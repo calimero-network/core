@@ -13,6 +13,7 @@ use calimero_server::config::AuthMode;
 use camino::Utf8Path;
 use eyre::{bail, Result as EyreResult, WrapErr};
 use multiaddr::{Multiaddr, Protocol};
+use tracing;
 
 /// Minimum sync timeout in milliseconds
 const MIN_SYNC_TIMEOUT_MS: u64 = 1000; // 1 second
@@ -26,8 +27,11 @@ const MAX_SYNC_INTERVAL_MS: u64 = 3_600_000; // 1 hour
 
 /// Maximum registrations limit.
 /// This limit prevents excessive resource usage from too many rendezvous/relay registrations.
-/// The value of 100 is chosen to be generous for most deployments while preventing
-/// pathological configurations that could impact network performance.
+/// The value of 100 is chosen based on:
+/// - Each registration maintains persistent connections and state (~2-5KB per registration)
+/// - At 100 registrations, memory overhead is bounded to ~500KB which is reasonable
+/// - Network overhead for keepalive messages scales linearly with registrations
+/// - Most production deployments use 3-10 registrations; 100 allows for unusual topologies
 const MAX_REGISTRATIONS_LIMIT: usize = 100;
 
 /// Validates the entire configuration at startup.
@@ -167,11 +171,21 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
         let host = auth_addr.ip().to_string();
         let port = auth_addr.port();
 
-        if check_conflict(&used_ports, &TransportProtocol::Tcp, &host, port).is_some() {
-            conflicts.push(format!(
-                "Embedded auth TCP port {} conflicts with another service",
-                port
-            ));
+        if let Some(owner) = check_conflict(&used_ports, &TransportProtocol::Tcp, &host, port) {
+            match owner {
+                PortOwner::Swarm => conflicts.push(format!(
+                    "Embedded auth TCP port {} conflicts with swarm on {}",
+                    port, host
+                )),
+                PortOwner::Server => conflicts.push(format!(
+                    "Embedded auth TCP port {} conflicts with server on {}",
+                    port, host
+                )),
+                PortOwner::EmbeddedAuth => conflicts.push(format!(
+                    "Duplicate embedded auth address: TCP {}:{}",
+                    host, port
+                )),
+            }
         } else {
             // Track embedded auth port for consistency (useful if future services are added)
             used_ports.push((TransportProtocol::Tcp, host, port, PortOwner::EmbeddedAuth));
@@ -290,12 +304,19 @@ fn validate_path_accessibility(config: &ConfigFile, node_path: &Utf8Path) -> Eyr
 }
 
 /// Validates that a path (or its parent) is accessible for writing.
+///
+/// This function checks:
+/// 1. If the path exists, it must be a directory
+/// 2. If the path doesn't exist, its parent must exist
+/// 3. The directory (or parent) must be writable (tested by creating a temp file)
 fn validate_path_writable(path: &Utf8Path, name: &str) -> EyreResult<()> {
-    // If the path exists, check if it's a directory
+    // If the path exists, check if it's a directory and writable
     if path.exists() {
         if !path.is_dir() {
             bail!("{} path '{}' exists but is not a directory", name, path);
         }
+        // Test write permissions by attempting to create a temp file
+        test_write_permission(path.as_std_path(), name)?;
         return Ok(());
     }
 
@@ -303,8 +324,12 @@ fn validate_path_writable(path: &Utf8Path, name: &str) -> EyreResult<()> {
     // Empty parent means path is relative to current directory (e.g., "data"),
     // which is always valid as the current directory exists.
     if let Some(parent) = path.parent() {
-        if !parent.as_str().is_empty() && !parent.exists() {
-            bail!("{} parent directory '{}' does not exist", name, parent);
+        if !parent.as_str().is_empty() {
+            if !parent.exists() {
+                bail!("{} parent directory '{}' does not exist", name, parent);
+            }
+            // Test write permissions on the parent
+            test_write_permission(parent.as_std_path(), name)?;
         }
     }
 
@@ -312,8 +337,13 @@ fn validate_path_writable(path: &Utf8Path, name: &str) -> EyreResult<()> {
 }
 
 /// Validates that a std path (or its parent) is accessible for writing.
+///
+/// This function checks:
+/// 1. If the path exists, it must be a directory
+/// 2. If the path doesn't exist, its parent must exist
+/// 3. The directory (or parent) must be writable (tested by creating a temp file)
 fn validate_path_writable_std(path: &std::path::Path, name: &str) -> EyreResult<()> {
-    // If the path exists, check if it's a directory
+    // If the path exists, check if it's a directory and writable
     if path.exists() {
         if !path.is_dir() {
             bail!(
@@ -322,23 +352,65 @@ fn validate_path_writable_std(path: &std::path::Path, name: &str) -> EyreResult<
                 path.display()
             );
         }
+        // Test write permissions
+        test_write_permission(path, name)?;
         return Ok(());
     }
 
-    // Check if parent directory exists.
+    // Check if parent directory exists and is writable.
     // Empty parent means path is relative to current directory (e.g., "data"),
     // which is always valid as the current directory exists.
     if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            bail!(
-                "{} parent directory '{}' does not exist",
-                name,
-                parent.display()
-            );
+        if !parent.as_os_str().is_empty() {
+            if !parent.exists() {
+                bail!(
+                    "{} parent directory '{}' does not exist",
+                    name,
+                    parent.display()
+                );
+            }
+            // Test write permissions on the parent
+            test_write_permission(parent, name)?;
         }
     }
 
     Ok(())
+}
+
+/// Tests write permissions by attempting to create and remove a temporary file.
+fn test_write_permission(dir: &std::path::Path, name: &str) -> EyreResult<()> {
+    use std::fs;
+    use std::io::Write;
+
+    // Generate a unique temp file name to avoid collisions
+    let temp_file = dir.join(format!(".calimero_write_test_{}", std::process::id()));
+
+    // Attempt to create and write to the file
+    match fs::File::create(&temp_file) {
+        Ok(mut file) => {
+            // Try to write something to fully test permissions
+            if let Err(e) = file.write_all(b"test") {
+                let _ = fs::remove_file(&temp_file);
+                bail!(
+                    "{} directory '{}' is not writable: {}",
+                    name,
+                    dir.display(),
+                    e
+                );
+            }
+            // Clean up the temp file
+            let _ = fs::remove_file(&temp_file);
+            Ok(())
+        }
+        Err(e) => {
+            bail!(
+                "{} directory '{}' is not writable: {}",
+                name,
+                dir.display(),
+                e
+            );
+        }
+    }
 }
 
 /// Validates that required credentials are present based on configuration.
@@ -366,11 +438,17 @@ fn validate_required_credentials(config: &ConfigFile) -> EyreResult<()> {
 
     // Check TEE KMS configuration
     if let Some(ref tee_config) = config.tee {
-        // At least one KMS provider must be configured
-        if tee_config.kms.phala.is_none() {
+        // Check if any KMS provider is configured.
+        // Currently only Phala is supported; extend this check when adding new providers.
+        let has_kms_provider = tee_config.kms.phala.is_some();
+        // Future providers would be checked here:
+        // let has_kms_provider = tee_config.kms.phala.is_some()
+        //     || tee_config.kms.other_provider.is_some();
+
+        if !has_kms_provider {
             bail!(
                 "TEE is enabled but no KMS provider is configured. \
-                 Please configure at least one KMS provider (e.g., phala)."
+                 Please configure the 'phala' KMS provider under [tee.kms.phala]."
             );
         }
     }
@@ -430,6 +508,16 @@ fn validate_limit_values(config: &ConfigFile) -> EyreResult<()> {
         );
     }
 
+    // Validate discovery_interval to prevent tokio::time::interval panic
+    // tokio::time::interval panics if duration is zero
+    let discovery_interval = config.network.discovery.rendezvous.discovery_interval;
+    if discovery_interval.is_zero() {
+        bail!(
+            "discovery.rendezvous.discovery_interval must be greater than 0 \
+             (tokio::time::interval panics on zero duration)"
+        );
+    }
+
     let relay_limit = config.network.discovery.relay.registrations_limit;
     if relay_limit == 0 {
         bail!("discovery.relay.registrations_limit must be greater than 0");
@@ -467,6 +555,15 @@ fn validate_limit_values(config: &ConfigFile) -> EyreResult<()> {
                     "websocket.pong_timeout_secs ({}) must be less than ping_interval_secs ({})",
                     ws_config.pong_timeout_secs,
                     ws_config.ping_interval_secs
+                );
+            }
+
+            // Warn about non-zero pong_timeout when ping is disabled (indicates misconfiguration)
+            if ws_config.ping_interval_secs == 0 && ws_config.pong_timeout_secs > 0 {
+                tracing::warn!(
+                    "websocket.pong_timeout_secs ({}) is non-zero but ping_interval_secs is 0 (disabled). \
+                     Consider setting pong_timeout_secs to 0 as well since pong timeout has no effect without ping.",
+                    ws_config.pong_timeout_secs
                 );
             }
         }
