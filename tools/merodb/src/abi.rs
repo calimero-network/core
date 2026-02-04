@@ -127,15 +127,6 @@ pub fn infer_schema_from_database(
                     .unwrap_or(false);
 
             if is_root_field {
-                // Debug: log what we're checking
-                eprintln!(
-                    "[infer_schema] Found root-level entity: id={}, parent_id={:?}, field_name={:?}, crdt_type={:?}",
-                    hex::encode(index.id.as_bytes()),
-                    index.parent_id.as_ref().map(|id| hex::encode(id.as_bytes())),
-                    index.metadata.field_name,
-                    index.metadata.crdt_type
-                );
-
                 // Check if we have field_name in metadata
                 if let Some(ref field_name) = index.metadata.field_name {
                     if !seen_field_names.contains(field_name) {
