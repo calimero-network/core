@@ -767,47 +767,64 @@ export class StateTreeVisualizer {
             html += `</div>`;
         }
 
-        html += '<div class="visualization__tooltip-section">';
-        html += `<div class="visualization__tooltip-title">Hashes</div>`;
-        html += `<div class="visualization__tooltip-row">`;
-        html += `  <span class="visualization__tooltip-label">ID:</span>`;
-        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(data.id, 'ID')}</span>`;
-        html += `</div>`;
-        html += `<div class="visualization__tooltip-row">`;
-        html += `  <span class="visualization__tooltip-label">Full Hash:</span>`;
-        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(data.full_hash, 'Full Hash')}</span>`;
-        html += `</div>`;
-        html += `<div class="visualization__tooltip-row">`;
-        html += `  <span class="visualization__tooltip-label">Own Hash:</span>`;
-        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(data.own_hash, 'Own Hash')}</span>`;
-        html += `</div>`;
-        // Use the parent node's ID from the D3 hierarchy instead of data.parent_id
-        // This ensures the displayed parent ID matches what's shown in the tree
-        if (node.parent) {
-            html += `<div class="visualization__tooltip-row">`;
-            html += `  <span class="visualization__tooltip-label">Parent ID:</span>`;
-            html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(node.parent.data.id, 'Parent ID')}</span>`;
+        // Hashes section - only show if we have hash data
+        const hasHashData = data.id || data.full_hash || data.own_hash || node.parent;
+        if (hasHashData) {
+            html += '<div class="visualization__tooltip-section">';
+            html += `<div class="visualization__tooltip-title">Hashes</div>`;
+            if (data.id) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">ID:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(data.id, 'ID')}</span>`;
+                html += `</div>`;
+            }
+            if (data.full_hash) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Full Hash:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(data.full_hash, 'Full Hash')}</span>`;
+                html += `</div>`;
+            }
+            if (data.own_hash) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Own Hash:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(data.own_hash, 'Own Hash')}</span>`;
+                html += `</div>`;
+            }
+            // Use the parent node's ID from the D3 hierarchy
+            if (node.parent) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Parent ID:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(node.parent.data.id, 'Parent ID')}</span>`;
+                html += `</div>`;
+            }
             html += `</div>`;
         }
-        html += `</div>`;
 
-        html += '<div class="visualization__tooltip-section">';
-        html += `<div class="visualization__tooltip-title">Timestamps</div>`;
-        html += `<div class="visualization__tooltip-row">`;
-        html += `  <span class="visualization__tooltip-label">Created:</span>`;
-        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(data.created_at)}</span>`;
-        html += `</div>`;
-        html += `<div class="visualization__tooltip-row">`;
-        html += `  <span class="visualization__tooltip-label">Updated:</span>`;
-        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(data.updated_at)}</span>`;
-        html += `</div>`;
-        if (data.deleted_at) {
-            html += `<div class="visualization__tooltip-row">`;
-            html += `  <span class="visualization__tooltip-label">Deleted:</span>`;
-            html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(data.deleted_at)}</span>`;
+        // Timestamps section - only show if we have timestamp data
+        const hasTimestampData = data.created_at || data.updated_at || data.deleted_at;
+        if (hasTimestampData) {
+            html += '<div class="visualization__tooltip-section">';
+            html += `<div class="visualization__tooltip-title">Timestamps</div>`;
+            if (data.created_at) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Created:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(data.created_at)}</span>`;
+                html += `</div>`;
+            }
+            if (data.updated_at) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Updated:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(data.updated_at)}</span>`;
+                html += `</div>`;
+            }
+            if (data.deleted_at) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Deleted:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(data.deleted_at)}</span>`;
+                html += `</div>`;
+            }
             html += `</div>`;
         }
-        html += `</div>`;
 
         return html;
     }
