@@ -1547,7 +1547,7 @@ impl borsh::BorshDeserialize for Metadata {
 
 /// CRDT type identifier for entity metadata.
 /// Must match the definition in calimero-storage.
-#[derive(borsh::BorshDeserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(borsh::BorshDeserialize, Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) enum CrdtType {
     LwwRegister,
@@ -1559,7 +1559,7 @@ pub(crate) enum CrdtType {
     UserStorage,
     FrozenStorage,
     Record,
-    Custom,
+    Custom { type_name: String },
 }
 
 #[derive(borsh::BorshDeserialize, Clone)]
