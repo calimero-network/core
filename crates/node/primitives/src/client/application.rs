@@ -777,6 +777,50 @@ impl NodeClient {
         Ok(())
     }
 
+    /// Validates that an artifact path is safe for use as a relative filesystem path.
+    /// Unlike `validate_path_component`, this allows subdirectories (forward slashes)
+    /// but still prevents path traversal attacks.
+    ///
+    /// This prevents malicious bundle manifests from specifying artifact paths like
+    /// `../../../etc/passwd` that could escape the extraction directory.
+    fn validate_artifact_path(value: &str, field_name: &str) -> eyre::Result<()> {
+        // Check for empty path
+        if value.is_empty() {
+            bail!("{} is empty", field_name);
+        }
+
+        // Check for null bytes
+        if value.contains('\0') {
+            bail!("{} contains null byte", field_name);
+        }
+
+        // Check for Windows-style backslashes (should use forward slashes)
+        if value.contains('\\') {
+            bail!("{} contains backslash (use forward slashes)", field_name);
+        }
+
+        // Check for absolute path (Unix-style starting with /)
+        if value.starts_with('/') {
+            bail!("{} is an absolute path", field_name);
+        }
+
+        // Check for absolute path (Windows drive letters like "C:")
+        if value.len() >= 2 && value.chars().nth(1) == Some(':') {
+            bail!("{} appears to be an absolute Windows path", field_name);
+        }
+
+        // Check each path component for traversal attempts
+        for component in value.split('/') {
+            // Empty components from double slashes are suspicious but not dangerous
+            // ".." is the critical traversal component
+            if component == ".." {
+                bail!("{} contains path traversal component '..'", field_name);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Extract and parse bundle manifest from bundle archive data.
     /// Returns both the raw JSON value (for signature verification) and the typed manifest.
     fn extract_bundle_manifest(
@@ -814,6 +858,21 @@ impl NodeClient {
                 // write files outside the intended applications directory
                 Self::validate_path_component(&manifest.package, "package")?;
                 Self::validate_path_component(&manifest.app_version, "appVersion")?;
+
+                // Validate artifact paths to prevent path traversal attacks
+                // These paths are used to locate files within the extracted bundle
+                if let Some(ref wasm) = manifest.wasm {
+                    Self::validate_artifact_path(&wasm.path, "wasm.path")?;
+                }
+                if let Some(ref abi) = manifest.abi {
+                    Self::validate_artifact_path(&abi.path, "abi.path")?;
+                }
+                for (i, migration) in manifest.migrations.iter().enumerate() {
+                    Self::validate_artifact_path(
+                        &migration.path,
+                        &format!("migrations[{}].path", i),
+                    )?;
+                }
 
                 return Ok((manifest_json, manifest));
             }
