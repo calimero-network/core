@@ -154,9 +154,14 @@ impl Engine {
     pub fn compile(&self, bytes: &[u8]) -> Result<Module, FunctionCallError> {
         // Check module size before compilation to prevent memory exhaustion attacks
         if bytes.len() > self.limits.max_module_size {
+            tracing::warn!(
+                size = bytes.len(),
+                max = self.limits.max_module_size,
+                "WASM module size limit exceeded"
+            );
             return Err(FunctionCallError::ModuleSizeLimitExceeded {
-                size: bytes.len(),
-                max: self.limits.max_module_size,
+                size: bytes.len() as u64,
+                max: self.limits.max_module_size as u64,
             });
         }
 
