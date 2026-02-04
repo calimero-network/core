@@ -17,8 +17,10 @@ pub struct KvStore {
     items: UnorderedMap<String, LwwRegister<String>>,
     /// Total number of operations performed
     operation_count: Counter,
-    /// History of operations (last 100 entries)
-    /// Using LwwRegister<String> so each entry can be independently updated
+    /// History of operations - append-only log
+    /// Note: Uses LwwRegister<String> because Vector<T> requires T: Mergeable,
+    /// and String doesn't implement Mergeable. For a true append-only log,
+    /// a custom AppendLog type would be needed.
     operation_history: Vector<LwwRegister<String>>,
     /// Tags associated with keys
     tags: UnorderedSet<String>,
