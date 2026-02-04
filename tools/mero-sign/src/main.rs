@@ -94,15 +94,14 @@ fn derive_signer_id_did_key(pubkey: &[u8; 32]) -> String {
 }
 
 /// Canonicalizes a manifest JSON value using RFC 8785 (JCS).
-/// Removes the signature field before canonicalization.
+/// Removes the signature field and all underscore-prefixed transient fields before canonicalization.
 fn canonicalize_manifest(manifest_json: &serde_json::Value) -> Result<Vec<u8>> {
     // Clone and remove the signature field for canonicalization
     let mut signing_view = manifest_json.clone();
     if let Some(obj) = signing_view.as_object_mut() {
         obj.remove("signature");
-        // Also remove transient fields
-        obj.remove("_binary");
-        obj.remove("_overwrite");
+        // Remove all underscore-prefixed fields to prevent signature confusion.
+        obj.retain(|k, _| !k.starts_with('_'));
     }
 
     // Canonicalize using RFC 8785 JCS
@@ -330,5 +329,42 @@ mod tests {
         );
         assert!(signature.get("publicKey").is_some());
         assert!(signature.get("signature").is_some());
+    }
+
+    #[test]
+    fn test_canonicalize_removes_all_underscore_prefixed_fields() {
+        // Test that ALL underscore-prefixed fields are removed, not just known ones.
+        // This ensures consistency with signature.rs verification logic.
+        let manifest = serde_json::json!({
+            "version": "1.0",
+            "package": "com.test.app",
+            "_binary": "some_value",
+            "_overwrite": true,
+            "_debug": "debug_info",
+            "_custom_field": 123,
+            "_temp": {"nested": "data"},
+            "signature": {
+                "algorithm": "ed25519",
+                "publicKey": "test",
+                "signature": "test"
+            }
+        });
+
+        let canonical = canonicalize_manifest(&manifest).unwrap();
+        let canonical_str = String::from_utf8(canonical).unwrap();
+
+        // All underscore-prefixed fields should be removed
+        assert!(!canonical_str.contains("_binary"));
+        assert!(!canonical_str.contains("_overwrite"));
+        assert!(!canonical_str.contains("_debug"));
+        assert!(!canonical_str.contains("_custom_field"));
+        assert!(!canonical_str.contains("_temp"));
+
+        // signature should also be removed
+        assert!(!canonical_str.contains("signature"));
+
+        // Regular fields should remain
+        assert!(canonical_str.contains("version"));
+        assert!(canonical_str.contains("package"));
     }
 }
