@@ -1,0 +1,119 @@
+name: Merobox E2E (Open Invitation + Propagation)
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "apps/**"
+      - ".github/workflows/merobox-e2e.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "apps/**"
+      - ".github/workflows/merobox-e2e.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CALIMERO_CONTRACTS_VERSION: "latest"
+  RUST_BACKTRACE: 1
+
+jobs:
+  merobox-e2e:
+    runs-on: big-machine
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: merobox-e2e
+          cache-on-failure: true
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build merod
+        run: cargo build -p merod
+
+      - name: Clone merobox
+        run: git clone https://github.com/calimero-network/merobox.git
+
+      - name: Install merobox dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r merobox/requirements.txt
+          pip install -e ./merobox
+
+      - name: Download contracts
+        env:
+          CALIMERO_CONTRACTS_DIR: ${{ github.workspace }}/contracts
+        run: ./merobox/workflow-examples/scripts/download_contracts.sh
+
+      - name: Run merobox workflow examples
+        run: |
+          set -euo pipefail
+          merobox --version
+
+          workflows=(
+            "workflow-examples/workflow-open-invitation-example.yml"
+            "workflow-examples/workflow-propagation-monitoring.yml"
+          )
+
+          failed_workflows=()
+
+          for workflow in "${workflows[@]}"; do
+            echo "Running workflow: $workflow"
+            if ! merobox bootstrap run "merobox/${workflow}" \
+              --no-docker \
+              --binary-path "$GITHUB_WORKSPACE/target/debug/merod" \
+              --e2e-mode \
+              --near-devnet \
+              --contracts-dir "$GITHUB_WORKSPACE/contracts/near"; then
+              failed_workflows+=("$workflow")
+            fi
+            merobox stop --all --no-docker || true
+            merobox nuke -f || true
+          done
+
+          for retry in 1 2; do
+            [ ${#failed_workflows[@]} -eq 0 ] && break
+            echo "Retry $retry for ${#failed_workflows[@]} failed workflow(s)..."
+            sleep 2
+
+            still_failed=()
+            for workflow in "${failed_workflows[@]}"; do
+              if ! merobox bootstrap run "merobox/${workflow}" \
+                --no-docker \
+                --binary-path "$GITHUB_WORKSPACE/target/debug/merod" \
+                --e2e-mode \
+                --near-devnet \
+                --contracts-dir "$GITHUB_WORKSPACE/contracts/near"; then
+                still_failed+=("$workflow")
+              fi
+              merobox stop --all --no-docker || true
+              merobox nuke -f || true
+              sleep 2
+            done
+            failed_workflows=("${still_failed[@]}")
+          done
+
+          if [ ${#failed_workflows[@]} -gt 0 ]; then
+            echo "Failed workflows: ${failed_workflows[*]}"
+            exit 1
+          fi
+
+          echo "All workflows passed!"
