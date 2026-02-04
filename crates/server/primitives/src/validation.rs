@@ -93,6 +93,13 @@ pub enum ValidationError {
         actual: u64,
     },
 
+    #[error("Field '{field}' value {actual} is below minimum of {min}")]
+    ValueTooSmall {
+        field: &'static str,
+        min: u64,
+        actual: u64,
+    },
+
     #[error("Field '{field}' contains too many items: {actual} (max {max})")]
     TooManyItems {
         field: &'static str,
@@ -224,7 +231,11 @@ pub mod helpers {
     /// Validate pagination limit (must be > 0 and <= MAX_PAGINATION_LIMIT)
     pub fn validate_limit(value: usize, field: &'static str) -> Option<ValidationError> {
         if value == 0 {
-            return Some(ValidationError::EmptyField { field });
+            return Some(ValidationError::ValueTooSmall {
+                field,
+                min: 1,
+                actual: 0,
+            });
         }
         if value > MAX_PAGINATION_LIMIT {
             Some(ValidationError::ValueTooLarge {
@@ -268,11 +279,11 @@ pub mod helpers {
         }
     }
 
-    /// Validate method name (checks for empty and length only)
+    /// Validate method name (checks for empty, length, and control characters)
     ///
-    /// Note: Character restrictions are intentionally not enforced here as the OpenAPI spec
-    /// does not define specific character constraints for method names. Runtime validation
-    /// is handled separately in the WASM execution layer.
+    /// Only minimal character restrictions are enforced here (control characters are rejected).
+    /// The OpenAPI spec does not define specific character constraints for method names, so
+    /// more specific validation is handled by the WASM execution layer at runtime.
     pub fn validate_method_name(value: &str, field: &'static str) -> Option<ValidationError> {
         if value.is_empty() {
             return Some(ValidationError::EmptyField { field });
@@ -305,8 +316,9 @@ pub mod helpers {
     /// Validate JSON value size using a recursive size estimator.
     ///
     /// This estimates the serialized size without allocating by walking the JSON tree.
-    /// The estimate is conservative (may slightly overestimate) but avoids the memory
-    /// overhead of re-serializing the entire JSON value.
+    /// The estimate uses a conservative 2x multiplier for strings to account for
+    /// JSON escape sequences (e.g., `"` becomes `\"`). This may overestimate but
+    /// ensures security against strings crafted to expand during serialization.
     pub fn validate_json_size(
         value: &serde_json::Value,
         field: &'static str,
@@ -325,6 +337,10 @@ pub mod helpers {
     }
 
     /// Recursively estimate the serialized size of a JSON value without allocating.
+    ///
+    /// Uses conservative estimates for strings (2x multiplier) to account for escape sequences.
+    /// This may overestimate the actual serialized size but prevents underestimation attacks
+    /// where strings with many escapable characters expand significantly during serialization.
     fn estimate_json_size(value: &serde_json::Value) -> usize {
         match value {
             serde_json::Value::Null => 4, // "null"
@@ -336,7 +352,8 @@ pub mod helpers {
                 }
             } // "true" or "false"
             serde_json::Value::Number(n) => n.to_string().len(), // Numbers vary in length
-            serde_json::Value::String(s) => s.len() + 2, // Include quotes, approximate escaping
+            // Conservative: assume worst case where chars may need escaping (2x) + quotes
+            serde_json::Value::String(s) => s.len() * 2 + 2,
             serde_json::Value::Array(arr) => {
                 // 2 for brackets, commas between elements
                 let content_size: usize = arr.iter().map(estimate_json_size).sum();
@@ -345,8 +362,10 @@ pub mod helpers {
             }
             serde_json::Value::Object(obj) => {
                 // 2 for braces, commas between entries, colons after keys
-                let content_size: usize = obj.iter()
-                    .map(|(k, v)| k.len() + 2 + 1 + estimate_json_size(v))  // key + quotes + colon + value
+                // Keys also use conservative 2x multiplier for escaping
+                let content_size: usize = obj
+                    .iter()
+                    .map(|(k, v)| k.len() * 2 + 2 + 1 + estimate_json_size(v)) // key*2 + quotes + colon + value
                     .sum();
                 let comma_size = if obj.is_empty() { 0 } else { obj.len() - 1 };
                 2 + content_size + comma_size
