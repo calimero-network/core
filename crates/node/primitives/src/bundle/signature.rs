@@ -302,10 +302,13 @@ pub fn sign_manifest_json(
     let verifying_key = signing_key.verifying_key();
     let signer_id = derive_signer_id_did_key(verifying_key.as_bytes());
 
-    // Add signerId to the manifest only if not already present
+    // Always set signerId to match the signing key (overwrites any existing value).
+    // This ensures the signed manifest is always valid and consistent with mero-sign CLI.
     if let Some(obj) = manifest_json.as_object_mut() {
-        obj.entry("signerId".to_string())
-            .or_insert_with(|| serde_json::Value::String(signer_id.clone()));
+        obj.insert(
+            "signerId".to_string(),
+            serde_json::Value::String(signer_id.clone()),
+        );
     }
 
     // Canonicalize the manifest (without signature field)

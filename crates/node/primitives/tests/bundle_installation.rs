@@ -1557,13 +1557,23 @@ fn create_tampered_bundle(
     bundle_path.try_into().unwrap()
 }
 
-/// Helper to create a bundle where manifest.signerId doesn't match the signing key
+/// Helper to create a bundle where manifest.signerId doesn't match the signing key.
+///
+/// This manually constructs the mismatch by:
+/// 1. Creating a manifest with signerId from key B
+/// 2. Signing it with key A (without using sign_manifest_json which would overwrite signerId)
+/// 3. The result has signerId B but signature from key A
 fn create_signer_id_mismatch_bundle(
     temp_dir: &TempDir,
     package: &str,
     version: &str,
     wasm_content: &[u8],
 ) -> Utf8PathBuf {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use calimero_node_primitives::bundle::{canonicalize_manifest, compute_signing_payload};
+    use ed25519_dalek::Signer;
+
     let bundle_path = temp_dir
         .path()
         .join(format!("{}-{}-signer-mismatch.mpk", package, version));
@@ -1592,8 +1602,22 @@ fn create_signer_id_mismatch_bundle(
         "migrations": []
     });
 
-    // But actually sign with key A (mismatch!)
-    sign_manifest(&mut manifest, &signing_key_a);
+    // Manually sign with key A without overwriting signerId (to create mismatch)
+    let canonical_bytes = canonicalize_manifest(&manifest).unwrap();
+    let signing_payload = compute_signing_payload(&canonical_bytes);
+    let signature = signing_key_a.sign(&signing_payload);
+
+    // Add signature from key A (but signerId is still from key B - mismatch!)
+    let public_key_b64 = URL_SAFE_NO_PAD.encode(signing_key_a.verifying_key().as_bytes());
+    let signature_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+    manifest.as_object_mut().unwrap().insert(
+        "signature".to_string(),
+        serde_json::json!({
+            "algorithm": "ed25519",
+            "publicKey": public_key_b64,
+            "signature": signature_b64
+        }),
+    );
 
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
     let mut manifest_header = tar::Header::new_gnu();
