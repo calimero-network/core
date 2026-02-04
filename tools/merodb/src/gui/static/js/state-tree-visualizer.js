@@ -388,7 +388,22 @@ export class StateTreeVisualizer {
                     }
                     // For Entry nodes, show meaningful data
                     if (d.data.type === 'Entry' && d.data.data) {
-                        // Map entries: show key
+                        // Counter entries: show value (the count) instead of key (executor ID)
+                        // Counter has both key (hash) and value (number)
+                        if (d.data.data.key && d.data.data.value) {
+                            const val = d.data.data.value.parsed ?? d.data.data.value;
+                            // If value is a number (Counter), show "count: N"
+                            if (typeof val === 'number') {
+                                return `count: ${val}`;
+                            }
+                            // Otherwise show "key → value" for regular maps
+                            const key = d.data.data.key.parsed || d.data.data.key;
+                            const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
+                            const valStr = typeof val === 'string' ? val : JSON.stringify(val);
+                            const display = `${keyStr} → ${valStr}`;
+                            return display.length > 30 ? display.substring(0, 27) + '...' : display;
+                        }
+                        // Map entries with only key: show key
                         if (d.data.data.key) {
                             const key = d.data.data.key.parsed || d.data.data.key;
                             const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
