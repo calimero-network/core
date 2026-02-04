@@ -665,9 +665,11 @@ export class StateTreeVisualizer {
         html += `  <span class="visualization__tooltip-label">Type:</span>`;
         html += `  <span class="visualization__tooltip-value">${data.type || 'N/A'}</span>`;
         html += `</div>`;
+        // Calculate children count from actual tree structure
+        const childrenCount = (node.children?.length || 0) + (node._children?.length || 0);
         html += `<div class="visualization__tooltip-row">`;
         html += `  <span class="visualization__tooltip-label">Children:</span>`;
-        html += `  <span class="visualization__tooltip-value">${data.children_count || 0}</span>`;
+        html += `  <span class="visualization__tooltip-value">${childrenCount}</span>`;
         html += `</div>`;
         html += `</div>`;
 
