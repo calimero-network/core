@@ -386,11 +386,26 @@ export class StateTreeVisualizer {
                     if (d.data.type === 'StateRoot') {
                         return 'Root';
                     }
-                    // For Entry nodes, show key if available
-                    if (d.data.type === 'Entry' && d.data.data && d.data.data.key) {
-                        const key = d.data.data.key.parsed || d.data.data.key;
-                        const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
-                        return keyStr.length > 20 ? keyStr.substring(0, 17) + '...' : keyStr;
+                    // For Entry nodes, show meaningful data
+                    if (d.data.type === 'Entry' && d.data.data) {
+                        // Map entries: show key
+                        if (d.data.data.key) {
+                            const key = d.data.data.key.parsed || d.data.data.key;
+                            const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
+                            return keyStr.length > 25 ? keyStr.substring(0, 22) + '...' : keyStr;
+                        }
+                        // Vector entries: show item value
+                        if (d.data.data.item) {
+                            const item = d.data.data.item.parsed || d.data.data.item;
+                            const itemStr = typeof item === 'string' ? item : JSON.stringify(item);
+                            return itemStr.length > 35 ? itemStr.substring(0, 32) + '...' : itemStr;
+                        }
+                        // Set entries or other: show value
+                        if (d.data.data.value) {
+                            const val = d.data.data.value.parsed || d.data.data.value;
+                            const valStr = typeof val === 'string' ? val : JSON.stringify(val);
+                            return valStr.length > 25 ? valStr.substring(0, 22) + '...' : valStr;
+                        }
                     }
                     // Fallback to truncated ID
                     const id = d.data.id || 'N/A';
