@@ -409,4 +409,61 @@ mod metadata__serialization {
         let metadata = Metadata::default();
         assert_eq!(metadata.crdt_type, None);
     }
+
+    #[test]
+    fn serialize_deserialize__with_field_name() {
+        let mut metadata = Metadata::with_crdt_type(1000, 2000, CrdtType::UnorderedMap);
+        metadata.field_name = Some("items".to_string());
+        let serialized = borsh::to_vec(&metadata).unwrap();
+        let deserialized: Metadata = BorshDeserialize::try_from_slice(&serialized).unwrap();
+        assert_eq!(deserialized.field_name, Some("items".to_string()));
+        assert_eq!(deserialized.crdt_type, Some(CrdtType::UnorderedMap));
+    }
+
+    #[test]
+    fn serialize_deserialize__without_field_name() {
+        let metadata = Metadata::with_crdt_type(1000, 2000, CrdtType::Counter);
+        // field_name is None by default
+        assert_eq!(metadata.field_name, None);
+        let serialized = borsh::to_vec(&metadata).unwrap();
+        let deserialized: Metadata = BorshDeserialize::try_from_slice(&serialized).unwrap();
+        assert_eq!(deserialized.field_name, None);
+        assert_eq!(deserialized.crdt_type, Some(CrdtType::Counter));
+    }
+}
+
+#[cfg(test)]
+mod element__new_with_field_name {
+    use super::*;
+
+    #[test]
+    fn creates_element_with_field_name() {
+        let element = Element::new_with_field_name(None, Some("my_field".to_string()));
+        assert_eq!(element.metadata.field_name, Some("my_field".to_string()));
+        // Default CRDT type for new_with_field_name is LwwRegister
+        assert_eq!(element.metadata.crdt_type, Some(CrdtType::LwwRegister));
+    }
+
+    #[test]
+    fn creates_element_without_field_name() {
+        let element = Element::new_with_field_name(None, None);
+        assert_eq!(element.metadata.field_name, None);
+    }
+
+    #[test]
+    fn creates_element_with_field_name_and_crdt_type() {
+        let element = Element::new_with_field_name_and_crdt_type(
+            None,
+            Some("items".to_string()),
+            CrdtType::UnorderedMap,
+        );
+        assert_eq!(element.metadata.field_name, Some("items".to_string()));
+        assert_eq!(element.metadata.crdt_type, Some(CrdtType::UnorderedMap));
+    }
+
+    #[test]
+    fn new_defaults_to_no_field_name() {
+        let element = Element::new(None);
+        assert_eq!(element.metadata.field_name, None);
+    }
 }
