@@ -144,15 +144,16 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
 
         // Check if this TCP port conflicts with existing TCP ports
         // Consider wildcard addresses (0.0.0.0 binds all IPv4, :: binds all IPv6)
-        let has_conflict = used_ports
-            .iter()
-            .any(|((proto, existing_host, existing_port), _owner)| {
-                if *proto != TransportProtocol::Tcp || *existing_port != port {
-                    return false;
-                }
-                // Check if hosts overlap (considering wildcards)
-                hosts_overlap(&host, existing_host)
-            });
+        let has_conflict =
+            used_ports
+                .iter()
+                .any(|((proto, existing_host, existing_port), _owner)| {
+                    if *proto != TransportProtocol::Tcp || *existing_port != port {
+                        return false;
+                    }
+                    // Check if hosts overlap (considering wildcards)
+                    hosts_overlap(&host, existing_host)
+                });
 
         if has_conflict {
             conflicts.push(format!(
