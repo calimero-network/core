@@ -6,7 +6,7 @@
 //! - Required credentials presence validation
 //! - Sane limit values for timeouts and intervals
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use calimero_config::ConfigFile;
@@ -59,6 +59,13 @@ enum TransportProtocol {
     Udp,
 }
 
+/// Tracks which service claimed a port.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PortOwner {
+    Swarm,
+    Server,
+}
+
 /// Extracts (protocol, port) pairs from a multiaddr.
 /// TCP and UDP on the same port are valid (different protocols).
 fn extract_protocol_ports_from_multiaddr(addr: &Multiaddr) -> Vec<(TransportProtocol, u16)> {
@@ -82,7 +89,7 @@ fn extract_protocol_ports_from_multiaddr(addr: &Multiaddr) -> Vec<(TransportProt
 /// IPv4 and IPv6 on the same port is also valid (different address families).
 fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
     // Key: (protocol, host, port) - this allows TCP and UDP on same port
-    let mut used_ports: HashSet<(TransportProtocol, String, u16)> = HashSet::new();
+    let mut used_ports: HashMap<(TransportProtocol, String, u16), PortOwner> = HashMap::new();
     let mut conflicts: Vec<String> = Vec::new();
 
     // Collect swarm ports
@@ -90,7 +97,7 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
         let host = extract_host_from_multiaddr(addr);
         for (proto, port) in extract_protocol_ports_from_multiaddr(addr) {
             let key = (proto.clone(), host.clone(), port);
-            if !used_ports.insert(key) {
+            if used_ports.insert(key, PortOwner::Swarm).is_some() {
                 let proto_str = match proto {
                     TransportProtocol::Tcp => "TCP",
                     TransportProtocol::Udp => "UDP",
@@ -108,15 +115,23 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
         let host = extract_host_from_multiaddr(addr);
         for (proto, port) in extract_protocol_ports_from_multiaddr(addr) {
             let key = (proto.clone(), host.clone(), port);
-            if !used_ports.insert(key) {
+            if let Some(owner) = used_ports.get(&key).copied() {
                 let proto_str = match proto {
                     TransportProtocol::Tcp => "TCP",
                     TransportProtocol::Udp => "UDP",
                 };
-                conflicts.push(format!(
-                    "Server port {} {} conflicts with swarm on {}",
-                    proto_str, port, host
-                ));
+                match owner {
+                    PortOwner::Swarm => conflicts.push(format!(
+                        "Server port {} {} conflicts with swarm on {}",
+                        proto_str, port, host
+                    )),
+                    PortOwner::Server => conflicts.push(format!(
+                        "Duplicate server address: {} {}:{}",
+                        proto_str, host, port
+                    )),
+                }
+            } else {
+                used_ports.insert(key, PortOwner::Server);
             }
         }
     }
@@ -131,7 +146,7 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
         // Consider wildcard addresses (0.0.0.0 binds all IPv4, :: binds all IPv6)
         let has_conflict = used_ports
             .iter()
-            .any(|(proto, existing_host, existing_port)| {
+            .any(|((proto, existing_host, existing_port), _owner)| {
                 if *proto != TransportProtocol::Tcp || *existing_port != port {
                     return false;
                 }
