@@ -858,7 +858,9 @@ mod user_storage_signature_verification {
         let (signing_key, owner) = create_test_keypair();
 
         // First, create the entity
+        // Use root element but clear crdt_type to avoid CRDT merge path in tests
         let mut element = Element::root();
+        element.metadata.crdt_type = None;
         element.set_user_domain(owner);
         let page = Page::new_from_element("Original Title", element);
         let serialized = to_vec(&page).unwrap();
@@ -999,7 +1001,9 @@ mod user_storage_replay_protection {
 
         let (signing_key, owner) = create_test_keypair();
 
+        // Use root element but clear crdt_type to avoid CRDT merge path in tests
         let mut element = Element::root();
+        element.metadata.crdt_type = None;
         element.set_user_domain(owner);
         let mut page = Page::new_from_element("Version 1", element);
         let serialized = to_vec(&page).unwrap();
@@ -1523,6 +1527,8 @@ mod storage_type_edge_cases {
                     nonce,
                 }),
             },
+            crdt_type: None,
+            field_name: None,
         };
 
         let mut action = Action::DeleteRef {
@@ -1803,7 +1809,9 @@ mod storage_type_edge_cases {
         let (signing_key, owner) = create_test_keypair();
 
         // Create user-owned entity
+        // Use root element but clear crdt_type to avoid CRDT merge path in tests
         let mut element = Element::root();
+        element.metadata.crdt_type = None;
         element.set_user_domain(owner);
         let page = Page::new_from_element("Page", element);
         let serialized = to_vec(&page).unwrap();

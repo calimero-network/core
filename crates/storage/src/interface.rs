@@ -1023,11 +1023,13 @@ impl<S: StorageAdaptor> Interface<S> {
                 } else {
                     data.to_vec()
                 }
-            } else if last_metadata.updated_at > metadata.updated_at {
+            } else if *last_metadata.updated_at > *metadata.updated_at {
                 // Non-root or root without crdt_type: skip if existing is newer (LWW)
+                // Note: Use dereferenced comparison since UpdatedAt::PartialOrd may not be correct
                 return Ok(None);
-            } else if last_metadata.updated_at == metadata.updated_at {
+            } else if *last_metadata.updated_at == *metadata.updated_at {
                 // Concurrent update (same timestamp) - try to merge
+                // Note: Use dereferenced comparison since UpdatedAt::PartialEq always returns true
                 if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
                     Self::try_merge_data(
                         id,
