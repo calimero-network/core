@@ -2,16 +2,17 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use calimero_server_primitives::admin::{InstallApplicationResponse, InstallDevApplicationRequest};
 use tracing::{debug, error, info};
 
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::ApiResponse;
 use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<InstallDevApplicationRequest>,
+    ValidatedJson(req): ValidatedJson<InstallDevApplicationRequest>,
 ) -> impl IntoResponse {
     info!(path=%req.path, "Installing dev application");
     let metadata_len = req.metadata.len();

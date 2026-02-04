@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::ProposalId;
 use calimero_context_config::{Proposal, ProposalWithApprovals};
@@ -17,6 +17,7 @@ use calimero_server_primitives::admin::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
@@ -35,7 +36,7 @@ pub enum ActionType {
 pub async fn get_proposals_handler(
     Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<GetProposalsRequest>,
+    ValidatedJson(req): ValidatedJson<GetProposalsRequest>,
 ) -> impl IntoResponse {
     let external_config = match state.ctx_client.context_config(&context_id) {
         Ok(Some(config)) => config,
@@ -128,7 +129,7 @@ pub async fn get_proxy_contract_handler(
 pub async fn get_context_value_handler(
     Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<GetContextValueRequest>,
+    ValidatedJson(req): ValidatedJson<GetContextValueRequest>,
 ) -> impl IntoResponse {
     let external_config = match state.ctx_client.context_config(&context_id) {
         Ok(Some(config)) => config,
@@ -162,7 +163,7 @@ pub async fn get_context_value_handler(
 pub async fn get_context_storage_entries_handler(
     Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<GetContextStorageEntriesRequest>,
+    ValidatedJson(req): ValidatedJson<GetContextStorageEntriesRequest>,
 ) -> impl IntoResponse {
     let external_config = match state.ctx_client.context_config(&context_id) {
         Ok(Some(config)) => config,
@@ -310,7 +311,7 @@ pub async fn get_proposal_approvers_handler(
 pub async fn create_and_approve_proposal_handler(
     Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<CreateAndApproveProposalRequest>,
+    ValidatedJson(req): ValidatedJson<CreateAndApproveProposalRequest>,
 ) -> impl IntoResponse {
     let external_config = match state.ctx_client.context_config(&context_id) {
         Ok(Some(config)) => config,
@@ -366,7 +367,7 @@ pub async fn create_and_approve_proposal_handler(
 pub async fn approve_proposal_handler(
     Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<ApproveProposalRequest>,
+    ValidatedJson(req): ValidatedJson<ApproveProposalRequest>,
 ) -> impl IntoResponse {
     let external_config = match state.ctx_client.context_config(&context_id) {
         Ok(Some(config)) => config,

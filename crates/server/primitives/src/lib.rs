@@ -5,6 +5,7 @@ pub mod admin;
 pub mod blob;
 pub mod jsonrpc;
 pub mod sse;
+pub mod validation;
 pub mod ws;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
