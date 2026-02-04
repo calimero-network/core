@@ -1559,7 +1559,7 @@ pub(crate) enum CrdtType {
     UserStorage,
     FrozenStorage,
     Record,
-    Custom,
+    Custom { type_name: String },
 }
 
 #[derive(borsh::BorshDeserialize, Clone)]
