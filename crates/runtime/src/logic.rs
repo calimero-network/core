@@ -111,6 +111,10 @@ const DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB: u64 = 10;
 const DEFAULT_MAX_METHOD_NAME_LENGTH: u64 = 256;
 /// Default maximum WASM module size in MiB (10 MiB).
 const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 10;
+/// Default maximum operations for WASM execution (300 million).
+/// This limits how many WASM operations can be executed before termination.
+/// A value of 0 disables the execution limit.
+const DEFAULT_MAX_OPERATIONS: u64 = 300_000_000;
 
 /// Defines the resource limits for a VM instance.
 ///
@@ -167,6 +171,20 @@ pub struct VMLimits {
     /// The default of 10 MiB accommodates most applications while preventing memory
     /// exhaustion. Consider reducing for memory-constrained environments.
     pub max_module_size: u64,
+    /// The maximum number of WASM operations allowed per execution.
+    ///
+    /// Each WASM instruction counts as one operation (uniform cost). When the limit is reached,
+    /// execution is terminated with an `ExecutionTimeout` error.
+    /// This prevents infinite loops and long-running computations from blocking
+    /// the executor indefinitely.
+    ///
+    /// **Note:** The operation budget is shared between all WASM function calls in a single
+    /// execution, including registration hooks like `__calimero_register_merge`. If hooks
+    /// consume operations, the remaining budget for the user method is reduced accordingly.
+    ///
+    /// A value of 0 disables the execution limit. Use caution when disabling limits for
+    /// untrusted code, as infinite loops will block execution indefinitely.
+    pub max_operations: u64,
 }
 
 impl Default for VMLimits {
@@ -202,6 +220,7 @@ impl Default for VMLimits {
             max_blob_chunk_size: DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB * u64::from(ONE_MIB),
             max_method_name_length: DEFAULT_MAX_METHOD_NAME_LENGTH,
             max_module_size: DEFAULT_MAX_MODULE_SIZE_MIB * u64::from(ONE_MIB),
+            max_operations: DEFAULT_MAX_OPERATIONS,
         }
     }
 }
@@ -811,6 +830,7 @@ mod tests {
         assert_eq!(limits.max_blob_handles, 100);
         assert_eq!(limits.max_blob_chunk_size, 10 << 20); // 10 MiB
         assert_eq!(limits.max_method_name_length, 256);
+        assert_eq!(limits.max_operations, 300_000_000); // 300 million operations
     }
 
     /// A smoke test for the successful path of the `finish` method.
