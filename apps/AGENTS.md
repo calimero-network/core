@@ -61,7 +61,7 @@ app-name/
 - ✅ DO: Follow `kv-store/src/lib.rs` as reference
 
 ```rust
-// apps/kv-store/src/lib.rs
+// Simplified example based on apps/kv-store/src/lib.rs
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
