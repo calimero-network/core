@@ -12,6 +12,7 @@ use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap, Unordere
     Clone,
     Copy,
     Debug,
+    Default,
     PartialEq,
     Eq,
     PartialOrd,
@@ -54,13 +55,18 @@ impl calimero_storage::collections::Mergeable for Profile {
 }
 
 // Variant types
-#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub enum Status {
-    Active { timestamp: u64 },
+    Active {
+        timestamp: u64,
+    },
+    #[default]
     Inactive,
-    Pending { reason: String },
+    Pending {
+        reason: String,
+    },
 }
 
 // State with comprehensive Calimero collection types
