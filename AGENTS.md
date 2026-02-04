@@ -130,7 +130,9 @@ rg -n "#\[test\]" crates/module_name/
 rg -l "fn main" crates/*/src/
 
 # Find host functions (WASM imports)
-rg -n "fn calimero_" crates/runtime/src/
+rg -n "fn " crates/runtime/src/logic/imports.rs
+# Or find implementations:
+rg -n "pub fn " crates/runtime/src/logic/host_functions/
 ```
 
 ## Definition of Done

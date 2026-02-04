@@ -63,16 +63,19 @@ Host functions are WASM imports callable from applications:
 ### Storage Functions (`logic/host_functions/storage.rs`)
 
 ```rust
-// Available to WASM apps as calimero_*
-fn calimero_storage_read(key_ptr: u64, key_len: u32) -> u64;
-fn calimero_storage_write(key_ptr: u64, key_len: u32, value_ptr: u64, value_len: u32);
+// Registered in imports.rs, callable from WASM apps
+fn storage_read(key_ptr: u64, register_id: u64) -> u32;
+fn storage_write(key_ptr: u64, value_ptr: u64, register_id: u64) -> u32;
+fn storage_remove(key_ptr: u64, register_id: u64) -> u32;
 ```
 
 ### Context Functions (`logic/host_functions/context.rs`)
 
 ```rust
-fn calimero_context_id() -> u64;
-fn calimero_executor_id() -> u64;
+fn context_id(register_id: u64);
+fn executor_id(register_id: u64);
+fn context_create(protocol_ptr: u64, app_id_ptr: u64, args_ptr: u64, alias_ptr: u64);
+fn context_delete(context_id_ptr: u64);
 ```
 
 ## Patterns
@@ -80,19 +83,21 @@ fn calimero_executor_id() -> u64;
 ### Adding a Host Function
 
 - ✅ DO: Add to appropriate file in `src/logic/host_functions/`
-- ✅ DO: Register in `src/logic/imports.rs`
-- ✅ DO: Follow existing naming: `calimero_<category>_<action>`
+- ✅ DO: Register in `src/logic/imports.rs` using the `imports!` macro
+- ✅ DO: Follow existing naming: `<category>_<action>` (e.g. `storage_read`, `context_id`, `blob_create`)
 
 ```rust
 // src/logic/host_functions/storage.rs
-pub fn calimero_storage_read(
-    mut env: FunctionEnvMut<'_, VMLogic>,
-    key_ptr: u64,
-    key_len: u32,
-) -> VMResult<u64> {
-    let logic = env.data_mut();
-    // Implementation
+pub fn storage_read(
+    &mut self,
+    src_key_ptr: u64,
+    dest_register_id: u64,
+) -> VMLogicResult<u32> {
+    // Implementation using self.read_guest_memory_typed, etc.
 }
+
+// Then register in src/logic/imports.rs:
+// fn storage_read(key_ptr: u64, register_id: u64) -> u32;
 ```
 
 ### VMLogic Pattern
@@ -120,11 +125,11 @@ pub struct VMLogic {
 ## JIT Index
 
 ```bash
-# Find host functions
-rg -n "pub fn calimero_" src/logic/host_functions/
+# Find host functions (implementations)
+rg -n "pub fn " src/logic/host_functions/
 
-# Find WASM imports registration
-rg -n "namespace!" src/logic/imports.rs
+# Find host functions (WASM import declarations)
+rg -n "fn " src/logic/imports.rs
 
 # Find VMLogic methods
 rg -n "impl VMLogic" src/logic/
