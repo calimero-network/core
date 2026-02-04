@@ -1069,17 +1069,17 @@ export class StateTreeVisualizer {
                     }
                 }
             }
-            // For Entry types, show key: value format
+            // For Entry types, show meaningful data
             else if (data.type === 'Entry') {
                 if (data.data) {
                     const stateData = data.data;
                     let keyStr = '';
                     let valueStr = '';
+                    let itemStr = '';
                     
-                    // Get key
+                    // Get key (for Map entries)
                     if (stateData.key && stateData.key.parsed !== undefined) {
                         const key = stateData.key.parsed;
-                        // Handle different key types
                         if (typeof key === 'string') {
                             keyStr = `"${key}"`;
                         } else {
@@ -1089,7 +1089,7 @@ export class StateTreeVisualizer {
                         keyStr = String(stateData.key);
                     }
                     
-                    // Get value
+                    // Get value (for Map/Counter entries)
                     if (stateData.value && stateData.value.parsed !== undefined) {
                         const val = stateData.value.parsed;
                         // Handle LwwRegister values (show inner value)
@@ -1097,6 +1097,8 @@ export class StateTreeVisualizer {
                             valueStr = typeof val.value === 'string' ? `"${val.value}"` : JSON.stringify(val.value, null, 0);
                         } else if (typeof val === 'string') {
                             valueStr = `"${val}"`;
+                        } else if (typeof val === 'number') {
+                            valueStr = String(val);
                         } else {
                             valueStr = JSON.stringify(val, null, 0);
                         }
@@ -1104,17 +1106,36 @@ export class StateTreeVisualizer {
                         valueStr = String(stateData.value);
                     }
                     
-                    // Truncate long values
-                    const maxLen = 50;
-                    if (valueStr.length > maxLen) {
-                        valueStr = valueStr.substring(0, maxLen) + '...';
+                    // Get item (for Vector/Set entries)
+                    if (stateData.item && stateData.item.parsed !== undefined) {
+                        const item = stateData.item.parsed;
+                        // Handle LwwRegister wrapped items
+                        if (item && typeof item === 'object' && item.value !== undefined && item.clock !== undefined) {
+                            itemStr = typeof item.value === 'string' ? `"${item.value}"` : JSON.stringify(item.value, null, 0);
+                        } else if (typeof item === 'string') {
+                            itemStr = `"${item}"`;
+                        } else {
+                            itemStr = JSON.stringify(item, null, 0);
+                        }
+                    } else if (stateData.item) {
+                        itemStr = String(stateData.item);
                     }
                     
-                    // Format as "key → value" with arrow for better readability
+                    // Truncate long values
+                    const maxLen = 60;
+                    if (valueStr.length > maxLen) valueStr = valueStr.substring(0, maxLen) + '...';
+                    if (itemStr.length > maxLen) itemStr = itemStr.substring(0, maxLen) + '...';
+                    
+                    // Determine display format based on what data is available
                     if (keyStr && valueStr) {
+                        // Counter: if value is a number, show "key → value"
+                        // Map: show "key → value"
                         labelText = `${keyStr} → ${valueStr}`;
+                    } else if (itemStr) {
+                        // Vector/Set entry: just show the item value
+                        labelText = itemStr;
                     } else if (keyStr) {
-                        labelText = `Key: ${keyStr}`;
+                        labelText = keyStr;
                     } else if (valueStr) {
                         labelText = valueStr;
                     } else {
