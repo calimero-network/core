@@ -1869,13 +1869,11 @@ mod tests {
     #[test]
     fn test_validate_artifact_path_very_long() {
         // Test with a very long path (potential DoS)
+        // Current implementation doesn't check length, so very long paths pass validation
         let long_path = "a".repeat(10000);
-        // Current implementation doesn't check length, but this documents the consideration
-        let result = NodeClient::validate_artifact_path(&long_path, "test");
-        // Should either pass (if length is not checked) or fail (if length limit is added)
         assert!(
-            result.is_ok() || result.is_err(),
-            "Very long path should be handled"
+            NodeClient::validate_artifact_path(&long_path, "test").is_ok(),
+            "Very long path currently passes validation (no length check implemented)"
         );
     }
 }
