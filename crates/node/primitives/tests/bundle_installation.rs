@@ -10,8 +10,7 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::bundle::{
-    canonicalize_manifest, compute_signing_payload, derive_signer_id_did_key, BundleManifest,
-    BundleSignature,
+    derive_signer_id_did_key, sign_manifest_json, BundleManifest,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::db::InMemoryDB;
@@ -28,26 +27,9 @@ use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
 
 /// Signs a manifest JSON value and adds the signature field.
+/// This is a convenience wrapper around the shared sign_manifest_json function.
 fn sign_manifest(manifest_json: &mut serde_json::Value, signing_key: &SigningKey) {
-    // Canonicalize the manifest (without signature field)
-    let canonical_bytes = canonicalize_manifest(manifest_json).unwrap();
-
-    // Compute the signing payload
-    let signing_payload = compute_signing_payload(&canonical_bytes);
-
-    // Sign the payload
-    let signature = signing_key.sign(&signing_payload);
-
-    // Encode public key and signature as base64url
-    let public_key_b64 = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes());
-    let signature_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
-
-    // Add the signature object to the manifest
-    manifest_json["signature"] = serde_json::json!({
-        "algorithm": "ed25519",
-        "publicKey": public_key_b64,
-        "signature": signature_b64
-    });
+    sign_manifest_json(manifest_json, signing_key).unwrap();
 }
 
 /// Create a test bundle archive with manifest.json, app.wasm, abi.json, and migrations
@@ -105,13 +87,9 @@ fn create_test_bundle(
     let mut manifest_json: serde_json::Value = serde_json::to_value(&manifest).unwrap();
     sign_manifest(&mut manifest_json, &signing_key);
 
-    // Update manifest struct with signature for completeness
-    manifest.signature = Some(BundleSignature {
-        algorithm: "ed25519".to_string(),
-        public_key: URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes()),
-        signature: URL_SAFE_NO_PAD.encode(signing_key.sign(&[0u8; 32]).to_bytes()),
-        signed_at: None,
-    });
+    // Note: The manifest struct's signature field is not used after this point
+    // since manifest_json is what gets serialized to the bundle. The struct
+    // signature field remains None, which is fine since only the JSON is used.
 
     let manifest_bytes = serde_json::to_vec(&manifest_json).unwrap();
     let mut manifest_header = tar::Header::new_gnu();
@@ -1711,7 +1689,7 @@ async fn test_bundle_installation_fails_without_signature() {
 
     // Installation should fail
     let result = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await;
 
     assert!(
@@ -1742,7 +1720,7 @@ async fn test_bundle_installation_fails_with_invalid_signature() {
 
     // Installation should fail due to invalid signature
     let result = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await;
 
     assert!(
@@ -1778,7 +1756,7 @@ async fn test_bundle_installation_fails_signer_id_mismatch() {
 
     // Installation should fail
     let result = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await;
 
     assert!(
@@ -1832,7 +1810,7 @@ async fn test_bundle_application_id_derived_from_package_and_signer_id() {
     );
 
     let app_id_a = node_client
-        .install_application_from_path(bundle_a, vec![])
+        .install_application_from_path(bundle_a, vec![], None, None)
         .await
         .expect("Bundle A installation should succeed");
 
@@ -1847,7 +1825,7 @@ async fn test_bundle_application_id_derived_from_package_and_signer_id() {
     );
 
     let app_id_b = node_client
-        .install_application_from_path(bundle_b, vec![])
+        .install_application_from_path(bundle_b, vec![], None, None)
         .await
         .expect("Bundle B installation should succeed");
 
@@ -1862,7 +1840,7 @@ async fn test_bundle_application_id_derived_from_package_and_signer_id() {
     );
 
     let app_id_c = node_client
-        .install_application_from_path(bundle_c, vec![])
+        .install_application_from_path(bundle_c, vec![], None, None)
         .await
         .expect("Bundle C installation should succeed");
 
@@ -2124,7 +2102,7 @@ async fn test_bundle_validation_path_traversal_in_package() {
 
     // Installation should fail due to path traversal
     let result = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await;
 
     assert!(
@@ -2171,7 +2149,7 @@ async fn test_bundle_validation_path_traversal_in_version() {
 
     // Installation should fail due to path traversal
     let result = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await;
 
     assert!(
@@ -2218,7 +2196,7 @@ async fn test_bundle_validation_forward_slash_in_package() {
 
     // Installation should fail due to directory separator
     let result = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await;
 
     assert!(
@@ -2265,7 +2243,7 @@ async fn test_bundle_validation_backslash_in_package() {
 
     // Installation should fail due to directory separator
     let result = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await;
 
     assert!(
@@ -2312,7 +2290,7 @@ async fn test_bundle_validation_windows_absolute_path_in_package() {
 
     // Installation should fail due to absolute path
     let result = node_client
-        .install_application_from_path(bundle_path, vec![])
+        .install_application_from_path(bundle_path, vec![], None, None)
         .await;
 
     assert!(
@@ -2355,7 +2333,7 @@ async fn test_bundle_validation_valid_package_names() {
         );
 
         let result = node_client
-            .install_application_from_path(bundle_path, vec![])
+            .install_application_from_path(bundle_path, vec![], None, None)
             .await;
 
         assert!(

@@ -64,9 +64,14 @@ pub fn canonicalize_manifest(manifest_json: &serde_json::Value) -> Result<Vec<u8
     let mut signing_view = manifest_json.clone();
     if let Some(obj) = signing_view.as_object_mut() {
         obj.remove("signature");
-        // Remove all underscore-prefixed fields to prevent signature confusion
-        // Unknown underscore-prefixed fields could be canonicalized and signed but ignored
-        // during processing, potentially leading to signature confusion or replay attacks
+        // Remove all underscore-prefixed fields to prevent signature confusion.
+        // The underscore-prefix convention is reserved for transient/unsigned fields that
+        // should not be included in signature verification. Known transient fields include:
+        // - _binary: Binary data references (not part of canonical JSON)
+        // - _overwrite: Overwrite flags for migration artifacts
+        // Any future fields starting with underscore are also stripped to prevent signature
+        // confusion attacks where fields could be canonicalized and signed but ignored during
+        // processing, potentially leading to replay attacks.
         obj.retain(|k, _| !k.starts_with('_'));
     }
 
@@ -209,6 +214,9 @@ pub fn verify_manifest_signature(
         .and_then(|v| v.as_str())
         .ok_or_else(|| eyre::eyre!("signature missing 'algorithm' field"))?;
 
+    // Algorithm comparison is intentionally case-sensitive per specification.
+    // Only "ed25519" (lowercase) is supported. Case variations like "ED25519" or "Ed25519"
+    // are rejected to prevent potential bypasses if other code paths normalize the string.
     ensure!(
         algorithm == "ed25519",
         "unsupported signature algorithm: '{}', expected 'ed25519'",
@@ -268,6 +276,66 @@ pub fn verify_manifest_signature(
 /// Formats a bundle hash as a lowercase hex string.
 pub fn format_bundle_hash(hash: &[u8; 32]) -> String {
     hex::encode(hash)
+}
+
+/// Signs a manifest JSON value and adds the signature field.
+///
+/// This function performs the complete signing flow:
+/// 1. Adds signerId to the manifest (if not present)
+/// 2. Canonicalizes the manifest (excluding signature field)
+/// 3. Computes the signing payload (SHA-256)
+/// 4. Signs the payload with Ed25519
+/// 5. Adds the signature object to the manifest
+///
+/// # Arguments
+/// * `manifest_json` - The manifest as a mutable serde_json::Value
+/// * `signing_key` - The Ed25519 signing key
+///
+/// # Returns
+/// The derived signerId (did:key format)
+pub fn sign_manifest_json(
+    manifest_json: &mut serde_json::Value,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<String> {
+    use ed25519_dalek::Signer;
+
+    let verifying_key = signing_key.verifying_key();
+    let signer_id = derive_signer_id_did_key(verifying_key.as_bytes());
+
+    // Add signerId to the manifest if not present
+    if let Some(obj) = manifest_json.as_object_mut() {
+        obj.insert(
+            "signerId".to_string(),
+            serde_json::Value::String(signer_id.clone()),
+        );
+    }
+
+    // Canonicalize the manifest (without signature field)
+    let canonical_bytes = canonicalize_manifest(manifest_json)?;
+
+    // Compute the signing payload
+    let signing_payload = compute_signing_payload(&canonical_bytes);
+
+    // Sign the payload
+    let signature = signing_key.sign(&signing_payload);
+
+    // Encode public key and signature as base64url
+    let public_key_b64 = URL_SAFE_NO_PAD.encode(verifying_key.as_bytes());
+    let signature_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+
+    // Add the signature object to the manifest
+    if let Some(obj) = manifest_json.as_object_mut() {
+        obj.insert(
+            "signature".to_string(),
+            serde_json::json!({
+                "algorithm": "ed25519",
+                "publicKey": public_key_b64,
+                "signature": signature_b64
+            }),
+        );
+    }
+
+    Ok(signer_id)
 }
 
 #[cfg(test)]
