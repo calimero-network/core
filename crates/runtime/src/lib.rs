@@ -153,15 +153,16 @@ impl Engine {
 
     pub fn compile(&self, bytes: &[u8]) -> Result<Module, FunctionCallError> {
         // Check module size before compilation to prevent memory exhaustion attacks
-        if bytes.len() > self.limits.max_module_size {
+        let size = bytes.len() as u64;
+        if size > self.limits.max_module_size {
             tracing::warn!(
-                size = bytes.len(),
+                size,
                 max = self.limits.max_module_size,
                 "WASM module size limit exceeded"
             );
             return Err(FunctionCallError::ModuleSizeLimitExceeded {
-                size: bytes.len() as u64,
-                max: self.limits.max_module_size as u64,
+                size,
+                max: self.limits.max_module_size,
             });
         }
 
@@ -184,6 +185,14 @@ impl Engine {
         })
     }
 
+    /// # Safety
+    ///
+    /// This function deserializes a precompiled WASM module. The caller must ensure
+    /// the bytes come from a trusted source (e.g., previously compiled by this engine).
+    ///
+    /// Note: No size limit check is performed here because precompiled modules have
+    /// already been validated during their original compilation, and their serialized
+    /// format may differ in size from the original WASM binary.
     pub unsafe fn from_precompiled(&self, bytes: &[u8]) -> Result<Module, DeserializeError> {
         let module = wasmer::Module::deserialize(&self.engine, bytes)?;
 
@@ -988,6 +997,34 @@ mod wasm_panic_integration_tests {
         assert!(
             result.is_ok(),
             "Expected successful compilation, got: {result:?}"
+        );
+    }
+
+    /// Test that modules exactly at the size limit compile successfully (boundary condition)
+    #[test]
+    fn test_wasm_module_at_exact_size_limit() {
+        use crate::logic::VMLimits;
+
+        // A minimal WASM module
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Create an engine with module size limit exactly equal to the WASM size
+        let mut limits = VMLimits::default();
+        limits.max_module_size = wasm.len() as u64; // Exact size limit
+
+        let engine = Engine::new(wasmer::Engine::default(), limits);
+
+        // Compilation should succeed because check is `size > limit`, not `size >= limit`
+        let result = engine.compile(&wasm);
+        assert!(
+            result.is_ok(),
+            "Expected successful compilation at exact size limit, got: {result:?}"
         );
     }
 }
