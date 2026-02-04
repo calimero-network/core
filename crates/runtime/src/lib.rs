@@ -441,9 +441,9 @@ mod integration_tests_package_usage {
     use {eyre as _, owo_colors as _, rand as _, wat as _};
 }
 
-/// Integration tests for WASM execution with panic handling
+/// Integration tests for WASM execution (panic handling, size limits, compilation)
 #[cfg(test)]
-mod wasm_panic_integration_tests {
+mod wasm_integration_tests {
     use super::*;
     use crate::store::InMemoryStorage;
 

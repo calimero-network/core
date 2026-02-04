@@ -162,6 +162,10 @@ pub struct VMLimits {
     /// The maximum size of a WASM module in bytes before compilation.
     /// This limit prevents memory exhaustion attacks from large malicious modules.
     /// Setting this to 0 will reject all non-empty modules.
+    ///
+    /// **Configuration guidance**: Typical WASM modules range from 100 KiB to a few MiB.
+    /// The default of 10 MiB accommodates most applications while preventing memory
+    /// exhaustion. Consider reducing for memory-constrained environments.
     pub max_module_size: u64,
 }
 
