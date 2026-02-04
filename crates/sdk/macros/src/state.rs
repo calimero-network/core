@@ -471,15 +471,10 @@ fn generate_default_impl(
                 Some(quote_spanned! {field_span=>
                     #field_name: <#field_type>::new_with_field_name(#field_name_lit),
                 })
-            } else if type_str.contains("LwwRegister") {
-                // LwwRegister needs a value, use Default for the inner type
-                // Extract inner type from LwwRegister<T>
-                let field_span = field_name.span();
-                Some(quote_spanned! {field_span=>
-                    #field_name: <#field_type>::new(::core::default::Default::default()),
-                })
             } else {
-                // For other types (String, u64, etc.), use Default
+                // For other types (LwwRegister<T>, String, u64, etc.), use Default
+                // Note: LwwRegister<T> implements Default when T: Default
+                // If T doesn't implement Default, use #[app::init] instead
                 Some(quote! {
                     #field_name: ::core::default::Default::default(),
                 })
@@ -499,10 +494,12 @@ fn generate_default_impl(
         //   - Uses new_with_field_name(field_name) to generate deterministic IDs
         //   - Enables merodb and other tools to infer schema from database
         //
-        // For other types:
-        //   - Uses Default::default() or appropriate constructor
+        // For other types (LwwRegister<T>, scalars, etc.):
+        //   - Uses Default::default()
+        //   - Requires all types to implement Default
         //
-        // Advanced users can override by manually implementing Default.
+        // If any field type doesn't implement Default, use #[app::init] to
+        // manually initialize the state instead of relying on this generated Default.
         //
         impl #impl_generics ::core::default::Default for #ident #ty_generics #where_clause {
             fn default() -> Self {
