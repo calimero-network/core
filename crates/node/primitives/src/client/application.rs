@@ -1,7 +1,7 @@
 use std::io::{self, ErrorKind, Read};
 use std::sync::Arc;
 
-use crate::bundle::{verify_manifest_signature, BundleManifest};
+use crate::bundle::{verify_manifest_signature, BundleManifest, ManifestVerification};
 use calimero_primitives::application::{
     Application, ApplicationBlob, ApplicationId, ApplicationSource,
 };
@@ -394,22 +394,15 @@ impl NodeClient {
                 "bundle downloaded and stored as blob"
             );
 
-            // Extract bundle to parse manifest and extract artifacts
+            // Extract bundle manifest and verify signature
             // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
             let bundle_data_clone = bundle_data.clone();
-            let (manifest_json, manifest) = tokio::task::spawn_blocking(move || {
-                Self::extract_bundle_manifest(&bundle_data_clone)
+            let (verification, manifest) = tokio::task::spawn_blocking(move || {
+                Self::verify_and_extract_manifest(&bundle_data_clone)
             })
             .await??;
 
-            // Verify manifest signature and derive signerId
-            let verification = verify_manifest_signature(&manifest_json)?;
             let signer_id = verification.signer_id;
-            debug!(
-                signer_id = %signer_id,
-                bundle_hash = %hex::encode(verification.bundle_hash),
-                "bundle manifest signature verified"
-            );
 
             // Extract package and version from manifest
             let package = &manifest.package;
@@ -591,21 +584,15 @@ impl NodeClient {
             "bundle stored as blob"
         );
 
-        // Extract bundle to parse manifest and extract artifacts
+        // Extract bundle manifest and verify signature
         // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
         let bundle_data_clone = bundle_data.clone();
-        let (manifest_json, manifest) =
-            tokio::task::spawn_blocking(move || Self::extract_bundle_manifest(&bundle_data_clone))
-                .await??;
+        let (verification, manifest) = tokio::task::spawn_blocking(move || {
+            Self::verify_and_extract_manifest(&bundle_data_clone)
+        })
+        .await??;
 
-        // Verify manifest signature and derive signerId
-        let verification = verify_manifest_signature(&manifest_json)?;
         let signer_id = verification.signer_id;
-        debug!(
-            signer_id = %signer_id,
-            bundle_hash = %hex::encode(verification.bundle_hash),
-            "bundle manifest signature verified"
-        );
 
         // Extract package and version from manifest (ignore provided values)
         let package = &manifest.package;
@@ -784,41 +771,42 @@ impl NodeClient {
     /// This prevents malicious bundle manifests from specifying artifact paths like
     /// `../../../etc/passwd` that could escape the extraction directory.
     fn validate_artifact_path(value: &str, field_name: &str) -> eyre::Result<()> {
-        // Check for empty path
         if value.is_empty() {
             bail!("{} is empty", field_name);
         }
-
-        // Check for null bytes
         if value.contains('\0') {
             bail!("{} contains null byte", field_name);
         }
-
-        // Check for Windows-style backslashes (should use forward slashes)
         if value.contains('\\') {
             bail!("{} contains backslash (use forward slashes)", field_name);
         }
-
-        // Check for absolute path (Unix-style starting with /)
+        // Reject absolute paths: Unix-style `/` prefix or Windows drive letter (e.g., "C:")
         if value.starts_with('/') {
             bail!("{} is an absolute path", field_name);
         }
-
-        // Check for absolute path (Windows drive letters like "C:")
-        if value.len() >= 2 && value.chars().nth(1) == Some(':') {
+        if value.as_bytes().get(1) == Some(&b':') {
             bail!("{} appears to be an absolute Windows path", field_name);
         }
-
-        // Check each path component for traversal attempts
-        for component in value.split('/') {
-            // Empty components from double slashes are suspicious but not dangerous
-            // ".." is the critical traversal component
-            if component == ".." {
-                bail!("{} contains path traversal component '..'", field_name);
-            }
+        // Reject path traversal via ".." components
+        if value.split('/').any(|c| c == "..") {
+            bail!("{} contains path traversal component '..'", field_name);
         }
-
         Ok(())
+    }
+
+    /// Extracts bundle manifest, verifies signature, and returns both verification result and typed manifest.
+    /// This helper ensures all bundle installation paths go through the same verified flow.
+    fn verify_and_extract_manifest(
+        bundle_data: &[u8],
+    ) -> eyre::Result<(ManifestVerification, BundleManifest)> {
+        let (manifest_json, manifest) = Self::extract_bundle_manifest(bundle_data)?;
+        let verification = verify_manifest_signature(&manifest_json)?;
+        debug!(
+            signer_id = %verification.signer_id,
+            bundle_hash = %hex::encode(verification.bundle_hash),
+            "bundle manifest signature verified"
+        );
+        Ok((verification, manifest))
     }
 
     /// Extract and parse bundle manifest from bundle archive data.
@@ -841,8 +829,8 @@ impl NodeClient {
                 let manifest_json: serde_json::Value = serde_json::from_str(&manifest_str)
                     .map_err(|e| eyre::eyre!("failed to parse manifest.json as JSON: {}", e))?;
 
-                // Parse as typed manifest
-                let manifest: BundleManifest = serde_json::from_str(&manifest_str)
+                // Convert from already-parsed Value to typed manifest (avoids re-parsing string)
+                let manifest: BundleManifest = serde_json::from_value(manifest_json.clone())
                     .map_err(|e| eyre::eyre!("failed to parse manifest.json: {}", e))?;
 
                 // Validate required fields
@@ -951,22 +939,16 @@ impl NodeClient {
             bail!("bundle blob not found");
         };
 
-        // Extract manifest for package/version (needed for extraction path)
+        // Extract manifest and verify signature
         // No metadata needed - bundle detection happens via is_bundle_blob()
         // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
         let bundle_bytes_clone = bundle_bytes.clone();
-        let (manifest_json, manifest) =
-            tokio::task::spawn_blocking(move || Self::extract_bundle_manifest(&bundle_bytes_clone))
-                .await??;
+        let (verification, manifest) = tokio::task::spawn_blocking(move || {
+            Self::verify_and_extract_manifest(&bundle_bytes_clone)
+        })
+        .await??;
 
-        // Verify manifest signature and derive signerId
-        let verification = verify_manifest_signature(&manifest_json)?;
         let signer_id = verification.signer_id;
-        debug!(
-            signer_id = %signer_id,
-            bundle_hash = %hex::encode(verification.bundle_hash),
-            "bundle manifest signature verified"
-        );
 
         let package = &manifest.package;
         let version = &manifest.app_version;

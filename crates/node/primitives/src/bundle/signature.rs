@@ -64,9 +64,10 @@ pub fn canonicalize_manifest(manifest_json: &serde_json::Value) -> Result<Vec<u8
     let mut signing_view = manifest_json.clone();
     if let Some(obj) = signing_view.as_object_mut() {
         obj.remove("signature");
-        // Also remove transient fields
-        obj.remove("_binary");
-        obj.remove("_overwrite");
+        // Remove all underscore-prefixed fields to prevent signature confusion
+        // Unknown underscore-prefixed fields could be canonicalized and signed but ignored
+        // during processing, potentially leading to signature confusion or replay attacks
+        obj.retain(|k, _| !k.starts_with('_'));
     }
 
     // Canonicalize using RFC 8785 JCS
@@ -241,14 +242,18 @@ pub fn verify_manifest_signature(
     let derived_signer_id = derive_signer_id_did_key(&public_key_bytes);
 
     // Validate that the manifest's signerId matches the derived signerId
-    if let Some(manifest_signer_id) = manifest_json.get("signerId").and_then(|v| v.as_str()) {
-        if manifest_signer_id != derived_signer_id {
-            bail!(
-                "signerId mismatch: manifest declares '{}' but signature public key derives to '{}'",
-                manifest_signer_id,
-                derived_signer_id
-            );
-        }
+    // signerId is required for signed bundles to ensure identity verification
+    let manifest_signer_id = manifest_json
+        .get("signerId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| eyre::eyre!("bundle manifest is missing required signerId field"))?;
+
+    if manifest_signer_id != derived_signer_id {
+        bail!(
+            "signerId mismatch: manifest declares '{}' but signature public key derives to '{}'",
+            manifest_signer_id,
+            derived_signer_id
+        );
     }
 
     // Bundle hash equals signing payload in v0
@@ -528,7 +533,9 @@ mod tests {
 
     #[test]
     fn test_verify_manifest_signature_wrong_algorithm() {
-        let mut manifest = create_test_manifest("com.example.app", "1.0.0", None);
+        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
+        let mut manifest = create_test_manifest("com.example.app", "1.0.0", Some(&signer_id));
         manifest["signature"] = serde_json::json!({
             "algorithm": "rsa",
             "publicKey": "test",
@@ -541,6 +548,21 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unsupported signature algorithm"));
+    }
+
+    #[test]
+    fn test_verify_manifest_signature_missing_signer_id() {
+        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        // Create manifest without signerId (but with signature)
+        let mut manifest = create_test_manifest("com.example.app", "1.0.0", None);
+        sign_manifest(&mut manifest, &signing_key).unwrap();
+
+        let result = verify_manifest_signature(&manifest);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("missing required signerId field"));
     }
 
     #[test]
