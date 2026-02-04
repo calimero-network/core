@@ -1,0 +1,35 @@
+name: Build state-visualization-test
+
+on:
+  pull_request:
+    paths:
+      - "apps/state-visualization-test/**"
+  push:
+    branches:
+      - master
+    paths:
+      - "apps/state-visualization-test/**"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Build
+        run: |
+          cd apps/state-visualization-test
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: state_visualization_test.wasm
+          path: apps/state-visualization-test/res/state_visualization_test.wasm
