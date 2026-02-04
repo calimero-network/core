@@ -302,12 +302,10 @@ pub fn sign_manifest_json(
     let verifying_key = signing_key.verifying_key();
     let signer_id = derive_signer_id_did_key(verifying_key.as_bytes());
 
-    // Add signerId to the manifest if not present
+    // Add signerId to the manifest only if not already present
     if let Some(obj) = manifest_json.as_object_mut() {
-        obj.insert(
-            "signerId".to_string(),
-            serde_json::Value::String(signer_id.clone()),
-        );
+        obj.entry("signerId".to_string())
+            .or_insert_with(|| serde_json::Value::String(signer_id.clone()));
     }
 
     // Canonicalize the manifest (without signature field)

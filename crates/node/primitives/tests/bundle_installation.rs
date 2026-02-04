@@ -56,7 +56,7 @@ fn create_test_bundle(
         package: package.to_string(),
         app_version: version.to_string(),
         signer_id: Some(signer_id),
-        min_runtime_version: "1.0.0".to_string(),
+        min_runtime_version: "0.1.0".to_string(),
         metadata: None,
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
@@ -424,7 +424,7 @@ async fn test_bundle_validation_missing_fields() {
     let invalid_manifest_json = r#"{
         "version": "1.0",
         "appVersion": "1.0.0",
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": 10
@@ -530,7 +530,7 @@ fn create_test_bundle_custom_wasm_path(
         package: package.to_string(),
         app_version: version.to_string(),
         signer_id: Some(signer_id),
-        min_runtime_version: "1.0.0".to_string(),
+        min_runtime_version: "0.1.0".to_string(),
         metadata: None,
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
@@ -676,7 +676,7 @@ async fn test_bundle_validation_empty_package() {
         "version": "1.0",
         "package": "",
         "appVersion": "1.0.0",
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": 10
@@ -731,7 +731,7 @@ async fn test_bundle_validation_empty_app_version() {
         "version": "1.0",
         "package": "com.example.test",
         "appVersion": "",
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": 10
@@ -785,7 +785,7 @@ async fn test_bundle_validation_missing_app_version() {
     let invalid_manifest_json = r#"{
         "version": "1.0",
         "package": "com.example.test",
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": 10
@@ -1456,7 +1456,7 @@ fn create_unsigned_bundle(
         "package": package,
         "appVersion": version,
         "signerId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": wasm_content.len()
@@ -1509,7 +1509,7 @@ fn create_tampered_bundle(
         "package": package,
         "appVersion": version,
         "signerId": signer_id,
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": wasm_content.len()
@@ -1529,7 +1529,7 @@ fn create_tampered_bundle(
         "package": package,
         "appVersion": "999.999.999",  // TAMPERED!
         "signerId": signer_id,
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": wasm_content.len()
@@ -1584,7 +1584,7 @@ fn create_signer_id_mismatch_bundle(
         "package": package,
         "appVersion": version,
         "signerId": signer_id_b,  // Claims to be signed by key B
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": wasm_content.len()
@@ -1637,7 +1637,7 @@ fn create_test_bundle_with_key(
         package: package.to_string(),
         app_version: version.to_string(),
         signer_id: Some(signer_id),
-        min_runtime_version: "1.0.0".to_string(),
+        min_runtime_version: "0.1.0".to_string(),
         metadata: None,
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
@@ -2087,7 +2087,7 @@ async fn test_bundle_validation_path_traversal_in_package() {
         "package": "../../../etc/malicious",  // Path traversal!
         "appVersion": "1.0.0",
         "signerId": signer_id,
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": 12
@@ -2134,7 +2134,7 @@ async fn test_bundle_validation_path_traversal_in_version() {
         "package": "com.example.test",
         "appVersion": "../../../tmp/malicious",  // Path traversal!
         "signerId": signer_id,
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": 12
@@ -2181,7 +2181,7 @@ async fn test_bundle_validation_forward_slash_in_package() {
         "package": "foo/bar",  // Directory separator!
         "appVersion": "1.0.0",
         "signerId": signer_id,
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": 12
@@ -2228,7 +2228,7 @@ async fn test_bundle_validation_backslash_in_package() {
         "package": "foo\\bar",  // Windows directory separator!
         "appVersion": "1.0.0",
         "signerId": signer_id,
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": 12
@@ -2275,7 +2275,7 @@ async fn test_bundle_validation_windows_absolute_path_in_package() {
         "package": "C:malicious",  // Windows absolute path!
         "appVersion": "1.0.0",
         "signerId": signer_id,
-        "minRuntimeVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
             "size": 12
