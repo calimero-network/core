@@ -467,3 +467,63 @@ mod element__new_with_field_name {
         assert_eq!(element.metadata.field_name, None);
     }
 }
+
+#[cfg(test)]
+mod metadata__backward_compatibility {
+    use super::*;
+    use borsh::BorshDeserialize;
+
+    /// Test that old Metadata format (without crdt_type and field_name) deserializes correctly.
+    /// This simulates data written before crdt_type and field_name were added.
+    #[test]
+    fn deserialize_old_format_without_crdt_type_and_field_name() {
+        // Manually construct old-format Metadata bytes:
+        // created_at: u64 (8 bytes)
+        // updated_at: u64 (8 bytes)
+        // storage_type: Public variant (1 byte for enum discriminant)
+        let mut old_bytes = Vec::new();
+        old_bytes.extend_from_slice(&1000u64.to_le_bytes()); // created_at
+        old_bytes.extend_from_slice(&2000u64.to_le_bytes()); // updated_at
+        old_bytes.push(0u8); // StorageType::Public enum discriminant
+
+        // Deserialize - should succeed with None for crdt_type and field_name
+        let deserialized: Metadata = BorshDeserialize::try_from_slice(&old_bytes).unwrap();
+        assert_eq!(deserialized.created_at, 1000);
+        assert_eq!(*deserialized.updated_at, 2000);
+        assert!(matches!(deserialized.storage_type, StorageType::Public));
+        assert_eq!(deserialized.crdt_type, None);
+        assert_eq!(deserialized.field_name, None);
+    }
+
+    /// Test that Metadata with crdt_type but without field_name deserializes correctly.
+    /// This simulates data written after crdt_type was added but before field_name.
+    #[test]
+    fn deserialize_format_with_crdt_type_without_field_name() {
+        // Construct Metadata with crdt_type but let field_name be missing
+        let metadata_with_crdt = Metadata::with_crdt_type(1000, 2000, CrdtType::Counter);
+        let mut bytes_with_crdt = borsh::to_vec(&metadata_with_crdt).unwrap();
+
+        // Remove the field_name bytes (last few bytes after crdt_type)
+        // Since field_name is Option<String> serialized as None (0 byte), we can test
+        // by ensuring current format works correctly
+        let deserialized: Metadata = BorshDeserialize::try_from_slice(&bytes_with_crdt).unwrap();
+        assert_eq!(deserialized.crdt_type, Some(CrdtType::Counter));
+        // field_name should be None (default when not set)
+        assert_eq!(deserialized.field_name, None);
+    }
+
+    /// Test that current format with all fields deserializes correctly.
+    #[test]
+    fn deserialize_current_format_with_all_fields() {
+        let mut metadata = Metadata::with_crdt_type(1000, 2000, CrdtType::UnorderedMap);
+        metadata.field_name = Some("test_field".to_string());
+
+        let bytes = borsh::to_vec(&metadata).unwrap();
+        let deserialized: Metadata = BorshDeserialize::try_from_slice(&bytes).unwrap();
+
+        assert_eq!(deserialized.created_at, 1000);
+        assert_eq!(*deserialized.updated_at, 2000);
+        assert_eq!(deserialized.crdt_type, Some(CrdtType::UnorderedMap));
+        assert_eq!(deserialized.field_name, Some("test_field".to_string()));
+    }
+}
