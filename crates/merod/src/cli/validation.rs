@@ -24,7 +24,10 @@ const MIN_SYNC_INTERVAL_MS: u64 = 100; // 100ms
 /// Maximum sync interval in milliseconds
 const MAX_SYNC_INTERVAL_MS: u64 = 3_600_000; // 1 hour
 
-/// Maximum registrations limit
+/// Maximum registrations limit.
+/// This limit prevents excessive resource usage from too many rendezvous/relay registrations.
+/// The value of 100 is chosen to be generous for most deployments while preventing
+/// pathological configurations that could impact network performance.
 const MAX_REGISTRATIONS_LIMIT: usize = 100;
 
 /// Validates the entire configuration at startup.
@@ -63,6 +66,7 @@ enum TransportProtocol {
 enum PortOwner {
     Swarm,
     Server,
+    EmbeddedAuth,
 }
 
 /// Extracts (protocol, port) pairs from a multiaddr.
@@ -146,6 +150,10 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
                         "Duplicate server address: {} {}:{}",
                         proto_str, host, port
                     )),
+                    PortOwner::EmbeddedAuth => conflicts.push(format!(
+                        "Server {} port {} conflicts with embedded auth on {}",
+                        proto_str, port, host
+                    )),
                 }
             } else {
                 used_ports.push((proto, host.clone(), port, PortOwner::Server));
@@ -164,6 +172,9 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
                 "Embedded auth TCP port {} conflicts with another service",
                 port
             ));
+        } else {
+            // Track embedded auth port for consistency (useful if future services are added)
+            used_ports.push((TransportProtocol::Tcp, host, port, PortOwner::EmbeddedAuth));
         }
     }
 
@@ -181,21 +192,43 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
     Ok(())
 }
 
-/// Checks if two hosts overlap (considering wildcard addresses).
-/// 0.0.0.0 overlaps with any IPv4 address.
-/// :: overlaps with any IPv6 address.
+/// Checks if two hosts overlap (considering wildcard addresses and common DNS names).
+/// - 0.0.0.0 overlaps with any IPv4 address.
+/// - :: overlaps with any IPv6 address.
+/// - "localhost" is treated as equivalent to 127.0.0.1 and ::1.
 fn hosts_overlap(host1: &str, host2: &str) -> bool {
+    // Direct match
     if host1 == host2 {
         return true;
     }
 
-    // Check IPv4 wildcard
-    if (host1 == "0.0.0.0" && is_ipv4(host2)) || (host2 == "0.0.0.0" && is_ipv4(host1)) {
+    // Handle localhost: treat it as equivalent to 127.0.0.1 and ::1
+    let is_localhost = |h: &str| h == "localhost";
+    let is_loopback_ipv4 = |h: &str| h == "127.0.0.1";
+    let is_loopback_ipv6 = |h: &str| h == "::1";
+
+    // localhost matches 127.0.0.1 and ::1
+    if (is_localhost(host1) && (is_loopback_ipv4(host2) || is_loopback_ipv6(host2)))
+        || (is_localhost(host2) && (is_loopback_ipv4(host1) || is_loopback_ipv6(host1)))
+    {
         return true;
     }
 
-    // Check IPv6 wildcard
-    if (host1 == "::" && is_ipv6(host2)) || (host2 == "::" && is_ipv6(host1)) {
+    // Check IPv4 wildcard (0.0.0.0 binds all IPv4 interfaces)
+    // Also matches localhost since localhost resolves to 127.0.0.1
+    if host1 == "0.0.0.0" && (is_ipv4(host2) || is_localhost(host2)) {
+        return true;
+    }
+    if host2 == "0.0.0.0" && (is_ipv4(host1) || is_localhost(host1)) {
+        return true;
+    }
+
+    // Check IPv6 wildcard (:: binds all IPv6 interfaces)
+    // Also matches localhost since localhost can resolve to ::1
+    if host1 == "::" && (is_ipv6(host2) || is_localhost(host2)) {
+        return true;
+    }
+    if host2 == "::" && (is_ipv6(host1) || is_localhost(host1)) {
         return true;
     }
 
@@ -266,7 +299,9 @@ fn validate_path_writable(path: &Utf8Path, name: &str) -> EyreResult<()> {
         return Ok(());
     }
 
-    // Check if parent directory exists and is writable
+    // Check if parent directory exists and is writable.
+    // Empty parent means path is relative to current directory (e.g., "data"),
+    // which is always valid as the current directory exists.
     if let Some(parent) = path.parent() {
         if !parent.as_str().is_empty() && !parent.exists() {
             bail!("{} parent directory '{}' does not exist", name, parent);
@@ -290,7 +325,9 @@ fn validate_path_writable_std(path: &std::path::Path, name: &str) -> EyreResult<
         return Ok(());
     }
 
-    // Check if parent directory exists
+    // Check if parent directory exists.
+    // Empty parent means path is relative to current directory (e.g., "data"),
+    // which is always valid as the current directory exists.
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() {
             bail!(
@@ -544,6 +581,17 @@ mod tests {
         // Different specific addresses
         assert!(!hosts_overlap("127.0.0.1", "192.168.1.1"));
         assert!(!hosts_overlap("::1", "fe80::1"));
+
+        // Localhost handling
+        assert!(hosts_overlap("localhost", "127.0.0.1"));
+        assert!(hosts_overlap("localhost", "::1"));
+        assert!(hosts_overlap("127.0.0.1", "localhost"));
+        assert!(hosts_overlap("::1", "localhost"));
+        assert!(hosts_overlap("localhost", "localhost"));
+
+        // Localhost with wildcards
+        assert!(hosts_overlap("localhost", "0.0.0.0"));
+        assert!(hosts_overlap("localhost", "::"));
     }
 
     #[test]
