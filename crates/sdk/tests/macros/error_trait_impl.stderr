@@ -1,41 +1,35 @@
-error: (calimero)> exposing an async method is not supported
- --> tests/macros/invalid_methods.rs:8:9
-  |
-8 |     pub async fn method_00(&self) {}
-  |         ^^^^^
-
-error: (calimero)> exposing an unsafe method is not supported
- --> tests/macros/invalid_methods.rs:9:9
-  |
-9 |     pub unsafe fn method_01(&self) {}
-  |         ^^^^^^
+error: (calimero)> trait impls are not supported
+  --> tests/macros/error_trait_impl.rs:13:1
+   |
+13 | impl MyTrait for MyState {
+   | ^^^^
 
 error[E0433]: failed to resolve: could not find `calimero_storage` in the list of imported crates
- --> tests/macros/invalid_methods.rs:3:1
+ --> tests/macros/error_trait_impl.rs:5:1
   |
-3 | #[app::state]
+5 | #[app::state]
   | ^^^^^^^^^^^^^ could not find `calimero_storage` in the list of imported crates
   |
   = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: (calimero)> no method named `#[app::init]` found for type `MyType`
- --> tests/macros/invalid_methods.rs:4:8
+error[E0277]: (calimero)> no method named `#[app::init]` found for type `MyState`
+ --> tests/macros/error_trait_impl.rs:6:8
   |
-4 | struct MyType;
-  |        ^^^^^^ add an `#[app::init]` method to this type
+6 | struct MyState;
+  |        ^^^^^^^ add an `#[app::init]` method to this type
   |
-  = help: the trait `AppStateInit` is not implemented for `MyType`
+  = help: the trait `AppStateInit` is not implemented for `MyState`
 note: required by a bound in `AppState`
  --> src/state.rs
   |
   | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
   |                                                         ^^^^^^^^^^^^ required by this bound in `AppState`
 
-error[E0277]: the trait bound `MyType: BorshDeserialize` is not satisfied
- --> tests/macros/invalid_methods.rs:4:8
+error[E0277]: the trait bound `MyState: BorshDeserialize` is not satisfied
+ --> tests/macros/error_trait_impl.rs:6:8
   |
-4 | struct MyType;
-  |        ^^^^^^ the trait `BorshDeserialize` is not implemented for `MyType`
+6 | struct MyState;
+  |        ^^^^^^^ the trait `BorshDeserialize` is not implemented for `MyState`
   |
   = help: the following other types implement trait `BorshDeserialize`:
             ()
@@ -53,11 +47,11 @@ note: required by a bound in `AppState`
   | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
   |                                      ^^^^^^^^^^^^^^^^ required by this bound in `AppState`
 
-error[E0277]: the trait bound `MyType: BorshSerialize` is not satisfied
- --> tests/macros/invalid_methods.rs:4:8
+error[E0277]: the trait bound `MyState: BorshSerialize` is not satisfied
+ --> tests/macros/error_trait_impl.rs:6:8
   |
-4 | struct MyType;
-  |        ^^^^^^ the trait `BorshSerialize` is not implemented for `MyType`
+6 | struct MyState;
+  |        ^^^^^^^ the trait `BorshSerialize` is not implemented for `MyState`
   |
   = help: the following other types implement trait `BorshSerialize`:
             &T

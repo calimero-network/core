@@ -1376,7 +1376,7 @@ impl VMHostFunctions<'_> {
 
     fn read_map_id(&mut self, map_id_ptr: u64) -> VMLogicResult<Result<Id, String>> {
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(map_id_ptr)? };
-        let data = self.read_guest_memory_slice(&buffer);
+        let data = self.read_guest_memory_slice(&buffer)?;
 
         if data.len() != COLLECTION_ID_LEN {
             return Ok(Err(format!(
@@ -1393,7 +1393,7 @@ impl VMHostFunctions<'_> {
 
     fn read_buffer(&mut self, ptr: u64) -> VMLogicResult<Vec<u8>> {
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(ptr)? };
-        Ok(self.read_guest_memory_slice(&buffer).to_vec())
+        Ok(self.read_guest_memory_slice(&buffer)?.to_vec())
     }
 
     fn write_register_bytes(&mut self, register_id: u64, bytes: &[u8]) -> VMLogicResult<()> {

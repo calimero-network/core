@@ -276,7 +276,7 @@ impl VMHostFunctions<'_> {
             return Ok(0);
         }
 
-        self.read_guest_memory_slice_mut(&dest_data)
+        self.read_guest_memory_slice_mut(&dest_data)?
             .copy_from_slice(data);
 
         trace!(
@@ -440,8 +440,8 @@ impl VMHostFunctions<'_> {
             unsafe { self.read_guest_memory_typed::<sys::ValueReturn<'_>>(src_value_ptr)? };
 
         let result = match result {
-            sys::ValueReturn::Ok(value) => Ok(self.read_guest_memory_slice(&value).to_vec()),
-            sys::ValueReturn::Err(value) => Err(self.read_guest_memory_slice(&value).to_vec()),
+            sys::ValueReturn::Ok(value) => Ok(self.read_guest_memory_slice(&value)?.to_vec()),
+            sys::ValueReturn::Err(value) => Err(self.read_guest_memory_slice(&value)?.to_vec()),
         };
 
         let result_len = match &result {
@@ -574,7 +574,7 @@ impl VMHostFunctions<'_> {
         }
 
         let kind = self.read_guest_memory_str(event.kind())?.to_owned();
-        let data = self.read_guest_memory_slice(event.data()).to_vec();
+        let data = self.read_guest_memory_slice(event.data())?.to_vec();
 
         // Read callback handler name from thread-local storage
         let handler = CURRENT_CALLBACK_HANDLER.with(|name| name.borrow().clone());
@@ -646,7 +646,7 @@ impl VMHostFunctions<'_> {
         }
 
         let kind = self.read_guest_memory_str(event.kind())?.to_owned();
-        let data = self.read_guest_memory_slice(event.data()).to_vec();
+        let data = self.read_guest_memory_slice(event.data())?.to_vec();
 
         // Parse handler name if provided (src_handler_ptr != 0)
         let handler = if src_handler_ptr == 0 {
@@ -715,7 +715,7 @@ impl VMHostFunctions<'_> {
 
         let context_id = *self.read_guest_memory_sized::<DIGEST_SIZE>(xcall.context_id())?;
         let function = self.read_guest_memory_str(xcall.function())?.to_owned();
-        let params = self.read_guest_memory_slice(xcall.params()).to_vec();
+        let params = self.read_guest_memory_slice(xcall.params())?.to_vec();
 
         self.with_logic_mut(|logic| {
             logic.xcalls.push(XCall {
@@ -756,7 +756,7 @@ impl VMHostFunctions<'_> {
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_artifact_ptr)? };
 
         let root_hash = *self.read_guest_memory_sized::<DIGEST_SIZE>(&root_hash)?;
-        let artifact = self.read_guest_memory_slice(&artifact).to_vec();
+        let artifact = self.read_guest_memory_slice(&artifact)?.to_vec();
 
         self.with_logic_mut(|logic| {
             if logic.commit_called {
@@ -788,7 +788,7 @@ impl VMHostFunctions<'_> {
         updated_at: u64,
     ) -> VMLogicResult<()> {
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_doc_ptr)? };
-        let payload = self.read_guest_memory_slice(&buffer).to_vec();
+        let payload = self.read_guest_memory_slice(&buffer)?.to_vec();
 
         fn hlc_to_nanos(ts: calimero_storage::logical_clock::HybridTimestamp) -> u64 {
             let ntp = ts.get_time().as_u64();
@@ -904,7 +904,7 @@ impl VMHostFunctions<'_> {
     /// CRDT entities and the root document are updated atomically.
     pub fn apply_storage_delta(&mut self, src_delta_ptr: u64) -> VMLogicResult<()> {
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_delta_ptr)? };
-        let payload = self.read_guest_memory_slice(&buffer).to_vec();
+        let payload = self.read_guest_memory_slice(&buffer)?.to_vec();
         let delta_len = payload.len();
 
         self.with_logic_mut(|logic| -> VMLogicResult<()> {
