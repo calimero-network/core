@@ -190,9 +190,15 @@ impl Engine {
     /// This function deserializes a precompiled WASM module. The caller must ensure
     /// the bytes come from a trusted source (e.g., previously compiled by this engine).
     ///
-    /// Note: No size limit check is performed here because precompiled modules have
-    /// already been validated during their original compilation, and their serialized
-    /// format may differ in size from the original WASM binary.
+    /// # Security Note
+    ///
+    /// No size limit check is performed here. This is an accepted security trade-off because:
+    /// 1. Precompiled modules have already been validated during their original compilation
+    /// 2. The serialized format may differ significantly in size from the original WASM binary
+    /// 3. The `unsafe` marker already requires callers to ensure the bytes are from a trusted source
+    ///
+    /// If precompiled bytes could come from an untrusted source, callers should implement
+    /// their own size validation before calling this method.
     pub unsafe fn from_precompiled(&self, bytes: &[u8]) -> Result<Module, DeserializeError> {
         let module = wasmer::Module::deserialize(&self.engine, bytes)?;
 

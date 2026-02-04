@@ -170,7 +170,7 @@ impl Default for VMLimits {
         }
 
         Self {
-            max_module_size: DEFAULT_MAX_MODULE_SIZE_MIB as u64 * u64::from(ONE_MIB),
+            max_module_size: DEFAULT_MAX_MODULE_SIZE_MIB * u64::from(ONE_MIB),
             max_memory_pages: ONE_KIB,
             max_stack_size: DEFAULT_MAX_STACK_SIZE_KIB * ONE_KIB as usize,
             max_registers: DEFAULT_MAX_REGISTERS,
