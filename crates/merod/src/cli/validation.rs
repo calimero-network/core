@@ -6,7 +6,6 @@
 //! - Required credentials presence validation
 //! - Sane limit values for timeouts and intervals
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use calimero_config::ConfigFile;
@@ -87,17 +86,34 @@ fn extract_protocol_ports_from_multiaddr(addr: &Multiaddr) -> Vec<(TransportProt
 ///
 /// Note: TCP and UDP on the same port is valid (different protocols).
 /// IPv4 and IPv6 on the same port is also valid (different address families).
+/// Wildcard addresses (0.0.0.0 and ::) are considered to overlap with specific addresses.
 fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
-    // Key: (protocol, host, port) - this allows TCP and UDP on same port
-    let mut used_ports: HashMap<(TransportProtocol, String, u16), PortOwner> = HashMap::new();
+    // Store: (protocol, host, port) -> owner
+    let mut used_ports: Vec<(TransportProtocol, String, u16, PortOwner)> = Vec::new();
     let mut conflicts: Vec<String> = Vec::new();
+
+    // Helper to check if a new port conflicts with existing ones
+    let check_conflict = |used: &[(TransportProtocol, String, u16, PortOwner)],
+                          proto: &TransportProtocol,
+                          host: &str,
+                          port: u16|
+     -> Option<PortOwner> {
+        for (existing_proto, existing_host, existing_port, owner) in used {
+            if existing_proto == proto
+                && *existing_port == port
+                && hosts_overlap(host, existing_host)
+            {
+                return Some(*owner);
+            }
+        }
+        None
+    };
 
     // Collect swarm ports
     for addr in &config.network.swarm.listen {
         let host = extract_host_from_multiaddr(addr);
         for (proto, port) in extract_protocol_ports_from_multiaddr(addr) {
-            let key = (proto.clone(), host.clone(), port);
-            if used_ports.insert(key, PortOwner::Swarm).is_some() {
+            if let Some(_owner) = check_conflict(&used_ports, &proto, &host, port) {
                 let proto_str = match proto {
                     TransportProtocol::Tcp => "TCP",
                     TransportProtocol::Udp => "UDP",
@@ -106,23 +122,24 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
                     "Duplicate swarm address: {} {}:{}",
                     proto_str, host, port
                 ));
+            } else {
+                used_ports.push((proto, host.clone(), port, PortOwner::Swarm));
             }
         }
     }
 
-    // Collect server ports - server uses TCP only
+    // Collect server ports
     for addr in &config.network.server.listen {
         let host = extract_host_from_multiaddr(addr);
         for (proto, port) in extract_protocol_ports_from_multiaddr(addr) {
-            let key = (proto.clone(), host.clone(), port);
-            if let Some(owner) = used_ports.get(&key).copied() {
+            if let Some(owner) = check_conflict(&used_ports, &proto, &host, port) {
                 let proto_str = match proto {
                     TransportProtocol::Tcp => "TCP",
                     TransportProtocol::Udp => "UDP",
                 };
                 match owner {
                     PortOwner::Swarm => conflicts.push(format!(
-                        "Server port {} {} conflicts with swarm on {}",
+                        "Server {} port {} conflicts with swarm on {}",
                         proto_str, port, host
                     )),
                     PortOwner::Server => conflicts.push(format!(
@@ -131,7 +148,7 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
                     )),
                 }
             } else {
-                used_ports.insert(key, PortOwner::Server);
+                used_ports.push((proto, host.clone(), port, PortOwner::Server));
             }
         }
     }
@@ -142,20 +159,7 @@ fn validate_port_conflicts(config: &ConfigFile) -> EyreResult<()> {
         let host = auth_addr.ip().to_string();
         let port = auth_addr.port();
 
-        // Check if this TCP port conflicts with existing TCP ports
-        // Consider wildcard addresses (0.0.0.0 binds all IPv4, :: binds all IPv6)
-        let has_conflict =
-            used_ports
-                .iter()
-                .any(|((proto, existing_host, existing_port), _owner)| {
-                    if *proto != TransportProtocol::Tcp || *existing_port != port {
-                        return false;
-                    }
-                    // Check if hosts overlap (considering wildcards)
-                    hosts_overlap(&host, existing_host)
-                });
-
-        if has_conflict {
+        if check_conflict(&used_ports, &TransportProtocol::Tcp, &host, port).is_some() {
             conflicts.push(format!(
                 "Embedded auth TCP port {} conflicts with another service",
                 port
@@ -376,6 +380,16 @@ fn validate_limit_values(config: &ConfigFile) -> EyreResult<()> {
             "discovery.rendezvous.registrations_limit ({}) exceeds maximum allowed value ({})",
             rendezvous_limit,
             MAX_REGISTRATIONS_LIMIT
+        );
+    }
+
+    // Validate discovery_rpm to prevent division by zero
+    // This value is used as a divisor in Duration::from_secs_f32(60.0 / rpm)
+    let discovery_rpm = config.network.discovery.rendezvous.discovery_rpm;
+    if !discovery_rpm.is_finite() || discovery_rpm <= 0.0 {
+        bail!(
+            "discovery.rendezvous.discovery_rpm ({}) must be a positive finite number",
+            discovery_rpm
         );
     }
 

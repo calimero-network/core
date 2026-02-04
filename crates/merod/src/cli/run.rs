@@ -34,7 +34,12 @@ impl RunCommand {
 
         let mut config = ConfigFile::load(&path).await?;
 
-        // Validate configuration at startup
+        // Apply CLI auth_mode override before validation
+        if let Some(mode) = self.auth_mode {
+            config.network.server.auth_mode = mode.into();
+        }
+
+        // Validate configuration at startup (after CLI overrides are applied)
         validate_config(&config, &path).wrap_err(
             "Configuration validation failed - please fix the configuration and try again",
         )?;
@@ -59,10 +64,6 @@ impl RunCommand {
         } else {
             None
         };
-
-        if let Some(mode) = self.auth_mode {
-            config.network.server.auth_mode = mode.into();
-        }
 
         // Read node mode from config
         let node_mode = config.mode;
