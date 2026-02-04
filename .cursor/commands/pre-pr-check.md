@@ -7,7 +7,7 @@ Run the Definition of Done checks before creating a PR. See `AGENTS.md` for full
 1. Run these commands in order and report results:
    ```bash
    cargo fmt --check
-   cargo clippy --workspace -- -A warnings
+   cargo clippy -- -A warnings
    cargo test
    cargo deny check licenses sources   # only if dependencies were modified
    ```
