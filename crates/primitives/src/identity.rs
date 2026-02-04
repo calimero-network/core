@@ -6,16 +6,13 @@ use core::str::FromStr;
 use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use zeroize::Zeroize;
 
 use crate::context::ContextId;
 use crate::hash::{Hash, HashError};
 
 use ed25519_dalek::{Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey};
 
-#[expect(
-    missing_copy_implementations,
-    reason = "PrivateKey must not be copied, cloned, viewed or serialized"
-)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
@@ -25,6 +22,25 @@ pub struct PrivateKey(Hash);
 impl fmt::Debug for PrivateKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad("PrivateKey")
+    }
+}
+
+impl Drop for PrivateKey {
+    fn drop(&mut self) {
+        // Zeroize the key material to prevent it from remaining in memory.
+        //
+        // SAFETY:
+        // - The pointer is valid and properly aligned because it comes from a valid
+        //   mutable reference (`&mut self.0`).
+        // - The size is correct as we use `size_of::<Hash>()` on the actual type.
+        // - We have exclusive access to this memory via `&mut self`.
+        // - Hash doesn't expose `DerefMut` or implement `Zeroize`, so we use pointer
+        //   casting to get a mutable byte slice over the entire structure.
+        unsafe {
+            let hash_ptr = &mut self.0 as *mut Hash as *mut u8;
+            let hash_size = core::mem::size_of::<Hash>();
+            core::slice::from_raw_parts_mut(hash_ptr, hash_size).zeroize();
+        }
     }
 }
 
@@ -276,4 +292,72 @@ pub enum NearNetworkId {
     Testnet,
     #[serde(untagged)]
     Custom(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use core::mem::ManuallyDrop;
+
+    use super::*;
+
+    #[test]
+    fn test_private_key_zeroize_on_drop() {
+        // Create a non-zero key wrapped in ManuallyDrop to control when drop occurs
+        let secret_bytes: [u8; 32] = [0x42; 32];
+        let mut key = ManuallyDrop::new(PrivateKey::from(secret_bytes));
+
+        // Verify the key contains the expected bytes before drop
+        assert_eq!(key.as_ref(), &secret_bytes);
+
+        // Get a raw pointer to the key's memory location before dropping
+        let key_ptr = &*key as *const PrivateKey as *const u8;
+        let hash_size = core::mem::size_of::<Hash>();
+
+        // Manually drop the key, which will call our Drop implementation.
+        // SAFETY: The key was created with ManuallyDrop::new, so we need to
+        // manually drop it. After this, the ManuallyDrop wrapper prevents
+        // double-drop.
+        unsafe {
+            ManuallyDrop::drop(&mut key);
+        }
+
+        // NOTE: Reading memory after drop is technically undefined behavior in Rust's
+        // memory model, even though the stack memory is still allocated. We accept
+        // this UB in a test-only context to verify the security property that
+        // sensitive key material is zeroized. The ManuallyDrop wrapper ensures
+        // the stack memory hasn't been reused yet.
+        //
+        // SAFETY: We're reading stack memory that was just zeroized. While this is
+        // technically UB (the value has been invalidated by drop), it's acceptable
+        // here for verifying the security-critical zeroization behavior.
+        let zeroed = unsafe { core::slice::from_raw_parts(key_ptr, hash_size) };
+
+        // Check that the entire Hash structure is zeroed, not just the key bytes
+        assert!(
+            zeroed.iter().all(|&b| b == 0),
+            "Key material was not properly zeroized on drop"
+        );
+    }
+
+    #[test]
+    fn test_private_key_can_sign_before_drop() {
+        // Ensure PrivateKey still works correctly with the Drop implementation
+        let secret_bytes: [u8; 32] = [0x42; 32];
+        let key = PrivateKey::from(secret_bytes);
+
+        // Key should be usable for signing
+        let message = b"test message";
+        let signature = key.sign(message);
+        assert!(signature.is_ok());
+
+        // Key should be usable for deriving public key
+        let public_key = key.public_key();
+        assert!(!AsRef::<[u8; 32]>::as_ref(&public_key)
+            .iter()
+            .all(|&b| b == 0));
+
+        // Signature should verify with the public key
+        let sig = signature.unwrap();
+        assert!(public_key.verify(message, &sig).is_ok());
+    }
 }
