@@ -161,17 +161,19 @@ impl Engine {
     /// - Only use headless engines for trusted, pre-validated WASM modules
     /// - For untrusted code, use a full engine with [`Engine::with_limits`] to compile modules
     ///
-    /// If a module was compiled with metering enabled (max_operations > 0) and then loaded
-    /// via a headless engine, the metering will still be enforced by the embedded middleware.
-    /// However, errors from metering exhaustion will be reported as `ExecutionTimeout`.
+    /// **Note on precompiled modules with metering:** If a module was originally compiled
+    /// with metering enabled (max_operations > 0) and later loaded via a headless engine,
+    /// the metering middleware embedded in the compiled code will still trap when exhausted.
+    /// However, these traps will surface as generic runtime errors rather than
+    /// `ExecutionTimeout`, since headless engines cannot detect metering state.
     #[must_use]
     pub fn headless() -> Self {
         let mut limits = VMLimits::default();
         // Disable operation limit for headless engines since metering requires compilation
         limits.max_operations = 0;
 
-        // Log security warning when using headless engines
-        tracing::warn!(
+        // Log at debug level - security implications are documented above
+        debug!(
             "Creating headless engine without operation limit enforcement. \
              Only use for trusted, pre-validated WASM modules."
         );
@@ -492,12 +494,13 @@ impl Module {
             if max_ops > 0 {
                 if let MeteringPoints::Exhausted = metering::get_remaining_points(store, &instance)
                 {
-                    // Log the original error for debugging before returning timeout
-                    debug!(
+                    // Log the original error at info level for production debugging
+                    // The error type from metering exhaustion is typically an unreachable trap
+                    info!(
                         %context_id,
                         method,
                         original_error = ?err,
-                        "Metering exhausted, returning ExecutionTimeout (original error logged)"
+                        "Metering exhausted, returning ExecutionTimeout (original trap preserved in logs)"
                     );
                     error!(%context_id, method, "WASM execution exceeded operation limit");
                     return Ok(Some(FunctionCallError::WasmTrap(
