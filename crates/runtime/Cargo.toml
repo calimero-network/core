@@ -47,6 +47,8 @@ wat.workspace = true
 
 [features]
 host-traces = ["owo-colors"]
-# Enables PerfMap profiling support for WASM stack traces when ENABLE_WASMER_PROFILING=true.
-# Note: Cranelift compiler is always included for operation limit metering.
+# Enables PerfMap profiling support for WASM stack traces.
+# When enabled, set ENABLE_WASMER_PROFILING=true at runtime to generate perf.map files.
+# Note: This feature only controls the runtime env var check behavior - it does NOT
+# gate the Cranelift compiler dependency, which is always included for operation limit metering.
 profiling = []
