@@ -271,3 +271,182 @@ async fn watch_app_and_update_context(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_create_command_parsing_with_application_id() {
+        let app_id = ApplicationId::from([42u8; 32]);
+
+        let cmd = CreateCommand::try_parse_from([
+            "create",
+            "--protocol",
+            "near",
+            "--application-id",
+            &app_id.to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.protocol, "near");
+        assert_eq!(cmd.application_id, Some(app_id));
+        assert!(cmd.watch.is_none());
+    }
+
+    #[test]
+    fn test_create_command_parsing_short_flags() {
+        let app_id = ApplicationId::from([42u8; 32]);
+
+        let cmd = CreateCommand::try_parse_from([
+            "create",
+            "--protocol",
+            "near",
+            "-a",
+            &app_id.to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.application_id, Some(app_id));
+    }
+
+    #[test]
+    fn test_create_command_parsing_with_watch() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "fake wasm content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let cmd = CreateCommand::try_parse_from(["create", "--protocol", "near", "--watch", path])
+            .unwrap();
+
+        assert_eq!(cmd.protocol, "near");
+        assert!(cmd.application_id.is_none());
+        assert!(cmd.watch.is_some());
+    }
+
+    #[test]
+    fn test_create_command_parsing_with_params() {
+        let app_id = ApplicationId::from([42u8; 32]);
+
+        let cmd = CreateCommand::try_parse_from([
+            "create",
+            "--protocol",
+            "near",
+            "--application-id",
+            &app_id.to_string(),
+            "--params",
+            r#"{"init": true}"#,
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.params, Some(r#"{"init": true}"#.to_string()));
+    }
+
+    #[test]
+    fn test_create_command_parsing_with_seed() {
+        let app_id = ApplicationId::from([42u8; 32]);
+        let seed = Hash::from([1u8; 32]);
+
+        let cmd = CreateCommand::try_parse_from([
+            "create",
+            "--protocol",
+            "near",
+            "--application-id",
+            &app_id.to_string(),
+            "--seed",
+            &seed.to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.context_seed, Some(seed));
+    }
+
+    #[test]
+    fn test_create_command_missing_protocol_fails() {
+        let app_id = ApplicationId::from([42u8; 32]);
+
+        let result =
+            CreateCommand::try_parse_from(["create", "--application-id", &app_id.to_string()]);
+        assert!(
+            result.is_err(),
+            "Command should fail when protocol is missing"
+        );
+    }
+
+    #[test]
+    fn test_create_command_empty_protocol_fails() {
+        let app_id = ApplicationId::from([42u8; 32]);
+
+        let result = CreateCommand::try_parse_from([
+            "create",
+            "--protocol",
+            "",
+            "--application-id",
+            &app_id.to_string(),
+        ]);
+        assert!(result.is_err(), "Command should fail with empty protocol");
+    }
+
+    #[test]
+    fn test_create_command_watch_and_app_id_conflict() {
+        let app_id = ApplicationId::from([42u8; 32]);
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "fake wasm content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let result = CreateCommand::try_parse_from([
+            "create",
+            "--protocol",
+            "near",
+            "--application-id",
+            &app_id.to_string(),
+            "--watch",
+            path,
+        ]);
+        assert!(
+            result.is_err(),
+            "Command should fail when both --application-id and --watch are provided"
+        );
+    }
+
+    #[test]
+    fn test_create_command_parsing_with_identity_alias() {
+        let app_id = ApplicationId::from([42u8; 32]);
+
+        let cmd = CreateCommand::try_parse_from([
+            "create",
+            "--protocol",
+            "near",
+            "--application-id",
+            &app_id.to_string(),
+            "--as",
+            "alice",
+        ])
+        .unwrap();
+
+        assert!(cmd.identity.is_some());
+        assert_eq!(cmd.identity.unwrap().as_str(), "alice");
+    }
+
+    #[test]
+    fn test_create_command_parsing_with_context_alias() {
+        let app_id = ApplicationId::from([42u8; 32]);
+
+        let cmd = CreateCommand::try_parse_from([
+            "create",
+            "--protocol",
+            "near",
+            "--application-id",
+            &app_id.to_string(),
+            "--name",
+            "my-context",
+        ])
+        .unwrap();
+
+        assert!(cmd.context.is_some());
+        assert_eq!(cmd.context.unwrap().as_str(), "my-context");
+    }
+}

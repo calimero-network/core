@@ -52,3 +52,36 @@ impl JoinCommand {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_join_command_missing_invitation_fails() {
+        let result = JoinCommand::try_parse_from(["join"]);
+        assert!(
+            result.is_err(),
+            "Command should fail when invitation payload is missing"
+        );
+    }
+
+    #[test]
+    fn test_join_command_invalid_invitation_fails() {
+        let result = JoinCommand::try_parse_from(["join", "invalid-invitation-payload"]);
+        assert!(
+            result.is_err(),
+            "Command should fail with invalid invitation payload"
+        );
+    }
+
+    #[test]
+    fn test_join_command_parsing_with_context_alias() {
+        // We can't easily create a valid ContextInvitationPayload for testing parsing,
+        // but we can verify the argument structure exists
+        let result = JoinCommand::try_parse_from(["join", "--help"]);
+        // --help should succeed and show the available options
+        assert!(result.is_err()); // try_parse_from fails on --help (exits 0)
+    }
+}

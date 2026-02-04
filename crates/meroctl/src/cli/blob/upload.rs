@@ -47,3 +47,92 @@ impl UploadCommand {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_upload_command_parsing_with_existing_file() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "test content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let cmd = UploadCommand::try_parse_from(["upload", "--file", path]).unwrap();
+
+        assert_eq!(cmd.file_path, PathBuf::from(path));
+        assert!(cmd.context_id.is_none());
+    }
+
+    #[test]
+    fn test_upload_command_parsing_short_flag() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "test content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let cmd = UploadCommand::try_parse_from(["upload", "-f", path]).unwrap();
+
+        assert_eq!(cmd.file_path, PathBuf::from(path));
+    }
+
+    #[test]
+    fn test_upload_command_parsing_with_context_id() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "test content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let context_id = ContextId::from([1u8; 32]);
+        let cmd = UploadCommand::try_parse_from([
+            "upload",
+            "--file",
+            path,
+            "--context-id",
+            &context_id.to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.file_path, PathBuf::from(path));
+        assert_eq!(cmd.context_id, Some(context_id));
+    }
+
+    #[test]
+    fn test_upload_command_missing_file_flag_fails() {
+        let result = UploadCommand::try_parse_from(["upload"]);
+        assert!(
+            result.is_err(),
+            "Command should fail when --file is missing"
+        );
+    }
+
+    #[test]
+    fn test_upload_command_nonexistent_file_fails() {
+        let result =
+            UploadCommand::try_parse_from(["upload", "--file", "/nonexistent/path/file.wasm"]);
+        assert!(
+            result.is_err(),
+            "Command should fail when file doesn't exist"
+        );
+    }
+
+    #[test]
+    fn test_upload_command_invalid_context_id_fails() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "test content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let result = UploadCommand::try_parse_from([
+            "upload",
+            "--file",
+            path,
+            "--context-id",
+            "invalid-context-id",
+        ]);
+        assert!(
+            result.is_err(),
+            "Command should fail with invalid context ID"
+        );
+    }
+}

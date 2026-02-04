@@ -73,3 +73,114 @@ impl DownloadCommand {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_download_command_parsing_minimal() {
+        let blob_id = BlobId::from([42u8; 32]);
+        let temp_dir = tempdir().unwrap();
+        let output_path = temp_dir.path().join("output.bin");
+
+        let cmd = DownloadCommand::try_parse_from([
+            "download",
+            "--blob-id",
+            &blob_id.to_string(),
+            "--output",
+            output_path.to_str().unwrap(),
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.blob_id, blob_id);
+        assert_eq!(cmd.output_path, output_path);
+        assert!(cmd.context_id.is_none());
+    }
+
+    #[test]
+    fn test_download_command_parsing_short_flags() {
+        let blob_id = BlobId::from([42u8; 32]);
+        let temp_dir = tempdir().unwrap();
+        let output_path = temp_dir.path().join("output.bin");
+
+        let cmd = DownloadCommand::try_parse_from([
+            "download",
+            "-b",
+            &blob_id.to_string(),
+            "-o",
+            output_path.to_str().unwrap(),
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.blob_id, blob_id);
+        assert_eq!(cmd.output_path, output_path);
+    }
+
+    #[test]
+    fn test_download_command_parsing_with_context_id() {
+        let blob_id = BlobId::from([42u8; 32]);
+        let context_id = ContextId::from([1u8; 32]);
+        let temp_dir = tempdir().unwrap();
+        let output_path = temp_dir.path().join("output.bin");
+
+        let cmd = DownloadCommand::try_parse_from([
+            "download",
+            "--blob-id",
+            &blob_id.to_string(),
+            "--output",
+            output_path.to_str().unwrap(),
+            "--context-id",
+            &context_id.to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.blob_id, blob_id);
+        assert_eq!(cmd.context_id, Some(context_id));
+    }
+
+    #[test]
+    fn test_download_command_missing_blob_id_fails() {
+        let temp_dir = tempdir().unwrap();
+        let output_path = temp_dir.path().join("output.bin");
+
+        let result = DownloadCommand::try_parse_from([
+            "download",
+            "--output",
+            output_path.to_str().unwrap(),
+        ]);
+        assert!(
+            result.is_err(),
+            "Command should fail when --blob-id is missing"
+        );
+    }
+
+    #[test]
+    fn test_download_command_missing_output_fails() {
+        let blob_id = BlobId::from([42u8; 32]);
+
+        let result =
+            DownloadCommand::try_parse_from(["download", "--blob-id", &blob_id.to_string()]);
+        assert!(
+            result.is_err(),
+            "Command should fail when --output is missing"
+        );
+    }
+
+    #[test]
+    fn test_download_command_invalid_blob_id_fails() {
+        let temp_dir = tempdir().unwrap();
+        let output_path = temp_dir.path().join("output.bin");
+
+        let result = DownloadCommand::try_parse_from([
+            "download",
+            "--blob-id",
+            "invalid-blob-id",
+            "--output",
+            output_path.to_str().unwrap(),
+        ]);
+        assert!(result.is_err(), "Command should fail with invalid blob ID");
+    }
+}

@@ -149,3 +149,143 @@ impl InstallCommand {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_install_command_parsing_with_path() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "fake wasm content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let cmd = InstallCommand::try_parse_from(["install", "--path", path]).unwrap();
+
+        assert!(cmd.path.is_some());
+        assert!(cmd.url.is_none());
+        assert!(!cmd.watch);
+    }
+
+    #[test]
+    fn test_install_command_parsing_short_path_flag() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "fake wasm content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let cmd = InstallCommand::try_parse_from(["install", "-p", path]).unwrap();
+
+        assert!(cmd.path.is_some());
+    }
+
+    #[test]
+    fn test_install_command_parsing_with_url() {
+        let cmd =
+            InstallCommand::try_parse_from(["install", "--url", "https://example.com/app.wasm"])
+                .unwrap();
+
+        assert!(cmd.path.is_none());
+        assert!(cmd.url.is_some());
+        assert_eq!(cmd.url.unwrap(), "https://example.com/app.wasm");
+    }
+
+    #[test]
+    fn test_install_command_parsing_with_metadata() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "fake wasm content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let cmd = InstallCommand::try_parse_from([
+            "install",
+            "--path",
+            path,
+            "--metadata",
+            "some metadata",
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.metadata, Some("some metadata".to_string()));
+    }
+
+    #[test]
+    fn test_install_command_parsing_with_package_and_version() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "fake wasm content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let cmd = InstallCommand::try_parse_from([
+            "install",
+            "--path",
+            path,
+            "--package",
+            "com.example.app",
+            "--version",
+            "1.2.3",
+        ])
+        .unwrap();
+
+        assert_eq!(cmd.package, "com.example.app");
+        assert_eq!(cmd.version, "1.2.3");
+    }
+
+    #[test]
+    fn test_install_command_parsing_with_watch() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "fake wasm content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let cmd = InstallCommand::try_parse_from(["install", "--path", path, "--watch"]).unwrap();
+
+        assert!(cmd.watch);
+    }
+
+    #[test]
+    fn test_install_command_default_package_and_version() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "fake wasm content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let cmd = InstallCommand::try_parse_from(["install", "--path", path]).unwrap();
+
+        assert_eq!(cmd.package, "unknown");
+        assert_eq!(cmd.version, "0.0.0");
+    }
+
+    #[test]
+    fn test_install_command_path_and_url_conflict() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "fake wasm content").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let result = InstallCommand::try_parse_from([
+            "install",
+            "--path",
+            path,
+            "--url",
+            "https://example.com/app.wasm",
+        ]);
+        assert!(
+            result.is_err(),
+            "Command should fail when both --path and --url are provided"
+        );
+    }
+
+    #[test]
+    fn test_install_command_invalid_url_fails() {
+        let result = InstallCommand::try_parse_from(["install", "--url", "not-a-valid-url"]);
+        assert!(result.is_err(), "Command should fail with invalid URL");
+    }
+
+    #[test]
+    fn test_install_command_watch_requires_path() {
+        // --watch requires --path to be present
+        let result = InstallCommand::try_parse_from(["install", "--watch"]);
+        assert!(
+            result.is_err(),
+            "Command should fail when --watch is used without --path"
+        );
+    }
+}

@@ -23,3 +23,36 @@ impl UninstallCommand {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_uninstall_command_parsing_valid_app_id() {
+        let app_id = ApplicationId::from([42u8; 32]);
+
+        let cmd = UninstallCommand::try_parse_from(["uninstall", &app_id.to_string()]).unwrap();
+
+        assert_eq!(cmd.app_id, app_id);
+    }
+
+    #[test]
+    fn test_uninstall_command_missing_app_id_fails() {
+        let result = UninstallCommand::try_parse_from(["uninstall"]);
+        assert!(
+            result.is_err(),
+            "Command should fail when app_id is missing"
+        );
+    }
+
+    #[test]
+    fn test_uninstall_command_invalid_app_id_fails() {
+        let result = UninstallCommand::try_parse_from(["uninstall", "invalid-app-id"]);
+        assert!(
+            result.is_err(),
+            "Command should fail with invalid application ID"
+        );
+    }
+}

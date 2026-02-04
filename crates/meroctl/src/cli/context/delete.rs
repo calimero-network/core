@@ -30,3 +30,35 @@ impl DeleteCommand {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_delete_command_parsing_with_context_id() {
+        let context_id = ContextId::from([42u8; 32]);
+
+        let cmd = DeleteCommand::try_parse_from(["delete", &context_id.to_string()]).unwrap();
+
+        // The context field is an Alias, which can be either a raw ID or an alias name
+        assert!(!cmd.context.as_str().is_empty());
+    }
+
+    #[test]
+    fn test_delete_command_parsing_with_alias() {
+        let cmd = DeleteCommand::try_parse_from(["delete", "my-context-alias"]).unwrap();
+
+        assert_eq!(cmd.context.as_str(), "my-context-alias");
+    }
+
+    #[test]
+    fn test_delete_command_missing_context_fails() {
+        let result = DeleteCommand::try_parse_from(["delete"]);
+        assert!(
+            result.is_err(),
+            "Command should fail when context is missing"
+        );
+    }
+}
