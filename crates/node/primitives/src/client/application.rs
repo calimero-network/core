@@ -80,10 +80,11 @@ impl NodeClient {
 
         if is_bundle {
             // This is a bundle, extract WASM from extracted directory or bundle
-            // Extract manifest (blocking I/O wrapped in spawn_blocking)
+            // Extract manifest and verify signature (blocking I/O wrapped in spawn_blocking)
+            // Signature verification ensures blob integrity even when re-extracting
             let blob_bytes_clone = Arc::clone(&blob_bytes);
             let (_, manifest) = tokio::task::spawn_blocking(move || {
-                Self::extract_bundle_manifest(&blob_bytes_clone)
+                Self::verify_and_extract_manifest(&blob_bytes_clone)
             })
             .await??;
             let package = &manifest.package;
