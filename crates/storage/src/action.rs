@@ -219,4 +219,5 @@ fn hash_metadata_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
 
     // Include crdt_type in hash to prevent tampering without invalidating signatures
     // This is critical for User storage actions where crdt_type affects merge behavior
+    hasher.update(borsh::to_vec(&metadata.crdt_type).unwrap_or_default());
 }

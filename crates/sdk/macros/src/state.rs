@@ -458,7 +458,8 @@ fn generate_default_impl(
 
     // Count collection fields - only generate Default if there are collections
     let has_collections = fields.iter().any(|field| {
-        let type_str = quote! { #field.ty }.to_string();
+        let field_type = &field.ty;
+        let type_str = quote! { #field_type }.to_string();
         is_collection_type(&type_str)
     });
 

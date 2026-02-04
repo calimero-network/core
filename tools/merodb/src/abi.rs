@@ -205,7 +205,7 @@ pub fn infer_schema_from_database(
                                         inner_type: None,
                                     }
                                 }
-                                crate::export::CrdtType::Custom => {
+                                crate::export::CrdtType::Custom { type_name: _ } => {
                                     // Custom type - can't infer without schema
                                     TypeRef::Collection {
                                         collection: CollectionType::Record { fields: Vec::new() },
