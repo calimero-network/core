@@ -120,7 +120,7 @@ const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 10;
 pub struct VMLimits {
     /// The maximum size of a WASM module in bytes before compilation.
     /// This limit prevents memory exhaustion attacks from large malicious modules.
-    /// Setting this to 0 will reject all modules.
+    /// Setting this to 0 will reject all non-empty modules.
     pub max_module_size: u64,
     /// The maximum number of memory pages allowed.
     pub max_memory_pages: u32,

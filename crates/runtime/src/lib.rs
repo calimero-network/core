@@ -1033,4 +1033,28 @@ mod wasm_panic_integration_tests {
             "Expected successful compilation at exact size limit, got: {result:?}"
         );
     }
+
+    /// Test that compilation errors are properly wrapped after passing size check
+    #[test]
+    fn test_wasm_compilation_error_propagation() {
+        // Invalid WASM bytes that pass size check but fail compilation
+        // This is not valid WASM but is large enough to pass typical size limits
+        let invalid_wasm = b"not valid wasm bytes at all - this should fail compilation";
+
+        let engine = Engine::default();
+
+        // Attempt to compile should fail with CompilationError (not size limit)
+        let result = engine.compile(invalid_wasm);
+
+        match result {
+            Err(FunctionCallError::CompilationError { .. }) => {
+                // Expected - wasmer compilation error is properly wrapped
+            }
+            Err(FunctionCallError::ModuleSizeLimitExceeded { .. }) => {
+                panic!("Should not hit size limit for small invalid module")
+            }
+            Ok(_) => panic!("Expected compilation error for invalid WASM"),
+            Err(other) => panic!("Expected CompilationError, got: {other:?}"),
+        }
+    }
 }
