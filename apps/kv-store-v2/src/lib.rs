@@ -78,11 +78,19 @@ struct KvStoreV1 {
 #[app::migrate]
 pub fn migrate_v1_to_v2() -> KvStoreV2 {
     // Read raw bytes from storage (old V1 format)
-    let old_bytes = read_raw().expect("No existing state found - cannot migrate empty state");
+    let old_bytes = read_raw().unwrap_or_else(|| {
+        panic!("Migration failed: No existing state found. Cannot migrate empty state - this migration requires existing V1 state.");
+    });
 
     // Deserialize using old schema
-    let old_state: KvStoreV1 = BorshDeserialize::try_from_slice(&old_bytes)
-        .expect("Failed to deserialize old state - schema mismatch");
+    let old_state: KvStoreV1 = BorshDeserialize::try_from_slice(&old_bytes).unwrap_or_else(|e| {
+        panic!(
+            "Migration failed: Failed to deserialize old state - schema mismatch. \
+                 Error: {:?}. \
+                 Ensure the existing state matches the V1 schema expected by this migration.",
+            e
+        );
+    });
 
     app::emit!(Event::Migrated {
         from_version: "1.0.0",
