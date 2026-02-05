@@ -52,10 +52,15 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
 
         let context_meta = self.contexts.get(&context_id).map(|c| c.meta.clone());
 
-        if let Some(ref context) = context_meta {
-            if application_id == context.application_id {
-                debug!(%context_id, "Application already set, skipping update");
-                return ActorResponse::reply(Ok(()));
+        // Skip update only when the application ID is unchanged AND no migration is requested.
+        // When migration IS requested, the WASM binary may have been replaced under the same
+        // application ID (same signing key), so we must proceed to run the migration function.
+        if migration.is_none() {
+            if let Some(ref context) = context_meta {
+                if application_id == context.application_id {
+                    debug!(%context_id, "Application already set and no migration requested, skipping update");
+                    return ActorResponse::reply(Ok(()));
+                }
             }
         }
 
@@ -70,13 +75,25 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                 "Migration requested, loading new module"
             );
 
+            // Invalidate the cached application entry BEFORE loading the module.
+            // The WASM binary may have been replaced under the same application ID
+            // (same signing key, new version), so we must force a fresh fetch from
+            // the node's blob storage to get the updated bytecode.
+            if self.applications.remove(&application_id).is_some() {
+                debug!(
+                    %context_id,
+                    %application_id,
+                    "Invalidated stale cached application before migration module load"
+                );
+            }
+
             // Clone values needed for migration
             let datastore = self.datastore.clone();
             let node_client = self.node_client.clone();
             let context_client = self.context_client.clone();
             let migration_params = migration_params.clone();
 
-            // First load the module
+            // Load the (fresh) module
             let module_task = self.get_module(application_id);
 
             let task = module_task.and_then(move |module, act, _ctx| {
@@ -104,11 +121,12 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                 .into_actor(act)
             });
 
-            return ActorResponse::r#async(task.map_ok(move |application, act, _ctx| {
-                let _ignored = act
-                    .applications
-                    .entry(application_id)
-                    .or_insert(application);
+            return ActorResponse::r#async(task.map_ok(move |_application, act, _ctx| {
+                // Invalidate cached module so the next execution loads the new WASM from the node.
+                // Otherwise we would keep using the pre-migration (v1) module for execute calls.
+                if act.applications.remove(&application_id).is_some() {
+                    debug!(%context_id, %application_id, "Invalidated cached application module after migration");
+                }
 
                 if let Some(context) = act.contexts.get_mut(&context_id) {
                     context.meta.application_id = application_id;
@@ -128,16 +146,19 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             public_key,
         );
 
-        ActorResponse::r#async(task.into_actor(self).map_ok(move |application, act, _ctx| {
-            let _ignored = act
-                .applications
-                .entry(application_id)
-                .or_insert(application);
+        ActorResponse::r#async(
+            task.into_actor(self)
+                .map_ok(move |_application, act, _ctx| {
+                    // Invalidate cached module so the next execution loads current bytecode from the node.
+                    if act.applications.remove(&application_id).is_some() {
+                        debug!(%context_id, %application_id, "Invalidated cached application module after update");
+                    }
 
-            if let Some(context) = act.contexts.get_mut(&context_id) {
-                context.meta.application_id = application_id;
-            }
-        }))
+                    if let Some(context) = act.contexts.get_mut(&context_id) {
+                        context.meta.application_id = application_id;
+                    }
+                }),
+        )
     }
 }
 
@@ -516,38 +537,28 @@ async fn execute_migration(
         .await
         .map_err(|e| eyre::eyre!("Migration task failed: {}", e))??;
 
-    // Extract the return value from the outcome
-    // Migration functions return serialized new state via value_return()
+    // Extract the return value from the outcome.
+    // `outcome.returns` is `Result<Option<Vec<u8>>, FunctionCallError>` where the
+    // Ok/Err discrimination is already handled by the `value_return` host function.
+    // The inner `Vec<u8>` is the raw borsh-serialized new state bytes — NOT a
+    // borsh-serialized `Result<Vec<u8>, Vec<u8>>`.
     let returns = outcome
         .returns
         .map_err(|e| eyre::eyre!("Migration execution failed: {:?}", e))?;
 
-    let Some(return_bytes) = returns else {
+    let Some(new_state_bytes) = returns else {
         bail!("Migration function did not return any data. Ensure the migration function returns the new state.");
     };
 
-    // The migration function wraps its return in Result<Vec<u8>, Vec<u8>>::Ok(bytes)
-    // via `env::value_return(&Ok::<Vec<u8>, Vec<u8>>(output_bytes))`
-    // We need to deserialize this Result wrapper
-    let new_state_bytes: Result<Vec<u8>, Vec<u8>> = borsh::from_slice(&return_bytes)
-        .map_err(|e| eyre::eyre!("Failed to deserialize migration return value: {}", e))?;
+    debug!(
+        %context_id,
+        bytes_len = new_state_bytes.len(),
+        events_count = outcome.events.len(),
+        logs_count = outcome.logs.len(),
+        "Migration function returned new state"
+    );
 
-    match new_state_bytes {
-        Ok(bytes) => {
-            debug!(
-                %context_id,
-                bytes_len = bytes.len(),
-                events_count = outcome.events.len(),
-                logs_count = outcome.logs.len(),
-                "Migration function returned new state"
-            );
-            Ok((bytes, outcome.events, outcome.logs))
-        }
-        Err(error_bytes) => {
-            let error_msg = String::from_utf8_lossy(&error_bytes);
-            bail!("Migration function returned error: {}", error_msg);
-        }
-    }
+    Ok((new_state_bytes, outcome.events, outcome.logs))
 }
 
 /// Write migrated state bytes to the root storage key, properly updating both Entry and Index.
@@ -676,12 +687,20 @@ fn write_migration_state(
         executor_id_bytes,
     );
 
+    // The storage layer stores root state entries as Entry<T> = borsh(T) ++ borsh(Element.id).
+    // The migration function returns only borsh(T) (the user data). We must re-append the
+    // 32-byte Element.id suffix (ROOT_STORAGE_ENTRY_ID) so the data can be deserialized as
+    // Entry<T> by the normal fetch path (Root::fetch → Collection::get → find_by_id::<Entry<T>>).
+    let mut entry_bytes = Vec::with_capacity(new_state_bytes.len() + ROOT_STORAGE_ENTRY_ID.len());
+    entry_bytes.extend_from_slice(new_state_bytes);
+    entry_bytes.extend_from_slice(&ROOT_STORAGE_ENTRY_ID);
+
     // Execute the save operation within the runtime environment
     // This ensures both Entry and Index are properly updated
     let result = with_runtime_env(runtime_env, || {
         // Use Interface::save_raw to properly update both Entry and Index
         // This maintains Merkle tree consistency
-        Interface::<MainStorage>::save_raw(root_entry_id, new_state_bytes.to_vec(), metadata)
+        Interface::<MainStorage>::save_raw(root_entry_id, entry_bytes, metadata)
     });
 
     match result {

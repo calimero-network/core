@@ -14,13 +14,14 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::ItemFn;
+use syn::{ItemFn, ReturnType};
 
 /// Generates the migration function implementation.
 ///
 /// This function transforms a user-defined migration function into:
 /// - A WASM export (for `wasm32` target) that:
 ///   - Sets up the panic hook for better error messages
+///   - Registers the event emitter for the new state type (so `app::emit!` works)
 ///   - Executes the user's migration logic
 ///   - Serializes the result with borsh
 ///   - Returns the bytes via `value_return`
@@ -49,6 +50,16 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Extract return type for the inner function signature
     let return_type = &sig.output;
 
+    // Extract the state type from the return type for event registration.
+    // The return type of a migration function is the new state struct (e.g., KvStoreV2),
+    // which implements AppState and defines the Event type needed by app::emit!.
+    let event_registration = match return_type {
+        ReturnType::Type(_, ty) => quote! {
+            ::calimero_sdk::event::register::<#ty>();
+        },
+        ReturnType::Default => quote! {},
+    };
+
     quote! {
         /// WASM export for migration function.
         ///
@@ -58,6 +69,11 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #[no_mangle]
         pub extern "C" fn #fn_name() {
             ::calimero_sdk::env::setup_panic_hook();
+
+            // Register the event emitter for the new state type so app::emit! works
+            // during migration. The return type is the new state struct which implements
+            // AppState and defines the associated Event type.
+            #event_registration
 
             // Define the inner migration logic with the original signature
             #(#attrs)*
@@ -121,6 +137,11 @@ mod tests {
         assert!(
             expanded.contains("no_mangle"),
             "expected #[no_mangle] in expansion: {}",
+            expanded
+        );
+        assert!(
+            expanded.contains("event :: register"),
+            "expected event::register call in expansion: {}",
             expanded
         );
     }
