@@ -135,16 +135,17 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
     }
 }
 
-pub async fn update_application_id(
-    datastore: calimero_store::Store,
-    node_client: NodeClient,
-    context_client: ContextClient,
+/// Resolves context and application from optional values or fetches them if missing.
+///
+/// Returns the resolved context and application, or an error if they don't exist.
+fn resolve_context_and_application(
+    context_client: &ContextClient,
+    node_client: &NodeClient,
     context_id: ContextId,
     context: Option<Context>,
     application_id: ApplicationId,
     application: Option<Application>,
-    public_key: PublicKey,
-) -> eyre::Result<Application> {
+) -> eyre::Result<(Context, Application)> {
     let context = match context {
         Some(context) => context,
         None => {
@@ -167,8 +168,24 @@ pub async fn update_application_id(
         }
     };
 
-    // Verify AppKey continuity (signerId match)
-    verify_appkey_continuity(&datastore, &context, &application_id)?;
+    Ok((context, application))
+}
+
+/// Finalizes the application update by updating external config, datastore, and syncing.
+///
+/// This function performs the common post-update steps:
+/// 1. Updates the external config client
+/// 2. Writes context metadata to datastore
+/// 3. Triggers node sync
+async fn finalize_application_update(
+    datastore: &calimero_store::Store,
+    node_client: &NodeClient,
+    context_client: &ContextClient,
+    context: &mut Context,
+    application: &Application,
+    public_key: PublicKey,
+) -> eyre::Result<()> {
+    let context_id = context.id;
 
     let Some(config_client) = context_client.context_config(&context_id)? else {
         bail!(
@@ -181,7 +198,7 @@ pub async fn update_application_id(
 
     external_client
         .config()
-        .update_application(&public_key, &application)
+        .update_application(&public_key, application)
         .await?;
 
     let mut handle = datastore.handle();
@@ -196,6 +213,41 @@ pub async fn update_application_id(
     )?;
 
     node_client.sync(Some(&context_id), None).await?;
+
+    Ok(())
+}
+
+pub async fn update_application_id(
+    datastore: calimero_store::Store,
+    node_client: NodeClient,
+    context_client: ContextClient,
+    context_id: ContextId,
+    context: Option<Context>,
+    application_id: ApplicationId,
+    application: Option<Application>,
+    public_key: PublicKey,
+) -> eyre::Result<Application> {
+    let (mut context, application) = resolve_context_and_application(
+        &context_client,
+        &node_client,
+        context_id,
+        context,
+        application_id,
+        application,
+    )?;
+
+    // Verify AppKey continuity (signerId match)
+    verify_appkey_continuity(&datastore, &context, &application_id)?;
+
+    finalize_application_update(
+        &datastore,
+        &node_client,
+        &context_client,
+        &mut context,
+        &application,
+        public_key,
+    )
+    .await?;
 
     Ok(application)
 }
@@ -259,7 +311,7 @@ fn verify_appkey_continuity(
         );
     }
 
-    // Security: Disallow signed-to-unsigned downgrades 
+    // Security: Disallow signed-to-unsigned downgrades
     // Allow unsigned-to-signed upgrades
     if !old_signer_id.is_empty() && new_signer_id.is_empty() {
         error!(
@@ -314,27 +366,14 @@ async fn update_application_with_migration(
     migration: Option<MigrationParams>,
     module: calimero_runtime::Module,
 ) -> eyre::Result<Application> {
-    let mut context = match context {
-        Some(context) => context,
-        None => {
-            let Some(context) = context_client.get_context(&context_id)? else {
-                bail!("context '{}' does not exist", context_id);
-            };
-
-            context
-        }
-    };
-
-    let application = match application {
-        Some(application) => application,
-        None => {
-            let Some(application) = node_client.get_application(&application_id)? else {
-                bail!("application with id '{}' not found", application_id);
-            };
-
-            application
-        }
-    };
+    let (mut context, application) = resolve_context_and_application(
+        &context_client,
+        &node_client,
+        context_id,
+        context,
+        application_id,
+        application,
+    )?;
 
     // Verify AppKey continuity (signerId match)
     verify_appkey_continuity(&datastore, &context, &application_id)?;
@@ -386,33 +425,15 @@ async fn update_application_with_migration(
         );
     }
 
-    // Update context metadata after migration
-    let Some(config_client) = context_client.context_config(&context_id)? else {
-        bail!(
-            "missing context config parameters for context '{}'",
-            context_id
-        );
-    };
-
-    let external_client = context_client.external_client(&context_id, &config_client)?;
-
-    external_client
-        .config()
-        .update_application(&public_key, &application)
-        .await?;
-
-    let mut handle = datastore.handle();
-
-    handle.put(
-        &key::ContextMeta::new(context.id),
-        &types::ContextMeta::new(
-            key::ApplicationMeta::new(application.id),
-            *context.root_hash,
-            context.dag_heads.clone(),
-        ),
-    )?;
-
-    node_client.sync(Some(&context_id), None).await?;
+    finalize_application_update(
+        &datastore,
+        &node_client,
+        &context_client,
+        &mut context,
+        &application,
+        public_key,
+    )
+    .await?;
 
     Ok(application)
 }
