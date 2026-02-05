@@ -11,6 +11,1919 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 
 // =============================================================================
+// Sync Handshake Protocol Types (CIP §2 - Sync Handshake Protocol)
+// =============================================================================
+
+/// Wire protocol version for sync handshake.
+///
+/// Increment on breaking changes to ensure nodes can detect incompatibility.
+pub const SYNC_PROTOCOL_VERSION: u32 = 1;
+
+/// Sync protocol selection for negotiation.
+///
+/// Each variant represents a different synchronization strategy with different
+/// trade-offs in terms of bandwidth, latency, and computational overhead.
+///
+/// See CIP §1 - Sync Protocol Types.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub enum SyncProtocol {
+    /// No sync needed - root hashes already match.
+    None,
+
+    /// Delta-based sync via DAG traversal.
+    ///
+    /// Best for: Small gaps, real-time updates.
+    DeltaSync {
+        /// Delta IDs that the requester is missing.
+        missing_delta_ids: Vec<[u8; 32]>,
+    },
+
+    /// Hash-based Merkle tree comparison.
+    ///
+    /// Best for: General-purpose catch-up, 10-50% divergence.
+    HashComparison {
+        /// Root hash to compare against.
+        root_hash: [u8; 32],
+        /// Subtree roots that differ (if known).
+        divergent_subtrees: Vec<[u8; 32]>,
+    },
+
+    /// Full state snapshot transfer.
+    ///
+    /// **CRITICAL**: Only valid for fresh nodes (Invariant I5).
+    /// Initialized nodes MUST use state-based sync with CRDT merge instead.
+    Snapshot {
+        /// Whether the snapshot is compressed.
+        compressed: bool,
+        /// Whether the responder guarantees snapshot is verifiable.
+        verified: bool,
+    },
+
+    /// Bloom filter-based quick diff.
+    ///
+    /// Best for: Large trees with small diff (<10% divergence).
+    BloomFilter {
+        /// Size of the bloom filter in bits.
+        filter_size: usize,
+        /// Expected false positive rate (0.0 to 1.0).
+        false_positive_rate: f64,
+    },
+
+    /// Subtree prefetch for deep localized changes.
+    ///
+    /// Best for: Deep hierarchies with localized changes.
+    SubtreePrefetch {
+        /// Root IDs of subtrees to prefetch.
+        subtree_roots: Vec<[u8; 32]>,
+    },
+
+    /// Level-wise sync for wide shallow trees.
+    ///
+    /// Best for: Trees with depth ≤ 2 and many children.
+    LevelWise {
+        /// Maximum depth to sync.
+        max_depth: usize,
+    },
+}
+
+impl Default for SyncProtocol {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+/// Capabilities advertised during sync negotiation.
+///
+/// Used to determine mutually supported features between peers.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SyncCapabilities {
+    /// Whether compression is supported.
+    pub supports_compression: bool,
+    /// Maximum entities per batch transfer.
+    pub max_batch_size: usize,
+    /// Protocols this node supports (ordered by preference).
+    pub supported_protocols: Vec<SyncProtocol>,
+}
+
+impl Default for SyncCapabilities {
+    fn default() -> Self {
+        Self {
+            supports_compression: true,
+            max_batch_size: 1000,
+            supported_protocols: vec![
+                SyncProtocol::None,
+                SyncProtocol::DeltaSync {
+                    missing_delta_ids: vec![],
+                },
+                SyncProtocol::HashComparison {
+                    root_hash: [0; 32],
+                    divergent_subtrees: vec![],
+                },
+                SyncProtocol::Snapshot {
+                    compressed: true,
+                    verified: true,
+                },
+            ],
+        }
+    }
+}
+
+/// Sync handshake message (Initiator → Responder).
+///
+/// Contains the initiator's state summary for protocol negotiation.
+///
+/// See CIP §2.1 - Handshake Message.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SyncHandshake {
+    /// Protocol version for compatibility checking.
+    pub version: u32,
+    /// Current Merkle root hash.
+    pub root_hash: [u8; 32],
+    /// Number of entities in the tree.
+    pub entity_count: usize,
+    /// Maximum depth of the Merkle tree.
+    pub max_depth: usize,
+    /// Current DAG heads (latest delta IDs).
+    pub dag_heads: Vec<[u8; 32]>,
+    /// Whether this node has any state.
+    pub has_state: bool,
+    /// Supported protocols (ordered by preference).
+    pub supported_protocols: Vec<SyncProtocol>,
+}
+
+impl SyncHandshake {
+    /// Create a new handshake message from local state.
+    #[must_use]
+    pub fn new(
+        root_hash: [u8; 32],
+        entity_count: usize,
+        max_depth: usize,
+        dag_heads: Vec<[u8; 32]>,
+    ) -> Self {
+        let has_state = root_hash != [0; 32];
+        Self {
+            version: SYNC_PROTOCOL_VERSION,
+            root_hash,
+            entity_count,
+            max_depth,
+            dag_heads,
+            has_state,
+            supported_protocols: SyncCapabilities::default().supported_protocols,
+        }
+    }
+
+    /// Check if the remote handshake has a compatible protocol version.
+    #[must_use]
+    pub fn is_version_compatible(&self, other: &Self) -> bool {
+        self.version == other.version
+    }
+
+    /// Check if root hashes match (already in sync).
+    #[must_use]
+    pub fn is_in_sync(&self, other: &Self) -> bool {
+        self.root_hash == other.root_hash
+    }
+}
+
+impl Default for SyncHandshake {
+    fn default() -> Self {
+        Self::new([0; 32], 0, 0, vec![])
+    }
+}
+
+/// Sync handshake response (Responder → Initiator).
+///
+/// Contains the selected protocol and responder's state summary.
+///
+/// See CIP §2.2 - Negotiation Flow.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SyncHandshakeResponse {
+    /// Protocol selected for this sync session.
+    pub selected_protocol: SyncProtocol,
+    /// Responder's current root hash.
+    pub root_hash: [u8; 32],
+    /// Responder's entity count.
+    pub entity_count: usize,
+    /// Responder's capabilities.
+    pub capabilities: SyncCapabilities,
+}
+
+impl SyncHandshakeResponse {
+    /// Create a response indicating no sync is needed.
+    #[must_use]
+    pub fn already_synced(root_hash: [u8; 32], entity_count: usize) -> Self {
+        Self {
+            selected_protocol: SyncProtocol::None,
+            root_hash,
+            entity_count,
+            capabilities: SyncCapabilities::default(),
+        }
+    }
+
+    /// Create a response with a selected protocol.
+    #[must_use]
+    pub fn with_protocol(
+        selected_protocol: SyncProtocol,
+        root_hash: [u8; 32],
+        entity_count: usize,
+    ) -> Self {
+        Self {
+            selected_protocol,
+            root_hash,
+            entity_count,
+            capabilities: SyncCapabilities::default(),
+        }
+    }
+}
+
+// =============================================================================
+// Protocol Selection (CIP §2.3 - Protocol Selection Rules)
+// =============================================================================
+
+/// Result of protocol selection with reasoning.
+#[derive(Clone, Debug)]
+pub struct ProtocolSelection {
+    /// The selected protocol.
+    pub protocol: SyncProtocol,
+    /// Human-readable reason for the selection (for logging).
+    pub reason: &'static str,
+}
+
+/// Calculate the divergence ratio between two handshakes.
+///
+/// Formula: `|local.entity_count - remote.entity_count| / max(remote.entity_count, 1)`
+///
+/// Returns a value in [0.0, ∞), where:
+/// - 0.0 = identical entity counts
+/// - 1.0 = 100% divergence (e.g., local=0, remote=100)
+/// - >1.0 = local has more entities than remote
+#[must_use]
+pub fn calculate_divergence(local: &SyncHandshake, remote: &SyncHandshake) -> f64 {
+    let diff = (local.entity_count as i64 - remote.entity_count as i64).unsigned_abs();
+    let denominator = remote.entity_count.max(1);
+    diff as f64 / denominator as f64
+}
+
+/// Select the optimal sync protocol based on handshake information.
+///
+/// Implements the decision table from CIP §2.3:
+///
+/// | # | Condition | Selected Protocol |
+/// |---|-----------|-------------------|
+/// | 1 | `local.root_hash == remote.root_hash` | `None` |
+/// | 2 | `!local.has_state` (fresh node) | `Snapshot` |
+/// | 3 | `local.has_state` AND divergence > 50% | `HashComparison` |
+/// | 4 | `max_depth > 3` AND divergence < 20% | `SubtreePrefetch` |
+/// | 5 | `entity_count > 50` AND divergence < 10% | `BloomFilter` |
+/// | 6 | `max_depth <= 2` AND many children | `LevelWise` |
+/// | 7 | (default) | `HashComparison` |
+///
+/// **CRITICAL (Invariant I5)**: Snapshot is NEVER selected for initialized nodes.
+/// This prevents silent data loss from overwriting local CRDT state.
+#[must_use]
+pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> ProtocolSelection {
+    // Rule 1: Already synced - no action needed
+    if local.root_hash == remote.root_hash {
+        return ProtocolSelection {
+            protocol: SyncProtocol::None,
+            reason: "root hashes match, already in sync",
+        };
+    }
+
+    // Check version compatibility first
+    if !local.is_version_compatible(remote) {
+        // Version mismatch - fall back to HashComparison as safest option
+        return ProtocolSelection {
+            protocol: SyncProtocol::HashComparison {
+                root_hash: remote.root_hash,
+                divergent_subtrees: vec![],
+            },
+            reason: "version mismatch, using safe fallback",
+        };
+    }
+
+    // Rule 2: Fresh node - Snapshot allowed
+    // CRITICAL: This is the ONLY case where Snapshot is permitted
+    if !local.has_state {
+        return ProtocolSelection {
+            protocol: SyncProtocol::Snapshot {
+                compressed: remote.entity_count > 100,
+                verified: true,
+            },
+            reason: "fresh node bootstrap via snapshot",
+        };
+    }
+
+    // From here on, local HAS state - NEVER use Snapshot (Invariant I5)
+    let divergence = calculate_divergence(local, remote);
+
+    // Rule 3: Large divergence (>50%) - use HashComparison with CRDT merge
+    if divergence > 0.5 {
+        return ProtocolSelection {
+            protocol: SyncProtocol::HashComparison {
+                root_hash: remote.root_hash,
+                divergent_subtrees: vec![],
+            },
+            reason: "high divergence (>50%), using hash comparison with CRDT merge",
+        };
+    }
+
+    // Rule 4: Deep tree with localized changes
+    if remote.max_depth > 3 && divergence < 0.2 {
+        return ProtocolSelection {
+            protocol: SyncProtocol::SubtreePrefetch {
+                subtree_roots: vec![], // Will be populated during sync
+            },
+            reason: "deep tree with low divergence, using subtree prefetch",
+        };
+    }
+
+    // Rule 5: Large tree with small diff
+    if remote.entity_count > 50 && divergence < 0.1 {
+        return ProtocolSelection {
+            protocol: SyncProtocol::BloomFilter {
+                filter_size: (remote.entity_count * 10).min(10_000), // ~10 bits per entity, max 10k
+                false_positive_rate: 0.01,
+            },
+            reason: "large tree with small divergence, using bloom filter",
+        };
+    }
+
+    // Rule 6: Wide shallow tree
+    // "Many children" heuristic: entity_count / max_depth > 10
+    let avg_children_per_level = if remote.max_depth > 0 {
+        remote.entity_count / remote.max_depth
+    } else {
+        remote.entity_count
+    };
+
+    if remote.max_depth <= 2 && avg_children_per_level > 10 {
+        return ProtocolSelection {
+            protocol: SyncProtocol::LevelWise {
+                max_depth: remote.max_depth,
+            },
+            reason: "wide shallow tree, using level-wise sync",
+        };
+    }
+
+    // Rule 7: Default fallback
+    ProtocolSelection {
+        protocol: SyncProtocol::HashComparison {
+            root_hash: remote.root_hash,
+            divergent_subtrees: vec![],
+        },
+        reason: "default: using hash comparison",
+    }
+}
+
+/// Check if a protocol is supported by the remote peer.
+#[must_use]
+pub fn is_protocol_supported(protocol: &SyncProtocol, capabilities: &SyncCapabilities) -> bool {
+    capabilities.supported_protocols.iter().any(|p| {
+        // Match on variant, ignoring inner values
+        std::mem::discriminant(p) == std::mem::discriminant(protocol)
+    })
+}
+
+/// Select protocol with fallback if preferred is not supported.
+///
+/// Tries the preferred protocol first, then falls back through the decision
+/// table until a mutually supported protocol is found.
+#[must_use]
+pub fn select_protocol_with_fallback(
+    local: &SyncHandshake,
+    remote: &SyncHandshake,
+    remote_capabilities: &SyncCapabilities,
+) -> ProtocolSelection {
+    let preferred = select_protocol(local, remote);
+
+    // Check if preferred protocol is supported
+    if is_protocol_supported(&preferred.protocol, remote_capabilities) {
+        return preferred;
+    }
+
+    // Fallback: HashComparison is always safe for initialized nodes
+    if local.has_state {
+        let fallback = SyncProtocol::HashComparison {
+            root_hash: remote.root_hash,
+            divergent_subtrees: vec![],
+        };
+        if is_protocol_supported(&fallback, remote_capabilities) {
+            return ProtocolSelection {
+                protocol: fallback,
+                reason: "fallback to hash comparison (preferred not supported)",
+            };
+        }
+    }
+
+    // Last resort: None (will need manual intervention)
+    ProtocolSelection {
+        protocol: SyncProtocol::None,
+        reason: "no mutually supported protocol found",
+    }
+}
+
+// =============================================================================
+// Delta Sync Types (CIP §4 - State Machine, DELTA SYNC branch)
+// =============================================================================
+
+/// Default threshold for choosing delta sync vs state-based sync.
+///
+/// If fewer than this many deltas are missing, use delta sync.
+/// If more are missing, escalate to state-based sync (HashComparison, etc.).
+///
+/// This is a heuristic balance between:
+/// - Delta sync: O(missing) round trips, but exact
+/// - State sync: O(log n) comparisons, but may transfer more data
+pub const DEFAULT_DELTA_SYNC_THRESHOLD: usize = 50;
+
+/// Request for delta-based synchronization.
+///
+/// Used when few deltas are missing and their IDs are known.
+/// The responder should return the requested deltas in causal order.
+///
+/// See CIP §4 - State Machine (DELTA SYNC branch).
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct DeltaSyncRequest {
+    /// IDs of missing deltas to request.
+    pub missing_delta_ids: Vec<[u8; 32]>,
+}
+
+impl DeltaSyncRequest {
+    /// Create a new delta sync request.
+    #[must_use]
+    pub fn new(missing_delta_ids: Vec<[u8; 32]>) -> Self {
+        Self { missing_delta_ids }
+    }
+
+    /// Check if the request is within the recommended threshold.
+    #[must_use]
+    pub fn is_within_threshold(&self) -> bool {
+        self.missing_delta_ids.len() <= DEFAULT_DELTA_SYNC_THRESHOLD
+    }
+
+    /// Number of deltas being requested.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.missing_delta_ids.len()
+    }
+}
+
+/// Response to a delta sync request.
+///
+/// Contains the requested deltas in causal order (parents before children).
+/// If some deltas are not found, they are omitted from the response.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct DeltaSyncResponse {
+    /// Deltas in causal order (parents first).
+    /// Each delta is serialized as bytes for transport.
+    pub deltas: Vec<DeltaPayload>,
+
+    /// IDs of deltas that were requested but not found.
+    pub not_found: Vec<[u8; 32]>,
+}
+
+impl DeltaSyncResponse {
+    /// Create a response with found deltas.
+    #[must_use]
+    pub fn new(deltas: Vec<DeltaPayload>, not_found: Vec<[u8; 32]>) -> Self {
+        Self { deltas, not_found }
+    }
+
+    /// Create an empty response (no deltas found).
+    #[must_use]
+    pub fn empty(not_found: Vec<[u8; 32]>) -> Self {
+        Self {
+            deltas: vec![],
+            not_found,
+        }
+    }
+
+    /// Check if all requested deltas were found.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.not_found.is_empty()
+    }
+
+    /// Number of deltas returned.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.deltas.len()
+    }
+}
+
+/// A delta payload for transport.
+///
+/// Contains the delta data and metadata needed for application.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct DeltaPayload {
+    /// Unique delta ID (content hash).
+    pub id: [u8; 32],
+
+    /// Parent delta IDs (for causal ordering).
+    pub parents: Vec<[u8; 32]>,
+
+    /// Serialized delta operations (Borsh-encoded).
+    pub payload: Vec<u8>,
+
+    /// HLC timestamp when the delta was created.
+    pub hlc_timestamp: u64,
+
+    /// Expected root hash after applying this delta.
+    /// Used for verification (may differ if concurrent deltas exist).
+    pub expected_root_hash: [u8; 32],
+}
+
+impl DeltaPayload {
+    /// Check if this delta has no parents (genesis delta).
+    #[must_use]
+    pub fn is_genesis(&self) -> bool {
+        self.parents.is_empty()
+    }
+}
+
+/// Result of attempting to apply deltas.
+#[derive(Clone, Debug)]
+pub enum DeltaApplyResult {
+    /// All deltas applied successfully.
+    Success {
+        /// Number of deltas applied.
+        applied_count: usize,
+        /// New root hash after applying.
+        new_root_hash: [u8; 32],
+    },
+
+    /// Some deltas could not be applied due to missing parents.
+    /// Suggests escalation to state-based sync.
+    MissingParents {
+        /// Delta IDs whose parents are missing.
+        missing_parent_deltas: Vec<[u8; 32]>,
+        /// Number of deltas successfully applied before failure.
+        applied_before_failure: usize,
+    },
+
+    /// Delta application failed (hash mismatch, corruption, etc.).
+    Failed {
+        /// Description of the failure.
+        reason: String,
+    },
+}
+
+impl DeltaApplyResult {
+    /// Check if delta application was fully successful.
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        matches!(self, Self::Success { .. })
+    }
+
+    /// Check if escalation to state-based sync is needed.
+    #[must_use]
+    pub fn needs_state_sync(&self) -> bool {
+        matches!(self, Self::MissingParents { .. })
+    }
+}
+
+// =============================================================================
+// Delta Buffering During Sync (CIP §5 - Delta Handling During Sync)
+// =============================================================================
+
+/// Default buffer capacity for deltas during state sync.
+///
+/// This should be large enough to handle deltas arriving during a typical
+/// state transfer. If exceeded, deltas are NOT dropped (invariant I6), but
+/// a warning is logged.
+pub const DEFAULT_BUFFER_CAPACITY: usize = 1000;
+
+/// State of an ongoing synchronization.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SyncState {
+    /// No sync in progress.
+    Idle,
+    /// Handshake sent, waiting for response.
+    Handshaking,
+    /// Receiving state data (HashComparison, Snapshot, etc.).
+    ReceivingState,
+    /// State received, replaying buffered deltas.
+    ReplayingDeltas,
+    /// Sync completed successfully.
+    Completed,
+    /// Sync failed with error.
+    Failed(String),
+}
+
+impl SyncState {
+    /// Check if sync is actively in progress.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self,
+            Self::Handshaking | Self::ReceivingState | Self::ReplayingDeltas
+        )
+    }
+
+    /// Check if deltas should be buffered (sync receiving state).
+    #[must_use]
+    pub fn should_buffer_deltas(&self) -> bool {
+        matches!(self, Self::ReceivingState)
+    }
+}
+
+/// A delta buffered during state synchronization.
+///
+/// Contains ALL fields required for replay via DAG insertion.
+/// See CIP §5 and Bug 7 in POC-IMPLEMENTATION-NOTES.md.
+///
+/// CRITICAL: Deltas MUST be replayed via DAG insertion (causal order),
+/// NOT by HLC timestamp sorting.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct BufferedDelta {
+    /// Unique delta ID (content hash).
+    pub id: [u8; 32],
+
+    /// Parent delta IDs (for causal ordering via DAG).
+    pub parents: Vec<[u8; 32]>,
+
+    /// HLC timestamp when the delta was created.
+    pub hlc: u64,
+
+    /// Nonce for decryption (24 bytes for XChaCha20-Poly1305).
+    pub nonce: [u8; 24],
+
+    /// Author's public key (for signature verification).
+    pub author_id: [u8; 32],
+
+    /// Expected root hash after applying this delta.
+    pub root_hash: [u8; 32],
+
+    /// Serialized delta payload (operations).
+    pub payload: Vec<u8>,
+
+    /// Serialized events emitted by this delta.
+    pub events: Vec<Vec<u8>>,
+}
+
+impl BufferedDelta {
+    /// Create a new buffered delta.
+    #[must_use]
+    pub fn new(
+        id: [u8; 32],
+        parents: Vec<[u8; 32]>,
+        hlc: u64,
+        nonce: [u8; 24],
+        author_id: [u8; 32],
+        root_hash: [u8; 32],
+        payload: Vec<u8>,
+        events: Vec<Vec<u8>>,
+    ) -> Self {
+        Self {
+            id,
+            parents,
+            hlc,
+            nonce,
+            author_id,
+            root_hash,
+            payload,
+            events,
+        }
+    }
+
+    /// Check if this is a genesis delta (no parents).
+    #[must_use]
+    pub fn is_genesis(&self) -> bool {
+        self.parents.is_empty()
+    }
+}
+
+/// Context for an ongoing synchronization session.
+///
+/// Manages buffering of incoming deltas during state transfer.
+/// Deltas are NEVER dropped (invariant I6 - liveness guarantee).
+#[derive(Clone, Debug)]
+pub struct SyncContext {
+    /// Current sync state.
+    pub state: SyncState,
+
+    /// Deltas buffered during state transfer.
+    /// Replay via DAG insertion after state is applied.
+    pub buffered_deltas: Vec<BufferedDelta>,
+
+    /// Maximum buffer capacity (soft limit - logs warning if exceeded).
+    pub buffer_capacity: usize,
+
+    /// Timestamp when sync started (for metrics).
+    pub sync_start_timestamp: u64,
+
+    /// Peer we're syncing with.
+    pub peer_id: Option<[u8; 32]>,
+
+    /// Protocol being used for this sync.
+    pub protocol: SyncProtocol,
+}
+
+impl Default for SyncContext {
+    fn default() -> Self {
+        Self {
+            state: SyncState::Idle,
+            buffered_deltas: Vec::new(),
+            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
+            sync_start_timestamp: 0,
+            peer_id: None,
+            protocol: SyncProtocol::None,
+        }
+    }
+}
+
+impl SyncContext {
+    /// Create a new sync context with default capacity.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a new sync context with custom capacity.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buffer_capacity: capacity,
+            ..Self::default()
+        }
+    }
+
+    /// Start a sync session with a peer.
+    pub fn start(&mut self, peer_id: [u8; 32], protocol: SyncProtocol, timestamp: u64) {
+        self.state = SyncState::Handshaking;
+        self.peer_id = Some(peer_id);
+        self.protocol = protocol;
+        self.sync_start_timestamp = timestamp;
+        self.buffered_deltas.clear();
+    }
+
+    /// Transition to receiving state.
+    pub fn begin_receiving(&mut self) {
+        self.state = SyncState::ReceivingState;
+    }
+
+    /// Buffer a delta during state transfer.
+    ///
+    /// Returns `true` if buffer is within capacity, `false` if exceeded
+    /// (delta is still buffered - caller should log warning).
+    ///
+    /// INVARIANT I6: Deltas are NEVER dropped.
+    pub fn buffer_delta(&mut self, delta: BufferedDelta) -> bool {
+        let within_capacity = self.buffered_deltas.len() < self.buffer_capacity;
+        self.buffered_deltas.push(delta);
+        within_capacity
+    }
+
+    /// Begin replay phase (after state is applied).
+    pub fn begin_replay(&mut self) {
+        self.state = SyncState::ReplayingDeltas;
+    }
+
+    /// Take buffered deltas for replay.
+    ///
+    /// IMPORTANT: These MUST be replayed via DAG insertion (causal order),
+    /// NOT by HLC timestamp sorting.
+    pub fn take_buffered_deltas(&mut self) -> Vec<BufferedDelta> {
+        std::mem::take(&mut self.buffered_deltas)
+    }
+
+    /// Complete the sync successfully.
+    pub fn complete(&mut self) {
+        self.state = SyncState::Completed;
+    }
+
+    /// Mark sync as failed.
+    pub fn fail(&mut self, reason: String) {
+        self.state = SyncState::Failed(reason);
+    }
+
+    /// Reset context for a new sync session.
+    pub fn reset(&mut self) {
+        self.state = SyncState::Idle;
+        self.buffered_deltas.clear();
+        self.peer_id = None;
+        self.protocol = SyncProtocol::None;
+        self.sync_start_timestamp = 0;
+    }
+
+    /// Check if sync is in progress.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.state.is_active()
+    }
+
+    /// Check if deltas should be buffered.
+    #[must_use]
+    pub fn should_buffer(&self) -> bool {
+        self.state.should_buffer_deltas()
+    }
+
+    /// Get number of buffered deltas.
+    #[must_use]
+    pub fn buffered_count(&self) -> usize {
+        self.buffered_deltas.len()
+    }
+
+    /// Check if buffer has exceeded capacity (soft limit).
+    #[must_use]
+    pub fn is_buffer_exceeded(&self) -> bool {
+        self.buffered_deltas.len() > self.buffer_capacity
+    }
+}
+
+/// Metrics for delta buffering during sync.
+#[derive(Clone, Debug, Default)]
+pub struct BufferMetrics {
+    /// Total deltas buffered in this session.
+    pub total_buffered: usize,
+    /// Peak buffer size reached.
+    pub peak_buffer_size: usize,
+    /// Number of times buffer exceeded capacity (soft warnings).
+    pub capacity_exceeded_count: usize,
+    /// Total deltas replayed.
+    pub total_replayed: usize,
+    /// Duration of sync in milliseconds (set on completion).
+    pub sync_duration_ms: Option<u64>,
+}
+
+impl BufferMetrics {
+    /// Record a delta being buffered.
+    pub fn record_buffer(&mut self, current_size: usize) {
+        self.total_buffered += 1;
+        self.peak_buffer_size = self.peak_buffer_size.max(current_size);
+    }
+
+    /// Record buffer capacity exceeded.
+    pub fn record_exceeded(&mut self) {
+        self.capacity_exceeded_count += 1;
+    }
+
+    /// Record deltas being replayed.
+    pub fn record_replay(&mut self, count: usize) {
+        self.total_replayed += count;
+    }
+
+    /// Record sync completion with duration.
+    pub fn record_completion(&mut self, duration_ms: u64) {
+        self.sync_duration_ms = Some(duration_ms);
+    }
+}
+
+// =============================================================================
+// HashComparison Sync Types (CIP §4 - State Machine, STATE-BASED branch)
+// =============================================================================
+
+/// Request to traverse the Merkle tree for hash comparison.
+///
+/// Used for recursive tree traversal to identify differing entities.
+/// Start at root, request children, compare hashes, recurse on differences.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct TreeNodeRequest {
+    /// ID of the node to request (root hash or internal node hash).
+    pub node_id: [u8; 32],
+
+    /// Maximum depth to traverse (None = unlimited).
+    /// Useful for batching: request multiple levels at once.
+    pub max_depth: Option<usize>,
+}
+
+impl TreeNodeRequest {
+    /// Create a request for a specific node.
+    #[must_use]
+    pub fn new(node_id: [u8; 32]) -> Self {
+        Self {
+            node_id,
+            max_depth: None,
+        }
+    }
+
+    /// Create a request with depth limit.
+    #[must_use]
+    pub fn with_depth(node_id: [u8; 32], max_depth: usize) -> Self {
+        Self {
+            node_id,
+            max_depth: Some(max_depth),
+        }
+    }
+
+    /// Create a request for the root node.
+    #[must_use]
+    pub fn root(root_hash: [u8; 32]) -> Self {
+        Self::new(root_hash)
+    }
+}
+
+/// Response containing tree nodes for hash comparison.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct TreeNodeResponse {
+    /// Nodes in the requested subtree.
+    pub nodes: Vec<TreeNode>,
+
+    /// True if the requested node was not found.
+    pub not_found: bool,
+}
+
+impl TreeNodeResponse {
+    /// Create a response with nodes.
+    #[must_use]
+    pub fn new(nodes: Vec<TreeNode>) -> Self {
+        Self {
+            nodes,
+            not_found: false,
+        }
+    }
+
+    /// Create a not-found response.
+    #[must_use]
+    pub fn not_found() -> Self {
+        Self {
+            nodes: vec![],
+            not_found: true,
+        }
+    }
+
+    /// Check if response contains any leaf nodes.
+    #[must_use]
+    pub fn has_leaves(&self) -> bool {
+        self.nodes.iter().any(|n| n.is_leaf())
+    }
+
+    /// Get all leaf nodes from response.
+    #[must_use]
+    pub fn leaves(&self) -> Vec<&TreeNode> {
+        self.nodes.iter().filter(|n| n.is_leaf()).collect()
+    }
+}
+
+/// A node in the Merkle tree.
+///
+/// Can be either an internal node (has children) or a leaf node (has data).
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct TreeNode {
+    /// Node ID (hash of this node's content).
+    pub id: [u8; 32],
+
+    /// Merkle hash (hash of children hashes or leaf content).
+    pub hash: [u8; 32],
+
+    /// Child node IDs (empty for leaf nodes).
+    pub children: Vec<[u8; 32]>,
+
+    /// Leaf data (present only for leaf nodes).
+    pub leaf_data: Option<TreeLeafData>,
+}
+
+impl TreeNode {
+    /// Create an internal node.
+    #[must_use]
+    pub fn internal(id: [u8; 32], hash: [u8; 32], children: Vec<[u8; 32]>) -> Self {
+        Self {
+            id,
+            hash,
+            children,
+            leaf_data: None,
+        }
+    }
+
+    /// Create a leaf node.
+    #[must_use]
+    pub fn leaf(id: [u8; 32], hash: [u8; 32], data: TreeLeafData) -> Self {
+        Self {
+            id,
+            hash,
+            children: vec![],
+            leaf_data: Some(data),
+        }
+    }
+
+    /// Check if this is a leaf node.
+    #[must_use]
+    pub fn is_leaf(&self) -> bool {
+        self.leaf_data.is_some()
+    }
+
+    /// Check if this is an internal node.
+    #[must_use]
+    pub fn is_internal(&self) -> bool {
+        self.leaf_data.is_none()
+    }
+
+    /// Get number of children (0 for leaf nodes).
+    #[must_use]
+    pub fn child_count(&self) -> usize {
+        self.children.len()
+    }
+}
+
+/// Data stored at a leaf node (entity).
+///
+/// Contains ALL information needed for CRDT merge on the receiving side.
+/// CRITICAL: `metadata` MUST include `crdt_type` for proper merge.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct TreeLeafData {
+    /// Entity key (unique identifier within collection).
+    pub key: [u8; 32],
+
+    /// Serialized entity value.
+    pub value: Vec<u8>,
+
+    /// Entity metadata including crdt_type.
+    /// CRITICAL: Must be included for CRDT merge to work correctly.
+    pub metadata: LeafMetadata,
+}
+
+impl TreeLeafData {
+    /// Create leaf data.
+    #[must_use]
+    pub fn new(key: [u8; 32], value: Vec<u8>, metadata: LeafMetadata) -> Self {
+        Self {
+            key,
+            value,
+            metadata,
+        }
+    }
+}
+
+/// Metadata for a leaf entity.
+///
+/// Minimal metadata needed for CRDT merge during sync.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct LeafMetadata {
+    /// CRDT type for proper merge semantics.
+    pub crdt_type: CrdtType,
+
+    /// HLC timestamp of last modification.
+    pub hlc_timestamp: u64,
+
+    /// Version counter (for some CRDT types).
+    pub version: u64,
+
+    /// Collection ID this entity belongs to.
+    pub collection_id: [u8; 32],
+
+    /// Optional parent entity ID (for nested structures).
+    pub parent_id: Option<[u8; 32]>,
+}
+
+impl LeafMetadata {
+    /// Create metadata with required fields.
+    #[must_use]
+    pub fn new(crdt_type: CrdtType, hlc_timestamp: u64, collection_id: [u8; 32]) -> Self {
+        Self {
+            crdt_type,
+            hlc_timestamp,
+            version: 0,
+            collection_id,
+            parent_id: None,
+        }
+    }
+
+    /// Set version.
+    #[must_use]
+    pub fn with_version(mut self, version: u64) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// Set parent ID.
+    #[must_use]
+    pub fn with_parent(mut self, parent_id: [u8; 32]) -> Self {
+        self.parent_id = Some(parent_id);
+        self
+    }
+}
+
+/// CRDT type indicator for merge semantics.
+///
+/// Determines how entities are merged during sync.
+#[derive(Clone, Copy, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub enum CrdtType {
+    /// Last-Writer-Wins register (simple overwrite by HLC).
+    LwwRegister,
+    /// Grow-only counter.
+    GCounter,
+    /// Positive-negative counter.
+    PnCounter,
+    /// Last-Writer-Wins element set.
+    LwwSet,
+    /// Observed-Remove set.
+    OrSet,
+    /// Replicated Growable Array (ordered list).
+    Rga,
+    /// Unordered map with LWW values.
+    UnorderedMap,
+    /// Unordered set.
+    UnorderedSet,
+    /// Vector (ordered collection).
+    Vector,
+    /// Custom CRDT with named merge strategy.
+    Custom(u32),
+}
+
+impl Default for CrdtType {
+    fn default() -> Self {
+        Self::LwwRegister
+    }
+}
+
+/// Result of comparing two tree nodes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TreeCompareResult {
+    /// Hashes match - no sync needed for this subtree.
+    Equal,
+    /// Hashes differ - need to recurse or fetch leaf.
+    Different {
+        /// IDs of differing children to recurse into.
+        differing_children: Vec<[u8; 32]>,
+    },
+    /// Local node missing - need to fetch from remote.
+    LocalMissing,
+    /// Remote node missing - nothing to sync.
+    RemoteMissing,
+}
+
+impl TreeCompareResult {
+    /// Check if sync is needed.
+    #[must_use]
+    pub fn needs_sync(&self) -> bool {
+        !matches!(self, Self::Equal | Self::RemoteMissing)
+    }
+}
+
+/// Compare local and remote tree nodes.
+///
+/// Returns which children (if any) need further traversal.
+#[must_use]
+pub fn compare_tree_nodes(local: Option<&TreeNode>, remote: &TreeNode) -> TreeCompareResult {
+    match local {
+        None => TreeCompareResult::LocalMissing,
+        Some(local_node) => {
+            if local_node.hash == remote.hash {
+                TreeCompareResult::Equal
+            } else {
+                // Find differing children
+                let differing: Vec<[u8; 32]> = remote
+                    .children
+                    .iter()
+                    .filter(|child_id| {
+                        // Child differs if not in local or hash differs
+                        !local_node.children.contains(child_id)
+                    })
+                    .copied()
+                    .collect();
+
+                TreeCompareResult::Different {
+                    differing_children: differing,
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// BloomFilter Sync Types (CIP Appendix B - Protocol Selection Matrix)
+// =============================================================================
+
+/// Default false positive rate for Bloom filters.
+pub const DEFAULT_BLOOM_FP_RATE: f32 = 0.01; // 1%
+
+/// Minimum bits per element for reasonable FP rate.
+const MIN_BITS_PER_ELEMENT: usize = 8;
+
+/// FNV-1a 64-bit offset basis.
+const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+
+/// FNV-1a 64-bit prime.
+const FNV_PRIME: u64 = 0x100000001b3;
+
+/// A Bloom filter for delta/entity ID membership testing.
+///
+/// CRITICAL: Uses FNV-1a hash for consistency across nodes.
+/// POC Bug 5: Hash mismatch when one node used SipHash.
+///
+/// Use this for sync when:
+/// - entity_count > 50
+/// - divergence < 10%
+/// - Want to minimize round trips (O(1) diff detection)
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct DeltaIdBloomFilter {
+    /// Bit array (packed as bytes).
+    bits: Vec<u8>,
+    /// Number of bits in the filter.
+    num_bits: usize,
+    /// Number of hash functions to use.
+    num_hashes: u8,
+    /// Number of items inserted.
+    item_count: usize,
+}
+
+impl DeltaIdBloomFilter {
+    /// Create a new Bloom filter sized for expected items and FP rate.
+    ///
+    /// # Arguments
+    /// * `expected_items` - Expected number of items to insert
+    /// * `fp_rate` - Desired false positive rate (0.0 to 1.0)
+    #[must_use]
+    pub fn new(expected_items: usize, fp_rate: f32) -> Self {
+        // Calculate optimal number of bits: m = -n * ln(p) / (ln(2)^2)
+        let ln2_sq = std::f64::consts::LN_2 * std::f64::consts::LN_2;
+        let num_bits = if expected_items == 0 {
+            64 // Minimum size
+        } else {
+            let m = -(expected_items as f64) * (fp_rate as f64).ln() / ln2_sq;
+            (m.ceil() as usize).max(expected_items * MIN_BITS_PER_ELEMENT)
+        };
+
+        // Calculate optimal number of hashes: k = (m/n) * ln(2)
+        let num_hashes = if expected_items == 0 {
+            4
+        } else {
+            let k = (num_bits as f64 / expected_items as f64) * std::f64::consts::LN_2;
+            (k.ceil() as u8).clamp(1, 16)
+        };
+
+        let num_bytes = (num_bits + 7) / 8;
+
+        Self {
+            bits: vec![0; num_bytes],
+            num_bits,
+            num_hashes,
+            item_count: 0,
+        }
+    }
+
+    /// Create a filter with explicit parameters.
+    #[must_use]
+    pub fn with_params(num_bits: usize, num_hashes: u8) -> Self {
+        let num_bytes = (num_bits + 7) / 8;
+        Self {
+            bits: vec![0; num_bytes],
+            num_bits,
+            num_hashes,
+            item_count: 0,
+        }
+    }
+
+    /// FNV-1a hash function.
+    ///
+    /// CRITICAL: This MUST be used by all nodes for consistency.
+    /// Do NOT use DefaultHasher (SipHash) or other hash functions.
+    #[must_use]
+    pub fn hash_fnv1a(data: &[u8]) -> u64 {
+        let mut hash: u64 = FNV_OFFSET_BASIS;
+        for byte in data {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash
+    }
+
+    /// Compute hash positions using double hashing technique.
+    fn compute_positions(&self, id: &[u8; 32]) -> Vec<usize> {
+        let h1 = Self::hash_fnv1a(id);
+        let h2 = Self::hash_fnv1a(&[id.as_slice(), &[0xFF]].concat());
+
+        (0..self.num_hashes as u64)
+            .map(|i| {
+                let combined = h1.wrapping_add(i.wrapping_mul(h2));
+                (combined as usize) % self.num_bits
+            })
+            .collect()
+    }
+
+    /// Insert an ID into the filter.
+    pub fn insert(&mut self, id: &[u8; 32]) {
+        let positions = self.compute_positions(id);
+        for pos in positions {
+            let byte_idx = pos / 8;
+            let bit_idx = pos % 8;
+            self.bits[byte_idx] |= 1 << bit_idx;
+        }
+        self.item_count += 1;
+    }
+
+    /// Check if an ID might be in the filter.
+    ///
+    /// Returns `true` if the ID is possibly in the set (may be false positive).
+    /// Returns `false` if the ID is definitely not in the set.
+    #[must_use]
+    pub fn contains(&self, id: &[u8; 32]) -> bool {
+        let positions = self.compute_positions(id);
+        for pos in positions {
+            let byte_idx = pos / 8;
+            let bit_idx = pos % 8;
+            if self.bits[byte_idx] & (1 << bit_idx) == 0 {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Get the number of items inserted.
+    #[must_use]
+    pub fn item_count(&self) -> usize {
+        self.item_count
+    }
+
+    /// Get the filter size in bits.
+    #[must_use]
+    pub fn bit_count(&self) -> usize {
+        self.num_bits
+    }
+
+    /// Get the number of hash functions.
+    #[must_use]
+    pub fn hash_count(&self) -> u8 {
+        self.num_hashes
+    }
+
+    /// Estimate current false positive rate.
+    #[must_use]
+    pub fn estimated_fp_rate(&self) -> f64 {
+        if self.item_count == 0 {
+            return 0.0;
+        }
+        // FP rate ≈ (1 - e^(-k*n/m))^k
+        let k = self.num_hashes as f64;
+        let n = self.item_count as f64;
+        let m = self.num_bits as f64;
+        (1.0 - (-k * n / m).exp()).powf(k)
+    }
+
+    /// Get the raw bits (for serialization/debugging).
+    #[must_use]
+    pub fn bits(&self) -> &[u8] {
+        &self.bits
+    }
+}
+
+/// Request for Bloom filter-based sync.
+///
+/// Initiator sends their Bloom filter of known entity IDs.
+/// Responder returns entities not in the filter.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct BloomFilterRequest {
+    /// Bloom filter containing initiator's entity IDs.
+    pub filter: DeltaIdBloomFilter,
+
+    /// False positive rate used to build the filter.
+    pub false_positive_rate: f32,
+}
+
+impl BloomFilterRequest {
+    /// Create a new Bloom filter request.
+    #[must_use]
+    pub fn new(filter: DeltaIdBloomFilter, false_positive_rate: f32) -> Self {
+        Self {
+            filter,
+            false_positive_rate,
+        }
+    }
+
+    /// Create a request by building a filter from entity IDs.
+    #[must_use]
+    pub fn from_ids(ids: &[[u8; 32]], fp_rate: f32) -> Self {
+        let mut filter = DeltaIdBloomFilter::new(ids.len(), fp_rate);
+        for id in ids {
+            filter.insert(id);
+        }
+        Self::new(filter, fp_rate)
+    }
+}
+
+/// Response to a Bloom filter sync request.
+///
+/// Contains entities that the responder has but were not in the filter.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct BloomFilterResponse {
+    /// Entities missing from the initiator.
+    /// Includes full data and metadata for CRDT merge.
+    pub missing_entities: Vec<TreeLeafData>,
+
+    /// Number of entities scanned.
+    pub scanned_count: usize,
+}
+
+impl BloomFilterResponse {
+    /// Create a new response.
+    #[must_use]
+    pub fn new(missing_entities: Vec<TreeLeafData>, scanned_count: usize) -> Self {
+        Self {
+            missing_entities,
+            scanned_count,
+        }
+    }
+
+    /// Create an empty response (no missing entities).
+    #[must_use]
+    pub fn empty(scanned_count: usize) -> Self {
+        Self {
+            missing_entities: vec![],
+            scanned_count,
+        }
+    }
+
+    /// Check if there are missing entities.
+    #[must_use]
+    pub fn has_missing(&self) -> bool {
+        !self.missing_entities.is_empty()
+    }
+
+    /// Get count of missing entities.
+    #[must_use]
+    pub fn missing_count(&self) -> usize {
+        self.missing_entities.len()
+    }
+}
+
+// =============================================================================
+// SubtreePrefetch Sync Types (CIP Appendix B - Protocol Selection Matrix)
+// =============================================================================
+
+/// Default maximum depth for subtree prefetch.
+///
+/// Limits how deep into a subtree we fetch to avoid over-fetching.
+pub const DEFAULT_SUBTREE_MAX_DEPTH: usize = 5;
+
+/// Request for subtree prefetch-based sync.
+///
+/// Fetches entire subtrees when divergence is detected in deep trees.
+/// More efficient than HashComparison when changes are clustered.
+///
+/// Use when:
+/// - max_depth > 3
+/// - divergence < 20%
+/// - Changes are clustered in subtrees
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SubtreePrefetchRequest {
+    /// Root hashes of subtrees to fetch.
+    pub subtree_roots: Vec<[u8; 32]>,
+
+    /// Maximum depth to traverse within each subtree (None = unlimited).
+    pub max_depth: Option<usize>,
+}
+
+impl SubtreePrefetchRequest {
+    /// Create a new subtree prefetch request.
+    #[must_use]
+    pub fn new(subtree_roots: Vec<[u8; 32]>) -> Self {
+        Self {
+            subtree_roots,
+            max_depth: Some(DEFAULT_SUBTREE_MAX_DEPTH),
+        }
+    }
+
+    /// Create a request with custom depth limit.
+    #[must_use]
+    pub fn with_depth(subtree_roots: Vec<[u8; 32]>, max_depth: usize) -> Self {
+        Self {
+            subtree_roots,
+            max_depth: Some(max_depth),
+        }
+    }
+
+    /// Create a request with unlimited depth (use carefully).
+    #[must_use]
+    pub fn unlimited_depth(subtree_roots: Vec<[u8; 32]>) -> Self {
+        Self {
+            subtree_roots,
+            max_depth: None,
+        }
+    }
+
+    /// Number of subtrees requested.
+    #[must_use]
+    pub fn subtree_count(&self) -> usize {
+        self.subtree_roots.len()
+    }
+}
+
+/// Response containing prefetched subtrees.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SubtreePrefetchResponse {
+    /// Fetched subtrees.
+    pub subtrees: Vec<SubtreeData>,
+
+    /// Subtree roots that were not found.
+    pub not_found: Vec<[u8; 32]>,
+}
+
+impl SubtreePrefetchResponse {
+    /// Create a new response.
+    #[must_use]
+    pub fn new(subtrees: Vec<SubtreeData>, not_found: Vec<[u8; 32]>) -> Self {
+        Self {
+            subtrees,
+            not_found,
+        }
+    }
+
+    /// Create a response with no missing subtrees.
+    #[must_use]
+    pub fn complete(subtrees: Vec<SubtreeData>) -> Self {
+        Self {
+            subtrees,
+            not_found: vec![],
+        }
+    }
+
+    /// Create an empty/not-found response.
+    #[must_use]
+    pub fn not_found(roots: Vec<[u8; 32]>) -> Self {
+        Self {
+            subtrees: vec![],
+            not_found: roots,
+        }
+    }
+
+    /// Check if all requested subtrees were found.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.not_found.is_empty()
+    }
+
+    /// Total number of entities across all subtrees.
+    #[must_use]
+    pub fn total_entity_count(&self) -> usize {
+        self.subtrees.iter().map(|s| s.entity_count()).sum()
+    }
+
+    /// Number of subtrees returned.
+    #[must_use]
+    pub fn subtree_count(&self) -> usize {
+        self.subtrees.len()
+    }
+}
+
+/// Data for a single subtree.
+///
+/// Contains all entities within the subtree for bulk CRDT merge.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SubtreeData {
+    /// Root ID of this subtree.
+    pub root_id: [u8; 32],
+
+    /// Root hash of this subtree (for verification).
+    pub root_hash: [u8; 32],
+
+    /// All entities in this subtree (leaves only).
+    /// Includes full data and metadata for CRDT merge.
+    pub entities: Vec<TreeLeafData>,
+
+    /// Depth of this subtree (how many levels were traversed).
+    pub depth: usize,
+
+    /// Whether the subtree was truncated due to depth limit.
+    pub truncated: bool,
+}
+
+impl SubtreeData {
+    /// Create subtree data.
+    #[must_use]
+    pub fn new(
+        root_id: [u8; 32],
+        root_hash: [u8; 32],
+        entities: Vec<TreeLeafData>,
+        depth: usize,
+    ) -> Self {
+        Self {
+            root_id,
+            root_hash,
+            entities,
+            depth,
+            truncated: false,
+        }
+    }
+
+    /// Create truncated subtree data (depth limit reached).
+    #[must_use]
+    pub fn truncated(
+        root_id: [u8; 32],
+        root_hash: [u8; 32],
+        entities: Vec<TreeLeafData>,
+        depth: usize,
+    ) -> Self {
+        Self {
+            root_id,
+            root_hash,
+            entities,
+            depth,
+            truncated: true,
+        }
+    }
+
+    /// Number of entities in this subtree.
+    #[must_use]
+    pub fn entity_count(&self) -> usize {
+        self.entities.len()
+    }
+
+    /// Check if subtree is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
+
+    /// Check if more data exists beyond depth limit.
+    #[must_use]
+    pub fn is_truncated(&self) -> bool {
+        self.truncated
+    }
+}
+
+/// Compare HashComparison vs SubtreePrefetch for a given scenario.
+///
+/// Returns true if SubtreePrefetch is likely more efficient.
+#[must_use]
+pub fn should_use_subtree_prefetch(
+    tree_depth: usize,
+    divergence_ratio: f64,
+    estimated_differing_subtrees: usize,
+) -> bool {
+    // SubtreePrefetch is better when:
+    // - Tree is deep (> 3 levels)
+    // - Divergence is moderate (< 20%)
+    // - Changes are clustered (few differing subtrees)
+
+    let deep_tree = tree_depth > 3;
+    let moderate_divergence = divergence_ratio < 0.20;
+    let clustered_changes = estimated_differing_subtrees <= 5;
+
+    deep_tree && moderate_divergence && clustered_changes
+}
+
+// =============================================================================
+// LevelWise Sync Types (CIP Appendix B - Protocol Selection Matrix)
+// =============================================================================
+
+/// Request for level-wise breadth-first synchronization.
+///
+/// Processes the tree level-by-level, comparing hashes at each level.
+/// Efficient for wide, shallow trees with scattered changes.
+///
+/// Use when:
+/// - max_depth <= 2
+/// - Wide trees with many children at each level
+/// - Changes scattered across siblings
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct LevelWiseRequest {
+    /// Level to request (0 = root's children, 1 = grandchildren, etc.).
+    pub level: usize,
+
+    /// Parent IDs to fetch children for (None = fetch all at this level).
+    /// Used to narrow down which subtrees to explore.
+    pub parent_ids: Option<Vec<[u8; 32]>>,
+}
+
+impl LevelWiseRequest {
+    /// Request all nodes at a given level.
+    #[must_use]
+    pub fn at_level(level: usize) -> Self {
+        Self {
+            level,
+            parent_ids: None,
+        }
+    }
+
+    /// Request children of specific parents at a given level.
+    #[must_use]
+    pub fn for_parents(level: usize, parent_ids: Vec<[u8; 32]>) -> Self {
+        Self {
+            level,
+            parent_ids: Some(parent_ids),
+        }
+    }
+
+    /// Check if this requests all nodes at the level.
+    #[must_use]
+    pub fn is_full_level(&self) -> bool {
+        self.parent_ids.is_none()
+    }
+
+    /// Get number of parents being queried (None if full level).
+    #[must_use]
+    pub fn parent_count(&self) -> Option<usize> {
+        self.parent_ids.as_ref().map(|p| p.len())
+    }
+}
+
+/// Response containing nodes at a specific level.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct LevelWiseResponse {
+    /// Level these nodes are at.
+    pub level: usize,
+
+    /// Nodes at this level.
+    pub nodes: Vec<LevelNode>,
+
+    /// Whether there are more levels below this one.
+    pub has_more_levels: bool,
+}
+
+impl LevelWiseResponse {
+    /// Create a response with nodes.
+    #[must_use]
+    pub fn new(level: usize, nodes: Vec<LevelNode>, has_more_levels: bool) -> Self {
+        Self {
+            level,
+            nodes,
+            has_more_levels,
+        }
+    }
+
+    /// Create an empty response (no nodes at this level).
+    #[must_use]
+    pub fn empty(level: usize) -> Self {
+        Self {
+            level,
+            nodes: vec![],
+            has_more_levels: false,
+        }
+    }
+
+    /// Number of nodes at this level.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Check if this level is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    /// Get all leaf nodes at this level.
+    #[must_use]
+    pub fn leaves(&self) -> Vec<&LevelNode> {
+        self.nodes.iter().filter(|n| n.is_leaf()).collect()
+    }
+
+    /// Get all internal nodes at this level.
+    #[must_use]
+    pub fn internal_nodes(&self) -> Vec<&LevelNode> {
+        self.nodes.iter().filter(|n| n.is_internal()).collect()
+    }
+
+    /// Get IDs of all internal nodes (for next level request).
+    #[must_use]
+    pub fn internal_node_ids(&self) -> Vec<[u8; 32]> {
+        self.nodes
+            .iter()
+            .filter(|n| n.is_internal())
+            .map(|n| n.id)
+            .collect()
+    }
+}
+
+/// A node in the level-wise traversal.
+///
+/// Contains enough information to compare with local state
+/// and decide whether to recurse or fetch leaf data.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct LevelNode {
+    /// Node ID.
+    pub id: [u8; 32],
+
+    /// Merkle hash of this node.
+    pub hash: [u8; 32],
+
+    /// Parent node ID (None for root children).
+    pub parent_id: Option<[u8; 32]>,
+
+    /// Leaf data (present only for leaf nodes).
+    /// Includes full data and metadata for CRDT merge.
+    pub leaf_data: Option<TreeLeafData>,
+}
+
+impl LevelNode {
+    /// Create an internal node.
+    #[must_use]
+    pub fn internal(id: [u8; 32], hash: [u8; 32], parent_id: Option<[u8; 32]>) -> Self {
+        Self {
+            id,
+            hash,
+            parent_id,
+            leaf_data: None,
+        }
+    }
+
+    /// Create a leaf node.
+    #[must_use]
+    pub fn leaf(
+        id: [u8; 32],
+        hash: [u8; 32],
+        parent_id: Option<[u8; 32]>,
+        data: TreeLeafData,
+    ) -> Self {
+        Self {
+            id,
+            hash,
+            parent_id,
+            leaf_data: Some(data),
+        }
+    }
+
+    /// Check if this is a leaf node.
+    #[must_use]
+    pub fn is_leaf(&self) -> bool {
+        self.leaf_data.is_some()
+    }
+
+    /// Check if this is an internal node.
+    #[must_use]
+    pub fn is_internal(&self) -> bool {
+        self.leaf_data.is_none()
+    }
+}
+
+/// Result of comparing nodes at a level.
+#[derive(Clone, Debug, Default)]
+pub struct LevelCompareResult {
+    /// Nodes that match (same hash).
+    pub matching: Vec<[u8; 32]>,
+
+    /// Nodes that differ (different hash) - need to recurse or fetch.
+    pub differing: Vec<[u8; 32]>,
+
+    /// Nodes missing locally - need to fetch.
+    pub local_missing: Vec<[u8; 32]>,
+
+    /// Nodes missing remotely - nothing to do.
+    pub remote_missing: Vec<[u8; 32]>,
+}
+
+impl LevelCompareResult {
+    /// Check if any sync work is needed.
+    #[must_use]
+    pub fn needs_sync(&self) -> bool {
+        !self.differing.is_empty() || !self.local_missing.is_empty()
+    }
+
+    /// Get all node IDs that need further processing.
+    #[must_use]
+    pub fn nodes_to_process(&self) -> Vec<[u8; 32]> {
+        let mut result = self.differing.clone();
+        result.extend(self.local_missing.iter().copied());
+        result
+    }
+
+    /// Total number of nodes compared.
+    #[must_use]
+    pub fn total_compared(&self) -> usize {
+        self.matching.len()
+            + self.differing.len()
+            + self.local_missing.len()
+            + self.remote_missing.len()
+    }
+}
+
+/// Compare local and remote nodes at a level.
+///
+/// Takes a map of local node hashes and the remote response,
+/// and categorizes each node.
+#[must_use]
+pub fn compare_level_nodes(
+    local_hashes: &std::collections::HashMap<[u8; 32], [u8; 32]>,
+    remote: &LevelWiseResponse,
+) -> LevelCompareResult {
+    let mut result = LevelCompareResult::default();
+
+    // Check each remote node against local
+    for node in &remote.nodes {
+        match local_hashes.get(&node.id) {
+            Some(local_hash) if *local_hash == node.hash => {
+                result.matching.push(node.id);
+            }
+            Some(_) => {
+                result.differing.push(node.id);
+            }
+            None => {
+                result.local_missing.push(node.id);
+            }
+        }
+    }
+
+    // Find nodes that exist locally but not in remote response
+    let remote_ids: std::collections::HashSet<_> = remote.nodes.iter().map(|n| n.id).collect();
+    for local_id in local_hashes.keys() {
+        if !remote_ids.contains(local_id) {
+            result.remote_missing.push(*local_id);
+        }
+    }
+
+    result
+}
+
+/// Check if LevelWise sync is appropriate for a tree.
+#[must_use]
+pub fn should_use_levelwise(tree_depth: usize, avg_children_per_level: usize) -> bool {
+    // LevelWise is better for wide, shallow trees
+    tree_depth <= 2 && avg_children_per_level > 10
+}
+
+// =============================================================================
 // Snapshot Sync Types
 // =============================================================================
 
@@ -82,7 +1995,7 @@ pub struct SnapshotCursor {
 }
 
 /// Errors that can occur during snapshot sync.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum SnapshotError {
     /// Peer's delta history is pruned; full snapshot required.
     SnapshotRequired,
@@ -90,6 +2003,861 @@ pub enum SnapshotError {
     InvalidBoundary,
     /// Resume cursor is invalid or expired.
     ResumeCursorInvalid,
+    /// Attempted to apply snapshot on a node with existing state.
+    /// INVARIANT I5: Snapshot is ONLY for fresh nodes.
+    SnapshotOnInitializedNode,
+    /// Root hash verification failed.
+    /// INVARIANT I7: Verification REQUIRED before apply.
+    RootHashMismatch {
+        expected: [u8; 32],
+        computed: [u8; 32],
+    },
+    /// Snapshot transfer was interrupted.
+    TransferInterrupted { pages_received: usize },
+    /// Decompression failed.
+    DecompressionFailed,
+}
+
+// =============================================================================
+// Snapshot Bootstrap Types (CIP §6 - Snapshot Sync Constraints)
+// =============================================================================
+
+/// Request to initiate a full snapshot transfer.
+///
+/// CRITICAL: This is ONLY for fresh nodes with NO existing state.
+/// Invariant I5: Initialized nodes MUST use CRDT merge, not snapshot overwrite.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotRequest {
+    /// Whether to compress the snapshot data.
+    pub compressed: bool,
+
+    /// Maximum page size in bytes (0 = use responder's default).
+    pub max_page_size: u32,
+
+    /// Whether the initiator is definitely a fresh node (for safety check).
+    /// If false, responder SHOULD verify this claim.
+    pub is_fresh_node: bool,
+}
+
+impl SnapshotRequest {
+    /// Create a request for compressed snapshot.
+    #[must_use]
+    pub fn compressed() -> Self {
+        Self {
+            compressed: true,
+            max_page_size: 0,
+            is_fresh_node: true,
+        }
+    }
+
+    /// Create a request for uncompressed snapshot.
+    #[must_use]
+    pub fn uncompressed() -> Self {
+        Self {
+            compressed: false,
+            max_page_size: 0,
+            is_fresh_node: true,
+        }
+    }
+
+    /// Set maximum page size.
+    #[must_use]
+    pub fn with_max_page_size(mut self, size: u32) -> Self {
+        self.max_page_size = size;
+        self
+    }
+}
+
+/// A single entity in a snapshot.
+///
+/// Contains all information needed to reconstruct the entity.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotEntity {
+    /// Entity ID (deterministic, based on path).
+    pub id: [u8; 32],
+
+    /// Serialized entity data.
+    pub data: Vec<u8>,
+
+    /// Entity metadata (crdt_type, timestamps, etc.).
+    pub metadata: LeafMetadata,
+
+    /// Collection ID this entity belongs to.
+    pub collection_id: [u8; 32],
+
+    /// Parent entity ID (for nested structures).
+    pub parent_id: Option<[u8; 32]>,
+}
+
+impl SnapshotEntity {
+    /// Create a new snapshot entity.
+    #[must_use]
+    pub fn new(
+        id: [u8; 32],
+        data: Vec<u8>,
+        metadata: LeafMetadata,
+        collection_id: [u8; 32],
+    ) -> Self {
+        Self {
+            id,
+            data,
+            metadata,
+            collection_id,
+            parent_id: None,
+        }
+    }
+
+    /// Set parent entity ID.
+    #[must_use]
+    pub fn with_parent(mut self, parent_id: [u8; 32]) -> Self {
+        self.parent_id = Some(parent_id);
+        self
+    }
+
+    /// Check if this is a root-level entity.
+    #[must_use]
+    pub fn is_root(&self) -> bool {
+        self.parent_id.is_none()
+    }
+}
+
+/// A page of snapshot entities for paginated transfer.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotEntityPage {
+    /// Page number (0-indexed).
+    pub page_number: usize,
+
+    /// Total number of pages (may be estimated).
+    pub total_pages: usize,
+
+    /// Entities in this page.
+    pub entities: Vec<SnapshotEntity>,
+
+    /// Whether this is the last page.
+    pub is_last: bool,
+}
+
+impl SnapshotEntityPage {
+    /// Create a new snapshot page.
+    #[must_use]
+    pub fn new(
+        page_number: usize,
+        total_pages: usize,
+        entities: Vec<SnapshotEntity>,
+        is_last: bool,
+    ) -> Self {
+        Self {
+            page_number,
+            total_pages,
+            entities,
+            is_last,
+        }
+    }
+
+    /// Number of entities in this page.
+    #[must_use]
+    pub fn entity_count(&self) -> usize {
+        self.entities.len()
+    }
+
+    /// Check if this page is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
+}
+
+/// Completion marker for snapshot transfer.
+///
+/// Sent after all pages have been transferred.
+/// Contains verification information for Invariant I7.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotComplete {
+    /// Root hash of the complete snapshot.
+    /// INVARIANT I7: MUST be verified before applying any entities.
+    pub root_hash: [u8; 32],
+
+    /// Total number of entities transferred.
+    pub total_entities: usize,
+
+    /// Total number of pages transferred.
+    pub total_pages: usize,
+
+    /// Uncompressed size in bytes.
+    pub uncompressed_size: u64,
+
+    /// Compressed size in bytes (if compression was used).
+    pub compressed_size: Option<u64>,
+
+    /// DAG heads at the time of snapshot.
+    /// Used to create checkpoint delta after apply.
+    pub dag_heads: Vec<[u8; 32]>,
+}
+
+impl SnapshotComplete {
+    /// Create a new snapshot completion marker.
+    #[must_use]
+    pub fn new(
+        root_hash: [u8; 32],
+        total_entities: usize,
+        total_pages: usize,
+        uncompressed_size: u64,
+    ) -> Self {
+        Self {
+            root_hash,
+            total_entities,
+            total_pages,
+            uncompressed_size,
+            compressed_size: None,
+            dag_heads: vec![],
+        }
+    }
+
+    /// Set compressed size.
+    #[must_use]
+    pub fn with_compressed_size(mut self, size: u64) -> Self {
+        self.compressed_size = Some(size);
+        self
+    }
+
+    /// Set DAG heads.
+    #[must_use]
+    pub fn with_dag_heads(mut self, heads: Vec<[u8; 32]>) -> Self {
+        self.dag_heads = heads;
+        self
+    }
+
+    /// Calculate compression ratio (if compression was used).
+    #[must_use]
+    pub fn compression_ratio(&self) -> Option<f64> {
+        self.compressed_size
+            .map(|c| c as f64 / self.uncompressed_size.max(1) as f64)
+    }
+}
+
+/// Result of verifying a snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SnapshotVerifyResult {
+    /// Verification passed - safe to apply.
+    Valid,
+
+    /// Root hash mismatch - DO NOT apply.
+    RootHashMismatch {
+        expected: [u8; 32],
+        computed: [u8; 32],
+    },
+
+    /// Entity count mismatch.
+    EntityCountMismatch { expected: usize, actual: usize },
+
+    /// Missing pages detected.
+    MissingPages { missing: Vec<usize> },
+}
+
+impl SnapshotVerifyResult {
+    /// Check if verification passed.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        matches!(self, Self::Valid)
+    }
+
+    /// Convert to error if invalid.
+    pub fn to_error(&self) -> Option<SnapshotError> {
+        match self {
+            Self::Valid => None,
+            Self::RootHashMismatch { expected, computed } => {
+                Some(SnapshotError::RootHashMismatch {
+                    expected: *expected,
+                    computed: *computed,
+                })
+            }
+            _ => Some(SnapshotError::InvalidBoundary),
+        }
+    }
+}
+
+/// Safety check before applying snapshot.
+///
+/// Returns error if the local node has existing state.
+/// INVARIANT I5: Snapshot is ONLY for fresh nodes.
+#[must_use]
+pub fn check_snapshot_safety(has_local_state: bool) -> Result<(), SnapshotError> {
+    if has_local_state {
+        Err(SnapshotError::SnapshotOnInitializedNode)
+    } else {
+        Ok(())
+    }
+}
+
+// =============================================================================
+// CRDT Merge Types (CIP Appendix A - Hybrid Merge Architecture)
+// =============================================================================
+
+/// Errors that can occur during CRDT merge operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MergeError {
+    /// CRDT-specific merge error.
+    CrdtMergeError(String),
+
+    /// The CRDT type requires WASM execution for merge.
+    WasmRequired { type_name: String },
+
+    /// Serialization/deserialization failed during merge.
+    SerializationError(String),
+
+    /// Type mismatch between local and remote values.
+    TypeMismatch { expected: String, found: String },
+
+    /// Missing CRDT type metadata (will use fallback).
+    MissingCrdtType,
+
+    /// HLC timestamp missing for LWW merge.
+    MissingTimestamp,
+}
+
+impl std::fmt::Display for MergeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CrdtMergeError(msg) => write!(f, "CRDT merge error: {msg}"),
+            Self::WasmRequired { type_name } => {
+                write!(f, "WASM required for merge of type: {type_name}")
+            }
+            Self::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
+            Self::TypeMismatch { expected, found } => {
+                write!(f, "Type mismatch: expected {expected}, found {found}")
+            }
+            Self::MissingCrdtType => write!(f, "Missing CRDT type metadata"),
+            Self::MissingTimestamp => write!(f, "Missing HLC timestamp for LWW merge"),
+        }
+    }
+}
+
+impl std::error::Error for MergeError {}
+
+/// Result of a CRDT merge operation.
+#[derive(Clone, Debug)]
+pub struct MergeResult {
+    /// Merged data (serialized).
+    pub data: Vec<u8>,
+
+    /// Whether the merge actually changed the local value.
+    pub changed: bool,
+
+    /// Merge strategy that was used.
+    pub strategy: MergeStrategy,
+}
+
+impl MergeResult {
+    /// Create a merge result.
+    #[must_use]
+    pub fn new(data: Vec<u8>, changed: bool, strategy: MergeStrategy) -> Self {
+        Self {
+            data,
+            changed,
+            strategy,
+        }
+    }
+
+    /// Create a result where local value was kept (no change).
+    #[must_use]
+    pub fn kept_local(data: Vec<u8>, strategy: MergeStrategy) -> Self {
+        Self::new(data, false, strategy)
+    }
+
+    /// Create a result where remote value was taken.
+    #[must_use]
+    pub fn took_remote(data: Vec<u8>, strategy: MergeStrategy) -> Self {
+        Self::new(data, true, strategy)
+    }
+}
+
+/// Strategy used for merging.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MergeStrategy {
+    /// Counter: sum per-node counts.
+    CounterSum,
+    /// Map: per-key merge (recursive).
+    MapPerKey,
+    /// Set: add-wins union.
+    SetAddWins,
+    /// Vector: element-wise merge.
+    VectorElementWise,
+    /// RGA: tombstone-based merge.
+    RgaTombstone,
+    /// LWW: timestamp comparison (higher wins).
+    LwwTimestamp,
+    /// Fallback LWW (crdt_type was None, logged warning).
+    LwwFallback,
+    /// Custom CRDT (via WASM).
+    WasmCustom,
+}
+
+impl MergeStrategy {
+    /// Check if this strategy requires WASM.
+    #[must_use]
+    pub fn requires_wasm(&self) -> bool {
+        matches!(self, Self::WasmCustom)
+    }
+
+    /// Check if this is a fallback strategy (indicates missing metadata).
+    #[must_use]
+    pub fn is_fallback(&self) -> bool {
+        matches!(self, Self::LwwFallback)
+    }
+}
+
+/// Determine the merge strategy for a given CRDT type.
+#[must_use]
+pub fn strategy_for_crdt_type(crdt_type: &CrdtType) -> MergeStrategy {
+    match crdt_type {
+        CrdtType::GCounter | CrdtType::PnCounter => MergeStrategy::CounterSum,
+        CrdtType::UnorderedMap => MergeStrategy::MapPerKey,
+        CrdtType::UnorderedSet | CrdtType::LwwSet | CrdtType::OrSet => MergeStrategy::SetAddWins,
+        CrdtType::Vector => MergeStrategy::VectorElementWise,
+        CrdtType::Rga => MergeStrategy::RgaTombstone,
+        CrdtType::LwwRegister => MergeStrategy::LwwTimestamp,
+        CrdtType::Custom(_) => MergeStrategy::WasmCustom,
+    }
+}
+
+/// Input for a merge operation.
+#[derive(Clone, Debug)]
+pub struct MergeInput<'a> {
+    /// Local value (serialized).
+    pub local: &'a [u8],
+
+    /// Remote value (serialized).
+    pub remote: &'a [u8],
+
+    /// Local HLC timestamp (for LWW).
+    pub local_hlc: u64,
+
+    /// Remote HLC timestamp (for LWW).
+    pub remote_hlc: u64,
+
+    /// CRDT type (if known).
+    pub crdt_type: Option<CrdtType>,
+}
+
+impl<'a> MergeInput<'a> {
+    /// Create a new merge input.
+    #[must_use]
+    pub fn new(local: &'a [u8], remote: &'a [u8]) -> Self {
+        Self {
+            local,
+            remote,
+            local_hlc: 0,
+            remote_hlc: 0,
+            crdt_type: None,
+        }
+    }
+
+    /// Set HLC timestamps.
+    #[must_use]
+    pub fn with_timestamps(mut self, local_hlc: u64, remote_hlc: u64) -> Self {
+        self.local_hlc = local_hlc;
+        self.remote_hlc = remote_hlc;
+        self
+    }
+
+    /// Set CRDT type.
+    #[must_use]
+    pub fn with_crdt_type(mut self, crdt_type: CrdtType) -> Self {
+        self.crdt_type = Some(crdt_type);
+        self
+    }
+
+    /// Get the merge strategy to use.
+    #[must_use]
+    pub fn strategy(&self) -> MergeStrategy {
+        match &self.crdt_type {
+            Some(ct) => strategy_for_crdt_type(ct),
+            None => MergeStrategy::LwwFallback,
+        }
+    }
+
+    /// Check if WASM is required for this merge.
+    #[must_use]
+    pub fn requires_wasm(&self) -> bool {
+        self.strategy().requires_wasm()
+    }
+}
+
+/// Result of comparing two HLC timestamps for LWW merge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LwwComparison {
+    /// Local value wins (higher timestamp).
+    LocalWins,
+    /// Remote value wins (higher timestamp).
+    RemoteWins,
+    /// Timestamps are equal - need tie-breaker.
+    Tie,
+}
+
+/// Compare HLC timestamps for LWW merge.
+///
+/// Returns which value should win based on timestamps.
+/// For ties, caller should use lexicographic comparison on data.
+#[must_use]
+pub fn compare_lww_timestamps(local_hlc: u64, remote_hlc: u64) -> LwwComparison {
+    match local_hlc.cmp(&remote_hlc) {
+        std::cmp::Ordering::Greater => LwwComparison::LocalWins,
+        std::cmp::Ordering::Less => LwwComparison::RemoteWins,
+        std::cmp::Ordering::Equal => LwwComparison::Tie,
+    }
+}
+
+/// Resolve an LWW tie using lexicographic comparison on data.
+///
+/// This provides deterministic tie-breaking when HLC timestamps are equal.
+#[must_use]
+pub fn resolve_lww_tie(local: &[u8], remote: &[u8]) -> LwwComparison {
+    match local.cmp(remote) {
+        std::cmp::Ordering::Greater => LwwComparison::LocalWins,
+        std::cmp::Ordering::Less => LwwComparison::RemoteWins,
+        std::cmp::Ordering::Equal => LwwComparison::LocalWins, // Same data, keep local
+    }
+}
+
+/// Perform LWW merge with timestamps and tie-breaking.
+///
+/// This is the base merge function used by LWW registers and as fallback.
+#[must_use]
+pub fn merge_lww(input: &MergeInput<'_>) -> MergeResult {
+    let comparison = compare_lww_timestamps(input.local_hlc, input.remote_hlc);
+
+    let (data, changed) = match comparison {
+        LwwComparison::LocalWins => (input.local.to_vec(), false),
+        LwwComparison::RemoteWins => (input.remote.to_vec(), true),
+        LwwComparison::Tie => {
+            // Tie-breaker: lexicographic on data
+            match resolve_lww_tie(input.local, input.remote) {
+                LwwComparison::LocalWins => (input.local.to_vec(), false),
+                LwwComparison::RemoteWins => (input.remote.to_vec(), true),
+                LwwComparison::Tie => (input.local.to_vec(), false), // Same data
+            }
+        }
+    };
+
+    let strategy = input
+        .crdt_type
+        .as_ref()
+        .map(|_| MergeStrategy::LwwTimestamp)
+        .unwrap_or(MergeStrategy::LwwFallback);
+
+    MergeResult::new(data, changed, strategy)
+}
+
+// =============================================================================
+// WASM Merge Callback Interface (CIP Appendix A - WASM Merge Callback)
+// =============================================================================
+
+/// Default timeout for WASM merge calls (in milliseconds).
+pub const DEFAULT_WASM_MERGE_TIMEOUT_MS: u64 = 5000;
+
+/// WASM export name for custom type merge.
+pub const WASM_MERGE_EXPORT: &str = "__calimero_merge";
+
+/// WASM export name for root state merge.
+pub const WASM_MERGE_ROOT_STATE_EXPORT: &str = "__calimero_merge_root_state";
+
+/// Errors specific to WASM merge operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WasmMergeError {
+    /// The WASM module doesn't export the required merge function.
+    MissingExport { export_name: String },
+
+    /// WASM merge call timed out.
+    Timeout { timeout_ms: u64 },
+
+    /// WASM execution failed.
+    ExecutionFailed { reason: String },
+
+    /// WASM returned invalid data.
+    InvalidResult { reason: String },
+
+    /// Memory allocation failed in WASM.
+    MemoryError { reason: String },
+
+    /// Type not found in WASM module.
+    TypeNotFound { type_name: String },
+}
+
+impl std::fmt::Display for WasmMergeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingExport { export_name } => {
+                write!(f, "WASM module missing export: {export_name}")
+            }
+            Self::Timeout { timeout_ms } => {
+                write!(f, "WASM merge timed out after {timeout_ms}ms")
+            }
+            Self::ExecutionFailed { reason } => {
+                write!(f, "WASM execution failed: {reason}")
+            }
+            Self::InvalidResult { reason } => {
+                write!(f, "WASM returned invalid result: {reason}")
+            }
+            Self::MemoryError { reason } => {
+                write!(f, "WASM memory error: {reason}")
+            }
+            Self::TypeNotFound { type_name } => {
+                write!(f, "Type not found in WASM: {type_name}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WasmMergeError {}
+
+impl From<WasmMergeError> for MergeError {
+    fn from(err: WasmMergeError) -> Self {
+        match err {
+            WasmMergeError::MissingExport { export_name } => MergeError::WasmRequired {
+                type_name: export_name,
+            },
+            other => MergeError::CrdtMergeError(other.to_string()),
+        }
+    }
+}
+
+/// Input for a WASM merge call.
+#[derive(Clone, Debug)]
+pub struct WasmMergeInput<'a> {
+    /// Local value (serialized).
+    pub local: &'a [u8],
+
+    /// Remote value (serialized).
+    pub remote: &'a [u8],
+
+    /// Type name for custom type merge (None for root state).
+    pub type_name: Option<&'a str>,
+
+    /// Timeout in milliseconds.
+    pub timeout_ms: u64,
+}
+
+impl<'a> WasmMergeInput<'a> {
+    /// Create input for custom type merge.
+    #[must_use]
+    pub fn for_type(local: &'a [u8], remote: &'a [u8], type_name: &'a str) -> Self {
+        Self {
+            local,
+            remote,
+            type_name: Some(type_name),
+            timeout_ms: DEFAULT_WASM_MERGE_TIMEOUT_MS,
+        }
+    }
+
+    /// Create input for root state merge.
+    #[must_use]
+    pub fn for_root_state(local: &'a [u8], remote: &'a [u8]) -> Self {
+        Self {
+            local,
+            remote,
+            type_name: None,
+            timeout_ms: DEFAULT_WASM_MERGE_TIMEOUT_MS,
+        }
+    }
+
+    /// Set custom timeout.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Check if this is a root state merge.
+    #[must_use]
+    pub fn is_root_state(&self) -> bool {
+        self.type_name.is_none()
+    }
+
+    /// Get the export name to call.
+    #[must_use]
+    pub fn export_name(&self) -> &'static str {
+        if self.is_root_state() {
+            WASM_MERGE_ROOT_STATE_EXPORT
+        } else {
+            WASM_MERGE_EXPORT
+        }
+    }
+}
+
+/// Result of a WASM merge operation.
+#[derive(Clone, Debug)]
+pub struct WasmMergeResult {
+    /// Merged data.
+    pub data: Vec<u8>,
+
+    /// Whether the merge changed the local value.
+    pub changed: bool,
+
+    /// Execution time in microseconds.
+    pub execution_time_us: u64,
+}
+
+impl WasmMergeResult {
+    /// Create a new WASM merge result.
+    #[must_use]
+    pub fn new(data: Vec<u8>, changed: bool, execution_time_us: u64) -> Self {
+        Self {
+            data,
+            changed,
+            execution_time_us,
+        }
+    }
+
+    /// Convert to a general MergeResult.
+    #[must_use]
+    pub fn into_merge_result(self) -> MergeResult {
+        MergeResult::new(self.data, self.changed, MergeStrategy::WasmCustom)
+    }
+}
+
+/// Capabilities advertised by a WASM module for merge operations.
+#[derive(Clone, Debug, Default)]
+pub struct WasmMergeCapabilities {
+    /// Module exports __calimero_merge.
+    pub supports_custom_merge: bool,
+
+    /// Module exports __calimero_merge_root_state.
+    pub supports_root_state_merge: bool,
+
+    /// Custom type names that can be merged.
+    pub supported_types: Vec<String>,
+}
+
+impl WasmMergeCapabilities {
+    /// Create capabilities from export checks.
+    #[must_use]
+    pub fn new(supports_custom: bool, supports_root: bool) -> Self {
+        Self {
+            supports_custom_merge: supports_custom,
+            supports_root_state_merge: supports_root,
+            supported_types: vec![],
+        }
+    }
+
+    /// Add a supported type.
+    pub fn add_type(&mut self, type_name: String) {
+        self.supported_types.push(type_name);
+    }
+
+    /// Check if any merge capability is available.
+    #[must_use]
+    pub fn has_any_capability(&self) -> bool {
+        self.supports_custom_merge || self.supports_root_state_merge
+    }
+
+    /// Check if a specific type can be merged.
+    #[must_use]
+    pub fn can_merge_type(&self, type_name: &str) -> bool {
+        self.supports_custom_merge
+            && (self.supported_types.is_empty()
+                || self.supported_types.iter().any(|t| t == type_name))
+    }
+}
+
+/// Request to merge via WASM callback.
+///
+/// Used when sync needs to merge a custom Mergeable type.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct WasmMergeRequest {
+    /// Local value (serialized).
+    pub local: Vec<u8>,
+
+    /// Remote value (serialized).
+    pub remote: Vec<u8>,
+
+    /// Type name for custom types (empty for root state).
+    pub type_name: String,
+
+    /// Timeout hint in milliseconds.
+    pub timeout_ms: u64,
+}
+
+impl WasmMergeRequest {
+    /// Create a request for custom type merge.
+    #[must_use]
+    pub fn for_type(local: Vec<u8>, remote: Vec<u8>, type_name: String) -> Self {
+        Self {
+            local,
+            remote,
+            type_name,
+            timeout_ms: DEFAULT_WASM_MERGE_TIMEOUT_MS,
+        }
+    }
+
+    /// Create a request for root state merge.
+    #[must_use]
+    pub fn for_root_state(local: Vec<u8>, remote: Vec<u8>) -> Self {
+        Self {
+            local,
+            remote,
+            type_name: String::new(),
+            timeout_ms: DEFAULT_WASM_MERGE_TIMEOUT_MS,
+        }
+    }
+
+    /// Check if this is a root state merge.
+    #[must_use]
+    pub fn is_root_state(&self) -> bool {
+        self.type_name.is_empty()
+    }
+}
+
+/// Response from a WASM merge callback.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct WasmMergeResponse {
+    /// Merged data (if successful).
+    pub data: Option<Vec<u8>>,
+
+    /// Error message (if failed).
+    pub error: Option<String>,
+
+    /// Whether the merge changed the local value.
+    pub changed: bool,
+}
+
+impl WasmMergeResponse {
+    /// Create a successful response.
+    #[must_use]
+    pub fn success(data: Vec<u8>, changed: bool) -> Self {
+        Self {
+            data: Some(data),
+            error: None,
+            changed,
+        }
+    }
+
+    /// Create an error response.
+    #[must_use]
+    pub fn error(message: String) -> Self {
+        Self {
+            data: None,
+            error: Some(message),
+            changed: false,
+        }
+    }
+
+    /// Check if the merge was successful.
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        self.data.is_some() && self.error.is_none()
+    }
+
+    /// Get the merged data (if successful).
+    #[must_use]
+    pub fn into_data(self) -> Result<Vec<u8>, WasmMergeError> {
+        match (self.data, self.error) {
+            (Some(data), None) => Ok(data),
+            (_, Some(err)) => Err(WasmMergeError::ExecutionFailed { reason: err }),
+            (None, None) => Err(WasmMergeError::InvalidResult {
+                reason: "No data or error in response".to_string(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -250,4 +3018,1988 @@ pub enum MessagePayload<'a> {
     SnapshotError {
         error: SnapshotError,
     },
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sync_protocol_roundtrip() {
+        let protocols = vec![
+            SyncProtocol::None,
+            SyncProtocol::DeltaSync {
+                missing_delta_ids: vec![[1; 32], [2; 32]],
+            },
+            SyncProtocol::HashComparison {
+                root_hash: [3; 32],
+                divergent_subtrees: vec![[4; 32]],
+            },
+            SyncProtocol::Snapshot {
+                compressed: true,
+                verified: false,
+            },
+            SyncProtocol::BloomFilter {
+                filter_size: 1024,
+                false_positive_rate: 0.01,
+            },
+            SyncProtocol::SubtreePrefetch {
+                subtree_roots: vec![[5; 32], [6; 32]],
+            },
+            SyncProtocol::LevelWise { max_depth: 3 },
+        ];
+
+        for protocol in protocols {
+            let encoded = borsh::to_vec(&protocol).expect("serialize");
+            let decoded: SyncProtocol = borsh::from_slice(&encoded).expect("deserialize");
+            assert_eq!(protocol, decoded);
+        }
+    }
+
+    #[test]
+    fn test_sync_capabilities_roundtrip() {
+        let caps = SyncCapabilities::default();
+        let encoded = borsh::to_vec(&caps).expect("serialize");
+        let decoded: SyncCapabilities = borsh::from_slice(&encoded).expect("deserialize");
+        assert_eq!(caps, decoded);
+    }
+
+    #[test]
+    fn test_sync_handshake_roundtrip() {
+        let handshake = SyncHandshake::new([42; 32], 100, 5, vec![[1; 32], [2; 32]]);
+
+        let encoded = borsh::to_vec(&handshake).expect("serialize");
+        let decoded: SyncHandshake = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(handshake, decoded);
+        assert_eq!(decoded.version, SYNC_PROTOCOL_VERSION);
+        assert!(decoded.has_state); // non-zero root_hash
+    }
+
+    #[test]
+    fn test_sync_handshake_response_roundtrip() {
+        let response = SyncHandshakeResponse::with_protocol(
+            SyncProtocol::HashComparison {
+                root_hash: [7; 32],
+                divergent_subtrees: vec![],
+            },
+            [8; 32],
+            500,
+        );
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: SyncHandshakeResponse = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(response, decoded);
+    }
+
+    #[test]
+    fn test_sync_handshake_version_compatibility() {
+        let local = SyncHandshake::new([1; 32], 10, 2, vec![]);
+        let compatible = SyncHandshake::new([2; 32], 20, 3, vec![]);
+        let incompatible = SyncHandshake {
+            version: SYNC_PROTOCOL_VERSION + 1,
+            ..SyncHandshake::default()
+        };
+
+        assert!(local.is_version_compatible(&compatible));
+        assert!(!local.is_version_compatible(&incompatible));
+    }
+
+    #[test]
+    fn test_sync_handshake_in_sync_detection() {
+        let local = SyncHandshake::new([42; 32], 100, 5, vec![]);
+        let same_hash = SyncHandshake::new([42; 32], 200, 6, vec![[1; 32]]);
+        let different_hash = SyncHandshake::new([99; 32], 100, 5, vec![]);
+
+        assert!(local.is_in_sync(&same_hash));
+        assert!(!local.is_in_sync(&different_hash));
+    }
+
+    #[test]
+    fn test_sync_handshake_fresh_node() {
+        let fresh = SyncHandshake::new([0; 32], 0, 0, vec![]);
+        assert!(!fresh.has_state);
+
+        let initialized = SyncHandshake::new([1; 32], 1, 1, vec![]);
+        assert!(initialized.has_state);
+    }
+
+    #[test]
+    fn test_sync_handshake_response_already_synced() {
+        let response = SyncHandshakeResponse::already_synced([42; 32], 100);
+        assert_eq!(response.selected_protocol, SyncProtocol::None);
+    }
+
+    // =========================================================================
+    // Protocol Selection Tests (Issue #1771)
+    // =========================================================================
+
+    #[test]
+    fn test_calculate_divergence() {
+        // Same counts
+        let local = SyncHandshake::new([1; 32], 100, 5, vec![]);
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![]);
+        assert!((calculate_divergence(&local, &remote) - 0.0).abs() < f64::EPSILON);
+
+        // 50% divergence
+        let local = SyncHandshake::new([1; 32], 50, 5, vec![]);
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![]);
+        assert!((calculate_divergence(&local, &remote) - 0.5).abs() < f64::EPSILON);
+
+        // 100% divergence (local empty)
+        let local = SyncHandshake::new([1; 32], 0, 0, vec![]);
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![]);
+        assert!((calculate_divergence(&local, &remote) - 1.0).abs() < f64::EPSILON);
+
+        // Handles zero remote count
+        let local = SyncHandshake::new([1; 32], 100, 5, vec![]);
+        let remote = SyncHandshake::new([2; 32], 0, 0, vec![]);
+        assert!((calculate_divergence(&local, &remote) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_select_protocol_rule1_already_synced() {
+        let local = SyncHandshake::new([42; 32], 100, 5, vec![]);
+        let remote = SyncHandshake::new([42; 32], 200, 3, vec![]); // Same root hash
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(selection.protocol, SyncProtocol::None));
+        assert!(selection.reason.contains("already in sync"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule2_fresh_node_gets_snapshot() {
+        let local = SyncHandshake::new([0; 32], 0, 0, vec![]); // Fresh node
+        let remote = SyncHandshake::new([42; 32], 200, 5, vec![]);
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(selection.protocol, SyncProtocol::Snapshot { .. }));
+        assert!(selection.reason.contains("fresh node"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule3_initialized_node_never_gets_snapshot() {
+        // CRITICAL TEST for Invariant I5
+        let local = SyncHandshake::new([1; 32], 1, 1, vec![]); // Has state!
+        let remote = SyncHandshake::new([42; 32], 200, 5, vec![]);
+
+        let selection = select_protocol(&local, &remote);
+        // Even with high divergence, should NOT get Snapshot
+        assert!(!matches!(selection.protocol, SyncProtocol::Snapshot { .. }));
+    }
+
+    #[test]
+    fn test_select_protocol_rule3_high_divergence_uses_hash_comparison() {
+        let local = SyncHandshake::new([1; 32], 10, 2, vec![]); // Has state
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![]); // 90% divergence
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(
+            selection.protocol,
+            SyncProtocol::HashComparison { .. }
+        ));
+        assert!(selection.reason.contains("divergence"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule4_deep_tree_uses_subtree_prefetch() {
+        let local = SyncHandshake::new([1; 32], 90, 5, vec![]); // ~10% divergence
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![]); // depth > 3
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(
+            selection.protocol,
+            SyncProtocol::SubtreePrefetch { .. }
+        ));
+        assert!(selection.reason.contains("subtree"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule5_large_tree_small_diff_uses_bloom() {
+        let local = SyncHandshake::new([1; 32], 95, 2, vec![]); // ~5% divergence
+        let remote = SyncHandshake::new([2; 32], 100, 2, vec![]); // entity_count > 50
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(
+            selection.protocol,
+            SyncProtocol::BloomFilter { .. }
+        ));
+        assert!(selection.reason.contains("bloom"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule6_wide_shallow_uses_levelwise() {
+        // Wide shallow tree: max_depth <= 2, many children per level, entity_count <= 50
+        // (to avoid triggering bloom filter rule first)
+        let local = SyncHandshake::new([1; 32], 40, 2, vec![]);
+        let remote = SyncHandshake::new([2; 32], 40, 2, vec![]);
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(selection.protocol, SyncProtocol::LevelWise { .. }));
+        assert!(selection.reason.contains("level"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule7_default_uses_hash_comparison() {
+        // Create conditions that don't match any specific rule
+        let local = SyncHandshake::new([1; 32], 30, 2, vec![]); // ~25% divergence
+        let remote = SyncHandshake::new([2; 32], 40, 3, vec![]); // depth=3, not >3
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(
+            selection.protocol,
+            SyncProtocol::HashComparison { .. }
+        ));
+        assert!(selection.reason.contains("default"));
+    }
+
+    #[test]
+    fn test_select_protocol_version_mismatch_uses_safe_fallback() {
+        let local = SyncHandshake::new([1; 32], 100, 5, vec![]);
+        let mut remote = SyncHandshake::new([2; 32], 100, 5, vec![]);
+        remote.version = SYNC_PROTOCOL_VERSION + 1; // Incompatible version
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(
+            selection.protocol,
+            SyncProtocol::HashComparison { .. }
+        ));
+        assert!(selection.reason.contains("version mismatch"));
+    }
+
+    #[test]
+    fn test_is_protocol_supported() {
+        let caps = SyncCapabilities::default();
+
+        // Supported (in default list)
+        assert!(is_protocol_supported(&SyncProtocol::None, &caps));
+        assert!(is_protocol_supported(
+            &SyncProtocol::HashComparison {
+                root_hash: [0; 32],
+                divergent_subtrees: vec![]
+            },
+            &caps
+        ));
+
+        // Not supported (not in default list)
+        assert!(!is_protocol_supported(
+            &SyncProtocol::SubtreePrefetch {
+                subtree_roots: vec![]
+            },
+            &caps
+        ));
+        assert!(!is_protocol_supported(
+            &SyncProtocol::LevelWise { max_depth: 2 },
+            &caps
+        ));
+    }
+
+    #[test]
+    fn test_select_protocol_with_fallback() {
+        let local = SyncHandshake::new([1; 32], 90, 5, vec![]); // Would prefer SubtreePrefetch
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![]);
+        let caps = SyncCapabilities::default(); // Doesn't support SubtreePrefetch
+
+        let selection = select_protocol_with_fallback(&local, &remote, &caps);
+
+        // Should fall back to HashComparison since SubtreePrefetch not supported
+        assert!(matches!(
+            selection.protocol,
+            SyncProtocol::HashComparison { .. }
+        ));
+        assert!(selection.reason.contains("fallback"));
+    }
+
+    // =========================================================================
+    // Delta Sync Tests (Issue #1772)
+    // =========================================================================
+
+    #[test]
+    fn test_delta_sync_request_roundtrip() {
+        let request = DeltaSyncRequest::new(vec![[1; 32], [2; 32], [3; 32]]);
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: DeltaSyncRequest = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(request, decoded);
+        assert_eq!(decoded.count(), 3);
+    }
+
+    #[test]
+    fn test_delta_sync_request_threshold() {
+        // Within threshold
+        let small_request = DeltaSyncRequest::new(vec![[1; 32]; 10]);
+        assert!(small_request.is_within_threshold());
+
+        // At threshold
+        let at_threshold = DeltaSyncRequest::new(vec![[1; 32]; DEFAULT_DELTA_SYNC_THRESHOLD]);
+        assert!(at_threshold.is_within_threshold());
+
+        // Over threshold
+        let large_request = DeltaSyncRequest::new(vec![[1; 32]; DEFAULT_DELTA_SYNC_THRESHOLD + 1]);
+        assert!(!large_request.is_within_threshold());
+    }
+
+    #[test]
+    fn test_delta_payload_roundtrip() {
+        let payload = DeltaPayload {
+            id: [1; 32],
+            parents: vec![[2; 32], [3; 32]],
+            payload: vec![4, 5, 6, 7],
+            hlc_timestamp: 12345678,
+            expected_root_hash: [8; 32],
+        };
+
+        let encoded = borsh::to_vec(&payload).expect("serialize");
+        let decoded: DeltaPayload = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(payload, decoded);
+        assert!(!decoded.is_genesis());
+    }
+
+    #[test]
+    fn test_delta_payload_genesis() {
+        let genesis = DeltaPayload {
+            id: [1; 32],
+            parents: vec![], // No parents = genesis
+            payload: vec![1, 2, 3],
+            hlc_timestamp: 0,
+            expected_root_hash: [2; 32],
+        };
+
+        assert!(genesis.is_genesis());
+
+        let non_genesis = DeltaPayload {
+            id: [2; 32],
+            parents: vec![[1; 32]], // Has parent
+            payload: vec![4, 5, 6],
+            hlc_timestamp: 1,
+            expected_root_hash: [3; 32],
+        };
+
+        assert!(!non_genesis.is_genesis());
+    }
+
+    #[test]
+    fn test_delta_sync_response_roundtrip() {
+        let delta1 = DeltaPayload {
+            id: [1; 32],
+            parents: vec![],
+            payload: vec![1, 2, 3],
+            hlc_timestamp: 100,
+            expected_root_hash: [10; 32],
+        };
+        let delta2 = DeltaPayload {
+            id: [2; 32],
+            parents: vec![[1; 32]],
+            payload: vec![4, 5, 6],
+            hlc_timestamp: 200,
+            expected_root_hash: [20; 32],
+        };
+
+        let response = DeltaSyncResponse::new(vec![delta1, delta2], vec![[99; 32]]);
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: DeltaSyncResponse = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(response, decoded);
+        assert_eq!(decoded.count(), 2);
+        assert!(!decoded.is_complete()); // Has not_found entries
+    }
+
+    #[test]
+    fn test_delta_sync_response_complete() {
+        let delta = DeltaPayload {
+            id: [1; 32],
+            parents: vec![],
+            payload: vec![1, 2, 3],
+            hlc_timestamp: 100,
+            expected_root_hash: [10; 32],
+        };
+
+        let complete_response = DeltaSyncResponse::new(vec![delta], vec![]);
+        assert!(complete_response.is_complete());
+
+        let incomplete_response = DeltaSyncResponse::empty(vec![[1; 32]]);
+        assert!(!incomplete_response.is_complete());
+        assert_eq!(incomplete_response.count(), 0);
+    }
+
+    #[test]
+    fn test_delta_apply_result() {
+        let success = DeltaApplyResult::Success {
+            applied_count: 5,
+            new_root_hash: [1; 32],
+        };
+        assert!(success.is_success());
+        assert!(!success.needs_state_sync());
+
+        let missing_parents = DeltaApplyResult::MissingParents {
+            missing_parent_deltas: vec![[2; 32]],
+            applied_before_failure: 3,
+        };
+        assert!(!missing_parents.is_success());
+        assert!(missing_parents.needs_state_sync());
+
+        let failed = DeltaApplyResult::Failed {
+            reason: "hash mismatch".to_string(),
+        };
+        assert!(!failed.is_success());
+        assert!(!failed.needs_state_sync());
+    }
+
+    // =========================================================================
+    // Delta Buffering Tests (Issue #1773)
+    // =========================================================================
+
+    #[test]
+    fn test_sync_state_transitions() {
+        assert!(!SyncState::Idle.is_active());
+        assert!(!SyncState::Idle.should_buffer_deltas());
+
+        assert!(SyncState::Handshaking.is_active());
+        assert!(!SyncState::Handshaking.should_buffer_deltas());
+
+        assert!(SyncState::ReceivingState.is_active());
+        assert!(SyncState::ReceivingState.should_buffer_deltas());
+
+        assert!(SyncState::ReplayingDeltas.is_active());
+        assert!(!SyncState::ReplayingDeltas.should_buffer_deltas());
+
+        assert!(!SyncState::Completed.is_active());
+        assert!(!SyncState::Failed("test".to_string()).is_active());
+    }
+
+    #[test]
+    fn test_buffered_delta_roundtrip() {
+        let delta = BufferedDelta::new(
+            [1; 32],
+            vec![[2; 32], [3; 32]],
+            12345,
+            [4; 24],
+            [5; 32],
+            [6; 32],
+            vec![7, 8, 9],
+            vec![vec![10, 11], vec![12, 13]],
+        );
+
+        let encoded = borsh::to_vec(&delta).expect("serialize");
+        let decoded: BufferedDelta = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(delta, decoded);
+        assert!(!decoded.is_genesis());
+    }
+
+    #[test]
+    fn test_buffered_delta_genesis() {
+        let genesis = BufferedDelta::new(
+            [1; 32],
+            vec![], // No parents
+            0,
+            [0; 24],
+            [2; 32],
+            [3; 32],
+            vec![1, 2, 3],
+            vec![],
+        );
+        assert!(genesis.is_genesis());
+
+        let non_genesis = BufferedDelta::new(
+            [2; 32],
+            vec![[1; 32]], // Has parent
+            1,
+            [0; 24],
+            [2; 32],
+            [4; 32],
+            vec![4, 5, 6],
+            vec![],
+        );
+        assert!(!non_genesis.is_genesis());
+    }
+
+    #[test]
+    fn test_sync_context_lifecycle() {
+        let mut ctx = SyncContext::new();
+        assert!(!ctx.is_active());
+        assert!(!ctx.should_buffer());
+        assert_eq!(ctx.buffered_count(), 0);
+
+        // Start sync
+        ctx.start(
+            [1; 32],
+            SyncProtocol::HashComparison {
+                root_hash: [2; 32],
+                divergent_subtrees: vec![],
+            },
+            1000,
+        );
+        assert!(ctx.is_active());
+        assert!(!ctx.should_buffer()); // Handshaking, not yet receiving
+
+        // Begin receiving state
+        ctx.begin_receiving();
+        assert!(ctx.is_active());
+        assert!(ctx.should_buffer());
+
+        // Begin replay
+        ctx.begin_replay();
+        assert!(ctx.is_active());
+        assert!(!ctx.should_buffer());
+
+        // Complete
+        ctx.complete();
+        assert!(!ctx.is_active());
+    }
+
+    #[test]
+    fn test_sync_context_buffer_deltas() {
+        let mut ctx = SyncContext::with_capacity(3);
+        ctx.begin_receiving();
+
+        let delta1 = BufferedDelta::new(
+            [1; 32],
+            vec![],
+            1,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+        let delta2 = BufferedDelta::new(
+            [2; 32],
+            vec![[1; 32]],
+            2,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+        let delta3 = BufferedDelta::new(
+            [3; 32],
+            vec![[2; 32]],
+            3,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+        let delta4 = BufferedDelta::new(
+            [4; 32],
+            vec![[3; 32]],
+            4,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+
+        // Buffer within capacity
+        assert!(ctx.buffer_delta(delta1));
+        assert!(ctx.buffer_delta(delta2));
+        assert!(ctx.buffer_delta(delta3));
+        assert_eq!(ctx.buffered_count(), 3);
+        assert!(!ctx.is_buffer_exceeded());
+
+        // Buffer exceeds capacity (but still buffers - I6)
+        assert!(!ctx.buffer_delta(delta4)); // Returns false - exceeded
+        assert_eq!(ctx.buffered_count(), 4); // Delta is still buffered!
+        assert!(ctx.is_buffer_exceeded());
+    }
+
+    #[test]
+    fn test_sync_context_take_buffered() {
+        let mut ctx = SyncContext::new();
+        ctx.begin_receiving();
+
+        let delta1 = BufferedDelta::new(
+            [1; 32],
+            vec![],
+            1,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+        let delta2 = BufferedDelta::new(
+            [2; 32],
+            vec![[1; 32]],
+            2,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+
+        ctx.buffer_delta(delta1.clone());
+        ctx.buffer_delta(delta2.clone());
+        assert_eq!(ctx.buffered_count(), 2);
+
+        // Take deltas for replay
+        let taken = ctx.take_buffered_deltas();
+        assert_eq!(taken.len(), 2);
+        assert_eq!(taken[0].id, delta1.id);
+        assert_eq!(taken[1].id, delta2.id);
+
+        // Buffer is now empty
+        assert_eq!(ctx.buffered_count(), 0);
+    }
+
+    #[test]
+    fn test_sync_context_reset() {
+        let mut ctx = SyncContext::new();
+        ctx.start(
+            [1; 32],
+            SyncProtocol::Snapshot {
+                compressed: true,
+                verified: true,
+            },
+            1000,
+        );
+        ctx.begin_receiving();
+
+        let delta = BufferedDelta::new(
+            [1; 32],
+            vec![],
+            1,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+        ctx.buffer_delta(delta);
+
+        assert!(ctx.is_active());
+        assert!(ctx.peer_id.is_some());
+        assert_eq!(ctx.buffered_count(), 1);
+
+        ctx.reset();
+
+        assert!(!ctx.is_active());
+        assert!(ctx.peer_id.is_none());
+        assert_eq!(ctx.buffered_count(), 0);
+        assert!(matches!(ctx.protocol, SyncProtocol::None));
+    }
+
+    #[test]
+    fn test_sync_context_fail() {
+        let mut ctx = SyncContext::new();
+        ctx.start(
+            [1; 32],
+            SyncProtocol::HashComparison {
+                root_hash: [0; 32],
+                divergent_subtrees: vec![],
+            },
+            1000,
+        );
+
+        ctx.fail("connection lost".to_string());
+        assert!(!ctx.is_active());
+        assert!(matches!(ctx.state, SyncState::Failed(ref msg) if msg == "connection lost"));
+    }
+
+    #[test]
+    fn test_buffer_metrics() {
+        let mut metrics = BufferMetrics::default();
+
+        metrics.record_buffer(1);
+        metrics.record_buffer(2);
+        metrics.record_buffer(3);
+        assert_eq!(metrics.total_buffered, 3);
+        assert_eq!(metrics.peak_buffer_size, 3);
+
+        metrics.record_exceeded();
+        metrics.record_exceeded();
+        assert_eq!(metrics.capacity_exceeded_count, 2);
+
+        metrics.record_replay(5);
+        assert_eq!(metrics.total_replayed, 5);
+
+        metrics.record_completion(1500);
+        assert_eq!(metrics.sync_duration_ms, Some(1500));
+    }
+
+    // =========================================================================
+    // HashComparison Sync Tests (Issue #1774)
+    // =========================================================================
+
+    #[test]
+    fn test_tree_node_request_roundtrip() {
+        let request = TreeNodeRequest::with_depth([1; 32], 3);
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: TreeNodeRequest = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(request, decoded);
+        assert_eq!(decoded.max_depth, Some(3));
+    }
+
+    #[test]
+    fn test_tree_node_request_root() {
+        let root_hash = [42; 32];
+        let request = TreeNodeRequest::root(root_hash);
+
+        assert_eq!(request.node_id, root_hash);
+        assert!(request.max_depth.is_none());
+    }
+
+    #[test]
+    fn test_tree_node_internal() {
+        let node = TreeNode::internal([1; 32], [2; 32], vec![[3; 32], [4; 32]]);
+
+        assert!(node.is_internal());
+        assert!(!node.is_leaf());
+        assert_eq!(node.child_count(), 2);
+        assert!(node.leaf_data.is_none());
+    }
+
+    #[test]
+    fn test_tree_node_leaf() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 12345, [5; 32]);
+        let leaf_data = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata);
+        let node = TreeNode::leaf([2; 32], [3; 32], leaf_data);
+
+        assert!(node.is_leaf());
+        assert!(!node.is_internal());
+        assert_eq!(node.child_count(), 0);
+        assert!(node.leaf_data.is_some());
+    }
+
+    #[test]
+    fn test_tree_node_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 999, [6; 32])
+            .with_version(5)
+            .with_parent([7; 32]);
+        let leaf_data = TreeLeafData::new([1; 32], vec![4, 5, 6], metadata);
+        let node = TreeNode::leaf([2; 32], [3; 32], leaf_data);
+
+        let encoded = borsh::to_vec(&node).expect("serialize");
+        let decoded: TreeNode = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(node, decoded);
+    }
+
+    #[test]
+    fn test_tree_node_response_roundtrip() {
+        let internal = TreeNode::internal([1; 32], [2; 32], vec![[3; 32]]);
+        let metadata = LeafMetadata::new(CrdtType::Rga, 100, [4; 32]);
+        let leaf_data = TreeLeafData::new([5; 32], vec![7, 8, 9], metadata);
+        let leaf = TreeNode::leaf([6; 32], [7; 32], leaf_data);
+
+        let response = TreeNodeResponse::new(vec![internal, leaf]);
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: TreeNodeResponse = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(response, decoded);
+        assert!(decoded.has_leaves());
+        assert_eq!(decoded.leaves().len(), 1);
+    }
+
+    #[test]
+    fn test_tree_node_response_not_found() {
+        let response = TreeNodeResponse::not_found();
+
+        assert!(response.not_found);
+        assert!(response.nodes.is_empty());
+        assert!(!response.has_leaves());
+    }
+
+    #[test]
+    fn test_leaf_metadata_builder() {
+        let metadata = LeafMetadata::new(CrdtType::PnCounter, 500, [1; 32])
+            .with_version(10)
+            .with_parent([2; 32]);
+
+        assert_eq!(metadata.crdt_type, CrdtType::PnCounter);
+        assert_eq!(metadata.hlc_timestamp, 500);
+        assert_eq!(metadata.version, 10);
+        assert_eq!(metadata.parent_id, Some([2; 32]));
+    }
+
+    #[test]
+    fn test_crdt_type_variants() {
+        let types = vec![
+            CrdtType::LwwRegister,
+            CrdtType::GCounter,
+            CrdtType::PnCounter,
+            CrdtType::LwwSet,
+            CrdtType::OrSet,
+            CrdtType::Rga,
+            CrdtType::UnorderedMap,
+            CrdtType::UnorderedSet,
+            CrdtType::Vector,
+            CrdtType::Custom(42),
+        ];
+
+        for crdt_type in types {
+            let encoded = borsh::to_vec(&crdt_type).expect("serialize");
+            let decoded: CrdtType = borsh::from_slice(&encoded).expect("deserialize");
+            assert_eq!(crdt_type, decoded);
+        }
+    }
+
+    #[test]
+    fn test_compare_tree_nodes_equal() {
+        let local = TreeNode::internal([1; 32], [99; 32], vec![[2; 32]]);
+        let remote = TreeNode::internal([1; 32], [99; 32], vec![[2; 32]]);
+
+        let result = compare_tree_nodes(Some(&local), &remote);
+        assert_eq!(result, TreeCompareResult::Equal);
+        assert!(!result.needs_sync());
+    }
+
+    #[test]
+    fn test_compare_tree_nodes_local_missing() {
+        let remote = TreeNode::internal([1; 32], [2; 32], vec![[3; 32]]);
+
+        let result = compare_tree_nodes(None, &remote);
+        assert_eq!(result, TreeCompareResult::LocalMissing);
+        assert!(result.needs_sync());
+    }
+
+    #[test]
+    fn test_compare_tree_nodes_different() {
+        let local = TreeNode::internal([1; 32], [10; 32], vec![[2; 32]]);
+        let remote = TreeNode::internal([1; 32], [20; 32], vec![[2; 32], [3; 32]]);
+
+        let result = compare_tree_nodes(Some(&local), &remote);
+
+        match &result {
+            TreeCompareResult::Different { differing_children } => {
+                // [3; 32] is in remote but not in local
+                assert!(differing_children.contains(&[3; 32]));
+            }
+            _ => panic!("Expected Different result"),
+        }
+        assert!(result.needs_sync());
+    }
+
+    #[test]
+    fn test_tree_compare_result_needs_sync() {
+        assert!(!TreeCompareResult::Equal.needs_sync());
+        assert!(!TreeCompareResult::RemoteMissing.needs_sync());
+        assert!(TreeCompareResult::LocalMissing.needs_sync());
+        assert!(TreeCompareResult::Different {
+            differing_children: vec![]
+        }
+        .needs_sync());
+    }
+
+    // =========================================================================
+    // BloomFilter Sync Tests (Issue #1775)
+    // =========================================================================
+
+    #[test]
+    fn test_bloom_filter_fnv1a_consistency() {
+        // FNV-1a must produce consistent results
+        let data = [1u8; 32];
+        let hash1 = DeltaIdBloomFilter::hash_fnv1a(&data);
+        let hash2 = DeltaIdBloomFilter::hash_fnv1a(&data);
+        assert_eq!(hash1, hash2);
+
+        // Different data should (very likely) produce different hashes
+        let other_data = [2u8; 32];
+        let other_hash = DeltaIdBloomFilter::hash_fnv1a(&other_data);
+        assert_ne!(hash1, other_hash);
+    }
+
+    #[test]
+    fn test_bloom_filter_insert_contains() {
+        let mut filter = DeltaIdBloomFilter::new(100, 0.01);
+
+        let id1 = [1u8; 32];
+        let id2 = [2u8; 32];
+        let id3 = [3u8; 32];
+
+        // Initially empty
+        assert!(!filter.contains(&id1));
+        assert!(!filter.contains(&id2));
+
+        // Insert and check
+        filter.insert(&id1);
+        filter.insert(&id2);
+
+        assert!(filter.contains(&id1));
+        assert!(filter.contains(&id2));
+        assert!(!filter.contains(&id3)); // Not inserted
+    }
+
+    #[test]
+    fn test_bloom_filter_item_count() {
+        let mut filter = DeltaIdBloomFilter::new(100, 0.01);
+        assert_eq!(filter.item_count(), 0);
+
+        filter.insert(&[1u8; 32]);
+        assert_eq!(filter.item_count(), 1);
+
+        filter.insert(&[2u8; 32]);
+        filter.insert(&[3u8; 32]);
+        assert_eq!(filter.item_count(), 3);
+    }
+
+    #[test]
+    fn test_bloom_filter_roundtrip() {
+        let mut filter = DeltaIdBloomFilter::new(50, 0.01);
+        filter.insert(&[1u8; 32]);
+        filter.insert(&[2u8; 32]);
+        filter.insert(&[3u8; 32]);
+
+        let encoded = borsh::to_vec(&filter).expect("serialize");
+        let decoded: DeltaIdBloomFilter = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(filter, decoded);
+        assert!(decoded.contains(&[1u8; 32]));
+        assert!(decoded.contains(&[2u8; 32]));
+        assert!(decoded.contains(&[3u8; 32]));
+        assert!(!decoded.contains(&[4u8; 32]));
+    }
+
+    #[test]
+    fn test_bloom_filter_false_positive_rate() {
+        // Create a filter and fill it
+        let num_items = 1000;
+        let target_fp_rate = 0.01;
+        let mut filter = DeltaIdBloomFilter::new(num_items, target_fp_rate);
+
+        // Insert items
+        for i in 0..num_items {
+            let mut id = [0u8; 32];
+            id[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+            filter.insert(&id);
+        }
+
+        // Test false positives with items not inserted
+        let test_count = 10000;
+        let mut false_positives = 0;
+        for i in num_items..(num_items + test_count) {
+            let mut id = [0u8; 32];
+            id[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+            if filter.contains(&id) {
+                false_positives += 1;
+            }
+        }
+
+        let actual_fp_rate = false_positives as f64 / test_count as f64;
+        // Allow some tolerance (FP rate should be roughly in the right ballpark)
+        assert!(
+            actual_fp_rate < target_fp_rate as f64 * 3.0,
+            "FP rate {} too high (target {})",
+            actual_fp_rate,
+            target_fp_rate
+        );
+    }
+
+    #[test]
+    fn test_bloom_filter_estimated_fp_rate() {
+        let mut filter = DeltaIdBloomFilter::new(100, 0.01);
+
+        // Empty filter has 0 FP rate
+        assert_eq!(filter.estimated_fp_rate(), 0.0);
+
+        // Fill partially
+        for i in 0..50 {
+            let mut id = [0u8; 32];
+            id[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+            filter.insert(&id);
+        }
+
+        // Estimated FP rate should be positive but reasonable
+        let estimated = filter.estimated_fp_rate();
+        assert!(estimated > 0.0);
+        assert!(estimated < 0.1); // Should be well under 10% with 50% fill
+    }
+
+    #[test]
+    fn test_bloom_filter_request_from_ids() {
+        let ids = [[1u8; 32], [2u8; 32], [3u8; 32]];
+        let request = BloomFilterRequest::from_ids(&ids, 0.01);
+
+        assert!(request.filter.contains(&[1u8; 32]));
+        assert!(request.filter.contains(&[2u8; 32]));
+        assert!(request.filter.contains(&[3u8; 32]));
+        assert!(!request.filter.contains(&[4u8; 32]));
+        assert_eq!(request.false_positive_rate, 0.01);
+    }
+
+    #[test]
+    fn test_bloom_filter_request_roundtrip() {
+        let ids = [[1u8; 32], [2u8; 32]];
+        let request = BloomFilterRequest::from_ids(&ids, 0.02);
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: BloomFilterRequest = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn test_bloom_filter_response() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let leaf = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata);
+
+        let response = BloomFilterResponse::new(vec![leaf.clone()], 100);
+
+        assert!(response.has_missing());
+        assert_eq!(response.missing_count(), 1);
+        assert_eq!(response.scanned_count, 100);
+    }
+
+    #[test]
+    fn test_bloom_filter_response_empty() {
+        let response = BloomFilterResponse::empty(50);
+
+        assert!(!response.has_missing());
+        assert_eq!(response.missing_count(), 0);
+        assert_eq!(response.scanned_count, 50);
+    }
+
+    #[test]
+    fn test_bloom_filter_response_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 200, [6; 32]);
+        let leaf = TreeLeafData::new([2; 32], vec![4, 5, 6], metadata);
+
+        let response = BloomFilterResponse::new(vec![leaf], 75);
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: BloomFilterResponse = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(response, decoded);
+    }
+
+    #[test]
+    fn test_bloom_filter_with_params() {
+        let filter = DeltaIdBloomFilter::with_params(1024, 7);
+
+        assert_eq!(filter.bit_count(), 1024);
+        assert_eq!(filter.hash_count(), 7);
+        assert_eq!(filter.item_count(), 0);
+    }
+
+    // =========================================================================
+    // SubtreePrefetch Sync Tests (Issue #1776)
+    // =========================================================================
+
+    #[test]
+    fn test_subtree_prefetch_request_new() {
+        let roots = vec![[1u8; 32], [2u8; 32]];
+        let request = SubtreePrefetchRequest::new(roots.clone());
+
+        assert_eq!(request.subtree_roots, roots);
+        assert_eq!(request.max_depth, Some(DEFAULT_SUBTREE_MAX_DEPTH));
+        assert_eq!(request.subtree_count(), 2);
+    }
+
+    #[test]
+    fn test_subtree_prefetch_request_with_depth() {
+        let roots = vec![[1u8; 32]];
+        let request = SubtreePrefetchRequest::with_depth(roots, 10);
+
+        assert_eq!(request.max_depth, Some(10));
+    }
+
+    #[test]
+    fn test_subtree_prefetch_request_unlimited() {
+        let roots = vec![[1u8; 32]];
+        let request = SubtreePrefetchRequest::unlimited_depth(roots);
+
+        assert!(request.max_depth.is_none());
+    }
+
+    #[test]
+    fn test_subtree_prefetch_request_roundtrip() {
+        let request = SubtreePrefetchRequest::with_depth(vec![[1u8; 32], [2u8; 32]], 7);
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: SubtreePrefetchRequest = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn test_subtree_data_new() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let leaf = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata);
+
+        let subtree = SubtreeData::new([10; 32], [11; 32], vec![leaf], 3);
+
+        assert_eq!(subtree.root_id, [10; 32]);
+        assert_eq!(subtree.root_hash, [11; 32]);
+        assert_eq!(subtree.entity_count(), 1);
+        assert_eq!(subtree.depth, 3);
+        assert!(!subtree.is_truncated());
+        assert!(!subtree.is_empty());
+    }
+
+    #[test]
+    fn test_subtree_data_truncated() {
+        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 200, [6; 32]);
+        let leaf = TreeLeafData::new([2; 32], vec![4, 5, 6], metadata);
+
+        let subtree = SubtreeData::truncated([20; 32], [21; 32], vec![leaf], 5);
+
+        assert!(subtree.is_truncated());
+        assert_eq!(subtree.depth, 5);
+    }
+
+    #[test]
+    fn test_subtree_data_empty() {
+        let subtree = SubtreeData::new([30; 32], [31; 32], vec![], 1);
+
+        assert!(subtree.is_empty());
+        assert_eq!(subtree.entity_count(), 0);
+    }
+
+    #[test]
+    fn test_subtree_data_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::Rga, 300, [7; 32]);
+        let leaf = TreeLeafData::new([3; 32], vec![7, 8, 9], metadata);
+
+        let subtree = SubtreeData::truncated([40; 32], [41; 32], vec![leaf], 4);
+
+        let encoded = borsh::to_vec(&subtree).expect("serialize");
+        let decoded: SubtreeData = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(subtree, decoded);
+    }
+
+    #[test]
+    fn test_subtree_prefetch_response_complete() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let leaf = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata);
+        let subtree = SubtreeData::new([10; 32], [11; 32], vec![leaf], 2);
+
+        let response = SubtreePrefetchResponse::complete(vec![subtree]);
+
+        assert!(response.is_complete());
+        assert_eq!(response.subtree_count(), 1);
+        assert_eq!(response.total_entity_count(), 1);
+    }
+
+    #[test]
+    fn test_subtree_prefetch_response_not_found() {
+        let response = SubtreePrefetchResponse::not_found(vec![[1u8; 32], [2u8; 32]]);
+
+        assert!(!response.is_complete());
+        assert_eq!(response.subtree_count(), 0);
+        assert_eq!(response.not_found.len(), 2);
+    }
+
+    #[test]
+    fn test_subtree_prefetch_response_partial() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let leaf1 = TreeLeafData::new([1; 32], vec![1, 2], metadata.clone());
+        let leaf2 = TreeLeafData::new([2; 32], vec![3, 4], metadata);
+
+        let subtree1 = SubtreeData::new([10; 32], [11; 32], vec![leaf1], 2);
+        let subtree2 = SubtreeData::new([20; 32], [21; 32], vec![leaf2], 3);
+
+        let response = SubtreePrefetchResponse::new(
+            vec![subtree1, subtree2],
+            vec![[30u8; 32]], // One not found
+        );
+
+        assert!(!response.is_complete());
+        assert_eq!(response.subtree_count(), 2);
+        assert_eq!(response.total_entity_count(), 2);
+    }
+
+    #[test]
+    fn test_subtree_prefetch_response_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::PnCounter, 400, [8; 32]);
+        let leaf = TreeLeafData::new([4; 32], vec![10, 11, 12], metadata);
+        let subtree = SubtreeData::new([50; 32], [51; 32], vec![leaf], 2);
+
+        let response = SubtreePrefetchResponse::new(vec![subtree], vec![[60u8; 32]]);
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: SubtreePrefetchResponse = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(response, decoded);
+    }
+
+    #[test]
+    fn test_should_use_subtree_prefetch() {
+        // Deep tree, moderate divergence, clustered - YES
+        assert!(should_use_subtree_prefetch(5, 0.10, 3));
+
+        // Deep tree, high divergence - NO
+        assert!(!should_use_subtree_prefetch(5, 0.30, 3));
+
+        // Shallow tree - NO
+        assert!(!should_use_subtree_prefetch(2, 0.10, 3));
+
+        // Many differing subtrees (scattered) - NO
+        assert!(!should_use_subtree_prefetch(5, 0.10, 10));
+
+        // Edge case: exactly at thresholds
+        assert!(!should_use_subtree_prefetch(3, 0.20, 5)); // depth not > 3
+        assert!(should_use_subtree_prefetch(4, 0.19, 5)); // just under thresholds
+    }
+
+    // =========================================================================
+    // LevelWise Sync Tests (Issue #1777)
+    // =========================================================================
+
+    #[test]
+    fn test_levelwise_request_at_level() {
+        let request = LevelWiseRequest::at_level(2);
+
+        assert_eq!(request.level, 2);
+        assert!(request.is_full_level());
+        assert!(request.parent_count().is_none());
+    }
+
+    #[test]
+    fn test_levelwise_request_for_parents() {
+        let parents = vec![[1u8; 32], [2u8; 32]];
+        let request = LevelWiseRequest::for_parents(1, parents.clone());
+
+        assert_eq!(request.level, 1);
+        assert!(!request.is_full_level());
+        assert_eq!(request.parent_count(), Some(2));
+        assert_eq!(request.parent_ids, Some(parents));
+    }
+
+    #[test]
+    fn test_levelwise_request_roundtrip() {
+        let request = LevelWiseRequest::for_parents(3, vec![[1u8; 32]]);
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: LevelWiseRequest = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn test_level_node_internal() {
+        let node = LevelNode::internal([1; 32], [2; 32], Some([0; 32]));
+
+        assert!(node.is_internal());
+        assert!(!node.is_leaf());
+        assert_eq!(node.parent_id, Some([0; 32]));
+    }
+
+    #[test]
+    fn test_level_node_leaf() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let leaf_data = TreeLeafData::new([3; 32], vec![1, 2, 3], metadata);
+        let node = LevelNode::leaf([1; 32], [2; 32], None, leaf_data);
+
+        assert!(node.is_leaf());
+        assert!(!node.is_internal());
+        assert!(node.parent_id.is_none());
+    }
+
+    #[test]
+    fn test_level_node_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 200, [6; 32]);
+        let leaf_data = TreeLeafData::new([4; 32], vec![4, 5, 6], metadata);
+        let node = LevelNode::leaf([1; 32], [2; 32], Some([0; 32]), leaf_data);
+
+        let encoded = borsh::to_vec(&node).expect("serialize");
+        let decoded: LevelNode = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(node, decoded);
+    }
+
+    #[test]
+    fn test_levelwise_response_new() {
+        let node1 = LevelNode::internal([1; 32], [2; 32], None);
+        let node2 = LevelNode::internal([3; 32], [4; 32], None);
+
+        let response = LevelWiseResponse::new(0, vec![node1, node2], true);
+
+        assert_eq!(response.level, 0);
+        assert_eq!(response.node_count(), 2);
+        assert!(response.has_more_levels);
+        assert!(!response.is_empty());
+    }
+
+    #[test]
+    fn test_levelwise_response_empty() {
+        let response = LevelWiseResponse::empty(3);
+
+        assert_eq!(response.level, 3);
+        assert!(response.is_empty());
+        assert!(!response.has_more_levels);
+    }
+
+    #[test]
+    fn test_levelwise_response_leaves_and_internal() {
+        let internal = LevelNode::internal([1; 32], [2; 32], None);
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let leaf_data = TreeLeafData::new([6; 32], vec![7, 8], metadata);
+        let leaf = LevelNode::leaf([3; 32], [4; 32], None, leaf_data);
+
+        let response = LevelWiseResponse::new(1, vec![internal, leaf], false);
+
+        assert_eq!(response.leaves().len(), 1);
+        assert_eq!(response.internal_nodes().len(), 1);
+        assert_eq!(response.internal_node_ids(), vec![[1; 32]]);
+    }
+
+    #[test]
+    fn test_levelwise_response_roundtrip() {
+        let node = LevelNode::internal([1; 32], [2; 32], Some([0; 32]));
+        let response = LevelWiseResponse::new(2, vec![node], true);
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: LevelWiseResponse = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(response, decoded);
+    }
+
+    #[test]
+    fn test_level_compare_result() {
+        let mut result = LevelCompareResult::default();
+        result.matching.push([1; 32]);
+        result.differing.push([2; 32]);
+        result.local_missing.push([3; 32]);
+        result.remote_missing.push([4; 32]);
+
+        assert!(result.needs_sync());
+        assert_eq!(result.total_compared(), 4);
+        assert_eq!(result.nodes_to_process().len(), 2); // differing + local_missing
+    }
+
+    #[test]
+    fn test_level_compare_result_no_sync() {
+        let mut result = LevelCompareResult::default();
+        result.matching.push([1; 32]);
+        result.remote_missing.push([2; 32]);
+
+        assert!(!result.needs_sync());
+        assert!(result.nodes_to_process().is_empty());
+    }
+
+    #[test]
+    fn test_compare_level_nodes() {
+        use std::collections::HashMap;
+
+        let mut local_hashes = HashMap::new();
+        local_hashes.insert([1; 32], [10; 32]); // Same hash
+        local_hashes.insert([2; 32], [20; 32]); // Different hash (local has 20, remote has 21)
+        local_hashes.insert([4; 32], [40; 32]); // Only in local
+
+        let remote_nodes = vec![
+            LevelNode::internal([1; 32], [10; 32], None), // Matches
+            LevelNode::internal([2; 32], [21; 32], None), // Differs
+            LevelNode::internal([3; 32], [30; 32], None), // Only in remote
+        ];
+        let response = LevelWiseResponse::new(0, remote_nodes, true);
+
+        let result = compare_level_nodes(&local_hashes, &response);
+
+        assert_eq!(result.matching, vec![[1; 32]]);
+        assert_eq!(result.differing, vec![[2; 32]]);
+        assert_eq!(result.local_missing, vec![[3; 32]]);
+        assert_eq!(result.remote_missing, vec![[4; 32]]);
+    }
+
+    #[test]
+    fn test_should_use_levelwise() {
+        // Wide shallow tree - YES
+        assert!(should_use_levelwise(2, 15));
+        assert!(should_use_levelwise(1, 100));
+
+        // Deep tree - NO
+        assert!(!should_use_levelwise(3, 15));
+        assert!(!should_use_levelwise(5, 100));
+
+        // Narrow tree - NO
+        assert!(!should_use_levelwise(2, 5));
+        assert!(!should_use_levelwise(1, 10)); // Exactly 10 is not > 10
+    }
+
+    // =========================================================================
+    // Snapshot Bootstrap Tests (Issue #1778)
+    // =========================================================================
+
+    #[test]
+    fn test_snapshot_request_compressed() {
+        let request = SnapshotRequest::compressed();
+
+        assert!(request.compressed);
+        assert!(request.is_fresh_node);
+        assert_eq!(request.max_page_size, 0);
+    }
+
+    #[test]
+    fn test_snapshot_request_uncompressed() {
+        let request = SnapshotRequest::uncompressed().with_max_page_size(1024 * 1024);
+
+        assert!(!request.compressed);
+        assert_eq!(request.max_page_size, 1024 * 1024);
+    }
+
+    #[test]
+    fn test_snapshot_request_roundtrip() {
+        let request = SnapshotRequest::compressed().with_max_page_size(65536);
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: SnapshotRequest = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn test_snapshot_entity_new() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let entity = SnapshotEntity::new([1; 32], vec![1, 2, 3], metadata, [6; 32]);
+
+        assert_eq!(entity.id, [1; 32]);
+        assert!(entity.is_root());
+        assert!(entity.parent_id.is_none());
+    }
+
+    #[test]
+    fn test_snapshot_entity_with_parent() {
+        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 200, [7; 32]);
+        let entity =
+            SnapshotEntity::new([2; 32], vec![4, 5, 6], metadata, [8; 32]).with_parent([1; 32]);
+
+        assert!(!entity.is_root());
+        assert_eq!(entity.parent_id, Some([1; 32]));
+    }
+
+    #[test]
+    fn test_snapshot_entity_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::Rga, 300, [9; 32]).with_version(5);
+        let entity =
+            SnapshotEntity::new([3; 32], vec![7, 8, 9], metadata, [10; 32]).with_parent([2; 32]);
+
+        let encoded = borsh::to_vec(&entity).expect("serialize");
+        let decoded: SnapshotEntity = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(entity, decoded);
+    }
+
+    #[test]
+    fn test_snapshot_entity_page() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let entity1 = SnapshotEntity::new([1; 32], vec![1, 2], metadata.clone(), [6; 32]);
+        let entity2 = SnapshotEntity::new([2; 32], vec![3, 4], metadata, [6; 32]);
+
+        let page = SnapshotEntityPage::new(0, 3, vec![entity1, entity2], false);
+
+        assert_eq!(page.page_number, 0);
+        assert_eq!(page.total_pages, 3);
+        assert_eq!(page.entity_count(), 2);
+        assert!(!page.is_last);
+        assert!(!page.is_empty());
+    }
+
+    #[test]
+    fn test_snapshot_entity_page_last() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let entity = SnapshotEntity::new([1; 32], vec![1, 2, 3], metadata, [6; 32]);
+
+        let page = SnapshotEntityPage::new(2, 3, vec![entity], true);
+
+        assert!(page.is_last);
+    }
+
+    #[test]
+    fn test_snapshot_entity_page_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::PnCounter, 400, [11; 32]);
+        let entity = SnapshotEntity::new([4; 32], vec![10, 11], metadata, [12; 32]);
+
+        let page = SnapshotEntityPage::new(1, 5, vec![entity], false);
+
+        let encoded = borsh::to_vec(&page).expect("serialize");
+        let decoded: SnapshotEntityPage = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(page, decoded);
+    }
+
+    #[test]
+    fn test_snapshot_complete() {
+        let complete = SnapshotComplete::new([1; 32], 1000, 10, 1024 * 1024)
+            .with_compressed_size(256 * 1024)
+            .with_dag_heads(vec![[2; 32], [3; 32]]);
+
+        assert_eq!(complete.root_hash, [1; 32]);
+        assert_eq!(complete.total_entities, 1000);
+        assert_eq!(complete.total_pages, 10);
+        assert_eq!(complete.dag_heads.len(), 2);
+
+        // Compression ratio: 256KB / 1MB = 0.25
+        let ratio = complete.compression_ratio().unwrap();
+        assert!((ratio - 0.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_snapshot_complete_no_compression() {
+        let complete = SnapshotComplete::new([1; 32], 100, 1, 10000);
+
+        assert!(complete.compression_ratio().is_none());
+    }
+
+    #[test]
+    fn test_snapshot_complete_roundtrip() {
+        let complete = SnapshotComplete::new([1; 32], 500, 5, 512 * 1024)
+            .with_compressed_size(128 * 1024)
+            .with_dag_heads(vec![[2; 32]]);
+
+        let encoded = borsh::to_vec(&complete).expect("serialize");
+        let decoded: SnapshotComplete = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(complete, decoded);
+    }
+
+    #[test]
+    fn test_snapshot_verify_result_valid() {
+        let result = SnapshotVerifyResult::Valid;
+        assert!(result.is_valid());
+        assert!(result.to_error().is_none());
+    }
+
+    #[test]
+    fn test_snapshot_verify_result_hash_mismatch() {
+        let result = SnapshotVerifyResult::RootHashMismatch {
+            expected: [1; 32],
+            computed: [2; 32],
+        };
+        assert!(!result.is_valid());
+
+        let error = result.to_error().unwrap();
+        assert!(matches!(error, SnapshotError::RootHashMismatch { .. }));
+    }
+
+    #[test]
+    fn test_snapshot_verify_result_entity_count() {
+        let result = SnapshotVerifyResult::EntityCountMismatch {
+            expected: 100,
+            actual: 99,
+        };
+        assert!(!result.is_valid());
+        assert!(result.to_error().is_some());
+    }
+
+    #[test]
+    fn test_check_snapshot_safety_fresh_node() {
+        // Fresh node (no state) - OK
+        assert!(check_snapshot_safety(false).is_ok());
+    }
+
+    #[test]
+    fn test_check_snapshot_safety_initialized_node() {
+        // Initialized node (has state) - ERROR
+        let result = check_snapshot_safety(true);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SnapshotError::SnapshotOnInitializedNode
+        ));
+    }
+
+    #[test]
+    fn test_snapshot_error_roundtrip() {
+        let errors = vec![
+            SnapshotError::SnapshotRequired,
+            SnapshotError::InvalidBoundary,
+            SnapshotError::ResumeCursorInvalid,
+            SnapshotError::SnapshotOnInitializedNode,
+            SnapshotError::RootHashMismatch {
+                expected: [1; 32],
+                computed: [2; 32],
+            },
+            SnapshotError::TransferInterrupted { pages_received: 5 },
+            SnapshotError::DecompressionFailed,
+        ];
+
+        for error in errors {
+            let encoded = borsh::to_vec(&error).expect("serialize");
+            let decoded: SnapshotError = borsh::from_slice(&encoded).expect("deserialize");
+            assert_eq!(error, decoded);
+        }
+    }
+
+    // =========================================================================
+    // CRDT Merge Tests (Issue #1779)
+    // =========================================================================
+
+    #[test]
+    fn test_merge_error_display() {
+        let error = MergeError::CrdtMergeError("test error".to_string());
+        assert!(error.to_string().contains("test error"));
+
+        let error = MergeError::WasmRequired {
+            type_name: "CustomType".to_string(),
+        };
+        assert!(error.to_string().contains("WASM"));
+        assert!(error.to_string().contains("CustomType"));
+
+        let error = MergeError::TypeMismatch {
+            expected: "Counter".to_string(),
+            found: "Map".to_string(),
+        };
+        assert!(error.to_string().contains("Counter"));
+        assert!(error.to_string().contains("Map"));
+    }
+
+    #[test]
+    fn test_merge_result() {
+        let result = MergeResult::new(vec![1, 2, 3], true, MergeStrategy::LwwTimestamp);
+        assert!(result.changed);
+        assert_eq!(result.strategy, MergeStrategy::LwwTimestamp);
+
+        let kept = MergeResult::kept_local(vec![4, 5, 6], MergeStrategy::CounterSum);
+        assert!(!kept.changed);
+
+        let took = MergeResult::took_remote(vec![7, 8, 9], MergeStrategy::SetAddWins);
+        assert!(took.changed);
+    }
+
+    #[test]
+    fn test_merge_strategy_properties() {
+        assert!(!MergeStrategy::CounterSum.requires_wasm());
+        assert!(!MergeStrategy::MapPerKey.requires_wasm());
+        assert!(!MergeStrategy::SetAddWins.requires_wasm());
+        assert!(!MergeStrategy::LwwTimestamp.requires_wasm());
+        assert!(MergeStrategy::WasmCustom.requires_wasm());
+
+        assert!(!MergeStrategy::LwwTimestamp.is_fallback());
+        assert!(MergeStrategy::LwwFallback.is_fallback());
+    }
+
+    #[test]
+    fn test_strategy_for_crdt_type() {
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::GCounter),
+            MergeStrategy::CounterSum
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::PnCounter),
+            MergeStrategy::CounterSum
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::UnorderedMap),
+            MergeStrategy::MapPerKey
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::UnorderedSet),
+            MergeStrategy::SetAddWins
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::LwwSet),
+            MergeStrategy::SetAddWins
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::Vector),
+            MergeStrategy::VectorElementWise
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::Rga),
+            MergeStrategy::RgaTombstone
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::LwwRegister),
+            MergeStrategy::LwwTimestamp
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::Custom(42)),
+            MergeStrategy::WasmCustom
+        );
+    }
+
+    #[test]
+    fn test_merge_input_builder() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6];
+
+        let input = MergeInput::new(&local, &remote)
+            .with_timestamps(100, 200)
+            .with_crdt_type(CrdtType::LwwRegister);
+
+        assert_eq!(input.local_hlc, 100);
+        assert_eq!(input.remote_hlc, 200);
+        assert_eq!(input.crdt_type, Some(CrdtType::LwwRegister));
+        assert_eq!(input.strategy(), MergeStrategy::LwwTimestamp);
+        assert!(!input.requires_wasm());
+    }
+
+    #[test]
+    fn test_merge_input_fallback_strategy() {
+        let local = [1u8];
+        let remote = [2u8];
+
+        let input = MergeInput::new(&local, &remote);
+        assert_eq!(input.strategy(), MergeStrategy::LwwFallback);
+    }
+
+    #[test]
+    fn test_merge_input_wasm_required() {
+        let local = [1u8];
+        let remote = [2u8];
+
+        let input = MergeInput::new(&local, &remote).with_crdt_type(CrdtType::Custom(1));
+        assert!(input.requires_wasm());
+    }
+
+    #[test]
+    fn test_compare_lww_timestamps() {
+        assert_eq!(compare_lww_timestamps(100, 50), LwwComparison::LocalWins);
+        assert_eq!(compare_lww_timestamps(50, 100), LwwComparison::RemoteWins);
+        assert_eq!(compare_lww_timestamps(100, 100), LwwComparison::Tie);
+    }
+
+    #[test]
+    fn test_resolve_lww_tie() {
+        // Lexicographically larger wins
+        assert_eq!(
+            resolve_lww_tie(&[2, 0, 0], &[1, 0, 0]),
+            LwwComparison::LocalWins
+        );
+        assert_eq!(
+            resolve_lww_tie(&[1, 0, 0], &[2, 0, 0]),
+            LwwComparison::RemoteWins
+        );
+
+        // Same data - local wins
+        assert_eq!(
+            resolve_lww_tie(&[1, 2, 3], &[1, 2, 3]),
+            LwwComparison::LocalWins
+        );
+    }
+
+    #[test]
+    fn test_merge_lww_local_wins() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6];
+
+        let input = MergeInput::new(&local, &remote)
+            .with_timestamps(200, 100) // Local has higher timestamp
+            .with_crdt_type(CrdtType::LwwRegister);
+
+        let result = merge_lww(&input);
+        assert!(!result.changed);
+        assert_eq!(result.data, local.to_vec());
+        assert_eq!(result.strategy, MergeStrategy::LwwTimestamp);
+    }
+
+    #[test]
+    fn test_merge_lww_remote_wins() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6];
+
+        let input = MergeInput::new(&local, &remote)
+            .with_timestamps(100, 200) // Remote has higher timestamp
+            .with_crdt_type(CrdtType::LwwRegister);
+
+        let result = merge_lww(&input);
+        assert!(result.changed);
+        assert_eq!(result.data, remote.to_vec());
+    }
+
+    #[test]
+    fn test_merge_lww_tie_breaker() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6]; // Lexicographically larger
+
+        let input = MergeInput::new(&local, &remote)
+            .with_timestamps(100, 100) // Same timestamp - tie
+            .with_crdt_type(CrdtType::LwwRegister);
+
+        let result = merge_lww(&input);
+        assert!(result.changed); // Remote wins due to lexicographic comparison
+        assert_eq!(result.data, remote.to_vec());
+    }
+
+    #[test]
+    fn test_merge_lww_fallback_strategy() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6];
+
+        // No CRDT type - uses fallback
+        let input = MergeInput::new(&local, &remote).with_timestamps(100, 200);
+
+        let result = merge_lww(&input);
+        assert_eq!(result.strategy, MergeStrategy::LwwFallback);
+    }
+
+    // =========================================================================
+    // WASM Merge Callback Tests (Issue #1780)
+    // =========================================================================
+
+    #[test]
+    fn test_wasm_merge_error_display() {
+        let err = WasmMergeError::MissingExport {
+            export_name: "__calimero_merge".to_string(),
+        };
+        assert!(err.to_string().contains("__calimero_merge"));
+
+        let err = WasmMergeError::Timeout { timeout_ms: 5000 };
+        assert!(err.to_string().contains("5000"));
+
+        let err = WasmMergeError::ExecutionFailed {
+            reason: "test error".to_string(),
+        };
+        assert!(err.to_string().contains("test error"));
+    }
+
+    #[test]
+    fn test_wasm_merge_error_to_merge_error() {
+        let wasm_err = WasmMergeError::MissingExport {
+            export_name: "MyType".to_string(),
+        };
+        let merge_err: MergeError = wasm_err.into();
+        assert!(matches!(merge_err, MergeError::WasmRequired { .. }));
+
+        let wasm_err = WasmMergeError::Timeout { timeout_ms: 1000 };
+        let merge_err: MergeError = wasm_err.into();
+        assert!(matches!(merge_err, MergeError::CrdtMergeError(_)));
+    }
+
+    #[test]
+    fn test_wasm_merge_input_for_type() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6];
+
+        let input = WasmMergeInput::for_type(&local, &remote, "MyCustomType");
+
+        assert!(!input.is_root_state());
+        assert_eq!(input.type_name, Some("MyCustomType"));
+        assert_eq!(input.export_name(), WASM_MERGE_EXPORT);
+        assert_eq!(input.timeout_ms, DEFAULT_WASM_MERGE_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn test_wasm_merge_input_for_root_state() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6];
+
+        let input = WasmMergeInput::for_root_state(&local, &remote);
+
+        assert!(input.is_root_state());
+        assert!(input.type_name.is_none());
+        assert_eq!(input.export_name(), WASM_MERGE_ROOT_STATE_EXPORT);
+    }
+
+    #[test]
+    fn test_wasm_merge_input_with_timeout() {
+        let local = [1u8];
+        let remote = [2u8];
+
+        let input = WasmMergeInput::for_type(&local, &remote, "Test").with_timeout(10000);
+
+        assert_eq!(input.timeout_ms, 10000);
+    }
+
+    #[test]
+    fn test_wasm_merge_result() {
+        let result = WasmMergeResult::new(vec![1, 2, 3], true, 500);
+
+        assert!(result.changed);
+        assert_eq!(result.execution_time_us, 500);
+
+        let merge_result = result.into_merge_result();
+        assert_eq!(merge_result.strategy, MergeStrategy::WasmCustom);
+    }
+
+    #[test]
+    fn test_wasm_merge_capabilities() {
+        let mut caps = WasmMergeCapabilities::new(true, false);
+
+        assert!(caps.supports_custom_merge);
+        assert!(!caps.supports_root_state_merge);
+        assert!(caps.has_any_capability());
+
+        caps.add_type("MyType".to_string());
+        assert!(caps.can_merge_type("MyType"));
+        assert!(!caps.can_merge_type("OtherType"));
+
+        // Empty supported_types means all types are supported
+        let caps_all = WasmMergeCapabilities::new(true, true);
+        assert!(caps_all.can_merge_type("AnyType"));
+    }
+
+    #[test]
+    fn test_wasm_merge_capabilities_none() {
+        let caps = WasmMergeCapabilities::default();
+
+        assert!(!caps.supports_custom_merge);
+        assert!(!caps.supports_root_state_merge);
+        assert!(!caps.has_any_capability());
+        assert!(!caps.can_merge_type("AnyType"));
+    }
+
+    #[test]
+    fn test_wasm_merge_request_for_type() {
+        let request =
+            WasmMergeRequest::for_type(vec![1, 2, 3], vec![4, 5, 6], "CustomType".to_string());
+
+        assert!(!request.is_root_state());
+        assert_eq!(request.type_name, "CustomType");
+    }
+
+    #[test]
+    fn test_wasm_merge_request_for_root_state() {
+        let request = WasmMergeRequest::for_root_state(vec![1, 2, 3], vec![4, 5, 6]);
+
+        assert!(request.is_root_state());
+        assert!(request.type_name.is_empty());
+    }
+
+    #[test]
+    fn test_wasm_merge_request_roundtrip() {
+        let request =
+            WasmMergeRequest::for_type(vec![1, 2, 3], vec![4, 5, 6], "TestType".to_string());
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: WasmMergeRequest = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn test_wasm_merge_response_success() {
+        let response = WasmMergeResponse::success(vec![1, 2, 3], true);
+
+        assert!(response.is_success());
+        assert!(response.changed);
+
+        let data = response.into_data().expect("should have data");
+        assert_eq!(data, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_wasm_merge_response_error() {
+        let response = WasmMergeResponse::error("something went wrong".to_string());
+
+        assert!(!response.is_success());
+        assert!(!response.changed);
+
+        let err = response.into_data().unwrap_err();
+        assert!(matches!(err, WasmMergeError::ExecutionFailed { .. }));
+    }
+
+    #[test]
+    fn test_wasm_merge_response_roundtrip() {
+        let response = WasmMergeResponse::success(vec![7, 8, 9], false);
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: WasmMergeResponse = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(response, decoded);
+    }
+
+    #[test]
+    fn test_wasm_export_constants() {
+        assert_eq!(WASM_MERGE_EXPORT, "__calimero_merge");
+        assert_eq!(WASM_MERGE_ROOT_STATE_EXPORT, "__calimero_merge_root_state");
+        assert_eq!(DEFAULT_WASM_MERGE_TIMEOUT_MS, 5000);
+    }
 }
