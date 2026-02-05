@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
+use borsh::BorshDeserialize;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::{MigrationParams, UpdateApplicationRequest};
 use calimero_node_primitives::client::NodeClient;
@@ -13,6 +14,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::entities::Metadata;
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
+use calimero_storage::index::EntityIndex;
 use calimero_storage::store::{Key, MainStorage};
 use calimero_storage::Interface;
 use calimero_store::{key, types};
@@ -547,11 +549,19 @@ fn write_migration_state(
         Rc::new(move |key: &Key| {
             let storage_key = key.to_bytes();
             let state_key = key::ContextState::new(ctx_id, storage_key);
-            handle
-                .get(&state_key)
-                .ok()
-                .flatten()
-                .map(|state| state.value.into_boxed().into_vec())
+            match handle.get(&state_key) {
+                Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
+                Ok(None) => None,
+                Err(e) => {
+                    error!(
+                        %ctx_id,
+                        storage_key = ?storage_key,
+                        error = ?e,
+                        "Storage read failed during migration state write"
+                    );
+                    None
+                }
+            }
         })
     };
 
@@ -580,6 +590,51 @@ fn write_migration_state(
         })
     };
 
+    // Read existing metadata before creating runtime environment to determine deterministic timestamp
+    // This ensures deterministic behavior across nodes (no clock skew issues)
+    let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
+    let index_key = Key::Index(root_entry_id);
+    let storage_key = index_key.to_bytes();
+    let state_key = key::ContextState::new(context_id, storage_key);
+    let timestamp = match datastore.handle().get(&state_key) {
+        Ok(Some(state_data)) => {
+            match EntityIndex::try_from_slice(&state_data.value.into_boxed().into_vec()) {
+                Ok(existing_index) => {
+                    // Use max(existing_updated_at + 1, existing_created_at + 1) to ensure
+                    // the new timestamp is strictly greater than any existing timestamp
+                    let existing_updated = existing_index.metadata.updated_at();
+                    let existing_created = existing_index.metadata.created_at();
+                    existing_updated.max(existing_created).saturating_add(1)
+                }
+                Err(e) => {
+                    error!(
+                        %context_id,
+                        error = ?e,
+                        "Failed to deserialize existing index for deterministic timestamp, using fallback"
+                    );
+                    // Fallback: use a large deterministic value
+                    u64::MAX / 2
+                }
+            }
+        }
+        Ok(None) => {
+            // No existing metadata - use a large deterministic value
+            // This ensures migrations always have a timestamp that's newer than
+            // any possible existing state, while remaining deterministic
+            u64::MAX / 2
+        }
+        Err(e) => {
+            error!(
+                %context_id,
+                error = ?e,
+                "Failed to read existing index for deterministic timestamp, using fallback"
+            );
+            // Fallback: use a large deterministic value
+            u64::MAX / 2
+        }
+    };
+    let metadata = Metadata::new(timestamp, timestamp);
+
     // Create runtime environment with the storage callbacks
     // Use the update requestor's identity as executor for proper audit trail
     let executor_id_bytes: [u8; 32] = *executor_identity.as_ref();
@@ -594,17 +649,6 @@ fn write_migration_state(
     // Execute the save operation within the runtime environment
     // This ensures both Entry and Index are properly updated
     let result = with_runtime_env(runtime_env, || {
-        // The root entry ID is the well-known ROOT_STORAGE_ENTRY_ID
-        let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
-
-        // Create metadata for the migration
-        // Use current time for both created_at and updated_at
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
-        let metadata = Metadata::new(now, now);
-
         // Use Interface::save_raw to properly update both Entry and Index
         // This maintains Merkle tree consistency
         Interface::<MainStorage>::save_raw(root_entry_id, new_state_bytes.to_vec(), metadata)
@@ -822,9 +866,9 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_passes_when_downgrading_from_signed_to_unsigned() {
+    fn test_appkey_continuity_rejects_downgrade_from_signed_to_unsigned() {
         // Setup: Test downgrading from signed to unsigned (legacy) application
-        // This is intentionally allowed for backwards compatibility, but generates a warning
+        // Security: This is explicitly rejected to prevent security vulnerabilities
         let store = create_test_store();
         let old_signer_id = "did:key:z6MkOldSignerKey123456789";
 
@@ -849,13 +893,25 @@ mod tests {
         let context_id = ContextId::from([1u8; 32]);
         let context = create_test_context(context_id, old_app_id);
 
-        // Verify AppKey continuity passes (signed to unsigned is allowed for backwards compat)
-        // Note: This behavior is intentional but generates a warning log
+        // Verify AppKey continuity rejects signed-to-unsigned downgrade
         let result = verify_appkey_continuity(&store, &context, &new_app_id);
         assert!(
-            result.is_ok(),
-            "AppKey continuity check should pass when downgrading from signed to unsigned: {:?}",
-            result.err()
+            result.is_err(),
+            "AppKey continuity check should reject downgrade from signed to unsigned: {:?}",
+            result
+        );
+
+        // Verify the error message contains the expected content
+        let error_message = result.unwrap_err().to_string();
+        assert!(
+            error_message.contains("Security downgrade rejected"),
+            "Error should mention security downgrade rejection: {}",
+            error_message
+        );
+        assert!(
+            error_message.contains("signed application"),
+            "Error should mention signed application: {}",
+            error_message
         );
     }
 
