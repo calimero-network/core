@@ -37,7 +37,7 @@ impl KvStore {
     #[app::init]
     pub fn init() -> KvStore {
         KvStore {
-            items: UnorderedMap::new(),
+            items: UnorderedMap::new_with_field_name("items"),
         }
     }
 

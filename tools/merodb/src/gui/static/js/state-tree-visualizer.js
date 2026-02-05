@@ -387,14 +387,45 @@ export class StateTreeVisualizer {
                         return 'Root';
                     }
                     // For Entry nodes, show meaningful data
-                    if (d.data.type === 'Entry' && d.data.data) {
-                        // Counter entries: show value (the count) instead of key (executor ID)
-                        // Counter has both key (hash) and value (number)
+                    if ((d.data.type === 'Entry' || d.data.type === 'VectorEntry') && d.data.data) {
+                        // Counter entries: show value (the count) with icon
                         if (d.data.data.key && d.data.data.value) {
                             const val = d.data.data.value.parsed ?? d.data.data.value;
-                            // If value is a number (Counter), show "count: N"
+                            const valType = d.data.data.value?.type;
+                            // If value is a Counter, show "key: 🔢 N"
+                            if (valType === 'Counter' && typeof val === 'number') {
+                                const key = d.data.data.key.parsed || d.data.data.key;
+                                const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
+                                return `${keyStr}: 🔢 ${val}`;
+                            }
+                            // If value is a number (legacy Counter format), show "key: 🔢 N"
                             if (typeof val === 'number') {
-                                return `count: ${val}`;
+                                const key = d.data.data.key.parsed || d.data.data.key;
+                                const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
+                                return `${keyStr}: 🔢 ${val}`;
+                            }
+                            // If value is a NestedCollection, show "key: type" with children count
+                            if (valType === 'NestedCollection') {
+                                const key = d.data.data.key.parsed || d.data.data.key;
+                                const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
+                                const crdtType = d.data.data.value.crdt_type || 'Collection';
+                                const nestedChildren = d.data.data.value.children || [];
+                                const childCount = d.data.data.value.children_count || nestedChildren.length;
+                                
+                                // If we have nested children, show them inline
+                                if (nestedChildren.length > 0 && nestedChildren.length <= 4) {
+                                    // For UnorderedSet, keys ARE the values (show as set items)
+                                    // For UnorderedMap, show key=value pairs
+                                    const isSet = crdtType === 'UnorderedSet' || nestedChildren.every(c => c.value_hex);
+                                    if (isSet) {
+                                        const items = nestedChildren.map(c => c.key).join(', ');
+                                        return `${keyStr}: {${items.length > 30 ? items.substring(0, 27) + '...' : items}}`;
+                                    } else {
+                                        const preview = nestedChildren.map(c => `${c.key}=${c.value || '?'}`).join(', ');
+                                        return `${keyStr}: {${preview.length > 30 ? preview.substring(0, 27) + '...' : preview}}`;
+                                    }
+                                }
+                                return `${keyStr}: 📦 ${crdtType} [${childCount}]`;
                             }
                             // Otherwise show "key → value" for regular maps
                             const key = d.data.data.key.parsed || d.data.data.key;
@@ -402,6 +433,15 @@ export class StateTreeVisualizer {
                             const valStr = typeof val === 'string' ? val : JSON.stringify(val);
                             const display = `${keyStr} → ${valStr}`;
                             return display.length > 30 ? display.substring(0, 27) + '...' : display;
+                        }
+                        // VectorEntry without key: show value directly
+                        if (d.data.data.value && d.data.type === 'VectorEntry') {
+                            const val = d.data.data.value.parsed ?? d.data.data.value;
+                            const valType = d.data.data.value?.type;
+                            if (valType === 'Counter' && typeof val === 'number') {
+                                return `🔢 ${val}`;
+                            }
+                            return typeof val === 'number' ? `🔢 ${val}` : JSON.stringify(val);
                         }
                         // Map entries with only key: show key
                         if (d.data.data.key) {

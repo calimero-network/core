@@ -690,6 +690,7 @@ fn decode_state_entry(
             "created_at": index.metadata.created_at,
             "updated_at": *index.metadata.updated_at,
             "field_name": index.metadata.field_name,
+            "crdt_type": index.metadata.crdt_type.as_ref().map(|c| format!("{:?}", c)),
             "deleted_at": index.deleted_at
         }));
     } else {
@@ -3058,6 +3059,185 @@ fn decode_collection_field_with_root(
     }
 }
 
+/// Read the actual value of a Counter by summing entries in its positive and negative maps
+#[cfg(feature = "gui")]
+fn read_counter_value(
+    db: &DBWithThreadMode<SingleThreaded>,
+    state_cf: &rocksdb::ColumnFamily,
+    context_id: &[u8],
+    positive_id: &[u8],
+    negative_id: &[u8],
+) -> i64 {
+    use sha2::{Digest, Sha256};
+
+    let mut total: i64 = 0;
+
+    // Helper to sum values from a counter map (positive or negative)
+    let sum_map_values = |map_id: &[u8]| -> i64 {
+        let mut sum: i64 = 0;
+
+        // Find the EntityIndex for this map to get its children
+        let mut key_bytes_for_hash = Vec::with_capacity(33);
+        key_bytes_for_hash.push(0u8); // Key::Index variant
+        key_bytes_for_hash.extend_from_slice(map_id);
+        let map_state_key = Sha256::digest(&key_bytes_for_hash);
+
+        let mut full_key = Vec::with_capacity(64);
+        full_key.extend_from_slice(context_id);
+        full_key.extend_from_slice(&map_state_key);
+
+        if let Ok(Some(map_value)) = db.get_cf(state_cf, &full_key) {
+            if let Ok(map_index) = borsh::from_slice::<EntityIndex>(&map_value) {
+                // For each child in the map, read its Entry to get the count value
+                if let Some(children) = &map_index.children {
+                    for child_info in children {
+                        // Calculate Key::Entry for this child
+                        let mut entry_key_bytes = Vec::with_capacity(33);
+                        entry_key_bytes.push(1u8); // Key::Entry variant
+                        entry_key_bytes.extend_from_slice(child_info.id.as_bytes());
+                        let entry_state_key = Sha256::digest(&entry_key_bytes);
+
+                        let mut entry_full_key = Vec::with_capacity(64);
+                        entry_full_key.extend_from_slice(context_id);
+                        entry_full_key.extend_from_slice(&entry_state_key);
+
+                        if let Ok(Some(entry_value)) = db.get_cf(state_cf, &entry_full_key) {
+                            // Entry format: (key: String, value: u64, element_id: Id)
+                            // Parse key length, skip key, read u64 value
+                            if entry_value.len() >= 12 {
+                                // minimum: 4 (len) + 0 (key) + 8 (u64)
+                                let key_len = u32::from_le_bytes([
+                                    entry_value[0],
+                                    entry_value[1],
+                                    entry_value[2],
+                                    entry_value[3],
+                                ]) as usize;
+
+                                let value_offset = 4 + key_len;
+                                if entry_value.len() >= value_offset + 8 {
+                                    let count = u64::from_le_bytes([
+                                        entry_value[value_offset],
+                                        entry_value[value_offset + 1],
+                                        entry_value[value_offset + 2],
+                                        entry_value[value_offset + 3],
+                                        entry_value[value_offset + 4],
+                                        entry_value[value_offset + 5],
+                                        entry_value[value_offset + 6],
+                                        entry_value[value_offset + 7],
+                                    ]);
+                                    sum += count as i64;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        sum
+    };
+
+    total += sum_map_values(positive_id);
+    total -= sum_map_values(negative_id);
+
+    total
+}
+
+/// Read children of a nested collection and return their entries as JSON
+#[cfg(feature = "gui")]
+fn read_nested_collection_entries(
+    db: &DBWithThreadMode<SingleThreaded>,
+    state_cf: &rocksdb::ColumnFamily,
+    context_id: &[u8],
+    collection_id: &[u8],
+) -> Vec<Value> {
+    use sha2::{Digest, Sha256};
+
+    let mut results = Vec::new();
+
+    // Look up the EntityIndex for this collection
+    let mut key_bytes = Vec::with_capacity(33);
+    key_bytes.push(0u8); // Key::Index variant
+    key_bytes.extend_from_slice(collection_id);
+    let state_key = Sha256::digest(&key_bytes);
+
+    let mut full_key = Vec::with_capacity(64);
+    full_key.extend_from_slice(context_id);
+    full_key.extend_from_slice(&state_key);
+
+    let Ok(Some(index_bytes)) = db.get_cf(state_cf, &full_key) else {
+        return results;
+    };
+
+    let Ok(index) = borsh::from_slice::<EntityIndex>(&index_bytes) else {
+        return results;
+    };
+
+    // Read each child entry
+    if let Some(children) = &index.children {
+        for child_info in children {
+            // Get Key::Entry for this child
+            let mut entry_key_bytes = Vec::with_capacity(33);
+            entry_key_bytes.push(1u8); // Key::Entry variant
+            entry_key_bytes.extend_from_slice(child_info.id.as_bytes());
+            let entry_state_key = Sha256::digest(&entry_key_bytes);
+
+            let mut entry_full_key = Vec::with_capacity(64);
+            entry_full_key.extend_from_slice(context_id);
+            entry_full_key.extend_from_slice(&entry_state_key);
+
+            let Ok(Some(entry_value)) = db.get_cf(state_cf, &entry_full_key) else {
+                continue;
+            };
+
+            // Try to parse the entry as (key: String, value)
+            if entry_value.len() >= 4 {
+                let key_len = u32::from_le_bytes([
+                    entry_value[0],
+                    entry_value[1],
+                    entry_value[2],
+                    entry_value[3],
+                ]) as usize;
+
+                if key_len > 0 && key_len < 1000 && entry_value.len() >= 4 + key_len {
+                    if let Ok(key_str) = std::str::from_utf8(&entry_value[4..4 + key_len]) {
+                        let value_bytes = &entry_value[4 + key_len..];
+
+                        // Try to parse value as a string (LwwRegister<String>)
+                        if value_bytes.len() >= 4 {
+                            let val_len = u32::from_le_bytes([
+                                value_bytes[0],
+                                value_bytes[1],
+                                value_bytes[2],
+                                value_bytes[3],
+                            ]) as usize;
+
+                            if val_len > 0 && val_len < 10000 && value_bytes.len() >= 4 + val_len {
+                                if let Ok(val_str) =
+                                    std::str::from_utf8(&value_bytes[4..4 + val_len])
+                                {
+                                    results.push(json!({
+                                        "key": key_str,
+                                        "value": val_str,
+                                    }));
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Fallback: show key with hex value
+                        results.push(json!({
+                            "key": key_str,
+                            "value_hex": hex::encode(value_bytes),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
 #[cfg(feature = "gui")]
 fn decode_collection_entries_bfs(
     db: &DBWithThreadMode<SingleThreaded>,
@@ -3177,7 +3357,218 @@ fn decode_collection_entries_bfs(
                 .wrap_err("Failed to query entry")?
                 .ok_or_else(|| eyre::eyre!("Entry not found"))?;
 
-            // Decode the entry according to collection type
+            // FIRST: Try to decode as EntityIndex to check if it's a nested collection
+            // This allows us to detect nested CRDTs (Counter, nested Map, Set, etc.)
+            // by reading their crdt_type from metadata instead of relying on schema
+            match borsh::from_slice::<EntityIndex>(&entry_value) {
+                Ok(entry_index) => {
+                    // It's an EntityIndex - check its crdt_type
+                    let child_crdt_type = entry_index.metadata.crdt_type.as_ref();
+                    let child_field_name = entry_index.metadata.field_name.clone();
+                    let child_count = entry_index.children.as_ref().map(|c| c.len()).unwrap_or(0);
+
+                    eprintln!(
+                        "[decode_collection_entries_bfs] Entry {} is EntityIndex with crdt_type={:?}, field_name={:?}, children={}",
+                        entry_state_key, child_crdt_type, child_field_name, child_count
+                    );
+
+                    // If it has a crdt_type, treat it as a nested collection
+                    if let Some(crdt) = child_crdt_type {
+                        let crdt_name = format!("{:?}", crdt);
+                        entries.push(json!({
+                            "state_key": entry_state_key,
+                            "entry": {
+                                "type": "NestedCollection",
+                                "crdt_type": crdt_name,
+                                "field_name": child_field_name,
+                                "children_count": child_count,
+                                "id": hex::encode(entry_index.id.as_bytes()),
+                            }
+                        }));
+                        continue;
+                    }
+
+                    // EntityIndex with no crdt_type might be a Vector entry
+                    // Look for the actual data under Key::Entry for this ID
+                    use sha2::{Digest, Sha256};
+                    let mut entry_key_bytes = Vec::with_capacity(33);
+                    entry_key_bytes.push(1u8); // Key::Entry variant
+                    entry_key_bytes.extend_from_slice(entry_index.id.as_bytes());
+                    let entry_data_state_key = Sha256::digest(&entry_key_bytes);
+
+                    let mut entry_data_full_key = Vec::with_capacity(64);
+                    entry_data_full_key.extend_from_slice(context_id);
+                    entry_data_full_key.extend_from_slice(&entry_data_state_key);
+
+                    if let Ok(Some(entry_data)) = db.get_cf(state_cf, &entry_data_full_key) {
+                        // Found the entry data - check if it's a Counter (64 bytes = two IDs)
+                        if entry_data.len() == 64 {
+                            let positive_id = &entry_data[..32];
+                            let negative_id = &entry_data[32..];
+                            let counter_value = read_counter_value(
+                                db,
+                                state_cf,
+                                context_id,
+                                positive_id,
+                                negative_id,
+                            );
+
+                            if counter_value.abs() < 1_000_000 {
+                                eprintln!(
+                                "[decode_collection_entries_bfs] Entry {} (Vector item) is Counter: value={}",
+                                entry_state_key, counter_value
+                            );
+                                entries.push(json!({
+                                    "state_key": entry_state_key,
+                                    "entry": {
+                                        "type": "VectorEntry",
+                                        "index": entries.len(),
+                                        "value": {
+                                            "type": "Counter",
+                                            "parsed": counter_value,
+                                        }
+                                    }
+                                }));
+                                continue;
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Not an EntityIndex - try to parse as raw (key, value) entry
+                    // First try to extract the key (Borsh string: u32 length + bytes)
+                    if entry_value.len() >= 4 {
+                        let key_len = u32::from_le_bytes([
+                            entry_value[0],
+                            entry_value[1],
+                            entry_value[2],
+                            entry_value[3],
+                        ]) as usize;
+
+                        if key_len > 0 && key_len < 1000 && entry_value.len() >= 4 + key_len {
+                            if let Ok(key_str) = std::str::from_utf8(&entry_value[4..4 + key_len]) {
+                                let value_bytes = &entry_value[4 + key_len..];
+
+                                // Check if value looks like a Counter (64 bytes = two 32-byte IDs)
+                                if value_bytes.len() == 64 {
+                                    let positive_id = &value_bytes[..32];
+                                    let negative_id = &value_bytes[32..];
+
+                                    // Try to read the actual counter value
+                                    let counter_value = read_counter_value(
+                                        db,
+                                        state_cf,
+                                        context_id,
+                                        positive_id,
+                                        negative_id,
+                                    );
+
+                                    // Sanity check: if counter value is reasonable (between -1M and 1M), it's likely a Counter
+                                    // Otherwise it might be an UnorderedSet or other 64-byte structure
+                                    if counter_value.abs() < 1_000_000 {
+                                        eprintln!(
+                                            "[decode_collection_entries_bfs] Entry {} is Counter: key='{}', value={}",
+                                            entry_state_key, key_str, counter_value
+                                        );
+                                        entries.push(json!({
+                                            "state_key": entry_state_key,
+                                            "entry": {
+                                                "type": "Entry",
+                                                "key": { "parsed": key_str, "type": "scalar::String" },
+                                                "value": {
+                                                    "type": "Counter",
+                                                    "parsed": counter_value,
+                                                    "display": format!("🔢 {}", counter_value),
+                                                }
+                                            }
+                                        }));
+                                        continue;
+                                    } else {
+                                        // Likely an UnorderedSet or nested Map (64 bytes = two collection IDs)
+                                        // Try to read the first collection to get its children
+                                        let nested_children = read_nested_collection_entries(
+                                            db,
+                                            state_cf,
+                                            context_id,
+                                            positive_id,
+                                        );
+
+                                        eprintln!(
+                                            "[decode_collection_entries_bfs] Entry {} is NestedCollection (64 bytes): key='{}', children={}",
+                                            entry_state_key, key_str, nested_children.len()
+                                        );
+                                        entries.push(json!({
+                                            "state_key": entry_state_key,
+                                            "entry": {
+                                                "type": "Entry",
+                                                "key": { "parsed": key_str, "type": "scalar::String" },
+                                                "value": {
+                                                    "type": "NestedCollection",
+                                                    "crdt_type": if nested_children.is_empty() { "UnorderedSet" } else { "UnorderedMap" },
+                                                    "children": nested_children,
+                                                    "children_count": nested_children.len(),
+                                                }
+                                            }
+                                        }));
+                                        continue;
+                                    }
+                                }
+
+                                // Check if value is another nested ID (32 bytes = single collection reference)
+                                if value_bytes.len() == 32 {
+                                    eprintln!(
+                                        "[decode_collection_entries_bfs] Entry {} looks like Map<String, NestedCollection>: key='{}', value=1 ID (32 bytes)",
+                                        entry_state_key, key_str
+                                    );
+                                    entries.push(json!({
+                                        "state_key": entry_state_key,
+                                        "entry": {
+                                            "type": "Entry",
+                                            "key": { "parsed": key_str, "type": "scalar::String" },
+                                            "value": {
+                                                "type": "NestedCollection",
+                                                "crdt_type": "UnorderedMap",
+                                                "collection_id": hex::encode(value_bytes),
+                                            }
+                                        }
+                                    }));
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    // Try Vector entry format: value directly (no key prefix)
+                    // Vector<Counter> entries are just 64 bytes (two 32-byte IDs)
+                    if entry_value.len() == 64 {
+                        let positive_id = &entry_value[..32];
+                        let negative_id = &entry_value[32..];
+                        let counter_value =
+                            read_counter_value(db, state_cf, context_id, positive_id, negative_id);
+
+                        if counter_value.abs() < 1_000_000 {
+                            eprintln!(
+                                "[decode_collection_entries_bfs] Entry {} is Vector<Counter> item: value={}",
+                                entry_state_key, counter_value
+                            );
+                            entries.push(json!({
+                                "state_key": entry_state_key,
+                                "entry": {
+                                    "type": "VectorEntry",
+                                    "index": entries.len(),
+                                    "value": {
+                                        "type": "Counter",
+                                        "parsed": counter_value,
+                                    }
+                                }
+                            }));
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // FALLBACK: Decode the entry according to collection type from schema
             match decode_collection_entry(
                 &entry_value,
                 field,
@@ -3199,7 +3590,7 @@ fn decode_collection_entries_bfs(
                 }
                 Err(e) => {
                     eprintln!(
-                        "[decode_collection_entries_bfs] Failed to decode entry {}: {}",
+                        "[decode_collection_entries_bfs] Failed to decode entry {} with schema: {}",
                         entry_state_key, e
                     );
                 }
