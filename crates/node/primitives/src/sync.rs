@@ -1654,6 +1654,276 @@ pub fn should_use_subtree_prefetch(
 }
 
 // =============================================================================
+// LevelWise Sync Types (CIP Appendix B - Protocol Selection Matrix)
+// =============================================================================
+
+/// Request for level-wise breadth-first synchronization.
+///
+/// Processes the tree level-by-level, comparing hashes at each level.
+/// Efficient for wide, shallow trees with scattered changes.
+///
+/// Use when:
+/// - max_depth <= 2
+/// - Wide trees with many children at each level
+/// - Changes scattered across siblings
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct LevelWiseRequest {
+    /// Level to request (0 = root's children, 1 = grandchildren, etc.).
+    pub level: usize,
+
+    /// Parent IDs to fetch children for (None = fetch all at this level).
+    /// Used to narrow down which subtrees to explore.
+    pub parent_ids: Option<Vec<[u8; 32]>>,
+}
+
+impl LevelWiseRequest {
+    /// Request all nodes at a given level.
+    #[must_use]
+    pub fn at_level(level: usize) -> Self {
+        Self {
+            level,
+            parent_ids: None,
+        }
+    }
+
+    /// Request children of specific parents at a given level.
+    #[must_use]
+    pub fn for_parents(level: usize, parent_ids: Vec<[u8; 32]>) -> Self {
+        Self {
+            level,
+            parent_ids: Some(parent_ids),
+        }
+    }
+
+    /// Check if this requests all nodes at the level.
+    #[must_use]
+    pub fn is_full_level(&self) -> bool {
+        self.parent_ids.is_none()
+    }
+
+    /// Get number of parents being queried (None if full level).
+    #[must_use]
+    pub fn parent_count(&self) -> Option<usize> {
+        self.parent_ids.as_ref().map(|p| p.len())
+    }
+}
+
+/// Response containing nodes at a specific level.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct LevelWiseResponse {
+    /// Level these nodes are at.
+    pub level: usize,
+
+    /// Nodes at this level.
+    pub nodes: Vec<LevelNode>,
+
+    /// Whether there are more levels below this one.
+    pub has_more_levels: bool,
+}
+
+impl LevelWiseResponse {
+    /// Create a response with nodes.
+    #[must_use]
+    pub fn new(level: usize, nodes: Vec<LevelNode>, has_more_levels: bool) -> Self {
+        Self {
+            level,
+            nodes,
+            has_more_levels,
+        }
+    }
+
+    /// Create an empty response (no nodes at this level).
+    #[must_use]
+    pub fn empty(level: usize) -> Self {
+        Self {
+            level,
+            nodes: vec![],
+            has_more_levels: false,
+        }
+    }
+
+    /// Number of nodes at this level.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Check if this level is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    /// Get all leaf nodes at this level.
+    #[must_use]
+    pub fn leaves(&self) -> Vec<&LevelNode> {
+        self.nodes.iter().filter(|n| n.is_leaf()).collect()
+    }
+
+    /// Get all internal nodes at this level.
+    #[must_use]
+    pub fn internal_nodes(&self) -> Vec<&LevelNode> {
+        self.nodes.iter().filter(|n| n.is_internal()).collect()
+    }
+
+    /// Get IDs of all internal nodes (for next level request).
+    #[must_use]
+    pub fn internal_node_ids(&self) -> Vec<[u8; 32]> {
+        self.nodes
+            .iter()
+            .filter(|n| n.is_internal())
+            .map(|n| n.id)
+            .collect()
+    }
+}
+
+/// A node in the level-wise traversal.
+///
+/// Contains enough information to compare with local state
+/// and decide whether to recurse or fetch leaf data.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct LevelNode {
+    /// Node ID.
+    pub id: [u8; 32],
+
+    /// Merkle hash of this node.
+    pub hash: [u8; 32],
+
+    /// Parent node ID (None for root children).
+    pub parent_id: Option<[u8; 32]>,
+
+    /// Leaf data (present only for leaf nodes).
+    /// Includes full data and metadata for CRDT merge.
+    pub leaf_data: Option<TreeLeafData>,
+}
+
+impl LevelNode {
+    /// Create an internal node.
+    #[must_use]
+    pub fn internal(id: [u8; 32], hash: [u8; 32], parent_id: Option<[u8; 32]>) -> Self {
+        Self {
+            id,
+            hash,
+            parent_id,
+            leaf_data: None,
+        }
+    }
+
+    /// Create a leaf node.
+    #[must_use]
+    pub fn leaf(
+        id: [u8; 32],
+        hash: [u8; 32],
+        parent_id: Option<[u8; 32]>,
+        data: TreeLeafData,
+    ) -> Self {
+        Self {
+            id,
+            hash,
+            parent_id,
+            leaf_data: Some(data),
+        }
+    }
+
+    /// Check if this is a leaf node.
+    #[must_use]
+    pub fn is_leaf(&self) -> bool {
+        self.leaf_data.is_some()
+    }
+
+    /// Check if this is an internal node.
+    #[must_use]
+    pub fn is_internal(&self) -> bool {
+        self.leaf_data.is_none()
+    }
+}
+
+/// Result of comparing nodes at a level.
+#[derive(Clone, Debug, Default)]
+pub struct LevelCompareResult {
+    /// Nodes that match (same hash).
+    pub matching: Vec<[u8; 32]>,
+
+    /// Nodes that differ (different hash) - need to recurse or fetch.
+    pub differing: Vec<[u8; 32]>,
+
+    /// Nodes missing locally - need to fetch.
+    pub local_missing: Vec<[u8; 32]>,
+
+    /// Nodes missing remotely - nothing to do.
+    pub remote_missing: Vec<[u8; 32]>,
+}
+
+impl LevelCompareResult {
+    /// Check if any sync work is needed.
+    #[must_use]
+    pub fn needs_sync(&self) -> bool {
+        !self.differing.is_empty() || !self.local_missing.is_empty()
+    }
+
+    /// Get all node IDs that need further processing.
+    #[must_use]
+    pub fn nodes_to_process(&self) -> Vec<[u8; 32]> {
+        let mut result = self.differing.clone();
+        result.extend(self.local_missing.iter().copied());
+        result
+    }
+
+    /// Total number of nodes compared.
+    #[must_use]
+    pub fn total_compared(&self) -> usize {
+        self.matching.len()
+            + self.differing.len()
+            + self.local_missing.len()
+            + self.remote_missing.len()
+    }
+}
+
+/// Compare local and remote nodes at a level.
+///
+/// Takes a map of local node hashes and the remote response,
+/// and categorizes each node.
+#[must_use]
+pub fn compare_level_nodes(
+    local_hashes: &std::collections::HashMap<[u8; 32], [u8; 32]>,
+    remote: &LevelWiseResponse,
+) -> LevelCompareResult {
+    let mut result = LevelCompareResult::default();
+
+    // Check each remote node against local
+    for node in &remote.nodes {
+        match local_hashes.get(&node.id) {
+            Some(local_hash) if *local_hash == node.hash => {
+                result.matching.push(node.id);
+            }
+            Some(_) => {
+                result.differing.push(node.id);
+            }
+            None => {
+                result.local_missing.push(node.id);
+            }
+        }
+    }
+
+    // Find nodes that exist locally but not in remote response
+    let remote_ids: std::collections::HashSet<_> = remote.nodes.iter().map(|n| n.id).collect();
+    for local_id in local_hashes.keys() {
+        if !remote_ids.contains(local_id) {
+            result.remote_missing.push(*local_id);
+        }
+    }
+
+    result
+}
+
+/// Check if LevelWise sync is appropriate for a tree.
+#[must_use]
+pub fn should_use_levelwise(tree_depth: usize, avg_children_per_level: usize) -> bool {
+    // LevelWise is better for wide, shallow trees
+    tree_depth <= 2 && avg_children_per_level > 10
+}
+
+// =============================================================================
 // Snapshot Sync Types
 // =============================================================================
 
@@ -3121,5 +3391,180 @@ mod tests {
         // Edge case: exactly at thresholds
         assert!(!should_use_subtree_prefetch(3, 0.20, 5)); // depth not > 3
         assert!(should_use_subtree_prefetch(4, 0.19, 5)); // just under thresholds
+    }
+
+    // =========================================================================
+    // LevelWise Sync Tests (Issue #1777)
+    // =========================================================================
+
+    #[test]
+    fn test_levelwise_request_at_level() {
+        let request = LevelWiseRequest::at_level(2);
+
+        assert_eq!(request.level, 2);
+        assert!(request.is_full_level());
+        assert!(request.parent_count().is_none());
+    }
+
+    #[test]
+    fn test_levelwise_request_for_parents() {
+        let parents = vec![[1u8; 32], [2u8; 32]];
+        let request = LevelWiseRequest::for_parents(1, parents.clone());
+
+        assert_eq!(request.level, 1);
+        assert!(!request.is_full_level());
+        assert_eq!(request.parent_count(), Some(2));
+        assert_eq!(request.parent_ids, Some(parents));
+    }
+
+    #[test]
+    fn test_levelwise_request_roundtrip() {
+        let request = LevelWiseRequest::for_parents(3, vec![[1u8; 32]]);
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: LevelWiseRequest = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn test_level_node_internal() {
+        let node = LevelNode::internal([1; 32], [2; 32], Some([0; 32]));
+
+        assert!(node.is_internal());
+        assert!(!node.is_leaf());
+        assert_eq!(node.parent_id, Some([0; 32]));
+    }
+
+    #[test]
+    fn test_level_node_leaf() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let leaf_data = TreeLeafData::new([3; 32], vec![1, 2, 3], metadata);
+        let node = LevelNode::leaf([1; 32], [2; 32], None, leaf_data);
+
+        assert!(node.is_leaf());
+        assert!(!node.is_internal());
+        assert!(node.parent_id.is_none());
+    }
+
+    #[test]
+    fn test_level_node_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 200, [6; 32]);
+        let leaf_data = TreeLeafData::new([4; 32], vec![4, 5, 6], metadata);
+        let node = LevelNode::leaf([1; 32], [2; 32], Some([0; 32]), leaf_data);
+
+        let encoded = borsh::to_vec(&node).expect("serialize");
+        let decoded: LevelNode = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(node, decoded);
+    }
+
+    #[test]
+    fn test_levelwise_response_new() {
+        let node1 = LevelNode::internal([1; 32], [2; 32], None);
+        let node2 = LevelNode::internal([3; 32], [4; 32], None);
+
+        let response = LevelWiseResponse::new(0, vec![node1, node2], true);
+
+        assert_eq!(response.level, 0);
+        assert_eq!(response.node_count(), 2);
+        assert!(response.has_more_levels);
+        assert!(!response.is_empty());
+    }
+
+    #[test]
+    fn test_levelwise_response_empty() {
+        let response = LevelWiseResponse::empty(3);
+
+        assert_eq!(response.level, 3);
+        assert!(response.is_empty());
+        assert!(!response.has_more_levels);
+    }
+
+    #[test]
+    fn test_levelwise_response_leaves_and_internal() {
+        let internal = LevelNode::internal([1; 32], [2; 32], None);
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let leaf_data = TreeLeafData::new([6; 32], vec![7, 8], metadata);
+        let leaf = LevelNode::leaf([3; 32], [4; 32], None, leaf_data);
+
+        let response = LevelWiseResponse::new(1, vec![internal, leaf], false);
+
+        assert_eq!(response.leaves().len(), 1);
+        assert_eq!(response.internal_nodes().len(), 1);
+        assert_eq!(response.internal_node_ids(), vec![[1; 32]]);
+    }
+
+    #[test]
+    fn test_levelwise_response_roundtrip() {
+        let node = LevelNode::internal([1; 32], [2; 32], Some([0; 32]));
+        let response = LevelWiseResponse::new(2, vec![node], true);
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: LevelWiseResponse = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(response, decoded);
+    }
+
+    #[test]
+    fn test_level_compare_result() {
+        let mut result = LevelCompareResult::default();
+        result.matching.push([1; 32]);
+        result.differing.push([2; 32]);
+        result.local_missing.push([3; 32]);
+        result.remote_missing.push([4; 32]);
+
+        assert!(result.needs_sync());
+        assert_eq!(result.total_compared(), 4);
+        assert_eq!(result.nodes_to_process().len(), 2); // differing + local_missing
+    }
+
+    #[test]
+    fn test_level_compare_result_no_sync() {
+        let mut result = LevelCompareResult::default();
+        result.matching.push([1; 32]);
+        result.remote_missing.push([2; 32]);
+
+        assert!(!result.needs_sync());
+        assert!(result.nodes_to_process().is_empty());
+    }
+
+    #[test]
+    fn test_compare_level_nodes() {
+        use std::collections::HashMap;
+
+        let mut local_hashes = HashMap::new();
+        local_hashes.insert([1; 32], [10; 32]); // Same hash
+        local_hashes.insert([2; 32], [20; 32]); // Different hash (local has 20, remote has 21)
+        local_hashes.insert([4; 32], [40; 32]); // Only in local
+
+        let remote_nodes = vec![
+            LevelNode::internal([1; 32], [10; 32], None), // Matches
+            LevelNode::internal([2; 32], [21; 32], None), // Differs
+            LevelNode::internal([3; 32], [30; 32], None), // Only in remote
+        ];
+        let response = LevelWiseResponse::new(0, remote_nodes, true);
+
+        let result = compare_level_nodes(&local_hashes, &response);
+
+        assert_eq!(result.matching, vec![[1; 32]]);
+        assert_eq!(result.differing, vec![[2; 32]]);
+        assert_eq!(result.local_missing, vec![[3; 32]]);
+        assert_eq!(result.remote_missing, vec![[4; 32]]);
+    }
+
+    #[test]
+    fn test_should_use_levelwise() {
+        // Wide shallow tree - YES
+        assert!(should_use_levelwise(2, 15));
+        assert!(should_use_levelwise(1, 100));
+
+        // Deep tree - NO
+        assert!(!should_use_levelwise(3, 15));
+        assert!(!should_use_levelwise(5, 100));
+
+        // Narrow tree - NO
+        assert!(!should_use_levelwise(2, 5));
+        assert!(!should_use_levelwise(1, 10)); // Exactly 10 is not > 10
     }
 }
