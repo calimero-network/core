@@ -50,6 +50,9 @@ impl ToTokens for StateImpl<'_> {
         // Generate registration hook
         let registration_hook = generate_registration_hook(ident, &ty_generics);
 
+        // Generate deterministic ID assignment method
+        let assign_ids_impl = generate_assign_deterministic_ids_impl(ident, generics, orig);
+
         quote! {
             #orig
 
@@ -68,6 +71,9 @@ impl ToTokens for StateImpl<'_> {
 
             // Auto-generated registration hook
             #registration_hook
+
+            // Auto-generated deterministic ID assignment
+            #assign_ids_impl
         }
         .to_tokens(tokens);
     }
@@ -433,6 +439,86 @@ fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>
         #[no_mangle]
         pub extern "C" fn __calimero_register_merge() {
             ::calimero_storage::register_crdt_merge::<#ident #ty_generics>();
+        }
+    }
+}
+
+/// Generate method to assign deterministic IDs to all collection fields.
+///
+/// This method is called by the init wrapper to ensure all top-level collections
+/// have deterministic IDs based on their field names, regardless of how they were
+/// created in the user's init() function.
+fn generate_assign_deterministic_ids_impl(
+    ident: &Ident,
+    generics: &Generics,
+    orig: &StructOrEnumItem,
+) -> TokenStream {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    // Extract fields from the struct
+    let fields = match orig {
+        StructOrEnumItem::Struct(s) => &s.fields,
+        StructOrEnumItem::Enum(_) => {
+            // Enums don't have fields
+            return quote! {};
+        }
+    };
+
+    // Helper function to check if a type is a collection that needs ID assignment
+    fn is_collection_type(type_str: &str) -> bool {
+        type_str.contains("UnorderedMap")
+            || type_str.contains("Vector")
+            || type_str.contains("UnorderedSet")
+            || type_str.contains("Counter")
+            || type_str.contains("ReplicatedGrowableArray")
+            || type_str.contains("UserStorage")
+            || type_str.contains("FrozenStorage")
+    }
+
+    // Generate reassign calls for each collection field
+    let reassign_calls: Vec<_> = fields
+        .iter()
+        .filter_map(|field| {
+            let field_name = field.ident.as_ref()?;
+            let field_type = &field.ty;
+            let type_str = quote! { #field_type }.to_string();
+
+            if !is_collection_type(&type_str) {
+                return None;
+            }
+
+            let field_name_str = field_name.to_string();
+            Some(quote! {
+                self.#field_name.reassign_deterministic_id(#field_name_str);
+            })
+        })
+        .collect();
+
+    if reassign_calls.is_empty() {
+        return quote! {};
+    }
+
+    quote! {
+        // ============================================================================
+        // AUTO-GENERATED Deterministic ID Assignment
+        // ============================================================================
+        //
+        // This method is called after init() to ensure all top-level collections have
+        // deterministic IDs. This allows users to use `UnorderedMap::new()` in init()
+        // while still getting deterministic IDs for proper sync behavior.
+        //
+        // CIP Invariant I9: Deterministic Entity IDs
+        // > Given the same application code and field names, all nodes MUST generate
+        // > identical entity IDs for the same logical entities.
+        //
+        impl #impl_generics #ident #ty_generics #where_clause {
+            /// Assigns deterministic IDs to all collection fields based on their field names.
+            ///
+            /// This is called automatically by the init wrapper. Users should not call this directly.
+            #[doc(hidden)]
+            pub fn __assign_deterministic_ids(&mut self) {
+                #(#reassign_calls)*
+            }
         }
     }
 }
