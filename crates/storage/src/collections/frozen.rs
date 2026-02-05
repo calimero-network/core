@@ -54,9 +54,11 @@ where
     /// Use this for top-level state fields (the `#[app::state]` macro does this
     /// automatically).
     pub fn new_with_field_name(field_name: &str) -> Self {
+        let mut storage = Element::new_with_field_name(None, Some(field_name.to_string()));
+        storage.metadata.crdt_type = Some(CrdtType::FrozenStorage);
         Self {
             inner: UnorderedMap::new_with_field_name(&format!("__frozen_storage_{field_name}")),
-            storage: Element::new_with_field_name(None, Some(field_name.to_string())),
+            storage,
         }
     }
 
@@ -72,6 +74,7 @@ where
         use super::compute_collection_id;
         let new_id = compute_collection_id(None, field_name);
         self.storage.reassign_id_and_field_name(new_id, field_name);
+        self.storage.metadata.crdt_type = Some(CrdtType::FrozenStorage);
         self.inner
             .reassign_deterministic_id(&format!("__frozen_storage_{field_name}"));
     }
@@ -195,7 +198,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::Custom("FrozenStorage".to_owned())
+        CrdtType::FrozenStorage
     }
     fn storage_strategy() -> StorageStrategy {
         StorageStrategy::Structured
