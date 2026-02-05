@@ -17,6 +17,7 @@ exclude = [
     "./apps/blobs",
     "./apps/collaborative-editor",
     "./apps/kv-store",
+    "./apps/kv-store-v2",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",
@@ -75,6 +76,7 @@ members = [
 
     "./apps/access-control",
     "./apps/kv-store",
+    "./apps/kv-store-v2",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",
