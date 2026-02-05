@@ -3400,24 +3400,26 @@ fn decode_collection_entries_bfs(
                                 negative_id,
                             );
 
-                            if counter_value.abs() < 1_000_000 {
-                                eprintln!(
-                                "[decode_collection_entries_bfs] Entry {} (Vector item) is Counter: value={}",
+                            // Note: For legacy data without crdt_type metadata, we attempt to read
+                            // the value as a Counter. New data created after PR #1864 will have
+                            // crdt_type set in metadata and won't need this heuristic.
+                            // A successful read (non-zero or non-error sum) indicates Counter data.
+                            eprintln!(
+                                "[decode_collection_entries_bfs] Entry {} (Vector item, no crdt_type metadata): Counter value read = {}",
                                 entry_state_key, counter_value
                             );
-                                entries.push(json!({
-                                    "state_key": entry_state_key,
-                                    "entry": {
-                                        "type": "VectorEntry",
-                                        "index": entries.len(),
-                                        "value": {
-                                            "type": "Counter",
-                                            "parsed": counter_value,
-                                        }
+                            entries.push(json!({
+                                "state_key": entry_state_key,
+                                "entry": {
+                                    "type": "VectorEntry",
+                                    "index": entries.len(),
+                                    "value": {
+                                        "type": "Counter",
+                                        "parsed": counter_value,
                                     }
-                                }));
-                                continue;
-                            }
+                                }
+                            }));
+                            continue;
                         }
                     }
                 }
@@ -3437,11 +3439,14 @@ fn decode_collection_entries_bfs(
                                 let value_bytes = &entry_value[4 + key_len..];
 
                                 // Check if value looks like a Counter (64 bytes = two 32-byte IDs)
+                                // This handles raw entry data without EntityIndex metadata.
+                                // For new data created after PR #1864, EntityIndex will have crdt_type
+                                // and be handled in the Ok(entry_index) branch above.
                                 if value_bytes.len() == 64 {
                                     let positive_id = &value_bytes[..32];
                                     let negative_id = &value_bytes[32..];
 
-                                    // Try to read the actual counter value
+                                    // Try to read the actual counter value from the internal maps
                                     let counter_value = read_counter_value(
                                         db,
                                         state_cf,
@@ -3450,11 +3455,40 @@ fn decode_collection_entries_bfs(
                                         negative_id,
                                     );
 
-                                    // Sanity check: if counter value is reasonable (between -1M and 1M), it's likely a Counter
-                                    // Otherwise it might be an UnorderedSet or other 64-byte structure
-                                    if counter_value.abs() < 1_000_000 {
+                                    // Also try to read the first collection as nested children
+                                    let nested_children = read_nested_collection_entries(
+                                        db,
+                                        state_cf,
+                                        context_id,
+                                        positive_id,
+                                    );
+
+                                    // Heuristic: If nested_children is non-empty, it's likely a nested collection.
+                                    // If counter_value is non-zero and children are empty, it's likely a Counter.
+                                    // This is a fallback for legacy data without crdt_type metadata.
+                                    if !nested_children.is_empty() {
                                         eprintln!(
-                                            "[decode_collection_entries_bfs] Entry {} is Counter: key='{}', value={}",
+                                            "[decode_collection_entries_bfs] Entry {} is NestedCollection (64 bytes, has children): key='{}', children={}",
+                                            entry_state_key, key_str, nested_children.len()
+                                        );
+                                        entries.push(json!({
+                                            "state_key": entry_state_key,
+                                            "entry": {
+                                                "type": "Entry",
+                                                "key": { "parsed": key_str, "type": "scalar::String" },
+                                                "value": {
+                                                    "type": "NestedCollection",
+                                                    "crdt_type": "UnorderedMap",
+                                                    "children": nested_children,
+                                                    "children_count": nested_children.len(),
+                                                }
+                                            }
+                                        }));
+                                        continue;
+                                    } else {
+                                        // No children found - treat as Counter (its internal maps may have entries)
+                                        eprintln!(
+                                            "[decode_collection_entries_bfs] Entry {} is Counter (64 bytes, no nested children): key='{}', value={}",
                                             entry_state_key, key_str, counter_value
                                         );
                                         entries.push(json!({
@@ -3466,34 +3500,6 @@ fn decode_collection_entries_bfs(
                                                     "type": "Counter",
                                                     "parsed": counter_value,
                                                     "display": format!("🔢 {}", counter_value),
-                                                }
-                                            }
-                                        }));
-                                        continue;
-                                    } else {
-                                        // Likely an UnorderedSet or nested Map (64 bytes = two collection IDs)
-                                        // Try to read the first collection to get its children
-                                        let nested_children = read_nested_collection_entries(
-                                            db,
-                                            state_cf,
-                                            context_id,
-                                            positive_id,
-                                        );
-
-                                        eprintln!(
-                                            "[decode_collection_entries_bfs] Entry {} is NestedCollection (64 bytes): key='{}', children={}",
-                                            entry_state_key, key_str, nested_children.len()
-                                        );
-                                        entries.push(json!({
-                                            "state_key": entry_state_key,
-                                            "entry": {
-                                                "type": "Entry",
-                                                "key": { "parsed": key_str, "type": "scalar::String" },
-                                                "value": {
-                                                    "type": "NestedCollection",
-                                                    "crdt_type": if nested_children.is_empty() { "UnorderedSet" } else { "UnorderedMap" },
-                                                    "children": nested_children,
-                                                    "children_count": nested_children.len(),
                                                 }
                                             }
                                         }));
