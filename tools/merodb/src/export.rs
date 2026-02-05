@@ -3112,7 +3112,10 @@ fn read_counter_value(
                                         entry_value[value_offset + 6],
                                         entry_value[value_offset + 7],
                                     ]);
-                                    sum += count as i64;
+                                    // Use saturating conversion to avoid overflow
+                                    // u64 values > i64::MAX will be clamped to i64::MAX
+                                    let count_i64 = i64::try_from(count).unwrap_or(i64::MAX);
+                                    sum = sum.saturating_add(count_i64);
                                 }
                             }
                         }
@@ -3123,8 +3126,8 @@ fn read_counter_value(
         sum
     };
 
-    total += sum_map_values(positive_id);
-    total -= sum_map_values(negative_id);
+    total = total.saturating_add(sum_map_values(positive_id));
+    total = total.saturating_sub(sum_map_values(negative_id));
 
     total
 }
