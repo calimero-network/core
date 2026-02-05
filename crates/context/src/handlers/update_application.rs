@@ -11,6 +11,7 @@ use calimero_store::slice::Slice;
 use calimero_store::{key, types};
 use calimero_utils_actix::global_runtime;
 use eyre::bail;
+use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 
 use crate::handlers::execute::storage::ContextStorage;
@@ -339,8 +340,11 @@ async fn update_application_with_migration(
         write_migration_state(&datastore, &context, &new_state_bytes)?;
 
         // Update root_hash after migration
-        // The new root hash is computed from the migrated state
-        let new_root_hash = Hash::new(&new_state_bytes);
+        // The root_hash must match what the storage layer computes via calculate_full_hash_for_children.
+        // For a root entity: full_hash = SHA256(own_hash) where own_hash = SHA256(state_bytes).
+        // This is the Merkle tree hash that the sync protocol expects.
+        let own_hash: [u8; 32] = Sha256::digest(&new_state_bytes).into();
+        let new_root_hash = Hash::new(&own_hash);
         context.root_hash = new_root_hash;
 
         info!(
