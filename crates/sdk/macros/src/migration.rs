@@ -12,7 +12,6 @@
 //! 4. It transforms the data to the new schema and returns the new state
 //! 5. The runtime writes the returned bytes back to the root state slot
 
-
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ItemFn;
@@ -85,5 +84,67 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #[cfg(not(target_arch = "wasm32"))]
         #(#attrs)*
         #vis #sig #block
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proc_macro2::TokenStream;
+    use quote::quote;
+
+    #[test]
+    fn migrate_expansion_produces_wasm_export() {
+        let input = quote! {
+            fn migrate_v1_to_v2() -> Vec<u8> {
+                vec![1, 2, 3]
+            }
+        };
+        let output = migrate_impl(TokenStream::new(), input);
+        let expanded = output.to_string();
+
+        assert!(
+            expanded.contains("extern \"C\""),
+            "expected WASM extern \"C\" export in expansion: {}",
+            expanded
+        );
+        assert!(
+            expanded.contains("value_return"),
+            "expected value_return call in expansion: {}",
+            expanded
+        );
+        assert!(
+            expanded.contains("__migration_logic"),
+            "expected inner __migration_logic in expansion: {}",
+            expanded
+        );
+        assert!(
+            expanded.contains("no_mangle"),
+            "expected #[no_mangle] in expansion: {}",
+            expanded
+        );
+    }
+
+    #[test]
+    fn migrate_expansion_preserves_native_stub() {
+        let input = quote! {
+            pub fn my_migrate() -> Vec<u8> {
+                vec![]
+            }
+        };
+        let output = migrate_impl(TokenStream::new(), input);
+        let expanded = output.to_string();
+
+        assert!(
+            expanded.contains("my_migrate"),
+            "expected function name in expansion: {}",
+            expanded
+        );
+        assert!(
+            expanded.contains("not (target_arch = \"wasm32\")")
+                || expanded.contains("not(target_arch = \"wasm32\")"),
+            "expected native cfg stub in expansion: {}",
+            expanded
+        );
     }
 }
