@@ -1995,7 +1995,7 @@ pub struct SnapshotCursor {
 }
 
 /// Errors that can occur during snapshot sync.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum SnapshotError {
     /// Peer's delta history is pruned; full snapshot required.
     SnapshotRequired,
@@ -2003,6 +2003,290 @@ pub enum SnapshotError {
     InvalidBoundary,
     /// Resume cursor is invalid or expired.
     ResumeCursorInvalid,
+    /// Attempted to apply snapshot on a node with existing state.
+    /// INVARIANT I5: Snapshot is ONLY for fresh nodes.
+    SnapshotOnInitializedNode,
+    /// Root hash verification failed.
+    /// INVARIANT I7: Verification REQUIRED before apply.
+    RootHashMismatch {
+        expected: [u8; 32],
+        computed: [u8; 32],
+    },
+    /// Snapshot transfer was interrupted.
+    TransferInterrupted { pages_received: usize },
+    /// Decompression failed.
+    DecompressionFailed,
+}
+
+// =============================================================================
+// Snapshot Bootstrap Types (CIP §6 - Snapshot Sync Constraints)
+// =============================================================================
+
+/// Request to initiate a full snapshot transfer.
+///
+/// CRITICAL: This is ONLY for fresh nodes with NO existing state.
+/// Invariant I5: Initialized nodes MUST use CRDT merge, not snapshot overwrite.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotRequest {
+    /// Whether to compress the snapshot data.
+    pub compressed: bool,
+
+    /// Maximum page size in bytes (0 = use responder's default).
+    pub max_page_size: u32,
+
+    /// Whether the initiator is definitely a fresh node (for safety check).
+    /// If false, responder SHOULD verify this claim.
+    pub is_fresh_node: bool,
+}
+
+impl SnapshotRequest {
+    /// Create a request for compressed snapshot.
+    #[must_use]
+    pub fn compressed() -> Self {
+        Self {
+            compressed: true,
+            max_page_size: 0,
+            is_fresh_node: true,
+        }
+    }
+
+    /// Create a request for uncompressed snapshot.
+    #[must_use]
+    pub fn uncompressed() -> Self {
+        Self {
+            compressed: false,
+            max_page_size: 0,
+            is_fresh_node: true,
+        }
+    }
+
+    /// Set maximum page size.
+    #[must_use]
+    pub fn with_max_page_size(mut self, size: u32) -> Self {
+        self.max_page_size = size;
+        self
+    }
+}
+
+/// A single entity in a snapshot.
+///
+/// Contains all information needed to reconstruct the entity.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotEntity {
+    /// Entity ID (deterministic, based on path).
+    pub id: [u8; 32],
+
+    /// Serialized entity data.
+    pub data: Vec<u8>,
+
+    /// Entity metadata (crdt_type, timestamps, etc.).
+    pub metadata: LeafMetadata,
+
+    /// Collection ID this entity belongs to.
+    pub collection_id: [u8; 32],
+
+    /// Parent entity ID (for nested structures).
+    pub parent_id: Option<[u8; 32]>,
+}
+
+impl SnapshotEntity {
+    /// Create a new snapshot entity.
+    #[must_use]
+    pub fn new(
+        id: [u8; 32],
+        data: Vec<u8>,
+        metadata: LeafMetadata,
+        collection_id: [u8; 32],
+    ) -> Self {
+        Self {
+            id,
+            data,
+            metadata,
+            collection_id,
+            parent_id: None,
+        }
+    }
+
+    /// Set parent entity ID.
+    #[must_use]
+    pub fn with_parent(mut self, parent_id: [u8; 32]) -> Self {
+        self.parent_id = Some(parent_id);
+        self
+    }
+
+    /// Check if this is a root-level entity.
+    #[must_use]
+    pub fn is_root(&self) -> bool {
+        self.parent_id.is_none()
+    }
+}
+
+/// A page of snapshot entities for paginated transfer.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotEntityPage {
+    /// Page number (0-indexed).
+    pub page_number: usize,
+
+    /// Total number of pages (may be estimated).
+    pub total_pages: usize,
+
+    /// Entities in this page.
+    pub entities: Vec<SnapshotEntity>,
+
+    /// Whether this is the last page.
+    pub is_last: bool,
+}
+
+impl SnapshotEntityPage {
+    /// Create a new snapshot page.
+    #[must_use]
+    pub fn new(
+        page_number: usize,
+        total_pages: usize,
+        entities: Vec<SnapshotEntity>,
+        is_last: bool,
+    ) -> Self {
+        Self {
+            page_number,
+            total_pages,
+            entities,
+            is_last,
+        }
+    }
+
+    /// Number of entities in this page.
+    #[must_use]
+    pub fn entity_count(&self) -> usize {
+        self.entities.len()
+    }
+
+    /// Check if this page is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
+}
+
+/// Completion marker for snapshot transfer.
+///
+/// Sent after all pages have been transferred.
+/// Contains verification information for Invariant I7.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SnapshotComplete {
+    /// Root hash of the complete snapshot.
+    /// INVARIANT I7: MUST be verified before applying any entities.
+    pub root_hash: [u8; 32],
+
+    /// Total number of entities transferred.
+    pub total_entities: usize,
+
+    /// Total number of pages transferred.
+    pub total_pages: usize,
+
+    /// Uncompressed size in bytes.
+    pub uncompressed_size: u64,
+
+    /// Compressed size in bytes (if compression was used).
+    pub compressed_size: Option<u64>,
+
+    /// DAG heads at the time of snapshot.
+    /// Used to create checkpoint delta after apply.
+    pub dag_heads: Vec<[u8; 32]>,
+}
+
+impl SnapshotComplete {
+    /// Create a new snapshot completion marker.
+    #[must_use]
+    pub fn new(
+        root_hash: [u8; 32],
+        total_entities: usize,
+        total_pages: usize,
+        uncompressed_size: u64,
+    ) -> Self {
+        Self {
+            root_hash,
+            total_entities,
+            total_pages,
+            uncompressed_size,
+            compressed_size: None,
+            dag_heads: vec![],
+        }
+    }
+
+    /// Set compressed size.
+    #[must_use]
+    pub fn with_compressed_size(mut self, size: u64) -> Self {
+        self.compressed_size = Some(size);
+        self
+    }
+
+    /// Set DAG heads.
+    #[must_use]
+    pub fn with_dag_heads(mut self, heads: Vec<[u8; 32]>) -> Self {
+        self.dag_heads = heads;
+        self
+    }
+
+    /// Calculate compression ratio (if compression was used).
+    #[must_use]
+    pub fn compression_ratio(&self) -> Option<f64> {
+        self.compressed_size
+            .map(|c| c as f64 / self.uncompressed_size.max(1) as f64)
+    }
+}
+
+/// Result of verifying a snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SnapshotVerifyResult {
+    /// Verification passed - safe to apply.
+    Valid,
+
+    /// Root hash mismatch - DO NOT apply.
+    RootHashMismatch {
+        expected: [u8; 32],
+        computed: [u8; 32],
+    },
+
+    /// Entity count mismatch.
+    EntityCountMismatch { expected: usize, actual: usize },
+
+    /// Missing pages detected.
+    MissingPages { missing: Vec<usize> },
+}
+
+impl SnapshotVerifyResult {
+    /// Check if verification passed.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        matches!(self, Self::Valid)
+    }
+
+    /// Convert to error if invalid.
+    pub fn to_error(&self) -> Option<SnapshotError> {
+        match self {
+            Self::Valid => None,
+            Self::RootHashMismatch { expected, computed } => {
+                Some(SnapshotError::RootHashMismatch {
+                    expected: *expected,
+                    computed: *computed,
+                })
+            }
+            _ => Some(SnapshotError::InvalidBoundary),
+        }
+    }
+}
+
+/// Safety check before applying snapshot.
+///
+/// Returns error if the local node has existing state.
+/// INVARIANT I5: Snapshot is ONLY for fresh nodes.
+#[must_use]
+pub fn check_snapshot_safety(has_local_state: bool) -> Result<(), SnapshotError> {
+    if has_local_state {
+        Err(SnapshotError::SnapshotOnInitializedNode)
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -3566,5 +3850,209 @@ mod tests {
         // Narrow tree - NO
         assert!(!should_use_levelwise(2, 5));
         assert!(!should_use_levelwise(1, 10)); // Exactly 10 is not > 10
+    }
+
+    // =========================================================================
+    // Snapshot Bootstrap Tests (Issue #1778)
+    // =========================================================================
+
+    #[test]
+    fn test_snapshot_request_compressed() {
+        let request = SnapshotRequest::compressed();
+
+        assert!(request.compressed);
+        assert!(request.is_fresh_node);
+        assert_eq!(request.max_page_size, 0);
+    }
+
+    #[test]
+    fn test_snapshot_request_uncompressed() {
+        let request = SnapshotRequest::uncompressed().with_max_page_size(1024 * 1024);
+
+        assert!(!request.compressed);
+        assert_eq!(request.max_page_size, 1024 * 1024);
+    }
+
+    #[test]
+    fn test_snapshot_request_roundtrip() {
+        let request = SnapshotRequest::compressed().with_max_page_size(65536);
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: SnapshotRequest = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn test_snapshot_entity_new() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let entity = SnapshotEntity::new([1; 32], vec![1, 2, 3], metadata, [6; 32]);
+
+        assert_eq!(entity.id, [1; 32]);
+        assert!(entity.is_root());
+        assert!(entity.parent_id.is_none());
+    }
+
+    #[test]
+    fn test_snapshot_entity_with_parent() {
+        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 200, [7; 32]);
+        let entity =
+            SnapshotEntity::new([2; 32], vec![4, 5, 6], metadata, [8; 32]).with_parent([1; 32]);
+
+        assert!(!entity.is_root());
+        assert_eq!(entity.parent_id, Some([1; 32]));
+    }
+
+    #[test]
+    fn test_snapshot_entity_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::Rga, 300, [9; 32]).with_version(5);
+        let entity =
+            SnapshotEntity::new([3; 32], vec![7, 8, 9], metadata, [10; 32]).with_parent([2; 32]);
+
+        let encoded = borsh::to_vec(&entity).expect("serialize");
+        let decoded: SnapshotEntity = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(entity, decoded);
+    }
+
+    #[test]
+    fn test_snapshot_entity_page() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let entity1 = SnapshotEntity::new([1; 32], vec![1, 2], metadata.clone(), [6; 32]);
+        let entity2 = SnapshotEntity::new([2; 32], vec![3, 4], metadata, [6; 32]);
+
+        let page = SnapshotEntityPage::new(0, 3, vec![entity1, entity2], false);
+
+        assert_eq!(page.page_number, 0);
+        assert_eq!(page.total_pages, 3);
+        assert_eq!(page.entity_count(), 2);
+        assert!(!page.is_last);
+        assert!(!page.is_empty());
+    }
+
+    #[test]
+    fn test_snapshot_entity_page_last() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let entity = SnapshotEntity::new([1; 32], vec![1, 2, 3], metadata, [6; 32]);
+
+        let page = SnapshotEntityPage::new(2, 3, vec![entity], true);
+
+        assert!(page.is_last);
+    }
+
+    #[test]
+    fn test_snapshot_entity_page_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::PnCounter, 400, [11; 32]);
+        let entity = SnapshotEntity::new([4; 32], vec![10, 11], metadata, [12; 32]);
+
+        let page = SnapshotEntityPage::new(1, 5, vec![entity], false);
+
+        let encoded = borsh::to_vec(&page).expect("serialize");
+        let decoded: SnapshotEntityPage = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(page, decoded);
+    }
+
+    #[test]
+    fn test_snapshot_complete() {
+        let complete = SnapshotComplete::new([1; 32], 1000, 10, 1024 * 1024)
+            .with_compressed_size(256 * 1024)
+            .with_dag_heads(vec![[2; 32], [3; 32]]);
+
+        assert_eq!(complete.root_hash, [1; 32]);
+        assert_eq!(complete.total_entities, 1000);
+        assert_eq!(complete.total_pages, 10);
+        assert_eq!(complete.dag_heads.len(), 2);
+
+        // Compression ratio: 256KB / 1MB = 0.25
+        let ratio = complete.compression_ratio().unwrap();
+        assert!((ratio - 0.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_snapshot_complete_no_compression() {
+        let complete = SnapshotComplete::new([1; 32], 100, 1, 10000);
+
+        assert!(complete.compression_ratio().is_none());
+    }
+
+    #[test]
+    fn test_snapshot_complete_roundtrip() {
+        let complete = SnapshotComplete::new([1; 32], 500, 5, 512 * 1024)
+            .with_compressed_size(128 * 1024)
+            .with_dag_heads(vec![[2; 32]]);
+
+        let encoded = borsh::to_vec(&complete).expect("serialize");
+        let decoded: SnapshotComplete = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(complete, decoded);
+    }
+
+    #[test]
+    fn test_snapshot_verify_result_valid() {
+        let result = SnapshotVerifyResult::Valid;
+        assert!(result.is_valid());
+        assert!(result.to_error().is_none());
+    }
+
+    #[test]
+    fn test_snapshot_verify_result_hash_mismatch() {
+        let result = SnapshotVerifyResult::RootHashMismatch {
+            expected: [1; 32],
+            computed: [2; 32],
+        };
+        assert!(!result.is_valid());
+
+        let error = result.to_error().unwrap();
+        assert!(matches!(error, SnapshotError::RootHashMismatch { .. }));
+    }
+
+    #[test]
+    fn test_snapshot_verify_result_entity_count() {
+        let result = SnapshotVerifyResult::EntityCountMismatch {
+            expected: 100,
+            actual: 99,
+        };
+        assert!(!result.is_valid());
+        assert!(result.to_error().is_some());
+    }
+
+    #[test]
+    fn test_check_snapshot_safety_fresh_node() {
+        // Fresh node (no state) - OK
+        assert!(check_snapshot_safety(false).is_ok());
+    }
+
+    #[test]
+    fn test_check_snapshot_safety_initialized_node() {
+        // Initialized node (has state) - ERROR
+        let result = check_snapshot_safety(true);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SnapshotError::SnapshotOnInitializedNode
+        ));
+    }
+
+    #[test]
+    fn test_snapshot_error_roundtrip() {
+        let errors = vec![
+            SnapshotError::SnapshotRequired,
+            SnapshotError::InvalidBoundary,
+            SnapshotError::ResumeCursorInvalid,
+            SnapshotError::SnapshotOnInitializedNode,
+            SnapshotError::RootHashMismatch {
+                expected: [1; 32],
+                computed: [2; 32],
+            },
+            SnapshotError::TransferInterrupted { pages_received: 5 },
+            SnapshotError::DecompressionFailed,
+        ];
+
+        for error in errors {
+            let encoded = borsh::to_vec(&error).expect("serialize");
+            let decoded: SnapshotError = borsh::from_slice(&encoded).expect("deserialize");
+            assert_eq!(error, decoded);
+        }
     }
 }
