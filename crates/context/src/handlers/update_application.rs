@@ -9,8 +9,12 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_prelude::ROOT_STORAGE_ENTRY_ID;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::events::{
+    ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
+};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use calimero_runtime::logic::Event as RuntimeEvent;
 use calimero_storage::address::Id;
 use calimero_storage::entities::Metadata;
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
@@ -390,7 +394,7 @@ async fn update_application_with_migration(
         );
 
         // Execute migration function via module.run()
-        let new_state_bytes = execute_migration(
+        let (new_state_bytes, migration_events, migration_logs) = execute_migration(
             &datastore,
             node_client.clone(),
             &context,
@@ -399,6 +403,11 @@ async fn update_application_with_migration(
             public_key,
         )
         .await?;
+
+        // Log migration logs
+        for log_line in &migration_logs {
+            info!(%context_id, migration_log = %log_line, "Migration log");
+        }
 
         // Write returned state bytes to root storage key
         // This uses the storage layer to properly update both Entry and Index
@@ -418,6 +427,24 @@ async fn update_application_with_migration(
             new_root_hash = %new_root_hash,
             "Updated dag_heads to new root after migration"
         );
+
+        // Emit migration events to WebSocket clients
+        if !migration_events.is_empty() {
+            let events_vec: Vec<ExecutionEvent> = migration_events
+                .into_iter()
+                .map(|e| ExecutionEvent {
+                    kind: e.kind,
+                    data: e.data,
+                    handler: e.handler,
+                })
+                .collect();
+            let _ = node_client.send_event(NodeEvent::Context(ContextEvent {
+                context_id,
+                payload: ContextEventPayload::StateMutation(
+                    StateMutationPayload::with_root_and_events(new_root_hash, events_vec),
+                ),
+            }));
+        }
 
         info!(
             %context_id,
@@ -443,6 +470,7 @@ async fn update_application_with_migration(
 /// Execute the migration function in the new WASM module.
 ///
 /// The migration function reads old state via `read_raw()` and returns new state bytes.
+/// Also returns events and logs produced by the migration so the caller can emit them and log them.
 async fn execute_migration(
     datastore: &calimero_store::Store,
     node_client: NodeClient,
@@ -450,7 +478,7 @@ async fn execute_migration(
     module: calimero_runtime::Module,
     migration_params: &MigrationParams,
     executor_identity: PublicKey,
-) -> eyre::Result<Vec<u8>> {
+) -> eyre::Result<(Vec<u8>, Vec<RuntimeEvent>, Vec<String>)> {
     let context_id = context.id;
     let method = migration_params.method.clone();
 
@@ -509,9 +537,11 @@ async fn execute_migration(
             debug!(
                 %context_id,
                 bytes_len = bytes.len(),
+                events_count = outcome.events.len(),
+                logs_count = outcome.logs.len(),
                 "Migration function returned new state"
             );
-            Ok(bytes)
+            Ok((bytes, outcome.events, outcome.logs))
         }
         Err(error_bytes) => {
             let error_msg = String::from_utf8_lossy(&error_bytes);
