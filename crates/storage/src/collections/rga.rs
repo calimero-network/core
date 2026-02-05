@@ -141,22 +141,33 @@ pub struct ReplicatedGrowableArray<S: StorageAdaptor = MainStorage> {
 }
 
 impl ReplicatedGrowableArray<MainStorage> {
-    /// Create a new empty RGA
+    /// Create a new empty RGA with a random ID.
+    ///
+    /// Use this for nested collections stored as values in other maps.
+    /// Merge happens by the parent map's key, so the nested collection's ID
+    /// doesn't affect sync semantics.
+    ///
+    /// For top-level state fields, use `new_with_field_name` instead.
     #[must_use]
     pub fn new() -> Self {
         Self::new_internal()
     }
 
-    /// Create a new RGA with a deterministic ID derived from parent ID and field name.
-    /// This ensures RGAs get the same ID across all nodes when created with the same
-    /// parent and field name.
+    /// Create a new RGA with a deterministic ID.
     ///
-    /// # Arguments
-    /// * `parent_id` - The ID of the parent collection (None for root-level collections)
-    /// * `field_name` - The name of the field containing this RGA
+    /// The `field_name` is used to generate a deterministic collection ID,
+    /// ensuring the same code produces the same ID across all nodes.
+    ///
+    /// Use this for top-level state fields (the `#[app::state]` macro does this
+    /// automatically).
+    ///
+    /// # Example
+    /// ```ignore
+    /// let document = ReplicatedGrowableArray::new_with_field_name("document");
+    /// ```
     #[must_use]
-    pub fn new_with_field_name(parent_id: Option<crate::address::Id>, field_name: &str) -> Self {
-        Self::new_with_field_name_internal(parent_id, field_name)
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        Self::new_with_field_name_internal(None, field_name)
     }
 }
 

@@ -23,20 +23,31 @@ impl<V> UnorderedSet<V, MainStorage>
 where
     V: BorshSerialize + BorshDeserialize,
 {
-    /// Create a new set collection.
+    /// Create a new set collection with a random ID.
+    ///
+    /// Use this for nested collections stored as values in other maps.
+    /// Merge happens by the parent map's key, so the nested collection's ID
+    /// doesn't affect sync semantics.
+    ///
+    /// For top-level state fields, use `new_with_field_name` instead.
     pub fn new() -> Self {
         Self::new_internal()
     }
 
-    /// Create a new set collection with a deterministic ID derived from parent ID and field name.
-    /// This ensures sets get the same ID across all nodes when created with the same
-    /// parent and field name.
+    /// Create a new set collection with a deterministic ID.
     ///
-    /// # Arguments
-    /// * `parent_id` - The ID of the parent collection (None for root-level collections)
-    /// * `field_name` - The name of the field containing this set
-    pub fn new_with_field_name(parent_id: Option<crate::address::Id>, field_name: &str) -> Self {
-        Self::new_with_field_name_internal(parent_id, field_name)
+    /// The `field_name` is used to generate a deterministic collection ID,
+    /// ensuring the same code produces the same ID across all nodes.
+    ///
+    /// Use this for top-level state fields (the `#[app::state]` macro does this
+    /// automatically).
+    ///
+    /// # Example
+    /// ```ignore
+    /// let tags = UnorderedSet::<String>::new_with_field_name("tags");
+    /// ```
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        Self::new_with_field_name_internal(None, field_name)
     }
 }
 
