@@ -1,6 +1,5 @@
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_prelude::{DIGEST_SIZE, ROOT_STORAGE_ENTRY_ID};
-use sha2::{Digest, Sha256};
+use calimero_prelude::root_storage_key;
 
 use crate::event::AppEvent;
 
@@ -33,14 +32,6 @@ pub trait AppStateInit: Sized {
 
 #[must_use]
 pub fn read_raw() -> Option<Vec<u8>> {
-    // Compute the storage key for the root state entry.
-    // This matches the key computation in `Key::Entry(id).to_bytes()` from calimero-storage.
-    let root_key: [u8; DIGEST_SIZE] = {
-        let mut bytes = [0u8; DIGEST_SIZE + 1];
-        bytes[0] = 1; // Key::Entry discriminant
-        bytes[1..DIGEST_SIZE + 1].copy_from_slice(&ROOT_STORAGE_ENTRY_ID);
-        Sha256::digest(bytes).into()
-    };
-
+    let root_key = root_storage_key();
     crate::env::storage_read(&root_key)
 }
