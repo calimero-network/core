@@ -104,7 +104,15 @@ pub fn infer_schema_from_database(
                 ctx_id.len()
             )
         })?,
-        None => [0u8; 32],
+        None => {
+            eprintln!(
+                "[WARNING] No context_id provided for schema inference. \
+                Using [0; 32] as fallback root ID. This may produce incorrect or incomplete \
+                schema if the database contains multiple contexts. Consider providing a \
+                specific context_id for accurate schema inference."
+            );
+            [0u8; 32]
+        }
     };
 
     // Scan State column for EntityIndex entries
