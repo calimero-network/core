@@ -198,6 +198,20 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         }
     }
 
+    /// Reassigns the RGA's ID to a deterministic ID based on field name.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all top-level collections have deterministic IDs regardless of how they were
+    /// created in `init()`.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this RGA
+    pub fn reassign_deterministic_id(&mut self, field_name: &str) {
+        self.chars
+            .inner
+            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::Rga);
+    }
+
     /// Insert a character at the given visible position
     ///
     /// # Errors

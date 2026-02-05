@@ -244,6 +244,27 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
         }
     }
 
+    /// Reassigns the counter's ID to a deterministic ID based on field name.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all top-level collections have deterministic IDs regardless of how they were
+    /// created in `init()`.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this counter
+    pub fn reassign_deterministic_id(&mut self, field_name: &str) {
+        // Counter has two internal maps - both need deterministic IDs
+        self.positive
+            .inner
+            .reassign_deterministic_id_with_crdt_type(
+                &format!("__counter_internal_{field_name}_positive"),
+                CrdtType::Counter,
+            );
+        self.negative
+            .inner
+            .reassign_deterministic_id(&format!("__counter_internal_{field_name}_negative"));
+    }
+
     /// Increment the counter for the current executor
     ///
     /// # Errors

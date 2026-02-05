@@ -77,7 +77,7 @@ fn compute_id(parent: Id, key: &[u8]) -> Id {
 /// Compute a deterministic collection ID from parent ID and field name.
 /// This ensures the same collection gets the same ID across all nodes.
 /// Uses domain separation to prevent collision with map entry IDs.
-fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> Id {
+pub(crate) fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> Id {
     let mut hasher = Sha256::new();
     if let Some(parent) = parent_id {
         hasher.update(parent.as_bytes());
@@ -213,6 +213,34 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         }
 
         this
+    }
+
+    /// Reassigns the collection's ID to a deterministic ID based on field name.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all top-level collections have deterministic IDs regardless of how they were
+    /// created in `init()`.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this collection
+    pub(crate) fn reassign_deterministic_id(&mut self, field_name: &str) {
+        let new_id = compute_collection_id(None, field_name);
+        self.storage.reassign_id_and_field_name(new_id, field_name);
+    }
+
+    /// Reassigns the collection's ID with a specific CRDT type.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this collection
+    /// * `crdt_type` - The CRDT type for merge dispatch
+    pub(crate) fn reassign_deterministic_id_with_crdt_type(
+        &mut self,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) {
+        let new_id = compute_collection_id(None, field_name);
+        self.storage.reassign_id_and_field_name(new_id, field_name);
+        self.storage.metadata.crdt_type = Some(crdt_type);
     }
 
     /// Inserts an item into the collection.

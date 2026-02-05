@@ -59,6 +59,22 @@ where
             storage: Element::new_with_field_name(None, Some(field_name.to_string())),
         }
     }
+
+    /// Reassigns the FrozenStorage's ID to a deterministic ID based on field name.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all top-level collections have deterministic IDs regardless of how they were
+    /// created in `init()`.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this FrozenStorage
+    pub fn reassign_deterministic_id(&mut self, field_name: &str) {
+        use super::compute_collection_id;
+        let new_id = compute_collection_id(None, field_name);
+        self.storage.reassign_id_and_field_name(new_id, field_name);
+        self.inner
+            .reassign_deterministic_id(&format!("__frozen_storage_{field_name}"));
+    }
 }
 
 impl<T> Default for FrozenStorage<T, MainStorage>

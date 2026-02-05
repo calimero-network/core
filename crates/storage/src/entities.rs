@@ -329,6 +329,20 @@ impl Element {
         self.metadata.storage_type = StorageType::Frozen;
         self.update(); // Mark as dirty
     }
+
+    /// Reassigns the element's ID and field name for deterministic ID generation.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all collections have deterministic IDs based on their field names.
+    ///
+    /// # Arguments
+    /// * `new_id` - The new deterministic ID
+    /// * `field_name` - The field name for metadata
+    pub fn reassign_id_and_field_name(&mut self, new_id: Id, field_name: &str) {
+        self.id = new_id;
+        self.metadata.field_name = Some(field_name.to_string());
+        self.is_dirty = true;
+    }
 }
 
 #[cfg(test)]
