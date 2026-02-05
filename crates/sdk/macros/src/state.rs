@@ -343,8 +343,8 @@ fn generate_mergeable_impl(
     // Only merge fields that are known CRDT types
     let merge_calls: Vec<_> = fields
         .iter()
-        .filter_map(|field| {
-            let field_name = field.ident.as_ref()?;
+        .enumerate()
+        .filter_map(|(idx, field)| {
             let field_type = &field.ty;
 
             // Check if this is a known CRDT type by examining the type path
@@ -366,21 +366,41 @@ fn generate_mergeable_impl(
                 return None;
             }
 
-            // Generate merge call for CRDT fields
-            Some(quote! {
-                ::calimero_storage::collections::Mergeable::merge(
-                    &mut self.#field_name,
-                    &other.#field_name
-                ).map_err(|e| {
-                    ::calimero_storage::collections::crdt_meta::MergeError::StorageError(
-                        format!(
-                            "Failed to merge field '{}': {:?}",
-                            stringify!(#field_name),
-                            e
+            // Handle both named fields and tuple struct fields
+            if let Some(field_name) = &field.ident {
+                // Named field
+                Some(quote! {
+                    ::calimero_storage::collections::Mergeable::merge(
+                        &mut self.#field_name,
+                        &other.#field_name
+                    ).map_err(|e| {
+                        ::calimero_storage::collections::crdt_meta::MergeError::StorageError(
+                            format!(
+                                "Failed to merge field '{}': {:?}",
+                                stringify!(#field_name),
+                                e
+                            )
                         )
-                    )
-                })?;
-            })
+                    })?;
+                })
+            } else {
+                // Tuple struct field
+                let field_index = syn::Index::from(idx);
+                Some(quote! {
+                    ::calimero_storage::collections::Mergeable::merge(
+                        &mut self.#field_index,
+                        &other.#field_index
+                    ).map_err(|e| {
+                        ::calimero_storage::collections::crdt_meta::MergeError::StorageError(
+                            format!(
+                                "Failed to merge field {}: {:?}",
+                                #idx,
+                                e
+                            )
+                        )
+                    })?;
+                })
+            }
         })
         .collect();
 
@@ -478,8 +498,8 @@ fn generate_assign_deterministic_ids_impl(
     // Generate reassign calls for each collection field
     let reassign_calls: Vec<_> = fields
         .iter()
-        .filter_map(|field| {
-            let field_name = field.ident.as_ref()?;
+        .enumerate()
+        .filter_map(|(idx, field)| {
             let field_type = &field.ty;
             let type_str = quote! { #field_type }.to_string();
 
@@ -487,10 +507,21 @@ fn generate_assign_deterministic_ids_impl(
                 return None;
             }
 
-            let field_name_str = field_name.to_string();
-            Some(quote! {
-                self.#field_name.reassign_deterministic_id(#field_name_str);
-            })
+            // Handle both named fields and tuple struct fields
+            if let Some(field_name) = &field.ident {
+                // Named field: use field name for both access and ID
+                let field_name_str = field_name.to_string();
+                Some(quote! {
+                    self.#field_name.reassign_deterministic_id(#field_name_str);
+                })
+            } else {
+                // Tuple struct field: use index for access, index string for ID
+                let field_index = syn::Index::from(idx);
+                let field_name_str = idx.to_string();
+                Some(quote! {
+                    self.#field_index.reassign_deterministic_id(#field_name_str);
+                })
+            }
         })
         .collect();
 

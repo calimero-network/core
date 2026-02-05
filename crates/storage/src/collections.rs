@@ -50,8 +50,9 @@ pub use frozen_value::FrozenValue;
 use crate as calimero_storage;
 use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
+use crate::index::Index;
 use crate::interface::{Interface, StorageError};
-use crate::store::{MainStorage, StorageAdaptor};
+use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::{AtomicUnit, Collection};
 
 /// Domain separator for map entry IDs to prevent collision with collection IDs.
@@ -221,26 +222,72 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// all top-level collections have deterministic IDs regardless of how they were
     /// created in `init()`.
     ///
+    /// This method cleans up the old storage entry and parent-child references
+    /// when moving from a random ID to a deterministic one.
+    ///
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this collection
+    #[expect(clippy::expect_used, reason = "fatal error if cleanup fails")]
     pub(crate) fn reassign_deterministic_id(&mut self, field_name: &str) {
         let new_id = compute_collection_id(None, field_name);
+        let old_id = self.storage.id();
+
+        // If already has the correct ID, nothing to do
+        if old_id == new_id {
+            return;
+        }
+
+        // Clean up old storage entry and index
+        let _ignored = S::storage_remove(Key::Entry(old_id));
+        let _ignored = S::storage_remove(Key::Index(old_id));
+
+        // Remove old child reference from ROOT (without creating tombstone)
+        let _ = <Index<S>>::remove_child_reference_only(*ROOT_ID, old_id);
+
+        // Update in-memory ID and field name
         self.storage.reassign_id_and_field_name(new_id, field_name);
+
+        // Add the collection with new ID to ROOT
+        let _ = <Interface<S>>::add_child_to(*ROOT_ID, self)
+            .expect("failed to add collection with new ID");
     }
 
     /// Reassigns the collection's ID with a specific CRDT type.
     ///
+    /// This method cleans up the old storage entry and parent-child references
+    /// when moving from a random ID to a deterministic one.
+    ///
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this collection
     /// * `crdt_type` - The CRDT type for merge dispatch
+    #[expect(clippy::expect_used, reason = "fatal error if cleanup fails")]
     pub(crate) fn reassign_deterministic_id_with_crdt_type(
         &mut self,
         field_name: &str,
         crdt_type: CrdtType,
     ) {
         let new_id = compute_collection_id(None, field_name);
+        let old_id = self.storage.id();
+
+        // If already has the correct ID, nothing to do
+        if old_id == new_id {
+            return;
+        }
+
+        // Clean up old storage entry and index
+        let _ignored = S::storage_remove(Key::Entry(old_id));
+        let _ignored = S::storage_remove(Key::Index(old_id));
+
+        // Remove old child reference from ROOT (without creating tombstone)
+        let _ = <Index<S>>::remove_child_reference_only(*ROOT_ID, old_id);
+
+        // Update in-memory ID, field name, and CRDT type
         self.storage.reassign_id_and_field_name(new_id, field_name);
         self.storage.metadata.crdt_type = Some(crdt_type);
+
+        // Add the collection with new ID to ROOT
+        let _ = <Interface<S>>::add_child_to(*ROOT_ID, self)
+            .expect("failed to add collection with new ID");
     }
 
     /// Inserts an item into the collection.
