@@ -63,6 +63,9 @@ pub struct UpdateCommand {
         default_value = "default"
     )]
     pub executor: Alias<PublicKey>,
+
+    #[arg(long, help = "Migration function name to execute during the update")]
+    pub migrate_method: Option<String>,
 }
 
 impl UpdateCommand {
@@ -89,9 +92,18 @@ impl UpdateCommand {
                 path: None,
                 metadata: None,
                 watch: false,
+                migrate_method,
                 ..
             } => {
-                let request = UpdateContextApplicationRequest::new(application_id, executor_id);
+                let request = if let Some(method) = migrate_method {
+                    UpdateContextApplicationRequest::with_migration(
+                        application_id,
+                        executor_id,
+                        method,
+                    )
+                } else {
+                    UpdateContextApplicationRequest::new(application_id, executor_id)
+                };
                 let _response = client
                     .update_context_application(&context_id, request)
                     .await?;
@@ -101,6 +113,7 @@ impl UpdateCommand {
                 application_id: None,
                 path: Some(path),
                 metadata,
+                migrate_method,
                 ..
             } => {
                 // Validate file exists before processing
@@ -119,7 +132,15 @@ impl UpdateCommand {
                     .data
                     .application_id;
 
-                let request = UpdateContextApplicationRequest::new(application_id, executor_id);
+                let request = if let Some(method) = migrate_method.clone() {
+                    UpdateContextApplicationRequest::with_migration(
+                        application_id,
+                        executor_id,
+                        method,
+                    )
+                } else {
+                    UpdateContextApplicationRequest::new(application_id, executor_id)
+                };
                 let _response = client
                     .update_context_application(&context_id, request)
                     .await?;
@@ -132,6 +153,7 @@ impl UpdateCommand {
                         path,
                         metadata,
                         executor_id,
+                        migrate_method,
                     )
                     .await?;
                 }
@@ -150,6 +172,7 @@ async fn watch_app_and_update_context(
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
     member_public_key: PublicKey,
+    migrate_method: Option<String>,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
@@ -203,7 +226,15 @@ async fn watch_app_and_update_context(
             .application_id;
 
         let client = environment.client()?;
-        let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
+        let request = if let Some(ref method) = migrate_method {
+            UpdateContextApplicationRequest::with_migration(
+                application_id,
+                member_public_key,
+                method.clone(),
+            )
+        } else {
+            UpdateContextApplicationRequest::new(application_id, member_public_key)
+        };
         let response = client
             .update_context_application(&context_id, request)
             .await?;
