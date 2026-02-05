@@ -1438,6 +1438,222 @@ impl BloomFilterResponse {
 }
 
 // =============================================================================
+// SubtreePrefetch Sync Types (CIP Appendix B - Protocol Selection Matrix)
+// =============================================================================
+
+/// Default maximum depth for subtree prefetch.
+///
+/// Limits how deep into a subtree we fetch to avoid over-fetching.
+pub const DEFAULT_SUBTREE_MAX_DEPTH: usize = 5;
+
+/// Request for subtree prefetch-based sync.
+///
+/// Fetches entire subtrees when divergence is detected in deep trees.
+/// More efficient than HashComparison when changes are clustered.
+///
+/// Use when:
+/// - max_depth > 3
+/// - divergence < 20%
+/// - Changes are clustered in subtrees
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SubtreePrefetchRequest {
+    /// Root hashes of subtrees to fetch.
+    pub subtree_roots: Vec<[u8; 32]>,
+
+    /// Maximum depth to traverse within each subtree (None = unlimited).
+    pub max_depth: Option<usize>,
+}
+
+impl SubtreePrefetchRequest {
+    /// Create a new subtree prefetch request.
+    #[must_use]
+    pub fn new(subtree_roots: Vec<[u8; 32]>) -> Self {
+        Self {
+            subtree_roots,
+            max_depth: Some(DEFAULT_SUBTREE_MAX_DEPTH),
+        }
+    }
+
+    /// Create a request with custom depth limit.
+    #[must_use]
+    pub fn with_depth(subtree_roots: Vec<[u8; 32]>, max_depth: usize) -> Self {
+        Self {
+            subtree_roots,
+            max_depth: Some(max_depth),
+        }
+    }
+
+    /// Create a request with unlimited depth (use carefully).
+    #[must_use]
+    pub fn unlimited_depth(subtree_roots: Vec<[u8; 32]>) -> Self {
+        Self {
+            subtree_roots,
+            max_depth: None,
+        }
+    }
+
+    /// Number of subtrees requested.
+    #[must_use]
+    pub fn subtree_count(&self) -> usize {
+        self.subtree_roots.len()
+    }
+}
+
+/// Response containing prefetched subtrees.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SubtreePrefetchResponse {
+    /// Fetched subtrees.
+    pub subtrees: Vec<SubtreeData>,
+
+    /// Subtree roots that were not found.
+    pub not_found: Vec<[u8; 32]>,
+}
+
+impl SubtreePrefetchResponse {
+    /// Create a new response.
+    #[must_use]
+    pub fn new(subtrees: Vec<SubtreeData>, not_found: Vec<[u8; 32]>) -> Self {
+        Self {
+            subtrees,
+            not_found,
+        }
+    }
+
+    /// Create a response with no missing subtrees.
+    #[must_use]
+    pub fn complete(subtrees: Vec<SubtreeData>) -> Self {
+        Self {
+            subtrees,
+            not_found: vec![],
+        }
+    }
+
+    /// Create an empty/not-found response.
+    #[must_use]
+    pub fn not_found(roots: Vec<[u8; 32]>) -> Self {
+        Self {
+            subtrees: vec![],
+            not_found: roots,
+        }
+    }
+
+    /// Check if all requested subtrees were found.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.not_found.is_empty()
+    }
+
+    /// Total number of entities across all subtrees.
+    #[must_use]
+    pub fn total_entity_count(&self) -> usize {
+        self.subtrees.iter().map(|s| s.entity_count()).sum()
+    }
+
+    /// Number of subtrees returned.
+    #[must_use]
+    pub fn subtree_count(&self) -> usize {
+        self.subtrees.len()
+    }
+}
+
+/// Data for a single subtree.
+///
+/// Contains all entities within the subtree for bulk CRDT merge.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SubtreeData {
+    /// Root ID of this subtree.
+    pub root_id: [u8; 32],
+
+    /// Root hash of this subtree (for verification).
+    pub root_hash: [u8; 32],
+
+    /// All entities in this subtree (leaves only).
+    /// Includes full data and metadata for CRDT merge.
+    pub entities: Vec<TreeLeafData>,
+
+    /// Depth of this subtree (how many levels were traversed).
+    pub depth: usize,
+
+    /// Whether the subtree was truncated due to depth limit.
+    pub truncated: bool,
+}
+
+impl SubtreeData {
+    /// Create subtree data.
+    #[must_use]
+    pub fn new(
+        root_id: [u8; 32],
+        root_hash: [u8; 32],
+        entities: Vec<TreeLeafData>,
+        depth: usize,
+    ) -> Self {
+        Self {
+            root_id,
+            root_hash,
+            entities,
+            depth,
+            truncated: false,
+        }
+    }
+
+    /// Create truncated subtree data (depth limit reached).
+    #[must_use]
+    pub fn truncated(
+        root_id: [u8; 32],
+        root_hash: [u8; 32],
+        entities: Vec<TreeLeafData>,
+        depth: usize,
+    ) -> Self {
+        Self {
+            root_id,
+            root_hash,
+            entities,
+            depth,
+            truncated: true,
+        }
+    }
+
+    /// Number of entities in this subtree.
+    #[must_use]
+    pub fn entity_count(&self) -> usize {
+        self.entities.len()
+    }
+
+    /// Check if subtree is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
+
+    /// Check if more data exists beyond depth limit.
+    #[must_use]
+    pub fn is_truncated(&self) -> bool {
+        self.truncated
+    }
+}
+
+/// Compare HashComparison vs SubtreePrefetch for a given scenario.
+///
+/// Returns true if SubtreePrefetch is likely more efficient.
+#[must_use]
+pub fn should_use_subtree_prefetch(
+    tree_depth: usize,
+    divergence_ratio: f64,
+    estimated_differing_subtrees: usize,
+) -> bool {
+    // SubtreePrefetch is better when:
+    // - Tree is deep (> 3 levels)
+    // - Divergence is moderate (< 20%)
+    // - Changes are clustered (few differing subtrees)
+
+    let deep_tree = tree_depth > 3;
+    let moderate_divergence = divergence_ratio < 0.20;
+    let clustered_changes = estimated_differing_subtrees <= 5;
+
+    deep_tree && moderate_divergence && clustered_changes
+}
+
+// =============================================================================
 // Snapshot Sync Types
 // =============================================================================
 
@@ -2744,5 +2960,166 @@ mod tests {
         assert_eq!(filter.bit_count(), 1024);
         assert_eq!(filter.hash_count(), 7);
         assert_eq!(filter.item_count(), 0);
+    }
+
+    // =========================================================================
+    // SubtreePrefetch Sync Tests (Issue #1776)
+    // =========================================================================
+
+    #[test]
+    fn test_subtree_prefetch_request_new() {
+        let roots = vec![[1u8; 32], [2u8; 32]];
+        let request = SubtreePrefetchRequest::new(roots.clone());
+
+        assert_eq!(request.subtree_roots, roots);
+        assert_eq!(request.max_depth, Some(DEFAULT_SUBTREE_MAX_DEPTH));
+        assert_eq!(request.subtree_count(), 2);
+    }
+
+    #[test]
+    fn test_subtree_prefetch_request_with_depth() {
+        let roots = vec![[1u8; 32]];
+        let request = SubtreePrefetchRequest::with_depth(roots, 10);
+
+        assert_eq!(request.max_depth, Some(10));
+    }
+
+    #[test]
+    fn test_subtree_prefetch_request_unlimited() {
+        let roots = vec![[1u8; 32]];
+        let request = SubtreePrefetchRequest::unlimited_depth(roots);
+
+        assert!(request.max_depth.is_none());
+    }
+
+    #[test]
+    fn test_subtree_prefetch_request_roundtrip() {
+        let request = SubtreePrefetchRequest::with_depth(vec![[1u8; 32], [2u8; 32]], 7);
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: SubtreePrefetchRequest = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn test_subtree_data_new() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let leaf = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata);
+
+        let subtree = SubtreeData::new([10; 32], [11; 32], vec![leaf], 3);
+
+        assert_eq!(subtree.root_id, [10; 32]);
+        assert_eq!(subtree.root_hash, [11; 32]);
+        assert_eq!(subtree.entity_count(), 1);
+        assert_eq!(subtree.depth, 3);
+        assert!(!subtree.is_truncated());
+        assert!(!subtree.is_empty());
+    }
+
+    #[test]
+    fn test_subtree_data_truncated() {
+        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 200, [6; 32]);
+        let leaf = TreeLeafData::new([2; 32], vec![4, 5, 6], metadata);
+
+        let subtree = SubtreeData::truncated([20; 32], [21; 32], vec![leaf], 5);
+
+        assert!(subtree.is_truncated());
+        assert_eq!(subtree.depth, 5);
+    }
+
+    #[test]
+    fn test_subtree_data_empty() {
+        let subtree = SubtreeData::new([30; 32], [31; 32], vec![], 1);
+
+        assert!(subtree.is_empty());
+        assert_eq!(subtree.entity_count(), 0);
+    }
+
+    #[test]
+    fn test_subtree_data_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::Rga, 300, [7; 32]);
+        let leaf = TreeLeafData::new([3; 32], vec![7, 8, 9], metadata);
+
+        let subtree = SubtreeData::truncated([40; 32], [41; 32], vec![leaf], 4);
+
+        let encoded = borsh::to_vec(&subtree).expect("serialize");
+        let decoded: SubtreeData = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(subtree, decoded);
+    }
+
+    #[test]
+    fn test_subtree_prefetch_response_complete() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let leaf = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata);
+        let subtree = SubtreeData::new([10; 32], [11; 32], vec![leaf], 2);
+
+        let response = SubtreePrefetchResponse::complete(vec![subtree]);
+
+        assert!(response.is_complete());
+        assert_eq!(response.subtree_count(), 1);
+        assert_eq!(response.total_entity_count(), 1);
+    }
+
+    #[test]
+    fn test_subtree_prefetch_response_not_found() {
+        let response = SubtreePrefetchResponse::not_found(vec![[1u8; 32], [2u8; 32]]);
+
+        assert!(!response.is_complete());
+        assert_eq!(response.subtree_count(), 0);
+        assert_eq!(response.not_found.len(), 2);
+    }
+
+    #[test]
+    fn test_subtree_prefetch_response_partial() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let leaf1 = TreeLeafData::new([1; 32], vec![1, 2], metadata.clone());
+        let leaf2 = TreeLeafData::new([2; 32], vec![3, 4], metadata);
+
+        let subtree1 = SubtreeData::new([10; 32], [11; 32], vec![leaf1], 2);
+        let subtree2 = SubtreeData::new([20; 32], [21; 32], vec![leaf2], 3);
+
+        let response = SubtreePrefetchResponse::new(
+            vec![subtree1, subtree2],
+            vec![[30u8; 32]], // One not found
+        );
+
+        assert!(!response.is_complete());
+        assert_eq!(response.subtree_count(), 2);
+        assert_eq!(response.total_entity_count(), 2);
+    }
+
+    #[test]
+    fn test_subtree_prefetch_response_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::PnCounter, 400, [8; 32]);
+        let leaf = TreeLeafData::new([4; 32], vec![10, 11, 12], metadata);
+        let subtree = SubtreeData::new([50; 32], [51; 32], vec![leaf], 2);
+
+        let response = SubtreePrefetchResponse::new(vec![subtree], vec![[60u8; 32]]);
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: SubtreePrefetchResponse = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(response, decoded);
+    }
+
+    #[test]
+    fn test_should_use_subtree_prefetch() {
+        // Deep tree, moderate divergence, clustered - YES
+        assert!(should_use_subtree_prefetch(5, 0.10, 3));
+
+        // Deep tree, high divergence - NO
+        assert!(!should_use_subtree_prefetch(5, 0.30, 3));
+
+        // Shallow tree - NO
+        assert!(!should_use_subtree_prefetch(2, 0.10, 3));
+
+        // Many differing subtrees (scattered) - NO
+        assert!(!should_use_subtree_prefetch(5, 0.10, 10));
+
+        // Edge case: exactly at thresholds
+        assert!(!should_use_subtree_prefetch(3, 0.20, 5)); // depth not > 3
+        assert!(should_use_subtree_prefetch(4, 0.19, 5)); // just under thresholds
     }
 }
