@@ -4,8 +4,8 @@
 
 use sha2::{Digest, Sha256};
 
-/// Size of cryptographic digests (SHA-256), in bytes.
-pub const DIGEST_SIZE: usize = 32;
+/// Re-export of [`calimero_primitives::common::DIGEST_SIZE`] for use in root storage types.
+pub use calimero_primitives::common::DIGEST_SIZE;
 
 /// Well-known ID for the root storage entry.
 ///
