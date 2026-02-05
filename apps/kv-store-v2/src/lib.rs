@@ -84,6 +84,11 @@ pub fn migrate_v1_to_v2() -> KvStoreV2 {
     let old_state: KvStoreV1 = BorshDeserialize::try_from_slice(&old_bytes)
         .expect("Failed to deserialize old state - schema mismatch");
 
+    app::emit!(Event::Migrated {
+        from_version: "1.0.0",
+        to_version: "2.0.0",
+    });
+
     // Transform to new schema with additional field
     KvStoreV2 {
         items: old_state.items,
