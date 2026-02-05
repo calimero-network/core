@@ -393,7 +393,9 @@ impl Default for StorageType {
 }
 
 /// System metadata (timestamps in u64 nanoseconds).
-#[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    BorshSerialize, BorshDeserialize, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
+)]
 #[non_exhaustive]
 pub struct Metadata {
     /// Timestamp of creation time in u64 nanoseconds.
@@ -493,41 +495,9 @@ impl Metadata {
     }
 }
 
-// Custom Borsh serialization for backward compatibility
-impl BorshSerialize for Metadata {
-    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        BorshSerialize::serialize(&self.created_at, writer)?;
-        BorshSerialize::serialize(&self.updated_at, writer)?;
-        BorshSerialize::serialize(&self.storage_type, writer)?;
-        BorshSerialize::serialize(&self.crdt_type, writer)?;
-        BorshSerialize::serialize(&self.field_name, writer)?;
-        Ok(())
-    }
-}
-
-// Custom Borsh deserialization with backward compatibility
-// Old data without crdt_type/field_name will deserialize as None
-impl BorshDeserialize for Metadata {
-    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-        let created_at = u64::deserialize_reader(reader)?;
-        let updated_at = UpdatedAt::deserialize_reader(reader)?;
-        let storage_type = StorageType::deserialize_reader(reader)?;
-
-        // Try to read crdt_type (may not exist in old data)
-        let crdt_type = Option::<CrdtType>::deserialize_reader(reader).unwrap_or(None);
-
-        // Try to read field_name (may not exist in old data)
-        let field_name = Option::<String>::deserialize_reader(reader).unwrap_or(None);
-
-        Ok(Self {
-            created_at,
-            updated_at,
-            storage_type,
-            crdt_type,
-            field_name,
-        })
-    }
-}
+// Metadata uses standard Borsh serialization via derive.
+// Breaking change: Old data without crdt_type/field_name fields will fail to deserialize.
+// This is intentional - we require fresh nodes with the new data format.
 
 /// Update timestamp (PartialEq always true for CRDT semantics).
 #[derive(BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Ord, PartialOrd)]
