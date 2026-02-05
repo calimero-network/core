@@ -30,11 +30,31 @@ impl<T> UserStorage<T, MainStorage>
 where
     T: BorshSerialize + BorshDeserialize,
 {
-    /// Creates a new, empty UserStorage.
+    /// Creates a new, empty UserStorage with a random ID.
+    ///
+    /// Use this for nested collections stored as values in other maps.
+    /// Merge happens by the parent map's key, so the nested collection's ID
+    /// doesn't affect sync semantics.
+    ///
+    /// For top-level state fields, use `new_with_field_name` instead.
     pub fn new() -> Self {
         Self {
             inner: UnorderedMap::new(),
             storage: Element::new(None),
+        }
+    }
+
+    /// Creates a new, empty UserStorage with a deterministic ID.
+    ///
+    /// The `field_name` is used to generate a deterministic collection ID,
+    /// ensuring the same code produces the same ID across all nodes.
+    ///
+    /// Use this for top-level state fields (the `#[app::state]` macro does this
+    /// automatically).
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        Self {
+            inner: UnorderedMap::new_with_field_name(&format!("__user_storage_{field_name}")),
+            storage: Element::new_with_field_name(None, Some(field_name.to_string())),
         }
     }
 }

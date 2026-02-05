@@ -29,20 +29,31 @@ where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
 {
-    /// Create a new map collection.
+    /// Create a new map collection with a random ID.
+    ///
+    /// Use this for nested collections stored as values in other maps.
+    /// Merge happens by the parent map's key, so the nested collection's ID
+    /// doesn't affect sync semantics.
+    ///
+    /// For top-level state fields, use `new_with_field_name` instead.
     pub fn new() -> Self {
         Self::new_internal()
     }
 
-    /// Create a new map collection with a deterministic ID derived from parent ID and field name.
-    /// This ensures maps get the same ID across all nodes when created with the same
-    /// parent and field name.
+    /// Create a new map collection with a deterministic ID.
     ///
-    /// # Arguments
-    /// * `parent_id` - The ID of the parent collection (None for root-level collections)
-    /// * `field_name` - The name of the field containing this map
-    pub fn new_with_field_name(parent_id: Option<crate::address::Id>, field_name: &str) -> Self {
-        Self::new_with_field_name_internal(parent_id, field_name)
+    /// The `field_name` is used to generate a deterministic collection ID,
+    /// ensuring the same code produces the same ID across all nodes.
+    ///
+    /// Use this for top-level state fields (the `#[app::state]` macro does this
+    /// automatically).
+    ///
+    /// # Example
+    /// ```ignore
+    /// let items = UnorderedMap::<String, String>::new_with_field_name("items");
+    /// ```
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        Self::new_with_field_name_internal(None, field_name)
     }
 }
 
@@ -988,8 +999,8 @@ mod tests {
         crate::env::reset_for_testing();
 
         // Create two maps with the same field name - they should have the same IDs
-        let map1_val = UnorderedMap::new_with_field_name(None, "items");
-        let map2_val = UnorderedMap::new_with_field_name(None, "items");
+        let map1_val: UnorderedMap<String, String> = UnorderedMap::new_with_field_name("items");
+        let map2_val: UnorderedMap<String, String> = UnorderedMap::new_with_field_name("items");
 
         assert_eq!(
             <UnorderedMap<String, String> as crate::entities::Data>::id(&map1_val),
@@ -998,7 +1009,7 @@ mod tests {
         );
 
         // Different field names should produce different IDs
-        let map3_val = UnorderedMap::new_with_field_name(None, "products");
+        let map3_val: UnorderedMap<String, String> = UnorderedMap::new_with_field_name("products");
         assert_ne!(
             <UnorderedMap<String, String> as crate::entities::Data>::id(&map1_val),
             <UnorderedMap<String, String> as crate::entities::Data>::id(&map3_val),
@@ -1007,50 +1018,38 @@ mod tests {
     }
 
     #[test]
-    fn test_deterministic_map_with_parent_id() {
+    fn test_random_vs_deterministic_map_ids() {
         crate::env::reset_for_testing();
 
-        let parent_id = Some(crate::address::Id::new([42u8; 32]));
+        // Random IDs (new()) should be different each time
+        let map1: UnorderedMap<String, String> = UnorderedMap::new();
+        let map2: UnorderedMap<String, String> = UnorderedMap::new();
 
-        // Same parent + same field name = same ID
-        let map1_val = UnorderedMap::new_with_field_name(parent_id, "nested_map");
-        let map2_val = UnorderedMap::new_with_field_name(parent_id, "nested_map");
-
-        assert_eq!(
-            <UnorderedMap<String, String> as crate::entities::Data>::id(&map1_val),
-            <UnorderedMap<String, String> as crate::entities::Data>::id(&map2_val),
-            "Maps with same parent and field name should have same ID"
+        assert_ne!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map1),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map2),
+            "Maps with new() should have different random IDs"
         );
 
-        // Different parent = different ID (even with same field name)
-        let parent_id2 = Some(crate::address::Id::new([43u8; 32]));
-        let map3_val = UnorderedMap::new_with_field_name(parent_id2, "nested_map");
-        assert_ne!(
-            <UnorderedMap<String, String> as crate::entities::Data>::id(&map1_val),
-            <UnorderedMap<String, String> as crate::entities::Data>::id(&map3_val),
-            "Maps with different parents should have different IDs"
+        // Deterministic IDs (new_with_field_name) should be the same
+        let map3: UnorderedMap<String, String> = UnorderedMap::new_with_field_name("items");
+        let map4: UnorderedMap<String, String> = UnorderedMap::new_with_field_name("items");
+        assert_eq!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map3),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map4),
+            "Maps with same field name should have same ID"
         );
     }
 
     #[test]
-    fn test_collection_id_no_collision_with_map_entry() {
+    fn test_nested_map_uses_random_ids() {
         crate::env::reset_for_testing();
 
-        // Verify that a nested collection with field name "key" doesn't collide
-        // with a map entry that has key "key" in the same parent map.
-        // This tests domain separation between compute_id and compute_collection_id.
-
+        // For nested maps (values in other maps), we use new() which generates random IDs.
+        // This is fine because merge happens by the parent map's key, not the nested map's ID.
         let mut parent_map = Root::new(|| UnorderedMap::<String, String>::new());
-        let parent_id = Some(<UnorderedMap<String, String> as crate::entities::Data>::id(
-            &*parent_map,
-        ));
 
-        // Create a nested collection with field name "key"
-        let nested_collection =
-            UnorderedMap::<String, String>::new_with_field_name(parent_id, "key");
-
-        // Insert an entry with key "key" into the parent map
-        // This entry will have an ID computed via compute_id(parent_id, "key")
+        // Insert an entry
         parent_map
             .insert("key".to_string(), "value".to_string())
             .unwrap();
@@ -1061,31 +1060,15 @@ mod tests {
             "Map entry should exist"
         );
 
-        // Verify the nested collection ID is different from any entry ID
-        // by checking that we can have both without collision
-        let nested_collection2 =
-            UnorderedMap::<String, String>::new_with_field_name(parent_id, "key");
-        assert_eq!(
-            <UnorderedMap<String, String> as crate::entities::Data>::id(&nested_collection),
-            <UnorderedMap<String, String> as crate::entities::Data>::id(&nested_collection2),
-            "Nested collections with same parent and field name should have same ID"
-        );
+        // Nested maps created with new() have random IDs - this is intentional
+        // because merge happens by key, not by the nested map's ID
+        let nested1: UnorderedMap<String, String> = UnorderedMap::new();
+        let nested2: UnorderedMap<String, String> = UnorderedMap::new();
 
-        // The key test: verify that inserting the entry didn't affect the nested collection
-        // If there was a collision, the nested collection would have been overwritten
-        // or the entry insertion would have failed. Since both exist, there's no collision.
-        assert!(
-            parent_map.contains("key").unwrap(),
-            "Map entry should still exist after creating nested collection"
-        );
-
-        // Verify we can still access the nested collection (it wasn't overwritten)
-        let nested_collection3 =
-            UnorderedMap::<String, String>::new_with_field_name(parent_id, "key");
-        assert_eq!(
-            <UnorderedMap<String, String> as crate::entities::Data>::id(&nested_collection),
-            <UnorderedMap<String, String> as crate::entities::Data>::id(&nested_collection3),
-            "Nested collection should still have the same ID after map entry insertion"
+        assert_ne!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&nested1),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&nested2),
+            "Nested maps with new() should have different IDs (random)"
         );
     }
 }
