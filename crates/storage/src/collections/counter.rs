@@ -9,7 +9,7 @@
 use borsh::io::{ErrorKind, Read, Result as BorshResult, Write};
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use super::{StorageAdaptor, UnorderedMap};
+use super::{CrdtType, StorageAdaptor, UnorderedMap};
 use crate::collections::error::StoreError;
 use crate::interface::StorageError;
 use crate::store::MainStorage;
@@ -179,10 +179,33 @@ pub type GCounter<S = MainStorage> = Counter<false, S>;
 pub type PNCounter<S = MainStorage> = Counter<true, S>;
 
 impl<const ALLOW_DECREMENT: bool> Counter<ALLOW_DECREMENT, MainStorage> {
-    /// Creates a new counter
+    /// Creates a new counter with a random ID.
+    ///
+    /// Use this for nested collections stored as values in other maps.
+    /// Merge happens by the parent map's key, so the nested collection's ID
+    /// doesn't affect sync semantics.
+    ///
+    /// For top-level state fields, use `new_with_field_name` instead.
     #[must_use]
     pub fn new() -> Self {
         Self::new_internal()
+    }
+
+    /// Creates a new counter with a deterministic ID.
+    ///
+    /// The `field_name` is used to generate a deterministic collection ID,
+    /// ensuring the same code produces the same ID across all nodes.
+    ///
+    /// Use this for top-level state fields (the `#[app::state]` macro does this
+    /// automatically).
+    ///
+    /// # Example
+    /// ```ignore
+    /// let visits = Counter::new_with_field_name("visit_count");
+    /// ```
+    #[must_use]
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        Self::new_with_field_name_internal(None, field_name)
     }
 }
 
@@ -193,6 +216,53 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
             positive: UnorderedMap::new_internal(),
             negative: UnorderedMap::new_internal(),
         }
+    }
+
+    /// Creates a new counter with deterministic IDs (internal)
+    pub(super) fn new_with_field_name_internal(
+        parent_id: Option<crate::address::Id>,
+        field_name: &str,
+    ) -> Self {
+        // For Counter, we need to create deterministic IDs for both positive and negative maps
+        // Use a reserved internal prefix to prevent collisions with user-created collections.
+        // The prefix "__counter_internal_" is reserved for Counter's internal maps and ensures
+        // that a Counter with field name "X" won't collide with a user-created collection
+        // named "X_positive" or "X_negative".
+        //
+        // The positive map gets CrdtType::Counter as it represents the main counter entity.
+        // The negative map is internal and doesn't need special CRDT type.
+        Self {
+            positive: UnorderedMap::new_with_field_name_and_crdt_type(
+                parent_id,
+                &format!("__counter_internal_{field_name}_positive"),
+                CrdtType::Counter,
+            ),
+            negative: UnorderedMap::new_with_field_name_internal(
+                parent_id,
+                &format!("__counter_internal_{field_name}_negative"),
+            ),
+        }
+    }
+
+    /// Reassigns the counter's ID to a deterministic ID based on field name.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all top-level collections have deterministic IDs regardless of how they were
+    /// created in `init()`.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this counter
+    pub fn reassign_deterministic_id(&mut self, field_name: &str) {
+        // Counter has two internal maps - both need deterministic IDs
+        self.positive
+            .inner
+            .reassign_deterministic_id_with_crdt_type(
+                &format!("__counter_internal_{field_name}_positive"),
+                CrdtType::Counter,
+            );
+        self.negative
+            .inner
+            .reassign_deterministic_id(&format!("__counter_internal_{field_name}_negative"));
     }
 
     /// Increment the counter for the current executor
@@ -752,6 +822,92 @@ mod tests {
             err_str.contains("Not all bytes read") || err_str.contains("Unexpected length"),
             "Error should indicate leftover data, got: {}",
             err_str
+        );
+    }
+
+    #[test]
+    fn test_deterministic_counter_ids() {
+        crate::env::reset_for_testing();
+
+        // Create two counters with the same field name - they should have the same IDs
+        let counter1 = GCounter::new_with_field_name("visit_count");
+        let counter2 = GCounter::new_with_field_name("visit_count");
+
+        assert_eq!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter2.positive),
+            "Counters with same field name should have same positive map ID"
+        );
+        assert_eq!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.negative),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter2.negative),
+            "Counters with same field name should have same negative map ID"
+        );
+
+        // Different field names should produce different IDs
+        let counter3 = GCounter::new_with_field_name("click_count");
+        assert_ne!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter3.positive),
+            "Counters with different field names should have different IDs"
+        );
+    }
+
+    #[test]
+    fn test_random_vs_deterministic_counter_ids() {
+        crate::env::reset_for_testing();
+
+        // Random IDs (new()) should be different each time
+        let counter1 = GCounter::new();
+        let counter2 = GCounter::new();
+
+        assert_ne!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter2.positive),
+            "Counters with new() should have different random IDs"
+        );
+
+        // Deterministic IDs (new_with_field_name) should be the same
+        let counter3 = GCounter::new_with_field_name("visits");
+        let counter4 = GCounter::new_with_field_name("visits");
+        assert_eq!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter3.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter4.positive),
+            "Counters with same field name should have same ID"
+        );
+    }
+
+    #[test]
+    fn test_counter_internal_maps_no_collision() {
+        crate::env::reset_for_testing();
+
+        // Verify that Counter's internal maps don't collide with user-created collections
+        // A Counter with field name "visits" should NOT collide with a user-created
+        // UnorderedMap with field name "visits_positive" or "visits_negative"
+        let counter = GCounter::new_with_field_name("visits");
+        let user_map_positive = UnorderedMap::<String, u64>::new_with_field_name("visits_positive");
+        let user_map_negative = UnorderedMap::<String, u64>::new_with_field_name("visits_negative");
+
+        // Counter's internal maps should have different IDs than user-created maps
+        assert_ne!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&user_map_positive),
+            "Counter's internal positive map should not collide with user-created 'visits_positive' map"
+        );
+        assert_ne!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter.negative),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&user_map_negative),
+            "Counter's internal negative map should not collide with user-created 'visits_negative' map"
+        );
+
+        // Also verify that Counter's internal maps use the reserved prefix
+        // by checking that a map with the actual internal name matches
+        let internal_positive =
+            UnorderedMap::<String, u64>::new_with_field_name("__counter_internal_visits_positive");
+        assert_eq!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&internal_positive),
+            "Counter's internal positive map should use the reserved prefix"
         );
     }
 }

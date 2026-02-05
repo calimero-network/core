@@ -26,7 +26,7 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use super::UnorderedMap;
+use super::{CrdtType, UnorderedMap};
 use crate::collections::error::StoreError;
 use crate::env;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -141,10 +141,33 @@ pub struct ReplicatedGrowableArray<S: StorageAdaptor = MainStorage> {
 }
 
 impl ReplicatedGrowableArray<MainStorage> {
-    /// Create a new empty RGA
+    /// Create a new empty RGA with a random ID.
+    ///
+    /// Use this for nested collections stored as values in other maps.
+    /// Merge happens by the parent map's key, so the nested collection's ID
+    /// doesn't affect sync semantics.
+    ///
+    /// For top-level state fields, use `new_with_field_name` instead.
     #[must_use]
     pub fn new() -> Self {
         Self::new_internal()
+    }
+
+    /// Create a new RGA with a deterministic ID.
+    ///
+    /// The `field_name` is used to generate a deterministic collection ID,
+    /// ensuring the same code produces the same ID across all nodes.
+    ///
+    /// Use this for top-level state fields (the `#[app::state]` macro does this
+    /// automatically).
+    ///
+    /// # Example
+    /// ```ignore
+    /// let document = ReplicatedGrowableArray::new_with_field_name("document");
+    /// ```
+    #[must_use]
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        Self::new_with_field_name_internal(None, field_name)
     }
 }
 
@@ -159,6 +182,34 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         Self {
             chars: UnorderedMap::new_internal(),
         }
+    }
+
+    /// Create a new RGA with deterministic ID (internal)
+    pub(super) fn new_with_field_name_internal(
+        parent_id: Option<crate::address::Id>,
+        field_name: &str,
+    ) -> Self {
+        Self {
+            chars: UnorderedMap::new_with_field_name_and_crdt_type(
+                parent_id,
+                field_name,
+                CrdtType::Rga,
+            ),
+        }
+    }
+
+    /// Reassigns the RGA's ID to a deterministic ID based on field name.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all top-level collections have deterministic IDs regardless of how they were
+    /// created in `init()`.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this RGA
+    pub fn reassign_deterministic_id(&mut self, field_name: &str) {
+        self.chars
+            .inner
+            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::Rga);
     }
 
     /// Insert a character at the given visible position
