@@ -24,6 +24,7 @@ mod returns;
 pub mod state;
 pub mod types;
 pub use calimero_primitives::identity::PublicKey;
+pub use state::read_raw;
 
 pub mod app {
     use super::types::Error;
