@@ -475,12 +475,24 @@ fn generate_assign_deterministic_ids_impl(
 ) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    // Extract fields from the struct
+    // Extract fields from the struct (enums don't have fields to process)
     let fields = match orig {
         StructOrEnumItem::Struct(s) => &s.fields,
         StructOrEnumItem::Enum(_) => {
-            // Enums don't have fields
-            return quote! {};
+            // Enums don't have fields, but we still need to generate the method
+            // because the init wrapper unconditionally calls it.
+            return quote! {
+                impl #impl_generics #ident #ty_generics #where_clause {
+                    /// Assigns deterministic IDs to all collection fields based on their field names.
+                    ///
+                    /// This is called automatically by the init wrapper. Users should not call this directly.
+                    /// For enum types, this is a no-op since enums don't have fields.
+                    #[doc(hidden)]
+                    pub fn __assign_deterministic_ids(&mut self) {
+                        // No-op for enum types
+                    }
+                }
+            };
         }
     };
 
