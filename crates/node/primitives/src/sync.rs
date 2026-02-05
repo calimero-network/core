@@ -584,6 +584,293 @@ impl DeltaApplyResult {
 }
 
 // =============================================================================
+// Delta Buffering During Sync (CIP §5 - Delta Handling During Sync)
+// =============================================================================
+
+/// Default buffer capacity for deltas during state sync.
+///
+/// This should be large enough to handle deltas arriving during a typical
+/// state transfer. If exceeded, deltas are NOT dropped (invariant I6), but
+/// a warning is logged.
+pub const DEFAULT_BUFFER_CAPACITY: usize = 1000;
+
+/// State of an ongoing synchronization.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SyncState {
+    /// No sync in progress.
+    Idle,
+    /// Handshake sent, waiting for response.
+    Handshaking,
+    /// Receiving state data (HashComparison, Snapshot, etc.).
+    ReceivingState,
+    /// State received, replaying buffered deltas.
+    ReplayingDeltas,
+    /// Sync completed successfully.
+    Completed,
+    /// Sync failed with error.
+    Failed(String),
+}
+
+impl SyncState {
+    /// Check if sync is actively in progress.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self,
+            Self::Handshaking | Self::ReceivingState | Self::ReplayingDeltas
+        )
+    }
+
+    /// Check if deltas should be buffered (sync receiving state).
+    #[must_use]
+    pub fn should_buffer_deltas(&self) -> bool {
+        matches!(self, Self::ReceivingState)
+    }
+}
+
+/// A delta buffered during state synchronization.
+///
+/// Contains ALL fields required for replay via DAG insertion.
+/// See CIP §5 and Bug 7 in POC-IMPLEMENTATION-NOTES.md.
+///
+/// CRITICAL: Deltas MUST be replayed via DAG insertion (causal order),
+/// NOT by HLC timestamp sorting.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct BufferedDelta {
+    /// Unique delta ID (content hash).
+    pub id: [u8; 32],
+
+    /// Parent delta IDs (for causal ordering via DAG).
+    pub parents: Vec<[u8; 32]>,
+
+    /// HLC timestamp when the delta was created.
+    pub hlc: u64,
+
+    /// Nonce for decryption (24 bytes for XChaCha20-Poly1305).
+    pub nonce: [u8; 24],
+
+    /// Author's public key (for signature verification).
+    pub author_id: [u8; 32],
+
+    /// Expected root hash after applying this delta.
+    pub root_hash: [u8; 32],
+
+    /// Serialized delta payload (operations).
+    pub payload: Vec<u8>,
+
+    /// Serialized events emitted by this delta.
+    pub events: Vec<Vec<u8>>,
+}
+
+impl BufferedDelta {
+    /// Create a new buffered delta.
+    #[must_use]
+    pub fn new(
+        id: [u8; 32],
+        parents: Vec<[u8; 32]>,
+        hlc: u64,
+        nonce: [u8; 24],
+        author_id: [u8; 32],
+        root_hash: [u8; 32],
+        payload: Vec<u8>,
+        events: Vec<Vec<u8>>,
+    ) -> Self {
+        Self {
+            id,
+            parents,
+            hlc,
+            nonce,
+            author_id,
+            root_hash,
+            payload,
+            events,
+        }
+    }
+
+    /// Check if this is a genesis delta (no parents).
+    #[must_use]
+    pub fn is_genesis(&self) -> bool {
+        self.parents.is_empty()
+    }
+}
+
+/// Context for an ongoing synchronization session.
+///
+/// Manages buffering of incoming deltas during state transfer.
+/// Deltas are NEVER dropped (invariant I6 - liveness guarantee).
+#[derive(Clone, Debug)]
+pub struct SyncContext {
+    /// Current sync state.
+    pub state: SyncState,
+
+    /// Deltas buffered during state transfer.
+    /// Replay via DAG insertion after state is applied.
+    pub buffered_deltas: Vec<BufferedDelta>,
+
+    /// Maximum buffer capacity (soft limit - logs warning if exceeded).
+    pub buffer_capacity: usize,
+
+    /// Timestamp when sync started (for metrics).
+    pub sync_start_timestamp: u64,
+
+    /// Peer we're syncing with.
+    pub peer_id: Option<[u8; 32]>,
+
+    /// Protocol being used for this sync.
+    pub protocol: SyncProtocol,
+}
+
+impl Default for SyncContext {
+    fn default() -> Self {
+        Self {
+            state: SyncState::Idle,
+            buffered_deltas: Vec::new(),
+            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
+            sync_start_timestamp: 0,
+            peer_id: None,
+            protocol: SyncProtocol::None,
+        }
+    }
+}
+
+impl SyncContext {
+    /// Create a new sync context with default capacity.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a new sync context with custom capacity.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buffer_capacity: capacity,
+            ..Self::default()
+        }
+    }
+
+    /// Start a sync session with a peer.
+    pub fn start(&mut self, peer_id: [u8; 32], protocol: SyncProtocol, timestamp: u64) {
+        self.state = SyncState::Handshaking;
+        self.peer_id = Some(peer_id);
+        self.protocol = protocol;
+        self.sync_start_timestamp = timestamp;
+        self.buffered_deltas.clear();
+    }
+
+    /// Transition to receiving state.
+    pub fn begin_receiving(&mut self) {
+        self.state = SyncState::ReceivingState;
+    }
+
+    /// Buffer a delta during state transfer.
+    ///
+    /// Returns `true` if buffer is within capacity, `false` if exceeded
+    /// (delta is still buffered - caller should log warning).
+    ///
+    /// INVARIANT I6: Deltas are NEVER dropped.
+    pub fn buffer_delta(&mut self, delta: BufferedDelta) -> bool {
+        let within_capacity = self.buffered_deltas.len() < self.buffer_capacity;
+        self.buffered_deltas.push(delta);
+        within_capacity
+    }
+
+    /// Begin replay phase (after state is applied).
+    pub fn begin_replay(&mut self) {
+        self.state = SyncState::ReplayingDeltas;
+    }
+
+    /// Take buffered deltas for replay.
+    ///
+    /// IMPORTANT: These MUST be replayed via DAG insertion (causal order),
+    /// NOT by HLC timestamp sorting.
+    pub fn take_buffered_deltas(&mut self) -> Vec<BufferedDelta> {
+        std::mem::take(&mut self.buffered_deltas)
+    }
+
+    /// Complete the sync successfully.
+    pub fn complete(&mut self) {
+        self.state = SyncState::Completed;
+    }
+
+    /// Mark sync as failed.
+    pub fn fail(&mut self, reason: String) {
+        self.state = SyncState::Failed(reason);
+    }
+
+    /// Reset context for a new sync session.
+    pub fn reset(&mut self) {
+        self.state = SyncState::Idle;
+        self.buffered_deltas.clear();
+        self.peer_id = None;
+        self.protocol = SyncProtocol::None;
+        self.sync_start_timestamp = 0;
+    }
+
+    /// Check if sync is in progress.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.state.is_active()
+    }
+
+    /// Check if deltas should be buffered.
+    #[must_use]
+    pub fn should_buffer(&self) -> bool {
+        self.state.should_buffer_deltas()
+    }
+
+    /// Get number of buffered deltas.
+    #[must_use]
+    pub fn buffered_count(&self) -> usize {
+        self.buffered_deltas.len()
+    }
+
+    /// Check if buffer has exceeded capacity (soft limit).
+    #[must_use]
+    pub fn is_buffer_exceeded(&self) -> bool {
+        self.buffered_deltas.len() > self.buffer_capacity
+    }
+}
+
+/// Metrics for delta buffering during sync.
+#[derive(Clone, Debug, Default)]
+pub struct BufferMetrics {
+    /// Total deltas buffered in this session.
+    pub total_buffered: usize,
+    /// Peak buffer size reached.
+    pub peak_buffer_size: usize,
+    /// Number of times buffer exceeded capacity (soft warnings).
+    pub capacity_exceeded_count: usize,
+    /// Total deltas replayed.
+    pub total_replayed: usize,
+    /// Duration of sync in milliseconds (set on completion).
+    pub sync_duration_ms: Option<u64>,
+}
+
+impl BufferMetrics {
+    /// Record a delta being buffered.
+    pub fn record_buffer(&mut self, current_size: usize) {
+        self.total_buffered += 1;
+        self.peak_buffer_size = self.peak_buffer_size.max(current_size);
+    }
+
+    /// Record buffer capacity exceeded.
+    pub fn record_exceeded(&mut self) {
+        self.capacity_exceeded_count += 1;
+    }
+
+    /// Record deltas being replayed.
+    pub fn record_replay(&mut self, count: usize) {
+        self.total_replayed += count;
+    }
+
+    /// Record sync completion with duration.
+    pub fn record_completion(&mut self, duration_ms: u64) {
+        self.sync_duration_ms = Some(duration_ms);
+    }
+}
+
+// =============================================================================
 // Snapshot Sync Types
 // =============================================================================
 
@@ -1256,5 +1543,282 @@ mod tests {
         };
         assert!(!failed.is_success());
         assert!(!failed.needs_state_sync());
+    }
+
+    // =========================================================================
+    // Delta Buffering Tests (Issue #1773)
+    // =========================================================================
+
+    #[test]
+    fn test_sync_state_transitions() {
+        assert!(!SyncState::Idle.is_active());
+        assert!(!SyncState::Idle.should_buffer_deltas());
+
+        assert!(SyncState::Handshaking.is_active());
+        assert!(!SyncState::Handshaking.should_buffer_deltas());
+
+        assert!(SyncState::ReceivingState.is_active());
+        assert!(SyncState::ReceivingState.should_buffer_deltas());
+
+        assert!(SyncState::ReplayingDeltas.is_active());
+        assert!(!SyncState::ReplayingDeltas.should_buffer_deltas());
+
+        assert!(!SyncState::Completed.is_active());
+        assert!(!SyncState::Failed("test".to_string()).is_active());
+    }
+
+    #[test]
+    fn test_buffered_delta_roundtrip() {
+        let delta = BufferedDelta::new(
+            [1; 32],
+            vec![[2; 32], [3; 32]],
+            12345,
+            [4; 24],
+            [5; 32],
+            [6; 32],
+            vec![7, 8, 9],
+            vec![vec![10, 11], vec![12, 13]],
+        );
+
+        let encoded = borsh::to_vec(&delta).expect("serialize");
+        let decoded: BufferedDelta = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(delta, decoded);
+        assert!(!decoded.is_genesis());
+    }
+
+    #[test]
+    fn test_buffered_delta_genesis() {
+        let genesis = BufferedDelta::new(
+            [1; 32],
+            vec![], // No parents
+            0,
+            [0; 24],
+            [2; 32],
+            [3; 32],
+            vec![1, 2, 3],
+            vec![],
+        );
+        assert!(genesis.is_genesis());
+
+        let non_genesis = BufferedDelta::new(
+            [2; 32],
+            vec![[1; 32]], // Has parent
+            1,
+            [0; 24],
+            [2; 32],
+            [4; 32],
+            vec![4, 5, 6],
+            vec![],
+        );
+        assert!(!non_genesis.is_genesis());
+    }
+
+    #[test]
+    fn test_sync_context_lifecycle() {
+        let mut ctx = SyncContext::new();
+        assert!(!ctx.is_active());
+        assert!(!ctx.should_buffer());
+        assert_eq!(ctx.buffered_count(), 0);
+
+        // Start sync
+        ctx.start(
+            [1; 32],
+            SyncProtocol::HashComparison {
+                root_hash: [2; 32],
+                divergent_subtrees: vec![],
+            },
+            1000,
+        );
+        assert!(ctx.is_active());
+        assert!(!ctx.should_buffer()); // Handshaking, not yet receiving
+
+        // Begin receiving state
+        ctx.begin_receiving();
+        assert!(ctx.is_active());
+        assert!(ctx.should_buffer());
+
+        // Begin replay
+        ctx.begin_replay();
+        assert!(ctx.is_active());
+        assert!(!ctx.should_buffer());
+
+        // Complete
+        ctx.complete();
+        assert!(!ctx.is_active());
+    }
+
+    #[test]
+    fn test_sync_context_buffer_deltas() {
+        let mut ctx = SyncContext::with_capacity(3);
+        ctx.begin_receiving();
+
+        let delta1 = BufferedDelta::new(
+            [1; 32],
+            vec![],
+            1,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+        let delta2 = BufferedDelta::new(
+            [2; 32],
+            vec![[1; 32]],
+            2,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+        let delta3 = BufferedDelta::new(
+            [3; 32],
+            vec![[2; 32]],
+            3,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+        let delta4 = BufferedDelta::new(
+            [4; 32],
+            vec![[3; 32]],
+            4,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+
+        // Buffer within capacity
+        assert!(ctx.buffer_delta(delta1));
+        assert!(ctx.buffer_delta(delta2));
+        assert!(ctx.buffer_delta(delta3));
+        assert_eq!(ctx.buffered_count(), 3);
+        assert!(!ctx.is_buffer_exceeded());
+
+        // Buffer exceeds capacity (but still buffers - I6)
+        assert!(!ctx.buffer_delta(delta4)); // Returns false - exceeded
+        assert_eq!(ctx.buffered_count(), 4); // Delta is still buffered!
+        assert!(ctx.is_buffer_exceeded());
+    }
+
+    #[test]
+    fn test_sync_context_take_buffered() {
+        let mut ctx = SyncContext::new();
+        ctx.begin_receiving();
+
+        let delta1 = BufferedDelta::new(
+            [1; 32],
+            vec![],
+            1,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+        let delta2 = BufferedDelta::new(
+            [2; 32],
+            vec![[1; 32]],
+            2,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+
+        ctx.buffer_delta(delta1.clone());
+        ctx.buffer_delta(delta2.clone());
+        assert_eq!(ctx.buffered_count(), 2);
+
+        // Take deltas for replay
+        let taken = ctx.take_buffered_deltas();
+        assert_eq!(taken.len(), 2);
+        assert_eq!(taken[0].id, delta1.id);
+        assert_eq!(taken[1].id, delta2.id);
+
+        // Buffer is now empty
+        assert_eq!(ctx.buffered_count(), 0);
+    }
+
+    #[test]
+    fn test_sync_context_reset() {
+        let mut ctx = SyncContext::new();
+        ctx.start(
+            [1; 32],
+            SyncProtocol::Snapshot {
+                compressed: true,
+                verified: true,
+            },
+            1000,
+        );
+        ctx.begin_receiving();
+
+        let delta = BufferedDelta::new(
+            [1; 32],
+            vec![],
+            1,
+            [0; 24],
+            [0; 32],
+            [0; 32],
+            vec![],
+            vec![],
+        );
+        ctx.buffer_delta(delta);
+
+        assert!(ctx.is_active());
+        assert!(ctx.peer_id.is_some());
+        assert_eq!(ctx.buffered_count(), 1);
+
+        ctx.reset();
+
+        assert!(!ctx.is_active());
+        assert!(ctx.peer_id.is_none());
+        assert_eq!(ctx.buffered_count(), 0);
+        assert!(matches!(ctx.protocol, SyncProtocol::None));
+    }
+
+    #[test]
+    fn test_sync_context_fail() {
+        let mut ctx = SyncContext::new();
+        ctx.start(
+            [1; 32],
+            SyncProtocol::HashComparison {
+                root_hash: [0; 32],
+                divergent_subtrees: vec![],
+            },
+            1000,
+        );
+
+        ctx.fail("connection lost".to_string());
+        assert!(!ctx.is_active());
+        assert!(matches!(ctx.state, SyncState::Failed(ref msg) if msg == "connection lost"));
+    }
+
+    #[test]
+    fn test_buffer_metrics() {
+        let mut metrics = BufferMetrics::default();
+
+        metrics.record_buffer(1);
+        metrics.record_buffer(2);
+        metrics.record_buffer(3);
+        assert_eq!(metrics.total_buffered, 3);
+        assert_eq!(metrics.peak_buffer_size, 3);
+
+        metrics.record_exceeded();
+        metrics.record_exceeded();
+        assert_eq!(metrics.capacity_exceeded_count, 2);
+
+        metrics.record_replay(5);
+        assert_eq!(metrics.total_replayed, 5);
+
+        metrics.record_completion(1500);
+        assert_eq!(metrics.sync_duration_ms, Some(1500));
     }
 }
