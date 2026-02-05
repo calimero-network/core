@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use calimero_storage::collections::CrdtType;
 use calimero_wasm_abi::schema::Manifest;
 use eyre::Result;
 
@@ -137,7 +138,7 @@ pub fn infer_schema_from_database(
                         // Infer type from crdt_type
                         let type_ref = if let Some(crdt_type) = index.metadata.crdt_type {
                             match crdt_type {
-                                crate::export::CrdtType::UnorderedMap => {
+                                CrdtType::UnorderedMap => {
                                     // Default to Map<String, String> - can be refined later
                                     TypeRef::Collection {
                                         collection: CollectionType::Map {
@@ -148,21 +149,21 @@ pub fn infer_schema_from_database(
                                         inner_type: None,
                                     }
                                 }
-                                crate::export::CrdtType::Vector => TypeRef::Collection {
+                                CrdtType::Vector => TypeRef::Collection {
                                     collection: CollectionType::List {
                                         items: Box::new(TypeRef::string()),
                                     },
                                     crdt_type: Some(CrdtCollectionType::Vector),
                                     inner_type: None,
                                 },
-                                crate::export::CrdtType::UnorderedSet => TypeRef::Collection {
+                                CrdtType::UnorderedSet => TypeRef::Collection {
                                     collection: CollectionType::List {
                                         items: Box::new(TypeRef::string()),
                                     },
                                     crdt_type: Some(CrdtCollectionType::UnorderedSet),
                                     inner_type: None,
                                 },
-                                crate::export::CrdtType::Counter => TypeRef::Collection {
+                                CrdtType::Counter => TypeRef::Collection {
                                     // Counter is stored as Map<String, u64> internally
                                     collection: CollectionType::Map {
                                         key: Box::new(TypeRef::string()),
@@ -171,17 +172,17 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::Counter),
                                     inner_type: None,
                                 },
-                                crate::export::CrdtType::Rga => TypeRef::Collection {
+                                CrdtType::Rga => TypeRef::Collection {
                                     collection: CollectionType::Record { fields: Vec::new() },
                                     crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
                                     inner_type: None,
                                 },
-                                crate::export::CrdtType::LwwRegister => TypeRef::Collection {
+                                CrdtType::LwwRegister => TypeRef::Collection {
                                     collection: CollectionType::Record { fields: Vec::new() },
                                     crdt_type: Some(CrdtCollectionType::LwwRegister),
                                     inner_type: Some(Box::new(TypeRef::string())),
                                 },
-                                crate::export::CrdtType::UserStorage => TypeRef::Collection {
+                                CrdtType::UserStorage => TypeRef::Collection {
                                     collection: CollectionType::Map {
                                         key: Box::new(TypeRef::string()),
                                         value: Box::new(TypeRef::string()),
@@ -189,7 +190,7 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::UnorderedMap),
                                     inner_type: None,
                                 },
-                                crate::export::CrdtType::FrozenStorage => TypeRef::Collection {
+                                CrdtType::FrozenStorage => TypeRef::Collection {
                                     collection: CollectionType::Map {
                                         key: Box::new(TypeRef::string()),
                                         value: Box::new(TypeRef::string()),
@@ -197,7 +198,7 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::UnorderedMap),
                                     inner_type: None,
                                 },
-                                crate::export::CrdtType::Record => {
+                                CrdtType::Record => {
                                     // Record type - would need to inspect children to infer fields
                                     TypeRef::Collection {
                                         collection: CollectionType::Record { fields: Vec::new() },
@@ -205,7 +206,7 @@ pub fn infer_schema_from_database(
                                         inner_type: None,
                                     }
                                 }
-                                crate::export::CrdtType::Custom { type_name: _ } => {
+                                CrdtType::Custom(_) => {
                                     // Custom type - can't infer without schema
                                     TypeRef::Collection {
                                         collection: CollectionType::Record { fields: Vec::new() },

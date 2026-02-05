@@ -1,6 +1,7 @@
 pub mod cli;
 
 use borsh::BorshDeserialize;
+use calimero_storage::collections::CrdtType;
 use calimero_store::types::ContextDagDelta as StoreContextDagDelta;
 use calimero_wasm_abi::schema::{
     CollectionType, CrdtCollectionType, Field, Manifest, ScalarType, TypeDef, TypeRef,
@@ -1546,22 +1547,8 @@ impl borsh::BorshDeserialize for Metadata {
     }
 }
 
-/// CRDT type identifier for entity metadata.
-/// Must match the definition in calimero-storage.
-#[derive(borsh::BorshDeserialize, Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum CrdtType {
-    LwwRegister,
-    Counter,
-    Rga,
-    UnorderedMap,
-    UnorderedSet,
-    Vector,
-    UserStorage,
-    FrozenStorage,
-    Record,
-    Custom { type_name: String },
-}
+// CrdtType is now imported from calimero_storage::collections::CrdtType
+// to ensure Borsh serialization compatibility with the storage layer.
 
 #[derive(borsh::BorshDeserialize, Clone)]
 #[expect(
