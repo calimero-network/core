@@ -18,8 +18,7 @@ use calimero_storage::Interface;
 use calimero_store::{key, types};
 use calimero_utils_actix::global_runtime;
 use eyre::bail;
-use sha2::{Digest, Sha256};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::handlers::execute::storage::ContextStorage;
 use crate::handlers::utils::StoreContextHost;
@@ -260,13 +259,29 @@ fn verify_appkey_continuity(
         );
     }
 
-    // Warn if updating from unsigned to signed (or vice versa)
-    if old_signer_id.is_empty() != new_signer_id.is_empty() {
-        warn!(
+    // Security: Disallow signed-to-unsigned downgrades 
+    // Allow unsigned-to-signed upgrades
+    if !old_signer_id.is_empty() && new_signer_id.is_empty() {
+        error!(
             context_id = %context.id,
-            old_has_signer = !old_signer_id.is_empty(),
-            new_has_signer = !new_signer_id.is_empty(),
-            "Updating between signed and unsigned applications"
+            old_signer_id = %old_signer_id,
+            "Security downgrade rejected: Cannot update from signed application to unsigned (legacy) application"
+        );
+        bail!(
+            "Security downgrade rejected: Cannot update from signed application (signerId: '{}') \
+             to unsigned (legacy) application. \
+             Signed-to-unsigned downgrades are disallowed to prevent security vulnerabilities. \
+             If you need to use a legacy unsigned application, you must create a new context.",
+            old_signer_id
+        );
+    }
+
+    // Warn if upgrading from unsigned to signed (allowed, but log for audit)
+    if old_signer_id.is_empty() && !new_signer_id.is_empty() {
+        info!(
+            context_id = %context.id,
+            new_signer_id = %new_signer_id,
+            "Upgrading from unsigned (legacy) to signed application - security improvement"
         );
     }
 
@@ -340,12 +355,13 @@ async fn update_application_with_migration(
             &context,
             module,
             &migration_params,
+            public_key,
         )
         .await?;
 
         // Write returned state bytes to root storage key
         // This uses the storage layer to properly update both Entry and Index
-        let full_hash = write_migration_state(&datastore, &context, &new_state_bytes)?;
+        let full_hash = write_migration_state(&datastore, &context, &new_state_bytes, public_key)?;
 
         // Update root_hash after migration using the hash computed by the storage layer
         // The full_hash from Interface::save_raw is the Merkle tree hash
@@ -410,6 +426,7 @@ async fn execute_migration(
     context: &Context,
     module: calimero_runtime::Module,
     migration_params: &MigrationParams,
+    executor_identity: PublicKey,
 ) -> eyre::Result<Vec<u8>> {
     let context_id = context.id;
     let method = migration_params.method.clone();
@@ -431,12 +448,12 @@ async fn execute_migration(
 
     // Execute the migration function in a blocking task
     // Migration functions take no parameters - context is accessed via host functions
+    // Use the update requestor's identity as executor for proper audit trail and authorization
     let outcome = global_runtime()
         .spawn_blocking(move || {
             module.run(
                 context_id,
-                // Use a zero executor since migration is not user-initiated
-                PublicKey::from([0u8; 32]),
+                executor_identity,
                 &method,
                 // Empty input - migration functions read old state via read_raw()
                 &[],
@@ -490,6 +507,7 @@ fn write_migration_state(
     datastore: &calimero_store::Store,
     context: &Context,
     new_state_bytes: &[u8],
+    executor_identity: PublicKey,
 ) -> eyre::Result<[u8; 32]> {
     let context_id = context.id;
 
@@ -542,12 +560,14 @@ fn write_migration_state(
     };
 
     // Create runtime environment with the storage callbacks
+    // Use the update requestor's identity as executor for proper audit trail
+    let executor_id_bytes: [u8; 32] = *executor_identity.as_ref();
     let runtime_env = RuntimeEnv::new(
         storage_read,
         storage_write,
         storage_remove,
         context_id_bytes,
-        [0u8; 32], // executor_id - zero for migration (not user-initiated)
+        executor_id_bytes,
     );
 
     // Execute the save operation within the runtime environment
@@ -580,15 +600,18 @@ fn write_migration_state(
         }
         Ok(None) => {
             // save_raw returns None if the data was rejected (e.g., older timestamp)
-            // This shouldn't happen during migration since we use current time
-            // Fall back to computing the hash manually
-            warn!(
+            // This indicates a timestamp conflict - the migration state write was skipped.
+            // Migration state writes should never be skipped as they represent a critical
+            // state transition. Return an error instead of silently computing a hash.
+            error!(
                 %context_id,
-                "Migration state write was skipped (timestamp conflict), computing hash manually"
+                "Migration state write was unexpectedly skipped - timestamp conflict"
             );
-            let own_hash: [u8; 32] = Sha256::digest(new_state_bytes).into();
-            let full_hash: [u8; 32] = Sha256::digest(own_hash).into();
-            Ok(full_hash)
+            bail!(
+                "Migration state write was unexpectedly skipped - timestamp conflict. \
+                 This indicates a concurrent update conflict that prevented the migration \
+                 state from being written. The migration must be retried."
+            )
         }
         Err(e) => {
             error!(
