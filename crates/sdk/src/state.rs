@@ -30,19 +30,7 @@ pub trait AppStateInit: Sized {
 ///
 /// * `Some(Vec<u8>)` - The raw serialized state bytes if state exists
 /// * `None` - If no state has been stored yet
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use calimero_sdk::state::read_raw;
-///
-/// // Read raw state bytes for migration
-/// if let Some(old_state_bytes) = read_raw() {
-///     // Deserialize old format and migrate to new format
-///     let old_state: OldState = borsh::from_slice(&old_state_bytes).unwrap();
-///     let new_state = migrate_state(old_state);
-/// }
-/// ```
+
 #[must_use]
 pub fn read_raw() -> Option<Vec<u8>> {
     // Compute the storage key for the root state entry.
