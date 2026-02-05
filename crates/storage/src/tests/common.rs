@@ -187,6 +187,8 @@ pub fn create_signed_user_add_action(
                 nonce,
             }),
         },
+        crdt_type: None,
+        field_name: None,
     };
 
     // Create action for signing
@@ -237,6 +239,8 @@ pub fn create_signed_user_update_action(
                 nonce,
             }),
         },
+        crdt_type: None,
+        field_name: None,
     };
 
     let mut action = Action::Update {
