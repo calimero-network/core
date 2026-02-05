@@ -53,6 +53,17 @@ pub enum Error<'a> {
 
 #[app::logic]
 impl VisualizationTest {
+    #[app::init]
+    pub fn init() -> VisualizationTest {
+        VisualizationTest {
+            items: UnorderedMap::new(),
+            operation_count: Counter::new(),
+            operation_history: Vector::new(),
+            tags: UnorderedSet::new(),
+            metadata: LwwRegister::new(String::new()),
+        }
+    }
+
     // =========================================================================
     // Item Operations (UnorderedMap)
     // =========================================================================
@@ -61,7 +72,8 @@ impl VisualizationTest {
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
         app::log!("Setting key: {:?} to value: {:?}", key, value);
 
-        self.items.insert(key.clone(), LwwRegister::new(value.clone()))?;
+        self.items
+            .insert(key.clone(), LwwRegister::new(value.clone()))?;
         self.operation_count.increment()?;
         self.operation_history
             .push(LwwRegister::new(format!("Set: {} = {}", key, value)))?;
