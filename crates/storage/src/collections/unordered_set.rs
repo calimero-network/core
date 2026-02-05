@@ -7,7 +7,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeSeq;
 use serde::Serialize;
 
-use super::{compute_id, Collection};
+use super::{compute_id, Collection, CrdtType};
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -58,7 +58,11 @@ where
         field_name: &str,
     ) -> Self {
         Self {
-            inner: Collection::new_with_field_name(parent_id, field_name),
+            inner: Collection::new_with_field_name_and_crdt_type(
+                parent_id,
+                field_name,
+                CrdtType::UnorderedSet,
+            ),
         }
     }
 
