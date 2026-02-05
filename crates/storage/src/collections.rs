@@ -169,7 +169,40 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
         let mut this = Self {
             children_ids: RefCell::new(None),
-            storage: Element::new(Some(id)),
+            storage: Element::new_with_field_name(Some(id), Some(field_name.to_string())),
+            _priv: PhantomData,
+        };
+
+        if id.is_root() {
+            let _ignored = <Interface<S>>::save(&mut this).expect("save");
+        } else {
+            let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
+        }
+
+        this
+    }
+
+    /// Creates a new collection with deterministic ID, field name, and CRDT type.
+    ///
+    /// # Arguments
+    /// * `parent_id` - The ID of the parent collection (None for root-level collections)
+    /// * `field_name` - The name of the field containing this collection
+    /// * `crdt_type` - The CRDT type for merge dispatch
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
+    pub(crate) fn new_with_field_name_and_crdt_type(
+        parent_id: Option<Id>,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) -> Self {
+        let id = compute_collection_id(parent_id, field_name);
+
+        let mut this = Self {
+            children_ids: RefCell::new(None),
+            storage: Element::new_with_field_name_and_crdt_type(
+                Some(id),
+                Some(field_name.to_string()),
+                crdt_type,
+            ),
             _priv: PhantomData,
         };
 

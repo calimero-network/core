@@ -9,7 +9,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeMap;
 use serde::Serialize;
 
-use super::{compute_id, Collection, EntryMut, StorageAdaptor};
+use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor};
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
@@ -65,7 +65,22 @@ where
         field_name: &str,
     ) -> Self {
         Self {
-            inner: Collection::new_with_field_name(parent_id, field_name),
+            inner: Collection::new_with_field_name_and_crdt_type(
+                parent_id,
+                field_name,
+                CrdtType::UnorderedMap,
+            ),
+        }
+    }
+
+    /// Create a new map with deterministic ID and explicit CRDT type (for Counter's internal maps)
+    pub(super) fn new_with_field_name_and_crdt_type(
+        parent_id: Option<crate::address::Id>,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) -> Self {
+        Self {
+            inner: Collection::new_with_field_name_and_crdt_type(parent_id, field_name, crdt_type),
         }
     }
 

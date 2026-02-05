@@ -9,7 +9,7 @@
 use borsh::io::{ErrorKind, Read, Result as BorshResult, Write};
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use super::{StorageAdaptor, UnorderedMap};
+use super::{CrdtType, StorageAdaptor, UnorderedMap};
 use crate::collections::error::StoreError;
 use crate::interface::StorageError;
 use crate::store::MainStorage;
@@ -217,10 +217,14 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
         // The prefix "__counter_internal_" is reserved for Counter's internal maps and ensures
         // that a Counter with field name "X" won't collide with a user-created collection
         // named "X_positive" or "X_negative".
+        //
+        // The positive map gets CrdtType::Counter as it represents the main counter entity.
+        // The negative map is internal and doesn't need special CRDT type.
         Self {
-            positive: UnorderedMap::new_with_field_name_internal(
+            positive: UnorderedMap::new_with_field_name_and_crdt_type(
                 parent_id,
                 &format!("__counter_internal_{field_name}_positive"),
+                CrdtType::Counter,
             ),
             negative: UnorderedMap::new_with_field_name_internal(
                 parent_id,

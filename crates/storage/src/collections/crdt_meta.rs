@@ -13,7 +13,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
 /// Identifies the specific CRDT type
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, BorshSerialize, BorshDeserialize)]
 pub enum CrdtType {
     /// Last-Write-Wins Register
     LwwRegister,
@@ -27,6 +27,10 @@ pub enum CrdtType {
     UnorderedSet,
     /// Vector (ordered list with operational transformation)
     Vector,
+    /// User storage
+    UserStorage,
+    /// Frozen storage
+    FrozenStorage,
     /// Custom user-defined CRDT (with #[derive(CrdtState)])
     Custom(String),
 }

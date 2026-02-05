@@ -21,6 +21,7 @@ use std::ops::{Deref, DerefMut};
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::address::Id;
+use crate::collections::CrdtType;
 use crate::env::time_now;
 
 /// Marker trait for atomic, persistable entities.
@@ -189,6 +190,50 @@ impl Element {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
+                crdt_type: None,
+                field_name: None,
+            },
+            merkle_hash: [0; 32],
+        }
+    }
+
+    /// Creates a new element with field name for schema inference.
+    #[must_use]
+    pub fn new_with_field_name(id: Option<Id>, field_name: Option<String>) -> Self {
+        let timestamp = time_now();
+        let element_id = id.unwrap_or_else(Id::random);
+        Self {
+            id: element_id,
+            is_dirty: true,
+            metadata: Metadata {
+                created_at: timestamp,
+                updated_at: timestamp.into(),
+                storage_type: StorageType::Public,
+                crdt_type: None,
+                field_name,
+            },
+            merkle_hash: [0; 32],
+        }
+    }
+
+    /// Creates a new element with field name and CRDT type.
+    #[must_use]
+    pub fn new_with_field_name_and_crdt_type(
+        id: Option<Id>,
+        field_name: Option<String>,
+        crdt_type: CrdtType,
+    ) -> Self {
+        let timestamp = time_now();
+        let element_id = id.unwrap_or_else(Id::random);
+        Self {
+            id: element_id,
+            is_dirty: true,
+            metadata: Metadata {
+                created_at: timestamp,
+                updated_at: timestamp.into(),
+                storage_type: StorageType::Public,
+                crdt_type: Some(crdt_type),
+                field_name,
             },
             merkle_hash: [0; 32],
         }
@@ -205,6 +250,8 @@ impl Element {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
+                crdt_type: None,
+                field_name: None,
             },
             merkle_hash: [0; 32],
         }
@@ -332,9 +379,7 @@ impl Default for StorageType {
 }
 
 /// System metadata (timestamps in u64 nanoseconds).
-#[derive(
-    BorshDeserialize, BorshSerialize, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
-)]
+#[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct Metadata {
     /// Timestamp of creation time in u64 nanoseconds.
@@ -346,6 +391,20 @@ pub struct Metadata {
     /// different characteristics of handling in the node.
     /// See `StorageType`.
     pub storage_type: StorageType,
+
+    /// CRDT type for merge dispatch during state synchronization.
+    ///
+    /// - Built-in types (Counter, Map, etc.) merge in storage layer
+    /// - Custom types dispatch to WASM for app-defined merge
+    /// - None indicates legacy data (falls back to LWW)
+    pub crdt_type: Option<CrdtType>,
+
+    /// Field name for schema inference.
+    ///
+    /// - Stored when entity is created via `new_with_field_name()`
+    /// - Enables schema inference from database without external schema file
+    /// - None for legacy data or entities created without field name
+    pub field_name: Option<String>,
 }
 
 impl Metadata {
@@ -356,6 +415,49 @@ impl Metadata {
             created_at,
             updated_at: updated_at.into(),
             storage_type: StorageType::default(),
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    /// Creates metadata with CRDT type.
+    #[must_use]
+    pub fn with_crdt_type(created_at: u64, updated_at: u64, crdt_type: CrdtType) -> Self {
+        Self {
+            created_at,
+            updated_at: updated_at.into(),
+            storage_type: StorageType::default(),
+            crdt_type: Some(crdt_type),
+            field_name: None,
+        }
+    }
+
+    /// Creates metadata with field name.
+    #[must_use]
+    pub fn with_field_name(created_at: u64, updated_at: u64, field_name: String) -> Self {
+        Self {
+            created_at,
+            updated_at: updated_at.into(),
+            storage_type: StorageType::default(),
+            crdt_type: None,
+            field_name: Some(field_name),
+        }
+    }
+
+    /// Creates metadata with CRDT type and field name.
+    #[must_use]
+    pub fn with_crdt_type_and_field_name(
+        created_at: u64,
+        updated_at: u64,
+        crdt_type: CrdtType,
+        field_name: String,
+    ) -> Self {
+        Self {
+            created_at,
+            updated_at: updated_at.into(),
+            storage_type: StorageType::default(),
+            crdt_type: Some(crdt_type),
+            field_name: Some(field_name),
         }
     }
 
@@ -374,6 +476,42 @@ impl Metadata {
     #[must_use]
     pub fn updated_at(&self) -> u64 {
         *self.updated_at
+    }
+}
+
+// Custom Borsh serialization for backward compatibility
+impl BorshSerialize for Metadata {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        BorshSerialize::serialize(&self.created_at, writer)?;
+        BorshSerialize::serialize(&self.updated_at, writer)?;
+        BorshSerialize::serialize(&self.storage_type, writer)?;
+        BorshSerialize::serialize(&self.crdt_type, writer)?;
+        BorshSerialize::serialize(&self.field_name, writer)?;
+        Ok(())
+    }
+}
+
+// Custom Borsh deserialization with backward compatibility
+// Old data without crdt_type/field_name will deserialize as None
+impl BorshDeserialize for Metadata {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let created_at = u64::deserialize_reader(reader)?;
+        let updated_at = UpdatedAt::deserialize_reader(reader)?;
+        let storage_type = StorageType::deserialize_reader(reader)?;
+
+        // Try to read crdt_type (may not exist in old data)
+        let crdt_type = Option::<CrdtType>::deserialize_reader(reader).unwrap_or(None);
+
+        // Try to read field_name (may not exist in old data)
+        let field_name = Option::<String>::deserialize_reader(reader).unwrap_or(None);
+
+        Ok(Self {
+            created_at,
+            updated_at,
+            storage_type,
+            crdt_type,
+            field_name,
+        })
     }
 }
 
