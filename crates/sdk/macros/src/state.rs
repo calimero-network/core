@@ -494,10 +494,6 @@ fn generate_assign_deterministic_ids_impl(
         })
         .collect();
 
-    if reassign_calls.is_empty() {
-        return quote! {};
-    }
-
     quote! {
         // ============================================================================
         // AUTO-GENERATED Deterministic ID Assignment
@@ -510,6 +506,9 @@ fn generate_assign_deterministic_ids_impl(
         // CIP Invariant I9: Deterministic Entity IDs
         // > Given the same application code and field names, all nodes MUST generate
         // > identical entity IDs for the same logical entities.
+        //
+        // Note: This method is always generated (even if empty) because the init wrapper
+        // unconditionally calls it. For apps without CRDT collections, this is a no-op.
         //
         impl #impl_generics #ident #ty_generics #where_clause {
             /// Assigns deterministic IDs to all collection fields based on their field names.
