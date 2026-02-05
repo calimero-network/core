@@ -1,13 +1,20 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::{MigrationParams, UpdateApplicationRequest};
 use calimero_node_primitives::client::NodeClient;
+use calimero_prelude::ROOT_STORAGE_ENTRY_ID;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use calimero_storage::constants::root_storage_key;
-use calimero_store::slice::Slice;
+use calimero_storage::address::Id;
+use calimero_storage::entities::Metadata;
+use calimero_storage::env::{with_runtime_env, RuntimeEnv};
+use calimero_storage::store::{Key, MainStorage};
+use calimero_storage::Interface;
 use calimero_store::{key, types};
 use calimero_utils_actix::global_runtime;
 use eyre::bail;
@@ -161,7 +168,7 @@ pub async fn update_application_id(
         }
     };
 
-    // Task 3.1: Verify AppKey continuity (signerId match)
+    // Verify AppKey continuity (signerId match)
     verify_appkey_continuity(&datastore, &context, &application_id)?;
 
     let Some(config_client) = context_client.context_config(&context_id)? else {
@@ -314,7 +321,7 @@ async fn update_application_with_migration(
         }
     };
 
-    // Task 3.1: Verify AppKey continuity (signerId match)
+    // Verify AppKey continuity (signerId match)
     verify_appkey_continuity(&datastore, &context, &application_id)?;
 
     // Execute migration if requested
@@ -326,7 +333,7 @@ async fn update_application_with_migration(
             "Executing migration"
         );
 
-        // Task 3.3: Execute migration function via module.run()
+        // Execute migration function via module.run()
         let new_state_bytes = execute_migration(
             &datastore,
             node_client.clone(),
@@ -336,15 +343,13 @@ async fn update_application_with_migration(
         )
         .await?;
 
-        // Task 3.4: Write returned state bytes to root storage key
-        write_migration_state(&datastore, &context, &new_state_bytes)?;
+        // Write returned state bytes to root storage key
+        // This uses the storage layer to properly update both Entry and Index
+        let full_hash = write_migration_state(&datastore, &context, &new_state_bytes)?;
 
-        // Update root_hash after migration
-        // The root_hash must match what the storage layer computes via calculate_full_hash_for_children.
-        // For a root entity: full_hash = SHA256(own_hash) where own_hash = SHA256(state_bytes).
-        // This is the Merkle tree hash that the sync protocol expects.
-        let own_hash: [u8; 32] = Sha256::digest(&new_state_bytes).into();
-        let new_root_hash = Hash::new(&own_hash);
+        // Update root_hash after migration using the hash computed by the storage layer
+        // The full_hash from Interface::save_raw is the Merkle tree hash
+        let new_root_hash = Hash::new(&full_hash);
         context.root_hash = new_root_hash;
 
         info!(
@@ -355,7 +360,7 @@ async fn update_application_with_migration(
         );
     }
 
-    // Task 3.5: Update context metadata after migration
+    // Update context metadata after migration
     let Some(config_client) = context_client.context_config(&context_id)? else {
         bail!(
             "missing context config parameters for context '{}'",
@@ -465,43 +470,125 @@ async fn execute_migration(
     }
 }
 
-/// Write migrated state bytes to the root storage key.
+/// Write migrated state bytes to the root storage key, properly updating both Entry and Index.
+///
+/// This function uses the `calimero-storage` layer to ensure the Merkle tree Index is
+/// updated along with the Entry data. This maintains consistency for the sync protocol.
+///
+/// Returns the computed `full_hash` (Merkle tree hash) which should be used as the `root_hash`.
 fn write_migration_state(
     datastore: &calimero_store::Store,
     context: &Context,
     new_state_bytes: &[u8],
-) -> eyre::Result<()> {
+) -> eyre::Result<[u8; 32]> {
     let context_id = context.id;
 
-    // Get the root storage key
-    let storage_key = root_storage_key();
-
     debug!(
         %context_id,
-        storage_key = ?storage_key,
         state_size = new_state_bytes.len(),
-        "Writing migrated state to root storage key"
+        "Writing migrated state via storage layer"
     );
 
-    // Write the new state to the context state storage
-    let mut handle = datastore.handle();
+    // Create storage callbacks that route to the datastore
+    let context_id_bytes: [u8; 32] = *context_id.as_ref();
 
-    // Create the context state key
-    let state_key = key::ContextState::new(context_id, storage_key);
+    let storage_read: Rc<dyn Fn(&Key) -> Option<Vec<u8>>> = {
+        let handle = datastore.handle();
+        let ctx_id = context_id;
+        Rc::new(move |key: &Key| {
+            let storage_key = key.to_bytes();
+            let state_key = key::ContextState::new(ctx_id, storage_key);
+            handle
+                .get(&state_key)
+                .ok()
+                .flatten()
+                .map(|state| state.value.into_boxed().into_vec())
+        })
+    };
 
-    // Convert bytes to ContextState value via Slice
-    let slice: Slice<'_> = new_state_bytes.to_vec().into();
-    let state_value = types::ContextState::from(slice);
+    let storage_write: Rc<dyn Fn(Key, &[u8]) -> bool> = {
+        let handle_cell: Rc<RefCell<_>> = Rc::new(RefCell::new(datastore.handle()));
+        let ctx_id = context_id;
+        Rc::new(move |key: Key, value: &[u8]| {
+            let storage_key = key.to_bytes();
+            let state_key = key::ContextState::new(ctx_id, storage_key);
+            let slice: calimero_store::slice::Slice<'_> = value.to_vec().into();
+            let state_value = types::ContextState::from(slice);
+            handle_cell
+                .borrow_mut()
+                .put(&state_key, &state_value)
+                .is_ok()
+        })
+    };
 
-    // Write the new state bytes
-    handle.put(&state_key, &state_value)?;
+    let storage_remove: Rc<dyn Fn(&Key) -> bool> = {
+        let handle_cell: Rc<RefCell<_>> = Rc::new(RefCell::new(datastore.handle()));
+        let ctx_id = context_id;
+        Rc::new(move |key: &Key| {
+            let storage_key = key.to_bytes();
+            let state_key = key::ContextState::new(ctx_id, storage_key);
+            handle_cell.borrow_mut().delete(&state_key).is_ok()
+        })
+    };
 
-    debug!(
-        %context_id,
-        "Migrated state written successfully"
+    // Create runtime environment with the storage callbacks
+    let runtime_env = RuntimeEnv::new(
+        storage_read,
+        storage_write,
+        storage_remove,
+        context_id_bytes,
+        [0u8; 32], // executor_id - zero for migration (not user-initiated)
     );
 
-    Ok(())
+    // Execute the save operation within the runtime environment
+    // This ensures both Entry and Index are properly updated
+    let result = with_runtime_env(runtime_env, || {
+        // The root entry ID is the well-known ROOT_STORAGE_ENTRY_ID
+        let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
+
+        // Create metadata for the migration
+        // Use current time for both created_at and updated_at
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let metadata = Metadata::new(now, now);
+
+        // Use Interface::save_raw to properly update both Entry and Index
+        // This maintains Merkle tree consistency
+        Interface::<MainStorage>::save_raw(root_entry_id, new_state_bytes.to_vec(), metadata)
+    });
+
+    match result {
+        Ok(Some(full_hash)) => {
+            debug!(
+                %context_id,
+                full_hash = ?full_hash,
+                "Migrated state written successfully with Index update"
+            );
+            Ok(full_hash)
+        }
+        Ok(None) => {
+            // save_raw returns None if the data was rejected (e.g., older timestamp)
+            // This shouldn't happen during migration since we use current time
+            // Fall back to computing the hash manually
+            warn!(
+                %context_id,
+                "Migration state write was skipped (timestamp conflict), computing hash manually"
+            );
+            let own_hash: [u8; 32] = Sha256::digest(new_state_bytes).into();
+            let full_hash: [u8; 32] = Sha256::digest(own_hash).into();
+            Ok(full_hash)
+        }
+        Err(e) => {
+            error!(
+                %context_id,
+                error = ?e,
+                "Failed to write migrated state"
+            );
+            bail!("Failed to write migrated state: {:?}", e)
+        }
+    }
 }
 
 #[cfg(test)]

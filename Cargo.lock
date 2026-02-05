@@ -2037,6 +2037,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-context-primitives",
  "calimero-node-primitives",
+ "calimero-prelude",
  "calimero-primitives",
  "calimero-runtime",
  "calimero-storage",
