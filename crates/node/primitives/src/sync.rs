@@ -2548,6 +2548,318 @@ pub fn merge_lww(input: &MergeInput<'_>) -> MergeResult {
     MergeResult::new(data, changed, strategy)
 }
 
+// =============================================================================
+// WASM Merge Callback Interface (CIP Appendix A - WASM Merge Callback)
+// =============================================================================
+
+/// Default timeout for WASM merge calls (in milliseconds).
+pub const DEFAULT_WASM_MERGE_TIMEOUT_MS: u64 = 5000;
+
+/// WASM export name for custom type merge.
+pub const WASM_MERGE_EXPORT: &str = "__calimero_merge";
+
+/// WASM export name for root state merge.
+pub const WASM_MERGE_ROOT_STATE_EXPORT: &str = "__calimero_merge_root_state";
+
+/// Errors specific to WASM merge operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WasmMergeError {
+    /// The WASM module doesn't export the required merge function.
+    MissingExport { export_name: String },
+
+    /// WASM merge call timed out.
+    Timeout { timeout_ms: u64 },
+
+    /// WASM execution failed.
+    ExecutionFailed { reason: String },
+
+    /// WASM returned invalid data.
+    InvalidResult { reason: String },
+
+    /// Memory allocation failed in WASM.
+    MemoryError { reason: String },
+
+    /// Type not found in WASM module.
+    TypeNotFound { type_name: String },
+}
+
+impl std::fmt::Display for WasmMergeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingExport { export_name } => {
+                write!(f, "WASM module missing export: {export_name}")
+            }
+            Self::Timeout { timeout_ms } => {
+                write!(f, "WASM merge timed out after {timeout_ms}ms")
+            }
+            Self::ExecutionFailed { reason } => {
+                write!(f, "WASM execution failed: {reason}")
+            }
+            Self::InvalidResult { reason } => {
+                write!(f, "WASM returned invalid result: {reason}")
+            }
+            Self::MemoryError { reason } => {
+                write!(f, "WASM memory error: {reason}")
+            }
+            Self::TypeNotFound { type_name } => {
+                write!(f, "Type not found in WASM: {type_name}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WasmMergeError {}
+
+impl From<WasmMergeError> for MergeError {
+    fn from(err: WasmMergeError) -> Self {
+        match err {
+            WasmMergeError::MissingExport { export_name } => MergeError::WasmRequired {
+                type_name: export_name,
+            },
+            other => MergeError::CrdtMergeError(other.to_string()),
+        }
+    }
+}
+
+/// Input for a WASM merge call.
+#[derive(Clone, Debug)]
+pub struct WasmMergeInput<'a> {
+    /// Local value (serialized).
+    pub local: &'a [u8],
+
+    /// Remote value (serialized).
+    pub remote: &'a [u8],
+
+    /// Type name for custom type merge (None for root state).
+    pub type_name: Option<&'a str>,
+
+    /// Timeout in milliseconds.
+    pub timeout_ms: u64,
+}
+
+impl<'a> WasmMergeInput<'a> {
+    /// Create input for custom type merge.
+    #[must_use]
+    pub fn for_type(local: &'a [u8], remote: &'a [u8], type_name: &'a str) -> Self {
+        Self {
+            local,
+            remote,
+            type_name: Some(type_name),
+            timeout_ms: DEFAULT_WASM_MERGE_TIMEOUT_MS,
+        }
+    }
+
+    /// Create input for root state merge.
+    #[must_use]
+    pub fn for_root_state(local: &'a [u8], remote: &'a [u8]) -> Self {
+        Self {
+            local,
+            remote,
+            type_name: None,
+            timeout_ms: DEFAULT_WASM_MERGE_TIMEOUT_MS,
+        }
+    }
+
+    /// Set custom timeout.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Check if this is a root state merge.
+    #[must_use]
+    pub fn is_root_state(&self) -> bool {
+        self.type_name.is_none()
+    }
+
+    /// Get the export name to call.
+    #[must_use]
+    pub fn export_name(&self) -> &'static str {
+        if self.is_root_state() {
+            WASM_MERGE_ROOT_STATE_EXPORT
+        } else {
+            WASM_MERGE_EXPORT
+        }
+    }
+}
+
+/// Result of a WASM merge operation.
+#[derive(Clone, Debug)]
+pub struct WasmMergeResult {
+    /// Merged data.
+    pub data: Vec<u8>,
+
+    /// Whether the merge changed the local value.
+    pub changed: bool,
+
+    /// Execution time in microseconds.
+    pub execution_time_us: u64,
+}
+
+impl WasmMergeResult {
+    /// Create a new WASM merge result.
+    #[must_use]
+    pub fn new(data: Vec<u8>, changed: bool, execution_time_us: u64) -> Self {
+        Self {
+            data,
+            changed,
+            execution_time_us,
+        }
+    }
+
+    /// Convert to a general MergeResult.
+    #[must_use]
+    pub fn into_merge_result(self) -> MergeResult {
+        MergeResult::new(self.data, self.changed, MergeStrategy::WasmCustom)
+    }
+}
+
+/// Capabilities advertised by a WASM module for merge operations.
+#[derive(Clone, Debug, Default)]
+pub struct WasmMergeCapabilities {
+    /// Module exports __calimero_merge.
+    pub supports_custom_merge: bool,
+
+    /// Module exports __calimero_merge_root_state.
+    pub supports_root_state_merge: bool,
+
+    /// Custom type names that can be merged.
+    pub supported_types: Vec<String>,
+}
+
+impl WasmMergeCapabilities {
+    /// Create capabilities from export checks.
+    #[must_use]
+    pub fn new(supports_custom: bool, supports_root: bool) -> Self {
+        Self {
+            supports_custom_merge: supports_custom,
+            supports_root_state_merge: supports_root,
+            supported_types: vec![],
+        }
+    }
+
+    /// Add a supported type.
+    pub fn add_type(&mut self, type_name: String) {
+        self.supported_types.push(type_name);
+    }
+
+    /// Check if any merge capability is available.
+    #[must_use]
+    pub fn has_any_capability(&self) -> bool {
+        self.supports_custom_merge || self.supports_root_state_merge
+    }
+
+    /// Check if a specific type can be merged.
+    #[must_use]
+    pub fn can_merge_type(&self, type_name: &str) -> bool {
+        self.supports_custom_merge
+            && (self.supported_types.is_empty()
+                || self.supported_types.iter().any(|t| t == type_name))
+    }
+}
+
+/// Request to merge via WASM callback.
+///
+/// Used when sync needs to merge a custom Mergeable type.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct WasmMergeRequest {
+    /// Local value (serialized).
+    pub local: Vec<u8>,
+
+    /// Remote value (serialized).
+    pub remote: Vec<u8>,
+
+    /// Type name for custom types (empty for root state).
+    pub type_name: String,
+
+    /// Timeout hint in milliseconds.
+    pub timeout_ms: u64,
+}
+
+impl WasmMergeRequest {
+    /// Create a request for custom type merge.
+    #[must_use]
+    pub fn for_type(local: Vec<u8>, remote: Vec<u8>, type_name: String) -> Self {
+        Self {
+            local,
+            remote,
+            type_name,
+            timeout_ms: DEFAULT_WASM_MERGE_TIMEOUT_MS,
+        }
+    }
+
+    /// Create a request for root state merge.
+    #[must_use]
+    pub fn for_root_state(local: Vec<u8>, remote: Vec<u8>) -> Self {
+        Self {
+            local,
+            remote,
+            type_name: String::new(),
+            timeout_ms: DEFAULT_WASM_MERGE_TIMEOUT_MS,
+        }
+    }
+
+    /// Check if this is a root state merge.
+    #[must_use]
+    pub fn is_root_state(&self) -> bool {
+        self.type_name.is_empty()
+    }
+}
+
+/// Response from a WASM merge callback.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct WasmMergeResponse {
+    /// Merged data (if successful).
+    pub data: Option<Vec<u8>>,
+
+    /// Error message (if failed).
+    pub error: Option<String>,
+
+    /// Whether the merge changed the local value.
+    pub changed: bool,
+}
+
+impl WasmMergeResponse {
+    /// Create a successful response.
+    #[must_use]
+    pub fn success(data: Vec<u8>, changed: bool) -> Self {
+        Self {
+            data: Some(data),
+            error: None,
+            changed,
+        }
+    }
+
+    /// Create an error response.
+    #[must_use]
+    pub fn error(message: String) -> Self {
+        Self {
+            data: None,
+            error: Some(message),
+            changed: false,
+        }
+    }
+
+    /// Check if the merge was successful.
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        self.data.is_some() && self.error.is_none()
+    }
+
+    /// Get the merged data (if successful).
+    #[must_use]
+    pub fn into_data(self) -> Result<Vec<u8>, WasmMergeError> {
+        match (self.data, self.error) {
+            (Some(data), None) => Ok(data),
+            (_, Some(err)) => Err(WasmMergeError::ExecutionFailed { reason: err }),
+            (None, None) => Err(WasmMergeError::InvalidResult {
+                reason: "No data or error in response".to_string(),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
 #[expect(clippy::large_enum_variant, reason = "Of no consequence here")]
@@ -4516,5 +4828,178 @@ mod tests {
 
         let result = merge_lww(&input);
         assert_eq!(result.strategy, MergeStrategy::LwwFallback);
+    }
+
+    // =========================================================================
+    // WASM Merge Callback Tests (Issue #1780)
+    // =========================================================================
+
+    #[test]
+    fn test_wasm_merge_error_display() {
+        let err = WasmMergeError::MissingExport {
+            export_name: "__calimero_merge".to_string(),
+        };
+        assert!(err.to_string().contains("__calimero_merge"));
+
+        let err = WasmMergeError::Timeout { timeout_ms: 5000 };
+        assert!(err.to_string().contains("5000"));
+
+        let err = WasmMergeError::ExecutionFailed {
+            reason: "test error".to_string(),
+        };
+        assert!(err.to_string().contains("test error"));
+    }
+
+    #[test]
+    fn test_wasm_merge_error_to_merge_error() {
+        let wasm_err = WasmMergeError::MissingExport {
+            export_name: "MyType".to_string(),
+        };
+        let merge_err: MergeError = wasm_err.into();
+        assert!(matches!(merge_err, MergeError::WasmRequired { .. }));
+
+        let wasm_err = WasmMergeError::Timeout { timeout_ms: 1000 };
+        let merge_err: MergeError = wasm_err.into();
+        assert!(matches!(merge_err, MergeError::CrdtMergeError(_)));
+    }
+
+    #[test]
+    fn test_wasm_merge_input_for_type() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6];
+
+        let input = WasmMergeInput::for_type(&local, &remote, "MyCustomType");
+
+        assert!(!input.is_root_state());
+        assert_eq!(input.type_name, Some("MyCustomType"));
+        assert_eq!(input.export_name(), WASM_MERGE_EXPORT);
+        assert_eq!(input.timeout_ms, DEFAULT_WASM_MERGE_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn test_wasm_merge_input_for_root_state() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6];
+
+        let input = WasmMergeInput::for_root_state(&local, &remote);
+
+        assert!(input.is_root_state());
+        assert!(input.type_name.is_none());
+        assert_eq!(input.export_name(), WASM_MERGE_ROOT_STATE_EXPORT);
+    }
+
+    #[test]
+    fn test_wasm_merge_input_with_timeout() {
+        let local = [1u8];
+        let remote = [2u8];
+
+        let input = WasmMergeInput::for_type(&local, &remote, "Test").with_timeout(10000);
+
+        assert_eq!(input.timeout_ms, 10000);
+    }
+
+    #[test]
+    fn test_wasm_merge_result() {
+        let result = WasmMergeResult::new(vec![1, 2, 3], true, 500);
+
+        assert!(result.changed);
+        assert_eq!(result.execution_time_us, 500);
+
+        let merge_result = result.into_merge_result();
+        assert_eq!(merge_result.strategy, MergeStrategy::WasmCustom);
+    }
+
+    #[test]
+    fn test_wasm_merge_capabilities() {
+        let mut caps = WasmMergeCapabilities::new(true, false);
+
+        assert!(caps.supports_custom_merge);
+        assert!(!caps.supports_root_state_merge);
+        assert!(caps.has_any_capability());
+
+        caps.add_type("MyType".to_string());
+        assert!(caps.can_merge_type("MyType"));
+        assert!(!caps.can_merge_type("OtherType"));
+
+        // Empty supported_types means all types are supported
+        let caps_all = WasmMergeCapabilities::new(true, true);
+        assert!(caps_all.can_merge_type("AnyType"));
+    }
+
+    #[test]
+    fn test_wasm_merge_capabilities_none() {
+        let caps = WasmMergeCapabilities::default();
+
+        assert!(!caps.supports_custom_merge);
+        assert!(!caps.supports_root_state_merge);
+        assert!(!caps.has_any_capability());
+        assert!(!caps.can_merge_type("AnyType"));
+    }
+
+    #[test]
+    fn test_wasm_merge_request_for_type() {
+        let request =
+            WasmMergeRequest::for_type(vec![1, 2, 3], vec![4, 5, 6], "CustomType".to_string());
+
+        assert!(!request.is_root_state());
+        assert_eq!(request.type_name, "CustomType");
+    }
+
+    #[test]
+    fn test_wasm_merge_request_for_root_state() {
+        let request = WasmMergeRequest::for_root_state(vec![1, 2, 3], vec![4, 5, 6]);
+
+        assert!(request.is_root_state());
+        assert!(request.type_name.is_empty());
+    }
+
+    #[test]
+    fn test_wasm_merge_request_roundtrip() {
+        let request =
+            WasmMergeRequest::for_type(vec![1, 2, 3], vec![4, 5, 6], "TestType".to_string());
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: WasmMergeRequest = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn test_wasm_merge_response_success() {
+        let response = WasmMergeResponse::success(vec![1, 2, 3], true);
+
+        assert!(response.is_success());
+        assert!(response.changed);
+
+        let data = response.into_data().expect("should have data");
+        assert_eq!(data, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_wasm_merge_response_error() {
+        let response = WasmMergeResponse::error("something went wrong".to_string());
+
+        assert!(!response.is_success());
+        assert!(!response.changed);
+
+        let err = response.into_data().unwrap_err();
+        assert!(matches!(err, WasmMergeError::ExecutionFailed { .. }));
+    }
+
+    #[test]
+    fn test_wasm_merge_response_roundtrip() {
+        let response = WasmMergeResponse::success(vec![7, 8, 9], false);
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: WasmMergeResponse = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(response, decoded);
+    }
+
+    #[test]
+    fn test_wasm_export_constants() {
+        assert_eq!(WASM_MERGE_EXPORT, "__calimero_merge");
+        assert_eq!(WASM_MERGE_ROOT_STATE_EXPORT, "__calimero_merge_root_state");
+        assert_eq!(DEFAULT_WASM_MERGE_TIMEOUT_MS, 5000);
     }
 }
