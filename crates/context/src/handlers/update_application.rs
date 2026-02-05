@@ -352,6 +352,16 @@ async fn update_application_with_migration(
         let new_root_hash = Hash::new(&full_hash);
         context.root_hash = new_root_hash;
 
+        // Align DAG heads with the new state. Migration does not create a causal delta,
+        // so use root_hash as dag_head fallback (same as execute flow when init() creates
+        // state without actions). This keeps sync protocol consistent and avoids divergence.
+        context.dag_heads = vec![*context.root_hash.as_bytes()];
+        debug!(
+            %context_id,
+            new_root_hash = %new_root_hash,
+            "Updated dag_heads to new root after migration"
+        );
+
         info!(
             %context_id,
             new_root_hash = %new_root_hash,
