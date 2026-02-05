@@ -2289,6 +2289,265 @@ pub fn check_snapshot_safety(has_local_state: bool) -> Result<(), SnapshotError>
     }
 }
 
+// =============================================================================
+// CRDT Merge Types (CIP Appendix A - Hybrid Merge Architecture)
+// =============================================================================
+
+/// Errors that can occur during CRDT merge operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MergeError {
+    /// CRDT-specific merge error.
+    CrdtMergeError(String),
+
+    /// The CRDT type requires WASM execution for merge.
+    WasmRequired { type_name: String },
+
+    /// Serialization/deserialization failed during merge.
+    SerializationError(String),
+
+    /// Type mismatch between local and remote values.
+    TypeMismatch { expected: String, found: String },
+
+    /// Missing CRDT type metadata (will use fallback).
+    MissingCrdtType,
+
+    /// HLC timestamp missing for LWW merge.
+    MissingTimestamp,
+}
+
+impl std::fmt::Display for MergeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CrdtMergeError(msg) => write!(f, "CRDT merge error: {msg}"),
+            Self::WasmRequired { type_name } => {
+                write!(f, "WASM required for merge of type: {type_name}")
+            }
+            Self::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
+            Self::TypeMismatch { expected, found } => {
+                write!(f, "Type mismatch: expected {expected}, found {found}")
+            }
+            Self::MissingCrdtType => write!(f, "Missing CRDT type metadata"),
+            Self::MissingTimestamp => write!(f, "Missing HLC timestamp for LWW merge"),
+        }
+    }
+}
+
+impl std::error::Error for MergeError {}
+
+/// Result of a CRDT merge operation.
+#[derive(Clone, Debug)]
+pub struct MergeResult {
+    /// Merged data (serialized).
+    pub data: Vec<u8>,
+
+    /// Whether the merge actually changed the local value.
+    pub changed: bool,
+
+    /// Merge strategy that was used.
+    pub strategy: MergeStrategy,
+}
+
+impl MergeResult {
+    /// Create a merge result.
+    #[must_use]
+    pub fn new(data: Vec<u8>, changed: bool, strategy: MergeStrategy) -> Self {
+        Self {
+            data,
+            changed,
+            strategy,
+        }
+    }
+
+    /// Create a result where local value was kept (no change).
+    #[must_use]
+    pub fn kept_local(data: Vec<u8>, strategy: MergeStrategy) -> Self {
+        Self::new(data, false, strategy)
+    }
+
+    /// Create a result where remote value was taken.
+    #[must_use]
+    pub fn took_remote(data: Vec<u8>, strategy: MergeStrategy) -> Self {
+        Self::new(data, true, strategy)
+    }
+}
+
+/// Strategy used for merging.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MergeStrategy {
+    /// Counter: sum per-node counts.
+    CounterSum,
+    /// Map: per-key merge (recursive).
+    MapPerKey,
+    /// Set: add-wins union.
+    SetAddWins,
+    /// Vector: element-wise merge.
+    VectorElementWise,
+    /// RGA: tombstone-based merge.
+    RgaTombstone,
+    /// LWW: timestamp comparison (higher wins).
+    LwwTimestamp,
+    /// Fallback LWW (crdt_type was None, logged warning).
+    LwwFallback,
+    /// Custom CRDT (via WASM).
+    WasmCustom,
+}
+
+impl MergeStrategy {
+    /// Check if this strategy requires WASM.
+    #[must_use]
+    pub fn requires_wasm(&self) -> bool {
+        matches!(self, Self::WasmCustom)
+    }
+
+    /// Check if this is a fallback strategy (indicates missing metadata).
+    #[must_use]
+    pub fn is_fallback(&self) -> bool {
+        matches!(self, Self::LwwFallback)
+    }
+}
+
+/// Determine the merge strategy for a given CRDT type.
+#[must_use]
+pub fn strategy_for_crdt_type(crdt_type: &CrdtType) -> MergeStrategy {
+    match crdt_type {
+        CrdtType::GCounter | CrdtType::PnCounter => MergeStrategy::CounterSum,
+        CrdtType::UnorderedMap => MergeStrategy::MapPerKey,
+        CrdtType::UnorderedSet | CrdtType::LwwSet | CrdtType::OrSet => MergeStrategy::SetAddWins,
+        CrdtType::Vector => MergeStrategy::VectorElementWise,
+        CrdtType::Rga => MergeStrategy::RgaTombstone,
+        CrdtType::LwwRegister => MergeStrategy::LwwTimestamp,
+        CrdtType::Custom(_) => MergeStrategy::WasmCustom,
+    }
+}
+
+/// Input for a merge operation.
+#[derive(Clone, Debug)]
+pub struct MergeInput<'a> {
+    /// Local value (serialized).
+    pub local: &'a [u8],
+
+    /// Remote value (serialized).
+    pub remote: &'a [u8],
+
+    /// Local HLC timestamp (for LWW).
+    pub local_hlc: u64,
+
+    /// Remote HLC timestamp (for LWW).
+    pub remote_hlc: u64,
+
+    /// CRDT type (if known).
+    pub crdt_type: Option<CrdtType>,
+}
+
+impl<'a> MergeInput<'a> {
+    /// Create a new merge input.
+    #[must_use]
+    pub fn new(local: &'a [u8], remote: &'a [u8]) -> Self {
+        Self {
+            local,
+            remote,
+            local_hlc: 0,
+            remote_hlc: 0,
+            crdt_type: None,
+        }
+    }
+
+    /// Set HLC timestamps.
+    #[must_use]
+    pub fn with_timestamps(mut self, local_hlc: u64, remote_hlc: u64) -> Self {
+        self.local_hlc = local_hlc;
+        self.remote_hlc = remote_hlc;
+        self
+    }
+
+    /// Set CRDT type.
+    #[must_use]
+    pub fn with_crdt_type(mut self, crdt_type: CrdtType) -> Self {
+        self.crdt_type = Some(crdt_type);
+        self
+    }
+
+    /// Get the merge strategy to use.
+    #[must_use]
+    pub fn strategy(&self) -> MergeStrategy {
+        match &self.crdt_type {
+            Some(ct) => strategy_for_crdt_type(ct),
+            None => MergeStrategy::LwwFallback,
+        }
+    }
+
+    /// Check if WASM is required for this merge.
+    #[must_use]
+    pub fn requires_wasm(&self) -> bool {
+        self.strategy().requires_wasm()
+    }
+}
+
+/// Result of comparing two HLC timestamps for LWW merge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LwwComparison {
+    /// Local value wins (higher timestamp).
+    LocalWins,
+    /// Remote value wins (higher timestamp).
+    RemoteWins,
+    /// Timestamps are equal - need tie-breaker.
+    Tie,
+}
+
+/// Compare HLC timestamps for LWW merge.
+///
+/// Returns which value should win based on timestamps.
+/// For ties, caller should use lexicographic comparison on data.
+#[must_use]
+pub fn compare_lww_timestamps(local_hlc: u64, remote_hlc: u64) -> LwwComparison {
+    match local_hlc.cmp(&remote_hlc) {
+        std::cmp::Ordering::Greater => LwwComparison::LocalWins,
+        std::cmp::Ordering::Less => LwwComparison::RemoteWins,
+        std::cmp::Ordering::Equal => LwwComparison::Tie,
+    }
+}
+
+/// Resolve an LWW tie using lexicographic comparison on data.
+///
+/// This provides deterministic tie-breaking when HLC timestamps are equal.
+#[must_use]
+pub fn resolve_lww_tie(local: &[u8], remote: &[u8]) -> LwwComparison {
+    match local.cmp(remote) {
+        std::cmp::Ordering::Greater => LwwComparison::LocalWins,
+        std::cmp::Ordering::Less => LwwComparison::RemoteWins,
+        std::cmp::Ordering::Equal => LwwComparison::LocalWins, // Same data, keep local
+    }
+}
+
+/// Perform LWW merge with timestamps and tie-breaking.
+///
+/// This is the base merge function used by LWW registers and as fallback.
+#[must_use]
+pub fn merge_lww(input: &MergeInput<'_>) -> MergeResult {
+    let comparison = compare_lww_timestamps(input.local_hlc, input.remote_hlc);
+
+    let (data, changed) = match comparison {
+        LwwComparison::LocalWins => (input.local.to_vec(), false),
+        LwwComparison::RemoteWins => (input.remote.to_vec(), true),
+        LwwComparison::Tie => {
+            // Tie-breaker: lexicographic on data
+            match resolve_lww_tie(input.local, input.remote) {
+                LwwComparison::LocalWins => (input.local.to_vec(), false),
+                LwwComparison::RemoteWins => (input.remote.to_vec(), true),
+                LwwComparison::Tie => (input.local.to_vec(), false), // Same data
+            }
+        }
+    };
+
+    let strategy = input
+        .crdt_type
+        .as_ref()
+        .map(|_| MergeStrategy::LwwTimestamp)
+        .unwrap_or(MergeStrategy::LwwFallback);
+
+    MergeResult::new(data, changed, strategy)
+}
+
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
 #[expect(clippy::large_enum_variant, reason = "Of no consequence here")]
@@ -4054,5 +4313,208 @@ mod tests {
             let decoded: SnapshotError = borsh::from_slice(&encoded).expect("deserialize");
             assert_eq!(error, decoded);
         }
+    }
+
+    // =========================================================================
+    // CRDT Merge Tests (Issue #1779)
+    // =========================================================================
+
+    #[test]
+    fn test_merge_error_display() {
+        let error = MergeError::CrdtMergeError("test error".to_string());
+        assert!(error.to_string().contains("test error"));
+
+        let error = MergeError::WasmRequired {
+            type_name: "CustomType".to_string(),
+        };
+        assert!(error.to_string().contains("WASM"));
+        assert!(error.to_string().contains("CustomType"));
+
+        let error = MergeError::TypeMismatch {
+            expected: "Counter".to_string(),
+            found: "Map".to_string(),
+        };
+        assert!(error.to_string().contains("Counter"));
+        assert!(error.to_string().contains("Map"));
+    }
+
+    #[test]
+    fn test_merge_result() {
+        let result = MergeResult::new(vec![1, 2, 3], true, MergeStrategy::LwwTimestamp);
+        assert!(result.changed);
+        assert_eq!(result.strategy, MergeStrategy::LwwTimestamp);
+
+        let kept = MergeResult::kept_local(vec![4, 5, 6], MergeStrategy::CounterSum);
+        assert!(!kept.changed);
+
+        let took = MergeResult::took_remote(vec![7, 8, 9], MergeStrategy::SetAddWins);
+        assert!(took.changed);
+    }
+
+    #[test]
+    fn test_merge_strategy_properties() {
+        assert!(!MergeStrategy::CounterSum.requires_wasm());
+        assert!(!MergeStrategy::MapPerKey.requires_wasm());
+        assert!(!MergeStrategy::SetAddWins.requires_wasm());
+        assert!(!MergeStrategy::LwwTimestamp.requires_wasm());
+        assert!(MergeStrategy::WasmCustom.requires_wasm());
+
+        assert!(!MergeStrategy::LwwTimestamp.is_fallback());
+        assert!(MergeStrategy::LwwFallback.is_fallback());
+    }
+
+    #[test]
+    fn test_strategy_for_crdt_type() {
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::GCounter),
+            MergeStrategy::CounterSum
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::PnCounter),
+            MergeStrategy::CounterSum
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::UnorderedMap),
+            MergeStrategy::MapPerKey
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::UnorderedSet),
+            MergeStrategy::SetAddWins
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::LwwSet),
+            MergeStrategy::SetAddWins
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::Vector),
+            MergeStrategy::VectorElementWise
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::Rga),
+            MergeStrategy::RgaTombstone
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::LwwRegister),
+            MergeStrategy::LwwTimestamp
+        );
+        assert_eq!(
+            strategy_for_crdt_type(&CrdtType::Custom(42)),
+            MergeStrategy::WasmCustom
+        );
+    }
+
+    #[test]
+    fn test_merge_input_builder() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6];
+
+        let input = MergeInput::new(&local, &remote)
+            .with_timestamps(100, 200)
+            .with_crdt_type(CrdtType::LwwRegister);
+
+        assert_eq!(input.local_hlc, 100);
+        assert_eq!(input.remote_hlc, 200);
+        assert_eq!(input.crdt_type, Some(CrdtType::LwwRegister));
+        assert_eq!(input.strategy(), MergeStrategy::LwwTimestamp);
+        assert!(!input.requires_wasm());
+    }
+
+    #[test]
+    fn test_merge_input_fallback_strategy() {
+        let local = [1u8];
+        let remote = [2u8];
+
+        let input = MergeInput::new(&local, &remote);
+        assert_eq!(input.strategy(), MergeStrategy::LwwFallback);
+    }
+
+    #[test]
+    fn test_merge_input_wasm_required() {
+        let local = [1u8];
+        let remote = [2u8];
+
+        let input = MergeInput::new(&local, &remote).with_crdt_type(CrdtType::Custom(1));
+        assert!(input.requires_wasm());
+    }
+
+    #[test]
+    fn test_compare_lww_timestamps() {
+        assert_eq!(compare_lww_timestamps(100, 50), LwwComparison::LocalWins);
+        assert_eq!(compare_lww_timestamps(50, 100), LwwComparison::RemoteWins);
+        assert_eq!(compare_lww_timestamps(100, 100), LwwComparison::Tie);
+    }
+
+    #[test]
+    fn test_resolve_lww_tie() {
+        // Lexicographically larger wins
+        assert_eq!(
+            resolve_lww_tie(&[2, 0, 0], &[1, 0, 0]),
+            LwwComparison::LocalWins
+        );
+        assert_eq!(
+            resolve_lww_tie(&[1, 0, 0], &[2, 0, 0]),
+            LwwComparison::RemoteWins
+        );
+
+        // Same data - local wins
+        assert_eq!(
+            resolve_lww_tie(&[1, 2, 3], &[1, 2, 3]),
+            LwwComparison::LocalWins
+        );
+    }
+
+    #[test]
+    fn test_merge_lww_local_wins() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6];
+
+        let input = MergeInput::new(&local, &remote)
+            .with_timestamps(200, 100) // Local has higher timestamp
+            .with_crdt_type(CrdtType::LwwRegister);
+
+        let result = merge_lww(&input);
+        assert!(!result.changed);
+        assert_eq!(result.data, local.to_vec());
+        assert_eq!(result.strategy, MergeStrategy::LwwTimestamp);
+    }
+
+    #[test]
+    fn test_merge_lww_remote_wins() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6];
+
+        let input = MergeInput::new(&local, &remote)
+            .with_timestamps(100, 200) // Remote has higher timestamp
+            .with_crdt_type(CrdtType::LwwRegister);
+
+        let result = merge_lww(&input);
+        assert!(result.changed);
+        assert_eq!(result.data, remote.to_vec());
+    }
+
+    #[test]
+    fn test_merge_lww_tie_breaker() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6]; // Lexicographically larger
+
+        let input = MergeInput::new(&local, &remote)
+            .with_timestamps(100, 100) // Same timestamp - tie
+            .with_crdt_type(CrdtType::LwwRegister);
+
+        let result = merge_lww(&input);
+        assert!(result.changed); // Remote wins due to lexicographic comparison
+        assert_eq!(result.data, remote.to_vec());
+    }
+
+    #[test]
+    fn test_merge_lww_fallback_strategy() {
+        let local = [1u8, 2, 3];
+        let remote = [4u8, 5, 6];
+
+        // No CRDT type - uses fallback
+        let input = MergeInput::new(&local, &remote).with_timestamps(100, 200);
+
+        let result = merge_lww(&input);
+        assert_eq!(result.strategy, MergeStrategy::LwwFallback);
     }
 }
