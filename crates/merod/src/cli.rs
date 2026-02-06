@@ -10,6 +10,7 @@ mod auth_mode;
 mod config;
 mod init;
 mod run;
+mod validation;
 
 use config::ConfigCommand;
 pub use init::ConfigProtocol;

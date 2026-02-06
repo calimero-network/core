@@ -109,11 +109,16 @@ const DEFAULT_MAX_BLOB_HANDLES: u64 = 100;
 const DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB: u64 = 10;
 /// Default maximum method name length in bytes.
 const DEFAULT_MAX_METHOD_NAME_LENGTH: u64 = 256;
+/// Default maximum WASM module size in MiB (10 MiB).
+const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 10;
 
 /// Defines the resource limits for a VM instance.
 ///
 /// This struct is used to configure constraints on various VM operations to prevent
 /// excessive resource consumption.
+///
+/// Note: New fields should be added at the end for better forward compatibility
+/// if serialization is ever added.
 #[derive(Debug, Clone, Copy)]
 pub struct VMLimits {
     /// The maximum number of memory pages allowed.
@@ -154,6 +159,14 @@ pub struct VMLimits {
     pub max_blob_chunk_size: u64,
     /// The maximum length of a method name in bytes.
     pub max_method_name_length: u64,
+    /// The maximum size of a WASM module in bytes before compilation.
+    /// This limit prevents memory exhaustion attacks from large malicious modules.
+    /// Setting this to 0 will reject all non-empty modules.
+    ///
+    /// **Configuration guidance**: Typical WASM modules range from 100 KiB to a few MiB.
+    /// The default of 10 MiB accommodates most applications while preventing memory
+    /// exhaustion. Consider reducing for memory-constrained environments.
+    pub max_module_size: u64,
 }
 
 impl Default for VMLimits {
@@ -188,6 +201,7 @@ impl Default for VMLimits {
             max_blob_handles: DEFAULT_MAX_BLOB_HANDLES,
             max_blob_chunk_size: DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB * u64::from(ONE_MIB),
             max_method_name_length: DEFAULT_MAX_METHOD_NAME_LENGTH,
+            max_module_size: DEFAULT_MAX_MODULE_SIZE_MIB * u64::from(ONE_MIB),
         }
     }
 }
@@ -778,6 +792,7 @@ mod tests {
     #[test]
     fn test_default_limits() {
         let limits = VMLimits::default();
+        assert_eq!(limits.max_module_size, 10 << 20); // 10 MiB
         assert_eq!(limits.max_memory_pages, 1 << 10);
         assert_eq!(limits.max_stack_size, 200 << 10);
         assert_eq!(limits.max_registers, 100);

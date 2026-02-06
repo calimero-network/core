@@ -2247,6 +2247,7 @@ dependencies = [
  "async-stream",
  "base64 0.22.1",
  "borsh",
+ "bs58 0.5.1",
  "calimero-blobstore",
  "calimero-crypto",
  "calimero-network-primitives",
@@ -2254,9 +2255,11 @@ dependencies = [
  "calimero-storage",
  "calimero-store",
  "calimero-utils-actix",
+ "calimero-version",
  "camino",
  "clap",
  "dashmap 6.1.0",
+ "ed25519-dalek",
  "eyre",
  "flate2",
  "futures-util",
@@ -2268,6 +2271,7 @@ dependencies = [
  "semver 1.0.27",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sha2 0.10.9",
  "tar",
  "tempfile",
@@ -2301,6 +2305,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 1.0.69",
  "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -2542,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.10.0-rc.39"
+version = "0.10.0-rc.40"
 dependencies = [
  "eyre",
  "rustc_version 0.2.3",
@@ -6678,6 +6683,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mero-sign"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bs58 0.5.1",
+ "clap",
+ "ed25519-dalek",
+ "eyre",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "meroctl"
 version = "0.0.0"
 dependencies = [
@@ -9222,6 +9244,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
+name = "ryu-js"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6518fc26bced4d53678a22d6e423e9d8716377def84545fe328236e3af070e7f"
+
+[[package]]
 name = "salsa20"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9559,6 +9587,17 @@ dependencies = [
  "ryu",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "serde_json_canonicalizer"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8a4c2ea923e1d3d2c03bd1299b7061e015f3bd9dab5a47b34283df9d8ab36a1"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

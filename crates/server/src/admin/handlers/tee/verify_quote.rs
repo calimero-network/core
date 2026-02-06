@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine};
 use calimero_server_primitives::admin::{
     TeeVerifyQuoteRequest, TeeVerifyQuoteResponse, TeeVerifyQuoteResponseData,
@@ -10,12 +10,13 @@ use calimero_tee_attestation::{verify_attestation, AttestationError};
 use reqwest::StatusCode;
 use tracing::{error, info};
 
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{ApiError, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
     Extension(_state): Extension<Arc<AdminState>>,
-    Json(req): Json<TeeVerifyQuoteRequest>,
+    ValidatedJson(req): ValidatedJson<TeeVerifyQuoteRequest>,
 ) -> impl IntoResponse {
     info!(
         nonce=%req.nonce,
@@ -30,50 +31,49 @@ pub async fn handler(
 }
 
 async fn verify_quote(req: TeeVerifyQuoteRequest) -> Result<TeeVerifyQuoteResponse, ApiError> {
-    // 1. Validate and decode nonce
+    // Defense-in-depth: ValidatedJson already validates format, but we keep defensive
+    // error handling here in case validation is bypassed or has bugs. This prevents
+    // panics and provides clear error messages.
     let nonce = hex::decode(&req.nonce).map_err(|_| {
         error!("Invalid nonce format");
         ApiError {
             status_code: StatusCode::BAD_REQUEST,
-            message: "Invalid nonce format (must be 64 hex characters)".to_owned(),
+            message: "Invalid nonce format (must be hex string)".to_owned(),
         }
     })?;
 
-    if nonce.len() != 32 {
-        error!(nonce_len=%nonce.len(), "Invalid nonce length");
-        return Err(ApiError {
+    let nonce_array: [u8; 32] = nonce.try_into().map_err(|_| {
+        error!(nonce_len=%req.nonce.len() / 2, "Invalid nonce length");
+        ApiError {
             status_code: StatusCode::BAD_REQUEST,
             message: "Nonce must be exactly 32 bytes (64 hex characters)".to_owned(),
-        });
-    }
+        }
+    })?;
 
-    let nonce_array: [u8; 32] = nonce.try_into().expect("checked length above");
-
-    // 2. Validate expected application hash if provided
+    // Decode and validate expected application hash if provided
     let expected_app_hash = if let Some(hash_hex) = &req.expected_application_hash {
         let h = hex::decode(hash_hex).map_err(|_| {
             error!("Invalid application hash format");
             ApiError {
                 status_code: StatusCode::BAD_REQUEST,
-                message: "Invalid application hash format (must be 64 hex characters)".to_owned(),
+                message: "Invalid application hash format (must be hex string)".to_owned(),
             }
         })?;
 
-        if h.len() != 32 {
-            error!(hash_len=%h.len(), "Invalid application hash length");
-            return Err(ApiError {
+        let hash_array: [u8; 32] = h.try_into().map_err(|_| {
+            error!(hash_len=%hash_hex.len() / 2, "Invalid application hash length");
+            ApiError {
                 status_code: StatusCode::BAD_REQUEST,
                 message: "Application hash must be exactly 32 bytes (64 hex characters)".to_owned(),
-            });
-        }
+            }
+        })?;
 
-        let hash_array: [u8; 32] = h.try_into().expect("checked length above");
         Some(hash_array)
     } else {
         None
     };
 
-    // 3. Decode base64 quote
+    // Decode base64 quote
     let quote_bytes = base64_engine.decode(&req.quote_b64).map_err(|err| {
         error!(error=?err, "Failed to decode base64 quote");
         ApiError {

@@ -12,6 +12,7 @@ use mero_auth::embedded::default_config;
 use tracing::info;
 
 use super::auth_mode::AuthModeArg;
+use super::validation::validate_config;
 use crate::cli::RootArgs;
 use crate::kms;
 
@@ -33,6 +34,16 @@ impl RunCommand {
 
         let mut config = ConfigFile::load(&path).await?;
 
+        // Apply CLI auth_mode override before validation
+        if let Some(mode) = self.auth_mode {
+            config.network.server.auth_mode = mode.into();
+        }
+
+        // Validate configuration at startup (after CLI overrides are applied)
+        validate_config(&config, &path).wrap_err(
+            "Configuration validation failed - please fix the configuration and try again",
+        )?;
+
         // Fetch storage encryption key from KMS if configured
         let encryption_key = if let Some(ref tee_config) = config.tee {
             let peer_id = config.identity.public().to_peer_id().to_base58();
@@ -53,10 +64,6 @@ impl RunCommand {
         } else {
             None
         };
-
-        if let Some(mode) = self.auth_mode {
-            config.network.server.auth_mode = mode.into();
-        }
 
         // Read node mode from config
         let node_mode = config.mode;

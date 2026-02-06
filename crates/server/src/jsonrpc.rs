@@ -7,6 +7,7 @@ use calimero_server_primitives::jsonrpc::{
     Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody,
     ResponseBodyError, ResponseBodyResult, ServerResponseError,
 };
+use calimero_server_primitives::validation::Validate;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
@@ -73,6 +74,29 @@ async fn handle_request(
     let body = match serde_json::from_value::<RequestPayload>(request.payload.clone()) {
         Ok(payload) => match payload {
             RequestPayload::Execute(exec_request) => {
+                // Validate the execution request before processing
+                let validation_errors = exec_request.validate();
+                if !validation_errors.is_empty() {
+                    let error_messages: Vec<String> =
+                        validation_errors.iter().map(ToString::to_string).collect();
+                    let message = if error_messages.len() == 1 {
+                        error_messages.into_iter().next().unwrap_or_default()
+                    } else {
+                        format!("Validation errors: {}", error_messages.join("; "))
+                    };
+
+                    error!(errors=?validation_errors, "Request validation failed");
+
+                    return PrimitiveResponse::new(
+                        request.jsonrpc,
+                        request.id,
+                        ResponseBody::Error(ResponseBodyError::ServerError(
+                            ServerResponseError::ParseError(message),
+                        )),
+                    )
+                    .into();
+                }
+
                 let context_id = exec_request.context_id;
                 let method = exec_request.method.clone();
 

@@ -5,6 +5,8 @@ use calimero_primitives::identity::PublicKey;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
+use crate::validation::{Validate, ValidationError};
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(untagged)]
 #[non_exhaustive]
@@ -191,4 +193,36 @@ pub enum ExecutionError {
     #[serde(untagged)]
     #[error(transparent)]
     ExecuteError(ExecuteError),
+}
+
+// -------------------------------------------- Validation Implementation --------------------------------------------
+
+impl Validate for ExecutionRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        use crate::validation::helpers::{
+            validate_collection_size, validate_json_size, validate_method_name,
+        };
+        use crate::validation::{MAX_ARGS_JSON_SIZE, MAX_SUBSTITUTE_ALIASES};
+
+        let mut errors = Vec::new();
+
+        // Validate method name
+        if let Some(e) = validate_method_name(&self.method, "method") {
+            errors.push(e);
+        }
+
+        // Validate args_json size
+        if let Some(e) = validate_json_size(&self.args_json, "args_json", MAX_ARGS_JSON_SIZE) {
+            errors.push(e);
+        }
+
+        // Validate substitute aliases count
+        if let Some(e) =
+            validate_collection_size(&self.substitute, "substitute", MAX_SUBSTITUTE_ALIASES)
+        {
+            errors.push(e);
+        }
+
+        errors
+    }
 }
