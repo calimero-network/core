@@ -64,7 +64,7 @@ pub enum SyncProtocol {
     /// Best for: Large trees with small diff (<10% divergence).
     BloomFilter {
         /// Size of the bloom filter in bits.
-        filter_size: usize,
+        filter_size: u64,
         /// Expected false positive rate (0.0 to 1.0).
         false_positive_rate: f64,
     },
@@ -82,7 +82,7 @@ pub enum SyncProtocol {
     /// Best for: Trees with depth ≤ 2 and many children.
     LevelWise {
         /// Maximum depth to sync.
-        max_depth: usize,
+        max_depth: u32,
     },
 }
 
@@ -100,7 +100,7 @@ pub struct SyncCapabilities {
     /// Whether compression is supported.
     pub supports_compression: bool,
     /// Maximum entities per batch transfer.
-    pub max_batch_size: usize,
+    pub max_batch_size: u64,
     /// Protocols this node supports (ordered by preference).
     pub supported_protocols: Vec<SyncProtocol>,
 }
@@ -140,9 +140,9 @@ pub struct SyncHandshake {
     /// Current Merkle root hash.
     pub root_hash: [u8; 32],
     /// Number of entities in the tree.
-    pub entity_count: usize,
+    pub entity_count: u64,
     /// Maximum depth of the Merkle tree.
-    pub max_depth: usize,
+    pub max_depth: u32,
     /// Current DAG heads (latest delta IDs).
     pub dag_heads: Vec<[u8; 32]>,
     /// Whether this node has any state.
@@ -156,8 +156,8 @@ impl SyncHandshake {
     #[must_use]
     pub fn new(
         root_hash: [u8; 32],
-        entity_count: usize,
-        max_depth: usize,
+        entity_count: u64,
+        max_depth: u32,
         dag_heads: Vec<[u8; 32]>,
     ) -> Self {
         let has_state = root_hash != [0; 32];
@@ -203,7 +203,7 @@ pub struct SyncHandshakeResponse {
     /// Responder's current root hash.
     pub root_hash: [u8; 32],
     /// Responder's entity count.
-    pub entity_count: usize,
+    pub entity_count: u64,
     /// Responder's capabilities.
     pub capabilities: SyncCapabilities,
 }
@@ -211,7 +211,7 @@ pub struct SyncHandshakeResponse {
 impl SyncHandshakeResponse {
     /// Create a response indicating no sync is needed.
     #[must_use]
-    pub fn already_synced(root_hash: [u8; 32], entity_count: usize) -> Self {
+    pub fn already_synced(root_hash: [u8; 32], entity_count: u64) -> Self {
         Self {
             selected_protocol: SyncProtocol::None,
             root_hash,
@@ -225,7 +225,7 @@ impl SyncHandshakeResponse {
     pub fn with_protocol(
         selected_protocol: SyncProtocol,
         root_hash: [u8; 32],
-        entity_count: usize,
+        entity_count: u64,
     ) -> Self {
         Self {
             selected_protocol,
