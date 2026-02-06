@@ -50,13 +50,6 @@ pub enum CrdtType {
     /// Use `GCounter` if you only need increment operations.
     Counter,
 
-    /// G-Counter - grow-only counter (increment only, no decrement).
-    ///
-    /// Internally uses a single map of positive counts per executor.
-    /// Merge: Take max count per executor.
-    /// More efficient than `Counter` (PNCounter) when decrement is not needed.
-    GCounter,
-
     /// Replicated Growable Array - CRDT for collaborative text editing.
     ///
     /// Supports concurrent insertions and deletions with causal ordering.
@@ -100,6 +93,13 @@ pub enum CrdtType {
     /// Each field is merged according to its own CRDT type.
     /// Merge: Recursively merge each field using the auto-generated `Mergeable` impl.
     Record,
+
+    /// G-Counter - grow-only counter (increment only, no decrement).
+    ///
+    /// Internally uses a single map of positive counts per executor.
+    /// Merge: Take max count per executor.
+    /// More efficient than `Counter` (PNCounter) when decrement is not needed.
+    GCounter,
 
     /// Custom user-defined CRDT type.
     ///
