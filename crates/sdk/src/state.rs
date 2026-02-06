@@ -43,9 +43,10 @@ pub fn read_raw() -> Option<Vec<u8>> {
     // The storage layer stores entities as Entry<T> = borsh(T) ++ borsh(Element.id).
     // Element only serializes its `id: Id` field ([u8; 32]), all other fields are
     // #[borsh(skip)]. Strip this 32-byte suffix so migration code sees only the
-    // user's state struct bytes.
+    // user's state struct bytes. Use >= so that when user state is 0 bytes (entry
+    // is exactly 32 bytes) we strip the suffix and return an empty Vec, not the id.
     const ELEMENT_SUFFIX_LEN: usize = 32;
-    if bytes.len() > ELEMENT_SUFFIX_LEN {
+    if bytes.len() >= ELEMENT_SUFFIX_LEN {
         Some(bytes[..bytes.len() - ELEMENT_SUFFIX_LEN].to_vec())
     } else {
         Some(bytes)
