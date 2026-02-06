@@ -31,6 +31,7 @@ pub struct ExportArgs {
     /// State schema JSON file (extracted using `calimero-abi state`)
     ///
     /// This includes the state root type and its dependencies, sufficient for state deserialization.
+    /// If not provided, schema will be inferred from database metadata (field_name and crdt_type).
     #[arg(long, value_name = "SCHEMA_FILE")]
     pub state_schema_file: Option<PathBuf>,
 
@@ -68,7 +69,25 @@ pub fn run_export(args: ExportArgs) -> Result<()> {
             Err(e) => eyre::bail!("Failed to load state schema: {e}"),
         }
     } else {
-        eyre::bail!("--state-schema-file is required when exporting data");
+        // Infer schema from database metadata
+        println!("No schema file provided, inferring schema from database metadata...");
+        println!("(This requires field_name to be stored in entity metadata)");
+        match abi::infer_schema_from_database(&db, None) {
+            Ok(manifest) => {
+                println!("Schema inferred successfully");
+                if let Some(ref root) = manifest.state_root {
+                    println!("State root: {root}");
+                }
+                if let Some(ref root_name) = manifest.state_root {
+                    if let Some(calimero_wasm_abi::schema::TypeDef::Record { fields }) = manifest.types.get(root_name) {
+                        println!("Fields: {}", fields.len());
+                    }
+                }
+                println!("Note: Inferred schema may have simplified types. For full type information, provide --state-schema-file");
+                manifest
+            }
+            Err(e) => eyre::bail!("Failed to infer schema from database: {e}. Try providing --state-schema-file instead."),
+        }
     };
 
     let columns = if args.all {
