@@ -2286,6 +2286,7 @@ name = "calimero-prelude"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-primitives",
  "serde",
  "sha2 0.10.9",
 ]

@@ -571,30 +571,25 @@ async fn execute_migration(
     Ok((new_state_bytes, outcome.events, outcome.logs))
 }
 
-/// Write migrated state bytes to the root storage key, properly updating both Entry and Index.
+/// Storage callback closures used by the `calimero-storage` runtime environment.
 ///
-/// This function uses the `calimero-storage` layer to ensure the Merkle tree Index is
-/// updated along with the Entry data. This maintains consistency for the sync protocol.
+/// These closures bridge the `calimero-storage` [`Key`]-based interface to the
+/// underlying `calimero-store` [`key::ContextState`]-based KV store.
+struct StorageCallbacks {
+    read: Rc<dyn Fn(&Key) -> Option<Vec<u8>>>,
+    write: Rc<dyn Fn(Key, &[u8]) -> bool>,
+    remove: Rc<dyn Fn(&Key) -> bool>,
+}
+
+/// Create storage callback closures that route `calimero-storage` operations to the datastore.
 ///
-/// Returns the computed `full_hash` (Merkle tree hash) which should be used as the `root_hash`.
-fn write_migration_state(
+/// Each callback translates a storage-layer [`Key`] into a context-scoped
+/// [`key::ContextState`] and forwards the operation to the store handle.
+fn create_storage_callbacks(
     datastore: &calimero_store::Store,
-    context: &Context,
-    new_state_bytes: &[u8],
-    executor_identity: PublicKey,
-) -> eyre::Result<[u8; 32]> {
-    let context_id = context.id;
-
-    debug!(
-        %context_id,
-        state_size = new_state_bytes.len(),
-        "Writing migrated state via storage layer"
-    );
-
-    // Create storage callbacks that route to the datastore
-    let context_id_bytes: [u8; 32] = *context_id.as_ref();
-
-    let storage_read: Rc<dyn Fn(&Key) -> Option<Vec<u8>>> = {
+    context_id: ContextId,
+) -> StorageCallbacks {
+    let read: Rc<dyn Fn(&Key) -> Option<Vec<u8>>> = {
         let handle = datastore.handle();
         let ctx_id = context_id;
         Rc::new(move |key: &Key| {
@@ -616,7 +611,7 @@ fn write_migration_state(
         })
     };
 
-    let storage_write: Rc<dyn Fn(Key, &[u8]) -> bool> = {
+    let write: Rc<dyn Fn(Key, &[u8]) -> bool> = {
         let handle_cell: Rc<RefCell<_>> = Rc::new(RefCell::new(datastore.handle()));
         let ctx_id = context_id;
         Rc::new(move |key: Key, value: &[u8]| {
@@ -631,7 +626,7 @@ fn write_migration_state(
         })
     };
 
-    let storage_remove: Rc<dyn Fn(&Key) -> bool> = {
+    let remove: Rc<dyn Fn(&Key) -> bool> = {
         let handle_cell: Rc<RefCell<_>> = Rc::new(RefCell::new(datastore.handle()));
         let ctx_id = context_id;
         Rc::new(move |key: &Key| {
@@ -641,12 +636,28 @@ fn write_migration_state(
         })
     };
 
-    // Read existing metadata before creating runtime environment to determine deterministic timestamp
-    // This ensures deterministic behavior across nodes (no clock skew issues)
+    StorageCallbacks {
+        read,
+        write,
+        remove,
+    }
+}
+
+/// Compute a deterministic [`Metadata`] timestamp from the existing root index.
+///
+/// Reads the current root entry's [`EntityIndex`] from the store and picks a
+/// timestamp strictly greater than any existing `created_at`/`updated_at` value.
+/// If the index cannot be read or deserialized, a large deterministic fallback
+/// (`u64::MAX / 2`) is used so every node converges on the same value.
+fn compute_deterministic_metadata(
+    datastore: &calimero_store::Store,
+    context_id: ContextId,
+) -> Metadata {
     let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
     let index_key = Key::Index(root_entry_id);
     let storage_key = index_key.to_bytes();
     let state_key = key::ContextState::new(context_id, storage_key);
+
     let timestamp = match datastore.handle().get(&state_key) {
         Ok(Some(state_data)) => {
             match EntityIndex::try_from_slice(&state_data.value.into_boxed().into_vec()) {
@@ -663,15 +674,13 @@ fn write_migration_state(
                         error = ?e,
                         "Failed to deserialize existing index for deterministic timestamp, using fallback"
                     );
-                    // Fallback: use a large deterministic value
                     u64::MAX / 2
                 }
             }
         }
         Ok(None) => {
-            // No existing metadata - use a large deterministic value
-            // This ensures migrations always have a timestamp that's newer than
-            // any possible existing state, while remaining deterministic
+            // No existing metadata — use a large deterministic value so the
+            // migration timestamp is newer than any possible prior state.
             u64::MAX / 2
         }
         Err(e) => {
@@ -680,36 +689,62 @@ fn write_migration_state(
                 error = ?e,
                 "Failed to read existing index for deterministic timestamp, using fallback"
             );
-            // Fallback: use a large deterministic value
             u64::MAX / 2
         }
     };
-    let metadata = Metadata::new(timestamp, timestamp);
 
-    // Create runtime environment with the storage callbacks
-    // Use the update requestor's identity as executor for proper audit trail
+    Metadata::new(timestamp, timestamp)
+}
+
+/// Build the full entry byte vector expected by the storage layer.
+///
+/// The storage layer persists root state entries as `Entry<T> = borsh(T) ++ borsh(Element.id)`.
+/// The migration function returns only `borsh(T)` (user data), so we re-append the 32-byte
+/// [`ROOT_STORAGE_ENTRY_ID`] suffix so the data round-trips through the normal fetch path
+/// (`Root::fetch` → `Collection::get` → `find_by_id::<Entry<T>>`).
+fn build_entry_bytes(new_state_bytes: &[u8]) -> Vec<u8> {
+    let mut entry_bytes = Vec::with_capacity(new_state_bytes.len() + ROOT_STORAGE_ENTRY_ID.len());
+    entry_bytes.extend_from_slice(new_state_bytes);
+    entry_bytes.extend_from_slice(&ROOT_STORAGE_ENTRY_ID);
+    entry_bytes
+}
+
+/// Write migrated state bytes to the root storage key, properly updating both Entry and Index.
+///
+/// This function uses the `calimero-storage` layer to ensure the Merkle tree Index is
+/// updated along with the Entry data. This maintains consistency for the sync protocol.
+///
+/// Returns the computed `full_hash` (Merkle tree hash) which should be used as the `root_hash`.
+fn write_migration_state(
+    datastore: &calimero_store::Store,
+    context: &Context,
+    new_state_bytes: &[u8],
+    executor_identity: PublicKey,
+) -> eyre::Result<[u8; 32]> {
+    let context_id = context.id;
+
+    debug!(
+        %context_id,
+        state_size = new_state_bytes.len(),
+        "Writing migrated state via storage layer"
+    );
+
+    let callbacks = create_storage_callbacks(datastore, context_id);
+    let metadata = compute_deterministic_metadata(datastore, context_id);
+    let entry_bytes = build_entry_bytes(new_state_bytes);
+
+    let context_id_bytes: [u8; 32] = *context_id.as_ref();
     let executor_id_bytes: [u8; 32] = *executor_identity.as_ref();
     let runtime_env = RuntimeEnv::new(
-        storage_read,
-        storage_write,
-        storage_remove,
+        callbacks.read,
+        callbacks.write,
+        callbacks.remove,
         context_id_bytes,
         executor_id_bytes,
     );
 
-    // The storage layer stores root state entries as Entry<T> = borsh(T) ++ borsh(Element.id).
-    // The migration function returns only borsh(T) (the user data). We must re-append the
-    // 32-byte Element.id suffix (ROOT_STORAGE_ENTRY_ID) so the data can be deserialized as
-    // Entry<T> by the normal fetch path (Root::fetch → Collection::get → find_by_id::<Entry<T>>).
-    let mut entry_bytes = Vec::with_capacity(new_state_bytes.len() + ROOT_STORAGE_ENTRY_ID.len());
-    entry_bytes.extend_from_slice(new_state_bytes);
-    entry_bytes.extend_from_slice(&ROOT_STORAGE_ENTRY_ID);
-
-    // Execute the save operation within the runtime environment
-    // This ensures both Entry and Index are properly updated
+    let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
     let result = with_runtime_env(runtime_env, || {
-        // Use Interface::save_raw to properly update both Entry and Index
-        // This maintains Merkle tree consistency
         Interface::<MainStorage>::save_raw(root_entry_id, entry_bytes, metadata)
     });
 
@@ -723,10 +758,6 @@ fn write_migration_state(
             Ok(full_hash)
         }
         Ok(None) => {
-            // save_raw returns None if the data was rejected (e.g., older timestamp)
-            // This indicates a timestamp conflict - the migration state write was skipped.
-            // Migration state writes should never be skipped as they represent a critical
-            // state transition. Return an error instead of silently computing a hash.
             error!(
                 %context_id,
                 "Migration state write was unexpectedly skipped - timestamp conflict"
