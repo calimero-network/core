@@ -324,11 +324,11 @@ async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
 
-    // State schema is optional - infer from database if not provided
-    let schema = if let Some(schema_text) = state_schema_text {
+    // State schema is optional - will infer from database if not provided
+    let parsed_schema = if let Some(schema_text) = state_schema_text {
         match serde_json::from_str::<serde_json::Value>(&schema_text) {
             Ok(schema_value) => match abi::load_state_schema_from_json_value(&schema_value) {
-                Ok(manifest) => manifest,
+                Ok(manifest) => Some(manifest),
                 Err(e) => {
                     return (
                         StatusCode::BAD_REQUEST,
@@ -350,37 +350,10 @@ async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
             }
         }
     } else {
-        // Infer schema from database
-        eprintln!("[server] No schema file provided, inferring from database...");
-        match open_database(&db_path) {
-            Ok(db) => match abi::infer_schema_from_database(&db, None) {
-                Ok(manifest) => {
-                    eprintln!("[server] Schema inferred successfully");
-                    manifest
-                }
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: format!("Failed to infer schema from database: {e}"),
-                        }),
-                    )
-                        .into_response();
-                }
-            },
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Failed to open database for schema inference: {e}"),
-                    }),
-                )
-                    .into_response();
-            }
-        }
+        None
     };
 
-    // Open database
+    // Open database (needed for both schema inference and export)
     let db = match open_database(&db_path) {
         Ok(db) => db,
         Err(e) => {
@@ -391,6 +364,28 @@ async fn handle_state_tree(mut multipart: Multipart) -> impl IntoResponse {
                 }),
             )
                 .into_response();
+        }
+    };
+
+    // Infer schema if not provided
+    let schema = if let Some(schema) = parsed_schema {
+        schema
+    } else {
+        eprintln!("[server] No schema file provided, inferring from database...");
+        match abi::infer_schema_from_database(&db, None) {
+            Ok(manifest) => {
+                eprintln!("[server] Schema inferred successfully");
+                manifest
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to infer schema from database: {e}"),
+                    }),
+                )
+                    .into_response();
+            }
         }
     };
 
@@ -590,11 +585,11 @@ async fn handle_context_tree(mut multipart: Multipart) -> impl IntoResponse {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
 
-    // State schema is optional - infer from database if not provided
-    let schema = if let Some(schema_text) = state_schema_text {
+    // State schema is optional - will infer from database if not provided
+    let parsed_schema = if let Some(schema_text) = state_schema_text {
         match serde_json::from_str::<serde_json::Value>(&schema_text) {
             Ok(schema_value) => match abi::load_state_schema_from_json_value(&schema_value) {
-                Ok(schema) => schema,
+                Ok(schema) => Some(schema),
                 Err(e) => {
                     return (
                         StatusCode::BAD_REQUEST,
@@ -616,70 +611,10 @@ async fn handle_context_tree(mut multipart: Multipart) -> impl IntoResponse {
             }
         }
     } else {
-        // Infer schema from database for this specific context
-        eprintln!(
-            "[server] No schema file provided, inferring from database for context {}...",
-            context_id
-        );
-        match open_database(&db_path) {
-            Ok(db) => {
-                // Decode context_id from hex string
-                let context_id_bytes = match hex::decode(&context_id) {
-                    Ok(bytes) if bytes.len() == 32 => bytes,
-                    _ => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(ErrorResponse {
-                                error: format!("Invalid context_id format: {}", context_id),
-                            }),
-                        )
-                            .into_response();
-                    }
-                };
-                match abi::infer_schema_from_database(&db, Some(&context_id_bytes)) {
-                    Ok(manifest) => {
-                        let field_count = manifest
-                            .state_root
-                            .as_ref()
-                            .and_then(|root| manifest.types.get(root))
-                            .and_then(|ty| {
-                                if let calimero_wasm_abi::schema::TypeDef::Record { fields } = ty {
-                                    Some(fields.len())
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or(0);
-                        eprintln!(
-                            "[server] Schema inferred successfully for context {}: {} fields found",
-                            context_id, field_count
-                        );
-                        manifest
-                    }
-                    Err(e) => {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(ErrorResponse {
-                                error: format!("Failed to infer schema from database: {e}"),
-                            }),
-                        )
-                            .into_response();
-                    }
-                }
-            }
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Failed to open database for schema inference: {e}"),
-                    }),
-                )
-                    .into_response();
-            }
-        }
+        None
     };
 
-    // Open database
+    // Open database (needed for both schema inference and export)
     let db = match open_database(&db_path) {
         Ok(db) => db,
         Err(e) => {
@@ -690,6 +625,59 @@ async fn handle_context_tree(mut multipart: Multipart) -> impl IntoResponse {
                 }),
             )
                 .into_response();
+        }
+    };
+
+    // Infer schema if not provided
+    let schema = if let Some(schema) = parsed_schema {
+        schema
+    } else {
+        eprintln!(
+            "[server] No schema file provided, inferring from database for context {}...",
+            context_id
+        );
+        // Decode context_id from hex string
+        let context_id_bytes = match hex::decode(&context_id) {
+            Ok(bytes) if bytes.len() == 32 => bytes,
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Invalid context_id format: {}", context_id),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        match abi::infer_schema_from_database(&db, Some(&context_id_bytes)) {
+            Ok(manifest) => {
+                let field_count = manifest
+                    .state_root
+                    .as_ref()
+                    .and_then(|root| manifest.types.get(root))
+                    .and_then(|ty| {
+                        if let calimero_wasm_abi::schema::TypeDef::Record { fields } = ty {
+                            Some(fields.len())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
+                eprintln!(
+                    "[server] Schema inferred successfully for context {}: {} fields found",
+                    context_id, field_count
+                );
+                manifest
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to infer schema from database: {e}"),
+                    }),
+                )
+                    .into_response();
+            }
         }
     };
 

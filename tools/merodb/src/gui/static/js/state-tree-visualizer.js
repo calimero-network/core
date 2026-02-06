@@ -1007,6 +1007,32 @@ export class StateTreeVisualizer {
             // Check if item is deleted
             const isDeleted = data.deleted_at !== null && data.deleted_at !== undefined;
             
+            // Determine type class early for Field types (needed for color lookup)
+            if (data.type === 'Field' && !d._typeClass) {
+                let typeInfo = '';
+                if (data.crdt_type) {
+                    typeInfo = data.crdt_type;
+                } else if (data.type_info) {
+                    typeInfo = data.type_info;
+                } else if (data.data && data.data.crdt_type) {
+                    typeInfo = data.data.crdt_type;
+                } else if (data.data && data.data.type) {
+                    typeInfo = data.data.type;
+                }
+                if (typeInfo) {
+                    const typeMap = {
+                        'UnorderedMap': 'unordered_map',
+                        'UnorderedSet': 'unordered_set',
+                        'Vector': 'vector',
+                        'LwwRegister': 'lww_register',
+                        'Counter': 'counter',
+                        'Rga': 'rga'
+                    };
+                    const readableType = typeMap[typeInfo] || typeInfo.toLowerCase();
+                    d._typeClass = `field-type-${readableType}`;
+                }
+            }
+            
             // Determine fill color based on type
             let textFill = isDeleted ? '#888' : '#d4d4d4';
             if (!isDeleted && d._typeClass) {
