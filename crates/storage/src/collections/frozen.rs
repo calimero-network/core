@@ -68,6 +68,9 @@ where
     /// all top-level collections have deterministic IDs regardless of how they were
     /// created in `init()`.
     ///
+    /// This method also migrates all existing entries to use the new parent ID,
+    /// ensuring that entries inserted during `init()` remain accessible.
+    ///
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this FrozenStorage
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {

@@ -250,18 +250,20 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
     /// all top-level collections have deterministic IDs regardless of how they were
     /// created in `init()`.
     ///
+    /// This method also migrates all internal map entries to use the new parent IDs,
+    /// ensuring that increments during `init()` remain accessible.
+    ///
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this counter
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {
-        // Counter has two internal maps - both need deterministic IDs
+        // Counter has two internal maps - both need deterministic IDs and entry migration.
+        // We use the UnorderedMap's reassign which handles entry migration.
         self.positive
-            .inner
-            .reassign_deterministic_id_with_crdt_type(
-                &format!("__counter_internal_{field_name}_positive"),
-                CrdtType::Counter,
-            );
+            .reassign_deterministic_id(&format!("__counter_internal_{field_name}_positive"));
+        // Update CRDT type after reassignment
+        self.positive.inner.storage.metadata.crdt_type = Some(CrdtType::Counter);
+
         self.negative
-            .inner
             .reassign_deterministic_id(&format!("__counter_internal_{field_name}_negative"));
     }
 

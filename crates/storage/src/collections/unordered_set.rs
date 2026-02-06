@@ -83,11 +83,44 @@ where
     /// all top-level collections have deterministic IDs regardless of how they were
     /// created in `init()`.
     ///
+    /// This method also migrates all existing elements to use the new parent ID,
+    /// ensuring that elements inserted during `init()` remain accessible.
+    ///
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this set
-    pub fn reassign_deterministic_id(&mut self, field_name: &str) {
+    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
+    pub fn reassign_deterministic_id(&mut self, field_name: &str)
+    where
+        V: AsRef<[u8]> + PartialEq,
+    {
+        use super::compute_collection_id;
+
+        let new_id = compute_collection_id(None, field_name);
+        let old_id = self.inner.id();
+
+        // If already has the correct ID, nothing to do
+        if old_id == new_id {
+            return;
+        }
+
+        // Collect all elements before migration (must do this before clearing)
+        let elements: Vec<V> = self
+            .iter()
+            .expect("failed to read elements for migration")
+            .collect();
+
+        // Clear the collection (removes old entries with old IDs)
+        self.inner.clear().expect("failed to clear for migration");
+
+        // Now reassign the collection's ID
         self.inner
             .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::UnorderedSet);
+
+        // Re-insert all elements (they will get new IDs based on new parent ID)
+        for value in elements {
+            self.insert(value)
+                .expect("failed to re-insert element during migration");
+        }
     }
 
     /// Insert a value pair into the set collection if the element does not already exist.
