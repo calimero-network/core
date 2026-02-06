@@ -1,3 +1,53 @@
+//! # RocksDB Storage Backend
+//!
+//! This module provides a RocksDB-based implementation of the `Database` trait.
+//!
+//! ## Why No Connection Pool?
+//!
+//! RocksDB already manages resources internally and does not require an external
+//! connection pool. Here's why:
+//!
+//! 1. **Thread Safety**: The `DB` object is thread-safe and designed to be shared
+//!    across multiple threads. A single `DB` instance can handle concurrent
+//!    read/write operations safely.
+//!
+//! 2. **Internal File Handle Management**: RocksDB uses an LRU cache to manage
+//!    open file handles internally. The `max_open_files` option controls how many
+//!    SST files RocksDB keeps open simultaneously. When this limit is reached,
+//!    RocksDB automatically closes least-recently-used file handles.
+//!
+//! 3. **Block Cache**: RocksDB maintains its own block cache for frequently
+//!    accessed data, reducing disk I/O without external caching.
+//!
+//! 4. **File Locking**: RocksDB uses file locking to prevent multiple processes
+//!    from opening the same database. Only one `DB` instance can exist per path
+//!    per process.
+//!
+//! 5. **The `Store` Wrapper**: The higher-level `Store` type already wraps the
+//!    database in an `Arc`, allowing it to be cloned and shared efficiently
+//!    across the application.
+//!
+//! ## Recommended Usage
+//!
+//! ```ignore
+//! // Open the database once
+//! let store = Store::open::<RocksDB>(&config)?;
+//!
+//! // Clone and share the store (cheap Arc clone)
+//! let store_clone = store.clone();
+//!
+//! // Both handles share the same underlying RocksDB instance
+//! ```
+//!
+//! ## Configuration
+//!
+//! Resource limits are configured through RocksDB's native options in the `open`
+//! method:
+//! - `max_open_files`: Controls file descriptor usage (default: 256)
+//! - Block cache: 128MB LRU cache for frequently accessed blocks
+//!
+//! If you need to adjust these settings, modify the `Options` in `RocksDB::open()`.
+
 #[cfg(test)]
 mod tests;
 
@@ -12,6 +62,39 @@ use rocksdb::{
 };
 use strum::IntoEnumIterator;
 
+/// Default maximum number of open files for RocksDB.
+///
+/// This limits file descriptor usage. RocksDB uses an internal LRU cache
+/// to manage file handles when this limit is reached.
+const DEFAULT_MAX_OPEN_FILES: i32 = 256;
+
+/// Default block cache size in bytes (128MB).
+///
+/// The block cache stores frequently accessed data blocks in memory,
+/// reducing disk I/O for hot data.
+const DEFAULT_BLOCK_CACHE_SIZE: usize = 128 * 1024 * 1024;
+
+/// RocksDB database wrapper implementing the `Database` trait.
+///
+/// This is a thin wrapper around RocksDB's `DB` type. The `DB` instance is
+/// thread-safe and handles its own resource management internally.
+///
+/// ## Resource Management
+///
+/// RocksDB manages resources internally - there is no need for an external
+/// connection pool. Key points:
+///
+/// - **Single instance per path**: RocksDB uses file locking; only one `DB`
+///   can be open per database path per process.
+/// - **Thread-safe**: Share the `RocksDB` instance (or the `Store` wrapper)
+///   across threads freely.
+/// - **Automatic file handle management**: RocksDB's internal LRU cache
+///   manages open file handles based on `max_open_files`.
+///
+/// ## Sharing
+///
+/// To share a database across your application, use the `Store` wrapper which
+/// provides `Arc`-based sharing, or wrap `RocksDB` in an `Arc` yourself.
 #[derive(Debug)]
 pub struct RocksDB {
     db: DB,
@@ -38,10 +121,13 @@ impl Database<'_> for RocksDB {
         options.create_if_missing(true);
         options.create_missing_column_families(true);
 
-        // Configure block cache for better performance
-        // Default: 128MB LRU cache for frequently accessed blocks
-        const DEFAULT_BLOCK_CACHE_SIZE: usize = 128 * 1024 * 1024; // 128MB
+        // Limit file descriptor usage. RocksDB manages an internal LRU cache
+        // for file handles, automatically closing least-recently-used files
+        // when this limit is reached.
+        options.set_max_open_files(DEFAULT_MAX_OPEN_FILES);
 
+        // Configure block cache for better read performance.
+        // This cache stores frequently accessed data blocks in memory.
         let cache = rocksdb::Cache::new_lru_cache(DEFAULT_BLOCK_CACHE_SIZE);
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         block_opts.set_block_cache(&cache);

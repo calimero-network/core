@@ -9,7 +9,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeMap;
 use serde::Serialize;
 
-use super::{compute_id, Collection, EntryMut, StorageAdaptor};
+use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor};
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
@@ -29,9 +29,31 @@ where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
 {
-    /// Create a new map collection.
+    /// Create a new map collection with a random ID.
+    ///
+    /// Use this for nested collections stored as values in other maps.
+    /// Merge happens by the parent map's key, so the nested collection's ID
+    /// doesn't affect sync semantics.
+    ///
+    /// For top-level state fields, use `new_with_field_name` instead.
     pub fn new() -> Self {
         Self::new_internal()
+    }
+
+    /// Create a new map collection with a deterministic ID.
+    ///
+    /// The `field_name` is used to generate a deterministic collection ID,
+    /// ensuring the same code produces the same ID across all nodes.
+    ///
+    /// Use this for top-level state fields (the `#[app::state]` macro does this
+    /// automatically).
+    ///
+    /// # Example
+    /// ```ignore
+    /// let items = UnorderedMap::<String, String>::new_with_field_name("items");
+    /// ```
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        Self::new_with_field_name_internal(None, field_name)
     }
 }
 
@@ -45,6 +67,77 @@ where
     pub(super) fn new_internal() -> Self {
         Self {
             inner: Collection::new(None),
+        }
+    }
+
+    /// Create a new map collection with deterministic ID (internal)
+    pub(super) fn new_with_field_name_internal(
+        parent_id: Option<crate::address::Id>,
+        field_name: &str,
+    ) -> Self {
+        Self {
+            inner: Collection::new_with_field_name_and_crdt_type(
+                parent_id,
+                field_name,
+                CrdtType::UnorderedMap,
+            ),
+        }
+    }
+
+    /// Create a new map with deterministic ID and explicit CRDT type (for Counter's internal maps)
+    pub(super) fn new_with_field_name_and_crdt_type(
+        parent_id: Option<crate::address::Id>,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) -> Self {
+        Self {
+            inner: Collection::new_with_field_name_and_crdt_type(parent_id, field_name, crdt_type),
+        }
+    }
+
+    /// Reassigns the map's ID to a deterministic ID based on field name.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all top-level collections have deterministic IDs regardless of how they were
+    /// created in `init()`.
+    ///
+    /// This method also migrates all existing entries to use the new parent ID,
+    /// ensuring that entries inserted during `init()` remain accessible.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this map
+    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
+    pub fn reassign_deterministic_id(&mut self, field_name: &str)
+    where
+        K: AsRef<[u8]> + PartialEq,
+    {
+        use super::compute_collection_id;
+
+        let new_id = compute_collection_id(None, field_name);
+        let old_id = self.inner.id();
+
+        // If already has the correct ID, nothing to do
+        if old_id == new_id {
+            return;
+        }
+
+        // Collect all entries before migration (must do this before clearing)
+        let entries: Vec<(K, V)> = self
+            .entries()
+            .expect("failed to read entries for migration")
+            .collect();
+
+        // Clear the collection (removes old entries with old IDs)
+        self.inner.clear().expect("failed to clear for migration");
+
+        // Now reassign the collection's ID
+        self.inner
+            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::UnorderedMap);
+
+        // Re-insert all entries (they will get new IDs based on new parent ID)
+        for (key, value) in entries {
+            self.insert(key, value)
+                .expect("failed to re-insert entry during migration");
         }
     }
 
@@ -945,5 +1038,83 @@ mod tests {
         assert_eq!(old_val, "value3");
         assert_eq!(map.get("key3").unwrap(), None); // Key should be gone
         assert_eq!(map.len().unwrap(), 2); // Length should decrease
+    }
+
+    #[test]
+    fn test_deterministic_map_ids() {
+        crate::env::reset_for_testing();
+
+        // Create two maps with the same field name - they should have the same IDs
+        let map1_val: UnorderedMap<String, String> = UnorderedMap::new_with_field_name("items");
+        let map2_val: UnorderedMap<String, String> = UnorderedMap::new_with_field_name("items");
+
+        assert_eq!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map1_val),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map2_val),
+            "Maps with same field name should have same ID"
+        );
+
+        // Different field names should produce different IDs
+        let map3_val: UnorderedMap<String, String> = UnorderedMap::new_with_field_name("products");
+        assert_ne!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map1_val),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map3_val),
+            "Maps with different field names should have different IDs"
+        );
+    }
+
+    #[test]
+    fn test_random_vs_deterministic_map_ids() {
+        crate::env::reset_for_testing();
+
+        // Random IDs (new()) should be different each time
+        let map1: UnorderedMap<String, String> = UnorderedMap::new();
+        let map2: UnorderedMap<String, String> = UnorderedMap::new();
+
+        assert_ne!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map1),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map2),
+            "Maps with new() should have different random IDs"
+        );
+
+        // Deterministic IDs (new_with_field_name) should be the same
+        let map3: UnorderedMap<String, String> = UnorderedMap::new_with_field_name("items");
+        let map4: UnorderedMap<String, String> = UnorderedMap::new_with_field_name("items");
+        assert_eq!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map3),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&map4),
+            "Maps with same field name should have same ID"
+        );
+    }
+
+    #[test]
+    fn test_nested_map_uses_random_ids() {
+        crate::env::reset_for_testing();
+
+        // For nested maps (values in other maps), we use new() which generates random IDs.
+        // This is fine because merge happens by the parent map's key, not the nested map's ID.
+        let mut parent_map = Root::new(|| UnorderedMap::<String, String>::new());
+
+        // Insert an entry
+        parent_map
+            .insert("key".to_string(), "value".to_string())
+            .unwrap();
+
+        // Verify the entry exists
+        assert!(
+            parent_map.contains("key").unwrap(),
+            "Map entry should exist"
+        );
+
+        // Nested maps created with new() have random IDs - this is intentional
+        // because merge happens by key, not by the nested map's ID
+        let nested1: UnorderedMap<String, String> = UnorderedMap::new();
+        let nested2: UnorderedMap<String, String> = UnorderedMap::new();
+
+        assert_ne!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&nested1),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&nested2),
+            "Nested maps with new() should have different IDs (random)"
+        );
     }
 }

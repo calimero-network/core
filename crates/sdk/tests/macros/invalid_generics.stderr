@@ -1,23 +1,121 @@
-error: (calimero)> generic types are not supported
- --> tests/macros/generics.rs:9:10
+error: (calimero)> state lifetimes are not supported
+ --> tests/macros/invalid_generics.rs:4:15
   |
-9 | impl<'t, T> MyType<'t, T> {
-  |          ^
+4 | struct MyType<'t, T, 'calimero>(&'t &'calimero T); // todo! what happens here?
+  |               ^^
+
+error: (calimero)> state lifetimes are not supported
+ --> tests/macros/invalid_generics.rs:4:22
+  |
+4 | struct MyType<'t, T, 'calimero>(&'t &'calimero T); // todo! what happens here?
+  |                      ^^^^^^^^^
 
 error: (calimero)> generic types are not supported
-  --> tests/macros/generics.rs:12:24
+ --> tests/macros/invalid_generics.rs:7:10
+  |
+7 | impl<'t, T, 'calimero> MyType<'t, T, 'calimero> {
+  |          ^
+
+error: (calimero)> state lifetimes are not supported
+ --> tests/macros/invalid_generics.rs:7:31
+  |
+7 | impl<'t, T, 'calimero> MyType<'t, T, 'calimero> {
+  |                               ^^
+
+error: (calimero)> state lifetimes are not supported
+ --> tests/macros/invalid_generics.rs:7:38
+  |
+7 | impl<'t, T, 'calimero> MyType<'t, T, 'calimero> {
+  |                                      ^^^^^^^^^
+
+error: (calimero)> generic types are not supported
+  --> tests/macros/invalid_generics.rs:10:24
    |
-12 |     pub fn method1<'k, K, 'v, V>(&self, tag: &'t T, key: &'k K, value: &'v V) {}
+10 |     pub fn method1<'k, K, 'v, V>(&self, tag: &'t T, key: &'k K, value: &'v V) {}
    |                        ^
 
 error: (calimero)> generic types are not supported
-  --> tests/macros/generics.rs:12:31
+  --> tests/macros/invalid_generics.rs:10:31
    |
-12 |     pub fn method1<'k, K, 'v, V>(&self, tag: &'t T, key: &'k K, value: &'v V) {}
+10 |     pub fn method1<'k, K, 'v, V>(&self, tag: &'t T, key: &'k K, value: &'v V) {}
    |                               ^
 
 error: (calimero)> generic types are not supported
-  --> tests/macros/generics.rs:13:20
+  --> tests/macros/invalid_generics.rs:11:20
    |
-13 |     pub fn method2<const N: usize>(&self, arr: [u8; N]) {}
-   |                    ^^^^^^^^^^^^^^
+11 |     pub fn method2<const N: usize>(&self, arr: [u8; N]) {}
+   |                    ^^^^^
+
+error: (calimero)> generic types are not supported
+  --> tests/macros/invalid_generics.rs:15:10
+   |
+15 | impl<'t, T, 'x> MyType<'t, T, 'x> {
+   |          ^
+
+error: (calimero)> state lifetimes are not supported
+  --> tests/macros/invalid_generics.rs:15:24
+   |
+15 | impl<'t, T, 'x> MyType<'t, T, 'x> {
+   |                        ^^
+
+error: (calimero)> state lifetimes are not supported
+  --> tests/macros/invalid_generics.rs:15:31
+   |
+15 | impl<'t, T, 'x> MyType<'t, T, 'x> {
+   |                               ^^
+
+warning: unused variable: `tag`
+ --> tests/macros/invalid_generics.rs:9:37
+  |
+9 |     fn method0<'k, K, 'v, V>(&self, tag: &'t T, key: &'k K, value: &'v V) {}
+  |                                     ^^^ help: if this is intentional, prefix it with an underscore: `_tag`
+  |
+  = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `key`
+ --> tests/macros/invalid_generics.rs:9:49
+  |
+9 |     fn method0<'k, K, 'v, V>(&self, tag: &'t T, key: &'k K, value: &'v V) {}
+  |                                                 ^^^ help: if this is intentional, prefix it with an underscore: `_key`
+
+warning: unused variable: `value`
+ --> tests/macros/invalid_generics.rs:9:61
+  |
+9 |     fn method0<'k, K, 'v, V>(&self, tag: &'t T, key: &'k K, value: &'v V) {}
+  |                                                             ^^^^^ help: if this is intentional, prefix it with an underscore: `_value`
+
+warning: unused variable: `tag`
+  --> tests/macros/invalid_generics.rs:10:41
+   |
+10 |     pub fn method1<'k, K, 'v, V>(&self, tag: &'t T, key: &'k K, value: &'v V) {}
+   |                                         ^^^ help: if this is intentional, prefix it with an underscore: `_tag`
+
+warning: unused variable: `key`
+  --> tests/macros/invalid_generics.rs:10:53
+   |
+10 |     pub fn method1<'k, K, 'v, V>(&self, tag: &'t T, key: &'k K, value: &'v V) {}
+   |                                                     ^^^ help: if this is intentional, prefix it with an underscore: `_key`
+
+warning: unused variable: `value`
+  --> tests/macros/invalid_generics.rs:10:65
+   |
+10 |     pub fn method1<'k, K, 'v, V>(&self, tag: &'t T, key: &'k K, value: &'v V) {}
+   |                                                                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_value`
+
+warning: unused variable: `arr`
+  --> tests/macros/invalid_generics.rs:11:43
+   |
+11 |     pub fn method2<const N: usize>(&self, arr: [u8; N]) {}
+   |                                           ^^^ help: if this is intentional, prefix it with an underscore: `_arr`
+
+warning: unused variable: `key`
+  --> tests/macros/invalid_generics.rs:16:41
+   |
+16 |     pub fn method<'k, 'calimero>(&self, key: &'k str, value: &'calimero str) {}
+   |                                         ^^^ help: if this is intentional, prefix it with an underscore: `_key`
+
+warning: unused variable: `value`
+  --> tests/macros/invalid_generics.rs:16:55
+   |
+16 |     pub fn method<'k, 'calimero>(&self, key: &'k str, value: &'calimero str) {}
+   |                                                       ^^^^^ help: if this is intentional, prefix it with an underscore: `_value`

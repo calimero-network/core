@@ -65,8 +65,11 @@ impl NodeClient {
         Ok(versions)
     }
 
-    /// Get the latest version of a package
-    pub fn get_latest_version(&self, package: &str) -> eyre::Result<Option<ApplicationId>> {
+    /// Get the latest version of a package (version string and application id)
+    pub fn get_latest_version(
+        &self,
+        package: &str,
+    ) -> eyre::Result<Option<(String, ApplicationId)>> {
         let handle = self.datastore.handle();
         let mut iter = handle.iter::<key::ApplicationMeta>()?;
         let mut latest_version: Option<(String, ApplicationId)> = None;
@@ -109,6 +112,6 @@ impl NodeClient {
             }
         }
 
-        Ok(latest_version.map(|(_, id)| id))
+        Ok(latest_version)
     }
 }

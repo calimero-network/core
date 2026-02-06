@@ -2,16 +2,17 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use calimero_server_primitives::admin::{InstallApplicationRequest, InstallApplicationResponse};
 use tracing::{error, info};
 
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::ApiResponse;
 use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<InstallApplicationRequest>,
+    ValidatedJson(req): ValidatedJson<InstallApplicationRequest>,
 ) -> impl IntoResponse {
     info!(url=%req.url, "Installing application");
 

@@ -1,19 +1,20 @@
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_server_primitives::admin::{
     InviteToContextOpenInvitationRequest, InviteToContextOpenInvitationResponse,
 };
 //use rand::Rng;
 
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<InviteToContextOpenInvitationRequest>,
+    ValidatedJson(req): ValidatedJson<InviteToContextOpenInvitationRequest>,
 ) -> impl IntoResponse {
     // TODO: figure out the best place to generate salt.
     // We temporarily ignore the passed `secret_salt` as we can't generate it in admin

@@ -4,7 +4,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use tracing::{debug, error, info};
-use wasmer::{CompileError, DeserializeError, Instance, SerializeError, Store};
+use wasmer::{DeserializeError, Instance, SerializeError, Store};
 
 // Profiling feature: Only compile these imports when profiling feature is enabled
 #[cfg(feature = "profiling")]
@@ -25,6 +25,59 @@ use memory::WasmerTunables;
 use store::Storage;
 
 pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
+
+/// Validates a method name for WASM execution.
+///
+/// Valid method names must:
+/// - Not be empty
+/// - Not exceed the maximum length limit
+/// - Contain only valid characters (ASCII alphanumeric, underscore)
+///
+/// # Arguments
+///
+/// * `method` - The method name to validate
+/// * `max_length` - The maximum allowed length for the method name
+///
+/// # Returns
+///
+/// * `Ok(())` if the method name is valid
+/// * `Err(FunctionCallError)` if the method name is invalid
+fn validate_method_name(method: &str, max_length: u64) -> Result<(), FunctionCallError> {
+    // Check for empty method name
+    if method.is_empty() {
+        return Err(FunctionCallError::MethodResolutionError(
+            errors::MethodResolutionError::EmptyMethodName,
+        ));
+    }
+
+    // Check length limit
+    let method_len = method.len();
+    if method_len as u64 > max_length {
+        return Err(FunctionCallError::MethodResolutionError(
+            errors::MethodResolutionError::MethodNameTooLong {
+                name: method.to_owned(),
+                length: method_len,
+                max: max_length,
+            },
+        ));
+    }
+
+    // Validate characters: only allow ASCII alphanumeric and underscore
+    // This covers typical WASM export names and Rust/JS function naming conventions
+    for (position, character) in method.chars().enumerate() {
+        if !character.is_ascii_alphanumeric() && character != '_' {
+            return Err(FunctionCallError::MethodResolutionError(
+                errors::MethodResolutionError::InvalidMethodNameCharacter {
+                    name: method.to_owned(),
+                    character,
+                    position,
+                },
+            ));
+        }
+    }
+
+    Ok(())
+}
 
 #[derive(Clone, Debug)]
 pub struct Engine {
@@ -98,7 +151,22 @@ impl Engine {
         Self::new(engine, limits)
     }
 
-    pub fn compile(&self, bytes: &[u8]) -> Result<Module, CompileError> {
+    pub fn compile(&self, bytes: &[u8]) -> Result<Module, FunctionCallError> {
+        // Check module size before compilation to prevent memory exhaustion attacks
+        // Note: `as u64` is safe because usize <= u64 on all supported platforms (32-bit and 64-bit)
+        let size = bytes.len() as u64;
+        if size > self.limits.max_module_size {
+            tracing::warn!(
+                size,
+                max = self.limits.max_module_size,
+                "WASM module size limit exceeded"
+            );
+            return Err(FunctionCallError::ModuleSizeLimitExceeded {
+                size,
+                max: self.limits.max_module_size,
+            });
+        }
+
         // todo! apply a prepare step
         // todo! - parse the wasm blob, validate and apply transformations
         // todo!   - validations:
@@ -118,6 +186,23 @@ impl Engine {
         })
     }
 
+    /// # Safety
+    ///
+    /// This function deserializes a precompiled WASM module. The caller must ensure
+    /// the bytes come from a trusted source (e.g., previously compiled by this engine).
+    ///
+    /// # Security Note
+    ///
+    /// No size limit check is performed here. This is an accepted security trade-off because:
+    /// 1. Precompiled modules have already been validated during their original compilation
+    /// 2. The serialized format may differ significantly in size from the original WASM binary
+    /// 3. The `unsafe` marker already requires callers to ensure the bytes are from a trusted source
+    ///
+    /// **Audit requirement**: All call sites using this method should be reviewed to ensure
+    /// precompiled bytes originate from trusted sources only (e.g., the node's own compilation cache).
+    ///
+    /// If precompiled bytes could come from an untrusted source, callers should implement
+    /// their own size validation before calling this method.
     pub unsafe fn from_precompiled(&self, bytes: &[u8]) -> Result<Module, DeserializeError> {
         let module = wasmer::Module::deserialize(&self.engine, bytes)?;
 
@@ -176,6 +261,7 @@ impl Module {
                 &mut logic,
                 method,
                 &context_id,
+                self.limits.max_method_name_length,
             )
         }));
 
@@ -230,7 +316,13 @@ impl Module {
         logic: &mut VMLogic<'_>,
         method: &str,
         context_id: &ContextId,
+        max_method_name_length: u64,
     ) -> RuntimeResult<Option<FunctionCallError>> {
+        // Validate method name before attempting to look it up
+        if let Err(err) = validate_method_name(method, max_method_name_length) {
+            error!(%context_id, method, error=?err, "Invalid method name");
+            return Ok(Some(err));
+        }
         let instance = match Instance::new(store, module, imports) {
             Ok(instance) => instance,
             Err(err) => {
@@ -239,14 +331,20 @@ impl Module {
             }
         };
 
-        let _ = match instance.exports.get_memory("memory") {
-            Ok(memory) => logic.with_memory(memory.clone()),
+        // Get memory from the WASM instance and attach it to VMLogic.
+        // Note: memory.clone() is cheap - it just increments an Arc reference count,
+        // not copying actual memory contents. VMLogic::finish() handles cleanup.
+        let memory = match instance.exports.get_memory("memory") {
+            Ok(memory) => memory.clone(),
             // todo! test memory returns MethodNotFound
             Err(err) => {
                 error!(%context_id, method, error=?err, "Failed to get WASM memory");
                 return Ok(Some(err.into()));
             }
         };
+
+        // Attach memory to VMLogic, which will clean it up in finish()
+        let _ = logic.with_memory(memory);
 
         // Call the auto-generated registration hook if it exists.
         // This enables automatic CRDT merge during sync.
@@ -343,9 +441,9 @@ mod integration_tests_package_usage {
     use {eyre as _, owo_colors as _, rand as _, wat as _};
 }
 
-/// Integration tests for WASM execution with panic handling
+/// Integration tests for WASM execution (panic handling, size limits, compilation)
 #[cfg(test)]
-mod wasm_panic_integration_tests {
+mod wasm_integration_tests {
     use super::*;
     use crate::store::InMemoryStorage;
 
@@ -419,6 +517,243 @@ mod wasm_panic_integration_tests {
             }
             other => panic!("Expected MethodNotFound error, got: {other:?}"),
         }
+    }
+
+    /// Test that empty method name returns EmptyMethodName error
+    #[test]
+    fn test_wasm_empty_method_name() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        match &outcome.returns {
+            Err(FunctionCallError::MethodResolutionError(
+                errors::MethodResolutionError::EmptyMethodName,
+            )) => {
+                // Expected - empty method name was rejected
+            }
+            other => panic!("Expected EmptyMethodName error, got: {other:?}"),
+        }
+    }
+
+    /// Test that method name exceeding max length returns MethodNameTooLong error
+    #[test]
+    fn test_wasm_method_name_too_long() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        // Create a method name that exceeds the default max length (256 bytes)
+        let long_method_name = "a".repeat(300);
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                &long_method_name,
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        match &outcome.returns {
+            Err(FunctionCallError::MethodResolutionError(
+                errors::MethodResolutionError::MethodNameTooLong { length, max, .. },
+            )) => {
+                assert_eq!(*length, 300);
+                assert_eq!(*max, 256);
+            }
+            other => panic!("Expected MethodNameTooLong error, got: {other:?}"),
+        }
+    }
+
+    /// Test that method name with invalid characters returns InvalidMethodNameCharacter error
+    #[test]
+    fn test_wasm_method_name_invalid_characters() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        // Test various invalid characters
+        let invalid_names = [
+            ("test func", ' ', 4),   // space
+            ("test\nfunc", '\n', 4), // newline
+            ("test-func", '-', 4),   // hyphen
+            ("test.func", '.', 4),   // dot
+            ("test/func", '/', 4),   // slash
+        ];
+
+        for (method_name, expected_char, expected_pos) in invalid_names {
+            let mut storage = InMemoryStorage::default();
+            let outcome = module
+                .run(
+                    [0; 32].into(),
+                    [0; 32].into(),
+                    method_name,
+                    &[],
+                    &mut storage,
+                    None,
+                    None,
+                )
+                .expect("Failed to run module");
+
+            match &outcome.returns {
+                Err(FunctionCallError::MethodResolutionError(
+                    errors::MethodResolutionError::InvalidMethodNameCharacter {
+                        character,
+                        position,
+                        ..
+                    },
+                )) => {
+                    assert_eq!(
+                        *character, expected_char,
+                        "Wrong invalid character for method name: {method_name}"
+                    );
+                    assert_eq!(
+                        *position, expected_pos,
+                        "Wrong position for method name: {method_name}"
+                    );
+                }
+                other => panic!(
+                    "Expected InvalidMethodNameCharacter error for '{method_name}', got: {other:?}"
+                ),
+            }
+        }
+    }
+
+    /// Test that valid method names with various allowed characters work
+    #[test]
+    fn test_wasm_method_name_valid_characters() {
+        // Note: This test verifies that validation passes for valid names.
+        // The actual method lookup may fail with MethodNotFound since these
+        // methods don't exist in the module, but the validation should pass.
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        // Test valid method names (these should pass validation but may not exist in module)
+        let valid_names = [
+            "simple",
+            "with_underscore",
+            "__double_underscore",
+            "_leading_underscore",
+            "trailing_underscore_",
+            "CamelCase",
+            "mixedCase123",
+            "numbers123",
+            "ALLCAPS",
+            "a", // single character
+        ];
+
+        for method_name in valid_names {
+            let mut storage = InMemoryStorage::default();
+            let outcome = module
+                .run(
+                    [0; 32].into(),
+                    [0; 32].into(),
+                    method_name,
+                    &[],
+                    &mut storage,
+                    None,
+                    None,
+                )
+                .expect("Failed to run module");
+
+            // Should get MethodNotFound (not a validation error) since the method doesn't exist
+            match &outcome.returns {
+                Err(FunctionCallError::MethodResolutionError(
+                    errors::MethodResolutionError::MethodNotFound { name },
+                )) => {
+                    assert_eq!(
+                        name, method_name,
+                        "Method name should pass validation: {method_name}"
+                    );
+                }
+                // test_func should succeed since it exists
+                Ok(_) if method_name == "test_func" => {}
+                other => panic!(
+                    "Expected MethodNotFound error for valid name '{method_name}', got: {other:?}"
+                ),
+            }
+        }
+    }
+
+    /// Test that test_func (valid name) still works correctly
+    #[test]
+    fn test_wasm_valid_method_name_execution() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "valid_method_name"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "valid_method_name",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        assert!(
+            outcome.returns.is_ok(),
+            "Expected successful execution with valid method name, got: {:?}",
+            outcome.returns
+        );
     }
 
     /// Test that unreachable instruction causes a WasmTrap error (not a crash)
@@ -611,6 +946,167 @@ mod wasm_panic_integration_tests {
                 // Expected - the trap was properly caught and converted to an error
             }
             other => panic!("Expected WasmTrap::StackOverflow error, got: {other:?}"),
+        }
+    }
+
+    /// Test that module size limit is enforced during compilation
+    #[test]
+    fn test_wasm_module_size_limit() {
+        use crate::logic::VMLimits;
+
+        // A minimal WASM module
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Create an engine with a very small module size limit (smaller than our module)
+        let mut limits = VMLimits::default();
+        limits.max_module_size = 10; // 10 bytes - way too small for any valid module
+
+        let engine = Engine::new(wasmer::Engine::default(), limits);
+
+        // Attempt to compile should fail due to size limit
+        let result = engine.compile(&wasm);
+
+        match result {
+            Err(FunctionCallError::ModuleSizeLimitExceeded { size, max }) => {
+                assert_eq!(max, 10);
+                assert!(size > 10, "Module size should be greater than the limit");
+            }
+            Ok(_) => panic!("Expected ModuleSizeLimitExceeded error, but compilation succeeded"),
+            Err(other) => panic!("Expected ModuleSizeLimitExceeded error, got: {other:?}"),
+        }
+    }
+
+    /// Test that modules within size limit compile successfully
+    #[test]
+    fn test_wasm_module_within_size_limit() {
+        use crate::logic::VMLimits;
+
+        // A minimal WASM module
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Create an engine with a large enough module size limit
+        let mut limits = VMLimits::default();
+        limits.max_module_size = 1024 * 1024; // 1 MiB - plenty of room
+
+        let engine = Engine::new(wasmer::Engine::default(), limits);
+
+        // Compilation should succeed
+        let result = engine.compile(&wasm);
+        assert!(
+            result.is_ok(),
+            "Expected successful compilation, got: {result:?}"
+        );
+    }
+
+    /// Test that modules exactly at the size limit compile successfully (boundary condition)
+    #[test]
+    fn test_wasm_module_at_exact_size_limit() {
+        use crate::logic::VMLimits;
+
+        // A minimal WASM module
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Create an engine with module size limit exactly equal to the WASM size
+        let mut limits = VMLimits::default();
+        limits.max_module_size = wasm.len() as u64; // Exact size limit
+
+        let engine = Engine::new(wasmer::Engine::default(), limits);
+
+        // Compilation should succeed because check is `size > limit`, not `size >= limit`
+        let result = engine.compile(&wasm);
+        assert!(
+            result.is_ok(),
+            "Expected successful compilation at exact size limit, got: {result:?}"
+        );
+    }
+
+    /// Test that compilation errors are properly wrapped after passing size check
+    #[test]
+    fn test_wasm_compilation_error_propagation() {
+        // Invalid WASM bytes that pass size check but fail compilation
+        // This is not valid WASM but is large enough to pass typical size limits
+        let invalid_wasm = b"not valid wasm bytes at all - this should fail compilation";
+
+        let engine = Engine::default();
+
+        // Attempt to compile should fail with CompilationError (not size limit)
+        let result = engine.compile(invalid_wasm);
+
+        match result {
+            Err(FunctionCallError::CompilationError { .. }) => {
+                // Expected - wasmer compilation error is properly wrapped
+            }
+            Err(FunctionCallError::ModuleSizeLimitExceeded { .. }) => {
+                panic!("Should not hit size limit for small invalid module")
+            }
+            Ok(_) => panic!("Expected compilation error for invalid WASM"),
+            Err(other) => panic!("Expected CompilationError, got: {other:?}"),
+        }
+    }
+
+    /// Test edge case where max_module_size is set to 0
+    #[test]
+    fn test_wasm_module_size_limit_zero() {
+        use crate::logic::VMLimits;
+
+        // A minimal WASM module (non-empty)
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Create an engine with max_module_size = 0
+        let mut limits = VMLimits::default();
+        limits.max_module_size = 0;
+
+        let engine = Engine::new(wasmer::Engine::default(), limits);
+
+        // Any non-empty module should be rejected
+        let result = engine.compile(&wasm);
+
+        match result {
+            Err(FunctionCallError::ModuleSizeLimitExceeded { size, max }) => {
+                assert_eq!(max, 0);
+                assert!(size > 0, "Module size should be greater than 0");
+            }
+            Ok(_) => panic!("Expected ModuleSizeLimitExceeded error with max_module_size=0"),
+            Err(other) => panic!("Expected ModuleSizeLimitExceeded error, got: {other:?}"),
+        }
+
+        // Empty byte slice should pass size check (0 > 0 is false) but fail compilation
+        let empty_bytes: &[u8] = &[];
+        let empty_result = engine.compile(empty_bytes);
+
+        match empty_result {
+            Err(FunctionCallError::CompilationError { .. }) => {
+                // Expected - empty bytes pass size check but fail compilation
+            }
+            Err(FunctionCallError::ModuleSizeLimitExceeded { .. }) => {
+                panic!("Empty module should pass size check (0 is not > 0)")
+            }
+            Ok(_) => panic!("Empty bytes should not compile successfully"),
+            Err(other) => panic!("Expected CompilationError for empty bytes, got: {other:?}"),
         }
     }
 }

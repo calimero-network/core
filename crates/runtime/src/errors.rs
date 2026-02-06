@@ -47,6 +47,8 @@ pub enum FunctionCallError {
     HostError(HostError),
     #[error("the method call returned an error: {0:?}")]
     ExecutionError(Vec<u8>),
+    #[error("module size limit (max_module_size) exceeded: {size} bytes > {max} bytes limit")]
+    ModuleSizeLimitExceeded { size: u64, max: u64 },
 }
 
 #[derive(Debug, Serialize, ThisError)]
@@ -57,6 +59,20 @@ pub enum MethodResolutionError {
     InvalidSignature { name: String },
     #[error("method {name:?} not found")]
     MethodNotFound { name: String },
+    #[error("method name too long: {length} bytes (max: {max})")]
+    MethodNameTooLong {
+        name: String,
+        length: usize,
+        max: u64,
+    },
+    #[error("method name contains invalid character at position {position}: {character:?}")]
+    InvalidMethodNameCharacter {
+        name: String,
+        character: char,
+        position: usize,
+    },
+    #[error("method name is empty")]
+    EmptyMethodName,
 }
 
 #[derive(Debug, Serialize, ThisError)]

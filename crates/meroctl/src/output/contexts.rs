@@ -7,6 +7,7 @@ use calimero_server_primitives::admin::{
     UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::jsonrpc::Response;
+use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
 
 use super::Report;
@@ -14,8 +15,15 @@ use super::Report;
 impl Report for CreateContextResponse {
     fn report(&self) {
         let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Context Created").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully created context"]);
+        let _ = table.set_header(vec![
+            Cell::new("Context Created").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Context ID", &self.data.context_id.to_string()]);
+        let _ = table.add_row(vec![
+            "Member Public Key",
+            &self.data.member_public_key.to_string(),
+        ]);
         println!("{table}");
     }
 }
@@ -167,19 +175,49 @@ impl Report for GrantPermissionResponse {
 
 impl Report for InviteToContextResponse {
     fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Invitation Sent").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully sent invitation"]);
-        println!("{table}");
+        if let Some(ref payload) = self.data {
+            println!("{}", "Invitation Created Successfully".green());
+            println!();
+            println!("Invitation Payload:");
+            println!("{}", payload);
+            println!();
+            println!("To join, run from another node:");
+            println!("  meroctl --node <NODE_ID> context join {}", payload);
+        } else {
+            println!("Failed to create an invitation");
+        }
     }
 }
 
 impl Report for InviteToContextOpenInvitationResponse {
     fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Open Invitation Created").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully created an open invitation"]);
-        println!("{table}");
+        if let Some(ref signed_invitation) = self.data {
+            println!("{}", "Open Invitation Created Successfully".green());
+            println!();
+            println!("Open Invitation Payload:");
+            match serde_json::to_string(signed_invitation) {
+                Ok(json_payload) => {
+                    println!("{}", json_payload);
+                    println!();
+                    println!("To join, run from another node:");
+                    println!(
+                        "  meroctl --node <NODE_ID> context join-by-open-invitation '{}' --as <INVITEE_PUBLIC_KEY>",
+                        json_payload
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Error: failed to serialize invitation as JSON: {e}");
+                    eprintln!("Debug representation:");
+                    eprintln!("{:?}", signed_invitation);
+                    eprintln!();
+                    eprintln!(
+                        "Cannot provide join command - invitation is not in valid JSON format."
+                    );
+                }
+            }
+        } else {
+            println!("Failed to create an open invitation");
+        }
     }
 }
 

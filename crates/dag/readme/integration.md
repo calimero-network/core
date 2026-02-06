@@ -621,7 +621,7 @@ pub async fn dag_health_check(dag: &DagStore<MyPayload>) -> HealthStatus {
     let pending = dag.pending_stats();
     
     if pending.count > 100 {
-        return HealthStatus::Unhealthy("Too many pending deltas".to_string());
+        return HealthStatus::NotAlive("Too many pending deltas".to_string());
     }
     
     if pending.oldest_age_secs > 300 {
@@ -632,7 +632,7 @@ pub async fn dag_health_check(dag: &DagStore<MyPayload>) -> HealthStatus {
         return HealthStatus::Warning("Many forks detected".to_string());
     }
     
-    HealthStatus::Healthy
+    HealthStatus::Alive
 }
 ```
 

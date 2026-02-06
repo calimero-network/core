@@ -148,3 +148,37 @@ fn test_rocksdb_iter() {
         }
     }
 }
+
+#[test]
+fn test_data_persistence() {
+    // Test that data persists across open/close cycles
+    let dir = TempDir::new("_calimero_store_persistence").expect("tempdir should be created");
+
+    let dir_path = dir
+        .path()
+        .to_owned()
+        .try_into()
+        .expect("path conversion should succeed");
+
+    let config = StoreConfig::new(dir_path);
+
+    // Open, write, and close
+    {
+        let db = RocksDB::open(&config).expect("open should succeed");
+        let key = Slice::from(&[1, 2, 3][..]);
+        let value = Slice::from(&[4, 5, 6][..]);
+        db.put(Column::Identity, (&key).into(), (&value).into())
+            .expect("put should succeed");
+    }
+
+    // Reopen and verify data persists
+    {
+        let db = RocksDB::open(&config).expect("reopen should succeed");
+        let key = Slice::from(&[1, 2, 3][..]);
+        let retrieved = db
+            .get(Column::Identity, (&key).into())
+            .expect("get should succeed")
+            .expect("key should exist");
+        assert_eq!(retrieved.as_ref(), &[4, 5, 6]);
+    }
+}

@@ -1,15 +1,19 @@
 use std::sync::Arc;
 
-use axum::extract::{Json, Path};
+use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_config::types::Capability;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
+use calimero_server_primitives::validation::{
+    helpers::validate_collection_size, Validate, ValidationError, MAX_CAPABILITIES_COUNT,
+};
 use eyre::bail;
 use serde::Deserialize;
 use tracing::{error, info};
 
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
@@ -19,10 +23,24 @@ pub struct RevokeCapabilitiesRequest {
     pub signer_id: PublicKey,
 }
 
+impl Validate for RevokeCapabilitiesRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        if let Some(e) =
+            validate_collection_size(&self.capabilities, "capabilities", MAX_CAPABILITIES_COUNT)
+        {
+            errors.push(e);
+        }
+
+        errors
+    }
+}
+
 pub async fn handler(
     Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(request): Json<RevokeCapabilitiesRequest>,
+    ValidatedJson(request): ValidatedJson<RevokeCapabilitiesRequest>,
 ) -> impl IntoResponse {
     info!(context_id=%context_id, signer_id=%request.signer_id, count=%request.capabilities.len(), "Revoking capabilities");
 

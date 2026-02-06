@@ -31,7 +31,7 @@ impl VMHostFunctions<'_> {
         let application_id = *self.read_guest_memory_sized::<DIGEST_SIZE>(&app_id_buf)?;
 
         let args_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(args_ptr)? };
-        let init_args = self.read_guest_memory_slice(&args_buf).to_vec();
+        let init_args = self.read_guest_memory_slice(&args_buf)?.to_vec();
 
         // Check if alias ptr is non-zero.
         let alias = if alias_ptr != 0 {

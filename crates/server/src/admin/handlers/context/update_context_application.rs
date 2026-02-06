@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     UpdateContextApplicationRequest, UpdateContextApplicationResponse,
@@ -11,13 +11,14 @@ use calimero_server_primitives::admin::{
 use reqwest::StatusCode;
 use tracing::{error, info};
 
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     Path(context_id): Path<String>,
-    Json(req): Json<UpdateContextApplicationRequest>,
+    ValidatedJson(req): ValidatedJson<UpdateContextApplicationRequest>,
 ) -> impl IntoResponse {
     let context_id_result = match ContextId::from_str(&context_id) {
         Ok(id) => id,

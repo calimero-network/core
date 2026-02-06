@@ -66,6 +66,9 @@ pub const EXAMPLES: &str = r"
   # Set a node as active (default for commands)
   $ meroctl node use node1
 
+  # List all configured nodes
+  $ meroctl node ls
+
   # Remove a node
   $ meroctl node remove node1
 ";

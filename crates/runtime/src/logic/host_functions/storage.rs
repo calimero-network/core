@@ -32,7 +32,7 @@ impl VMHostFunctions<'_> {
         if key.len() > logic.limits.max_storage_key_size.get() {
             return Err(HostError::KeyLengthOverflow.into());
         }
-        let key = self.read_guest_memory_slice(&key).to_vec();
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
 
         trace!(
             target: "runtime::host::storage",
@@ -103,7 +103,7 @@ impl VMHostFunctions<'_> {
             return Err(HostError::KeyLengthOverflow.into());
         }
 
-        let key = self.read_guest_memory_slice(&key).to_vec();
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
 
         trace!(
             target: "runtime::host::storage",
@@ -184,8 +184,8 @@ impl VMHostFunctions<'_> {
             return Err(HostError::ValueLengthOverflow.into());
         }
 
-        let key = self.read_guest_memory_slice(&key).to_vec();
-        let value = self.read_guest_memory_slice(&value).to_vec();
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
+        let value = self.read_guest_memory_slice(&value)?.to_vec();
         let key_len = key.len();
         let value_len = value.len();
 
