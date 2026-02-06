@@ -121,17 +121,27 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                 .into_actor(act)
             });
 
-            return ActorResponse::r#async(task.map_ok(move |_application, act, _ctx| {
-                // Invalidate cached module so the next execution loads the new WASM from the node.
-                // Otherwise we would keep using the pre-migration (v1) module for execute calls.
-                if act.applications.remove(&application_id).is_some() {
-                    debug!(%context_id, %application_id, "Invalidated cached application module after migration");
-                }
+            return ActorResponse::r#async(task.map_ok(
+                move |(_application, updated_context), act, _ctx| {
+                    // Invalidate cached module so the next execution loads the new WASM from the node.
+                    // Otherwise we would keep using the pre-migration (v1) module for execute calls.
+                    if act.applications.remove(&application_id).is_some() {
+                        debug!(%context_id, %application_id, "Invalidated cached application module after migration");
+                    }
 
-                if let Some(context) = act.contexts.get_mut(&context_id) {
-                    context.meta.application_id = application_id;
-                }
-            }));
+                    if let Some(cached) = act.contexts.get_mut(&context_id) {
+                        debug!(
+                            %context_id,
+                            old_root = ?cached.meta.root_hash,
+                            new_root = ?updated_context.root_hash,
+                            "Updating cached context after migration"
+                        );
+                        cached.meta.application_id = application_id;
+                        cached.meta.root_hash = updated_context.root_hash;
+                        cached.meta.dag_heads = updated_context.dag_heads;
+                    }
+                },
+            ));
         }
 
         // No migration - use existing update path
@@ -392,7 +402,7 @@ async fn update_application_with_migration(
     public_key: PublicKey,
     migration: Option<MigrationParams>,
     module: calimero_runtime::Module,
-) -> eyre::Result<Application> {
+) -> eyre::Result<(Application, Context)> {
     let (mut context, application) = resolve_context_and_application(
         &context_client,
         &node_client,
@@ -485,7 +495,7 @@ async fn update_application_with_migration(
     )
     .await?;
 
-    Ok(application)
+    Ok((application, context))
 }
 
 /// Execute the migration function in the new WASM module.
