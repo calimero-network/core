@@ -693,21 +693,24 @@ mod merge_by_crdt_type_tests {
         assert!(is_builtin_crdt(&CrdtType::GCounter)); // GCounter
         assert!(is_builtin_crdt(&CrdtType::Rga));
 
-        // LwwRegister with known inner types should return true
-        assert!(is_builtin_crdt(&CrdtType::LwwRegister {
+        // LwwRegisterTyped with known inner types should return true
+        assert!(is_builtin_crdt(&CrdtType::LwwRegisterTyped {
             inner: InnerType::String
         }));
-        assert!(is_builtin_crdt(&CrdtType::LwwRegister {
+        assert!(is_builtin_crdt(&CrdtType::LwwRegisterTyped {
             inner: InnerType::U64
         }));
-        assert!(is_builtin_crdt(&CrdtType::LwwRegister {
+        assert!(is_builtin_crdt(&CrdtType::LwwRegisterTyped {
             inner: InnerType::Bool
         }));
 
-        // LwwRegister with Custom inner type should return false
-        assert!(!is_builtin_crdt(&CrdtType::LwwRegister {
+        // LwwRegisterTyped with Custom inner type should return false
+        assert!(!is_builtin_crdt(&CrdtType::LwwRegisterTyped {
             inner: InnerType::Custom("MyStruct".to_owned())
         }));
+
+        // Legacy LwwRegister (unit variant) should return false (needs WASM)
+        assert!(!is_builtin_crdt(&CrdtType::LwwRegister));
 
         // Collections with nested generics should return false (go through registry)
         assert!(!is_builtin_crdt(&CrdtType::UnorderedMap));
@@ -817,7 +820,7 @@ mod merge_by_crdt_type_tests {
 
         // Merge using merge_by_crdt_type with correct inner type
         let merged_bytes = merge_by_crdt_type(
-            &CrdtType::LwwRegister {
+            &CrdtType::LwwRegisterTyped {
                 inner: InnerType::String,
             },
             &bytes1,
@@ -851,7 +854,7 @@ mod merge_by_crdt_type_tests {
 
         // Merge using merge_by_crdt_type with correct inner type
         let merged_bytes = merge_by_crdt_type(
-            &CrdtType::LwwRegister {
+            &CrdtType::LwwRegisterTyped {
                 inner: InnerType::U64,
             },
             &bytes1,
@@ -885,7 +888,7 @@ mod merge_by_crdt_type_tests {
 
         // Merge using merge_by_crdt_type with correct inner type
         let merged_bytes = merge_by_crdt_type(
-            &CrdtType::LwwRegister {
+            &CrdtType::LwwRegisterTyped {
                 inner: InnerType::Bool,
             },
             &bytes1,
@@ -909,9 +912,9 @@ mod merge_by_crdt_type_tests {
 
         let bytes = vec![1, 2, 3, 4];
 
-        // LwwRegister with Custom inner type should return WasmRequired
+        // LwwRegisterTyped with Custom inner type should return WasmRequired
         let result = merge_by_crdt_type(
-            &CrdtType::LwwRegister {
+            &CrdtType::LwwRegisterTyped {
                 inner: InnerType::Custom("MyStruct".to_owned()),
             },
             &bytes,

@@ -21,10 +21,10 @@ use borsh::{BorshDeserialize, BorshSerialize};
 ///
 /// ```ignore
 /// // For LwwRegister<u64>:
-/// CrdtType::LwwRegister { inner: InnerType::U64 }
+/// CrdtType::LwwRegisterTyped { inner: InnerType::U64 }
 ///
 /// // For LwwRegister<String>:
-/// CrdtType::LwwRegister { inner: InnerType::String }
+/// CrdtType::LwwRegisterTyped { inner: InnerType::String }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, BorshSerialize, BorshDeserialize)]
 pub enum InnerType {
@@ -181,17 +181,14 @@ impl AsInnerType for Vec<u8> {
 /// random IDs while top-level fields need deterministic IDs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, BorshSerialize, BorshDeserialize)]
 pub enum CrdtType {
-    /// Last-Write-Wins Register - wraps primitive types with timestamp-based conflict resolution.
+    /// Last-Write-Wins Register (legacy) - wraps primitive types with timestamp-based conflict resolution.
     ///
     /// Merge: Higher timestamp wins, with node ID as tie-breaker.
     ///
-    /// The `inner` field specifies the type of the wrapped value, enabling proper
-    /// deserialization during merge. Use `InnerType::Custom` for app-defined types
-    /// that require WASM callback for merging.
-    LwwRegister {
-        /// The type of the inner value (e.g., `InnerType::U64` for `LwwRegister<u64>`)
-        inner: InnerType,
-    },
+    /// **Note**: This is the legacy unit variant preserved for Borsh deserialization
+    /// compatibility with existing persisted data. New code should use `LwwRegisterTyped`
+    /// which includes the inner type information for proper merge dispatch.
+    LwwRegister,
 
     /// PN-Counter - supports both increment and decrement operations.
     ///
@@ -253,6 +250,22 @@ pub enum CrdtType {
     /// Note: Placed at end of enum to preserve Borsh serialization compatibility
     /// with existing variants.
     GCounter,
+
+    /// Last-Write-Wins Register with type info - wraps primitive types with timestamp-based conflict resolution.
+    ///
+    /// Merge: Higher timestamp wins, with node ID as tie-breaker.
+    ///
+    /// The `inner` field specifies the type of the wrapped value, enabling proper
+    /// deserialization during merge. Use `InnerType::Custom` for app-defined types
+    /// that require WASM callback for merging.
+    ///
+    /// Note: This variant is placed at the end to preserve Borsh serialization
+    /// compatibility. The original `LwwRegister` unit variant is kept at index 0
+    /// for deserializing legacy data.
+    LwwRegisterTyped {
+        /// The type of the inner value (e.g., `InnerType::U64` for `LwwRegister<u64>`)
+        inner: InnerType,
+    },
 
     /// Custom user-defined CRDT type.
     ///

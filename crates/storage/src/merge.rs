@@ -152,7 +152,11 @@ pub fn merge_by_crdt_type(
 ) -> Result<Vec<u8>, MergeError> {
     match crdt_type {
         // Types with known inner type info - can merge at byte level
-        CrdtType::LwwRegister { inner } => merge_lww_register(existing, incoming, inner),
+        CrdtType::LwwRegisterTyped { inner } => merge_lww_register(existing, incoming, inner),
+        // Legacy LwwRegister without type info - needs WASM for proper merge
+        CrdtType::LwwRegister => Err(MergeError::WasmRequired {
+            type_name: "LwwRegister (legacy)".to_owned(),
+        }),
         CrdtType::Counter => merge_pn_counter(existing, incoming),
         CrdtType::GCounter => merge_g_counter(existing, incoming),
         CrdtType::Rga => merge_rga(existing, incoming),
@@ -291,8 +295,10 @@ fn merge_rga(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
 /// - `Custom` - app-defined types
 pub fn is_builtin_crdt(crdt_type: &CrdtType) -> bool {
     match crdt_type {
-        // LwwRegister with known inner type can be merged
-        CrdtType::LwwRegister { inner } => !matches!(inner, InnerType::Custom(_)),
+        // LwwRegisterTyped with known inner type can be merged
+        CrdtType::LwwRegisterTyped { inner } => !matches!(inner, InnerType::Custom(_)),
+        // Legacy LwwRegister without type info goes through registry
+        CrdtType::LwwRegister => false,
         // Counters and RGA have no unknown generics
         CrdtType::Counter | CrdtType::GCounter | CrdtType::Rga => true,
         // Collections with nested generics go through registry
