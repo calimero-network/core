@@ -18,7 +18,8 @@ use calimero_runtime::logic::Event as RuntimeEvent;
 use calimero_storage::address::Id;
 use calimero_storage::entities::Metadata;
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
-use calimero_storage::index::EntityIndex;
+use calimero_storage::error::StorageError;
+use calimero_storage::index::{EntityIndex, Index};
 use calimero_storage::store::{Key, MainStorage};
 use calimero_storage::Interface;
 use calimero_store::{key, types};
@@ -714,7 +715,8 @@ fn build_entry_bytes(new_state_bytes: &[u8]) -> Vec<u8> {
 /// This function uses the `calimero-storage` layer to ensure the Merkle tree Index is
 /// updated along with the Entry data. This maintains consistency for the sync protocol.
 ///
-/// Returns the computed `full_hash` (Merkle tree hash) which should be used as the `root_hash`.
+/// Returns the Merkle tree root's `full_hash` (from `Id::root()`), matching the hash
+/// computation used by the normal execution flow in `system.rs`.
 fn write_migration_state(
     datastore: &calimero_store::Store,
     context: &Context,
@@ -744,18 +746,32 @@ fn write_migration_state(
     );
 
     let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
-    let result = with_runtime_env(runtime_env, || {
-        Interface::<MainStorage>::save_raw(root_entry_id, entry_bytes, metadata)
+    let result = with_runtime_env(runtime_env, || -> Result<_, StorageError> {
+        // Write the entry — this updates the entry's Index and propagates hashes
+        // up to the Merkle tree root via recalculate_ancestor_hashes_for.
+        let save_result = Interface::<MainStorage>::save_raw(root_entry_id, entry_bytes, metadata)?;
+
+        if save_result.is_none() {
+            return Ok(None);
+        }
+
+        // Read the Merkle tree root hash — same as the normal execution flow
+        // save_raw returns the *entry node's* full_hash, not the tree root's.
+        let root_hash = Index::<MainStorage>::get_hashes_for(Id::root())?
+            .map(|(full_hash, _)| full_hash)
+            .unwrap_or([0; 32]);
+
+        Ok(Some(root_hash))
     });
 
     match result {
-        Ok(Some(full_hash)) => {
+        Ok(Some(root_hash)) => {
             debug!(
                 %context_id,
-                full_hash = ?full_hash,
+                root_hash = ?root_hash,
                 "Migrated state written successfully with Index update"
             );
-            Ok(full_hash)
+            Ok(root_hash)
         }
         Ok(None) => {
             error!(
