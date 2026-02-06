@@ -19,6 +19,31 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 /// Increment on breaking changes to ensure nodes can detect incompatibility.
 pub const SYNC_PROTOCOL_VERSION: u32 = 1;
 
+/// Protocol capability identifier for sync negotiation.
+///
+/// This is a discriminant-only enum used for advertising which sync protocols
+/// a node supports. Unlike [`SyncProtocol`], this does not carry protocol-specific
+/// data, making it suitable for capability comparison with `contains()` and equality.
+///
+/// See CIP §1 - Sync Protocol Types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, BorshSerialize, BorshDeserialize)]
+pub enum SyncProtocolKind {
+    /// No sync needed - root hashes already match.
+    None,
+    /// Delta-based sync via DAG traversal.
+    DeltaSync,
+    /// Hash-based Merkle tree comparison.
+    HashComparison,
+    /// Full state snapshot transfer.
+    Snapshot,
+    /// Bloom filter-based quick diff.
+    BloomFilter,
+    /// Subtree prefetch for deep localized changes.
+    SubtreePrefetch,
+    /// Level-wise sync for wide shallow trees.
+    LevelWise,
+}
+
 /// Sync protocol selection for negotiation.
 ///
 /// Each variant represents a different synchronization strategy with different
@@ -92,6 +117,24 @@ impl Default for SyncProtocol {
     }
 }
 
+impl SyncProtocol {
+    /// Returns the protocol kind (discriminant) for this protocol.
+    ///
+    /// Useful for capability matching where the protocol-specific data is irrelevant.
+    #[must_use]
+    pub fn kind(&self) -> SyncProtocolKind {
+        match self {
+            Self::None => SyncProtocolKind::None,
+            Self::DeltaSync { .. } => SyncProtocolKind::DeltaSync,
+            Self::HashComparison { .. } => SyncProtocolKind::HashComparison,
+            Self::Snapshot { .. } => SyncProtocolKind::Snapshot,
+            Self::BloomFilter { .. } => SyncProtocolKind::BloomFilter,
+            Self::SubtreePrefetch { .. } => SyncProtocolKind::SubtreePrefetch,
+            Self::LevelWise { .. } => SyncProtocolKind::LevelWise,
+        }
+    }
+}
+
 /// Capabilities advertised during sync negotiation.
 ///
 /// Used to determine mutually supported features between peers.
@@ -102,7 +145,7 @@ pub struct SyncCapabilities {
     /// Maximum entities per batch transfer.
     pub max_batch_size: u64,
     /// Protocols this node supports (ordered by preference).
-    pub supported_protocols: Vec<SyncProtocol>,
+    pub supported_protocols: Vec<SyncProtocolKind>,
 }
 
 impl Default for SyncCapabilities {
@@ -111,18 +154,10 @@ impl Default for SyncCapabilities {
             supports_compression: true,
             max_batch_size: 1000,
             supported_protocols: vec![
-                SyncProtocol::None,
-                SyncProtocol::DeltaSync {
-                    missing_delta_ids: vec![],
-                },
-                SyncProtocol::HashComparison {
-                    root_hash: [0; 32],
-                    divergent_subtrees: vec![],
-                },
-                SyncProtocol::Snapshot {
-                    compressed: true,
-                    verified: true,
-                },
+                SyncProtocolKind::None,
+                SyncProtocolKind::DeltaSync,
+                SyncProtocolKind::HashComparison,
+                SyncProtocolKind::Snapshot,
             ],
         }
     }
@@ -148,7 +183,7 @@ pub struct SyncHandshake {
     /// Whether this node has any state.
     pub has_state: bool,
     /// Supported protocols (ordered by preference).
-    pub supported_protocols: Vec<SyncProtocol>,
+    pub supported_protocols: Vec<SyncProtocolKind>,
 }
 
 impl SyncHandshake {
