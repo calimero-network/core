@@ -83,7 +83,7 @@ impl<T: Mergeable + Clone> Mergeable for Option<T> {
 
 impl<T: AsInnerType> CrdtMeta for LwwRegister<T> {
     fn crdt_type() -> CrdtType {
-        CrdtType::LwwRegister {
+        CrdtType::LwwRegisterTyped {
             inner: T::as_inner_type(),
         }
     }
@@ -485,7 +485,7 @@ mod tests {
         assert!(LwwRegister::<String>::is_crdt());
         assert_eq!(
             LwwRegister::<String>::crdt_type(),
-            CrdtType::LwwRegister {
+            CrdtType::LwwRegisterTyped {
                 inner: InnerType::String
             }
         );
@@ -494,13 +494,13 @@ mod tests {
         // Test with different inner types
         assert_eq!(
             LwwRegister::<u64>::crdt_type(),
-            CrdtType::LwwRegister {
+            CrdtType::LwwRegisterTyped {
                 inner: InnerType::U64
             }
         );
         assert_eq!(
             LwwRegister::<bool>::crdt_type(),
-            CrdtType::LwwRegister {
+            CrdtType::LwwRegisterTyped {
                 inner: InnerType::Bool
             }
         );
