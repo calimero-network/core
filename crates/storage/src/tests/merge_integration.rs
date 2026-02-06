@@ -675,3 +675,295 @@ fn test_merge_nested_document_with_rga() {
 
     println!("✅ Nested Document RGA merge test PASSED - no divergence!");
 }
+
+// ============================================================================
+// Tests for merge_by_crdt_type dispatch function
+// ============================================================================
+
+mod merge_by_crdt_type_tests {
+    use super::*;
+    use crate::collections::crdt_meta::{CrdtType, MergeError};
+    use crate::collections::{GCounter, PNCounter};
+    use crate::merge::{is_builtin_crdt, merge_by_crdt_type};
+
+    #[test]
+    fn test_is_builtin_crdt() {
+        // Built-in types (no generics, can deserialize at byte level) should return true
+        assert!(is_builtin_crdt(&CrdtType::Counter)); // PNCounter
+        assert!(is_builtin_crdt(&CrdtType::GCounter)); // GCounter
+        assert!(is_builtin_crdt(&CrdtType::LwwRegister));
+        assert!(is_builtin_crdt(&CrdtType::UnorderedMap));
+        assert!(is_builtin_crdt(&CrdtType::UnorderedSet));
+        assert!(is_builtin_crdt(&CrdtType::Vector));
+        assert!(is_builtin_crdt(&CrdtType::Rga));
+
+        // Generic wrappers (need concrete T to deserialize) should return false
+        assert!(!is_builtin_crdt(&CrdtType::UserStorage));
+        assert!(!is_builtin_crdt(&CrdtType::FrozenStorage));
+
+        // Registry-based types should return false
+        assert!(!is_builtin_crdt(&CrdtType::Record));
+        assert!(!is_builtin_crdt(&CrdtType::Custom("MyType".to_owned())));
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_gcounter() {
+        env::reset_for_testing();
+
+        // Create G-Counter on node 1
+        env::set_executor_id([50; 32]);
+        let mut counter1: GCounter = GCounter::new();
+        counter1.increment().unwrap();
+        counter1.increment().unwrap(); // value = 2
+
+        let bytes1 = borsh::to_vec(&counter1).unwrap();
+
+        // Create G-Counter on node 2
+        env::set_executor_id([60; 32]);
+        let mut counter2: GCounter = GCounter::new();
+        counter2.increment().unwrap();
+        counter2.increment().unwrap();
+        counter2.increment().unwrap(); // value = 3
+
+        let bytes2 = borsh::to_vec(&counter2).unwrap();
+
+        // Merge using merge_by_crdt_type with GCounter type
+        let merged_bytes = merge_by_crdt_type(&CrdtType::GCounter, &bytes1, &bytes2)
+            .expect("GCounter merge failed");
+
+        // Deserialize and verify
+        let merged: GCounter = borsh::from_slice(&merged_bytes).unwrap();
+        let value = merged.value().unwrap();
+
+        // Both counters should be summed: 2 + 3 = 5
+        assert_eq!(
+            value, 5,
+            "GCounter merge should sum: 2 + 3 = 5, got {}",
+            value
+        );
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_pncounter() {
+        env::reset_for_testing();
+
+        // Create PN-Counter on node 1
+        env::set_executor_id([50; 32]);
+        let mut counter1: PNCounter = PNCounter::new();
+        counter1.increment().unwrap();
+        counter1.increment().unwrap();
+        counter1.increment().unwrap(); // +3
+        counter1.decrement().unwrap(); // -1 = net 2
+
+        let bytes1 = borsh::to_vec(&counter1).unwrap();
+
+        // Create PN-Counter on node 2
+        env::set_executor_id([60; 32]);
+        let mut counter2: PNCounter = PNCounter::new();
+        counter2.increment().unwrap();
+        counter2.increment().unwrap();
+        counter2.increment().unwrap();
+        counter2.increment().unwrap(); // +4
+        counter2.decrement().unwrap(); // -1 = net 3
+
+        let bytes2 = borsh::to_vec(&counter2).unwrap();
+
+        // Merge using merge_by_crdt_type with Counter type (PNCounter)
+        let merged_bytes = merge_by_crdt_type(&CrdtType::Counter, &bytes1, &bytes2)
+            .expect("PNCounter merge failed");
+
+        // Deserialize and verify
+        let merged: PNCounter = borsh::from_slice(&merged_bytes).unwrap();
+        let value = merged.value().unwrap();
+
+        // Both counters: node1 (+3, -1) + node2 (+4, -1) = +7, -2 = net 5
+        assert_eq!(
+            value, 5,
+            "PNCounter merge should be: (3-1) + (4-1) = 5, got {}",
+            value
+        );
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_lww_register() {
+        env::reset_for_testing();
+
+        // Create register with older timestamp
+        let reg1 = LwwRegister::new("old_value".to_owned());
+        let bytes1 = borsh::to_vec(&reg1).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        // Create register with newer timestamp
+        let reg2 = LwwRegister::new("new_value".to_owned());
+        let bytes2 = borsh::to_vec(&reg2).unwrap();
+
+        // Merge using merge_by_crdt_type
+        let merged_bytes = merge_by_crdt_type(&CrdtType::LwwRegister, &bytes1, &bytes2)
+            .expect("LwwRegister merge failed");
+
+        // Deserialize and verify - newer timestamp should win
+        let merged: LwwRegister<String> = borsh::from_slice(&merged_bytes).unwrap();
+        assert_eq!(
+            merged.get(),
+            "new_value",
+            "LwwRegister merge should keep newer value"
+        );
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_unordered_set() {
+        env::reset_for_testing();
+
+        // Create set on node 1
+        let mut set1: UnorderedSet<String> = UnorderedSet::new();
+        set1.insert("alice".to_owned()).unwrap();
+        set1.insert("bob".to_owned()).unwrap();
+
+        let bytes1 = borsh::to_vec(&set1).unwrap();
+
+        // Create set on node 2
+        let mut set2: UnorderedSet<String> = UnorderedSet::new();
+        set2.insert("charlie".to_owned()).unwrap();
+        set2.insert("bob".to_owned()).unwrap(); // Overlapping element
+
+        let bytes2 = borsh::to_vec(&set2).unwrap();
+
+        // Merge using merge_by_crdt_type
+        let merged_bytes = merge_by_crdt_type(&CrdtType::UnorderedSet, &bytes1, &bytes2)
+            .expect("UnorderedSet merge failed");
+
+        // Deserialize and verify - should be union
+        let merged: UnorderedSet<String> = borsh::from_slice(&merged_bytes).unwrap();
+
+        assert!(
+            merged.contains(&"alice".to_owned()).unwrap(),
+            "Set should contain 'alice'"
+        );
+        assert!(
+            merged.contains(&"bob".to_owned()).unwrap(),
+            "Set should contain 'bob'"
+        );
+        assert!(
+            merged.contains(&"charlie".to_owned()).unwrap(),
+            "Set should contain 'charlie'"
+        );
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_rga() {
+        env::reset_for_testing();
+
+        // Create RGA on node 1
+        let mut rga1 = ReplicatedGrowableArray::new();
+        rga1.insert_str(0, "Hello").unwrap();
+
+        let bytes1 = borsh::to_vec(&rga1).unwrap();
+
+        // Create RGA on node 2
+        let mut rga2 = ReplicatedGrowableArray::new();
+        rga2.insert_str(0, "World").unwrap();
+
+        let bytes2 = borsh::to_vec(&rga2).unwrap();
+
+        // Merge using merge_by_crdt_type
+        let merged_bytes =
+            merge_by_crdt_type(&CrdtType::Rga, &bytes1, &bytes2).expect("RGA merge failed");
+
+        // Deserialize and verify - should have all characters
+        let merged: ReplicatedGrowableArray = borsh::from_slice(&merged_bytes).unwrap();
+        let len = merged.len().unwrap();
+
+        // Both "Hello" and "World" have 5 chars each = 10 total
+        assert_eq!(len, 10, "RGA merge should have 10 chars, got {}", len);
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_custom_returns_wasm_required() {
+        env::reset_for_testing();
+
+        let bytes = vec![1, 2, 3, 4];
+
+        // Custom type should return WasmRequired error
+        let result =
+            merge_by_crdt_type(&CrdtType::Custom("MyCustomType".to_owned()), &bytes, &bytes);
+
+        match result {
+            Err(MergeError::WasmRequired { type_name }) => {
+                assert_eq!(type_name, "MyCustomType");
+            }
+            _ => panic!("Expected WasmRequired error for Custom type"),
+        }
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_record_returns_wasm_required() {
+        env::reset_for_testing();
+
+        let bytes = vec![1, 2, 3, 4];
+
+        // Record type should return WasmRequired error
+        let result = merge_by_crdt_type(&CrdtType::Record, &bytes, &bytes);
+
+        match result {
+            Err(MergeError::WasmRequired { type_name }) => {
+                assert_eq!(type_name, "Record");
+            }
+            _ => panic!("Expected WasmRequired error for Record type"),
+        }
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_frozen_storage_returns_wasm_required() {
+        env::reset_for_testing();
+
+        let bytes = vec![1, 2, 3, 4];
+
+        // FrozenStorage is a generic wrapper - should go through registry, not merge_by_crdt_type
+        let result = merge_by_crdt_type(&CrdtType::FrozenStorage, &bytes, &bytes);
+
+        match result {
+            Err(MergeError::WasmRequired { .. }) => {
+                // Expected - FrozenStorage needs concrete type to deserialize
+            }
+            _ => panic!("Expected WasmRequired error for FrozenStorage"),
+        }
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_user_storage_returns_wasm_required() {
+        env::reset_for_testing();
+
+        let bytes = vec![1, 2, 3, 4];
+
+        // UserStorage is a generic wrapper - should go through registry, not merge_by_crdt_type
+        let result = merge_by_crdt_type(&CrdtType::UserStorage, &bytes, &bytes);
+
+        match result {
+            Err(MergeError::WasmRequired { .. }) => {
+                // Expected - UserStorage needs concrete type to deserialize
+            }
+            _ => panic!("Expected WasmRequired error for UserStorage"),
+        }
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_invalid_data_returns_error() {
+        env::reset_for_testing();
+
+        let invalid_bytes = vec![0xFF, 0xFF, 0xFF]; // Invalid borsh data
+
+        // Should return SerializationError for invalid data
+        let result = merge_by_crdt_type(&CrdtType::Counter, &invalid_bytes, &invalid_bytes);
+
+        match result {
+            Err(MergeError::SerializationError(_)) => {
+                // Expected
+            }
+            other => panic!(
+                "Expected SerializationError for invalid data, got {:?}",
+                other
+            ),
+        }
+    }
+}

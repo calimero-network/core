@@ -47,7 +47,15 @@ pub enum CrdtType {
     ///
     /// Internally uses two maps: positive and negative counts per executor.
     /// Merge: Union of positive maps, union of negative maps, then compute difference.
+    /// Use `GCounter` if you only need increment operations.
     Counter,
+
+    /// G-Counter - grow-only counter (increment only, no decrement).
+    ///
+    /// Internally uses a single map of positive counts per executor.
+    /// Merge: Take max count per executor.
+    /// More efficient than `Counter` (PNCounter) when decrement is not needed.
+    GCounter,
 
     /// Replicated Growable Array - CRDT for collaborative text editing.
     ///
@@ -171,6 +179,13 @@ pub enum MergeError {
     StorageError(String),
     /// Type mismatch (attempted to merge different CRDT types)
     TypeMismatch,
+    /// CRDT type requires WASM execution for merge (custom app-defined types)
+    WasmRequired {
+        /// Name of the custom type that requires WASM merge
+        type_name: String,
+    },
+    /// Serialization or deserialization error during merge
+    SerializationError(String),
 }
 
 impl std::fmt::Display for MergeError {
@@ -179,6 +194,10 @@ impl std::fmt::Display for MergeError {
             MergeError::IncompatibleStates => write!(f, "Incompatible CRDT states"),
             MergeError::StorageError(msg) => write!(f, "Storage error: {}", msg),
             MergeError::TypeMismatch => write!(f, "Cannot merge different CRDT types"),
+            MergeError::WasmRequired { type_name } => {
+                write!(f, "CRDT type '{}' requires WASM for merge", type_name)
+            }
+            MergeError::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
         }
     }
 }

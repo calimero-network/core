@@ -74,7 +74,7 @@ pub mod snapshot;
 pub mod store;
 
 // Re-export for convenience
-pub use merge::register_crdt_merge;
+pub use merge::{is_builtin_crdt, merge_by_crdt_type, register_crdt_merge};
 
 /// Re-exported types, mostly for use in macros (for convenience).
 pub mod exports {

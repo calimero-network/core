@@ -109,7 +109,11 @@ impl<T: Clone> Mergeable for LwwRegister<T> {
 
 impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> CrdtMeta for Counter<ALLOW_DECREMENT, S> {
     fn crdt_type() -> CrdtType {
-        CrdtType::Counter
+        if ALLOW_DECREMENT {
+            CrdtType::Counter // PNCounter
+        } else {
+            CrdtType::GCounter // Grow-only counter
+        }
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -482,7 +486,7 @@ mod tests {
     #[test]
     fn test_gcounter_is_crdt() {
         assert!(GCounter::<MainStorage>::is_crdt());
-        assert_eq!(GCounter::<MainStorage>::crdt_type(), CrdtType::Counter);
+        assert_eq!(GCounter::<MainStorage>::crdt_type(), CrdtType::GCounter);
         assert!(!GCounter::<MainStorage>::can_contain_crdts());
     }
 
@@ -534,11 +538,12 @@ mod tests {
     fn test_counter_custom_storage_is_crdt() {
         use crate::store::mocked::MockedStorage;
 
-        type CustomCounter = Counter<false, MockedStorage<0>>;
+        // Counter<false, S> is GCounter
+        type CustomGCounter = Counter<false, MockedStorage<0>>;
 
-        assert!(CustomCounter::is_crdt());
-        assert_eq!(CustomCounter::crdt_type(), CrdtType::Counter);
-        assert!(!CustomCounter::can_contain_crdts());
+        assert!(CustomGCounter::is_crdt());
+        assert_eq!(CustomGCounter::crdt_type(), CrdtType::GCounter);
+        assert!(!CustomGCounter::can_contain_crdts());
     }
 
     #[test]
