@@ -444,9 +444,9 @@ async fn update_application_with_migration(
         // This uses the storage layer to properly update both Entry and Index
         let full_hash = write_migration_state(&datastore, &context, &new_state_bytes, public_key)?;
 
-        // Update root_hash after migration using the hash computed by the storage layer
-        // The full_hash from Interface::save_raw is the Merkle tree hash
-        let new_root_hash = Hash::new(&full_hash);
+        // Update root_hash after migration: full_hash is already the Merkle tree hash from
+        // the storage layer; wrap the bytes directly (same as create_context/execute).
+        let new_root_hash = Hash::from(full_hash);
         context.root_hash = new_root_hash;
 
         // Align DAG heads with the new state. Migration does not create a causal delta,
