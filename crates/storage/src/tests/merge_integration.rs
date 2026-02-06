@@ -682,20 +682,37 @@ fn test_merge_nested_document_with_rga() {
 
 mod merge_by_crdt_type_tests {
     use super::*;
-    use crate::collections::crdt_meta::{CrdtType, MergeError};
+    use crate::collections::crdt_meta::{CrdtType, InnerType, MergeError};
     use crate::collections::{GCounter, PNCounter};
     use crate::merge::{is_builtin_crdt, merge_by_crdt_type};
 
     #[test]
     fn test_is_builtin_crdt() {
-        // Built-in types (no generics, can deserialize at byte level) should return true
+        // Built-in types (no unknown generics) should return true
         assert!(is_builtin_crdt(&CrdtType::Counter)); // PNCounter
         assert!(is_builtin_crdt(&CrdtType::GCounter)); // GCounter
-        assert!(is_builtin_crdt(&CrdtType::LwwRegister));
-        assert!(is_builtin_crdt(&CrdtType::UnorderedMap));
-        assert!(is_builtin_crdt(&CrdtType::UnorderedSet));
-        assert!(is_builtin_crdt(&CrdtType::Vector));
         assert!(is_builtin_crdt(&CrdtType::Rga));
+
+        // LwwRegister with known inner types should return true
+        assert!(is_builtin_crdt(&CrdtType::LwwRegister {
+            inner: InnerType::String
+        }));
+        assert!(is_builtin_crdt(&CrdtType::LwwRegister {
+            inner: InnerType::U64
+        }));
+        assert!(is_builtin_crdt(&CrdtType::LwwRegister {
+            inner: InnerType::Bool
+        }));
+
+        // LwwRegister with Custom inner type should return false
+        assert!(!is_builtin_crdt(&CrdtType::LwwRegister {
+            inner: InnerType::Custom("MyStruct".to_owned())
+        }));
+
+        // Collections with nested generics should return false (go through registry)
+        assert!(!is_builtin_crdt(&CrdtType::UnorderedMap));
+        assert!(!is_builtin_crdt(&CrdtType::UnorderedSet));
+        assert!(!is_builtin_crdt(&CrdtType::Vector));
 
         // Generic wrappers (need concrete T to deserialize) should return false
         assert!(!is_builtin_crdt(&CrdtType::UserStorage));
@@ -785,7 +802,7 @@ mod merge_by_crdt_type_tests {
     }
 
     #[test]
-    fn test_merge_by_crdt_type_lww_register() {
+    fn test_merge_by_crdt_type_lww_register_string() {
         env::reset_for_testing();
 
         // Create register with older timestamp
@@ -798,56 +815,166 @@ mod merge_by_crdt_type_tests {
         let reg2 = LwwRegister::new("new_value".to_owned());
         let bytes2 = borsh::to_vec(&reg2).unwrap();
 
-        // Merge using merge_by_crdt_type
-        let merged_bytes = merge_by_crdt_type(&CrdtType::LwwRegister, &bytes1, &bytes2)
-            .expect("LwwRegister merge failed");
+        // Merge using merge_by_crdt_type with correct inner type
+        let merged_bytes = merge_by_crdt_type(
+            &CrdtType::LwwRegister {
+                inner: InnerType::String,
+            },
+            &bytes1,
+            &bytes2,
+        )
+        .expect("LwwRegister<String> merge failed");
 
         // Deserialize and verify - newer timestamp should win
         let merged: LwwRegister<String> = borsh::from_slice(&merged_bytes).unwrap();
         assert_eq!(
             merged.get(),
             "new_value",
-            "LwwRegister merge should keep newer value"
+            "LwwRegister<String> merge should keep newer value"
         );
     }
 
+    /// Test that LwwRegister<u64> can now be merged correctly with InnerType::U64
     #[test]
-    fn test_merge_by_crdt_type_unordered_set() {
+    fn test_merge_by_crdt_type_lww_register_u64() {
         env::reset_for_testing();
 
-        // Create set on node 1
-        let mut set1: UnorderedSet<String> = UnorderedSet::new();
-        set1.insert("alice".to_owned()).unwrap();
-        set1.insert("bob".to_owned()).unwrap();
+        // Create register with older timestamp and u64 value
+        let reg1: LwwRegister<u64> = LwwRegister::new(100u64);
+        let bytes1 = borsh::to_vec(&reg1).unwrap();
 
-        let bytes1 = borsh::to_vec(&set1).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1));
 
-        // Create set on node 2
-        let mut set2: UnorderedSet<String> = UnorderedSet::new();
-        set2.insert("charlie".to_owned()).unwrap();
-        set2.insert("bob".to_owned()).unwrap(); // Overlapping element
+        // Create register with newer timestamp
+        let reg2: LwwRegister<u64> = LwwRegister::new(200u64);
+        let bytes2 = borsh::to_vec(&reg2).unwrap();
 
-        let bytes2 = borsh::to_vec(&set2).unwrap();
+        // Merge using merge_by_crdt_type with correct inner type
+        let merged_bytes = merge_by_crdt_type(
+            &CrdtType::LwwRegister {
+                inner: InnerType::U64,
+            },
+            &bytes1,
+            &bytes2,
+        )
+        .expect("LwwRegister<u64> merge failed");
 
-        // Merge using merge_by_crdt_type
-        let merged_bytes = merge_by_crdt_type(&CrdtType::UnorderedSet, &bytes1, &bytes2)
-            .expect("UnorderedSet merge failed");
-
-        // Deserialize and verify - should be union
-        let merged: UnorderedSet<String> = borsh::from_slice(&merged_bytes).unwrap();
-
-        assert!(
-            merged.contains(&"alice".to_owned()).unwrap(),
-            "Set should contain 'alice'"
+        // Deserialize and verify - newer timestamp should win
+        let merged: LwwRegister<u64> = borsh::from_slice(&merged_bytes).unwrap();
+        assert_eq!(
+            *merged.get(),
+            200u64,
+            "LwwRegister<u64> merge should keep newer value (200)"
         );
-        assert!(
-            merged.contains(&"bob".to_owned()).unwrap(),
-            "Set should contain 'bob'"
+    }
+
+    /// Test that LwwRegister<bool> can now be merged correctly with InnerType::Bool
+    #[test]
+    fn test_merge_by_crdt_type_lww_register_bool() {
+        env::reset_for_testing();
+
+        // Create register with older timestamp
+        let reg1: LwwRegister<bool> = LwwRegister::new(false);
+        let bytes1 = borsh::to_vec(&reg1).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        // Create register with newer timestamp
+        let reg2: LwwRegister<bool> = LwwRegister::new(true);
+        let bytes2 = borsh::to_vec(&reg2).unwrap();
+
+        // Merge using merge_by_crdt_type with correct inner type
+        let merged_bytes = merge_by_crdt_type(
+            &CrdtType::LwwRegister {
+                inner: InnerType::Bool,
+            },
+            &bytes1,
+            &bytes2,
+        )
+        .expect("LwwRegister<bool> merge failed");
+
+        // Deserialize and verify - newer timestamp should win
+        let merged: LwwRegister<bool> = borsh::from_slice(&merged_bytes).unwrap();
+        assert_eq!(
+            *merged.get(),
+            true,
+            "LwwRegister<bool> merge should keep newer value (true)"
         );
-        assert!(
-            merged.contains(&"charlie".to_owned()).unwrap(),
-            "Set should contain 'charlie'"
+    }
+
+    /// Test that LwwRegister with Custom inner type returns WasmRequired
+    #[test]
+    fn test_merge_by_crdt_type_lww_register_custom_returns_wasm_required() {
+        env::reset_for_testing();
+
+        let bytes = vec![1, 2, 3, 4];
+
+        // LwwRegister with Custom inner type should return WasmRequired
+        let result = merge_by_crdt_type(
+            &CrdtType::LwwRegister {
+                inner: InnerType::Custom("MyStruct".to_owned()),
+            },
+            &bytes,
+            &bytes,
         );
+
+        match result {
+            Err(MergeError::WasmRequired { type_name }) => {
+                assert_eq!(type_name, "MyStruct");
+            }
+            _ => panic!("Expected WasmRequired error for LwwRegister with Custom inner type"),
+        }
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_unordered_set_returns_wasm_required() {
+        env::reset_for_testing();
+
+        let bytes = vec![1, 2, 3, 4];
+
+        // UnorderedSet has nested generics - should go through registry
+        let result = merge_by_crdt_type(&CrdtType::UnorderedSet, &bytes, &bytes);
+
+        match result {
+            Err(MergeError::WasmRequired { .. }) => {
+                // Expected - UnorderedSet<T> needs concrete T from registry
+            }
+            _ => panic!("Expected WasmRequired error for UnorderedSet"),
+        }
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_unordered_map_returns_wasm_required() {
+        env::reset_for_testing();
+
+        let bytes = vec![1, 2, 3, 4];
+
+        // UnorderedMap has nested generics - should go through registry
+        let result = merge_by_crdt_type(&CrdtType::UnorderedMap, &bytes, &bytes);
+
+        match result {
+            Err(MergeError::WasmRequired { .. }) => {
+                // Expected - UnorderedMap<K, V> needs concrete types from registry
+            }
+            _ => panic!("Expected WasmRequired error for UnorderedMap"),
+        }
+    }
+
+    #[test]
+    fn test_merge_by_crdt_type_vector_returns_wasm_required() {
+        env::reset_for_testing();
+
+        let bytes = vec![1, 2, 3, 4];
+
+        // Vector has nested generics - should go through registry
+        let result = merge_by_crdt_type(&CrdtType::Vector, &bytes, &bytes);
+
+        match result {
+            Err(MergeError::WasmRequired { .. }) => {
+                // Expected - Vector<T> needs concrete T from registry
+            }
+            _ => panic!("Expected WasmRequired error for Vector"),
+        }
     }
 
     #[test]

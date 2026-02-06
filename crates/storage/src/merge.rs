@@ -21,10 +21,8 @@ pub use registry::clear_merge_registry;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::collections::crdt_meta::{CrdtType, MergeError, Mergeable};
-use crate::collections::{
-    Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap, UnorderedSet, Vector,
-};
+use crate::collections::crdt_meta::{CrdtType, InnerType, MergeError, Mergeable};
+use crate::collections::{Counter, LwwRegister, ReplicatedGrowableArray};
 use crate::store::MainStorage;
 
 /// Attempts to merge two Borsh-serialized app state blobs using CRDT semantics.
@@ -153,29 +151,29 @@ pub fn merge_by_crdt_type(
     incoming: &[u8],
 ) -> Result<Vec<u8>, MergeError> {
     match crdt_type {
-        CrdtType::LwwRegister => merge_lww_register(existing, incoming),
+        // Types with known inner type info - can merge at byte level
+        CrdtType::LwwRegister { inner } => merge_lww_register(existing, incoming, inner),
         CrdtType::Counter => merge_pn_counter(existing, incoming),
         CrdtType::GCounter => merge_g_counter(existing, incoming),
         CrdtType::Rga => merge_rga(existing, incoming),
-        CrdtType::UnorderedMap => merge_unordered_map(existing, incoming),
-        CrdtType::UnorderedSet => merge_unordered_set(existing, incoming),
-        CrdtType::Vector => merge_vector(existing, incoming),
-        CrdtType::UserStorage | CrdtType::FrozenStorage => {
-            // These are generic wrappers (UserStorage<T>, FrozenStorage<T>)
-            // that require knowing the concrete type T to deserialize.
-            // They should go through the registry path where the app
-            // has registered the concrete type's Mergeable impl.
+
+        // Collections with nested generics - need registry path
+        // (e.g., UnorderedMap<String, LwwRegister<u64>> has nested types)
+        CrdtType::UnorderedMap | CrdtType::UnorderedSet | CrdtType::Vector => {
             Err(MergeError::WasmRequired {
                 type_name: format!("{:?}", crdt_type),
             })
         }
-        CrdtType::Record => {
-            // Record types should be handled by the app-level merge callback
-            // as they contain multiple fields with different CRDT types
-            Err(MergeError::WasmRequired {
-                type_name: "Record".to_owned(),
-            })
-        }
+
+        // Generic wrappers - need concrete T to deserialize
+        CrdtType::UserStorage | CrdtType::FrozenStorage => Err(MergeError::WasmRequired {
+            type_name: format!("{:?}", crdt_type),
+        }),
+
+        // App-level types
+        CrdtType::Record => Err(MergeError::WasmRequired {
+            type_name: "Record".to_owned(),
+        }),
         CrdtType::Custom(type_name) => Err(MergeError::WasmRequired {
             type_name: type_name.clone(),
         }),
@@ -184,16 +182,42 @@ pub fn merge_by_crdt_type(
 
 /// Merge two LWW registers - later timestamp wins.
 ///
-/// LwwRegister stores `(timestamp, value)`, so we compare timestamps
-/// and keep the one with the higher timestamp.
-fn merge_lww_register(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
-    // LwwRegister<T> serializes as (timestamp: u64, value: T)
-    // We can deserialize with any T that implements BorshDeserialize
-    // For now, use Vec<u8> as a generic wrapper to preserve the value bytes
+/// Dispatches to the appropriate typed merge function based on `InnerType`.
+fn merge_lww_register(
+    existing: &[u8],
+    incoming: &[u8],
+    inner: &InnerType,
+) -> Result<Vec<u8>, MergeError> {
+    match inner {
+        InnerType::U8 => merge_lww_register_typed::<u8>(existing, incoming),
+        InnerType::U16 => merge_lww_register_typed::<u16>(existing, incoming),
+        InnerType::U32 => merge_lww_register_typed::<u32>(existing, incoming),
+        InnerType::U64 => merge_lww_register_typed::<u64>(existing, incoming),
+        InnerType::U128 => merge_lww_register_typed::<u128>(existing, incoming),
+        InnerType::I8 => merge_lww_register_typed::<i8>(existing, incoming),
+        InnerType::I16 => merge_lww_register_typed::<i16>(existing, incoming),
+        InnerType::I32 => merge_lww_register_typed::<i32>(existing, incoming),
+        InnerType::I64 => merge_lww_register_typed::<i64>(existing, incoming),
+        InnerType::I128 => merge_lww_register_typed::<i128>(existing, incoming),
+        InnerType::F32 => merge_lww_register_typed::<f32>(existing, incoming),
+        InnerType::F64 => merge_lww_register_typed::<f64>(existing, incoming),
+        InnerType::Bool => merge_lww_register_typed::<bool>(existing, incoming),
+        InnerType::String => merge_lww_register_typed::<String>(existing, incoming),
+        InnerType::Bytes => merge_lww_register_typed::<Vec<u8>>(existing, incoming),
+        InnerType::Custom(type_name) => Err(MergeError::WasmRequired {
+            type_name: type_name.clone(),
+        }),
+    }
+}
 
-    let mut existing_reg: LwwRegister<Vec<u8>> =
+/// Type-safe merge for LwwRegister<T>
+fn merge_lww_register_typed<T>(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError>
+where
+    T: borsh::BorshDeserialize + borsh::BorshSerialize + Clone,
+{
+    let mut existing_reg: LwwRegister<T> =
         borsh::from_slice(existing).map_err(|e| MergeError::SerializationError(e.to_string()))?;
-    let incoming_reg: LwwRegister<Vec<u8>> =
+    let incoming_reg: LwwRegister<T> =
         borsh::from_slice(incoming).map_err(|e| MergeError::SerializationError(e.to_string()))?;
 
     // Use the Mergeable impl which compares timestamps
@@ -245,74 +269,38 @@ fn merge_rga(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     borsh::to_vec(&existing_rga).map_err(|e| MergeError::SerializationError(e.to_string()))
 }
 
-/// Merge two UnorderedMaps.
-///
-/// Map merges by unioning keys and recursively merging values
-/// for keys that exist in both maps.
-fn merge_unordered_map(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
-    // UnorderedMap<K, V> requires V: Mergeable for the Mergeable impl
-    // For byte-level merging, we use LwwRegister<Vec<u8>> as the value type
-    // which enables timestamp-based conflict resolution for nested values
-    let mut existing_map: UnorderedMap<Vec<u8>, LwwRegister<Vec<u8>>, MainStorage> =
-        borsh::from_slice(existing).map_err(|e| MergeError::SerializationError(e.to_string()))?;
-    let incoming_map: UnorderedMap<Vec<u8>, LwwRegister<Vec<u8>>, MainStorage> =
-        borsh::from_slice(incoming).map_err(|e| MergeError::SerializationError(e.to_string()))?;
-
-    Mergeable::merge(&mut existing_map, &incoming_map)?;
-
-    borsh::to_vec(&existing_map).map_err(|e| MergeError::SerializationError(e.to_string()))
-}
-
-/// Merge two UnorderedSets.
-///
-/// Set merges using union (add-wins) semantics - all elements
-/// from both sets are preserved.
-fn merge_unordered_set(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
-    let mut existing_set: UnorderedSet<Vec<u8>, MainStorage> =
-        borsh::from_slice(existing).map_err(|e| MergeError::SerializationError(e.to_string()))?;
-    let incoming_set: UnorderedSet<Vec<u8>, MainStorage> =
-        borsh::from_slice(incoming).map_err(|e| MergeError::SerializationError(e.to_string()))?;
-
-    Mergeable::merge(&mut existing_set, &incoming_set)?;
-
-    borsh::to_vec(&existing_set).map_err(|e| MergeError::SerializationError(e.to_string()))
-}
-
-/// Merge two Vectors.
-///
-/// Vector merges element-by-element at same indices,
-/// with longer vector determining final length.
-fn merge_vector(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
-    // Vector<T> requires T: Mergeable for the Mergeable impl
-    // Use LwwRegister<Vec<u8>> for timestamp-based nested value merging
-    let mut existing_vec: Vector<LwwRegister<Vec<u8>>, MainStorage> =
-        borsh::from_slice(existing).map_err(|e| MergeError::SerializationError(e.to_string()))?;
-    let incoming_vec: Vector<LwwRegister<Vec<u8>>, MainStorage> =
-        borsh::from_slice(incoming).map_err(|e| MergeError::SerializationError(e.to_string()))?;
-
-    Mergeable::merge(&mut existing_vec, &incoming_vec)?;
-
-    borsh::to_vec(&existing_vec).map_err(|e| MergeError::SerializationError(e.to_string()))
-}
+// Note: UnorderedMap, UnorderedSet, and Vector have nested generic types
+// (e.g., UnorderedMap<K, V>) that make byte-level merging unsafe without
+// knowing the concrete types. They go through the registry path instead,
+// where the app has registered the full type with its Mergeable impl.
 
 /// Check if a CRDT type can be merged in the storage layer without knowing the concrete type.
 ///
 /// Returns `true` for built-in types that have storage-layer merge implementations
-/// and don't require generic type parameters to deserialize.
+/// and don't require unknown generic type parameters to deserialize.
 ///
-/// Returns `false` for:
-/// - `UserStorage`/`FrozenStorage` - generic wrappers, need concrete T to deserialize
-/// - `Record` - composite app state, uses registry
-/// - `Custom` - app-defined types, need WASM callback
+/// **Builtin types** (can merge at byte level):
+/// - `LwwRegister { inner }` - if inner is a known primitive type
+/// - `Counter` (PNCounter), `GCounter` - no generics, internal maps use known types
+/// - `Rga` - no generics, uses chars
+///
+/// **Registry types** (need app-registered concrete types):
+/// - `UnorderedMap`, `UnorderedSet`, `Vector` - nested generics too complex
+/// - `UserStorage`, `FrozenStorage` - generic wrappers
+/// - `Record` - composite app state
+/// - `Custom` - app-defined types
 pub fn is_builtin_crdt(crdt_type: &CrdtType) -> bool {
-    matches!(
-        crdt_type,
-        CrdtType::LwwRegister
-            | CrdtType::Counter
-            | CrdtType::GCounter
-            | CrdtType::Rga
-            | CrdtType::UnorderedMap
-            | CrdtType::UnorderedSet
-            | CrdtType::Vector
-    )
+    match crdt_type {
+        // LwwRegister with known inner type can be merged
+        CrdtType::LwwRegister { inner } => !matches!(inner, InnerType::Custom(_)),
+        // Counters and RGA have no unknown generics
+        CrdtType::Counter | CrdtType::GCounter | CrdtType::Rga => true,
+        // Collections with nested generics go through registry
+        CrdtType::UnorderedMap | CrdtType::UnorderedSet | CrdtType::Vector => false,
+        // Generic wrappers and app types go through registry
+        CrdtType::UserStorage
+        | CrdtType::FrozenStorage
+        | CrdtType::Record
+        | CrdtType::Custom(_) => false,
+    }
 }

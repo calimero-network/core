@@ -12,6 +12,149 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
+/// Describes the Borsh serialization format of an inner type for generic CRDTs.
+///
+/// This enables `merge_by_crdt_type` to correctly deserialize generic types like
+/// `LwwRegister<T>` without knowing `T` at compile time.
+///
+/// # Examples
+///
+/// ```ignore
+/// // For LwwRegister<u64>:
+/// CrdtType::LwwRegister { inner: InnerType::U64 }
+///
+/// // For LwwRegister<String>:
+/// CrdtType::LwwRegister { inner: InnerType::String }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, BorshSerialize, BorshDeserialize)]
+pub enum InnerType {
+    // Unsigned integers
+    /// `u8` - 1 byte fixed size
+    U8,
+    /// `u16` - 2 bytes fixed size
+    U16,
+    /// `u32` - 4 bytes fixed size
+    U32,
+    /// `u64` - 8 bytes fixed size
+    U64,
+    /// `u128` - 16 bytes fixed size
+    U128,
+
+    // Signed integers
+    /// `i8` - 1 byte fixed size
+    I8,
+    /// `i16` - 2 bytes fixed size
+    I16,
+    /// `i32` - 4 bytes fixed size
+    I32,
+    /// `i64` - 8 bytes fixed size
+    I64,
+    /// `i128` - 16 bytes fixed size
+    I128,
+
+    // Floats
+    /// `f32` - 4 bytes fixed size
+    F32,
+    /// `f64` - 8 bytes fixed size
+    F64,
+
+    // Other primitives
+    /// `bool` - 1 byte
+    Bool,
+    /// `String` - length-prefixed UTF-8 bytes
+    String,
+    /// `Vec<u8>` - length-prefixed raw bytes
+    Bytes,
+
+    /// Custom/unknown type - cannot merge at storage level, requires WASM callback
+    Custom(std::string::String),
+}
+
+/// Trait for types that can be described as an `InnerType` for CRDT metadata.
+///
+/// This enables `LwwRegister<T>` to report the correct `InnerType` based on `T`.
+pub trait AsInnerType {
+    /// Returns the `InnerType` that describes this type's Borsh serialization format.
+    fn as_inner_type() -> InnerType;
+}
+
+// Implement AsInnerType for primitive types
+impl AsInnerType for u8 {
+    fn as_inner_type() -> InnerType {
+        InnerType::U8
+    }
+}
+impl AsInnerType for u16 {
+    fn as_inner_type() -> InnerType {
+        InnerType::U16
+    }
+}
+impl AsInnerType for u32 {
+    fn as_inner_type() -> InnerType {
+        InnerType::U32
+    }
+}
+impl AsInnerType for u64 {
+    fn as_inner_type() -> InnerType {
+        InnerType::U64
+    }
+}
+impl AsInnerType for u128 {
+    fn as_inner_type() -> InnerType {
+        InnerType::U128
+    }
+}
+impl AsInnerType for i8 {
+    fn as_inner_type() -> InnerType {
+        InnerType::I8
+    }
+}
+impl AsInnerType for i16 {
+    fn as_inner_type() -> InnerType {
+        InnerType::I16
+    }
+}
+impl AsInnerType for i32 {
+    fn as_inner_type() -> InnerType {
+        InnerType::I32
+    }
+}
+impl AsInnerType for i64 {
+    fn as_inner_type() -> InnerType {
+        InnerType::I64
+    }
+}
+impl AsInnerType for i128 {
+    fn as_inner_type() -> InnerType {
+        InnerType::I128
+    }
+}
+impl AsInnerType for f32 {
+    fn as_inner_type() -> InnerType {
+        InnerType::F32
+    }
+}
+impl AsInnerType for f64 {
+    fn as_inner_type() -> InnerType {
+        InnerType::F64
+    }
+}
+impl AsInnerType for bool {
+    fn as_inner_type() -> InnerType {
+        InnerType::Bool
+    }
+}
+impl AsInnerType for String {
+    fn as_inner_type() -> InnerType {
+        InnerType::String
+    }
+}
+impl AsInnerType for Vec<u8> {
+    fn as_inner_type() -> InnerType {
+        InnerType::Bytes
+    }
+}
+
 /// Identifies the specific CRDT type for merge dispatch during state synchronization.
 ///
 /// # ID Assignment
@@ -41,7 +184,14 @@ pub enum CrdtType {
     /// Last-Write-Wins Register - wraps primitive types with timestamp-based conflict resolution.
     ///
     /// Merge: Higher timestamp wins, with node ID as tie-breaker.
-    LwwRegister,
+    ///
+    /// The `inner` field specifies the type of the wrapped value, enabling proper
+    /// deserialization during merge. Use `InnerType::Custom` for app-defined types
+    /// that require WASM callback for merging.
+    LwwRegister {
+        /// The type of the inner value (e.g., `InnerType::U64` for `LwwRegister<u64>`)
+        inner: InnerType,
+    },
 
     /// PN-Counter - supports both increment and decrement operations.
     ///

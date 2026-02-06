@@ -8,7 +8,7 @@
 //! - UnorderedSet
 //! - Vector
 
-use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
+use super::crdt_meta::{AsInnerType, CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
 use super::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap, UnorderedSet, Vector};
 #[cfg(test)]
 use super::{GCounter, PNCounter};
@@ -81,9 +81,11 @@ impl<T: Mergeable + Clone> Mergeable for Option<T> {
 // LwwRegister
 // ============================================================================
 
-impl<T> CrdtMeta for LwwRegister<T> {
+impl<T: AsInnerType> CrdtMeta for LwwRegister<T> {
     fn crdt_type() -> CrdtType {
-        CrdtType::LwwRegister
+        CrdtType::LwwRegister {
+            inner: T::as_inner_type(),
+        }
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -478,9 +480,30 @@ mod tests {
 
     #[test]
     fn test_lww_register_is_crdt() {
+        use crate::collections::crdt_meta::InnerType;
+
         assert!(LwwRegister::<String>::is_crdt());
-        assert_eq!(LwwRegister::<String>::crdt_type(), CrdtType::LwwRegister);
+        assert_eq!(
+            LwwRegister::<String>::crdt_type(),
+            CrdtType::LwwRegister {
+                inner: InnerType::String
+            }
+        );
         assert!(!LwwRegister::<String>::can_contain_crdts());
+
+        // Test with different inner types
+        assert_eq!(
+            LwwRegister::<u64>::crdt_type(),
+            CrdtType::LwwRegister {
+                inner: InnerType::U64
+            }
+        );
+        assert_eq!(
+            LwwRegister::<bool>::crdt_type(),
+            CrdtType::LwwRegister {
+                inner: InnerType::Bool
+            }
+        );
     }
 
     #[test]

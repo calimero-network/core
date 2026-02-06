@@ -24,7 +24,9 @@ pub use rga::ReplicatedGrowableArray;
 pub mod lww_register;
 pub use lww_register::LwwRegister;
 pub mod crdt_meta;
-pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageStrategy};
+pub use crdt_meta::{
+    AsInnerType, CrdtMeta, CrdtType, Decomposable, InnerType, Mergeable, StorageStrategy,
+};
 pub mod composite_key;
 mod crdt_impls;
 mod decompose_impls;
