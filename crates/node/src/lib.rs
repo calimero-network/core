@@ -78,6 +78,34 @@ pub(crate) struct NodeManagers {
     pub(crate) sync: SyncManager,
 }
 
+/// State of a sync session for a context.
+#[derive(Debug)]
+pub(crate) enum SyncSessionState {
+    /// Buffering deltas during snapshot sync.
+    BufferingDeltas {
+        /// Number of deltas buffered so far.
+        buffered_count: usize,
+        /// HLC timestamp when sync started.
+        sync_start_hlc: u64,
+    },
+}
+
+impl SyncSessionState {
+    /// Check if we should buffer incoming deltas.
+    pub fn should_buffer_deltas(&self) -> bool {
+        matches!(self, Self::BufferingDeltas { .. })
+    }
+}
+
+/// Active sync session for a context.
+#[derive(Debug)]
+pub(crate) struct SyncSession {
+    /// Current state of the sync.
+    pub state: SyncSessionState,
+    /// Buffer for deltas received during sync.
+    pub delta_buffer: calimero_node_primitives::delta_buffer::DeltaBuffer,
+}
+
 /// Mutable runtime state
 #[derive(Clone, Debug)]
 pub(crate) struct NodeState {
@@ -89,6 +117,8 @@ pub(crate) struct NodeState {
     pub(crate) accept_mock_tee: bool,
     /// Node operation mode (Standard or ReadOnly)
     pub(crate) node_mode: NodeMode,
+    /// Active sync sessions (for delta buffering during snapshot sync).
+    pub(crate) sync_sessions: Arc<DashMap<ContextId, SyncSession>>,
 }
 
 impl NodeState {
@@ -99,7 +129,56 @@ impl NodeState {
             pending_specialized_node_invites: new_pending_specialized_node_invites(),
             accept_mock_tee,
             node_mode,
+            sync_sessions: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Check if we should buffer a delta (during snapshot sync).
+    pub(crate) fn should_buffer_delta(&self, context_id: &ContextId) -> bool {
+        self.sync_sessions
+            .get(context_id)
+            .map_or(false, |session| session.state.should_buffer_deltas())
+    }
+
+    /// Buffer a delta during snapshot sync.
+    ///
+    /// Returns true if successfully buffered, false if buffer is full or no session.
+    pub(crate) fn buffer_delta(
+        &self,
+        context_id: &ContextId,
+        delta: calimero_node_primitives::delta_buffer::BufferedDelta,
+    ) -> bool {
+        if let Some(mut session) = self.sync_sessions.get_mut(context_id) {
+            session.delta_buffer.push(delta).is_ok()
+        } else {
+            false
+        }
+    }
+
+    /// Start a sync session for a context (enables delta buffering).
+    pub(crate) fn start_sync_session(&self, context_id: ContextId, sync_start_hlc: u64) {
+        use calimero_node_primitives::delta_buffer::DeltaBuffer;
+
+        self.sync_sessions.insert(
+            context_id,
+            SyncSession {
+                state: SyncSessionState::BufferingDeltas {
+                    buffered_count: 0,
+                    sync_start_hlc,
+                },
+                delta_buffer: DeltaBuffer::new(1000, sync_start_hlc), // Max 1000 buffered deltas
+            },
+        );
+    }
+
+    /// End a sync session and return buffered deltas for replay.
+    pub(crate) fn end_sync_session(
+        &self,
+        context_id: &ContextId,
+    ) -> Option<Vec<calimero_node_primitives::delta_buffer::BufferedDelta>> {
+        self.sync_sessions
+            .remove(context_id)
+            .map(|(_, mut session)| session.delta_buffer.drain())
     }
 
     /// Evict blobs from cache based on age, count, and memory limits

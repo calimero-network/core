@@ -23,6 +23,29 @@ use tracing::{info, warn};
 /// The value selected as ~96 KB.
 pub const MAX_DELTA_QUERY_LIMIT: usize = 3000;
 
+/// Type of delta - regular operation or checkpoint (snapshot boundary)
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub enum DeltaKind {
+    /// Regular delta with operations to apply
+    Regular,
+    /// Checkpoint delta representing a snapshot boundary
+    ///
+    /// Checkpoints are created after snapshot sync to mark a known-good state.
+    /// They have no payload to apply but provide parent IDs for future deltas.
+    ///
+    /// # Properties
+    /// - `payload` is empty (no operations)
+    /// - `expected_root_hash` is the snapshot's root hash
+    /// - Treated as "already applied" by the DAG
+    Checkpoint,
+}
+
+impl Default for DeltaKind {
+    fn default() -> Self {
+        Self::Regular
+    }
+}
+
 /// A causal delta with parent references
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct CausalDelta<T> {
@@ -40,6 +63,10 @@ pub struct CausalDelta<T> {
 
     /// Expected root hash after applying this delta
     pub expected_root_hash: [u8; 32],
+
+    /// Kind of delta (regular or checkpoint)
+    #[serde(default)]
+    pub kind: DeltaKind,
 }
 
 impl<T> CausalDelta<T> {
@@ -56,7 +83,34 @@ impl<T> CausalDelta<T> {
             payload,
             hlc,
             expected_root_hash,
+            kind: DeltaKind::Regular,
         }
+    }
+
+    /// Create a checkpoint delta for snapshot boundary
+    ///
+    /// Checkpoints mark the boundary after a snapshot sync. They have:
+    /// - The DAG head IDs from the snapshot as their ID
+    /// - Genesis as parent (since we don't know actual history)
+    /// - Empty payload (no operations to apply)
+    /// - The snapshot's root hash as expected_root_hash
+    pub fn checkpoint(id: [u8; 32], expected_root_hash: [u8; 32]) -> Self
+    where
+        T: Default,
+    {
+        Self {
+            id,
+            parents: vec![[0; 32]], // Genesis parent
+            payload: T::default(),  // Empty payload
+            hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
+            expected_root_hash,
+            kind: DeltaKind::Checkpoint,
+        }
+    }
+
+    /// Returns true if this is a checkpoint (snapshot boundary) delta
+    pub fn is_checkpoint(&self) -> bool {
+        self.kind == DeltaKind::Checkpoint
     }
 
     /// Convenience constructor for tests that uses a default HLC
@@ -68,6 +122,7 @@ impl<T> CausalDelta<T> {
             payload,
             hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
             expected_root_hash: [0; 32],
+            kind: DeltaKind::Regular,
         }
     }
 }
@@ -230,6 +285,41 @@ impl<T: Clone> DagStore<T> {
         true
     }
 
+    /// Try to process pending deltas whose parents are now available.
+    ///
+    /// This should be called after restoring checkpoints or other deltas that
+    /// might unblock pending deltas. Unlike `apply_pending` which is called
+    /// internally during `add_delta`, this method is for explicit triggering.
+    pub async fn try_process_pending(
+        &mut self,
+        applier: &impl DeltaApplier<T>,
+    ) -> Result<usize, DagError> {
+        let mut applied_count = 0;
+        let mut applied_any = true;
+
+        while applied_any {
+            applied_any = false;
+
+            // Find deltas that are now ready
+            let ready: Vec<[u8; 32]> = self
+                .pending
+                .iter()
+                .filter(|(_, pending)| self.can_apply(&pending.delta))
+                .map(|(id, _)| *id)
+                .collect();
+
+            for id in ready {
+                if let Some(pending) = self.pending.remove(&id) {
+                    self.apply_delta(pending.delta, applier).await?;
+                    applied_count += 1;
+                    applied_any = true;
+                }
+            }
+        }
+
+        Ok(applied_count)
+    }
+
     /// Add a delta to the DAG
     ///
     /// Returns:
@@ -243,9 +333,19 @@ impl<T: Clone> DagStore<T> {
     ) -> Result<bool, DagError> {
         let delta_id = delta.id;
 
-        // Skip if already seen
-        if self.deltas.contains_key(&delta_id) {
-            return Ok(false); // Silently skip duplicates
+        // Check if delta already exists
+        if let Some(existing) = self.deltas.get(&delta_id) {
+            // If existing is a checkpoint and incoming is a real delta,
+            // we can skip since the checkpoint represents state we already have via snapshot.
+            // The real delta's actions are already reflected in our state.
+            if existing.is_checkpoint() && !delta.is_checkpoint() {
+                tracing::debug!(
+                    delta_id = ?delta_id,
+                    "Received real delta for existing checkpoint - skipping (state already present via snapshot)"
+                );
+            }
+            // Skip duplicate
+            return Ok(false);
         }
 
         // Store delta in memory
@@ -562,6 +662,9 @@ impl<T: Clone> DagStore<T> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_convergence;
 
 #[cfg(test)]
 mod basic_tests {

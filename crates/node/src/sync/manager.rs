@@ -763,7 +763,38 @@ impl SyncManager {
                                 dag_heads_count = result.dag_heads.len(),
                                 "Snapshot sync completed successfully"
                             );
+
+                            // CRITICAL: Add snapshot boundary checkpoints to DAG
+                            // This ensures that when new deltas arrive referencing the
+                            // snapshot boundary heads as parents, the DAG accepts them.
                             if !result.dag_heads.is_empty() {
+                                let delta_store = self
+                                    .node_state
+                                    .delta_stores
+                                    .entry(context_id)
+                                    .or_insert_with(|| {
+                                        crate::delta_store::DeltaStore::new(
+                                            [0u8; 32],
+                                            self.context_client.clone(),
+                                            context_id,
+                                            our_identity,
+                                        )
+                                    })
+                                    .clone();
+
+                                let checkpoints_added = delta_store
+                                    .add_snapshot_checkpoints(
+                                        result.dag_heads.clone(),
+                                        *result.boundary_root_hash,
+                                    )
+                                    .await;
+
+                                info!(
+                                    %context_id,
+                                    checkpoints_added,
+                                    "Added snapshot boundary checkpoints to DAG"
+                                );
+
                                 match self.network_client.open_stream(chosen_peer).await {
                                     Ok(mut fine_stream) => {
                                         if let Err(e) = self
@@ -793,6 +824,29 @@ impl SyncManager {
                                     }
                                 }
                             }
+
+                            // Replay any buffered deltas (from uninitialized context period)
+                            // This ensures handlers execute for deltas that arrived before sync completed
+                            if let Some(buffered_deltas) =
+                                self.node_state.end_sync_session(&context_id)
+                            {
+                                let buffered_count = buffered_deltas.len();
+                                if buffered_count > 0 {
+                                    info!(
+                                        %context_id,
+                                        buffered_count,
+                                        "Replaying buffered deltas after snapshot sync (bootstrap path)"
+                                    );
+                                    self.replay_buffered_deltas(
+                                        context_id,
+                                        our_identity,
+                                        buffered_deltas,
+                                        chosen_peer,
+                                    )
+                                    .await;
+                                }
+                            }
+
                             return Ok(Some(SyncProtocol::SnapshotSync));
                         }
                         Err(e) => {
@@ -821,6 +875,9 @@ impl SyncManager {
         // Check if we have pending deltas (incomplete DAG)
         // Even if node has some state, it might be missing parent deltas
         if let Some(delta_store) = self.node_state.delta_stores.get(&context_id) {
+            // Reload persisted deltas to catch locally-created deltas from execute.rs
+            // that are in the database but not in the in-memory DeltaStore
+            let _ = delta_store.load_persisted_deltas().await;
             let missing_result = delta_store.get_missing_parents().await;
 
             // Note: Cascaded events from DB loads are handled in state_delta handler
@@ -875,17 +932,29 @@ impl SyncManager {
 
                 let our_heads_set: std::collections::HashSet<_> =
                     context.dag_heads.iter().collect();
-                let missing_heads: Vec<_> = peer_dag_heads
+                let peer_heads_set: std::collections::HashSet<_> = peer_dag_heads.iter().collect();
+
+                // Heads peer has that we don't have
+                let missing_from_peer: Vec<_> = peer_dag_heads
                     .iter()
                     .filter(|h| !our_heads_set.contains(h))
                     .cloned()
                     .collect();
 
-                if !missing_heads.is_empty() {
+                // Heads we have that peer doesn't have
+                let peer_missing: Vec<_> = context
+                    .dag_heads
+                    .iter()
+                    .filter(|h| !peer_heads_set.contains(h))
+                    .cloned()
+                    .collect();
+
+                if !missing_from_peer.is_empty() {
+                    // Peer has heads we don't have, request them
                     info!(
                         %context_id,
                         %chosen_peer,
-                        missing_count = missing_heads.len(),
+                        missing_count = missing_from_peer.len(),
                         "Peer has DAG heads we don't have, requesting them"
                     );
 
@@ -900,23 +969,36 @@ impl SyncManager {
                     }
 
                     return Ok(Some(result));
+                } else if !peer_missing.is_empty() {
+                    // We have heads peer doesn't have - we are ahead, no need to sync FROM them
+                    // The peer will request from us when they sync
+                    info!(
+                        %context_id,
+                        %chosen_peer,
+                        our_extra_heads = peer_missing.len(),
+                        "We have DAG heads peer doesn't have - we are ahead, skipping sync from this peer"
+                    );
+                    // Return None to indicate no sync needed from this peer
+                    return Ok(None);
                 } else {
-                    // Same heads but different root hash - may have deltas that haven't been applied yet
+                    // Truly same heads but different root hash - this is a state divergence
+                    // that can only be resolved via snapshot sync (DAG sync won't help
+                    // since there are no missing deltas on either side)
                     warn!(
                         %context_id,
                         %chosen_peer,
-                        "Same DAG heads but different root hash - requesting full sync"
+                        our_root_hash = %context.root_hash,
+                        peer_root_hash = %peer_root_hash,
+                        our_heads_count = context.dag_heads.len(),
+                        peer_heads_count = peer_dag_heads.len(),
+                        "STATE DIVERGENCE: Truly same DAG heads but different root hash - forcing snapshot sync"
                     );
 
+                    // Force snapshot sync to reconcile state
                     let result = self
-                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
                         .await
-                        .wrap_err("request DAG heads and sync")?;
-
-                    // If peer had no data or unexpected response, return error to try next peer
-                    if matches!(result, SyncProtocol::None) {
-                        bail!("Peer has no data or unexpected response for this context, will try next peer");
-                    }
+                        .wrap_err("snapshot sync for state divergence")?;
 
                     return Ok(Some(result));
                 }
@@ -1144,15 +1226,16 @@ impl SyncManager {
                     (delta_store_ref, is_new)
                 };
 
-                // Load persisted deltas from database on first access
-                if is_new_store {
-                    if let Err(e) = delta_store_ref.load_persisted_deltas().await {
-                        warn!(
-                            ?e,
-                            %context_id,
-                            "Failed to load persisted deltas, starting with empty DAG"
-                        );
-                    }
+                // Always reload persisted deltas from database before sync operations
+                // This is critical because local deltas created via execute.rs are persisted
+                // to the database but NOT added to the in-memory DeltaStore. Without this
+                // reload, the DeltaStore would be missing locally-created deltas.
+                if let Err(e) = delta_store_ref.load_persisted_deltas().await {
+                    warn!(
+                        ?e,
+                        %context_id,
+                        "Failed to load persisted deltas, starting with empty DAG"
+                    );
                 }
 
                 // Phase 1: Request and add ALL DAG heads
@@ -1195,6 +1278,7 @@ impl SyncManager {
                                 payload: storage_delta.actions,
                                 hlc: storage_delta.hlc,
                                 expected_root_hash: storage_delta.expected_root_hash,
+                                kind: calimero_dag::DeltaKind::Regular,
                             };
 
                             if let Err(e) = delta_store_ref.add_delta(dag_delta).await {
@@ -1310,8 +1394,35 @@ impl SyncManager {
     ) -> eyre::Result<SyncProtocol> {
         info!(%context_id, %peer_id, "Initiating snapshot sync");
 
+        // Start buffering deltas that arrive during snapshot sync
+        // Use current time as sync start HLC
+        let sync_start_hlc = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        self.node_state
+            .start_sync_session(context_id, sync_start_hlc);
+
         let result = self.request_snapshot_sync(context_id, peer_id).await?;
         info!(%context_id, records = result.applied_records, "Snapshot sync completed");
+
+        // End buffering and get any deltas that arrived during sync
+        let buffered_deltas = self.node_state.end_sync_session(&context_id);
+        let buffered_count = buffered_deltas.as_ref().map_or(0, Vec::len);
+
+        if buffered_count > 0 {
+            info!(
+                %context_id,
+                buffered_count,
+                "Replaying buffered deltas after snapshot sync"
+            );
+
+            // Replay buffered deltas - now that context is initialized, we can process them
+            if let Some(deltas) = buffered_deltas {
+                self.replay_buffered_deltas(context_id, our_identity, deltas, peer_id)
+                    .await;
+            }
+        }
 
         // Fine-sync to catch any deltas since the snapshot boundary
         if !result.dag_heads.is_empty() {
@@ -1325,6 +1436,148 @@ impl SyncManager {
         }
 
         Ok(SyncProtocol::SnapshotSync)
+    }
+
+    /// Replay buffered deltas after snapshot sync completes.
+    ///
+    /// This ensures that:
+    /// 1. Deltas arriving during sync aren't lost
+    /// 2. Event handlers execute for buffered deltas
+    /// 3. Ancestor deltas (whose state is covered by checkpoint) get handlers executed
+    async fn replay_buffered_deltas(
+        &self,
+        context_id: ContextId,
+        our_identity: PublicKey,
+        deltas: Vec<calimero_node_primitives::delta_buffer::BufferedDelta>,
+        _fallback_peer: PeerId,
+    ) {
+        use crate::handlers::state_delta::replay_buffered_delta;
+        use std::collections::{HashMap, HashSet};
+
+        // Build a set of IDs that are "covered" by the snapshot
+        // This includes:
+        // 1. Deltas that match checkpoints directly
+        // 2. Deltas that are ancestors of checkpoints (their state is included in snapshot)
+        let mut covered_delta_ids: HashSet<[u8; 32]> = HashSet::new();
+
+        // Get the delta store to check for existing checkpoints
+        let delta_store = self
+            .node_state
+            .delta_stores
+            .entry(context_id)
+            .or_insert_with(|| {
+                crate::delta_store::DeltaStore::new(
+                    [0u8; 32],
+                    self.context_client.clone(),
+                    context_id,
+                    our_identity,
+                )
+            })
+            .clone();
+
+        // Build parent -> children map from buffered deltas
+        let mut parent_to_children: HashMap<[u8; 32], Vec<[u8; 32]>> = HashMap::new();
+        for buffered in &deltas {
+            for parent in &buffered.parents {
+                parent_to_children
+                    .entry(*parent)
+                    .or_default()
+                    .push(buffered.id);
+            }
+        }
+
+        // Identify which buffered deltas match existing checkpoints
+        let mut checkpoint_matches: Vec<[u8; 32]> = Vec::new();
+        for buffered in &deltas {
+            if delta_store.dag_has_delta_applied(&buffered.id).await {
+                checkpoint_matches.push(buffered.id);
+                covered_delta_ids.insert(buffered.id);
+            }
+        }
+
+        // Propagate "covered" status backwards through the parent chain
+        // If delta D has a child C that is covered, then D is also covered
+        // (D's state is included in C's checkpoint)
+        let delta_ids: HashSet<[u8; 32]> = deltas.iter().map(|d| d.id).collect();
+        let delta_parents: HashMap<[u8; 32], Vec<[u8; 32]>> =
+            deltas.iter().map(|d| (d.id, d.parents.clone())).collect();
+
+        // BFS backwards from checkpoint matches
+        let mut queue: std::collections::VecDeque<[u8; 32]> =
+            checkpoint_matches.iter().copied().collect();
+        while let Some(child_id) = queue.pop_front() {
+            // Get parents of this delta (if it's one of our buffered deltas)
+            if let Some(parents) = delta_parents.get(&child_id) {
+                for parent_id in parents {
+                    // If parent is also a buffered delta and not yet covered
+                    if delta_ids.contains(parent_id) && !covered_delta_ids.contains(parent_id) {
+                        covered_delta_ids.insert(*parent_id);
+                        queue.push_back(*parent_id);
+                    }
+                }
+            }
+        }
+
+        if !covered_delta_ids.is_empty() {
+            info!(
+                %context_id,
+                covered_count = covered_delta_ids.len(),
+                checkpoint_matches = checkpoint_matches.len(),
+                total_buffered = deltas.len(),
+                "Identified buffered deltas covered by snapshot checkpoint"
+            );
+        }
+
+        for buffered in deltas {
+            let delta_id = buffered.id;
+            let has_events = buffered.events.is_some();
+            let is_covered_by_checkpoint = covered_delta_ids.contains(&delta_id);
+
+            match replay_buffered_delta(
+                &self.context_client,
+                &self.node_client,
+                &self.network_client,
+                &self.node_state,
+                context_id,
+                our_identity,
+                buffered,
+                self.sync_config.timeout,
+                is_covered_by_checkpoint,
+            )
+            .await
+            {
+                Ok(applied) => {
+                    if applied {
+                        info!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            has_events,
+                            "Replayed buffered delta successfully"
+                        );
+                    } else if is_covered_by_checkpoint {
+                        debug!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            "Buffered delta is ancestor of checkpoint (state covered, handlers executed)"
+                        );
+                    } else {
+                        debug!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            "Buffered delta went to pending (missing parents)"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        error = %e,
+                        "Failed to replay buffered delta"
+                    );
+                }
+            }
+        }
     }
 
     /// Fine-sync from snapshot boundary to catch up to latest state.

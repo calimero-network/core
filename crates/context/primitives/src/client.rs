@@ -1,6 +1,7 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
 use async_stream::try_stream;
+use borsh::BorshDeserialize;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::types::{
     BlockHeight, InvitationFromMember, RevealPayloadData, SignedOpenInvitation, SignedRevealPayload,
@@ -527,17 +528,172 @@ impl ContextClient {
         Ok(())
     }
 
+    /// Computes the actual root hash from storage by reading the root Index entry.
+    ///
+    /// This reads the EntityIndex for Id::root() from RocksDB and extracts the
+    /// Merkle full_hash. This is the authoritative hash computed from the actual
+    /// state, not a claimed value.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context to compute the root hash for.
+    ///
+    /// # Returns
+    ///
+    /// The computed root hash, or `[0; 32]` if no root index exists (empty state).
+    pub fn compute_root_hash(&self, context_id: &ContextId) -> eyre::Result<[u8; 32]> {
+        // Compute the state_key for Key::Index(Id::root())
+        // Id::root() = Id::new(context_id) in WASM context
+        // Key::Index(id).to_bytes() = SHA256([0] || id.as_bytes())
+        let root_id: [u8; 32] = **context_id;
+        let mut key_bytes = [0u8; 33];
+        key_bytes[0] = 0; // Index discriminant
+        key_bytes[1..33].copy_from_slice(&root_id);
+        let state_key: [u8; 32] = Sha256::digest(key_bytes).into();
+
+        let handle = self.datastore.handle();
+        let db_key = key::ContextState::new(*context_id, state_key);
+
+        // Get data and convert to owned bytes to avoid lifetime issues
+        let data_opt = handle.get(&db_key)?;
+
+        match data_opt {
+            Some(data) => {
+                // Convert to owned Vec<u8> to avoid lifetime issues
+                let bytes: Vec<u8> = data.as_ref().to_vec();
+                drop(data); // Explicitly drop the borrowed data
+
+                self.parse_entity_index_root_hash(context_id, &bytes)
+            }
+            None => {
+                // No root index exists - empty state
+                tracing::debug!(
+                    %context_id,
+                    "No root index found, returning zero hash"
+                );
+                Ok([0; 32])
+            }
+        }
+    }
+
+    /// Parse EntityIndex bytes to extract the root hash.
+    fn parse_entity_index_root_hash(
+        &self,
+        context_id: &ContextId,
+        bytes: &[u8],
+    ) -> eyre::Result<[u8; 32]> {
+        // Deserialize EntityIndex and extract full_hash
+        // EntityIndex is borsh-serialized with full_hash at a known offset
+        // Structure: id(32) + parent_id(Option<32>) + children(Option<Vec>) + full_hash(32) + ...
+
+        if bytes.len() < 68 {
+            // Minimum size: id(32) + parent_id_tag(1) + children_tag(1) + full_hash(32) + own_hash(32) = 98
+            // But we check for 68 to be safe (id + tags + full_hash)
+            eyre::bail!(
+                "EntityIndex too small: {} bytes, expected at least 68",
+                bytes.len()
+            );
+        }
+
+        // Parse the EntityIndex structure manually for efficiency
+        // id: [u8; 32]
+        // parent_id: Option<Id> - 1 byte tag + optional 32 bytes
+        // children: Option<Vec<ChildInfo>> - 1 byte tag + optional length + data
+        // full_hash: [u8; 32]
+
+        let mut offset = 32; // Skip id
+
+        // Skip parent_id (Option<Id>)
+        let parent_tag = bytes[offset];
+        offset += 1;
+        if parent_tag == 1 {
+            offset += 32; // Skip the Id bytes
+        }
+
+        // Skip children (Option<Vec<ChildInfo>>)
+        let children_tag = bytes[offset];
+        offset += 1;
+        if children_tag == 1 {
+            // Children present - use full borsh deserialization for correctness
+            return self.compute_root_hash_via_borsh(context_id, bytes);
+        }
+
+        // Now at full_hash position
+        if offset + 32 > bytes.len() {
+            eyre::bail!(
+                "EntityIndex full_hash truncated at offset {}, len {}",
+                offset,
+                bytes.len()
+            );
+        }
+
+        let mut full_hash = [0u8; 32];
+        full_hash.copy_from_slice(&bytes[offset..offset + 32]);
+
+        tracing::debug!(
+            %context_id,
+            computed_root = ?Hash::from(full_hash),
+            "Computed root hash from storage"
+        );
+
+        Ok(full_hash)
+    }
+
+    /// Helper to compute root hash using full borsh deserialization.
+    fn compute_root_hash_via_borsh(
+        &self,
+        context_id: &ContextId,
+        bytes: &[u8],
+    ) -> eyre::Result<[u8; 32]> {
+        // Minimal EntityIndex structure for deserialization
+        #[derive(BorshDeserialize)]
+        struct EntityIndexMinimal {
+            _id: [u8; 32],
+            _parent_id: Option<[u8; 32]>,
+            _children: Option<Vec<ChildInfoMinimal>>,
+            full_hash: [u8; 32],
+            // Don't need rest
+        }
+
+        #[derive(BorshDeserialize)]
+        struct ChildInfoMinimal {
+            _id: [u8; 32],
+            _merkle_hash: [u8; 32],
+            _metadata: MetadataMinimal,
+        }
+
+        #[derive(BorshDeserialize)]
+        struct MetadataMinimal {
+            _created_at: u64,
+            _updated_at: UpdatedAtMinimal,
+            _storage_type: u8,
+        }
+
+        #[derive(BorshDeserialize)]
+        struct UpdatedAtMinimal(u64);
+
+        let index: EntityIndexMinimal = EntityIndexMinimal::try_from_slice(bytes)
+            .map_err(|e| eyre::eyre!("Failed to deserialize EntityIndex: {}", e))?;
+
+        tracing::debug!(
+            %context_id,
+            computed_root = ?Hash::from(index.full_hash),
+            "Computed root hash from storage (via borsh)"
+        );
+
+        Ok(index.full_hash)
+    }
+
     /// Forces the root hash for a context to a specific value.
     ///
-    /// This is used during delta application to ensure all nodes have identical
-    /// root hashes even when WASM execution produces different hashes due to
-    /// non-determinism. The expected_root_hash from the delta author is
-    /// considered authoritative for DAG consistency.
+    /// **WARNING**: This bypasses verification and should only be used when
+    /// the hash has already been verified or during controlled operations.
+    /// Prefer `compute_root_hash` + `set_root_hash` for safety.
     ///
     /// # Arguments
     ///
     /// * `context_id` - The ID of the context to update.
-    /// * `root_hash` - The authoritative root hash to set.
+    /// * `root_hash` - The root hash to set.
     ///
     /// # Returns
     ///
@@ -555,14 +711,50 @@ impl ContextClient {
             %context_id,
             old_root = ?Hash::from(meta.root_hash),
             new_root = ?root_hash,
-            "Forcing root hash to expected value for DAG consistency"
+            "Setting root hash"
         );
 
-        // Override root hash with the expected value
         meta.root_hash = *root_hash;
 
-        // Write back to database
         self.datastore.clone().handle().put(&key, &meta)?;
+
+        Ok(())
+    }
+
+    /// Verifies that the stored root hash matches the actual state.
+    ///
+    /// Computes the root hash from storage and compares with the claimed hash.
+    /// Returns Ok(()) if they match, or an error describing the mismatch.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context to verify.
+    /// * `claimed_hash` - The hash to verify against.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success if hashes match, or an error if they don't.
+    pub fn verify_root_hash(
+        &self,
+        context_id: &ContextId,
+        claimed_hash: [u8; 32],
+    ) -> eyre::Result<()> {
+        let computed = self.compute_root_hash(context_id)?;
+
+        if computed != claimed_hash {
+            eyre::bail!(
+                "Root hash verification failed for context {}: computed {} != claimed {}",
+                context_id,
+                hex::encode(computed),
+                hex::encode(claimed_hash)
+            );
+        }
+
+        tracing::debug!(
+            %context_id,
+            hash = ?Hash::from(computed),
+            "Root hash verified successfully"
+        );
 
         Ok(())
     }
