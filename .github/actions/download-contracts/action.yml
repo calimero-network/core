@@ -1,0 +1,58 @@
+name: Download Contracts
+description: "Download Calimero contracts with caching based on version"
+
+inputs:
+  contracts-version:
+    description: "Contracts version to download (defaults to CALIMERO_CONTRACTS_VERSION env var or 'latest')"
+    required: false
+    default: ""
+  output-dir:
+    description: "Directory to download contracts to"
+    required: false
+    default: "contracts"
+
+outputs:
+  contracts-dir:
+    description: "Path to the downloaded contracts directory"
+    value: ${{ steps.set-outputs.outputs.contracts-dir }}
+  cache-hit:
+    description: "Whether the contracts were restored from cache"
+    value: ${{ steps.cache-contracts.outputs.cache-hit }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Determine contracts version
+      id: version
+      shell: bash
+      run: |
+        # Use input, fall back to env var, then default to 'latest'
+        VERSION="${{ inputs.contracts-version }}"
+        if [ -z "$VERSION" ]; then
+          VERSION="${CALIMERO_CONTRACTS_VERSION:-latest}"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Using contracts version: $VERSION"
+
+    - name: Cache contracts
+      id: cache-contracts
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.output-dir }}
+        key: contracts-${{ steps.version.outputs.version }}
+        restore-keys: |
+          contracts-
+
+    - name: Download contracts
+      if: steps.cache-contracts.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        CALIMERO_CONTRACTS_VERSION: ${{ steps.version.outputs.version }}
+        CALIMERO_CONTRACTS_DIR: ${{ inputs.output-dir }}
+      run: ./scripts/download-contracts.sh
+
+    - name: Set outputs
+      id: set-outputs
+      shell: bash
+      run: |
+        echo "contracts-dir=${{ inputs.output-dir }}" >> $GITHUB_OUTPUT

@@ -3769,6 +3769,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "e2e-kv-store"
+version = "0.0.0"
+dependencies = [
+ "bs58 0.5.1",
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-storage-macros",
+ "calimero-wasm-abi",
+ "hex",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "easy-ext"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

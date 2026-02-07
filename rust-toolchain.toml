@@ -1,7 +1,7 @@
 [toolchain]
 channel = "1.88.0"
 # ^~~ keep this in sync with Dockerfile
-components = ["cargo", "clippy"]
+components = ["cargo", "clippy", "rustfmt"]
 
 [profile.dev]
 opt-level = 0
