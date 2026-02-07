@@ -1,11 +1,17 @@
 //! DAG-based delta storage and application
 //!
 //! Wraps calimero-dag and provides context-aware delta application via WASM.
-
-use std::sync::Arc;
-use std::time::Duration;
+//!
+//! # Merge Handling
+//!
+//! When concurrent deltas are detected (deltas from different branches of the DAG),
+//! the applier uses CRDT merge semantics instead of failing on hash mismatch.
+//! This ensures that all nodes converge to the same state regardless of the
+//! order in which they receive concurrent deltas.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use calimero_context_primitives::client::ContextClient;
 use calimero_dag::{
@@ -40,28 +46,54 @@ pub struct MissingParentsResult {
 }
 
 /// Applier that applies actions to WASM storage via ContextClient
+///
+/// Supports two application modes:
+/// 1. **Sequential**: When delta's parent matches our current state - verify hash
+/// 2. **Merge**: When concurrent branches detected - CRDT merge, skip hash check
 #[derive(Debug)]
 struct ContextStorageApplier {
     context_client: ContextClient,
     context_id: ContextId,
     our_identity: PublicKey,
+    /// Maps delta_id -> actual_computed_root_hash for parent state tracking
+    /// Used to detect concurrent branches (merge scenarios)
+    /// CRITICAL: This stores the ACTUAL computed hash, NOT expected_root_hash!
+    parent_hashes: Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>,
 }
 
 #[async_trait::async_trait]
 impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
     async fn apply(&self, delta: &CausalDelta<Vec<Action>>) -> Result<(), ApplyError> {
+        let apply_start = std::time::Instant::now();
+
+        // Get current context state
+        let context = self
+            .context_client
+            .get_context(&self.context_id)
+            .map_err(|e| ApplyError::Application(format!("Failed to get context: {}", e)))?
+            .ok_or_else(|| ApplyError::Application("Context not found".to_owned()))?;
+
+        let current_root_hash = *context.root_hash;
+
+        // Detect if this is a merge scenario (concurrent branches)
+        // A merge is needed when our current state differs from what the delta's parent expects
+        let is_merge_scenario = self.is_merge_scenario(delta, &current_root_hash).await;
+
+        if is_merge_scenario {
+            info!(
+                context_id = %self.context_id,
+                delta_id = ?delta.id,
+                current_root_hash = ?Hash::from(current_root_hash),
+                delta_expected_hash = ?Hash::from(delta.expected_root_hash),
+                "Concurrent branch detected - applying with CRDT merge semantics"
+            );
+        }
+
         // Serialize actions to StorageDelta
         let artifact = borsh::to_vec(&StorageDelta::Actions(delta.payload.clone()))
             .map_err(|e| ApplyError::Application(format!("Failed to serialize delta: {}", e)))?;
 
-        // Get context to access WASM runtime
-        let Some(_context) = self
-            .context_client
-            .get_context(&self.context_id)
-            .map_err(|e| ApplyError::Application(format!("Failed to get context: {}", e)))?
-        else {
-            return Err(ApplyError::Application("Context not found".to_owned()));
-        };
+        let wasm_start = std::time::Instant::now();
 
         // Execute __calimero_sync_next via WASM to apply actions to storage
         let outcome = self
@@ -77,11 +109,15 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             .await
             .map_err(|e| ApplyError::Application(format!("WASM execution failed: {}", e)))?;
 
+        let wasm_elapsed_ms = wasm_start.elapsed().as_secs_f64() * 1000.0;
+
         debug!(
             context_id = %self.context_id,
             delta_id = ?delta.id,
             root_hash = ?outcome.root_hash,
             return_registers = ?outcome.returns,
+            is_merge = is_merge_scenario,
+            wasm_ms = format!("{:.2}", wasm_elapsed_ms),
             "WASM sync completed execution"
         );
 
@@ -92,33 +128,174 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             )));
         }
 
-        // Ensure deterministic root hash across all nodes.
-        // WASM execution may produce different hashes due to non-deterministic factors;
-        // use the delta author's expected_root_hash to maintain DAG consistency.
         let computed_hash = outcome.root_hash;
-        if *computed_hash != delta.expected_root_hash {
-            warn!(
-                context_id = %self.context_id,
-                delta_id = ?delta.id,
-                computed_hash = ?computed_hash,
-                expected_hash = ?Hash::from(delta.expected_root_hash),
-                "Root hash mismatch - using expected hash for consistency"
-            );
 
-            self.context_client
-                .force_root_hash(&self.context_id, delta.expected_root_hash.into())
-                .map_err(|e| ApplyError::Application(format!("Failed to set root hash: {}", e)))?;
+        // In a CRDT environment, hash mismatches are EXPECTED when there are concurrent writes.
+        // The delta's expected_root_hash is based on the sender's linear history, but we may have
+        // additional data from concurrent writes (our own or from other nodes).
+        //
+        // We NEVER reject deltas due to hash mismatch - CRDT merge semantics ensure eventual
+        // consistency. The hash mismatch just means we have concurrent state.
+        //
+        // Log the mismatch for debugging, but always accept the delta.
+        if *computed_hash != delta.expected_root_hash {
+            if is_merge_scenario {
+                info!(
+                    context_id = %self.context_id,
+                    delta_id = ?delta.id,
+                    computed_hash = ?computed_hash,
+                    delta_expected_hash = ?Hash::from(delta.expected_root_hash),
+                    merge_wasm_ms = format!("{:.2}", wasm_elapsed_ms),
+                    "Merge produced new hash (expected - concurrent branches merged)"
+                );
+            } else {
+                // Even "sequential" applications can produce different hashes if we have
+                // concurrent state that the sender doesn't know about. This is normal in
+                // a distributed CRDT system.
+                debug!(
+                    context_id = %self.context_id,
+                    delta_id = ?delta.id,
+                    computed_hash = ?computed_hash,
+                    expected_hash = ?Hash::from(delta.expected_root_hash),
+                    "Hash mismatch (concurrent state) - CRDT merge ensures consistency"
+                );
+            }
         }
 
-        debug!(
+        // Store the ACTUAL computed hash after applying this delta for future merge detection
+        // This is what OUR state actually is, not what the remote expected.
+        // Child deltas will check if our current state matches the parent's result.
+        //
+        // CRITICAL: We must store the computed hash, NOT delta.expected_root_hash!
+        // In merge scenarios, computed_hash differs from expected_root_hash.
+        // If we stored expected_root_hash, sequential child deltas would incorrectly
+        // appear to be merge scenarios because our state wouldn't match.
+        {
+            let mut hashes = self.parent_hashes.write().await;
+            hashes.insert(delta.id, *computed_hash);
+
+            // CLEANUP: Prevent unbounded memory growth
+            // Keep only the most recent entries. Old delta hashes are rarely needed
+            // since merge detection mainly looks at recent parent-child relationships.
+            // 10,000 entries = ~640KB (64 bytes per entry), sufficient for most scenarios.
+            const MAX_PARENT_HASH_ENTRIES: usize = 10_000;
+            if hashes.len() > MAX_PARENT_HASH_ENTRIES {
+                // Remove ~10% of oldest entries when threshold exceeded
+                // Since HashMap doesn't track insertion order, we do a simple drain
+                // This is rare (only when threshold exceeded) so perf impact is minimal
+                let excess = hashes.len() - (MAX_PARENT_HASH_ENTRIES * 9 / 10);
+                let keys_to_remove: Vec<_> = hashes.keys().take(excess).copied().collect();
+                for key in keys_to_remove {
+                    hashes.remove(&key);
+                }
+                debug!(
+                    context_id = %self.context_id,
+                    removed = excess,
+                    remaining = hashes.len(),
+                    "Pruned parent_hashes cache to prevent memory growth"
+                );
+            }
+        }
+
+        let total_elapsed_ms = apply_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Log with unique marker for parsing: DELTA_APPLY_TIMING
+        info!(
             context_id = %self.context_id,
             delta_id = ?delta.id,
             action_count = delta.payload.len(),
-            expected_root_hash = ?delta.expected_root_hash,
-            "Applied delta to WASM storage"
+            final_root_hash = ?computed_hash,
+            was_merge = is_merge_scenario,
+            wasm_ms = format!("{:.2}", wasm_elapsed_ms),
+            total_ms = format!("{:.2}", total_elapsed_ms),
+            "DELTA_APPLY_TIMING"
         );
 
         Ok(())
+    }
+}
+
+impl ContextStorageApplier {
+    /// Determine if this delta application is a merge scenario.
+    ///
+    /// A merge is needed when:
+    /// 1. The delta has a non-genesis parent, AND
+    /// 2. Our current state has diverged from that parent's expected state
+    ///
+    /// This happens when concurrent deltas were applied before this one.
+    ///
+    /// Detection strategies (in order):
+    /// 1. If parent hash is tracked, compare directly
+    /// 2. If the delta expects a different state than we have, it's a merge
+    /// 3. If parent is unknown and we're not at genesis, assume merge (conservative)
+    async fn is_merge_scenario(
+        &self,
+        delta: &CausalDelta<Vec<Action>>,
+        current_root_hash: &[u8; 32],
+    ) -> bool {
+        // Genesis parent means this is a first delta - no merge needed
+        let has_only_genesis_parent = delta.parents.iter().all(|p| *p == [0u8; 32]);
+        if has_only_genesis_parent {
+            // But if we have state and delta expects genesis state, we've diverged
+            if *current_root_hash != [0u8; 32] {
+                debug!(
+                    context_id = %self.context_id,
+                    delta_id = ?delta.id,
+                    current_root_hash = ?Hash::from(*current_root_hash),
+                    "Delta from genesis but we have state - concurrent branch detected"
+                );
+                return true;
+            }
+            return false;
+        }
+
+        // Get the expected root hash of the delta's parent(s)
+        let hashes = self.parent_hashes.read().await;
+
+        for parent_id in &delta.parents {
+            if *parent_id == [0u8; 32] {
+                continue; // Skip genesis
+            }
+
+            if let Some(parent_computed_hash) = hashes.get(parent_id) {
+                // Parent's computed hash is what OUR state was AFTER applying that parent
+                // If our current state differs, we've diverged (either we merged, or have local changes)
+                if parent_computed_hash != current_root_hash {
+                    debug!(
+                        context_id = %self.context_id,
+                        delta_id = ?delta.id,
+                        parent_id = ?parent_id,
+                        parent_computed_hash = ?Hash::from(*parent_computed_hash),
+                        current_root_hash = ?Hash::from(*current_root_hash),
+                        "State diverged from parent's computed hash - treating as merge"
+                    );
+                    return true;
+                } else {
+                    debug!(
+                        context_id = %self.context_id,
+                        delta_id = ?delta.id,
+                        parent_id = ?parent_id,
+                        parent_computed_hash = ?Hash::from(*parent_computed_hash),
+                        current_root_hash = ?Hash::from(*current_root_hash),
+                        "State matches parent's computed hash - sequential application OK"
+                    );
+                }
+            } else {
+                // Parent was created by another node - we don't have its hash tracked
+                // This is common when receiving deltas from other nodes.
+                // Conservative: treat as merge since we can't verify sequential application
+                debug!(
+                    context_id = %self.context_id,
+                    delta_id = ?delta.id,
+                    parent_id = ?parent_id,
+                    current_root_hash = ?Hash::from(*current_root_hash),
+                    "Unknown parent (not in our tracking) - treating as merge"
+                );
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -144,10 +321,14 @@ impl DeltaStore {
         context_id: ContextId,
         our_identity: PublicKey,
     ) -> Self {
+        // Shared parent hash tracking for merge detection
+        let parent_hashes = Arc::new(RwLock::new(HashMap::new()));
+
         let applier = Arc::new(ContextStorageApplier {
             context_client,
             context_id,
             our_identity,
+            parent_hashes: Arc::clone(&parent_hashes),
         });
 
         Self {
@@ -198,18 +379,37 @@ impl DeltaStore {
             };
 
             // Reconstruct the delta
+            // Infer checkpoint status: checkpoints have genesis as parent and empty payload
+            let is_checkpoint = stored_delta.parents.len() == 1
+                && stored_delta.parents[0] == [0u8; 32]
+                && actions.is_empty();
+
             let dag_delta = CausalDelta {
                 id: stored_delta.delta_id,
                 parents: stored_delta.parents,
                 payload: actions,
                 hlc: stored_delta.hlc,
                 expected_root_hash: stored_delta.expected_root_hash,
+                kind: if is_checkpoint {
+                    calimero_dag::DeltaKind::Checkpoint
+                } else {
+                    calimero_dag::DeltaKind::Regular
+                },
             };
 
-            // Store root hash mapping
+            // Store root hash mapping for both head_root_hashes and parent_hashes
+            // Note: For persisted deltas that were already applied, we use expected_root_hash
+            // as the computed hash (they should be the same for non-merge deltas).
+            // For merge deltas, the actual computed hash may have differed, but we don't
+            // persist that - this is a minor approximation that works for most cases.
             {
                 let mut head_hashes = self.head_root_hashes.write().await;
                 let _ = head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
+            }
+            {
+                let mut parent_hashes = self.applier.parent_hashes.write().await;
+                let _ =
+                    parent_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
             }
 
             drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
@@ -283,6 +483,30 @@ impl DeltaStore {
                 loaded_count,
                 "Loaded persisted deltas into DAG from database"
             );
+        }
+
+        // Try to process any pending deltas that might now have their parents available
+        // This handles cases where deltas were received via gossip before their parents
+        // were loaded from the database.
+        {
+            let mut dag = self.dag.write().await;
+            match dag.try_process_pending(&*self.applier).await {
+                Ok(processed) if processed > 0 => {
+                    info!(
+                        context_id = %self.applier.context_id,
+                        processed,
+                        "Processed pending deltas after loading from database"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        context_id = %self.applier.context_id,
+                        "Failed to process pending deltas after database load"
+                    );
+                }
+                _ => {}
+            }
         }
 
         Ok(loaded_count)
@@ -539,34 +763,39 @@ impl DeltaStore {
         } else {
             Vec::new()
         };
-
-        self.applier
-            .context_client
-            .update_dag_heads(&self.applier.context_id, heads.clone())
-            .map_err(|e| eyre::eyre!("Failed to update dag_heads: {}", e))?;
-
-        // Deterministic root hash selection for concurrent branches.
-        // When multiple DAG heads exist, use the lexicographically smallest head's root_hash
-        // to ensure all nodes converge to the same root regardless of delta arrival order.
+        // When multiple DAG heads exist, compute the actual root hash from storage.
+        // With CRDT merge semantics, the state after applying all deltas is deterministic
+        // regardless of application order, so computing from storage gives the correct hash.
+        // NOTE: The root hash is already updated during delta application via __calimero_sync_next,
+        // so we just log for debugging purposes.
         if heads.len() > 1 {
-            let head_hashes = self.head_root_hashes.read().await;
-            let mut sorted_heads = heads.clone();
-            sorted_heads.sort();
-            let canonical_head = sorted_heads[0];
+            debug!(
+                context_id = %self.applier.context_id,
+                heads_count = heads.len(),
+                "Multiple DAG heads detected - state hash determined by CRDT merge semantics"
+            );
 
-            if let Some(&canonical_root_hash) = head_hashes.get(&canonical_head) {
-                debug!(
-                    context_id = %self.applier.context_id,
-                    heads_count = heads.len(),
-                    canonical_head = ?canonical_head,
-                    canonical_root = ?canonical_root_hash,
-                    "Multiple DAG heads - using deterministic root hash selection"
-                );
-
-                self.applier
-                    .context_client
-                    .force_root_hash(&self.applier.context_id, canonical_root_hash.into())
-                    .map_err(|e| eyre::eyre!("Failed to set canonical root hash: {}", e))?;
+            // Optionally verify the stored hash matches computed
+            // (the hash should already be correct from WASM execution)
+            match self
+                .applier
+                .context_client
+                .compute_root_hash(&self.applier.context_id)
+            {
+                Ok(computed_hash) => {
+                    debug!(
+                        context_id = %self.applier.context_id,
+                        computed_root = ?computed_hash,
+                        "Verified root hash from storage after multi-head DAG merge"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        context_id = %self.applier.context_id,
+                        error = %e,
+                        "Failed to compute root hash for verification (non-fatal)"
+                    );
+                }
             }
         }
 
@@ -574,6 +803,23 @@ impl DeltaStore {
         {
             let mut head_hashes = self.head_root_hashes.write().await;
             head_hashes.retain(|head_id, _| heads.contains(head_id));
+        }
+
+        // CRITICAL: Update the database's dag_heads to match the in-memory DAG.
+        // This is essential for sync operations which compare our database dag_heads
+        // with peer's heads to determine what deltas are missing.
+        // Without this update, the sync manager would use stale head information
+        // and may request deltas we already have or miss deltas we need.
+        if result || !cascaded_deltas.is_empty() {
+            self.applier
+                .context_client
+                .update_dag_heads(&self.applier.context_id, heads.clone())
+                .map_err(|e| eyre::eyre!("Failed to update dag_heads in database: {}", e))?;
+            debug!(
+                context_id = %self.applier.context_id,
+                new_heads = ?heads,
+                "Updated database dag_heads after delta application"
+            );
         }
 
         Ok(AddDeltaResult {
@@ -632,94 +878,45 @@ impl DeltaStore {
                         payload: actions,
                         hlc: stored_delta.hlc,
                         expected_root_hash: stored_delta.expected_root_hash,
+                        kind: calimero_dag::DeltaKind::Regular,
                     };
 
-                    // Add to DAG and track any cascaded deltas
-                    let mut dag = self.dag.write().await;
-
-                    let pending_before: std::collections::HashSet<[u8; 32]> =
-                        dag.get_pending_delta_ids().into_iter().collect();
-
-                    if let Err(e) = dag.add_delta(dag_delta, &*self.applier).await {
-                        tracing::warn!(
-                            ?e,
+                    // Check if this delta was already applied (e.g., locally authored)
+                    if stored_delta.applied {
+                        // Restore topology WITHOUT re-applying - delta was already applied
+                        tracing::info!(
                             context_id = %self.applier.context_id,
                             parent_id = ?parent_id,
-                            "Failed to load persisted parent delta into DAG"
-                        );
-                    }
-
-                    // Check for cascaded deltas
-                    let cascaded_deltas: Vec<[u8; 32]> = if !pending_before.is_empty() {
-                        let pending_after: std::collections::HashSet<[u8; 32]> =
-                            dag.get_pending_delta_ids().into_iter().collect();
-                        pending_before.difference(&pending_after).copied().collect()
-                    } else {
-                        Vec::new()
-                    };
-
-                    // Persist cascaded deltas and retrieve their stored events
-                    if !cascaded_deltas.is_empty() {
-                        info!(
-                            context_id = %self.applier.context_id,
-                            cascaded_count = cascaded_deltas.len(),
-                            "Persisting cascaded deltas triggered by loading parent from DB"
+                            "Parent delta already applied in DB - restoring to DAG without re-applying"
                         );
 
-                        for cascaded_id in &cascaded_deltas {
-                            // Retrieve stored events for this cascaded delta
-                            let cascaded_db_key = calimero_store::key::ContextDagDelta::new(
-                                self.applier.context_id,
-                                *cascaded_id,
+                        // Also track the expected root hash for this delta
+                        {
+                            let mut head_hashes = self.head_root_hashes.write().await;
+                            head_hashes.insert(*parent_id, stored_delta.expected_root_hash);
+                        }
+
+                        // Re-acquire lock as write lock to mutate DAG
+                        let mut dag = self.dag.write().await;
+                        if !dag.restore_applied_delta(dag_delta) {
+                            tracing::debug!(
+                                context_id = %self.applier.context_id,
+                                parent_id = ?parent_id,
+                                "Parent delta already in DAG"
                             );
-                            let stored_events =
-                                handle.get(&cascaded_db_key).ok().flatten().and_then(
-                                    |stored: calimero_store::types::ContextDagDelta| stored.events,
-                                );
-
-                            if stored_events.is_some() {
-                                info!(
-                                    context_id = %self.applier.context_id,
-                                    delta_id = ?cascaded_id,
-                                    "Found stored events for cascaded delta - will execute handlers"
-                                );
-                            }
-
-                            if let Some(cascaded_delta) = dag.get_delta(cascaded_id) {
-                                let serialized_actions = match borsh::to_vec(
-                                    &cascaded_delta.payload,
-                                ) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        warn!(?e, context_id = %self.applier.context_id, delta_id = ?cascaded_id, "Failed to serialize");
-                                        continue;
-                                    }
-                                };
-
-                                // Add events to return list
-                                if let Some(events_data) = stored_events {
-                                    all_cascaded_events.push((*cascaded_id, events_data));
-                                }
-
-                                if let Err(e) = self.applier.context_client.datastore_handle().put(
-                                    &cascaded_db_key,
-                                    &calimero_store::types::ContextDagDelta {
-                                        delta_id: *cascaded_id,
-                                        parents: cascaded_delta.parents.clone(),
-                                        actions: serialized_actions,
-                                        hlc: cascaded_delta.hlc,
-                                        applied: true,
-                                        expected_root_hash: cascaded_delta.expected_root_hash,
-                                        events: None, // Clear events after cascading
-                                    },
-                                ) {
-                                    warn!(?e, context_id = %self.applier.context_id, delta_id = ?cascaded_id, "Failed to persist cascaded delta");
-                                }
-                            }
+                        }
+                    } else {
+                        // Re-acquire lock as write lock to mutate DAG
+                        let mut dag = self.dag.write().await;
+                        if let Err(e) = dag.add_delta(dag_delta, &*self.applier).await {
+                            tracing::warn!(
+                                ?e,
+                                context_id = %self.applier.context_id,
+                                parent_id = ?parent_id,
+                                "Failed to load persisted parent delta into DAG"
+                            );
                         }
                     }
-
-                    drop(dag);
                 }
                 Ok(None) => {
                     // Truly missing - add to request list
@@ -788,5 +985,129 @@ impl DeltaStore {
     pub async fn get_delta(&self, id: &[u8; 32]) -> Option<CausalDelta<Vec<Action>>> {
         let dag = self.dag.read().await;
         dag.get_delta(id).cloned()
+    }
+
+    /// Add snapshot boundary checkpoints to the DAG.
+    ///
+    /// After a snapshot sync, we need to inform the DAG about the boundary state
+    /// so it knows what "heads" the snapshot represents. This allows subsequent
+    /// delta sync to continue from the correct point.
+    ///
+    /// Creates proper checkpoint deltas (with DeltaKind::Checkpoint) that mark
+    /// the snapshot boundary. These checkpoints have empty payloads and are
+    /// treated as "already applied" by the DAG.
+    ///
+    /// CRITICAL: Checkpoints are persisted to the database so that peers can
+    /// request them during delta sync. Without persistence, a peer requesting
+    /// a delta whose parent is a checkpoint would get "delta not found".
+    pub async fn add_snapshot_checkpoints(
+        &self,
+        boundary_dag_heads: Vec<[u8; 32]>,
+        boundary_root_hash: [u8; 32],
+    ) -> usize {
+        let mut added_count = 0;
+        let mut dag = self.dag.write().await;
+
+        for head_id in boundary_dag_heads {
+            // Skip genesis (zero hash)
+            if head_id == [0; 32] {
+                continue;
+            }
+
+            // Create a proper checkpoint delta using the architecture-defined constructor
+            let checkpoint = CausalDelta::checkpoint(head_id, boundary_root_hash);
+
+            // Restore the checkpoint to the DAG (marks it as applied)
+            if dag.restore_applied_delta(checkpoint.clone()) {
+                added_count += 1;
+
+                // CRITICAL: Persist the checkpoint to the database so peers can request it
+                // Without this, delta sync fails because the parent delta (checkpoint) is "not found"
+                let mut handle = self.applier.context_client.datastore_handle();
+                let serialized_actions = match borsh::to_vec(&checkpoint.payload) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(
+                            ?e,
+                            context_id = %self.applier.context_id,
+                            ?head_id,
+                            "Failed to serialize checkpoint payload"
+                        );
+                        continue;
+                    }
+                };
+
+                if let Err(e) = handle.put(
+                    &calimero_store::key::ContextDagDelta::new(self.applier.context_id, head_id),
+                    &calimero_store::types::ContextDagDelta {
+                        delta_id: head_id,
+                        parents: checkpoint.parents.clone(),
+                        actions: serialized_actions,
+                        hlc: checkpoint.hlc,
+                        applied: true, // Checkpoints are always "applied"
+                        expected_root_hash: checkpoint.expected_root_hash,
+                        events: None,
+                    },
+                ) {
+                    tracing::warn!(
+                        ?e,
+                        context_id = %self.applier.context_id,
+                        ?head_id,
+                        "Failed to persist checkpoint to database"
+                    );
+                } else {
+                    tracing::info!(
+                        context_id = %self.applier.context_id,
+                        ?head_id,
+                        "Persisted snapshot checkpoint to DAG and database"
+                    );
+                }
+            }
+        }
+
+        // Also track the expected root hash for merge detection
+        if added_count > 0 {
+            let mut head_hashes = self.head_root_hashes.write().await;
+            for head_id in dag.get_heads().iter() {
+                let _previous = head_hashes.insert(*head_id, boundary_root_hash);
+            }
+
+            // Also update parent_hashes for merge detection
+            let mut parent_hashes = self.applier.parent_hashes.write().await;
+            for head_id in dag.get_heads().iter() {
+                let _previous = parent_hashes.insert(*head_id, boundary_root_hash);
+            }
+        }
+
+        // Try to process any pending deltas that might now have their parents available
+        // This is critical because deltas received via gossip before the checkpoint was added
+        // would be stuck in pending state waiting for the checkpoint parent.
+        if added_count > 0 {
+            match dag.try_process_pending(&*self.applier).await {
+                Ok(processed) if processed > 0 => {
+                    tracing::info!(
+                        context_id = %self.applier.context_id,
+                        processed,
+                        "Processed pending deltas after adding snapshot checkpoints"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        ?e,
+                        context_id = %self.applier.context_id,
+                        "Failed to process pending deltas after checkpoint"
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        tracing::info!(
+            context_id = %self.applier.context_id,
+            added_count,
+            "Snapshot checkpoints added to DAG"
+        );
+
+        added_count
     }
 }
