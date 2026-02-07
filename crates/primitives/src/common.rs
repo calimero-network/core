@@ -7,6 +7,9 @@ use url::Url;
 /// The digest is used everywhere: for context, public key, proposals, etc.
 pub const DIGEST_SIZE: usize = 32;
 
+/// The default number of proposals to display in results.
+pub const DEFAULT_PROPOSALS_LIMIT: usize = 20;
+
 #[must_use]
 pub const fn bool_true() -> bool {
     true
