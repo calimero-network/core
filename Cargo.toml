@@ -75,6 +75,7 @@ members = [
     "./crates/wasm-abi",
 
     "./apps/access-control",
+    "./apps/e2e-kv-store",
     "./apps/kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
