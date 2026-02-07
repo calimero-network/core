@@ -959,7 +959,7 @@ pub struct GetProxyContractResponse {
 }
 
 fn default_proposals_limit() -> usize {
-    1
+    calimero_primitives::common::DEFAULT_PROPOSALS_LIMIT
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]

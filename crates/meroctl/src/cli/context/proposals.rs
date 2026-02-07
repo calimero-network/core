@@ -38,7 +38,7 @@ pub enum ProposalsSubcommand {
         #[arg(
             long,
             help = "Maximum number of proposals to display in results",
-            default_value = "1"
+            default_value_t = calimero_primitives::common::DEFAULT_PROPOSALS_LIMIT
         )]
         limit: usize,
     },
