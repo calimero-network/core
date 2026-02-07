@@ -101,6 +101,7 @@ pub fn default_config() -> AuthConfig {
             issuer: "calimero-auth".to_string(),
             access_token_expiry: 3600,
             refresh_token_expiry: 2592000,
+            idle_timeout: 1800, // 30 minutes
         },
         storage: StorageConfig::RocksDB {
             path: "auth".into(),
