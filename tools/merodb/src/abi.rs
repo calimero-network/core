@@ -171,7 +171,7 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::UnorderedSet),
                                     inner_type: None,
                                 },
-                                CrdtType::Counter => TypeRef::Collection {
+                                CrdtType::Counter | CrdtType::GCounter => TypeRef::Collection {
                                     // Counter is stored as Map<String, u64> internally
                                     collection: CollectionType::Map {
                                         key: Box::new(TypeRef::string()),
@@ -185,7 +185,7 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
                                     inner_type: None,
                                 },
-                                CrdtType::LwwRegister => TypeRef::Collection {
+                                CrdtType::LwwRegister { .. } => TypeRef::Collection {
                                     collection: CollectionType::Record { fields: Vec::new() },
                                     crdt_type: Some(CrdtCollectionType::LwwRegister),
                                     inner_type: Some(Box::new(TypeRef::string())),

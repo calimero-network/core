@@ -8,7 +8,7 @@
 //! - UnorderedSet
 //! - Vector
 
-use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
+use super::crdt_meta::{AsInnerType, CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
 use super::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap, UnorderedSet, Vector};
 #[cfg(test)]
 use super::{GCounter, PNCounter};
@@ -81,9 +81,11 @@ impl<T: Mergeable + Clone> Mergeable for Option<T> {
 // LwwRegister
 // ============================================================================
 
-impl<T> CrdtMeta for LwwRegister<T> {
+impl<T: AsInnerType> CrdtMeta for LwwRegister<T> {
     fn crdt_type() -> CrdtType {
-        CrdtType::LwwRegister
+        CrdtType::LwwRegister {
+            inner: T::as_inner_type(),
+        }
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -109,7 +111,11 @@ impl<T: Clone> Mergeable for LwwRegister<T> {
 
 impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> CrdtMeta for Counter<ALLOW_DECREMENT, S> {
     fn crdt_type() -> CrdtType {
-        CrdtType::Counter
+        if ALLOW_DECREMENT {
+            CrdtType::Counter // PNCounter
+        } else {
+            CrdtType::GCounter // Grow-only counter
+        }
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -474,15 +480,36 @@ mod tests {
 
     #[test]
     fn test_lww_register_is_crdt() {
+        use crate::collections::crdt_meta::InnerType;
+
         assert!(LwwRegister::<String>::is_crdt());
-        assert_eq!(LwwRegister::<String>::crdt_type(), CrdtType::LwwRegister);
+        assert_eq!(
+            LwwRegister::<String>::crdt_type(),
+            CrdtType::LwwRegister {
+                inner: InnerType::String
+            }
+        );
         assert!(!LwwRegister::<String>::can_contain_crdts());
+
+        // Test with different inner types
+        assert_eq!(
+            LwwRegister::<u64>::crdt_type(),
+            CrdtType::LwwRegister {
+                inner: InnerType::U64
+            }
+        );
+        assert_eq!(
+            LwwRegister::<bool>::crdt_type(),
+            CrdtType::LwwRegister {
+                inner: InnerType::Bool
+            }
+        );
     }
 
     #[test]
     fn test_gcounter_is_crdt() {
         assert!(GCounter::<MainStorage>::is_crdt());
-        assert_eq!(GCounter::<MainStorage>::crdt_type(), CrdtType::Counter);
+        assert_eq!(GCounter::<MainStorage>::crdt_type(), CrdtType::GCounter);
         assert!(!GCounter::<MainStorage>::can_contain_crdts());
     }
 
@@ -534,11 +561,12 @@ mod tests {
     fn test_counter_custom_storage_is_crdt() {
         use crate::store::mocked::MockedStorage;
 
-        type CustomCounter = Counter<false, MockedStorage<0>>;
+        // Counter<false, S> is GCounter
+        type CustomGCounter = Counter<false, MockedStorage<0>>;
 
-        assert!(CustomCounter::is_crdt());
-        assert_eq!(CustomCounter::crdt_type(), CrdtType::Counter);
-        assert!(!CustomCounter::can_contain_crdts());
+        assert!(CustomGCounter::is_crdt());
+        assert_eq!(CustomGCounter::crdt_type(), CrdtType::GCounter);
+        assert!(!CustomGCounter::can_contain_crdts());
     }
 
     #[test]

@@ -938,6 +938,12 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Saves raw data to the storage system.
     ///
+    /// # CIP Invariants
+    ///
+    /// - **I5 (No Silent Data Loss)**: Built-in CRDT types (Counter, Map, Set, etc.)
+    ///   are merged using their semantic rules, not overwritten with LWW.
+    /// - **I10 (Metadata Persistence)**: Uses `metadata.crdt_type` to dispatch merges.
+    ///
     /// # Errors
     ///
     /// If an error occurs when serialising data or interacting with the storage
@@ -948,42 +954,73 @@ impl<S: StorageAdaptor> Interface<S> {
         data: &[u8],
         metadata: Metadata,
     ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
-        let incoming_created_at = metadata.created_at;
-        let incoming_updated_at = metadata.updated_at();
+        use crate::merge::{is_builtin_crdt, merge_by_crdt_type};
 
         let last_metadata = <Index<S>>::get_metadata(id)?;
         let final_data = if let Some(last_metadata) = &last_metadata {
             if last_metadata.updated_at > metadata.updated_at {
                 return Ok(None);
-            } else if id.is_root() {
-                // Root entity (app state) - ALWAYS merge to preserve CRDTs like G-Counter
-                // Even if incoming is newer, we merge to avoid losing concurrent updates
+            }
+
+            // Determine if we should merge based on CRDT type
+            let should_merge = id.is_root()
+                || last_metadata.updated_at == metadata.updated_at
+                || metadata
+                    .crdt_type
+                    .as_ref()
+                    .is_some_and(|ct| is_builtin_crdt(ct));
+
+            if should_merge {
                 if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
-                    Self::try_merge_data(
-                        id,
-                        &existing_data,
-                        data,
-                        *last_metadata.updated_at,
-                        *metadata.updated_at,
-                    )?
-                } else {
-                    data.to_vec()
-                }
-            } else if last_metadata.updated_at == metadata.updated_at {
-                // Concurrent update (same timestamp) - try to merge
-                if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
-                    Self::try_merge_data(
-                        id,
-                        &existing_data,
-                        data,
-                        *last_metadata.updated_at,
-                        *metadata.updated_at,
-                    )?
+                    // Try CRDT merge based on type
+                    if let Some(crdt_type) = &metadata.crdt_type {
+                        if is_builtin_crdt(crdt_type) {
+                            // Use type-dispatched CRDT merge
+                            match merge_by_crdt_type(crdt_type, &existing_data, data) {
+                                Ok(merged) => merged,
+                                Err(e) => {
+                                    // Log error and fall back to try_merge_data
+                                    tracing::warn!(
+                                        %id,
+                                        crdt_type = ?crdt_type,
+                                        error = %e,
+                                        "CRDT merge failed, falling back to registry merge"
+                                    );
+                                    Self::try_merge_data(
+                                        id,
+                                        &existing_data,
+                                        data,
+                                        *last_metadata.updated_at,
+                                        *metadata.updated_at,
+                                    )?
+                                }
+                            }
+                        } else {
+                            // Custom type - use registry-based merge
+                            Self::try_merge_data(
+                                id,
+                                &existing_data,
+                                data,
+                                *last_metadata.updated_at,
+                                *metadata.updated_at,
+                            )?
+                        }
+                    } else {
+                        // No crdt_type - use registry-based merge (backward compat)
+                        Self::try_merge_data(
+                            id,
+                            &existing_data,
+                            data,
+                            *last_metadata.updated_at,
+                            *metadata.updated_at,
+                        )?
+                    }
                 } else {
                     data.to_vec()
                 }
             } else {
-                // Incoming is newer - use it (LWW for non-root entities)
+                // Incoming is newer AND no CRDT type - use LWW
+                // Note: This path is only taken for non-CRDT entities
                 data.to_vec()
             }
         } else {
