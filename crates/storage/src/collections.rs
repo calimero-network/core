@@ -50,15 +50,41 @@ pub use frozen_value::FrozenValue;
 use crate as calimero_storage;
 use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
+use crate::index::Index;
 use crate::interface::{Interface, StorageError};
-use crate::store::{MainStorage, StorageAdaptor};
+use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::{AtomicUnit, Collection};
 
-/// Compute the ID for a key.
+/// Domain separator for map entry IDs to prevent collision with collection IDs.
+/// This ensures that a map entry with key "X" never collides with a nested collection
+/// with field name "X" in the same parent.
+const DOMAIN_SEPARATOR_ENTRY: &[u8] = b"__calimero_entry__";
+
+/// Domain separator for collection IDs to prevent collision with map entry IDs.
+/// This ensures that a nested collection with field name "X" never collides with a
+/// map entry with key "X" in the same parent.
+const DOMAIN_SEPARATOR_COLLECTION: &[u8] = b"__calimero_collection__";
+
+/// Compute the ID for a key in a map.
+/// Uses domain separation to prevent collision with collection IDs.
 fn compute_id(parent: Id, key: &[u8]) -> Id {
     let mut hasher = Sha256::new();
     hasher.update(parent.as_bytes());
+    hasher.update(DOMAIN_SEPARATOR_ENTRY);
     hasher.update(key);
+    Id::new(hasher.finalize().into())
+}
+
+/// Compute a deterministic collection ID from parent ID and field name.
+/// This ensures the same collection gets the same ID across all nodes.
+/// Uses domain separation to prevent collision with map entry IDs.
+pub(crate) fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> Id {
+    let mut hasher = Sha256::new();
+    if let Some(parent) = parent_id {
+        hasher.update(parent.as_bytes());
+    }
+    hasher.update(DOMAIN_SEPARATOR_COLLECTION);
+    hasher.update(field_name.as_bytes());
     Id::new(hasher.finalize().into())
 }
 
@@ -129,6 +155,139 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         }
 
         this
+    }
+
+    /// Creates a new collection with a deterministic ID derived from parent ID and field name.
+    /// This ensures collections get the same ID across all nodes when created with the same
+    /// parent and field name.
+    ///
+    /// # Arguments
+    /// * `parent_id` - The ID of the parent collection (None for root-level collections)
+    /// * `field_name` - The name of the field containing this collection
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
+    pub(crate) fn new_with_field_name(parent_id: Option<Id>, field_name: &str) -> Self {
+        let id = compute_collection_id(parent_id, field_name);
+
+        let mut this = Self {
+            children_ids: RefCell::new(None),
+            storage: Element::new_with_field_name(Some(id), Some(field_name.to_string())),
+            _priv: PhantomData,
+        };
+
+        if id.is_root() {
+            let _ignored = <Interface<S>>::save(&mut this).expect("save");
+        } else {
+            let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
+        }
+
+        this
+    }
+
+    /// Creates a new collection with deterministic ID, field name, and CRDT type.
+    ///
+    /// # Arguments
+    /// * `parent_id` - The ID of the parent collection (None for root-level collections)
+    /// * `field_name` - The name of the field containing this collection
+    /// * `crdt_type` - The CRDT type for merge dispatch
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
+    pub(crate) fn new_with_field_name_and_crdt_type(
+        parent_id: Option<Id>,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) -> Self {
+        let id = compute_collection_id(parent_id, field_name);
+
+        let mut this = Self {
+            children_ids: RefCell::new(None),
+            storage: Element::new_with_field_name_and_crdt_type(
+                Some(id),
+                Some(field_name.to_string()),
+                crdt_type,
+            ),
+            _priv: PhantomData,
+        };
+
+        if id.is_root() {
+            let _ignored = <Interface<S>>::save(&mut this).expect("save");
+        } else {
+            let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
+        }
+
+        this
+    }
+
+    /// Reassigns the collection's ID to a deterministic ID based on field name.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all top-level collections have deterministic IDs regardless of how they were
+    /// created in `init()`.
+    ///
+    /// This method cleans up the old storage entry and parent-child references
+    /// when moving from a random ID to a deterministic one.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this collection
+    #[expect(clippy::expect_used, reason = "fatal error if cleanup fails")]
+    pub(crate) fn reassign_deterministic_id(&mut self, field_name: &str) {
+        let new_id = compute_collection_id(None, field_name);
+        let old_id = self.storage.id();
+
+        // If already has the correct ID, nothing to do
+        if old_id == new_id {
+            return;
+        }
+
+        // Clean up old storage entry and index
+        let _ignored = S::storage_remove(Key::Entry(old_id));
+        let _ignored = S::storage_remove(Key::Index(old_id));
+
+        // Remove old child reference from ROOT (without creating tombstone)
+        let _ = <Index<S>>::remove_child_reference_only(*ROOT_ID, old_id);
+
+        // Update in-memory ID and field name
+        self.storage.reassign_id_and_field_name(new_id, field_name);
+
+        // Add the collection with new ID to ROOT
+        let _ = <Interface<S>>::add_child_to(*ROOT_ID, self)
+            .expect("failed to add collection with new ID");
+    }
+
+    /// Reassigns the collection's ID with a specific CRDT type.
+    ///
+    /// This method cleans up the old storage entry and parent-child references
+    /// when moving from a random ID to a deterministic one.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this collection
+    /// * `crdt_type` - The CRDT type for merge dispatch
+    #[expect(clippy::expect_used, reason = "fatal error if cleanup fails")]
+    pub(crate) fn reassign_deterministic_id_with_crdt_type(
+        &mut self,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) {
+        let new_id = compute_collection_id(None, field_name);
+        let old_id = self.storage.id();
+
+        // If already has the correct ID, nothing to do
+        if old_id == new_id {
+            return;
+        }
+
+        // Clean up old storage entry and index
+        let _ignored = S::storage_remove(Key::Entry(old_id));
+        let _ignored = S::storage_remove(Key::Index(old_id));
+
+        // Remove old child reference from ROOT (without creating tombstone)
+        let _ = <Index<S>>::remove_child_reference_only(*ROOT_ID, old_id);
+
+        // Update in-memory ID, field name, and CRDT type
+        self.storage.reassign_id_and_field_name(new_id, field_name);
+        self.storage.metadata.crdt_type = Some(crdt_type);
+
+        // Add the collection with new ID to ROOT
+        let _ = <Interface<S>>::add_child_to(*ROOT_ID, self)
+            .expect("failed to add collection with new ID");
     }
 
     /// Inserts an item into the collection.

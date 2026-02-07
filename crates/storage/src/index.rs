@@ -309,6 +309,20 @@ impl<S: StorageAdaptor> Index<S> {
         Self::mark_deleted(id, time_now())
     }
 
+    /// Removes a child reference from a parent without creating a tombstone.
+    ///
+    /// Used when reassigning collection IDs - we need to remove the old child
+    /// reference from the parent but don't want to create a tombstone since
+    /// the collection is being moved, not deleted.
+    pub(crate) fn remove_child_reference_only(
+        parent_id: Id,
+        child_id: Id,
+    ) -> Result<(), StorageError> {
+        Self::update_parent_after_child_removal(parent_id, child_id)?;
+        Self::recalculate_ancestor_hashes_for(parent_id)?;
+        Ok(())
+    }
+
     /// Updates parent's children list and hash after child removal.
     ///
     /// Step 2 of deletion: Remove child from parent's index and recalculate hash.

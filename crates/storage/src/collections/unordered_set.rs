@@ -7,7 +7,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeSeq;
 use serde::Serialize;
 
-use super::{compute_id, Collection};
+use super::{compute_id, Collection, CrdtType};
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -23,9 +23,31 @@ impl<V> UnorderedSet<V, MainStorage>
 where
     V: BorshSerialize + BorshDeserialize,
 {
-    /// Create a new set collection.
+    /// Create a new set collection with a random ID.
+    ///
+    /// Use this for nested collections stored as values in other maps.
+    /// Merge happens by the parent map's key, so the nested collection's ID
+    /// doesn't affect sync semantics.
+    ///
+    /// For top-level state fields, use `new_with_field_name` instead.
     pub fn new() -> Self {
         Self::new_internal()
+    }
+
+    /// Create a new set collection with a deterministic ID.
+    ///
+    /// The `field_name` is used to generate a deterministic collection ID,
+    /// ensuring the same code produces the same ID across all nodes.
+    ///
+    /// Use this for top-level state fields (the `#[app::state]` macro does this
+    /// automatically).
+    ///
+    /// # Example
+    /// ```ignore
+    /// let tags = UnorderedSet::<String>::new_with_field_name("tags");
+    /// ```
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        Self::new_with_field_name_internal(None, field_name)
     }
 }
 
@@ -38,6 +60,66 @@ where
     fn new_internal() -> Self {
         Self {
             inner: Collection::new(None),
+        }
+    }
+
+    /// Create a new set collection with deterministic ID (internal)
+    pub(super) fn new_with_field_name_internal(
+        parent_id: Option<crate::address::Id>,
+        field_name: &str,
+    ) -> Self {
+        Self {
+            inner: Collection::new_with_field_name_and_crdt_type(
+                parent_id,
+                field_name,
+                CrdtType::UnorderedSet,
+            ),
+        }
+    }
+
+    /// Reassigns the set's ID to a deterministic ID based on field name.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all top-level collections have deterministic IDs regardless of how they were
+    /// created in `init()`.
+    ///
+    /// This method also migrates all existing elements to use the new parent ID,
+    /// ensuring that elements inserted during `init()` remain accessible.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this set
+    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
+    pub fn reassign_deterministic_id(&mut self, field_name: &str)
+    where
+        V: AsRef<[u8]> + PartialEq,
+    {
+        use super::compute_collection_id;
+
+        let new_id = compute_collection_id(None, field_name);
+        let old_id = self.inner.id();
+
+        // If already has the correct ID, nothing to do
+        if old_id == new_id {
+            return;
+        }
+
+        // Collect all elements before migration (must do this before clearing)
+        let elements: Vec<V> = self
+            .iter()
+            .expect("failed to read elements for migration")
+            .collect();
+
+        // Clear the collection (removes old entries with old IDs)
+        self.inner.clear().expect("failed to clear for migration");
+
+        // Now reassign the collection's ID
+        self.inner
+            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::UnorderedSet);
+
+        // Re-insert all elements (they will get new IDs based on new parent ID)
+        for value in elements {
+            self.insert(value)
+                .expect("failed to re-insert element during migration");
         }
     }
 

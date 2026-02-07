@@ -172,26 +172,23 @@ export class ApiService {
                         throw new Error(`Failed to read state schema file: ${err.message}. The file may have already been consumed.`);
                     }
                 } else {
-                    console.error('[ApiService.loadContextTree] ERROR: No state schema file or cached content available!');
-                    console.error('[ApiService.loadContextTree] State:', {
-                        currentStateSchemaFile: window.app?.state?.currentStateSchemaFile?.name || 'null',
-                        hasCachedContent: !!window.app?.state?.currentStateSchemaFileContent,
-                        hasLocalStorageContent: !!localStorage.getItem('merodb_schema_content'),
-                        stateSchemaFileProvided: !!stateSchemaFile
-                    });
-                    throw new Error('State schema file is required for state tree extraction');
+                    // Schema is optional - backend will infer it if not provided
+                    console.log('[ApiService.loadContextTree] No state schema file - backend will infer schema from database');
+                    text = null; // Don't send schema file
                 }
             } catch (err) {
-                if (err.message.includes('State schema file is required')) {
-                    throw err;
-                }
-                console.error('[ApiService.loadContextTree] Error accessing local storage:', err);
-                throw new Error('State schema file is required for state tree extraction');
+                // Schema is optional - backend will infer it if not provided
+                console.log('[ApiService.loadContextTree] No state schema file - backend will infer schema from database');
+                text = null; // Don't send schema file
             }
         }
         
-        console.log('[ApiService.loadContextTree] Appending state_schema_file to formData, length:', text.length);
-        formData.append('state_schema_file', text);
+        if (text) {
+            console.log('[ApiService.loadContextTree] Appending state_schema_file to formData, length:', text.length);
+            formData.append('state_schema_file', text);
+        } else {
+            console.log('[ApiService.loadContextTree] No schema file - will use schema inference');
+        }
 
         const response = await fetch('/api/context-tree', {
             method: 'POST',
