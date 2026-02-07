@@ -24,6 +24,7 @@ mod returns;
 pub mod state;
 pub mod types;
 pub use calimero_primitives::identity::PublicKey;
+pub use state::read_raw;
 
 pub mod app {
     use super::types::Error;
@@ -31,7 +32,7 @@ pub mod app {
     pub type Result<T, E = Error> = core::result::Result<T, E>;
 
     pub use calimero_sdk_macros::{
-        bail, destroy, emit, err, event, init, log, logic, private, state,
+        bail, destroy, emit, err, event, init, log, logic, migrate, private, state,
     };
 }
 

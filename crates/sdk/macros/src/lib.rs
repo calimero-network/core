@@ -46,6 +46,7 @@ mod event;
 mod items;
 mod logic;
 mod macros;
+mod migration;
 mod private;
 mod reserved;
 mod sanitizer;
@@ -182,6 +183,27 @@ pub fn init(_args: TokenStream, input: TokenStream) -> TokenStream {
 pub fn destroy(_args: TokenStream, input: TokenStream) -> TokenStream {
     // this is a no-op, the attribute is just a marker
     input
+}
+
+/// Transforms a migration function into a WASM-compatible export.
+///
+/// This macro is used to define state migration functions that are called during
+/// application upgrades. The migration function should read the old state using
+/// `calimero_sdk::read_raw()`, transform it to the new schema, and return the new state.
+///
+/// # Usage
+///
+/// Apply the `#[app::migrate]` attribute to a function that performs state migration.
+///
+/// # Features
+///
+/// - **WASM Export**: Generates a `#[no_mangle] pub extern "C"` function for the runtime
+/// - **Panic Hook**: Sets up proper panic handling with location information
+/// - **Serialization**: Automatically serializes the returned state with borsh
+/// - **Testing Support**: Preserves the original function signature for non-WASM testing
+#[proc_macro_attribute]
+pub fn migrate(args: TokenStream, input: TokenStream) -> TokenStream {
+    migration::migrate_impl(args.into(), input.into()).into()
 }
 
 /// Defines application events for external communication.

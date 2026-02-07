@@ -561,11 +561,15 @@ impl JoinContextResponse {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateContextApplicationRequest {
     pub application_id: ApplicationId,
     pub executor_public_key: PublicKey,
+    /// Optional migration function name to execute during the update.
+    /// The function must be decorated with `#[app::migrate]` in the new application.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub migrate_method: Option<String>,
 }
 
 impl UpdateContextApplicationRequest {
@@ -573,6 +577,19 @@ impl UpdateContextApplicationRequest {
         Self {
             application_id,
             executor_public_key,
+            migrate_method: None,
+        }
+    }
+
+    pub fn with_migration(
+        application_id: ApplicationId,
+        executor_public_key: PublicKey,
+        migrate_method: String,
+    ) -> Self {
+        Self {
+            application_id,
+            executor_public_key,
+            migrate_method: Some(migrate_method),
         }
     }
 }
@@ -1472,8 +1489,8 @@ use crate::validation::{
         validate_url,
     },
     Validate, ValidationError, MAX_CONTEXT_KEY_LENGTH, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE,
-    MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH, MAX_PROTOCOL_LENGTH,
-    MAX_QUOTE_B64_LENGTH, MAX_VALID_FOR_BLOCKS, MAX_VERSION_LENGTH,
+    MAX_METHOD_NAME_LENGTH, MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH,
+    MAX_PROTOCOL_LENGTH, MAX_QUOTE_B64_LENGTH, MAX_VALID_FOR_BLOCKS, MAX_VERSION_LENGTH,
 };
 
 impl Validate for InstallApplicationRequest {
@@ -1608,8 +1625,24 @@ impl Validate for JoinContextByOpenInvitationRequest {
 
 impl Validate for UpdateContextApplicationRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed (ApplicationId, PublicKey) which have their own validation
-        Vec::new()
+        let mut errors = Vec::new();
+
+        // Validate migrate_method if provided
+        if let Some(ref method) = self.migrate_method {
+            if let Some(e) =
+                validate_string_length(method, "migrate_method", MAX_METHOD_NAME_LENGTH)
+            {
+                errors.push(e);
+            }
+
+            if method.is_empty() {
+                errors.push(ValidationError::EmptyField {
+                    field: "migrate_method",
+                });
+            }
+        }
+
+        errors
     }
 }
 

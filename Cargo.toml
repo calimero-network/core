@@ -17,6 +17,7 @@ exclude = [
     "./apps/blobs",
     "./apps/collaborative-editor",
     "./apps/kv-store",
+    "./apps/kv-store-v2",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",
@@ -75,6 +76,7 @@ members = [
 
     "./apps/access-control",
     "./apps/kv-store",
+    "./apps/kv-store-v2",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",
@@ -231,6 +233,7 @@ calimero-network = { path = "./crates/network" }
 calimero-network-primitives = { path = "./crates/network/primitives" }
 calimero-node = { path = "./crates/node" }
 calimero-node-primitives = { path = "./crates/node/primitives" }
+calimero-prelude = { path = "./crates/prelude" }
 calimero-primitives = { path = "./crates/primitives" }
 calimero-runtime = { path = "./crates/runtime" }
 calimero-sdk = { path = "./crates/sdk" }

@@ -2037,6 +2037,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-context-primitives",
  "calimero-node-primitives",
+ "calimero-prelude",
  "calimero-primitives",
  "calimero-runtime",
  "calimero-storage",
@@ -2285,7 +2286,9 @@ name = "calimero-prelude"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-primitives",
  "serde",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -2345,12 +2348,14 @@ version = "0.0.0"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
+ "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk-macros",
  "calimero-sys",
  "calimero-wasm-abi",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "trybuild",
 ]
 
@@ -2440,6 +2445,7 @@ name = "calimero-storage"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk",
  "calimero-storage-macros",
@@ -5690,6 +5696,17 @@ dependencies = [
 
 [[package]]
 name = "kv-store-init"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "kv-store-v2"
 version = "0.0.0"
 dependencies = [
  "calimero-sdk",
