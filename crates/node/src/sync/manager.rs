@@ -1403,11 +1403,15 @@ impl SyncManager {
         self.node_state
             .start_sync_session(context_id, sync_start_hlc);
 
-        let result = self.request_snapshot_sync(context_id, peer_id).await?;
-        info!(%context_id, records = result.applied_records, "Snapshot sync completed");
+        let sync_result = self.request_snapshot_sync(context_id, peer_id).await;
 
         // End buffering and get any deltas that arrived during sync
+        // This must happen regardless of whether sync succeeded to avoid losing buffered deltas
         let buffered_deltas = self.node_state.end_sync_session(&context_id);
+
+        // Now propagate any error from the sync
+        let result = sync_result?;
+        info!(%context_id, records = result.applied_records, "Snapshot sync completed");
         let buffered_count = buffered_deltas.as_ref().map_or(0, Vec::len);
 
         if buffered_count > 0 {
@@ -1474,17 +1478,6 @@ impl SyncManager {
                 )
             })
             .clone();
-
-        // Build parent -> children map from buffered deltas
-        let mut parent_to_children: HashMap<[u8; 32], Vec<[u8; 32]>> = HashMap::new();
-        for buffered in &deltas {
-            for parent in &buffered.parents {
-                parent_to_children
-                    .entry(*parent)
-                    .or_default()
-                    .push(buffered.id);
-            }
-        }
 
         // Identify which buffered deltas match existing checkpoints
         let mut checkpoint_matches: Vec<[u8; 32]> = Vec::new();
