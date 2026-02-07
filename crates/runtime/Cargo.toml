@@ -25,8 +25,9 @@ tokio-stream.workspace = true
 tracing.workspace = true
 ureq.workspace = true
 wasmer.workspace = true
+wasmer-compiler-cranelift.workspace = true
+wasmer-middlewares.workspace = true
 wasmer-types.workspace = true
-wasmer-compiler-cranelift = { workspace = true, optional = true }
 
 calimero-primitives.workspace = true
 calimero-node-primitives.workspace = true
@@ -46,4 +47,8 @@ wat.workspace = true
 
 [features]
 host-traces = ["owo-colors"]
-profiling = ["wasmer-compiler-cranelift"]
+# Enables PerfMap profiling support for WASM stack traces.
+# When enabled, set ENABLE_WASMER_PROFILING=true at runtime to generate perf.map files.
+# Note: This feature only controls the runtime env var check behavior - it does NOT
+# gate the Cranelift compiler dependency, which is always included for operation limit metering.
+profiling = []
