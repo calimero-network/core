@@ -439,32 +439,29 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 );
                                 None
                             } else {
-                                // Clear handler field for events whose handlers were already executed locally.
-                                // This prevents receivers from re-executing handlers that the sender
-                                // already executed, avoiding duplicate state changes.
-                                let events_vec: Vec<ExecutionEvent> = outcome
-                                    .events
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(idx, e)| ExecutionEvent {
-                                        kind: e.kind.clone(),
-                                        data: e.data.clone(),
-                                        // If handler was executed locally, clear it from broadcast
-                                        handler: if executed_handler_indices.contains(&idx) {
-                                            None
-                                        } else {
-                                            e.handler.clone()
-                                        },
-                                    })
-                                    .collect();
+                            // Keep handler fields intact in broadcast events.
+                            // Handler execution is deferred and spawned asynchronously after this
+                            // broadcast, so we cannot guarantee the sender will successfully execute
+                            // the handlers. By keeping handlers in the broadcast, receivers can
+                            // execute them as a fallback if needed. CRDT merge semantics handle
+                            // any duplicate state changes from multiple nodes executing the same handler.
+                            let events_vec: Vec<ExecutionEvent> = outcome
+                                .events
+                                .iter()
+                                .map(|e| ExecutionEvent {
+                                    kind: e.kind.clone(),
+                                    data: e.data.clone(),
+                                    handler: e.handler.clone(),
+                                })
+                                .collect();
                                 let serialized = serde_json::to_vec(&events_vec)?;
                                 info!(
                                     %context_id,
                                     %executor,
                                     events_count = events_vec.len(),
-                                    handlers_executed_locally = executed_handler_indices.len(),
+                                    handlers_to_execute_locally = executed_handler_indices.len(),
                                     serialized_len = serialized.len(),
-                                    "Serializing events for broadcast (handlers cleared for executed events)"
+                                    "Serializing events for broadcast (handlers preserved for resilience)"
                                 );
                                 Some(serialized)
                             };

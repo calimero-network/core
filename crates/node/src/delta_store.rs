@@ -9,7 +9,7 @@
 //! This ensures that all nodes converge to the same state regardless of the
 //! order in which they receive concurrent deltas.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -47,25 +47,13 @@ pub struct MissingParentsResult {
 
 /// Applier that applies actions to WASM storage via ContextClient
 ///
-/// Supports two application modes:
-/// 1. **Sequential**: When delta's parent matches our current state - verify hash
-/// 2. **Merge**: When concurrent branches detected - CRDT merge, skip hash check
+/// Uses conservative CRDT merge semantics for all non-genesis deltas to ensure
+/// eventual consistency in distributed scenarios.
 #[derive(Debug)]
 struct ContextStorageApplier {
     context_client: ContextClient,
     context_id: ContextId,
     our_identity: PublicKey,
-    /// Maps delta_id -> actual_computed_root_hash for parent state tracking
-    /// Used to detect concurrent branches (merge scenarios)
-    /// CRITICAL: This stores the ACTUAL computed hash, NOT expected_root_hash!
-    parent_hashes: Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>,
-    /// Set of delta IDs that were applied as merges on our node.
-    /// Any child of a merged delta must also be treated as a potential merge,
-    /// because the computed hash on our node differs from what the author computed.
-    /// This prevents the case where Node-A applies delta X as merge → hash H1,
-    /// while Node-B applies X sequentially → hash H2. When Node-B's child delta
-    /// arrives, we must recognize that our parent hash differs from the author's.
-    merged_deltas: Arc<RwLock<HashSet<[u8; 32]>>>,
 }
 
 #[async_trait::async_trait]
@@ -189,61 +177,6 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             }
         }
 
-        // Store the ACTUAL computed hash after applying this delta for future merge detection
-        // This is what OUR state actually is, not what the remote expected.
-        // Child deltas will check if our current state matches the parent's result.
-        //
-        // CRITICAL: We must store the computed hash, NOT delta.expected_root_hash!
-        // In merge scenarios, computed_hash differs from expected_root_hash.
-        // If we stored expected_root_hash, sequential child deltas would incorrectly
-        // appear to be merge scenarios because our state wouldn't match.
-        {
-            let mut hashes = self.parent_hashes.write().await;
-            hashes.insert(delta.id, *computed_hash);
-
-            // CLEANUP: Prevent unbounded memory growth
-            // Keep only the most recent entries. Old delta hashes are rarely needed
-            // since merge detection mainly looks at recent parent-child relationships.
-            // 10,000 entries = ~640KB (64 bytes per entry), sufficient for most scenarios.
-            const MAX_PARENT_HASH_ENTRIES: usize = 10_000;
-            if hashes.len() > MAX_PARENT_HASH_ENTRIES {
-                // Remove ~10% of oldest entries when threshold exceeded
-                // Since HashMap doesn't track insertion order, we do a simple drain
-                // This is rare (only when threshold exceeded) so perf impact is minimal
-                let excess = hashes.len() - (MAX_PARENT_HASH_ENTRIES * 9 / 10);
-                let keys_to_remove: Vec<_> = hashes.keys().take(excess).copied().collect();
-                for key in keys_to_remove {
-                    hashes.remove(&key);
-                }
-                debug!(
-                    context_id = %self.context_id,
-                    removed = excess,
-                    remaining = hashes.len(),
-                    "Pruned parent_hashes cache to prevent memory growth"
-                );
-            }
-        }
-
-        // Track if this delta was applied as a merge
-        // Child deltas of merged deltas need special handling because:
-        // - Our computed hash differs from what the delta author computed
-        // - Child deltas from other nodes are based on THEIR computed hash, not ours
-        // - So children of merged deltas should also be treated as merges
-        if is_merge_scenario || *computed_hash != delta.expected_root_hash {
-            let mut merged = self.merged_deltas.write().await;
-            merged.insert(delta.id);
-
-            // CLEANUP: Same strategy as parent_hashes
-            const MAX_MERGED_ENTRIES: usize = 10_000;
-            if merged.len() > MAX_MERGED_ENTRIES {
-                let excess = merged.len() - (MAX_MERGED_ENTRIES * 9 / 10);
-                let keys_to_remove: Vec<_> = merged.iter().take(excess).copied().collect();
-                for key in keys_to_remove {
-                    merged.remove(&key);
-                }
-            }
-        }
-
         let total_elapsed_ms = apply_start.elapsed().as_secs_f64() * 1000.0;
 
         // Log with unique marker for parsing: DELTA_APPLY_TIMING
@@ -265,153 +198,47 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
 impl ContextStorageApplier {
     /// Determine if this delta application is a merge scenario.
     ///
-    /// A merge is needed when:
-    /// 1. The delta has a non-genesis parent, AND
-    /// 2. Our current state has diverged from that parent's expected state
+    /// In a distributed CRDT system, we cannot reliably detect whether a delta
+    /// was created on the same state we have. Remote nodes may have applied
+    /// parent deltas as merges (producing different hashes than us), then
+    /// created child deltas based on THEIR computed state.
     ///
-    /// This happens when concurrent deltas were applied before this one.
+    /// Therefore, we use CONSERVATIVE merge semantics for all non-genesis deltas.
+    /// CRDT merge is idempotent - if states were identical, merge produces the
+    /// same result. If not, we merge correctly and ensure eventual consistency.
     ///
-    /// Detection strategies (in order):
-    /// 1. If parent hash is tracked, compare directly
-    /// 2. If the delta expects a different state than we have, it's a merge
-    /// 3. If parent is unknown and we're not at genesis, assume merge (conservative)
+    /// The only exception is genesis deltas (parent is zero hash) when we have
+    /// no existing state - these can be applied sequentially.
     async fn is_merge_scenario(
         &self,
         delta: &CausalDelta<Vec<Action>>,
         current_root_hash: &[u8; 32],
     ) -> bool {
-        // Genesis parent means this is a first delta - no merge needed
+        // Genesis parent means this is a first delta
         let has_only_genesis_parent = delta.parents.iter().all(|p| *p == [0u8; 32]);
         if has_only_genesis_parent {
-            // But if we have state and delta expects genesis state, we've diverged
-            if *current_root_hash != [0u8; 32] {
-                debug!(
-                    context_id = %self.context_id,
-                    delta_id = ?delta.id,
-                    current_root_hash = ?Hash::from(*current_root_hash),
-                    "Delta from genesis but we have state - concurrent branch detected"
-                );
-                return true;
+            // If we have no state (also at genesis), no merge needed
+            if *current_root_hash == [0u8; 32] {
+                return false;
             }
-            return false;
+            // We have state but delta expects genesis - concurrent branch detected
+            debug!(
+                context_id = %self.context_id,
+                delta_id = ?delta.id,
+                current_root_hash = ?Hash::from(*current_root_hash),
+                "Delta from genesis but we have state - concurrent branch detected"
+            );
+            return true;
         }
 
-        // Check if any parent was applied as a merge on our node
-        // If so, child deltas from other nodes are based on THEIR computed hash for that parent,
-        // which differs from ours. So we must treat this as a merge.
-        let merged = self.merged_deltas.read().await;
-        for parent_id in &delta.parents {
-            if *parent_id == [0u8; 32] {
-                continue; // Skip genesis
-            }
-
-            if merged.contains(parent_id) {
-                debug!(
-                    context_id = %self.context_id,
-                    delta_id = ?delta.id,
-                    parent_id = ?parent_id,
-                    current_root_hash = ?Hash::from(*current_root_hash),
-                    "Parent was previously merged - child inherits merge requirement"
-                );
-                return true;
-            }
-        }
-        drop(merged);
-
-        // Get the expected root hash of the delta's parent(s)
-        let hashes = self.parent_hashes.read().await;
-
-        for parent_id in &delta.parents {
-            if *parent_id == [0u8; 32] {
-                continue; // Skip genesis
-            }
-
-            if let Some(parent_computed_hash) = hashes.get(parent_id) {
-                // Parent's computed hash is what OUR state was AFTER applying that parent
-                // If our current state differs, we've diverged (either we merged, or have local changes)
-                if parent_computed_hash != current_root_hash {
-                    debug!(
-                        context_id = %self.context_id,
-                        delta_id = ?delta.id,
-                        parent_id = ?parent_id,
-                        parent_computed_hash = ?Hash::from(*parent_computed_hash),
-                        current_root_hash = ?Hash::from(*current_root_hash),
-                        "State diverged from parent's computed hash - treating as merge"
-                    );
-                    return true;
-                } else {
-                    // State matches, but we CANNOT know if the delta's author was working
-                    // on the same state we have. They might have applied the parent as a
-                    // CRDT merge (resulting in different state than us) and then created
-                    // this child delta based on THEIR computed state.
-                    //
-                    // Key insight: We created the parent locally with hash H1.
-                    // The remote node received our parent, applied it as merge → hash H2.
-                    // They created this child delta expecting H2 state.
-                    // We have H1 state. If we apply sequentially, we get WRONG result.
-                    //
-                    // Detection: Check if delta's expected_root_hash is "reasonable" given
-                    // our current state. If it's very different, the author was on different state.
-                    //
-                    // CONSERVATIVE APPROACH: Always treat remote deltas as potential merges
-                    // when they build on parents we created locally. The CRDT merge is
-                    // idempotent - if states were identical, merge produces same result.
-                    //
-                    // For now, check if delta.expected_root_hash matches what we'd expect.
-                    // If our current_root_hash is H1 and delta expects H3 (significantly different),
-                    // it's a merge scenario.
-
-                    // Since we can't pre-compute what hash we'd get, use the heuristic:
-                    // If we're not the same as the delta's parent according to head_root_hashes,
-                    // treat as merge.
-                    debug!(
-                        context_id = %self.context_id,
-                        delta_id = ?delta.id,
-                        parent_id = ?parent_id,
-                        parent_computed_hash = ?Hash::from(*parent_computed_hash),
-                        current_root_hash = ?Hash::from(*current_root_hash),
-                        "State matches parent's computed hash - checking if truly sequential"
-                    );
-
-                    // Additional check: was this parent created by us locally (not through
-                    // the normal add_delta flow)? If so, the parent might have been merged
-                    // by the remote node, meaning this child was created on different state.
-                    //
-                    // We detect locally-created parents by checking if they were added
-                    // through add_delta_internal (which sets a flag) vs loaded from storage.
-                    // For now, we use a simpler check: if parent is in head_root_hashes with
-                    // the same hash as parent_computed_hash, it was processed normally.
-                    // If not, it might have been created locally and needs merge treatment.
-                }
-            } else {
-                // Parent was created by another node - we don't have its hash tracked
-                // This is common when receiving deltas from other nodes.
-                // Conservative: treat as merge since we can't verify sequential application
-                debug!(
-                    context_id = %self.context_id,
-                    delta_id = ?delta.id,
-                    parent_id = ?parent_id,
-                    current_root_hash = ?Hash::from(*current_root_hash),
-                    "Unknown parent (not in our tracking) - treating as merge"
-                );
-                return true;
-            }
-        }
-
-        // CRITICAL FIX: Even if all parent checks passed, we STILL might need merge.
-        // The issue is: we don't know if the remote node applied our parent as a merge.
-        // Their child delta's actions are based on THEIR computed state, not ours.
-        //
-        // CONSERVATIVE FINAL CHECK: Always use merge semantics. CRDT merge is idempotent,
-        // so if states were identical, we get the same result. If not, we merge correctly.
-        //
-        // This is the safest approach and ensures eventual consistency.
+        // For all non-genesis deltas, use merge semantics conservatively.
+        // We cannot reliably determine if the remote node was on the same state.
         debug!(
             context_id = %self.context_id,
             delta_id = ?delta.id,
             current_root_hash = ?Hash::from(*current_root_hash),
             delta_expected_hash = ?Hash::from(delta.expected_root_hash),
-            "Using CRDT merge semantics for all remote deltas (conservative)"
+            "Using CRDT merge semantics for remote delta (conservative)"
         );
         true
     }
@@ -439,17 +266,10 @@ impl DeltaStore {
         context_id: ContextId,
         our_identity: PublicKey,
     ) -> Self {
-        // Shared parent hash tracking for merge detection
-        let parent_hashes = Arc::new(RwLock::new(HashMap::new()));
-        // Track deltas that were applied as merges (their children need merge too)
-        let merged_deltas = Arc::new(RwLock::new(HashSet::new()));
-
         let applier = Arc::new(ContextStorageApplier {
             context_client,
             context_id,
             our_identity,
-            parent_hashes: Arc::clone(&parent_hashes),
-            merged_deltas: Arc::clone(&merged_deltas),
         });
 
         Self {
@@ -518,19 +338,10 @@ impl DeltaStore {
                 },
             };
 
-            // Store root hash mapping for both head_root_hashes and parent_hashes
-            // Note: For persisted deltas that were already applied, we use expected_root_hash
-            // as the computed hash (they should be the same for non-merge deltas).
-            // For merge deltas, the actual computed hash may have differed, but we don't
-            // persist that - this is a minor approximation that works for most cases.
+            // Store root hash mapping for head_root_hashes
             {
                 let mut head_hashes = self.head_root_hashes.write().await;
                 let _ = head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
-            }
-            {
-                let mut parent_hashes = self.applier.parent_hashes.write().await;
-                let _ =
-                    parent_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
             }
 
             drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
@@ -963,7 +774,7 @@ impl DeltaStore {
         // Filter out parents that exist in the database
         let handle = self.applier.context_client.datastore_handle();
         let mut actually_missing = Vec::new();
-        let mut all_cascaded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+        let all_cascaded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
         for parent_id in &potentially_missing {
             let db_key =
@@ -1186,17 +997,11 @@ impl DeltaStore {
             }
         }
 
-        // Also track the expected root hash for merge detection
+        // Track the expected root hash for head selection
         if added_count > 0 {
             let mut head_hashes = self.head_root_hashes.write().await;
             for head_id in dag.get_heads().iter() {
                 let _previous = head_hashes.insert(*head_id, boundary_root_hash);
-            }
-
-            // Also update parent_hashes for merge detection
-            let mut parent_hashes = self.applier.parent_hashes.write().await;
-            for head_id in dag.get_heads().iter() {
-                let _previous = parent_hashes.insert(*head_id, boundary_root_hash);
             }
         }
 
