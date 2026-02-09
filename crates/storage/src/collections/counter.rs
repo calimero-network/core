@@ -145,6 +145,7 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> BorshDeserialize
                     match e.kind() {
                         ErrorKind::UnexpectedEof => {
                             // Stream ended - no negative field present
+                            // Use new_internal() because PNCounter needs a real negative map
                             UnorderedMap::new_internal()
                         }
                         ErrorKind::InvalidData if e.to_string().contains("Unexpected length") => {
@@ -164,7 +165,13 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> BorshDeserialize
             // If PNCounter data is deserialized as GCounter, Borsh will fail with
             // "Not all bytes read" or "Unexpected length of input", preventing silent data loss.
             // This is the desired behavior - users must use the correct type.
-            UnorderedMap::new_internal()
+            //
+            // CRITICAL: Use new_detached() instead of new_internal() to prevent creating
+            // a random child of ROOT_ID during deserialization. This was causing root hash
+            // divergence because each deserialization would create a new random child ID.
+            // The negative map for GCounter is never used, so it doesn't need to be
+            // registered with the storage system.
+            UnorderedMap::new_detached()
         };
 
         Ok(Counter { positive, negative })
@@ -214,7 +221,15 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
     pub(super) fn new_internal() -> Self {
         Self {
             positive: UnorderedMap::new_internal(),
-            negative: UnorderedMap::new_internal(),
+            // GCounter (ALLOW_DECREMENT = false): negative map is never used,
+            // so use detached to avoid adding a useless child to ROOT_ID.
+            // PNCounter (ALLOW_DECREMENT = true): negative map is actually used,
+            // so it needs to be properly registered with storage.
+            negative: if ALLOW_DECREMENT {
+                UnorderedMap::new_internal()
+            } else {
+                UnorderedMap::new_detached()
+            },
         }
     }
 
@@ -237,10 +252,16 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
                 &format!("__counter_internal_{field_name}_positive"),
                 CrdtType::Counter,
             ),
-            negative: UnorderedMap::new_with_field_name_internal(
-                parent_id,
-                &format!("__counter_internal_{field_name}_negative"),
-            ),
+            // GCounter: negative map is never used, so use detached
+            // PNCounter: negative map is used, so register it properly
+            negative: if ALLOW_DECREMENT {
+                UnorderedMap::new_with_field_name_internal(
+                    parent_id,
+                    &format!("__counter_internal_{field_name}_negative"),
+                )
+            } else {
+                UnorderedMap::new_detached()
+            },
         }
     }
 
@@ -256,15 +277,18 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this counter
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {
-        // Counter has two internal maps - both need deterministic IDs and entry migration.
-        // We use the UnorderedMap's reassign which handles entry migration.
+        // Positive map: always needs deterministic ID and entry migration
         self.positive
             .reassign_deterministic_id(&format!("__counter_internal_{field_name}_positive"));
         // Update CRDT type after reassignment
         self.positive.inner.storage.metadata.crdt_type = Some(CrdtType::Counter);
 
-        self.negative
-            .reassign_deterministic_id(&format!("__counter_internal_{field_name}_negative"));
+        // Negative map: only for PNCounter (ALLOW_DECREMENT = true)
+        // GCounter's negative map is detached and never used, so skip it
+        if ALLOW_DECREMENT {
+            self.negative
+                .reassign_deterministic_id(&format!("__counter_internal_{field_name}_negative"));
+        }
     }
 
     /// Increment the counter for the current executor
@@ -831,7 +855,7 @@ mod tests {
     fn test_deterministic_counter_ids() {
         crate::env::reset_for_testing();
 
-        // Create two counters with the same field name - they should have the same IDs
+        // Create two counters with the same field name - they should have the same positive map IDs
         let counter1 = GCounter::new_with_field_name("visit_count");
         let counter2 = GCounter::new_with_field_name("visit_count");
 
@@ -840,18 +864,38 @@ mod tests {
             <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter2.positive),
             "Counters with same field name should have same positive map ID"
         );
-        assert_eq!(
-            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.negative),
-            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter2.negative),
-            "Counters with same field name should have same negative map ID"
-        );
 
-        // Different field names should produce different IDs
+        // Note: GCounter's negative map uses new_detached() and has random IDs.
+        // This is intentional - the negative map is never used for GCounter, so its ID
+        // doesn't matter. Using detached prevents adding useless children to ROOT_ID.
+        // Only PNCounter needs deterministic negative map IDs.
+
+        // Different field names should produce different positive map IDs
         let counter3 = GCounter::new_with_field_name("click_count");
         assert_ne!(
             <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.positive),
             <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter3.positive),
             "Counters with different field names should have different IDs"
+        );
+    }
+
+    #[test]
+    fn test_pncounter_deterministic_ids() {
+        crate::env::reset_for_testing();
+
+        // For PNCounter, BOTH positive and negative maps should have deterministic IDs
+        let counter1 = PNCounter::new_with_field_name("balance");
+        let counter2 = PNCounter::new_with_field_name("balance");
+
+        assert_eq!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.positive),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter2.positive),
+            "PNCounters with same field name should have same positive map ID"
+        );
+        assert_eq!(
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter1.negative),
+            <UnorderedMap<String, u64> as crate::entities::Data>::id(&counter2.negative),
+            "PNCounters with same field name should have same negative map ID"
         );
     }
 

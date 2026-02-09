@@ -70,6 +70,20 @@ where
         }
     }
 
+    /// Creates a detached map that is NOT registered with the storage system.
+    ///
+    /// This is used for placeholder fields that are never actually used, such as
+    /// GCounter's negative map which exists only to satisfy the type signature but
+    /// is never persisted or read from storage.
+    ///
+    /// WARNING: Maps created with this method will NOT be synced across nodes.
+    /// Only use this for truly inert placeholder fields.
+    pub(super) fn new_detached() -> Self {
+        Self {
+            inner: Collection::new_detached(),
+        }
+    }
+
     /// Create a new map collection with deterministic ID (internal)
     pub(super) fn new_with_field_name_internal(
         parent_id: Option<crate::address::Id>,
