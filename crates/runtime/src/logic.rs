@@ -217,6 +217,8 @@ impl Default for VMLimits {
 pub struct VMLogic<'a> {
     /// A mutable reference to the storage.
     storage: &'a mut dyn Storage,
+    /// A mutable reference to the private (node-local) storage, NOT synchronized.
+    private_storage: Option<&'a mut dyn Storage>,
     /// The Wasmer memory instance associated with the guest module.
     memory: Option<wasmer::Memory>,
     /// The execution context for the current call.
@@ -265,11 +267,13 @@ impl<'a> VMLogic<'a> {
     /// # Arguments
     ///
     /// * `storage` - A mutable reference to the storage implementation.
+    /// * `private_storage` - Optional mutable reference to node-local private storage (NOT synchronized).
     /// * `context` - The execution context for the VM.
     /// * `limits` - The VM resource limits to enforce.
     /// * `node_client` - An optional client for blob storage operations.
     pub fn new(
         storage: &'a mut dyn Storage,
+        private_storage: Option<&'a mut dyn Storage>,
         context: VMContext<'a>,
         limits: &'a VMLimits,
         node_client: Option<NodeClient>,
@@ -280,10 +284,12 @@ impl<'a> VMLogic<'a> {
             context = ?context,
             limits = ?limits,
             has_node_client = node_client.is_some(),
+            has_private_storage = private_storage.is_some(),
             "VMLogic::new"
         );
         VMLogic {
             storage,
+            private_storage,
             memory: None,
             context,
             limits,
@@ -725,7 +731,8 @@ mod tests {
             let mut store = Store::default();
             let memory =
                 wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
-            let mut logic = VMLogic::new($storage, context, $limits, None, None);
+            // Pass None for private_storage in tests
+            let mut logic = VMLogic::new($storage, None, context, $limits, None, None);
             let _ = logic.with_memory(memory);
             (logic, store)
         }};
@@ -876,7 +883,7 @@ mod tests {
         let context = VMContext::new(Cow::Owned(vec![]), [0u8; DIGEST_SIZE], [0u8; DIGEST_SIZE]);
 
         // Create VMLogic without attaching memory
-        let logic = VMLogic::new(&mut storage, context, &limits, None, None);
+        let logic = VMLogic::new(&mut storage, None, context, &limits, None, None);
 
         // Verify no memory is attached
         assert!(logic.memory.is_none(), "Memory should not be attached");

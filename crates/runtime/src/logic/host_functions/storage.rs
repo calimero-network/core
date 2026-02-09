@@ -227,6 +227,227 @@ impl VMHostFunctions<'_> {
 
         Ok(0)
     }
+
+    // ==================== Private Storage Functions ====================
+    // These operate on node-local storage that is NOT synchronized.
+
+    /// Reads a value from private (node-local) storage.
+    ///
+    /// Private storage is NOT synchronized across nodes - it remains local to this node only.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_key_ptr` - A pointer to the key source-buffer in guest memory.
+    /// * `dest_register_id` - The ID of the destination register in host memory.
+    ///
+    /// # Returns
+    ///
+    /// * Returns `1` if the key was found and the value was recorded into the register.
+    /// * Returns `0` if the key was not found or private storage is not available.
+    pub fn private_storage_read(
+        &mut self,
+        src_key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<u32> {
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
+
+        let logic = self.borrow_logic();
+
+        if key.len() > logic.limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
+
+        trace!(
+            target: "runtime::host::private_storage",
+            op = "read",
+            key_len = key.len(),
+            dest_register_id,
+            "private_storage_read"
+        );
+
+        // Access private storage
+        let logic = self.borrow_logic();
+        let Some(ref private_storage) = logic.private_storage else {
+            debug!(
+                target: "runtime::host::private_storage",
+                "private_storage_read: no private storage available"
+            );
+            return Ok(0);
+        };
+
+        if let Some(value) = private_storage.get(&key) {
+            let value_len = value.len();
+            self.with_logic_mut(|logic| {
+                logic.registers.set(logic.limits, dest_register_id, value)
+            })?;
+
+            debug!(
+                target: "runtime::host::private_storage",
+                op = "read",
+                key_len = key.len(),
+                value_len,
+                dest_register_id,
+                "private_storage_read hit"
+            );
+
+            return Ok(1);
+        }
+
+        debug!(
+            target: "runtime::host::private_storage",
+            op = "read",
+            key_len = key.len(),
+            dest_register_id,
+            "private_storage_read miss"
+        );
+
+        Ok(0)
+    }
+
+    /// Removes a key-value pair from private (node-local) storage.
+    ///
+    /// Private storage is NOT synchronized across nodes - it remains local to this node only.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_key_ptr` - A pointer to the key source-buffer in guest memory.
+    /// * `dest_register_id` - The ID of the destination register in host memory.
+    ///
+    /// # Returns
+    ///
+    /// * Returns `1` if the key was found and removed.
+    /// * Returns `0` if the key was not found or private storage is not available.
+    pub fn private_storage_remove(
+        &mut self,
+        src_key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<u32> {
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
+
+        let logic = self.borrow_logic();
+
+        if key.len() > logic.limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
+
+        trace!(
+            target: "runtime::host::private_storage",
+            op = "remove",
+            key_len = key.len(),
+            dest_register_id,
+            "private_storage_remove"
+        );
+
+        // Access private storage
+        let value = self.with_logic_mut(|logic| {
+            let Some(ref mut private_storage) = logic.private_storage else {
+                return None;
+            };
+            private_storage.remove(&key)
+        });
+
+        if let Some(value) = value {
+            let value_len = value.len();
+            self.with_logic_mut(|logic| {
+                logic.registers.set(logic.limits, dest_register_id, value)
+            })?;
+
+            debug!(
+                target: "runtime::host::private_storage",
+                op = "remove",
+                key_len = key.len(),
+                removed_value_len = value_len,
+                dest_register_id,
+                "private_storage_remove removed"
+            );
+
+            return Ok(1);
+        }
+
+        debug!(
+            target: "runtime::host::private_storage",
+            op = "remove",
+            key_len = key.len(),
+            dest_register_id,
+            "private_storage_remove miss"
+        );
+
+        Ok(0)
+    }
+
+    /// Writes a key-value pair to private (node-local) storage.
+    ///
+    /// Private storage is NOT synchronized across nodes - it remains local to this node only.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_key_ptr` - A pointer to the key source-buffer in guest memory.
+    /// * `src_value_ptr` - A pointer to the value source-buffer in guest memory.
+    ///
+    /// # Returns
+    ///
+    /// * Returns `1` if the write was successful.
+    /// * Returns `0` if private storage is not available.
+    pub fn private_storage_write(
+        &mut self,
+        src_key_ptr: u64,
+        src_value_ptr: u64,
+    ) -> VMLogicResult<u32> {
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
+        let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_value_ptr)? };
+
+        let logic = self.borrow_logic();
+
+        if key.len() > logic.limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+
+        if value.len() > logic.limits.max_storage_value_size.get() {
+            return Err(HostError::ValueLengthOverflow.into());
+        }
+
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
+        let value = self.read_guest_memory_slice(&value)?.to_vec();
+        let key_len = key.len();
+        let value_len = value.len();
+
+        trace!(
+            target: "runtime::host::private_storage",
+            op = "write",
+            key_len,
+            value_len,
+            "private_storage_write"
+        );
+
+        let written = self.with_logic_mut(|logic| {
+            let Some(ref mut private_storage) = logic.private_storage else {
+                return false;
+            };
+            let _evicted = private_storage.set(key, value);
+            true
+        });
+
+        if written {
+            debug!(
+                target: "runtime::host::private_storage",
+                op = "write",
+                key_len,
+                value_len,
+                "private_storage_write success"
+            );
+            return Ok(1);
+        }
+
+        debug!(
+            target: "runtime::host::private_storage",
+            "private_storage_write: no private storage available"
+        );
+
+        Ok(0)
+    }
 }
 
 #[cfg(test)]

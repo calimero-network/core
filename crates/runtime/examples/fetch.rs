@@ -42,6 +42,7 @@ fn main() -> EyreResult<()> {
         "view_account",
         &input,
         &mut storage,
+        None, // No private storage for example
         None,
         None,
     )?;

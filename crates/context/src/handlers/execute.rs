@@ -45,7 +45,7 @@ use crate::ContextManager;
 
 pub mod storage;
 
-use storage::ContextStorage;
+use storage::{ContextPrivateStorage, ContextStorage};
 
 impl Handler<ExecuteRequest> for ContextManager {
     type Result = ActorResponse<Self, <ExecuteRequest as Message>::Result>;
@@ -306,20 +306,34 @@ impl Handler<ExecuteRequest> for ContextManager {
                         "Execution outcome details"
                     );
 
-                    // Log events with handlers for debugging
-                    // NOTE: Handlers are NEVER executed on the node that produces the events/diffs.
-                    // Handlers are only executed on receiving nodes during network sync to avoid
-                    // infinite loops and ensure proper distributed execution.
-                    for event in &outcome.events {
-                        if let Some(handler_name) = &event.handler {
-                            info!(
-                                %context_id,
-                                event_kind = %event.kind,
-                                handler_name = %handler_name,
-                                "Event emitted with handler (will be executed on receiving nodes)"
-                            );
-                        }
-                    }
+                    // Collect events that have handlers for deferred execution.
+                    // NOTE: We cannot execute handlers synchronously here because it would cause
+                    // an actor deadlock - the ContextManager actor is busy processing this request
+                    // and can't process another ExecuteRequest until this one completes.
+                    //
+                    // Instead, we spawn handler executions as separate async tasks that will run
+                    // after this response is sent. This means handlers execute asynchronously
+                    // and their results are broadcast separately.
+                    let events_with_handlers: Vec<_> = outcome
+                        .events
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, event)| {
+                            event.handler.as_ref().map(|handler_name| {
+                                info!(
+                                    %context_id,
+                                    event_kind = %event.kind,
+                                    handler_name = %handler_name,
+                                    "Event with handler will be executed after response"
+                                );
+                                (idx, handler_name.clone(), event.data.clone())
+                            })
+                        })
+                        .collect();
+
+                    // Track indices of events whose handlers will be executed locally
+                    let executed_handler_indices: std::collections::HashSet<usize> =
+                        events_with_handlers.iter().map(|(idx, _, _)| *idx).collect();
 
                     // Process cross-context calls
                     // NOTE: XCalls are executed locally on the current node after the main execution completes.
@@ -425,13 +439,22 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 );
                                 None
                             } else {
+                                // Clear handler field for events whose handlers were already executed locally.
+                                // This prevents receivers from re-executing handlers that the sender
+                                // already executed, avoiding duplicate state changes.
                                 let events_vec: Vec<ExecutionEvent> = outcome
                                     .events
                                     .iter()
-                                    .map(|e| ExecutionEvent {
+                                    .enumerate()
+                                    .map(|(idx, e)| ExecutionEvent {
                                         kind: e.kind.clone(),
                                         data: e.data.clone(),
-                                        handler: e.handler.clone(),
+                                        // If handler was executed locally, clear it from broadcast
+                                        handler: if executed_handler_indices.contains(&idx) {
+                                            None
+                                        } else {
+                                            e.handler.clone()
+                                        },
                                     })
                                     .collect();
                                 let serialized = serde_json::to_vec(&events_vec)?;
@@ -439,8 +462,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     %context_id,
                                     %executor,
                                     events_count = events_vec.len(),
+                                    handlers_executed_locally = executed_handler_indices.len(),
                                     serialized_len = serialized.len(),
-                                    "Serializing events for broadcast"
+                                    "Serializing events for broadcast (handlers cleared for executed events)"
                                 );
                                 Some(serialized)
                             };
@@ -482,6 +506,54 @@ impl Handler<ExecuteRequest> for ContextManager {
                     }
 
                     process_context_mutations(&context_client, &node_client, context_id, executor, &outcome.context_mutations).await;
+
+                    // Spawn handler executions as separate tasks.
+                    // This runs after the current response is sent, avoiding actor deadlock.
+                    // Each handler execution creates its own delta that gets broadcast separately.
+                    if !events_with_handlers.is_empty() {
+                        let handler_context_client = context_client.clone();
+                        let handler_context_id = context_id;
+                        let handler_executor = executor;
+
+                        // Spawn handlers in the global runtime so they execute independently
+                        global_runtime().spawn(async move {
+                            for (_idx, handler_name, event_data) in events_with_handlers {
+                                info!(
+                                    %handler_context_id,
+                                    handler_name = %handler_name,
+                                    "Executing handler on sender (deferred)"
+                                );
+
+                                match handler_context_client
+                                    .execute(
+                                        &handler_context_id,
+                                        &handler_executor,
+                                        handler_name.clone(),
+                                        event_data,
+                                        vec![],
+                                        None,
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        info!(
+                                            %handler_context_id,
+                                            handler_name = %handler_name,
+                                            "Handler executed successfully on sender"
+                                        );
+                                    }
+                                    Err(err) => {
+                                        warn!(
+                                            %handler_context_id,
+                                            handler_name = %handler_name,
+                                            error = %err,
+                                            "Handler execution failed on sender"
+                                        );
+                                    }
+                                }
+                            }
+                        });
+                    }
 
                     Ok((guard, context.root_hash, outcome))
                 }
@@ -638,14 +710,17 @@ async fn internal_execute(
         context_id: context.id,
     };
 
-    let storage = ContextStorage::from(datastore, context.id);
-    let (mut outcome, storage) = execute(
+    let storage = ContextStorage::from(datastore.clone(), context.id);
+    // Create private storage (node-local, NOT synchronized)
+    let private_storage = ContextPrivateStorage::from(datastore, context.id);
+    let (mut outcome, storage, private_storage) = execute(
         guard,
         module,
         executor,
         method.clone(),
         input,
         storage,
+        private_storage,
         node_client.clone(),
         Some(Box::new(context_host)),
     )
@@ -709,6 +784,9 @@ async fn internal_execute(
 
         // Commit storage and persist metadata
         let store = storage.commit()?;
+        // Commit private storage (node-local, NOT synchronized)
+        // Private storage changes are not included in sync deltas
+        let _private_store = private_storage.commit()?;
 
         // Create causal delta for non-state ops with non-empty artifacts
         if !is_state_op && !outcome.artifact.is_empty() {
@@ -900,9 +978,10 @@ pub async fn execute(
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     mut storage: ContextStorage,
+    mut private_storage: ContextPrivateStorage,
     node_client: NodeClient,
     context_host: Option<Box<dyn ContextHost>>,
-) -> eyre::Result<(Outcome, ContextStorage)> {
+) -> eyre::Result<(Outcome, ContextStorage, ContextPrivateStorage)> {
     let context_id = **context;
 
     // Run WASM execution in blocking context
@@ -915,10 +994,11 @@ pub async fn execute(
                 &method,
                 &input,
                 &mut storage,
+                Some(&mut private_storage),
                 Some(node_client),
                 context_host,
             )?;
-            Ok((outcome, storage))
+            Ok((outcome, storage, private_storage))
         })
         .await
         .wrap_err("failed to receive execution response")?

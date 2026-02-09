@@ -447,6 +447,7 @@ mod tests {
 
         let mut logic = crate::logic::VMLogic::new(
             &mut storage,
+            None, // No private storage for tests
             context,
             &limits,
             None,
@@ -491,6 +492,7 @@ mod tests {
 
         let mut logic = crate::logic::VMLogic::new(
             &mut storage,
+            None, // No private storage for tests
             context,
             &limits,
             None,
@@ -535,6 +537,7 @@ mod tests {
 
         let mut logic = crate::logic::VMLogic::new(
             &mut storage,
+            None, // No private storage for tests
             context,
             &limits,
             None,
