@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
+use tracing::info;
 
 use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata, UpdatedAt};
@@ -264,12 +265,23 @@ impl<S: StorageAdaptor> Index<S> {
         while let Some(parent_id) = Self::get_parent_id(current_id)? {
             let mut parent_index =
                 Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
+            let old_full_hash = parent_index.full_hash;
 
             // Update the child's hash in the parent's children list
             if let Some(children) = &mut parent_index.children {
                 if let Some(child) = children.iter_mut().find(|c| c.id() == current_id) {
                     let new_child_hash = Self::calculate_full_merkle_hash_for(current_id)?;
                     if child.merkle_hash() != new_child_hash {
+                        // Log when a child's hash changes and affects the root
+                        if parent_id.is_root() {
+                            info!(
+                                target: "storage::merkle",
+                                child_id = %current_id,
+                                old_child_hash = %hex::encode(child.merkle_hash()),
+                                new_child_hash = %hex::encode(&new_child_hash),
+                                "ROOT MERKLE: Child hash updated"
+                            );
+                        }
                         *child = ChildInfo::new(current_id, new_child_hash, child.metadata.clone());
                     }
                 }
@@ -280,6 +292,20 @@ impl<S: StorageAdaptor> Index<S> {
                 parent_index.own_hash,
                 &parent_index.children,
             )?;
+
+            // Log when root hash changes
+            if parent_id.is_root() && old_full_hash != parent_index.full_hash {
+                let children_count = parent_index.children.as_ref().map(|c| c.len()).unwrap_or(0);
+                info!(
+                    target: "storage::merkle",
+                    parent_id = %parent_id,
+                    old_full_hash = %hex::encode(&old_full_hash),
+                    new_full_hash = %hex::encode(&parent_index.full_hash),
+                    children_count,
+                    "ROOT MERKLE: Root hash recalculated from ancestor"
+                );
+            }
+
             Self::save_index(&parent_index)?;
             current_id = parent_id;
         }
@@ -326,7 +352,11 @@ impl<S: StorageAdaptor> Index<S> {
     /// Updates parent's children list and hash after child removal.
     ///
     /// Step 2 of deletion: Remove child from parent's index and recalculate hash.
-    fn update_parent_after_child_removal(parent_id: Id, child_id: Id) -> Result<(), StorageError> {
+    /// Made pub(crate) so Interface::apply_delete_ref_action can use it.
+    pub(crate) fn update_parent_after_child_removal(
+        parent_id: Id,
+        child_id: Id,
+    ) -> Result<(), StorageError> {
         let mut parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
@@ -371,11 +401,39 @@ impl<S: StorageAdaptor> Index<S> {
         updated_at: Option<UpdatedAt>,
     ) -> Result<[u8; 32], StorageError> {
         let mut index = Self::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
+        let old_own_hash = index.own_hash;
+        let old_full_hash = index.full_hash;
         index.own_hash = merkle_hash;
         index.full_hash = Self::calculate_full_hash_for_children(index.own_hash, &index.children)?;
         if let Some(updated_at) = updated_at {
             index.metadata.updated_at = updated_at;
         }
+
+        // Log detailed info for root entity hash updates
+        if id.is_root() {
+            let children_count = index.children.as_ref().map(|c| c.len()).unwrap_or(0);
+            let children_hashes: Vec<String> = index
+                .children
+                .as_ref()
+                .map(|c| {
+                    c.iter()
+                        .map(|child| format!("{}:{}", child.id(), hex::encode(child.merkle_hash())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            info!(
+                target: "storage::merkle",
+                %id,
+                old_own_hash = %hex::encode(&old_own_hash),
+                new_own_hash = %hex::encode(&merkle_hash),
+                old_full_hash = %hex::encode(&old_full_hash),
+                new_full_hash = %hex::encode(&index.full_hash),
+                children_count,
+                children_hashes = ?children_hashes,
+                "ROOT MERKLE: Hash update for root entity"
+            );
+        }
+
         Self::save_index(&index)?;
         <Index<S>>::recalculate_ancestor_hashes_for(id)?;
         Ok(index.full_hash)

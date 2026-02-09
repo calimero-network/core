@@ -1,0 +1,51 @@
+name: Handler Sync Test
+description: Test set_with_handler sync
+
+force_pull_image: false
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create mesh with node-2
+    type: create_mesh
+    context_node: e2e-node-1
+    application_id: "{{app_id}}"
+    nodes:
+      - e2e-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      node1_key: memberPublicKey
+
+  # set_with_handler emits event that triggers insert_handler on receivers
+  - name: Set with handler on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: set_with_handler
+    args:
+      key: "test_key"
+      value: "test_value"
+
+  - name: Wait for sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
