@@ -1403,7 +1403,14 @@ impl SyncManager {
         self.node_state
             .start_sync_session(context_id, sync_start_hlc);
 
-        let result = self.request_snapshot_sync(context_id, peer_id).await?;
+        let result = match self.request_snapshot_sync(context_id, peer_id).await {
+            Ok(result) => result,
+            Err(e) => {
+                // Clean up sync session on failure to prevent stale sessions
+                self.node_state.end_sync_session(&context_id);
+                return Err(e);
+            }
+        };
         info!(%context_id, records = result.applied_records, "Snapshot sync completed");
 
         // End buffering and get any deltas that arrived during sync
