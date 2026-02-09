@@ -5706,17 +5706,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kv-store-v2"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "kv-store-with-handlers"
 version = "0.0.0"
 dependencies = [
@@ -6826,6 +6815,56 @@ dependencies = [
  "tokio",
  "tower-http 0.5.2",
  "tracing",
+]
+
+[[package]]
+name = "migration-suite-v1"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "migration-suite-v2-add-field"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "migration-suite-v3-remove-field"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "migration-suite-v4-rename-field"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "migration-suite-v5-change-type"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
 ]
 
 [[package]]

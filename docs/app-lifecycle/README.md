@@ -63,7 +63,7 @@ flowchart LR
 ```
 
 This document covers each step in detail, with working code examples based on
-the `kv-store` (v1) and `kv-store-v2` example apps in this repo.
+the `kv-store` (v1) and `migrations/migration-suite-v2-add-field` example apps in this repo.
 
 ---
 
@@ -280,8 +280,8 @@ kv-store-1.0.0.mpk
 
 ### Build Script Walkthrough
 
-Both `apps/kv-store/build-bundle.sh` and `apps/kv-store-v2/build-bundle.sh`
-follow the same pattern:
+Both `apps/migrations/migration-suite-v1/build-bundle.sh` and
+`apps/migrations/migration-suite-v2-add-field/build-bundle.sh` follow the same pattern:
 
 ```bash
 #!/bin/bash
@@ -293,14 +293,14 @@ cd "$(dirname $0)"
 
 # 2. Prepare bundle directory
 mkdir -p res/bundle-temp
-cp res/kv_store.wasm res/bundle-temp/app.wasm
+cp res/migration_suite_v1.wasm res/bundle-temp/app.wasm
 cp res/abi.json res/bundle-temp/abi.json  # if exists
 
 # 3. Write manifest.json
 cat > res/bundle-temp/manifest.json <<EOF
 {
   "version": "1.0",
-  "package": "com.calimero.kv-store",
+  "package": "com.calimero.migration-suite",
   "appVersion": "1.0.0",
   "minRuntimeVersion": "0.1.0",
   "wasm": { "path": "app.wasm", "size": ${WASM_SIZE}, "hash": null },
@@ -315,7 +315,7 @@ cargo run -p mero-sign --quiet -- sign res/bundle-temp/manifest.json \
 
 # 5. Create the .mpk archive
 cd res/bundle-temp
-tar -czf ../kv-store-1.0.0.mpk manifest.json app.wasm abi.json
+tar -czf ../migration-suite-1.0.0.mpk manifest.json app.wasm abi.json
 ```
 
 The key point: **both v1 and v2 use the same signing key** at
@@ -456,51 +456,56 @@ Key points:
   passes it back to the runtime.
 - Events can be emitted during migration via `app::emit!()`.
 
-### Step-by-Step: KV Store v1 to v2
+### Step-by-Step: Migration Suite v1 to v2
 
-**V1 state** (`apps/kv-store/src/lib.rs`):
+**V1 state** (`apps/migrations/migration-suite-v1/src/lib.rs`):
 
 ```rust
-#[app::state(emits = for<'a> Event<'a>)]
-pub struct KvStore {
+#[app::state]
+pub struct MigrationSuiteV1 {
     items: UnorderedMap<String, LwwRegister<String>>,
+    description: LwwRegister<String>,
+    counter: LwwRegister<u64>,
 }
 ```
 
-**V2 state** (`apps/kv-store-v2/src/lib.rs`) — adds `migration_version`:
+**V2 state** (`apps/migrations/migration-suite-v2-add-field/src/lib.rs`) — adds `notes`:
 
 ```rust
 #[app::state(emits = for<'a> Event<'a>)]
-pub struct KvStoreV2 {
+pub struct MigrationSuiteV2AddField {
     items: UnorderedMap<String, LwwRegister<String>>,
-    migration_version: LwwRegister<String>,
+    description: LwwRegister<String>,
+    counter: LwwRegister<u64>,
+    notes: LwwRegister<String>,
 }
 ```
 
 **What changed:**
 
-- New field: `migration_version` (tracks which schema version the state is on).
-- New methods: `get_migration_version`, `get_with_default`, `set_if_absent`,
-  `schema_info`.
-- Existing methods (`set`, `get`, `entries`, etc.): unchanged — they work on
-  the migrated state without modification.
+- New field: `notes` (added in v2).
+- New methods: `get_notes`, `set_notes`, `schema_info`.
+- Existing methods (`set_item`, `get_item`, `set_description`, `get_description`,
+  `increment_counter`, `get_counter`): unchanged — they work on the migrated state.
 
 **The migration function:**
 
 ```rust
 #[derive(BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
-struct KvStoreV1 {
+struct MigrationSuiteV1 {
     items: UnorderedMap<String, LwwRegister<String>>,
+    description: LwwRegister<String>,
+    counter: LwwRegister<u64>,
 }
 
 #[app::migrate]
-pub fn migrate_v1_to_v2() -> KvStoreV2 {
+pub fn migrate_v1_to_v2() -> MigrationSuiteV2AddField {
     let old_bytes = read_raw().unwrap_or_else(|| {
         panic!("Migration failed: no existing state.");
     });
 
-    let old_state: KvStoreV1 =
+    let old_state: MigrationSuiteV1 =
         BorshDeserialize::deserialize(&mut &old_bytes[..]).unwrap_or_else(|e| {
             panic!("Migration failed: deserialization error {:?}", e);
         });
@@ -510,9 +515,11 @@ pub fn migrate_v1_to_v2() -> KvStoreV2 {
         to_version: "2.0.0",
     });
 
-    KvStoreV2 {
+    MigrationSuiteV2AddField {
         items: old_state.items,
-        migration_version: LwwRegister::new("2.0.0".to_owned()),
+        description: old_state.description,
+        counter: old_state.counter,
+        notes: LwwRegister::new("added in v2".to_owned()),
     }
 }
 ```
@@ -574,13 +581,13 @@ let old: OldState = BorshDeserialize::try_from_slice(&old_bytes).unwrap();
 
 ```bash
 # Build v2 WASM and create the signed bundle
-cd apps/kv-store-v2
+cd apps/migrations/migration-suite-v2-add-field
 ./build-bundle.sh
 ```
 
 The critical requirement: the v2 `build-bundle.sh` must:
 
-- Use the **same `package` name** as v1 (`"com.calimero.kv-store"`).
+- Use the **same `package` name** as v1 (`"com.calimero.migration-suite"`).
 - Sign with the **same key** as v1 (AppKey continuity).
 
 ### Install and Update
@@ -588,7 +595,7 @@ The critical requirement: the v2 `build-bundle.sh` must:
 ```bash
 # 1. Install the v2 bundle (this does NOT affect running contexts)
 meroctl --node node1 app install \
-    --path apps/kv-store-v2/res/kv-store-2.0.0.mpk
+    --path apps/migrations/migration-suite-v2-add-field/res/migration-suite-2.0.0.mpk
 
 # 2. Update an existing context with migration
 meroctl --node node1 context update \
@@ -667,12 +674,12 @@ This walkthrough uses a running node (start one with `merod --node node1 run`).
 
 ```bash
 # Step 1: Build both bundles
-cd apps/kv-store && ./build-bundle.sh && cd ../..
-cd apps/kv-store-v2 && ./build-bundle.sh && cd ../..
+cd apps/migrations/migration-suite-v1 && ./build-bundle.sh && cd ../../..
+cd apps/migrations/migration-suite-v2-add-field && ./build-bundle.sh && cd ../../..
 
 # Step 2: Install v1
 meroctl --node node1 app install \
-    --path apps/kv-store/res/kv-store-1.0.0.mpk
+    --path apps/migrations/migration-suite-v1/res/migration-suite-1.0.0.mpk
 # → Note the ApplicationId
 
 # Step 3: Create a context
@@ -681,16 +688,16 @@ meroctl --node node1 context create --protocol near \
 # → Note ContextId and MemberPublicKey
 
 # Step 4: Populate state (v1)
-meroctl --node node1 call set --context <CTX> --as <MEMBER> \
+meroctl --node node1 call set_item --context <CTX> --as <MEMBER> \
     --args '{"key": "hello", "value": "world"}'
 
-meroctl --node node1 call get --context <CTX> --as <MEMBER> \
+meroctl --node node1 call get_item --context <CTX> --as <MEMBER> \
     --args '{"key": "hello"}'
 # → Returns "world"
 
 # Step 5: Install v2
 meroctl --node node1 app install \
-    --path apps/kv-store-v2/res/kv-store-2.0.0.mpk
+    --path apps/migrations/migration-suite-v2-add-field/res/migration-suite-2.0.0.mpk
 # → Note the new ApplicationId (same as v1 if same package + signer)
 
 # Step 6: Migrate the context
@@ -701,21 +708,17 @@ meroctl --node node1 context update \
     --migrate-method migrate_v1_to_v2
 
 # Step 7: Verify state preservation
-meroctl --node node1 call get --context <CTX> --as <MEMBER> \
+meroctl --node node1 call get_item --context <CTX> --as <MEMBER> \
     --args '{"key": "hello"}'
 # → Still returns "world"
 
 # Step 8: Use new V2-only methods
-meroctl --node node1 call get_migration_version \
+meroctl --node node1 call get_notes \
     --context <CTX> --as <MEMBER>
-# → Returns "2.0.0"
-
-meroctl --node node1 call get_with_default --context <CTX> --as <MEMBER> \
-    --args '{"key": "missing", "default": "fallback"}'
-# → Returns "fallback"
+# → Returns "added in v2"
 
 meroctl --node node1 call schema_info --context <CTX> --as <MEMBER>
-# → Returns { schema_version: "2.0.0", migration_version: "2.0.0" }
+# → Returns { schema_version: "2.0.0", ... }
 ```
 
 ---
