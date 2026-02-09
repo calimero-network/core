@@ -72,6 +72,37 @@ jobs:
           path: merod-local.tar.gz
           retention-days: 1
 
+  build-blockchain-app:
+    name: Build Blockchain App
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: e2e-blockchain
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build blockchain app
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo build -p blockchain --target wasm32-unknown-unknown --profile app-release
+
+      - name: Copy wasm to res
+        run: |
+          mkdir -p apps/demo-blockchain-integrations/res
+          cp target/wasm32-unknown-unknown/app-release/blockchain.wasm apps/demo-blockchain-integrations/res/
+
+      - name: Upload blockchain app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-blockchain-app
+          path: apps/demo-blockchain-integrations/res/blockchain.wasm
+          retention-days: 1
+
   download-contracts:
     name: Download Contracts
     runs-on: big-machine
@@ -91,7 +122,7 @@ jobs:
 
   near:
     name: Test NEAR Proposals
-    needs: [build-merod, download-contracts]
+    needs: [build-merod, download-contracts, build-blockchain-app]
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
@@ -102,6 +133,12 @@ jobs:
         with:
           name: e2e-blockchain-contracts
           path: contracts
+
+      - name: Download blockchain app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-blockchain-app
+          path: workflows/proposals
 
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4
@@ -162,7 +199,7 @@ jobs:
 
   icp:
     name: Test ICP Proposals
-    needs: [build-merod, download-contracts]
+    needs: [build-merod, download-contracts, build-blockchain-app]
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
@@ -173,6 +210,12 @@ jobs:
         with:
           name: e2e-blockchain-contracts
           path: contracts
+
+      - name: Download blockchain app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-blockchain-app
+          path: workflows/proposals
 
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4
@@ -240,7 +283,7 @@ jobs:
 
   ethereum:
     name: Test Ethereum Proposals
-    needs: [build-merod, download-contracts]
+    needs: [build-merod, download-contracts, build-blockchain-app]
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
@@ -251,6 +294,12 @@ jobs:
         with:
           name: e2e-blockchain-contracts
           path: contracts
+
+      - name: Download blockchain app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-blockchain-app
+          path: workflows/proposals
 
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4
