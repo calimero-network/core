@@ -645,14 +645,17 @@ impl ContextClient {
         context_id: &ContextId,
         bytes: &[u8],
     ) -> eyre::Result<[u8; 32]> {
-        // Minimal EntityIndex structure for deserialization
+        // Complete EntityIndex structure for deserialization
+        // Must match the real EntityIndex in calimero-storage exactly
         #[derive(BorshDeserialize)]
         struct EntityIndexMinimal {
             _id: [u8; 32],
             _parent_id: Option<[u8; 32]>,
             _children: Option<Vec<ChildInfoMinimal>>,
             full_hash: [u8; 32],
-            // Don't need rest
+            _own_hash: [u8; 32],
+            _metadata: MetadataMinimal,
+            _deleted_at: Option<u64>,
         }
 
         #[derive(BorshDeserialize)]
@@ -666,11 +669,45 @@ impl ContextClient {
         struct MetadataMinimal {
             _created_at: u64,
             _updated_at: UpdatedAtMinimal,
-            _storage_type: u8,
+            _storage_type: StorageTypeMinimal,
+            _crdt_type: Option<CrdtTypeMinimal>,
+            _field_name: Option<String>,
         }
 
         #[derive(BorshDeserialize)]
         struct UpdatedAtMinimal(u64);
+
+        // StorageType enum with data-carrying variant
+        #[derive(BorshDeserialize)]
+        enum StorageTypeMinimal {
+            Public,
+            User {
+                _owner: [u8; 32], // PublicKey wraps Hash which is [u8; 32]
+                _signature_data: Option<SignatureDataMinimal>,
+            },
+            Frozen,
+        }
+
+        #[derive(BorshDeserialize)]
+        struct SignatureDataMinimal {
+            _signature: [u8; 64],
+            _nonce: u64,
+        }
+
+        // CrdtType enum matching calimero-storage
+        #[derive(BorshDeserialize)]
+        enum CrdtTypeMinimal {
+            LwwRegister,
+            Counter,
+            Rga,
+            UnorderedMap,
+            UnorderedSet,
+            Vector,
+            UserStorage,
+            FrozenStorage,
+            Record,
+            Custom(String),
+        }
 
         let index: EntityIndexMinimal = EntityIndexMinimal::try_from_slice(bytes)
             .map_err(|e| eyre::eyre!("Failed to deserialize EntityIndex: {}", e))?;

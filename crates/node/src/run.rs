@@ -225,7 +225,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             res = &mut server => res??,
             res = &mut bridge => {
                 // Bridge task completed (channel closed or shutdown signal)
+                // Must break to avoid re-polling the completed JoinHandle, which would panic
                 tracing::warn!("Network event bridge stopped: {:?}", res);
+                bridge_shutdown.notify_one();
+                // Check for JoinError (panic or cancellation), then return Ok for normal completion
+                res?;
+                break Ok(());
             }
             res = &mut arbiter_pool.system_handle => {
                 // Signal bridge shutdown before exiting
