@@ -7,12 +7,13 @@
     reason = "Currently necessary due to code structure"
 )]
 use std::collections::hash_map::HashMap;
+use std::sync::Arc;
 
 use actix::{Actor, AsyncContext, Context};
 use calimero_network_primitives::config::NetworkConfig;
-use calimero_network_primitives::messages::NetworkEvent;
+use calimero_network_primitives::messages::{NetworkEvent, NetworkEventDispatcher};
 use calimero_network_primitives::stream::{CALIMERO_BLOB_PROTOCOL, CALIMERO_STREAM_PROTOCOL};
-use calimero_utils_actix::{actor, LazyRecipient};
+use calimero_utils_actix::actor;
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
 use libp2p::kad::QueryId;
@@ -43,7 +44,7 @@ use handlers::stream::swarm::FromSwarm;
 )]
 pub struct NetworkManager {
     swarm: Box<Swarm<Behaviour>>,
-    event_recipient: LazyRecipient<NetworkEvent>,
+    event_dispatcher: Arc<dyn NetworkEventDispatcher>,
     discovery: Discovery,
     pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<()>>>,
     pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<()>>>,
@@ -52,9 +53,13 @@ pub struct NetworkManager {
 }
 
 impl NetworkManager {
+    /// Create a new NetworkManager with an event dispatcher.
+    ///
+    /// The dispatcher receives all network events (gossipsub messages, streams, etc.)
+    /// and must implement `NetworkEventDispatcher` for reliable delivery.
     pub async fn new(
         config: &NetworkConfig,
-        event_recipient: LazyRecipient<NetworkEvent>,
+        event_dispatcher: Arc<dyn NetworkEventDispatcher>,
         prom_registry: &mut Registry,
     ) -> eyre::Result<Self> {
         let swarm = Behaviour::build_swarm(config)?;
@@ -73,7 +78,7 @@ impl NetworkManager {
 
         let this = Self {
             swarm: Box::new(swarm),
-            event_recipient,
+            event_dispatcher,
             discovery,
             pending_dial: HashMap::default(),
             pending_bootstrap: HashMap::default(),

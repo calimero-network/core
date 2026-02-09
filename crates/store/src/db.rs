@@ -19,6 +19,8 @@ pub enum Column {
     Config,
     Identity,
     State,
+    /// Node-local private storage that is NOT synchronized across nodes
+    PrivateState,
     Delta,
     Blobs,
     Application,

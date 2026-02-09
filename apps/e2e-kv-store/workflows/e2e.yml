@@ -874,7 +874,7 @@ steps:
     executor_public_key: "{{public_key_e2e-node-2}}"
     method: push_metric
     args:
-      value: 200
+      value: 30
 
   - name: Wait for sync after node-2 metric push
     type: wait_for_sync

@@ -178,10 +178,22 @@ pub struct Element {
 }
 
 impl Element {
+    /// Returns a timestamp for element creation/update.
+    /// During merge mode, returns 0 to ensure deterministic hashes.
+    /// Outside merge mode, returns the current time.
+    #[inline]
+    fn timestamp_for_operation() -> u64 {
+        if crate::env::in_merge_mode() {
+            0
+        } else {
+            time_now()
+        }
+    }
+
     /// Creates a new element (marked dirty, empty hash until saved).
     #[must_use]
     pub fn new(id: Option<Id>) -> Self {
-        let timestamp = time_now();
+        let timestamp = Self::timestamp_for_operation();
         let element_id = id.unwrap_or_else(Id::random);
         Self {
             id: element_id,
@@ -200,7 +212,7 @@ impl Element {
     /// Creates a new element with field name for schema inference.
     #[must_use]
     pub fn new_with_field_name(id: Option<Id>, field_name: Option<String>) -> Self {
-        let timestamp = time_now();
+        let timestamp = Self::timestamp_for_operation();
         let element_id = id.unwrap_or_else(Id::random);
         Self {
             id: element_id,
@@ -223,7 +235,7 @@ impl Element {
         field_name: Option<String>,
         crdt_type: CrdtType,
     ) -> Self {
-        let timestamp = time_now();
+        let timestamp = Self::timestamp_for_operation();
         let element_id = id.unwrap_or_else(Id::random);
         Self {
             id: element_id,
@@ -242,7 +254,7 @@ impl Element {
     /// Creates the root element.
     #[must_use]
     pub fn root() -> Self {
-        let timestamp = time_now();
+        let timestamp = Self::timestamp_for_operation();
         Self {
             id: Id::root(),
             is_dirty: true,
@@ -288,9 +300,15 @@ impl Element {
     }
 
     /// Marks dirty and updates timestamp.
+    ///
+    /// When in merge mode (during CRDT sync), timestamp generation is skipped
+    /// to ensure deterministic results across nodes. See `crate::env::in_merge_mode()`.
     pub fn update(&mut self) {
         self.is_dirty = true;
-        *self.metadata.updated_at = time_now();
+        // Skip timestamp generation during merge to ensure deterministic hashes
+        if !crate::env::in_merge_mode() {
+            *self.metadata.updated_at = time_now();
+        }
     }
 
     /// Returns the last update timestamp.

@@ -75,6 +75,7 @@ members = [
     "./crates/wasm-abi",
 
     "./apps/access-control",
+    "./apps/e2e-kv-store",
     "./apps/kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
@@ -88,7 +89,6 @@ members = [
     "./apps/abi_conformance",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
-    "./apps/e2e-kv-store",
 
     "./tools/calimero-abi",
     "./tools/merodb",

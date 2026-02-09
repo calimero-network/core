@@ -62,6 +62,74 @@ pub async fn handle_state_delta(
         "Received state delta"
     );
 
+    // Check if we should buffer this delta:
+    // 1. During snapshot sync (sync session active)
+    // 2. When context is uninitialized (can't decrypt without sender key)
+    let is_uninitialized = context.root_hash == Hash::default();
+    let should_buffer = node_state.should_buffer_delta(&context_id) || is_uninitialized;
+
+    if should_buffer {
+        info!(
+            %context_id,
+            delta_id = ?delta_id,
+            is_uninitialized,
+            has_events = events.is_some(),
+            "Buffering delta (sync in progress or context uninitialized)"
+        );
+
+        // CRITICAL: Store ALL fields needed for replay after sync completes
+        let buffered = calimero_node_primitives::delta_buffer::BufferedDelta {
+            id: delta_id,
+            parents: parent_ids.clone(),
+            hlc: hlc.get_time().as_u64(),
+            payload: artifact.clone(),
+            nonce,
+            author_id,
+            root_hash,
+            events: events.clone(),
+            source_peer: source,
+        };
+
+        if node_state.buffer_delta(&context_id, buffered) {
+            return Ok(()); // Successfully buffered, will be replayed after sync
+        }
+
+        // Buffer full or no active session - if context is uninitialized, we must
+        // start a session to buffer this delta
+        if is_uninitialized && !node_state.should_buffer_delta(&context_id) {
+            // Start a temporary buffer session for uninitialized context
+            node_state.start_sync_session(context_id, hlc.get_time().as_u64());
+
+            let buffered = calimero_node_primitives::delta_buffer::BufferedDelta {
+                id: delta_id,
+                parents: parent_ids.clone(),
+                hlc: hlc.get_time().as_u64(),
+                payload: artifact.clone(),
+                nonce,
+                author_id,
+                root_hash,
+                events: events.clone(),
+                source_peer: source,
+            };
+
+            if node_state.buffer_delta(&context_id, buffered) {
+                info!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    "Started buffer session for uninitialized context"
+                );
+                return Ok(());
+            }
+        }
+
+        warn!(
+            %context_id,
+            delta_id = ?delta_id,
+            "Delta buffer full, proceeding with normal processing (may fail)"
+        );
+        // Fall through to normal processing
+    }
+
     let sender_key = ensure_author_sender_key(
         &node_clients.context,
         &network_client,
@@ -81,9 +149,29 @@ pub async fn handle_state_delta(
         payload: actions,
         hlc,
         expected_root_hash: *root_hash,
+        kind: calimero_dag::DeltaKind::Regular,
     };
 
     let our_identity = choose_owned_identity(&node_clients.context, &context_id).await?;
+
+    // Check if this is our own delta (gossipsub echoes back to sender).
+    // Self-authored deltas are already applied locally, so we should NOT re-apply them.
+    // This prevents state divergence from double-application of actions.
+    let is_self_authored = author_id == our_identity;
+    if is_self_authored {
+        debug!(
+            %context_id,
+            %author_id,
+            delta_id = ?delta_id,
+            "Skipping self-authored delta (already applied locally)"
+        );
+        // Still emit events to WebSocket clients for consistency
+        let events_payload = parse_events_payload(&events, &context_id);
+        if let Some(payload) = events_payload {
+            emit_state_mutation_event_parsed(&node_clients.node, &context_id, root_hash, payload)?;
+        }
+        return Ok(());
+    }
 
     // Check if application is available BEFORE applying the delta.
     // If not available, bail early so the delta can be retried later when rebroadcast.
@@ -819,6 +907,7 @@ async fn request_missing_deltas(
                         payload: storage_delta.actions,
                         hlc: storage_delta.hlc,
                         expected_root_hash: storage_delta.expected_root_hash,
+                        kind: calimero_dag::DeltaKind::Regular,
                     };
 
                     // Store for later (don't add to DAG yet!)
@@ -1375,4 +1464,215 @@ async fn ensure_application_available(
         "Application blob not available after {:?}",
         timeout
     ))
+}
+
+/// Replay a buffered delta after snapshot sync completes.
+///
+/// This function processes a delta that was buffered because the context was
+/// uninitialized when it arrived. Now that the context is initialized (after
+/// snapshot sync), we can decrypt it, apply it, and execute any event handlers.
+///
+/// The `is_covered_by_checkpoint` parameter indicates whether this delta is an
+/// ancestor of an existing checkpoint. If true, the delta's state is already
+/// present via the snapshot, and handlers should be executed even if the delta
+/// can't be applied to the DAG (due to missing intermediate parents).
+///
+/// Returns Ok(true) if delta was applied, Ok(false) if pending (missing parents).
+pub async fn replay_buffered_delta(
+    context_client: &ContextClient,
+    node_client: &NodeClient,
+    network_client: &calimero_network_primitives::client::NetworkClient,
+    node_state: &crate::NodeState,
+    context_id: ContextId,
+    our_identity: PublicKey,
+    buffered: calimero_node_primitives::delta_buffer::BufferedDelta,
+    sync_timeout: std::time::Duration,
+    is_covered_by_checkpoint: bool,
+) -> Result<bool> {
+    let delta_id = buffered.id;
+
+    info!(
+        %context_id,
+        delta_id = ?delta_id,
+        author = %buffered.author_id,
+        has_events = buffered.events.is_some(),
+        "Replaying buffered delta"
+    );
+
+    // Skip if this is our own delta
+    if buffered.author_id == our_identity {
+        debug!(
+            %context_id,
+            delta_id = ?delta_id,
+            "Skipping replay of self-authored delta"
+        );
+        return Ok(false);
+    }
+
+    // Get context (should exist now after snapshot sync)
+    let context = context_client
+        .get_context(&context_id)?
+        .ok_or_else(|| eyre::eyre!("context not found after snapshot sync"))?;
+
+    // Get sender key (should be available now that context is initialized)
+    let sender_key = ensure_author_sender_key(
+        context_client,
+        network_client,
+        &context_id,
+        &buffered.author_id,
+        buffered.source_peer,
+        sync_timeout,
+        context.root_hash,
+    )
+    .await?;
+
+    // Decrypt the payload
+    let actions = decrypt_delta_actions(buffered.payload, buffered.nonce, sender_key)?;
+
+    // Build the delta - reconstruct HLC from stored time
+    use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+    use std::num::NonZeroU128;
+    let default_id = ID::from(NonZeroU128::new(1).expect("1 is non-zero"));
+    let hlc = HybridTimestamp::new(Timestamp::new(NTP64(buffered.hlc), default_id));
+
+    let delta = calimero_dag::CausalDelta {
+        id: buffered.id,
+        parents: buffered.parents,
+        payload: actions,
+        hlc,
+        expected_root_hash: *buffered.root_hash,
+        kind: calimero_dag::DeltaKind::Regular,
+    };
+
+    // Get or create delta store - use [0u8; 32] as genesis hash placeholder
+    // The actual genesis doesn't matter much for replay since the DAG already has
+    // checkpoints from snapshot sync
+    let delta_store = node_state
+        .delta_stores
+        .entry(context_id)
+        .or_insert_with(|| {
+            crate::delta_store::DeltaStore::new(
+                [0u8; 32],
+                context_client.clone(),
+                context_id,
+                our_identity,
+            )
+        })
+        .clone();
+
+    // Load any persisted deltas first
+    let _ = delta_store.load_persisted_deltas().await;
+
+    // If this delta is covered by checkpoint (ancestor of checkpoint) but is NOT the checkpoint
+    // itself, skip adding it to the DAG. Its state is already present via snapshot, and adding
+    // it would just put it in the pending queue forever (since its parents don't exist).
+    let is_checkpoint_match = delta_store.dag_has_delta_applied(&delta_id).await;
+
+    let add_result = if is_covered_by_checkpoint && !is_checkpoint_match {
+        // Skip DAG addition for covered ancestor deltas
+        // Return a "not applied" result since we're not adding to DAG
+        debug!(
+            %context_id,
+            delta_id = ?delta_id,
+            "Skipping DAG addition for ancestor delta (state covered by checkpoint)"
+        );
+        crate::delta_store::AddDeltaResult {
+            applied: false,
+            cascaded_events: vec![],
+        }
+    } else {
+        // Normal case: add delta to DAG with events for handler execution
+        delta_store
+            .add_delta_with_events(delta.clone(), buffered.events.clone())
+            .await?
+    };
+
+    // Re-check is_checkpoint_match after potential DAG add (for the case where we did add)
+    let is_checkpoint_match =
+        !add_result.applied && delta_store.dag_has_delta_applied(&delta_id).await;
+
+    // Execute handlers if:
+    // 1. Delta was applied (normal case), OR
+    // 2. Delta matches a checkpoint (state exists via snapshot but handlers not yet run), OR
+    // 3. Delta is covered by checkpoint (ancestor of checkpoint, state already in snapshot)
+    //
+    // Do NOT execute handlers if delta went to pending AND is NOT covered by checkpoint
+    let should_execute_handlers =
+        add_result.applied || is_checkpoint_match || is_covered_by_checkpoint;
+
+    if should_execute_handlers {
+        if let Some(events_data) = &buffered.events {
+            let events_payload: Option<Vec<ExecutionEvent>> =
+                match serde_json::from_slice(events_data) {
+                    Ok(events) => Some(events),
+                    Err(e) => {
+                        warn!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            error = %e,
+                            "Failed to parse buffered events"
+                        );
+                        None
+                    }
+                };
+
+            if let Some(events) = events_payload {
+                // Check if we are the author (shouldn't be, but check anyway)
+                let is_author = buffered.author_id == our_identity;
+                if !is_author {
+                    info!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        events_count = events.len(),
+                        applied_via_dag = add_result.applied,
+                        is_checkpoint_match,
+                        is_covered_by_checkpoint,
+                        "Executing handlers for replayed buffered delta"
+                    );
+
+                    execute_event_handlers_parsed(
+                        context_client,
+                        &context_id,
+                        &our_identity,
+                        &events,
+                    )
+                    .await?;
+                }
+
+                // Emit to WebSocket clients
+                emit_state_mutation_event_parsed(
+                    node_client,
+                    &context_id,
+                    buffered.root_hash,
+                    events,
+                )?;
+            }
+        }
+    } else {
+        debug!(
+            %context_id,
+            delta_id = ?delta_id,
+            has_events = buffered.events.is_some(),
+            "Skipping handler execution for pending delta (will execute when delta is applied)"
+        );
+    }
+
+    // Execute any cascaded handlers
+    let node_clients = crate::NodeClients {
+        context: context_client.clone(),
+        node: node_client.clone(),
+    };
+
+    execute_cascaded_events(
+        &add_result.cascaded_events,
+        &node_clients,
+        &context_id,
+        &our_identity,
+        sync_timeout,
+        "buffered delta replay",
+        None,
+    )
+    .await?;
+
+    Ok(add_result.applied)
 }
