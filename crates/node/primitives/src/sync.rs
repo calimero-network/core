@@ -19,6 +19,33 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 /// Increment on breaking changes to ensure nodes can detect incompatibility.
 pub const SYNC_PROTOCOL_VERSION: u32 = 1;
 
+/// Protocol capability identifier for sync negotiation.
+///
+/// This is a discriminant-only enum used for advertising which sync protocols
+/// a node supports. Unlike [`SyncProtocol`], this does not carry protocol-specific
+/// data, making it suitable for capability comparison with `contains()` and equality.
+///
+/// See CIP §2 - Sync Handshake Protocol.
+///
+/// **IMPORTANT**: Keep variants in sync with [`SyncProtocol`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, BorshSerialize, BorshDeserialize)]
+pub enum SyncProtocolKind {
+    /// No sync needed - root hashes already match.
+    None,
+    /// Delta-based sync via DAG traversal.
+    DeltaSync,
+    /// Hash-based Merkle tree comparison.
+    HashComparison,
+    /// Full state snapshot transfer.
+    Snapshot,
+    /// Bloom filter-based quick diff.
+    BloomFilter,
+    /// Subtree prefetch for deep localized changes.
+    SubtreePrefetch,
+    /// Level-wise sync for wide shallow trees.
+    LevelWise,
+}
+
 /// Sync protocol selection for negotiation.
 ///
 /// Each variant represents a different synchronization strategy with different
@@ -92,6 +119,30 @@ impl Default for SyncProtocol {
     }
 }
 
+impl SyncProtocol {
+    /// Returns the protocol kind (discriminant) for this protocol.
+    ///
+    /// Useful for capability matching where the protocol-specific data is irrelevant.
+    #[must_use]
+    pub fn kind(&self) -> SyncProtocolKind {
+        SyncProtocolKind::from(self)
+    }
+}
+
+impl From<&SyncProtocol> for SyncProtocolKind {
+    fn from(protocol: &SyncProtocol) -> Self {
+        match protocol {
+            SyncProtocol::None => Self::None,
+            SyncProtocol::DeltaSync { .. } => Self::DeltaSync,
+            SyncProtocol::HashComparison { .. } => Self::HashComparison,
+            SyncProtocol::Snapshot { .. } => Self::Snapshot,
+            SyncProtocol::BloomFilter { .. } => Self::BloomFilter,
+            SyncProtocol::SubtreePrefetch { .. } => Self::SubtreePrefetch,
+            SyncProtocol::LevelWise { .. } => Self::LevelWise,
+        }
+    }
+}
+
 /// Capabilities advertised during sync negotiation.
 ///
 /// Used to determine mutually supported features between peers.
@@ -102,7 +153,7 @@ pub struct SyncCapabilities {
     /// Maximum entities per batch transfer.
     pub max_batch_size: u64,
     /// Protocols this node supports (ordered by preference).
-    pub supported_protocols: Vec<SyncProtocol>,
+    pub supported_protocols: Vec<SyncProtocolKind>,
 }
 
 impl Default for SyncCapabilities {
@@ -111,18 +162,10 @@ impl Default for SyncCapabilities {
             supports_compression: true,
             max_batch_size: 1000,
             supported_protocols: vec![
-                SyncProtocol::None,
-                SyncProtocol::DeltaSync {
-                    missing_delta_ids: vec![],
-                },
-                SyncProtocol::HashComparison {
-                    root_hash: [0; 32],
-                    divergent_subtrees: vec![],
-                },
-                SyncProtocol::Snapshot {
-                    compressed: true,
-                    verified: true,
-                },
+                SyncProtocolKind::None,
+                SyncProtocolKind::DeltaSync,
+                SyncProtocolKind::HashComparison,
+                SyncProtocolKind::Snapshot,
             ],
         }
     }
@@ -148,7 +191,7 @@ pub struct SyncHandshake {
     /// Whether this node has any state.
     pub has_state: bool,
     /// Supported protocols (ordered by preference).
-    pub supported_protocols: Vec<SyncProtocol>,
+    pub supported_protocols: Vec<SyncProtocolKind>,
 }
 
 impl SyncHandshake {
@@ -591,5 +634,80 @@ mod tests {
     fn test_sync_handshake_response_already_synced() {
         let response = SyncHandshakeResponse::already_synced([42; 32], 100);
         assert_eq!(response.selected_protocol, SyncProtocol::None);
+    }
+
+    #[test]
+    fn test_sync_protocol_kind_roundtrip() {
+        let kinds = vec![
+            SyncProtocolKind::None,
+            SyncProtocolKind::DeltaSync,
+            SyncProtocolKind::HashComparison,
+            SyncProtocolKind::Snapshot,
+            SyncProtocolKind::BloomFilter,
+            SyncProtocolKind::SubtreePrefetch,
+            SyncProtocolKind::LevelWise,
+        ];
+
+        for kind in kinds {
+            let encoded = borsh::to_vec(&kind).expect("serialize");
+            let decoded: SyncProtocolKind = borsh::from_slice(&encoded).expect("deserialize");
+            assert_eq!(kind, decoded);
+        }
+    }
+
+    #[test]
+    fn test_sync_protocol_kind_conversion() {
+        // Test kind() method and From trait
+        assert_eq!(SyncProtocol::None.kind(), SyncProtocolKind::None);
+        assert_eq!(
+            SyncProtocol::DeltaSync {
+                missing_delta_ids: vec![[1; 32]]
+            }
+            .kind(),
+            SyncProtocolKind::DeltaSync
+        );
+        assert_eq!(
+            SyncProtocol::HashComparison {
+                root_hash: [2; 32],
+                divergent_subtrees: vec![]
+            }
+            .kind(),
+            SyncProtocolKind::HashComparison
+        );
+        assert_eq!(
+            SyncProtocol::Snapshot {
+                compressed: true,
+                verified: true
+            }
+            .kind(),
+            SyncProtocolKind::Snapshot
+        );
+        assert_eq!(
+            SyncProtocol::BloomFilter {
+                filter_size: 1024,
+                false_positive_rate: 0.01
+            }
+            .kind(),
+            SyncProtocolKind::BloomFilter
+        );
+        assert_eq!(
+            SyncProtocol::SubtreePrefetch {
+                subtree_roots: vec![]
+            }
+            .kind(),
+            SyncProtocolKind::SubtreePrefetch
+        );
+        assert_eq!(
+            SyncProtocol::LevelWise { max_depth: 5 }.kind(),
+            SyncProtocolKind::LevelWise
+        );
+
+        // Test From trait directly
+        let protocol = SyncProtocol::HashComparison {
+            root_hash: [3; 32],
+            divergent_subtrees: vec![],
+        };
+        let kind: SyncProtocolKind = (&protocol).into();
+        assert_eq!(kind, SyncProtocolKind::HashComparison);
     }
 }

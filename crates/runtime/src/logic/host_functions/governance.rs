@@ -141,4 +141,242 @@ mod tests {
         assert_eq!(host.borrow_logic().approvals.len(), 1);
         assert_eq!(host.borrow_logic().approvals[0], approval_id);
     }
+
+    /// Tests sending a proposal with empty actions.
+    #[test]
+    fn test_send_proposal_with_empty_actions() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Test sending a proposal with empty actions.
+        let actions: Vec<u8> = vec![];
+        let actions_ptr = 100u64;
+        let actions_buf_ptr = 16u64;
+        // Guest: prepare the descriptor for an empty buffer.
+        prepare_guest_buf_descriptor(&host, actions_buf_ptr, actions_ptr, 0);
+
+        let id_out_ptr = 300u64;
+        let id_buf_ptr = 32u64;
+        // Guest: prepare the descriptor for the destination buffer.
+        prepare_guest_buf_descriptor(&host, id_buf_ptr, id_out_ptr, DIGEST_SIZE as u64);
+
+        // Guest: send proposal with empty actions.
+        host.send_proposal(actions_buf_ptr, id_buf_ptr).unwrap();
+
+        // Verify the proposal was successfully added with empty actions.
+        assert_eq!(host.borrow_logic().proposals.len(), 1);
+        assert_eq!(
+            host.borrow_logic().proposals.values().next().unwrap(),
+            &actions
+        );
+    }
+
+    /// Tests sending multiple proposals generates unique IDs.
+    #[test]
+    fn test_send_multiple_proposals_generates_unique_ids() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Send first proposal.
+        let actions1 = vec![1, 2, 3];
+        let actions1_ptr = 100u64;
+        host.borrow_memory().write(actions1_ptr, &actions1).unwrap();
+        let actions1_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, actions1_buf_ptr, actions1_ptr, actions1.len() as u64);
+
+        let id1_out_ptr = 300u64;
+        let id1_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, id1_buf_ptr, id1_out_ptr, DIGEST_SIZE as u64);
+
+        host.send_proposal(actions1_buf_ptr, id1_buf_ptr).unwrap();
+
+        // Read the first proposal ID from guest memory.
+        let mut proposal_id_1 = [0u8; DIGEST_SIZE];
+        host.borrow_memory()
+            .read(id1_out_ptr, &mut proposal_id_1)
+            .unwrap();
+
+        // Send second proposal.
+        let actions2 = vec![4, 5, 6];
+        let actions2_ptr = 400u64;
+        host.borrow_memory().write(actions2_ptr, &actions2).unwrap();
+        let actions2_buf_ptr = 48u64;
+        prepare_guest_buf_descriptor(&host, actions2_buf_ptr, actions2_ptr, actions2.len() as u64);
+
+        let id2_out_ptr = 500u64;
+        let id2_buf_ptr = 64u64;
+        prepare_guest_buf_descriptor(&host, id2_buf_ptr, id2_out_ptr, DIGEST_SIZE as u64);
+
+        host.send_proposal(actions2_buf_ptr, id2_buf_ptr).unwrap();
+
+        // Read the second proposal ID from guest memory.
+        let mut proposal_id_2 = [0u8; DIGEST_SIZE];
+        host.borrow_memory()
+            .read(id2_out_ptr, &mut proposal_id_2)
+            .unwrap();
+
+        // Verify both proposals were added.
+        assert_eq!(host.borrow_logic().proposals.len(), 2);
+
+        // Verify the proposal IDs are different (with very high probability since they're random).
+        // Note: This test has a negligible probability of failing due to random collision.
+        assert_ne!(proposal_id_1, proposal_id_2);
+    }
+
+    /// Tests approving multiple proposals.
+    #[test]
+    fn test_approve_multiple_proposals() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // First approval.
+        let approval_id_1 = [1u8; DIGEST_SIZE];
+        let approval_ptr_1 = 100u64;
+        host.borrow_memory()
+            .write(approval_ptr_1, &approval_id_1)
+            .unwrap();
+        let approval_buf_ptr_1 = 16u64;
+        prepare_guest_buf_descriptor(
+            &host,
+            approval_buf_ptr_1,
+            approval_ptr_1,
+            DIGEST_SIZE as u64,
+        );
+
+        host.approve_proposal(approval_buf_ptr_1).unwrap();
+
+        // Second approval.
+        let approval_id_2 = [2u8; DIGEST_SIZE];
+        let approval_ptr_2 = 200u64;
+        host.borrow_memory()
+            .write(approval_ptr_2, &approval_id_2)
+            .unwrap();
+        let approval_buf_ptr_2 = 32u64;
+        prepare_guest_buf_descriptor(
+            &host,
+            approval_buf_ptr_2,
+            approval_ptr_2,
+            DIGEST_SIZE as u64,
+        );
+
+        host.approve_proposal(approval_buf_ptr_2).unwrap();
+
+        // Third approval.
+        let approval_id_3 = [3u8; DIGEST_SIZE];
+        let approval_ptr_3 = 300u64;
+        host.borrow_memory()
+            .write(approval_ptr_3, &approval_id_3)
+            .unwrap();
+        let approval_buf_ptr_3 = 48u64;
+        prepare_guest_buf_descriptor(
+            &host,
+            approval_buf_ptr_3,
+            approval_ptr_3,
+            DIGEST_SIZE as u64,
+        );
+
+        host.approve_proposal(approval_buf_ptr_3).unwrap();
+
+        // Verify all approvals were stored in order.
+        assert_eq!(host.borrow_logic().approvals.len(), 3);
+        assert_eq!(host.borrow_logic().approvals[0], approval_id_1);
+        assert_eq!(host.borrow_logic().approvals[1], approval_id_2);
+        assert_eq!(host.borrow_logic().approvals[2], approval_id_3);
+    }
+
+    /// Tests approving the same proposal ID multiple times (allowed).
+    #[test]
+    fn test_approve_same_proposal_multiple_times() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let approval_id = [42u8; DIGEST_SIZE];
+        let approval_ptr = 100u64;
+        host.borrow_memory()
+            .write(approval_ptr, &approval_id)
+            .unwrap();
+        let approval_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, approval_buf_ptr, approval_ptr, DIGEST_SIZE as u64);
+
+        // Approve the same proposal three times.
+        host.approve_proposal(approval_buf_ptr).unwrap();
+        host.approve_proposal(approval_buf_ptr).unwrap();
+        host.approve_proposal(approval_buf_ptr).unwrap();
+
+        // All three approvals should be recorded (deduplication is handled elsewhere).
+        assert_eq!(host.borrow_logic().approvals.len(), 3);
+        assert!(host
+            .borrow_logic()
+            .approvals
+            .iter()
+            .all(|id| *id == approval_id));
+    }
+
+    /// Tests sending a proposal with large actions data.
+    #[test]
+    fn test_send_proposal_with_large_actions() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Create a large actions payload.
+        let actions: Vec<u8> = (0..1000).map(|i| (i % 256) as u8).collect();
+        let actions_ptr = 100u64;
+        host.borrow_memory().write(actions_ptr, &actions).unwrap();
+        let actions_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, actions_buf_ptr, actions_ptr, actions.len() as u64);
+
+        let id_out_ptr = 2000u64;
+        let id_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, id_buf_ptr, id_out_ptr, DIGEST_SIZE as u64);
+
+        host.send_proposal(actions_buf_ptr, id_buf_ptr).unwrap();
+
+        // Verify the proposal was added with the correct large actions.
+        assert_eq!(host.borrow_logic().proposals.len(), 1);
+        assert_eq!(
+            host.borrow_logic().proposals.values().next().unwrap(),
+            &actions
+        );
+    }
+
+    /// Tests that proposal IDs are written to guest memory correctly.
+    #[test]
+    fn test_proposal_id_written_to_guest_memory() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let actions = vec![1, 2, 3];
+        let actions_ptr = 100u64;
+        host.borrow_memory().write(actions_ptr, &actions).unwrap();
+        let actions_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, actions_buf_ptr, actions_ptr, actions.len() as u64);
+
+        let id_out_ptr = 300u64;
+        let id_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, id_buf_ptr, id_out_ptr, DIGEST_SIZE as u64);
+
+        host.send_proposal(actions_buf_ptr, id_buf_ptr).unwrap();
+
+        // Read the proposal ID from guest memory.
+        let mut written_id = [0u8; DIGEST_SIZE];
+        host.borrow_memory()
+            .read(id_out_ptr, &mut written_id)
+            .unwrap();
+
+        // Verify the written ID matches the key in proposals map.
+        let stored_key = *host.borrow_logic().proposals.keys().next().unwrap();
+        assert_eq!(written_id, stored_key);
+    }
 }

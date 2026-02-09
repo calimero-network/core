@@ -562,4 +562,237 @@ mod tests {
         // We should receive an empty vec of members.
         assert!(members.is_empty());
     }
+
+    /// Tests that `context_is_member` returns 0 when no context host is configured.
+    #[test]
+    fn test_context_is_member_without_context_host() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let host = logic.host_functions(store.as_store_mut());
+
+        let public_key = [1u8; DIGEST_SIZE];
+        let pk_ptr = 100u64;
+        let pk_buf_ptr = 16u64;
+
+        host.borrow_memory().write(pk_ptr, &public_key).unwrap();
+        prepare_guest_buf_descriptor(&host, pk_buf_ptr, pk_ptr, DIGEST_SIZE as u64);
+
+        // Without a context host, should return 0 (not a member).
+        let result = host.context_is_member(pk_buf_ptr).unwrap();
+        assert_eq!(result, 0);
+    }
+
+    /// Tests that `context_members` returns an empty list when no context host is configured.
+    #[test]
+    fn test_context_members_without_context_host() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let reg_id = 1;
+        host.context_members(reg_id).unwrap();
+
+        let data = host
+            .borrow_logic()
+            .registers
+            .get(reg_id)
+            .expect("Register should be set");
+        let members: Vec<[u8; DIGEST_SIZE]> =
+            borsh::from_slice(data).expect("Failed to deserialize");
+
+        assert!(members.is_empty());
+    }
+
+    /// Tests that `context_resolve_alias` returns an error when no node client is configured.
+    #[test]
+    fn test_context_resolve_alias_without_node_client() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let alias = "my_alias";
+        let alias_ptr = 100u64;
+        write_str(&host, alias_ptr, alias);
+        let alias_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, alias_buf_ptr, alias_ptr, alias.len() as u64);
+
+        let dest_register_id = 1u64;
+        let err = host
+            .context_resolve_alias(alias_buf_ptr, dest_register_id)
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::logic::VMLogicError::HostError(HostError::NodeClientNotAvailable)
+        ));
+    }
+
+    /// Tests that `context_create` with empty alias string (but non-zero pointer) is handled.
+    #[test]
+    fn test_context_create_empty_alias_string() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let protocol = "near";
+        let app_id = [1u8; DIGEST_SIZE];
+        let args = vec![1, 2, 3];
+
+        let protocol_ptr = 100u64;
+        let app_id_ptr = 200u64;
+        let args_ptr = 300u64;
+        let alias_ptr = 400u64;
+
+        let protocol_buf = 10u64;
+        let app_id_buf = 30u64;
+        let args_buf = 50u64;
+        let alias_buf = 70u64;
+
+        write_str(&host, protocol_ptr, protocol);
+        prepare_guest_buf_descriptor(&host, protocol_buf, protocol_ptr, protocol.len() as u64);
+
+        host.borrow_memory().write(app_id_ptr, &app_id).unwrap();
+        prepare_guest_buf_descriptor(&host, app_id_buf, app_id_ptr, DIGEST_SIZE as u64);
+
+        host.borrow_memory().write(args_ptr, &args).unwrap();
+        prepare_guest_buf_descriptor(&host, args_buf, args_ptr, args.len() as u64);
+
+        // Empty alias string (length 0)
+        prepare_guest_buf_descriptor(&host, alias_buf, alias_ptr, 0);
+
+        host.context_create(protocol_buf, app_id_buf, args_buf, alias_buf)
+            .unwrap();
+
+        let mutations = &host.borrow_logic().context_mutations;
+        match &mutations[0] {
+            ContextMutation::CreateContext { alias, .. } => {
+                // Empty string alias should be treated as None
+                assert!(alias.is_none());
+            }
+            _ => panic!("Wrong mutation type"),
+        }
+    }
+
+    /// Tests `context_add_member` and `context_remove_member` with boundary public keys.
+    #[test]
+    fn test_context_member_mutations_boundary_keys() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Test with all-zeros public key
+        let pk_zeros = [0u8; DIGEST_SIZE];
+        let pk_zeros_ptr = 100u64;
+        let pk_zeros_buf_ptr = 16u64;
+        host.borrow_memory().write(pk_zeros_ptr, &pk_zeros).unwrap();
+        prepare_guest_buf_descriptor(&host, pk_zeros_buf_ptr, pk_zeros_ptr, DIGEST_SIZE as u64);
+
+        host.context_add_member(pk_zeros_buf_ptr).unwrap();
+
+        // Test with all-255 public key
+        let pk_max = [255u8; DIGEST_SIZE];
+        let pk_max_ptr = 200u64;
+        let pk_max_buf_ptr = 32u64;
+        host.borrow_memory().write(pk_max_ptr, &pk_max).unwrap();
+        prepare_guest_buf_descriptor(&host, pk_max_buf_ptr, pk_max_ptr, DIGEST_SIZE as u64);
+
+        host.context_add_member(pk_max_buf_ptr).unwrap();
+        host.context_remove_member(pk_max_buf_ptr).unwrap();
+
+        let mutations = &host.borrow_logic().context_mutations;
+        assert_eq!(mutations.len(), 3);
+
+        match mutations[0] {
+            ContextMutation::AddMember { public_key } => assert_eq!(public_key, pk_zeros),
+            _ => panic!("Unexpected mutation type"),
+        }
+        match mutations[1] {
+            ContextMutation::AddMember { public_key } => assert_eq!(public_key, pk_max),
+            _ => panic!("Unexpected mutation type"),
+        }
+        match mutations[2] {
+            ContextMutation::RemoveMember { public_key } => assert_eq!(public_key, pk_max),
+            _ => panic!("Unexpected mutation type"),
+        }
+    }
+
+    /// Tests `context_delete` with all-zeros context ID.
+    #[test]
+    fn test_context_delete_zero_context_id() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let context_id = [0u8; DIGEST_SIZE];
+        let ctx_ptr = 100u64;
+        let ctx_buf = 16u64;
+
+        host.borrow_memory().write(ctx_ptr, &context_id).unwrap();
+        prepare_guest_buf_descriptor(&host, ctx_buf, ctx_ptr, DIGEST_SIZE as u64);
+
+        host.context_delete(ctx_buf).unwrap();
+
+        let mutations = &host.borrow_logic().context_mutations;
+        assert_eq!(mutations.len(), 1);
+        match &mutations[0] {
+            ContextMutation::DeleteContext { context_id: c } => {
+                assert_eq!(*c, context_id);
+            }
+            _ => panic!("Wrong mutation type"),
+        }
+    }
+
+    /// Tests multiple context mutations in sequence.
+    #[test]
+    fn test_multiple_context_mutations() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Add member 1
+        let pk1 = [1u8; DIGEST_SIZE];
+        let pk1_ptr = 100u64;
+        let pk1_buf = 16u64;
+        host.borrow_memory().write(pk1_ptr, &pk1).unwrap();
+        prepare_guest_buf_descriptor(&host, pk1_buf, pk1_ptr, DIGEST_SIZE as u64);
+        host.context_add_member(pk1_buf).unwrap();
+
+        // Add member 2
+        let pk2 = [2u8; DIGEST_SIZE];
+        let pk2_ptr = 200u64;
+        let pk2_buf = 32u64;
+        host.borrow_memory().write(pk2_ptr, &pk2).unwrap();
+        prepare_guest_buf_descriptor(&host, pk2_buf, pk2_ptr, DIGEST_SIZE as u64);
+        host.context_add_member(pk2_buf).unwrap();
+
+        // Remove member 1
+        host.context_remove_member(pk1_buf).unwrap();
+
+        // Delete a context
+        let ctx_id = [99u8; DIGEST_SIZE];
+        let ctx_ptr = 300u64;
+        let ctx_buf = 48u64;
+        host.borrow_memory().write(ctx_ptr, &ctx_id).unwrap();
+        prepare_guest_buf_descriptor(&host, ctx_buf, ctx_ptr, DIGEST_SIZE as u64);
+        host.context_delete(ctx_buf).unwrap();
+
+        let mutations = &host.borrow_logic().context_mutations;
+        assert_eq!(mutations.len(), 4);
+
+        // Verify order of mutations
+        assert!(matches!(mutations[0], ContextMutation::AddMember { .. }));
+        assert!(matches!(mutations[1], ContextMutation::AddMember { .. }));
+        assert!(matches!(mutations[2], ContextMutation::RemoveMember { .. }));
+        assert!(matches!(
+            mutations[3],
+            ContextMutation::DeleteContext { .. }
+        ));
+    }
 }

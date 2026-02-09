@@ -581,4 +581,389 @@ mod tests {
             .unwrap();
         assert_eq!(std::str::from_utf8(&mem_buffer).unwrap(), value);
     }
+
+    /// Tests that `storage_read` returns 0 when the key is not found.
+    #[test]
+    fn test_storage_read_key_not_found() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key = "non_existent_key";
+        let key_ptr = 100u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let register_id = 1u64;
+        let res = host.storage_read(key_buf_ptr, register_id).unwrap();
+
+        // Should return 0 indicating key not found.
+        assert_eq!(res, 0);
+    }
+
+    /// Tests that `storage_remove` returns 0 when the key is not found.
+    #[test]
+    fn test_storage_remove_key_not_found() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key = "non_existent_key";
+        let key_ptr = 100u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let register_id = 1u64;
+        let res = host.storage_remove(key_buf_ptr, register_id).unwrap();
+
+        // Should return 0 indicating key not found.
+        assert_eq!(res, 0);
+    }
+
+    /// Tests that `storage_read` fails when key length exceeds the limit.
+    #[test]
+    fn test_storage_read_key_too_long() {
+        let mut storage = SimpleMockStorage::new();
+        let mut limits = VMLimits::default();
+        // Set a small key size limit for testing.
+        limits.max_storage_key_size = std::num::NonZeroU64::new(10).unwrap();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Create a key that exceeds the limit.
+        let key = "this_key_is_way_too_long";
+        let key_ptr = 100u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let register_id = 1u64;
+        let err = host.storage_read(key_buf_ptr, register_id).unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::logic::VMLogicError::HostError(crate::errors::HostError::KeyLengthOverflow)
+        ));
+    }
+
+    /// Tests that `storage_write` fails when key length exceeds the limit.
+    #[test]
+    fn test_storage_write_key_too_long() {
+        let mut storage = SimpleMockStorage::new();
+        let mut limits = VMLimits::default();
+        // Set a small key size limit for testing.
+        limits.max_storage_key_size = std::num::NonZeroU64::new(10).unwrap();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Create a key that exceeds the limit.
+        let key = "this_key_is_way_too_long";
+        let key_ptr = 100u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let value = "value";
+        let value_ptr = 200u64;
+        write_str(&host, value_ptr, value);
+        let value_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, value.len() as u64);
+
+        let register_id = 1u64;
+        let err = host
+            .storage_write(key_buf_ptr, value_buf_ptr, register_id)
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::logic::VMLogicError::HostError(crate::errors::HostError::KeyLengthOverflow)
+        ));
+    }
+
+    /// Tests that `storage_write` fails when value length exceeds the limit.
+    #[test]
+    fn test_storage_write_value_too_long() {
+        let mut storage = SimpleMockStorage::new();
+        let mut limits = VMLimits::default();
+        // Set a small value size limit for testing.
+        limits.max_storage_value_size = std::num::NonZeroU64::new(10).unwrap();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key = "key";
+        let key_ptr = 100u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        // Create a value that exceeds the limit.
+        let value = "this_value_is_way_too_long_for_the_limit";
+        let value_ptr = 200u64;
+        write_str(&host, value_ptr, value);
+        let value_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, value.len() as u64);
+
+        let register_id = 1u64;
+        let err = host
+            .storage_write(key_buf_ptr, value_buf_ptr, register_id)
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::logic::VMLogicError::HostError(crate::errors::HostError::ValueLengthOverflow)
+        ));
+    }
+
+    /// Tests that `storage_remove` fails when key length exceeds the limit.
+    #[test]
+    fn test_storage_remove_key_too_long() {
+        let mut storage = SimpleMockStorage::new();
+        let mut limits = VMLimits::default();
+        // Set a small key size limit for testing.
+        limits.max_storage_key_size = std::num::NonZeroU64::new(10).unwrap();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Create a key that exceeds the limit.
+        let key = "this_key_is_way_too_long";
+        let key_ptr = 100u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let register_id = 1u64;
+        let err = host.storage_remove(key_buf_ptr, register_id).unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::logic::VMLogicError::HostError(crate::errors::HostError::KeyLengthOverflow)
+        ));
+    }
+
+    /// Tests `storage_write` overwriting an existing key returns the old value.
+    #[test]
+    fn test_storage_write_overwrite_returns_old_value() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key = "key";
+        let old_value = "old_value";
+        let new_value = "new_value";
+
+        // First write.
+        let key_ptr = 100u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let old_value_ptr = 200u64;
+        write_str(&host, old_value_ptr, old_value);
+        let old_value_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(
+            &host,
+            old_value_buf_ptr,
+            old_value_ptr,
+            old_value.len() as u64,
+        );
+
+        let register_id = 1u64;
+        let res = host
+            .storage_write(key_buf_ptr, old_value_buf_ptr, register_id)
+            .unwrap();
+        // First write should return 0 (no eviction).
+        assert_eq!(res, 0);
+
+        // Second write (overwrite).
+        let new_value_ptr = 300u64;
+        write_str(&host, new_value_ptr, new_value);
+        let new_value_buf_ptr = 48u64;
+        prepare_guest_buf_descriptor(
+            &host,
+            new_value_buf_ptr,
+            new_value_ptr,
+            new_value.len() as u64,
+        );
+
+        let res = host
+            .storage_write(key_buf_ptr, new_value_buf_ptr, register_id)
+            .unwrap();
+        // Second write should return 1 (eviction occurred).
+        assert_eq!(res, 1);
+
+        // Verify the evicted (old) value is in the register.
+        let evicted_value = host.borrow_logic().registers.get(register_id).unwrap();
+        assert_eq!(evicted_value, old_value.as_bytes());
+    }
+
+    /// Tests storage operations with empty key.
+    #[test]
+    fn test_storage_operations_with_empty_key() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Empty key.
+        let key_ptr = 100u64;
+        let key_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, 0);
+
+        let value = "value_for_empty_key";
+        let value_ptr = 200u64;
+        write_str(&host, value_ptr, value);
+        let value_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, value.len() as u64);
+
+        let register_id = 1u64;
+
+        // Write with empty key.
+        let res = host
+            .storage_write(key_buf_ptr, value_buf_ptr, register_id)
+            .unwrap();
+        assert_eq!(res, 0);
+
+        // Read with empty key.
+        let res = host.storage_read(key_buf_ptr, register_id).unwrap();
+        assert_eq!(res, 1);
+        assert_eq!(
+            host.borrow_logic().registers.get(register_id).unwrap(),
+            value.as_bytes()
+        );
+
+        // Remove with empty key.
+        let res = host.storage_remove(key_buf_ptr, register_id).unwrap();
+        assert_eq!(res, 1);
+
+        // Verify empty key is removed.
+        let res = host.storage_read(key_buf_ptr, register_id).unwrap();
+        assert_eq!(res, 0);
+    }
+
+    /// Tests storage operations with empty value.
+    #[test]
+    fn test_storage_operations_with_empty_value() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key = "key_with_empty_value";
+        let key_ptr = 100u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        // Empty value.
+        let value_ptr = 200u64;
+        let value_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, 0);
+
+        let register_id = 1u64;
+
+        // Write with empty value.
+        let res = host
+            .storage_write(key_buf_ptr, value_buf_ptr, register_id)
+            .unwrap();
+        assert_eq!(res, 0);
+
+        // Read should find the key with empty value.
+        let res = host.storage_read(key_buf_ptr, register_id).unwrap();
+        assert_eq!(res, 1);
+        assert_eq!(
+            host.borrow_logic().registers.get(register_id).unwrap(),
+            &[] as &[u8]
+        );
+    }
+
+    /// Tests storage with binary (non-UTF8) key and value.
+    #[test]
+    fn test_storage_with_binary_data() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Binary key with non-UTF8 bytes.
+        let key: Vec<u8> = vec![0x00, 0xFF, 0x80, 0x7F];
+        let key_ptr = 100u64;
+        host.borrow_memory().write(key_ptr, &key).unwrap();
+        let key_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        // Binary value with non-UTF8 bytes.
+        let value: Vec<u8> = vec![0x01, 0x02, 0xFE, 0xFD];
+        let value_ptr = 200u64;
+        host.borrow_memory().write(value_ptr, &value).unwrap();
+        let value_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, value.len() as u64);
+
+        let register_id = 1u64;
+
+        // Write binary data.
+        let res = host
+            .storage_write(key_buf_ptr, value_buf_ptr, register_id)
+            .unwrap();
+        assert_eq!(res, 0);
+
+        // Read binary data.
+        let res = host.storage_read(key_buf_ptr, register_id).unwrap();
+        assert_eq!(res, 1);
+        assert_eq!(
+            host.borrow_logic().registers.get(register_id).unwrap(),
+            &value
+        );
+    }
+
+    /// Tests multiple consecutive storage operations.
+    #[test]
+    fn test_multiple_storage_operations() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Write multiple keys.
+        for i in 0..5 {
+            let key = format!("key_{}", i);
+            let value = format!("value_{}", i);
+
+            let key_ptr = (100 + i * 100) as u64;
+            write_str(&host, key_ptr, &key);
+            let key_buf_ptr = (16 + i * 32) as u64;
+            prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+            let value_ptr = (500 + i * 100) as u64;
+            write_str(&host, value_ptr, &value);
+            let value_buf_ptr = (48 + i * 32) as u64;
+            prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, value.len() as u64);
+
+            let register_id = (i + 1) as u64;
+            host.storage_write(key_buf_ptr, value_buf_ptr, register_id)
+                .unwrap();
+        }
+
+        // Read all keys and verify values.
+        for i in 0..5 {
+            let key = format!("key_{}", i);
+            let expected_value = format!("value_{}", i);
+
+            let key_ptr = (100 + i * 100) as u64;
+            let key_buf_ptr = (16 + i * 32) as u64;
+            // Reuse the already prepared descriptors.
+
+            let register_id = (i + 10) as u64;
+            let res = host.storage_read(key_buf_ptr, register_id).unwrap();
+            assert_eq!(res, 1);
+            assert_eq!(
+                host.borrow_logic().registers.get(register_id).unwrap(),
+                expected_value.as_bytes()
+            );
+        }
+    }
 }
