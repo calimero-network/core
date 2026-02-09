@@ -30,7 +30,7 @@ pub enum ProposalsSubcommand {
         #[arg(
             long,
             help = "Starting position for pagination (skip this many proposals)",
-            default_value_t
+            default_value_t = 0
         )]
         offset: usize,
 

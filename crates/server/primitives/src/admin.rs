@@ -965,6 +965,7 @@ fn default_proposals_limit() -> usize {
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalsRequest {
+    #[serde(default)]
     pub offset: usize,
     #[serde(default = "default_proposals_limit")]
     pub limit: usize,
@@ -979,7 +980,9 @@ pub struct GetContextValueRequest {
 #[derive(Debug, Deserialize, Serialize, Copy, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct GetContextStorageEntriesRequest {
+    #[serde(default)]
     pub offset: usize,
+    #[serde(default = "default_proposals_limit")]
     pub limit: usize,
 }
 
