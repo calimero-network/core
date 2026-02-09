@@ -24,11 +24,11 @@ $: cargo run -p mero-sign -- <COMMAND>
 $: cd tools/mero-sign
 $: cargo install --path .
 > ...
->     Installed package `mero-sign v0.1.0 (/Users/frandomovic/Desktop/things/core/tools/mero-sign)` (executable `mero-sign`)
+>     Installed package `mero-sign v0.1.0 (/path/to/core/tools/mero-sign)` (executable `mero-sign`)
 # Or from workspace root:
 $: cargo install --path tools/mero-sign
 > ...
-> Installed package `mero-sign v0.1.0 (/Users/frandomovic/Desktop/things/core/tools/mero-sign)` (executable `mero-sign`)
+> Installed package `mero-sign v0.1.0 (/path/to/core/tools/mero-sign)` (executable `mero-sign`)
 
 # Verify installation
 $: mero-sign --version
@@ -184,7 +184,7 @@ Use this to get your signer ID before signing, or to verify which key signed a m
 ```bash
 # 1. Build WASM binary
 $: cd apps/kv-store
-$: cargo ./build.sh
+$: ./build.sh
 
 # 2. Generate ABI and bundle (typically done by build-bundle.sh)
 $: cargo run -p calimero-abi-cli -- generate \
@@ -274,7 +274,7 @@ cargo install --path tools/mero-sign --force
 ## Related Tools
 
 - **[meroctl](../../crates/meroctl/)** - CLI for deploying signed bundles to Calimero nodes
-- **[calimero-abi-cli](../../tools/abi/)** - Generate ABI from Rust source code
+- **[calimero-abi-cli](../calimero-abi/)** - Generate ABI from Rust source code
 - **[merod](../../crates/merod/)** - Calimero node daemon
 
 ## See Also
