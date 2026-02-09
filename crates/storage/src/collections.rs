@@ -67,7 +67,7 @@ const DOMAIN_SEPARATOR_COLLECTION: &[u8] = b"__calimero_collection__";
 
 /// Compute the ID for a key in a map.
 /// Uses domain separation to prevent collision with collection IDs.
-fn compute_id(parent: Id, key: &[u8]) -> Id {
+pub(crate) fn compute_id(parent: Id, key: &[u8]) -> Id {
     let mut hasher = Sha256::new();
     hasher.update(parent.as_bytes());
     hasher.update(DOMAIN_SEPARATOR_ENTRY);
@@ -155,6 +155,23 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         }
 
         this
+    }
+
+    /// Creates a detached collection that is NOT registered with the storage system.
+    ///
+    /// This is used for placeholder fields that are never actually used, such as
+    /// GCounter's negative map which exists only to satisfy the type signature but
+    /// is never persisted or read from storage.
+    ///
+    /// WARNING: Collections created with this method will NOT be synced across nodes.
+    /// Only use this for truly inert placeholder fields.
+    fn new_detached() -> Self {
+        Self {
+            children_ids: RefCell::new(Some(indexmap::IndexSet::new())),
+            storage: Element::new(None), // Gets a random ID but won't be persisted
+            _priv: PhantomData,
+        }
+        // Note: No Interface::save or add_child_to call - this collection is completely detached
     }
 
     /// Creates a new collection with a deterministic ID derived from parent ID and field name.
@@ -333,6 +350,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Ok(entry.map(|entry| EntryMut {
             collection: CollectionMut::new(self),
             entry,
+            removed: false,
         }))
     }
 
@@ -407,6 +425,10 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 struct EntryMut<'a, T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> {
     collection: CollectionMut<'a, T, S>,
     entry: Entry<T>,
+    /// Flag to prevent saving on drop when the entry has been removed.
+    /// When `remove()` is called, this is set to true to prevent the Drop impl
+    /// from generating an Update action for the deleted entity.
+    removed: bool,
 }
 
 impl<T, S> EntryMut<'_, T, S>
@@ -414,7 +436,7 @@ where
     T: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    fn remove(self) -> StoreResult<T> {
+    fn remove(mut self) -> StoreResult<T> {
         let old = self
             .collection
             .get(self.entry.id())?
@@ -428,6 +450,10 @@ where
             .collection
             .children_cache()?
             .shift_remove(&self.entry.id());
+
+        // Mark as removed to prevent Drop from creating an Update action
+        // for this deleted entity
+        self.removed = true;
 
         Ok(old)
     }
@@ -460,6 +486,11 @@ where
     S: StorageAdaptor,
 {
     fn drop(&mut self) {
+        // Don't save if the entry was removed - the DeleteRef action has
+        // already been created, and saving would create a conflicting Update action
+        if self.removed {
+            return;
+        }
         self.entry.element_mut().update();
         let _ignored = <Interface<S>>::save(&mut self.entry);
     }

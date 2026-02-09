@@ -31,7 +31,7 @@ impl Handler<RequestBlob> for NetworkManager {
         );
 
         let mut stream_control = self.swarm.behaviour().stream.new_control();
-        let event_recipient = self.event_recipient.clone();
+        let event_dispatcher = self.event_dispatcher.clone();
 
         Box::pin(async move {
             // Wrap the entire blob transfer in a timeout
@@ -44,7 +44,7 @@ impl Handler<RequestBlob> for NetworkManager {
                     Ok(stream) => stream,
                     Err(e) => {
                         // Emit failure event
-                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                        let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
                             blob_id: request.blob_id,
                             context_id: request.context_id,
                             from_peer: request.peer_id,
@@ -68,7 +68,7 @@ impl Handler<RequestBlob> for NetworkManager {
                     Ok(data) => data,
                     Err(e) => {
                         // Emit failure event
-                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                        let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
                             blob_id: request.blob_id,
                             context_id: request.context_id,
                             from_peer: request.peer_id,
@@ -80,7 +80,7 @@ impl Handler<RequestBlob> for NetworkManager {
 
                 if let Err(e) = stream.send(StreamMessage::new(request_data)).await {
                     // Emit failure event
-                    event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                    let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
                         blob_id: request.blob_id,
                         context_id: request.context_id,
                         from_peer: request.peer_id,
@@ -94,7 +94,7 @@ impl Handler<RequestBlob> for NetworkManager {
                     Ok(Some(Ok(msg))) => msg,
                     Ok(Some(Err(e))) => {
                         // Emit failure event
-                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                        let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
                             blob_id: request.blob_id,
                             context_id: request.context_id,
                             from_peer: request.peer_id,
@@ -104,7 +104,7 @@ impl Handler<RequestBlob> for NetworkManager {
                     }
                     Ok(None) => {
                         // Emit failure event
-                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                        let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
                             blob_id: request.blob_id,
                             context_id: request.context_id,
                             from_peer: request.peer_id,
@@ -114,7 +114,7 @@ impl Handler<RequestBlob> for NetworkManager {
                     }
                     Err(_) => {
                         // Timeout occurred
-                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                        let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
                             blob_id: request.blob_id,
                             context_id: request.context_id,
                             from_peer: request.peer_id,
@@ -128,7 +128,7 @@ impl Handler<RequestBlob> for NetworkManager {
                     Ok(response) => response,
                     Err(e) => {
                         // Emit failure event
-                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                        let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
                             blob_id: request.blob_id,
                             context_id: request.context_id,
                             from_peer: request.peer_id,
@@ -188,7 +188,7 @@ impl Handler<RequestBlob> for NetworkManager {
                                 msg
                             },
                             Ok(Some(Err(e))) => {
-                                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                                let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
                                     blob_id: request.blob_id,
                                     context_id: request.context_id,
                                     from_peer: request.peer_id,
@@ -208,7 +208,7 @@ impl Handler<RequestBlob> for NetworkManager {
                                 break;
                             }
                             Err(_) => {
-                                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                                let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
                                     blob_id: request.blob_id,
                                     context_id: request.context_id,
                                     from_peer: request.peer_id,
@@ -240,7 +240,7 @@ impl Handler<RequestBlob> for NetworkManager {
                                     error = %e,
                                     "Failed to parse chunk"
                                 );
-                                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                                let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
                                     blob_id: request.blob_id,
                                     context_id: request.context_id,
                                     from_peer: request.peer_id,
@@ -287,7 +287,7 @@ impl Handler<RequestBlob> for NetworkManager {
                     );
 
                     // Emit success event for NodeManager to handle storage
-                    event_recipient.do_send(NetworkEvent::BlobDownloaded {
+                    let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloaded {
                         blob_id: request.blob_id,
                         context_id: request.context_id,
                         data: collected_data.clone(),
@@ -298,7 +298,7 @@ impl Handler<RequestBlob> for NetworkManager {
                     Ok(Some(collected_data))
                 } else {
                     // Emit failure event - blob not found
-                    event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                    let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
                         blob_id: request.blob_id,
                         context_id: request.context_id,
                         from_peer: request.peer_id,
@@ -313,7 +313,7 @@ impl Handler<RequestBlob> for NetworkManager {
                 result
             } else {
                 // Overall transfer timeout
-                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
                     blob_id: request.blob_id,
                     context_id: request.context_id,
                     from_peer: request.peer_id,

@@ -36,11 +36,17 @@ mod constants;
 mod delta_store;
 pub mod gc;
 pub mod handlers;
+pub mod network_event_channel;
+pub mod network_event_processor;
 mod run;
 mod specialized_node_invite_state;
 pub mod sync;
 mod utils;
 
+pub use network_event_channel::{
+    channel as network_event_channel, NetworkEventChannelConfig, NetworkEventSender,
+};
+pub use network_event_processor::NetworkEventBridge;
 pub use run::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 pub use sync::SyncManager;
 
