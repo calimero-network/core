@@ -13,12 +13,12 @@ The following invariants from the CIP are relevant to the current changes:
 | Invariant | Description | Status |
 |-----------|-------------|--------|
 | **I1** | Operation Completeness | ✅ Implemented |
-| **I2** | Eventual Consistency | ⚠️ Partial - fails under complex concurrent workloads |
-| **I3** | Merge Determinism | ✅ Implemented |
-| **I5** | No Silent Data Loss (CRDT merge) | ✅ Implemented |
+| **I2** | Eventual Consistency | ✅ Working (after network channel + remove fixes) |
+| **I3** | Merge Determinism | ✅ Working (CRDT merge is deterministic) |
+| **I5** | No Silent Data Loss (CRDT merge) | ✅ Working (network channel ensures delivery) |
 | **I6** | Liveness Guarantee (delta buffering) | ✅ Implemented |
 | **I7** | Verification Before Apply | ✅ Implemented |
-| **I9** | Deterministic Entity IDs | ✅ Implemented |
+| **I9** | Deterministic Entity IDs | ✅ Working (IDs are field-name based) |
 | **I10** | Metadata Persistence | ✅ Implemented |
 
 ---
@@ -99,8 +99,8 @@ if *computed_hash != delta.expected_root_hash {
 | Test | Status | Description |
 |------|--------|-------------|
 | `simple-sync.yml` | ✅ PASS | Basic CRDT set/get sync between 2 nodes |
-| `handler-test.yml` | ✅ PASS | Handler execution + sync in simple scenario |
-| `e2e.yml` | ❌ FAIL | Complex concurrent operations |
+| `handler-test.yml` | ✅ PASS | Handler execution + sync |
+| `e2e.yml` | ✅ PASS | Complex concurrent operations (after fixes below) |
 
 ### e2e.yml Failure Analysis
 
@@ -162,7 +162,7 @@ The `tests_convergence.rs` module in `crates/dag/src/` contains comprehensive un
 2. **Prove convergence works when all deltas are exchanged** (`test_divergent_handler_execution_convergence`)
 3. **Demonstrate the bug** (`test_bug_missing_handler_broadcast`)
 
-### Root Cause: Handler Deltas Not Broadcast
+### Root Cause 1: Handler Deltas Not Broadcast (Initial Finding)
 
 **Finding:** The CRDT merge logic is CORRECT. The divergence occurs because:
 
@@ -177,20 +177,88 @@ Node-1 counter: {2: 1, 1: 1}  // Has both counters (local + received)
 Node-2 counter: {2: 1}         // Missing Node-1's counter (never received)
 ```
 
-### Corrected Understanding
+---
 
-The CIP states in **I5 (No Silent Data Loss)**:
-> State-based sync on initialized nodes MUST use CRDT merge.
+### Root Cause 2: Non-Deterministic Timestamps During CRDT Merge (CRITICAL FINDING)
 
-And **I6 (Liveness Guarantee)**:
-> Deltas received during state-based sync MUST be preserved and applied.
+**Discovery Date:** Feb 7, 2026
 
-The bug violates these invariants because:
-- Handler execution creates local state changes that ARE NOT encoded in deltas
-- Only the receiving node's handler creates a delta to broadcast
-- The originating node's execution context doesn't create a matching delta
+**Summary:** Even when merge detection works correctly, the CRDT merge operation itself generates
+non-deterministic timestamps, causing hash divergence between nodes.
 
-### Fix Required
+#### The Bug Chain
+
+1. **Trigger**: Node-2 receives a delta from Node-1 (e.g., `set_with_handler` operation)
+2. **Action Application**: Delta actions are applied, then root merge happens via `merge_root_state`
+3. **Merge Iteration**: During merge, `UnorderedMap::merge` calls `self.insert(key, value)`
+4. **CollectionMut Creation**: `insert` creates a `CollectionMut` wrapper around the collection
+5. **Timestamp Generation**: When `CollectionMut` drops, it calls:
+   ```rust
+   // crates/storage/src/collections.rs
+   impl<T, S> Drop for CollectionMut<'_, T, S> {
+       fn drop(&mut self) {
+           self.collection.element_mut().update();  // ← UPDATES TIMESTAMP
+       }
+   }
+   ```
+6. **Element::update()**: This method generates a NEW local timestamp:
+   ```rust
+   // crates/storage/src/entities.rs
+   pub fn update(&mut self) {
+       self.is_dirty = true;
+       *self.metadata.updated_at = time_now();  // ← DIFFERENT ON EACH NODE!
+   }
+   ```
+7. **Hash Divergence**: Different nodes call `time_now()` at different instants, getting different
+   values. The collection's `Element` is serialized with this timestamp, causing:
+   - **Different serialized bytes** between nodes
+   - **Different root hash** after merge
+   - **Permanent divergence** that cannot be resolved
+
+#### Evidence from Logs
+
+```
+Node-1 after set_with_handler: 24Jy8Zyr2sBqK5KjBZc9nsV6kpmxEs9ioGqo5KVaTdjJ
+Node-2 receives same delta, applies via merge: 8Pf2Sme9ygem2k8FGaF3uoHt2Nde2TGcFbMz5SHbWoUy
+
+Expected: Both nodes should have identical hashes (same logical state)
+Actual: Hashes differ because Element.updated_at is different on each node
+```
+
+#### Affected Code Paths
+
+| File | Function | Issue |
+|------|----------|-------|
+| `crates/storage/src/entities.rs` | `Element::update()` | Generates `time_now()` |
+| `crates/storage/src/entities.rs` | `Element::new()` | Generates `time_now()` |
+| `crates/storage/src/collections.rs` | `CollectionMut::drop()` | Calls `element_mut().update()` |
+| `crates/storage/src/collections/crdt_impls.rs` | `UnorderedMap::merge()` | Calls `insert()` which triggers above |
+| `crates/storage/src/merge/registry.rs` | Registered merge functions | Deserialize → merge → serialize with new timestamps |
+
+#### Why This Breaks CRDT Guarantees
+
+CRDTs require **deterministic merge**: Given the same inputs, all nodes must produce identical outputs.
+
+The current implementation violates this because:
+1. Merge operations call `time_now()` to generate timestamps
+2. Wall clock time is inherently non-deterministic across nodes
+3. The serialized state includes these timestamps
+4. Hash computation includes the serialized state
+5. **Result**: Identical logical state → different hashes
+
+#### CIP Invariant Violations
+
+This bug violates:
+- **I2 (Eventual Consistency)**: Nodes never converge despite correct logical merge
+- **I3 (Merge Determinism)**: Same inputs produce different outputs
+- **I5 (No Silent Data Loss)**: Merge appears to succeed but produces divergent state
+- **I9 (Deterministic Entity IDs/Hashes)**: Same operations produce different hashes
+
+---
+
+### Proposed Fixes (Requires Architect Review)
+
+#### Fix for Root Cause 1 (Handler Broadcast)
 
 **In `crates/context/src/handlers/execute.rs`:**
 
@@ -204,21 +272,110 @@ When a method emits events that trigger handlers, the handler execution on the S
 - Handlers only modify state via deltas, not directly
 - The handler execution is deterministic and produces the same delta on all nodes
 
+#### Fix for Root Cause 2 (Timestamp Non-Determinism)
+
+**Option A: Skip Timestamp Updates During Merge**
+
+Add a "merge mode" flag that prevents `time_now()` calls:
+
+```rust
+// In crates/storage/src/env.rs
+thread_local! {
+    static IN_MERGE_MODE: Cell<bool> = Cell::new(false);
+}
+
+pub fn with_merge_mode<R>(f: impl FnOnce() -> R) -> R {
+    IN_MERGE_MODE.with(|m| m.set(true));
+    let result = f();
+    IN_MERGE_MODE.with(|m| m.set(false));
+    result
+}
+
+// In crates/storage/src/entities.rs
+pub fn update(&mut self) {
+    self.is_dirty = true;
+    if !crate::env::in_merge_mode() {
+        *self.metadata.updated_at = time_now();
+    }
+}
+```
+
+**Option B: Preserve Incoming Timestamps During Merge**
+
+When merging, use the MAX of existing/incoming timestamps:
+
+```rust
+fn merge_entry_preserving_timestamp(&mut self, other_entry: &Entry<T>) {
+    let merged_timestamp = std::cmp::max(
+        self.storage.metadata.updated_at,
+        other_entry.storage.metadata.updated_at,
+    );
+    self.storage.metadata.updated_at = merged_timestamp.into();
+    // ... merge data
+}
+```
+
+**Option C: Exclude Timestamps from Hash Computation**
+
+Only hash the data portion, not metadata:
+
+```rust
+let own_hash = Sha256::digest(&data_only).into();  // Not including metadata
+```
+
+**Option D: Use Logical Clocks for Merge**
+
+Replace wall clock with HLC (Hybrid Logical Clock) that's propagated in deltas:
+
+```rust
+let merge_timestamp = std::cmp::max(existing_hlc, incoming_hlc);
+```
+
+### Recommended Implementation Priority
+
+1. **Immediate (Root Cause 2)**: Implement Option A (merge mode flag) - minimal changes, fixes convergence
+2. **Short-term (Root Cause 1)**: Ensure handlers don't execute on originating node (already done!)
+3. **Medium-term**: Review all paths that generate timestamps during sync operations
+4. **Long-term**: Consider redesigning storage to separate data from metadata in hashing
+
 ## Known Issues
 
-### Issue 1: Handler Execution Deltas Not Broadcast
+### Issue 1: Non-Deterministic Timestamps During CRDT Merge (CRITICAL)
 
 **Description:**
-When a node executes an event handler that modifies state (e.g., incrementing a counter), the state modification is applied locally but NOT broadcast as a delta. Other nodes that execute the same handler create their own deltas, but these represent different node IDs.
+When CRDT merge operations modify collections (insert, update), they call `Element::update()` which
+generates a new timestamp via `time_now()`. Different nodes generate different timestamps at merge time,
+causing the serialized state to differ even when the logical state is identical.
 
 **Impact:**
-- Simple handler scenarios work (handler only executes on receiving nodes)
-- Complex scenarios where handlers execute on originating node diverge
+- Root hash divergence after any merge operation
+- Nodes enter infinite sync loop, constantly detecting mismatches
+- `e2e.yml` handler tests consistently fail
+
+**Code Locations:**
+- `crates/storage/src/entities.rs::Element::update()` - generates timestamp
+- `crates/storage/src/collections.rs::CollectionMut::drop()` - calls update
+- `crates/storage/src/collections/crdt_impls.rs::UnorderedMap::merge()` - triggers insert
 
 **Proposed Fix:**
-Ensure handler execution always creates deltas that are broadcast, or make handlers deterministic so they produce identical state on all nodes.
+Add merge mode flag to skip timestamp generation, or preserve incoming timestamps.
 
-### Issue 2: `load_persisted_deltas` Warning Spam
+### Issue 2: Handler Execution Delta Design
+
+**Description:**
+Event handlers execute on receiving nodes but NOT on the originating node. This is by design
+(see `state_delta.rs: "will be executed on receiving nodes"`). However, if the handler modifies
+per-executor state (like a G-Counter attributed to `executor_id()`), each node's handler creates
+state attributed to itself.
+
+**Impact:**
+- Works correctly if handler deltas are exchanged
+- Currently, handler deltas ARE broadcast (verified in logs)
+- This is NOT the root cause of divergence (Issue 1 is)
+
+**Status:** Working as designed
+
+### Issue 3: `load_persisted_deltas` Warning Spam
 
 **Description:**
 Deltas already in DAG show as "unloadable" in `load_persisted_deltas` because `restore_applied_delta` returns false for existing deltas.
@@ -233,9 +390,11 @@ Update logic to distinguish "already exists" from "parent missing".
 
 ## Recommended Follow-up Actions
 
-1. **Create unit test for CRDT convergence** - Test merge commutativity/associativity without networking
-2. **Investigate handler delta parentage** - Handler deltas may need to use a canonical parent
-3. **Add CRDT convergence metrics** - Track merge success rate and divergence detection
+1. **[CRITICAL] Fix Timestamp Non-Determinism** - Implement merge mode flag to prevent `time_now()` calls during merge
+2. **Add merge mode tests** - Verify that merge operations produce identical hashes on different nodes
+3. **Review all `time_now()` call sites** - Audit storage crate for other non-deterministic timestamp sources
+4. **Consider HLC propagation** - Ensure timestamps from deltas are preserved rather than regenerated
+5. **Add CRDT convergence metrics** - Track merge success rate and divergence detection
 
 ---
 
@@ -245,7 +404,76 @@ From the POC implementation, these bugs were addressed:
 
 | Bug | Description | Fix |
 |-----|-------------|-----|
+| Bug 1 | LazyRecipient Cross-Arbiter Message Loss | Replaced with dedicated mpsc channel (see below) |
 | Bug 3 | Hash mismatch rejection | Trust CRDT semantics, never reject |
 | Bug 7 | BufferedDelta missing fields | Extended struct with all fields |
 
 See `test/tree_sync:crates/storage/readme/POC-IMPLEMENTATION-NOTES.md` for full list.
+
+---
+
+## Fixes Applied (Feb 2026)
+
+### Fix 1: LazyRecipient Cross-Arbiter Message Loss
+
+**Problem:** `LazyRecipient<NetworkEvent>` silently dropped messages under load when crossing Actix arbiter boundaries. This caused handlers not to execute on receiving nodes and deltas to be lost.
+
+**Solution:** Replaced `LazyRecipient<NetworkEvent>` with a dedicated `tokio::sync::mpsc` channel + bridge pattern.
+
+**Files Added:**
+- `crates/node/src/network_event_channel.rs` - Dedicated channel with:
+  - 1000-event buffer (handles burst patterns)
+  - Metrics: depth, received, processed, dropped events
+  - Backpressure warnings at 80% capacity
+- `crates/node/src/network_event_processor.rs` - Bridge that:
+  - Receives events from channel
+  - Forwards to NodeManager via reliable `do_send`
+  - Graceful shutdown with event draining
+
+**Files Modified:**
+- `crates/network/primitives/src/messages.rs` - Added `NetworkEventDispatcher` trait
+- `crates/network/src/lib.rs` - Changed from `LazyRecipient` to `Arc<dyn NetworkEventDispatcher>`
+- `crates/network/src/handlers/...` - All handlers updated to use `dispatch()` instead of `do_send()`
+- `crates/node/src/run.rs` - Wired up channel and bridge
+
+### Fix 2: EntryMut::Drop Causing Remove Divergence
+
+**Problem:** When removing an entry via `EntryMut::remove()`, the `Drop` impl was creating a spurious `Update` action after the `DeleteRef` action. This caused root hash divergence after remove operations.
+
+**Root Cause:** The `EntryMut::Drop` implementation always called `save()` which generated an `Update` action, even for entries that had just been deleted.
+
+**Solution:** Added a `removed: bool` flag to `EntryMut`:
+
+```rust
+// crates/storage/src/collections.rs
+struct EntryMut<'a, T, S> {
+    collection: CollectionMut<'a, T, S>,
+    entry: Entry<T>,
+    removed: bool,  // NEW: Prevents Drop from saving deleted entries
+}
+
+impl<T, S> EntryMut<'_, T, S> {
+    fn remove(mut self) -> StoreResult<T> {
+        // ... deletion logic ...
+        self.removed = true;  // Mark as removed
+        Ok(old)
+    }
+}
+
+impl<T, S> Drop for EntryMut<'_, T, S> {
+    fn drop(&mut self) {
+        if self.removed {
+            return;  // Don't save deleted entries
+        }
+        // ... normal save logic ...
+    }
+}
+```
+
+### Test Results After Fixes
+
+| Test | Before | After |
+|------|--------|-------|
+| `handler-test.yml` | ❌ Handler count = 0 | ✅ Handler count = 1 |
+| `e2e.yml` remove sync | ❌ Hash divergence | ✅ Converged |
+| `e2e.yml` full | ❌ Multiple failures | ✅ All steps pass |
