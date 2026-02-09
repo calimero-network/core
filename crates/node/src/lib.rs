@@ -162,19 +162,26 @@ impl NodeState {
     }
 
     /// Start a sync session for a context (enables delta buffering).
+    ///
+    /// Uses atomic get-or-create semantics to avoid race conditions where
+    /// concurrent deltas could both try to create a session, causing the
+    /// second to overwrite the first and lose any buffered deltas.
     pub(crate) fn start_sync_session(&self, context_id: ContextId, sync_start_hlc: u64) {
         use calimero_node_primitives::delta_buffer::DeltaBuffer;
 
-        self.sync_sessions.insert(
-            context_id,
+        // Use entry().or_insert_with() for atomic get-or-create semantics.
+        // This prevents a TOCTOU race where two concurrent deltas both see
+        // no session exists, both create sessions, and the second overwrites
+        // the first (losing any deltas buffered in the first session).
+        let _session = self.sync_sessions.entry(context_id).or_insert_with(|| {
             SyncSession {
                 state: SyncSessionState::BufferingDeltas {
                     buffered_count: 0,
                     sync_start_hlc,
                 },
                 delta_buffer: DeltaBuffer::new(1000, sync_start_hlc), // Max 1000 buffered deltas
-            },
-        );
+            }
+        });
     }
 
     /// End a sync session and return buffered deltas for replay.

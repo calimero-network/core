@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use calimero_context_primitives::client::ContextClient;
 use calimero_dag::{
-    ApplyError, CausalDelta, DagStore as CoreDagStore, DeltaApplier, PendingStats,
-    MAX_DELTA_QUERY_LIMIT,
+    ApplyError, CausalDelta, DagStore as CoreDagStore, DeltaApplier, MAX_DELTA_QUERY_LIMIT,
+    PendingStats,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -908,6 +908,11 @@ impl DeltaStore {
                     } else {
                         // Re-acquire lock as write lock to mutate DAG
                         let mut dag = self.dag.write().await;
+
+                        // Track pending deltas BEFORE adding to detect cascades
+                        let pending_before: std::collections::HashSet<[u8; 32]> =
+                            dag.get_pending_delta_ids().into_iter().collect();
+
                         if let Err(e) = dag.add_delta(dag_delta, &*self.applier).await {
                             tracing::warn!(
                                 ?e,
@@ -915,6 +920,67 @@ impl DeltaStore {
                                 parent_id = ?parent_id,
                                 "Failed to load persisted parent delta into DAG"
                             );
+                        } else if !pending_before.is_empty() {
+                            // Detect which pending deltas cascaded (were applied)
+                            let pending_after: std::collections::HashSet<[u8; 32]> =
+                                dag.get_pending_delta_ids().into_iter().collect();
+                            let cascaded_deltas: Vec<[u8; 32]> =
+                                pending_before.difference(&pending_after).copied().collect();
+
+                            // Release DAG lock before DB access
+                            drop(dag);
+
+                            // Look up events for cascaded deltas and collect for handler execution
+                            if !cascaded_deltas.is_empty() {
+                                tracing::info!(
+                                    context_id = %self.applier.context_id,
+                                    parent_id = ?parent_id,
+                                    cascaded_count = cascaded_deltas.len(),
+                                    "Deltas cascaded after loading parent from database"
+                                );
+
+                                for cascaded_id in cascaded_deltas {
+                                    let cascaded_key = calimero_store::key::ContextDagDelta::new(
+                                        self.applier.context_id,
+                                        cascaded_id,
+                                    );
+
+                                    if let Ok(Some(cascaded_stored)) = handle.get(&cascaded_key) {
+                                        if let Some(events_data) = cascaded_stored.events {
+                                            all_cascaded_events.push((cascaded_id, events_data));
+                                            tracing::debug!(
+                                                context_id = %self.applier.context_id,
+                                                delta_id = ?cascaded_id,
+                                                "Retrieved stored events for cascaded delta"
+                                            );
+                                        }
+
+                                        // Update the delta as applied and clear events
+                                        let mut write_handle =
+                                            self.applier.context_client.datastore_handle();
+                                        if let Err(e) = write_handle.put(
+                                            &cascaded_key,
+                                            &calimero_store::types::ContextDagDelta {
+                                                delta_id: cascaded_id,
+                                                parents: cascaded_stored.parents,
+                                                actions: cascaded_stored.actions,
+                                                hlc: cascaded_stored.hlc,
+                                                applied: true,
+                                                expected_root_hash: cascaded_stored
+                                                    .expected_root_hash,
+                                                events: None, // Clear events after cascade
+                                            },
+                                        ) {
+                                            tracing::warn!(
+                                                ?e,
+                                                context_id = %self.applier.context_id,
+                                                delta_id = ?cascaded_id,
+                                                "Failed to update cascaded delta as applied"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
