@@ -4,6 +4,7 @@
 //! **Main Function**: `start(NodeConfig)` - initializes and runs the node.
 
 use std::pin::pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use actix::Actor;
@@ -33,6 +34,8 @@ use tracing::info;
 
 use crate::arbiter_pool::ArbiterPool;
 use crate::gc::GarbageCollector;
+use crate::network_event_channel::{self, NetworkEventChannelConfig};
+use crate::network_event_processor::NetworkEventBridge;
 use crate::sync::{SyncConfig, SyncManager};
 use crate::NodeManager;
 
@@ -84,14 +87,24 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let node_recipient = LazyRecipient::new();
     let network_recipient = LazyRecipient::new();
     let context_recipient = LazyRecipient::new();
-    let network_event_recipient = LazyRecipient::new();
+
+    // Create dedicated network event channel for reliable message delivery
+    // This replaces LazyRecipient<NetworkEvent> to avoid cross-arbiter message loss
+    let channel_config = NetworkEventChannelConfig {
+        channel_size: 1000,     // Configurable, handles burst patterns
+        warning_threshold: 0.8, // Log warning at 80% capacity
+        stats_log_interval: Duration::from_secs(30),
+    };
+    let (network_event_sender, network_event_receiver) =
+        network_event_channel::channel(channel_config, &mut registry);
 
     // Create arbiter pool for spawning actors across threads
     let mut arbiter_pool = ArbiterPool::new().await?;
 
+    // Create NetworkManager with channel-based dispatcher for reliable event delivery
     let network_manager = NetworkManager::new(
         &config.network,
-        network_event_recipient.clone(),
+        Arc::new(network_event_sender),
         &mut registry,
     )
     .await?;
@@ -171,11 +184,18 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_state.clone(),
     );
 
-    let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
+    // Start NodeManager actor and get its address
+    let node_manager_addr = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
         assert!(node_recipient.init(ctx), "failed to initialize");
-        assert!(network_event_recipient.init(ctx), "failed to initialize");
         node_manager
     });
+
+    // Start the network event bridge in a dedicated tokio task
+    // This bridges the channel to NodeManager, ensuring reliable message delivery
+    // by avoiding cross-arbiter message passing issues
+    let bridge = NetworkEventBridge::new(network_event_receiver, node_manager_addr);
+    let bridge_shutdown = bridge.shutdown_handle();
+    let bridge_handle = tokio::spawn(bridge.run());
 
     let server = calimero_server::start(
         config.server.clone(),
@@ -195,6 +215,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let mut sync = pin!(sync_manager.start());
     let mut server = tokio::spawn(server);
+    let mut bridge = bridge_handle;
 
     info!("Node started successfully");
 
@@ -202,7 +223,15 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         tokio::select! {
             _ = &mut sync => {},
             res = &mut server => res??,
-            res = &mut arbiter_pool.system_handle => break res?,
+            res = &mut bridge => {
+                // Bridge task completed (channel closed or shutdown signal)
+                tracing::warn!("Network event bridge stopped: {:?}", res);
+            }
+            res = &mut arbiter_pool.system_handle => {
+                // Signal bridge shutdown before exiting
+                bridge_shutdown.notify_one();
+                break res?;
+            }
         }
     }
 }

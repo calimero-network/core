@@ -30,7 +30,7 @@ impl EventHandler<Event<VerificationRequest, SpecializedNodeInvitationResponse>>
                         "Received specialized node verification request"
                     );
                     // Forward to NodeManager for handling
-                    self.event_recipient.do_send(
+                    let _ignored = self.event_dispatcher.dispatch(
                         NetworkEvent::SpecializedNodeVerificationRequest {
                             peer_id: peer,
                             request_id,
@@ -51,12 +51,13 @@ impl EventHandler<Event<VerificationRequest, SpecializedNodeInvitationResponse>>
                         "Received specialized node invitation response"
                     );
                     // Forward to NodeManager for handling
-                    self.event_recipient
-                        .do_send(NetworkEvent::SpecializedNodeInvitationResponse {
+                    let _ignored = self.event_dispatcher.dispatch(
+                        NetworkEvent::SpecializedNodeInvitationResponse {
                             peer_id: peer,
                             request_id,
                             response,
-                        });
+                        },
+                    );
                 }
             },
             Event::OutboundFailure {
