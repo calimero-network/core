@@ -89,7 +89,6 @@ members = [
     "./apps/abi_conformance",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
-    "./apps/e2e-kv-store",
 
     "./tools/calimero-abi",
     "./tools/merodb",
