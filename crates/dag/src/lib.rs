@@ -47,7 +47,7 @@ impl Default for DeltaKind {
 }
 
 /// A causal delta with parent references
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, Serialize, Deserialize)]
 pub struct CausalDelta<T> {
     /// Unique delta ID (content hash)
     pub id: [u8; 32],
@@ -67,6 +67,36 @@ pub struct CausalDelta<T> {
     /// Kind of delta (regular or checkpoint)
     #[serde(default)]
     pub kind: DeltaKind,
+}
+
+/// Custom BorshDeserialize implementation for backwards compatibility.
+///
+/// This handles deserialization of old data (without `kind` field) by defaulting
+/// to `DeltaKind::Regular` when the field is missing. Borsh reads fields sequentially,
+/// so if we've read all mandatory fields and there's no more data, we know we're
+/// reading old format data.
+impl<T: BorshDeserialize> BorshDeserialize for CausalDelta<T> {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        // Read mandatory fields
+        let id = <[u8; 32]>::deserialize_reader(reader)?;
+        let parents = Vec::<[u8; 32]>::deserialize_reader(reader)?;
+        let payload = T::deserialize_reader(reader)?;
+        let hlc = calimero_storage::logical_clock::HybridTimestamp::deserialize_reader(reader)?;
+        let expected_root_hash = <[u8; 32]>::deserialize_reader(reader)?;
+
+        // Try to read the `kind` field. If it fails (EOF/no more data), default to Regular.
+        // This provides backwards compatibility with old serialized data that didn't have `kind`.
+        let kind = DeltaKind::deserialize_reader(reader).unwrap_or_default();
+
+        Ok(Self {
+            id,
+            parents,
+            payload,
+            hlc,
+            expected_root_hash,
+            kind,
+        })
+    }
 }
 
 impl<T> CausalDelta<T> {
