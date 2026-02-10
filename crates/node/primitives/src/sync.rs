@@ -280,6 +280,188 @@ impl SyncHandshakeResponse {
 }
 
 // =============================================================================
+// Protocol Selection (CIP §2.3 - Protocol Selection Rules)
+// =============================================================================
+
+/// Result of protocol selection with reasoning.
+#[derive(Clone, Debug)]
+pub struct ProtocolSelection {
+    /// The selected protocol.
+    pub protocol: SyncProtocol,
+    /// Human-readable reason for the selection (for logging).
+    pub reason: &'static str,
+}
+
+/// Calculate the divergence ratio between two handshakes.
+///
+/// Formula: `|local.entity_count - remote.entity_count| / max(remote.entity_count, 1)`
+///
+/// Returns a value in [0.0, ∞), where:
+/// - 0.0 = identical entity counts
+/// - 1.0 = 100% divergence (e.g., local=0, remote=100)
+/// - >1.0 = local has more entities than remote
+#[must_use]
+pub fn calculate_divergence(local: &SyncHandshake, remote: &SyncHandshake) -> f64 {
+    let diff = (local.entity_count as i64 - remote.entity_count as i64).unsigned_abs();
+    let denominator = remote.entity_count.max(1);
+    diff as f64 / denominator as f64
+}
+
+/// Select the optimal sync protocol based on handshake information.
+///
+/// Implements the decision table from CIP §2.3:
+///
+/// | # | Condition | Selected Protocol |
+/// |---|-----------|-------------------|
+/// | 1 | `root_hash` match | `None` |
+/// | 2 | `!has_state` (fresh node) | `Snapshot` |
+/// | 3 | `has_state` AND divergence >50% | `HashComparison` |
+/// | 4 | `max_depth` >3 AND divergence <20% | `SubtreePrefetch` |
+/// | 5 | `entity_count` >50 AND divergence <10% | `BloomFilter` |
+/// | 6 | `max_depth` 1-2 AND avg children/level >10 | `LevelWise` |
+/// | 7 | (default) | `HashComparison` |
+///
+/// **CRITICAL (Invariant I5)**: Snapshot is NEVER selected for initialized nodes.
+/// This prevents silent data loss from overwriting local CRDT state.
+#[must_use]
+pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> ProtocolSelection {
+    // Rule 1: Already synced - no action needed
+    if local.root_hash == remote.root_hash {
+        return ProtocolSelection {
+            protocol: SyncProtocol::None,
+            reason: "root hashes match, already in sync",
+        };
+    }
+
+    // Check version compatibility first
+    if !local.is_version_compatible(remote) {
+        // Version mismatch - fall back to HashComparison as safest option
+        return ProtocolSelection {
+            protocol: SyncProtocol::HashComparison {
+                root_hash: remote.root_hash,
+                divergent_subtrees: vec![],
+            },
+            reason: "version mismatch, using safe fallback",
+        };
+    }
+
+    // Rule 2: Fresh node - Snapshot allowed
+    // CRITICAL: This is the ONLY case where Snapshot is permitted
+    if !local.has_state {
+        return ProtocolSelection {
+            protocol: SyncProtocol::Snapshot {
+                compressed: remote.entity_count > 100,
+                verified: true,
+            },
+            reason: "fresh node bootstrap via snapshot",
+        };
+    }
+
+    // From here on, local HAS state - NEVER use Snapshot (Invariant I5)
+    let divergence = calculate_divergence(local, remote);
+
+    // Rule 3: Large divergence (>50%) - use HashComparison with CRDT merge
+    if divergence > 0.5 {
+        return ProtocolSelection {
+            protocol: SyncProtocol::HashComparison {
+                root_hash: remote.root_hash,
+                divergent_subtrees: vec![],
+            },
+            reason: "high divergence (>50%), using hash comparison with CRDT merge",
+        };
+    }
+
+    // Rule 4: Deep tree with localized changes
+    if remote.max_depth > 3 && divergence < 0.2 {
+        return ProtocolSelection {
+            protocol: SyncProtocol::SubtreePrefetch {
+                subtree_roots: vec![], // Will be populated during sync
+            },
+            reason: "deep tree with low divergence, using subtree prefetch",
+        };
+    }
+
+    // Rule 5: Large tree with small diff
+    if remote.entity_count > 50 && divergence < 0.1 {
+        return ProtocolSelection {
+            protocol: SyncProtocol::BloomFilter {
+                // ~10 bits per entity, max 10k; saturating to avoid overflow on huge counts
+                filter_size: remote.entity_count.saturating_mul(10).min(10_000),
+                false_positive_rate: 0.01,
+            },
+            reason: "large tree with small divergence, using bloom filter",
+        };
+    }
+
+    // Rule 6: Wide shallow tree (depth 1-2 with many children per level)
+    // Skip depth=0 (no hierarchy) - LevelWise requires actual tree structure
+    if remote.max_depth >= 1 && remote.max_depth <= 2 {
+        let avg_children_per_level = remote.entity_count / u64::from(remote.max_depth);
+        if avg_children_per_level > 10 {
+            return ProtocolSelection {
+                protocol: SyncProtocol::LevelWise {
+                    max_depth: remote.max_depth,
+                },
+                reason: "wide shallow tree, using level-wise sync",
+            };
+        }
+    }
+
+    // Rule 7: Default fallback
+    ProtocolSelection {
+        protocol: SyncProtocol::HashComparison {
+            root_hash: remote.root_hash,
+            divergent_subtrees: vec![],
+        },
+        reason: "default: using hash comparison",
+    }
+}
+
+/// Check if a protocol kind is supported by the remote peer.
+#[must_use]
+pub fn is_protocol_supported(protocol: &SyncProtocol, capabilities: &SyncCapabilities) -> bool {
+    capabilities.supported_protocols.contains(&protocol.kind())
+}
+
+/// Select protocol with fallback if preferred is not supported.
+///
+/// Tries the preferred protocol first, then falls back through the decision
+/// table until a mutually supported protocol is found.
+#[must_use]
+pub fn select_protocol_with_fallback(
+    local: &SyncHandshake,
+    remote: &SyncHandshake,
+    remote_capabilities: &SyncCapabilities,
+) -> ProtocolSelection {
+    let preferred = select_protocol(local, remote);
+
+    // Check if preferred protocol is supported
+    if is_protocol_supported(&preferred.protocol, remote_capabilities) {
+        return preferred;
+    }
+
+    // Fallback: HashComparison is always safe for initialized nodes
+    if local.has_state {
+        let fallback = SyncProtocol::HashComparison {
+            root_hash: remote.root_hash,
+            divergent_subtrees: vec![],
+        };
+        if is_protocol_supported(&fallback, remote_capabilities) {
+            return ProtocolSelection {
+                protocol: fallback,
+                reason: "fallback to hash comparison (preferred not supported)",
+            };
+        }
+    }
+
+    // Last resort: None (will need manual intervention)
+    ProtocolSelection {
+        protocol: SyncProtocol::None,
+        reason: "no mutually supported protocol found",
+    }
+}
+
+// =============================================================================
 // Snapshot Sync Types
 // =============================================================================
 
@@ -709,5 +891,185 @@ mod tests {
         };
         let kind: SyncProtocolKind = (&protocol).into();
         assert_eq!(kind, SyncProtocolKind::HashComparison);
+    }
+
+    // =========================================================================
+    // Protocol Selection Tests (Issue #1771)
+    // =========================================================================
+
+    #[test]
+    fn test_calculate_divergence() {
+        // Same counts
+        let local = SyncHandshake::new([1; 32], 100, 5, vec![]);
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![]);
+        assert!((calculate_divergence(&local, &remote) - 0.0).abs() < f64::EPSILON);
+
+        // 50% divergence
+        let local = SyncHandshake::new([1; 32], 50, 5, vec![]);
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![]);
+        assert!((calculate_divergence(&local, &remote) - 0.5).abs() < f64::EPSILON);
+
+        // 100% divergence (local empty)
+        let local = SyncHandshake::new([1; 32], 0, 0, vec![]);
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![]);
+        assert!((calculate_divergence(&local, &remote) - 1.0).abs() < f64::EPSILON);
+
+        // Handles zero remote count
+        let local = SyncHandshake::new([1; 32], 100, 5, vec![]);
+        let remote = SyncHandshake::new([2; 32], 0, 0, vec![]);
+        assert!((calculate_divergence(&local, &remote) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_select_protocol_rule1_already_synced() {
+        let local = SyncHandshake::new([42; 32], 100, 5, vec![]);
+        let remote = SyncHandshake::new([42; 32], 200, 3, vec![]); // Same root hash
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(selection.protocol, SyncProtocol::None));
+        assert!(selection.reason.contains("already in sync"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule2_fresh_node_gets_snapshot() {
+        let local = SyncHandshake::new([0; 32], 0, 0, vec![]); // Fresh node
+        let remote = SyncHandshake::new([42; 32], 200, 5, vec![]);
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(selection.protocol, SyncProtocol::Snapshot { .. }));
+        assert!(selection.reason.contains("fresh node"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule3_initialized_node_never_gets_snapshot() {
+        // CRITICAL TEST for Invariant I5
+        let local = SyncHandshake::new([1; 32], 1, 1, vec![]); // Has state!
+        let remote = SyncHandshake::new([42; 32], 200, 5, vec![]);
+
+        let selection = select_protocol(&local, &remote);
+        // Even with high divergence, should NOT get Snapshot
+        assert!(!matches!(selection.protocol, SyncProtocol::Snapshot { .. }));
+    }
+
+    #[test]
+    fn test_select_protocol_rule3_high_divergence_uses_hash_comparison() {
+        let local = SyncHandshake::new([1; 32], 10, 2, vec![]); // Has state
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![]); // 90% divergence
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(
+            selection.protocol,
+            SyncProtocol::HashComparison { .. }
+        ));
+        assert!(selection.reason.contains("divergence"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule4_deep_tree_uses_subtree_prefetch() {
+        let local = SyncHandshake::new([1; 32], 90, 5, vec![]); // ~10% divergence
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![]); // depth > 3
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(
+            selection.protocol,
+            SyncProtocol::SubtreePrefetch { .. }
+        ));
+        assert!(selection.reason.contains("subtree"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule5_large_tree_small_diff_uses_bloom() {
+        let local = SyncHandshake::new([1; 32], 95, 2, vec![]); // ~5% divergence
+        let remote = SyncHandshake::new([2; 32], 100, 2, vec![]); // entity_count > 50
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(
+            selection.protocol,
+            SyncProtocol::BloomFilter { .. }
+        ));
+        assert!(selection.reason.contains("bloom"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule6_wide_shallow_uses_levelwise() {
+        // Wide shallow tree: max_depth <= 2, many children per level, entity_count <= 50
+        // (to avoid triggering bloom filter rule first)
+        let local = SyncHandshake::new([1; 32], 40, 2, vec![]);
+        let remote = SyncHandshake::new([2; 32], 40, 2, vec![]);
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(selection.protocol, SyncProtocol::LevelWise { .. }));
+        assert!(selection.reason.contains("level"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule7_default_uses_hash_comparison() {
+        // Create conditions that don't match any specific rule
+        let local = SyncHandshake::new([1; 32], 30, 2, vec![]); // ~25% divergence
+        let remote = SyncHandshake::new([2; 32], 40, 3, vec![]); // depth=3, not >3
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(
+            selection.protocol,
+            SyncProtocol::HashComparison { .. }
+        ));
+        assert!(selection.reason.contains("default"));
+    }
+
+    #[test]
+    fn test_select_protocol_version_mismatch_uses_safe_fallback() {
+        let local = SyncHandshake::new([1; 32], 100, 5, vec![]);
+        let mut remote = SyncHandshake::new([2; 32], 100, 5, vec![]);
+        remote.version = SYNC_PROTOCOL_VERSION + 1; // Incompatible version
+
+        let selection = select_protocol(&local, &remote);
+        assert!(matches!(
+            selection.protocol,
+            SyncProtocol::HashComparison { .. }
+        ));
+        assert!(selection.reason.contains("version mismatch"));
+    }
+
+    #[test]
+    fn test_is_protocol_supported() {
+        let caps = SyncCapabilities::default();
+
+        // Supported (in default list)
+        assert!(is_protocol_supported(&SyncProtocol::None, &caps));
+        assert!(is_protocol_supported(
+            &SyncProtocol::HashComparison {
+                root_hash: [0; 32],
+                divergent_subtrees: vec![]
+            },
+            &caps
+        ));
+
+        // Not supported (not in default list)
+        assert!(!is_protocol_supported(
+            &SyncProtocol::SubtreePrefetch {
+                subtree_roots: vec![]
+            },
+            &caps
+        ));
+        assert!(!is_protocol_supported(
+            &SyncProtocol::LevelWise { max_depth: 2 },
+            &caps
+        ));
+    }
+
+    #[test]
+    fn test_select_protocol_with_fallback() {
+        let local = SyncHandshake::new([1; 32], 90, 5, vec![]); // Would prefer SubtreePrefetch
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![]);
+        let caps = SyncCapabilities::default(); // Doesn't support SubtreePrefetch
+
+        let selection = select_protocol_with_fallback(&local, &remote, &caps);
+
+        // Should fall back to HashComparison since SubtreePrefetch not supported
+        assert!(matches!(
+            selection.protocol,
+            SyncProtocol::HashComparison { .. }
+        ));
+        assert!(selection.reason.contains("fallback"));
     }
 }
