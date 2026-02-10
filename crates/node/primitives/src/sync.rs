@@ -991,13 +991,16 @@ pub enum TreeCompareResult {
     /// Hashes differ - need to recurse or fetch leaf.
     ///
     /// For internal nodes: lists children to recurse into.
-    /// For leaf nodes: both vecs will be empty, but Different still indicates
-    /// that the leaf data needs to be fetched and merged.
+    /// For leaf nodes: all vecs will be empty, but Different still indicates
+    /// that the leaf data needs to be fetched and merged bidirectionally.
     Different {
         /// IDs of children in remote but not in local (need to fetch).
-        differing_children: Vec<[u8; 32]>,
+        remote_only_children: Vec<[u8; 32]>,
         /// IDs of children in local but not in remote (for bidirectional sync).
         local_only_children: Vec<[u8; 32]>,
+        /// IDs of children present on both sides that need recursive comparison.
+        /// These are the primary candidates for recursion when parent hashes differ.
+        common_children: Vec<[u8; 32]>,
     },
     /// Local node missing - need to fetch from remote.
     LocalMissing,
@@ -1023,9 +1026,20 @@ impl TreeCompareResult {
         match self {
             Self::RemoteMissing => true,
             Self::Different {
+                remote_only_children,
                 local_only_children,
-                ..
-            } => !local_only_children.is_empty(),
+                common_children,
+            } => {
+                // Push needed if we have local-only children
+                if !local_only_children.is_empty() {
+                    return true;
+                }
+                // Push needed for differing leaf nodes: when hashes differ but there are
+                // no children at all (all vecs empty), it means we compared two leaves
+                // with different content. The local leaf data needs to be pushed for
+                // CRDT merge.
+                remote_only_children.is_empty() && common_children.is_empty()
+            }
             _ => false,
         }
     }
@@ -1071,7 +1085,7 @@ pub fn compare_tree_nodes(
                 let remote_children: HashSet<&[u8; 32]> = remote_node.children.iter().collect();
 
                 // Children in remote but not in local (need to fetch)
-                let differing_children: Vec<[u8; 32]> = remote_node
+                let remote_only_children: Vec<[u8; 32]> = remote_node
                     .children
                     .iter()
                     .filter(|child_id| !local_children.contains(child_id))
@@ -1086,9 +1100,19 @@ pub fn compare_tree_nodes(
                     .copied()
                     .collect();
 
+                // Children present on both sides - these are the primary candidates
+                // for recursive comparison when parent hashes differ
+                let common_children: Vec<[u8; 32]> = local_node
+                    .children
+                    .iter()
+                    .filter(|child_id| remote_children.contains(child_id))
+                    .copied()
+                    .collect();
+
                 TreeCompareResult::Different {
-                    differing_children,
+                    remote_only_children,
                     local_only_children,
+                    common_children,
                 }
             }
         }
@@ -1993,11 +2017,14 @@ mod tests {
 
         match &result {
             TreeCompareResult::Different {
-                differing_children,
+                remote_only_children,
                 local_only_children: _,
+                common_children,
             } => {
                 // [3; 32] is in remote but not in local
-                assert!(differing_children.contains(&[3; 32]));
+                assert!(remote_only_children.contains(&[3; 32]));
+                // [2; 32] is common to both sides
+                assert!(common_children.contains(&[2; 32]));
             }
             _ => panic!("Expected Different result"),
         }
@@ -2010,8 +2037,9 @@ mod tests {
         assert!(!TreeCompareResult::RemoteMissing.needs_sync());
         assert!(TreeCompareResult::LocalMissing.needs_sync());
         assert!(TreeCompareResult::Different {
-            differing_children: vec![],
+            remote_only_children: vec![],
             local_only_children: vec![],
+            common_children: vec![],
         }
         .needs_sync());
     }
@@ -2035,20 +2063,24 @@ mod tests {
         let result = compare_tree_nodes(Some(&local), Some(&remote));
 
         // Both are leaves, hashes differ, but no children
-        // The function MUST indicate that this node needs sync
+        // The function MUST indicate that this node needs sync AND push
         match &result {
             TreeCompareResult::Different {
-                differing_children,
+                remote_only_children,
                 local_only_children,
+                common_children,
             } => {
-                // For leaf nodes, differing_children will be empty (no children)
+                // For leaf nodes, all child vecs will be empty (no children)
                 // but the Different result itself indicates sync is needed
-                assert!(differing_children.is_empty());
+                assert!(remote_only_children.is_empty());
                 assert!(local_only_children.is_empty());
+                assert!(common_children.is_empty());
             }
             _ => panic!("Expected Different result for leaves with different content"),
         }
         assert!(result.needs_sync());
+        // Bug fix: needs_push should now return true for differing leaf nodes
+        assert!(result.needs_push());
     }
 
     #[test]
@@ -2071,14 +2103,17 @@ mod tests {
 
         match &result {
             TreeCompareResult::Different {
-                differing_children,
+                remote_only_children,
                 local_only_children,
+                common_children,
             } => {
                 // [5; 32] is in remote but not in local
-                assert!(differing_children.contains(&[5; 32]));
+                assert!(remote_only_children.contains(&[5; 32]));
                 // [3; 32] and [4; 32] are in local but not in remote
                 assert!(local_only_children.contains(&[3; 32]));
                 assert!(local_only_children.contains(&[4; 32]));
+                // [2; 32] is common to both sides
+                assert!(common_children.contains(&[2; 32]));
             }
             _ => panic!("Expected Different result"),
         }
@@ -2145,17 +2180,37 @@ mod tests {
 
         // Different with local_only_children needs push
         let with_local_only = TreeCompareResult::Different {
-            differing_children: vec![],
+            remote_only_children: vec![],
             local_only_children: vec![[1; 32]],
+            common_children: vec![],
         };
         assert!(with_local_only.needs_push());
 
-        // Different without local_only_children doesn't need push
-        let without_local_only = TreeCompareResult::Different {
-            differing_children: vec![[1; 32]],
+        // Different with only remote_only_children (internal node) doesn't need push
+        let with_remote_only = TreeCompareResult::Different {
+            remote_only_children: vec![[1; 32]],
             local_only_children: vec![],
+            common_children: vec![],
         };
-        assert!(!without_local_only.needs_push());
+        assert!(!with_remote_only.needs_push());
+
+        // Different with only common_children (internal node) doesn't need push
+        // - caller needs to recurse into common_children to determine if push is needed
+        let with_common_only = TreeCompareResult::Different {
+            remote_only_children: vec![],
+            local_only_children: vec![],
+            common_children: vec![[1; 32]],
+        };
+        assert!(!with_common_only.needs_push());
+
+        // Different for leaf nodes (all vecs empty) DOES need push
+        // This is a critical fix: differing leaves have unique data to push
+        let differing_leaves = TreeCompareResult::Different {
+            remote_only_children: vec![],
+            local_only_children: vec![],
+            common_children: vec![],
+        };
+        assert!(differing_leaves.needs_push());
 
         // Equal doesn't need push
         assert!(!TreeCompareResult::Equal.needs_push());
