@@ -222,6 +222,12 @@ pub fn infer_schema_from_database(
                                         inner_type: None,
                                     }
                                 }
+                                // Handle new/unknown CRDT types (LwwSet, OrSet, future additions)
+                                _ => TypeRef::Collection {
+                                    collection: CollectionType::Record { fields: Vec::new() },
+                                    crdt_type: None,
+                                    inner_type: None,
+                                },
                             }
                         } else {
                             // No CRDT type - default to LWW register

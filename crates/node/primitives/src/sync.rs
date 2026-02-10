@@ -972,41 +972,8 @@ impl LeafMetadata {
     }
 }
 
-/// CRDT type indicator for merge semantics.
-///
-/// Determines how entities are merged during sync.
-///
-/// TODO: Consolidate with `calimero_storage::collections::CrdtType` - see
-/// <https://github.com/calimero-network/core/issues/1912>
-#[derive(Clone, Copy, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
-pub enum CrdtType {
-    /// Last-Writer-Wins register. Merge: higher HLC timestamp wins.
-    LwwRegister,
-    /// Grow-only counter. Merge: take max of each node's count.
-    GCounter,
-    /// Positive-negative counter. Merge: union of increment/decrement maps.
-    PnCounter,
-    /// Last-Writer-Wins element set. Merge: per-element timestamp comparison.
-    LwwSet,
-    /// Observed-Remove set. Merge: union of adds, respecting remove tombstones.
-    OrSet,
-    /// Replicated Growable Array. Merge: interleave by (timestamp, node_id).
-    Rga,
-    /// Unordered map. Merge: union of keys, recursive merge of values.
-    UnorderedMap,
-    /// Unordered set. Merge: union of all elements.
-    UnorderedSet,
-    /// Vector (ordered collection). Merge: element-wise by index.
-    Vector,
-    /// Custom CRDT with app-defined merge via WASM callback.
-    Custom(u32),
-}
-
-impl Default for CrdtType {
-    fn default() -> Self {
-        Self::LwwRegister
-    }
-}
+// Re-export the unified CrdtType from primitives (consolidated per issue #1912)
+pub use calimero_primitives::crdt::CrdtType;
 
 /// Result of comparing two tree nodes.
 ///
@@ -2000,11 +1967,11 @@ mod tests {
 
     #[test]
     fn test_leaf_metadata_builder() {
-        let metadata = LeafMetadata::new(CrdtType::PnCounter, 500, [1; 32])
+        let metadata = LeafMetadata::new(CrdtType::Counter, 500, [1; 32])
             .with_version(10)
             .with_parent([2; 32]);
 
-        assert_eq!(metadata.crdt_type, CrdtType::PnCounter);
+        assert_eq!(metadata.crdt_type, CrdtType::Counter);
         assert_eq!(metadata.hlc_timestamp, 500);
         assert_eq!(metadata.version, 10);
         assert_eq!(metadata.parent_id, Some([2; 32]));
@@ -2012,17 +1979,20 @@ mod tests {
 
     #[test]
     fn test_crdt_type_variants() {
+        // Test all variants in declaration order (discriminant order matters for Borsh)
         let types = vec![
             CrdtType::LwwRegister,
-            CrdtType::GCounter,
-            CrdtType::PnCounter,
-            CrdtType::LwwSet,
-            CrdtType::OrSet,
+            CrdtType::Counter,
             CrdtType::Rga,
             CrdtType::UnorderedMap,
             CrdtType::UnorderedSet,
             CrdtType::Vector,
-            CrdtType::Custom(42),
+            CrdtType::UserStorage,
+            CrdtType::FrozenStorage,
+            CrdtType::Record,
+            CrdtType::Custom("test".to_string()),
+            CrdtType::LwwSet,
+            CrdtType::OrSet,
         ];
 
         for crdt_type in types {
