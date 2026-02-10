@@ -879,6 +879,13 @@ impl TreeLeafData {
 /// Metadata for a leaf entity.
 ///
 /// Minimal metadata needed for CRDT merge during sync.
+///
+/// This is a wire-protocol-optimized subset of `calimero_storage::Metadata`.
+/// It contains only the fields needed for sync operations, avoiding larger
+/// fields like `field_name: String` that aren't needed over the wire.
+///
+/// When receiving entities, implementations should map this to/from the
+/// storage layer's `Metadata` type.
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct LeafMetadata {
     /// CRDT type for proper merge semantics.
@@ -928,6 +935,18 @@ impl LeafMetadata {
 /// CRDT type indicator for merge semantics.
 ///
 /// Determines how entities are merged during sync.
+///
+/// # TODO: Consolidate with storage CrdtType
+///
+/// This enum duplicates `calimero_storage::collections::CrdtType`.
+/// Both should be consolidated into `calimero-primitives` crate as a single
+/// source of truth. See: <https://github.com/calimero-network/core/issues/1912>
+///
+/// Current differences:
+/// - This enum has: `GCounter`, `LwwSet`, `OrSet`, `Custom(u32)`
+/// - Storage enum has: `Counter` (PN), `UserStorage`, `FrozenStorage`
+///
+/// When consolidating, ensure wire-protocol compatibility is maintained.
 #[derive(Clone, Copy, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum CrdtType {
     /// Last-Writer-Wins register (simple overwrite by HLC).
