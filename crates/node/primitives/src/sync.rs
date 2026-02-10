@@ -93,6 +93,10 @@ pub enum SyncProtocol {
         /// Size of the bloom filter in bits.
         filter_size: u64,
         /// Expected false positive rate (0.0 to 1.0).
+        ///
+        /// **Note**: Validation of bounds is performed when constructing the actual
+        /// bloom filter, not at protocol negotiation time. Invalid values will cause
+        /// filter construction to fail gracefully.
         false_positive_rate: f64,
     },
 
@@ -302,7 +306,8 @@ pub struct ProtocolSelection {
 /// - >1.0 = local has more entities than remote
 #[must_use]
 pub fn calculate_divergence(local: &SyncHandshake, remote: &SyncHandshake) -> f64 {
-    let diff = (local.entity_count as i64 - remote.entity_count as i64).unsigned_abs();
+    // Use abs_diff to avoid overflow when entity_count exceeds i64::MAX
+    let diff = local.entity_count.abs_diff(remote.entity_count);
     let denominator = remote.entity_count.max(1);
     diff as f64 / denominator as f64
 }
@@ -568,7 +573,19 @@ pub struct DeltaPayload {
     pub hlc_timestamp: u64,
 
     /// Expected root hash after applying this delta.
-    /// Used for verification (may differ if concurrent deltas exist).
+    ///
+    /// This hash is captured by the originating node at delta creation time.
+    /// It serves two purposes:
+    /// 1. **Linear history**: When deltas are applied in sequence without
+    ///    concurrent branches, receivers can verify they reach the same state.
+    /// 2. **DAG consistency**: When concurrent deltas exist, this hash ensures
+    ///    nodes build identical DAG structures even if their local root hashes
+    ///    differ due to different merge ordering. The hash reflects the
+    ///    originator's state, not a universal truth.
+    ///
+    /// **Verification strategy**: Compare against this hash only when applying
+    /// deltas from a single linear chain. For concurrent/merged deltas, use
+    /// the Merkle tree reconciliation protocol instead.
     pub expected_root_hash: [u8; 32],
 }
 
@@ -581,6 +598,9 @@ impl DeltaPayload {
 }
 
 /// Result of attempting to apply deltas.
+///
+/// **Note**: This is a local-only type used to report the outcome of delta
+/// application. It is not transmitted over the wire (hence no Borsh traits).
 #[derive(Clone, Debug)]
 pub enum DeltaApplyResult {
     /// All deltas applied successfully.
