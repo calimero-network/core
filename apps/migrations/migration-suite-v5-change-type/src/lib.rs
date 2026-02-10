@@ -18,7 +18,10 @@ pub struct MigrationSuiteV5ChangeType {
 
 #[app::event]
 pub enum Event<'a> {
-    Migrated { from_version: &'a str, to_version: &'a str },
+    Migrated {
+        from_version: &'a str,
+        to_version: &'a str,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -43,8 +46,8 @@ pub fn migrate_v4_to_v5() -> MigrationSuiteV5ChangeType {
         panic!("Migration failed: no existing state. Create a V4 context first.");
     });
 
-    let old_state: MigrationSuiteV4 =
-        BorshDeserialize::deserialize(&mut &old_bytes[..]).unwrap_or_else(|e| {
+    let old_state: MigrationSuiteV4 = BorshDeserialize::deserialize(&mut &old_bytes[..])
+        .unwrap_or_else(|e| {
             panic!("Migration failed: V4 deserialization error {:?}", e);
         });
 

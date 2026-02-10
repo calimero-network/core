@@ -18,7 +18,10 @@ pub struct MigrationSuiteV4RenameField {
 
 #[app::event]
 pub enum Event<'a> {
-    Migrated { from_version: &'a str, to_version: &'a str },
+    Migrated {
+        from_version: &'a str,
+        to_version: &'a str,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -43,8 +46,8 @@ pub fn migrate_v3_to_v4() -> MigrationSuiteV4RenameField {
         panic!("Migration failed: no existing state. Create a V3 context first.");
     });
 
-    let old_state: MigrationSuiteV3 =
-        BorshDeserialize::deserialize(&mut &old_bytes[..]).unwrap_or_else(|e| {
+    let old_state: MigrationSuiteV3 = BorshDeserialize::deserialize(&mut &old_bytes[..])
+        .unwrap_or_else(|e| {
             panic!("Migration failed: V3 deserialization error {:?}", e);
         });
 

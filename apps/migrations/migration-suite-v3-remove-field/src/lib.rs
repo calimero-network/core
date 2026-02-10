@@ -18,7 +18,10 @@ pub struct MigrationSuiteV3RemoveField {
 
 #[app::event]
 pub enum Event<'a> {
-    Migrated { from_version: &'a str, to_version: &'a str },
+    Migrated {
+        from_version: &'a str,
+        to_version: &'a str,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -44,8 +47,8 @@ pub fn migrate_v2_to_v3() -> MigrationSuiteV3RemoveField {
         panic!("Migration failed: no existing state. Create a V2 context first.");
     });
 
-    let old_state: MigrationSuiteV2 =
-        BorshDeserialize::deserialize(&mut &old_bytes[..]).unwrap_or_else(|e| {
+    let old_state: MigrationSuiteV2 = BorshDeserialize::deserialize(&mut &old_bytes[..])
+        .unwrap_or_else(|e| {
             panic!("Migration failed: V2 deserialization error {:?}", e);
         });
 
