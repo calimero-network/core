@@ -1,6 +1,7 @@
 #![expect(single_use_lifetimes, reason = "borsh shenanigans")]
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_crypto::Nonce;
@@ -747,19 +748,22 @@ impl TreeNodeResponse {
         self.nodes.iter().any(|n| n.is_leaf())
     }
 
-    /// Get all leaf nodes from response.
-    #[must_use]
-    pub fn leaves(&self) -> Vec<&TreeNode> {
-        self.nodes.iter().filter(|n| n.is_leaf()).collect()
+    /// Get an iterator over leaf nodes in response.
+    ///
+    /// Returns an iterator rather than allocating a Vec, which is more
+    /// efficient for single-pass iteration.
+    pub fn leaves(&self) -> impl Iterator<Item = &TreeNode> {
+        self.nodes.iter().filter(|n| n.is_leaf())
     }
 
     /// Check if response is within valid bounds.
     ///
     /// Call this after deserializing from untrusted sources to prevent
-    /// memory exhaustion attacks.
+    /// memory exhaustion attacks. Validates both response size and all
+    /// contained nodes.
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.nodes.len() <= MAX_NODES_PER_RESPONSE
+        self.nodes.len() <= MAX_NODES_PER_RESPONSE && self.nodes.iter().all(TreeNode::is_valid)
     }
 }
 
@@ -820,12 +824,34 @@ impl TreeNode {
         }
     }
 
-    /// Check if node is within valid bounds.
+    /// Check if node is within valid bounds and structurally valid.
     ///
     /// Call this after deserializing from untrusted sources.
+    /// Validates:
+    /// - Children count within MAX_CHILDREN_PER_NODE
+    /// - Structural invariant: internal nodes have children, leaf nodes have data
+    /// - Leaf data validity (value size within limits)
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.children.len() <= MAX_CHILDREN_PER_NODE
+        // Check children count
+        if self.children.len() > MAX_CHILDREN_PER_NODE {
+            return false;
+        }
+
+        // Check structural invariant: a node cannot have both children AND leaf_data
+        // (internal nodes have children, leaf nodes have data, not both)
+        if !self.children.is_empty() && self.leaf_data.is_some() {
+            return false;
+        }
+
+        // Validate leaf data if present
+        if let Some(ref leaf_data) = self.leaf_data {
+            if !leaf_data.is_valid() {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Check if this is a leaf node.
@@ -846,6 +872,12 @@ impl TreeNode {
         self.children.len()
     }
 }
+
+/// Maximum size for leaf value data (1 MB).
+///
+/// Prevents memory exhaustion from malicious peers sending oversized leaf values.
+/// This should be sufficient for most entity data while protecting against DoS.
+pub const MAX_LEAF_VALUE_SIZE: usize = 1_048_576;
 
 /// Data stored at a leaf node (entity).
 ///
@@ -873,6 +905,14 @@ impl TreeLeafData {
             value,
             metadata,
         }
+    }
+
+    /// Check if leaf data is within valid bounds.
+    ///
+    /// Call this after deserializing from untrusted sources.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.value.len() <= MAX_LEAF_VALUE_SIZE
     }
 }
 
@@ -1079,8 +1119,6 @@ pub fn compare_tree_nodes(
                 TreeCompareResult::Equal
             } else {
                 // Use HashSet for O(1) lookups instead of O(n) Vec::contains
-                use std::collections::HashSet;
-
                 let local_children: HashSet<&[u8; 32]> = local_node.children.iter().collect();
                 let remote_children: HashSet<&[u8; 32]> = remote_node.children.iter().collect();
 
@@ -1943,7 +1981,7 @@ mod tests {
 
         assert_eq!(response, decoded);
         assert!(decoded.has_leaves());
-        assert_eq!(decoded.leaves().len(), 1);
+        assert_eq!(decoded.leaves().count(), 1);
     }
 
     #[test]
@@ -2171,6 +2209,67 @@ mod tests {
         let children: Vec<[u8; 32]> = (0..MAX_CHILDREN_PER_NODE).map(|i| [i as u8; 32]).collect();
         let at_limit = TreeNode::internal([1; 32], [2; 32], children);
         assert!(at_limit.is_valid());
+
+        // Node exceeding limit is invalid
+        let over_children: Vec<[u8; 32]> =
+            (0..=MAX_CHILDREN_PER_NODE).map(|i| [i as u8; 32]).collect();
+        let over_limit = TreeNode::internal([1; 32], [2; 32], over_children);
+        assert!(!over_limit.is_valid());
+
+        // Node with both children AND leaf_data is invalid (structural invariant)
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let leaf_data = TreeLeafData::new([10; 32], vec![1, 2, 3], metadata);
+        let invalid_node = TreeNode {
+            id: [1; 32],
+            hash: [2; 32],
+            children: vec![[3; 32]],
+            leaf_data: Some(leaf_data),
+        };
+        assert!(!invalid_node.is_valid());
+
+        // Valid leaf node
+        let valid_metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let valid_leaf_data = TreeLeafData::new([10; 32], vec![1, 2, 3], valid_metadata);
+        let valid_leaf = TreeNode::leaf([1; 32], [2; 32], valid_leaf_data);
+        assert!(valid_leaf.is_valid());
+    }
+
+    #[test]
+    fn test_tree_node_response_validation_over_limit() {
+        // Response exceeding limit is invalid
+        let mut nodes = Vec::new();
+        for i in 0..=MAX_NODES_PER_RESPONSE {
+            let id = [i as u8; 32];
+            nodes.push(TreeNode::internal(id, id, vec![]));
+        }
+        let over_limit = TreeNodeResponse::new(nodes);
+        assert!(!over_limit.is_valid());
+
+        // Response with invalid nested node is invalid
+        let over_children: Vec<[u8; 32]> =
+            (0..=MAX_CHILDREN_PER_NODE).map(|i| [i as u8; 32]).collect();
+        let invalid_node = TreeNode::internal([1; 32], [2; 32], over_children);
+        let response_with_invalid = TreeNodeResponse::new(vec![invalid_node]);
+        assert!(!response_with_invalid.is_valid());
+    }
+
+    #[test]
+    fn test_tree_leaf_data_validation() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+
+        // Valid leaf data
+        let valid = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata.clone());
+        assert!(valid.is_valid());
+
+        // Leaf data at limit is valid
+        let at_limit_value = vec![0u8; MAX_LEAF_VALUE_SIZE];
+        let at_limit = TreeLeafData::new([1; 32], at_limit_value, metadata.clone());
+        assert!(at_limit.is_valid());
+
+        // Leaf data exceeding limit is invalid
+        let over_limit_value = vec![0u8; MAX_LEAF_VALUE_SIZE + 1];
+        let over_limit = TreeLeafData::new([1; 32], over_limit_value, metadata);
+        assert!(!over_limit.is_valid());
     }
 
     #[test]
