@@ -171,7 +171,7 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::UnorderedSet),
                                     inner_type: None,
                                 },
-                                CrdtType::Counter => TypeRef::Collection {
+                                CrdtType::PnCounter => TypeRef::Collection {
                                     // Counter is stored as Map<String, u64> internally
                                     collection: CollectionType::Map {
                                         key: Box::new(TypeRef::string()),

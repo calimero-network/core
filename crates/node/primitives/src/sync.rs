@@ -972,41 +972,8 @@ impl LeafMetadata {
     }
 }
 
-/// CRDT type indicator for merge semantics.
-///
-/// Determines how entities are merged during sync.
-///
-/// TODO: Consolidate with `calimero_storage::collections::CrdtType` - see
-/// <https://github.com/calimero-network/core/issues/1912>
-#[derive(Clone, Copy, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
-pub enum CrdtType {
-    /// Last-Writer-Wins register. Merge: higher HLC timestamp wins.
-    LwwRegister,
-    /// Grow-only counter. Merge: take max of each node's count.
-    GCounter,
-    /// Positive-negative counter. Merge: union of increment/decrement maps.
-    PnCounter,
-    /// Last-Writer-Wins element set. Merge: per-element timestamp comparison.
-    LwwSet,
-    /// Observed-Remove set. Merge: union of adds, respecting remove tombstones.
-    OrSet,
-    /// Replicated Growable Array. Merge: interleave by (timestamp, node_id).
-    Rga,
-    /// Unordered map. Merge: union of keys, recursive merge of values.
-    UnorderedMap,
-    /// Unordered set. Merge: union of all elements.
-    UnorderedSet,
-    /// Vector (ordered collection). Merge: element-wise by index.
-    Vector,
-    /// Custom CRDT with app-defined merge via WASM callback.
-    Custom(u32),
-}
-
-impl Default for CrdtType {
-    fn default() -> Self {
-        Self::LwwRegister
-    }
-}
+// Re-export the unified CrdtType from primitives (consolidated per issue #1912)
+pub use calimero_primitives::crdt::CrdtType;
 
 /// Result of comparing two tree nodes.
 ///
