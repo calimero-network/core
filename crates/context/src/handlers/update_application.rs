@@ -541,6 +541,7 @@ async fn execute_migration(
                 // Empty input - migration functions read old state via read_raw()
                 &[],
                 &mut storage,
+                None,
                 Some(node_client),
                 Some(Box::new(context_host)),
             )
