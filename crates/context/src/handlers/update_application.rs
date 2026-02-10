@@ -164,11 +164,10 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                 .entry(application_id)
                 .or_insert(application);
 
-                    if let Some(context) = act.contexts.get_mut(&context_id) {
-                        context.meta.application_id = application_id;
-                    }
-                }),
-        )
+            if let Some(context) = act.contexts.get_mut(&context_id) {
+                context.meta.application_id = application_id;
+            }
+        }))
     }
 }
 
