@@ -833,7 +833,7 @@ impl E2eKvStore {
 
         let value = counter
             .value()
-            .map_err(|e| format!("Value failed: {:?}", e))? as i64;
+            .map_err(|e| format!("Value failed: {:?}", e))?;
 
         drop(
             self.crdt_pn_counters
@@ -862,7 +862,7 @@ impl E2eKvStore {
 
         let value = counter
             .value()
-            .map_err(|e| format!("Value failed: {:?}", e))? as i64;
+            .map_err(|e| format!("Value failed: {:?}", e))?;
 
         drop(
             self.crdt_pn_counters
