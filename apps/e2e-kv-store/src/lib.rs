@@ -23,8 +23,8 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, PublicKey};
 use calimero_storage::collections::{
-    Counter, FrozenStorage, LwwRegister, Mergeable, ReplicatedGrowableArray, UnorderedMap,
-    UnorderedSet, UserStorage, Vector,
+    Counter, FrozenStorage, GCounter, LwwRegister, Mergeable, PNCounter, ReplicatedGrowableArray,
+    UnorderedMap, UnorderedSet, UserStorage, Vector,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -107,7 +107,7 @@ pub struct E2eKvStore {
     kv_items: UnorderedMap<String, LwwRegister<String>>,
 
     // --- Handler Tracking ---
-    /// Counter for handler executions (CRDT G-Counter)
+    /// Counter for handler executions (CRDT G-Counter - grow only)
     handler_counter: Counter,
 
     // --- User Storage ---
@@ -133,13 +133,17 @@ pub struct E2eKvStore {
     file_owner: LwwRegister<String>,
 
     // --- Nested CRDTs ---
-    /// Map of counters (concurrent increments should sum)
+    /// Map of G-Counters (grow-only, concurrent increments should sum)
+    /// Counter<false> = GCounter (default)
     crdt_counters: UnorderedMap<String, Counter>,
+    /// Map of PN-Counters (supports decrement, concurrent inc/dec should merge correctly)
+    /// Counter<true> = PNCounter (allows decrement)
+    crdt_pn_counters: UnorderedMap<String, Counter<true>>,
     /// Map of LWW registers (latest timestamp wins)
     crdt_registers: UnorderedMap<String, LwwRegister<String>>,
     /// Nested maps (field-level merge)
     crdt_metadata: UnorderedMap<String, UnorderedMap<String, LwwRegister<String>>>,
-    /// Vector of counters (element-wise merge)
+    /// Vector of G-Counters (element-wise merge)
     crdt_metrics: Vector<Counter>,
     /// Map of sets (union merge)
     crdt_tags: UnorderedMap<String, UnorderedSet<String>>,
@@ -147,7 +151,7 @@ pub struct E2eKvStore {
     // --- RGA Document ---
     /// Collaborative text document
     rga_document: ReplicatedGrowableArray,
-    /// Edit count for document
+    /// Edit count for document (G-Counter)
     rga_edit_count: Counter,
     /// Document metadata (title, owner)
     rga_metadata: UnorderedMap<String, LwwRegister<String>>,
@@ -211,9 +215,14 @@ pub enum Event<'a> {
     },
 
     // Nested CRDT Events
-    CounterIncremented {
+    GCounterIncremented {
         key: String,
         value: u64,
+    },
+    PnCounterChanged {
+        key: String,
+        value: i64,
+        operation: &'a str,
     },
     RegisterSet {
         key: String,
@@ -339,13 +348,14 @@ impl E2eKvStore {
             file_owner: LwwRegister::new(String::new()),
             // Nested CRDTs
             crdt_counters: UnorderedMap::new(),
+            crdt_pn_counters: UnorderedMap::new(),
             crdt_registers: UnorderedMap::new(),
             crdt_metadata: UnorderedMap::new(),
             crdt_metrics: Vector::new(),
             crdt_tags: UnorderedMap::new(),
             // RGA
             rga_document: ReplicatedGrowableArray::new(),
-            rga_edit_count: Counter::new(),
+            rga_edit_count: GCounter::new(),
             rga_metadata: UnorderedMap::new(),
         }
     }
@@ -773,12 +783,14 @@ impl E2eKvStore {
 
     // NESTED CRDT - COUNTERS
 
-    pub fn increment_counter(&mut self, key: String) -> Result<u64, String> {
+    // --- G-COUNTER (grow-only) ---
+
+    pub fn increment_g_counter(&mut self, key: String) -> Result<u64, String> {
         let mut counter = self
             .crdt_counters
             .get(&key)
             .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(Counter::new);
+            .unwrap_or_else(GCounter::new);
 
         counter
             .increment()
@@ -794,16 +806,93 @@ impl E2eKvStore {
                 .map_err(|e| format!("Insert failed: {:?}", e))?,
         );
 
-        app::emit!(Event::CounterIncremented { key, value });
+        app::emit!(Event::GCounterIncremented { key, value });
         Ok(value)
     }
 
-    pub fn get_counter(&self, key: String) -> Result<u64, String> {
+    pub fn get_g_counter(&self, key: String) -> Result<u64, String> {
         self.crdt_counters
             .get(&key)
             .map_err(|e| format!("Get failed: {:?}", e))?
             .map(|c| c.value().unwrap_or(0))
-            .ok_or_else(|| "Counter not found".to_owned())
+            .ok_or_else(|| "GCounter not found".to_owned())
+    }
+
+    // --- PN-COUNTER (supports increment AND decrement) ---
+
+    pub fn increment_pn_counter(&mut self, key: String) -> Result<i64, String> {
+        let mut counter = self
+            .crdt_pn_counters
+            .get(&key)
+            .map_err(|e| format!("Get failed: {:?}", e))?
+            .unwrap_or_else(PNCounter::new);
+
+        counter
+            .increment()
+            .map_err(|e| format!("Increment failed: {:?}", e))?;
+
+        let value = counter
+            .value()
+            .map_err(|e| format!("Value failed: {:?}", e))? as i64;
+
+        drop(
+            self.crdt_pn_counters
+                .insert(key.clone(), counter)
+                .map_err(|e| format!("Insert failed: {:?}", e))?,
+        );
+
+        app::emit!(Event::PnCounterChanged {
+            key,
+            value,
+            operation: "increment"
+        });
+        Ok(value)
+    }
+
+    pub fn decrement_pn_counter(&mut self, key: String) -> Result<i64, String> {
+        let mut counter = self
+            .crdt_pn_counters
+            .get(&key)
+            .map_err(|e| format!("Get failed: {:?}", e))?
+            .unwrap_or_else(PNCounter::new);
+
+        counter
+            .decrement()
+            .map_err(|e| format!("Decrement failed: {:?}", e))?;
+
+        let value = counter
+            .value()
+            .map_err(|e| format!("Value failed: {:?}", e))? as i64;
+
+        drop(
+            self.crdt_pn_counters
+                .insert(key.clone(), counter)
+                .map_err(|e| format!("Insert failed: {:?}", e))?,
+        );
+
+        app::emit!(Event::PnCounterChanged {
+            key,
+            value,
+            operation: "decrement"
+        });
+        Ok(value)
+    }
+
+    pub fn get_pn_counter(&self, key: String) -> Result<i64, String> {
+        self.crdt_pn_counters
+            .get(&key)
+            .map_err(|e| format!("Get failed: {:?}", e))?
+            .map(|c| c.value().unwrap_or(0) as i64)
+            .ok_or_else(|| "PNCounter not found".to_owned())
+    }
+
+    // Legacy alias for backward compatibility
+    pub fn increment_counter(&mut self, key: String) -> Result<u64, String> {
+        self.increment_g_counter(key)
+    }
+
+    pub fn get_counter(&self, key: String) -> Result<u64, String> {
+        self.get_g_counter(key)
     }
 
     // NESTED CRDT - REGISTERS
@@ -877,7 +966,7 @@ impl E2eKvStore {
     // NESTED CRDT - METRICS VECTOR
 
     pub fn push_metric(&mut self, value: u64) -> Result<usize, String> {
-        let mut counter = Counter::new();
+        let mut counter = GCounter::new();
         for _ in 0..value {
             counter
                 .increment()
