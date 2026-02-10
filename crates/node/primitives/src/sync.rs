@@ -642,6 +642,317 @@ impl DeltaApplyResult {
 }
 
 // =============================================================================
+// HashComparison Sync Types (CIP §4 - State Machine, STATE-BASED branch)
+// =============================================================================
+
+/// Request to traverse the Merkle tree for hash comparison.
+///
+/// Used for recursive tree traversal to identify differing entities.
+/// Start at root, request children, compare hashes, recurse on differences.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct TreeNodeRequest {
+    /// ID of the node to request (root hash or internal node hash).
+    pub node_id: [u8; 32],
+
+    /// Maximum depth to traverse (None = unlimited).
+    /// Useful for batching: request multiple levels at once.
+    pub max_depth: Option<usize>,
+}
+
+impl TreeNodeRequest {
+    /// Create a request for a specific node.
+    #[must_use]
+    pub fn new(node_id: [u8; 32]) -> Self {
+        Self {
+            node_id,
+            max_depth: None,
+        }
+    }
+
+    /// Create a request with depth limit.
+    #[must_use]
+    pub fn with_depth(node_id: [u8; 32], max_depth: usize) -> Self {
+        Self {
+            node_id,
+            max_depth: Some(max_depth),
+        }
+    }
+
+    /// Create a request for the root node.
+    #[must_use]
+    pub fn root(root_hash: [u8; 32]) -> Self {
+        Self::new(root_hash)
+    }
+}
+
+/// Response containing tree nodes for hash comparison.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct TreeNodeResponse {
+    /// Nodes in the requested subtree.
+    pub nodes: Vec<TreeNode>,
+
+    /// True if the requested node was not found.
+    pub not_found: bool,
+}
+
+impl TreeNodeResponse {
+    /// Create a response with nodes.
+    #[must_use]
+    pub fn new(nodes: Vec<TreeNode>) -> Self {
+        Self {
+            nodes,
+            not_found: false,
+        }
+    }
+
+    /// Create a not-found response.
+    #[must_use]
+    pub fn not_found() -> Self {
+        Self {
+            nodes: vec![],
+            not_found: true,
+        }
+    }
+
+    /// Check if response contains any leaf nodes.
+    #[must_use]
+    pub fn has_leaves(&self) -> bool {
+        self.nodes.iter().any(|n| n.is_leaf())
+    }
+
+    /// Get all leaf nodes from response.
+    #[must_use]
+    pub fn leaves(&self) -> Vec<&TreeNode> {
+        self.nodes.iter().filter(|n| n.is_leaf()).collect()
+    }
+}
+
+/// A node in the Merkle tree.
+///
+/// Can be either an internal node (has children) or a leaf node (has data).
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct TreeNode {
+    /// Node ID (hash of this node's content).
+    pub id: [u8; 32],
+
+    /// Merkle hash (hash of children hashes or leaf content).
+    pub hash: [u8; 32],
+
+    /// Child node IDs (empty for leaf nodes).
+    pub children: Vec<[u8; 32]>,
+
+    /// Leaf data (present only for leaf nodes).
+    pub leaf_data: Option<TreeLeafData>,
+}
+
+impl TreeNode {
+    /// Create an internal node.
+    #[must_use]
+    pub fn internal(id: [u8; 32], hash: [u8; 32], children: Vec<[u8; 32]>) -> Self {
+        Self {
+            id,
+            hash,
+            children,
+            leaf_data: None,
+        }
+    }
+
+    /// Create a leaf node.
+    #[must_use]
+    pub fn leaf(id: [u8; 32], hash: [u8; 32], data: TreeLeafData) -> Self {
+        Self {
+            id,
+            hash,
+            children: vec![],
+            leaf_data: Some(data),
+        }
+    }
+
+    /// Check if this is a leaf node.
+    #[must_use]
+    pub fn is_leaf(&self) -> bool {
+        self.leaf_data.is_some()
+    }
+
+    /// Check if this is an internal node.
+    #[must_use]
+    pub fn is_internal(&self) -> bool {
+        self.leaf_data.is_none()
+    }
+
+    /// Get number of children (0 for leaf nodes).
+    #[must_use]
+    pub fn child_count(&self) -> usize {
+        self.children.len()
+    }
+}
+
+/// Data stored at a leaf node (entity).
+///
+/// Contains ALL information needed for CRDT merge on the receiving side.
+/// CRITICAL: `metadata` MUST include `crdt_type` for proper merge.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct TreeLeafData {
+    /// Entity key (unique identifier within collection).
+    pub key: [u8; 32],
+
+    /// Serialized entity value.
+    pub value: Vec<u8>,
+
+    /// Entity metadata including crdt_type.
+    /// CRITICAL: Must be included for CRDT merge to work correctly.
+    pub metadata: LeafMetadata,
+}
+
+impl TreeLeafData {
+    /// Create leaf data.
+    #[must_use]
+    pub fn new(key: [u8; 32], value: Vec<u8>, metadata: LeafMetadata) -> Self {
+        Self {
+            key,
+            value,
+            metadata,
+        }
+    }
+}
+
+/// Metadata for a leaf entity.
+///
+/// Minimal metadata needed for CRDT merge during sync.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct LeafMetadata {
+    /// CRDT type for proper merge semantics.
+    pub crdt_type: CrdtType,
+
+    /// HLC timestamp of last modification.
+    pub hlc_timestamp: u64,
+
+    /// Version counter (for some CRDT types).
+    pub version: u64,
+
+    /// Collection ID this entity belongs to.
+    pub collection_id: [u8; 32],
+
+    /// Optional parent entity ID (for nested structures).
+    pub parent_id: Option<[u8; 32]>,
+}
+
+impl LeafMetadata {
+    /// Create metadata with required fields.
+    #[must_use]
+    pub fn new(crdt_type: CrdtType, hlc_timestamp: u64, collection_id: [u8; 32]) -> Self {
+        Self {
+            crdt_type,
+            hlc_timestamp,
+            version: 0,
+            collection_id,
+            parent_id: None,
+        }
+    }
+
+    /// Set version.
+    #[must_use]
+    pub fn with_version(mut self, version: u64) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// Set parent ID.
+    #[must_use]
+    pub fn with_parent(mut self, parent_id: [u8; 32]) -> Self {
+        self.parent_id = Some(parent_id);
+        self
+    }
+}
+
+/// CRDT type indicator for merge semantics.
+///
+/// Determines how entities are merged during sync.
+#[derive(Clone, Copy, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub enum CrdtType {
+    /// Last-Writer-Wins register (simple overwrite by HLC).
+    LwwRegister,
+    /// Grow-only counter.
+    GCounter,
+    /// Positive-negative counter.
+    PnCounter,
+    /// Last-Writer-Wins element set.
+    LwwSet,
+    /// Observed-Remove set.
+    OrSet,
+    /// Replicated Growable Array (ordered list).
+    Rga,
+    /// Unordered map with LWW values.
+    UnorderedMap,
+    /// Unordered set.
+    UnorderedSet,
+    /// Vector (ordered collection).
+    Vector,
+    /// Custom CRDT with named merge strategy.
+    Custom(u32),
+}
+
+impl Default for CrdtType {
+    fn default() -> Self {
+        Self::LwwRegister
+    }
+}
+
+/// Result of comparing two tree nodes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TreeCompareResult {
+    /// Hashes match - no sync needed for this subtree.
+    Equal,
+    /// Hashes differ - need to recurse or fetch leaf.
+    Different {
+        /// IDs of differing children to recurse into.
+        differing_children: Vec<[u8; 32]>,
+    },
+    /// Local node missing - need to fetch from remote.
+    LocalMissing,
+    /// Remote node missing - nothing to sync.
+    RemoteMissing,
+}
+
+impl TreeCompareResult {
+    /// Check if sync is needed.
+    #[must_use]
+    pub fn needs_sync(&self) -> bool {
+        !matches!(self, Self::Equal | Self::RemoteMissing)
+    }
+}
+
+/// Compare local and remote tree nodes.
+///
+/// Returns which children (if any) need further traversal.
+#[must_use]
+pub fn compare_tree_nodes(local: Option<&TreeNode>, remote: &TreeNode) -> TreeCompareResult {
+    match local {
+        None => TreeCompareResult::LocalMissing,
+        Some(local_node) => {
+            if local_node.hash == remote.hash {
+                TreeCompareResult::Equal
+            } else {
+                // Find differing children
+                let differing: Vec<[u8; 32]> = remote
+                    .children
+                    .iter()
+                    .filter(|child_id| {
+                        // Child differs if not in local or hash differs
+                        !local_node.children.contains(child_id)
+                    })
+                    .copied()
+                    .collect();
+
+                TreeCompareResult::Different {
+                    differing_children: differing,
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
 // Snapshot Sync Types
 // =============================================================================
 
@@ -1389,5 +1700,172 @@ mod tests {
         };
         assert!(!failed.is_success());
         assert!(!failed.needs_state_sync());
+    }
+
+    // =========================================================================
+    // HashComparison Sync Tests (Issue #1774)
+    // =========================================================================
+
+    #[test]
+    fn test_tree_node_request_roundtrip() {
+        let request = TreeNodeRequest::with_depth([1; 32], 3);
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: TreeNodeRequest = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(request, decoded);
+        assert_eq!(decoded.max_depth, Some(3));
+    }
+
+    #[test]
+    fn test_tree_node_request_root() {
+        let root_hash = [42; 32];
+        let request = TreeNodeRequest::root(root_hash);
+
+        assert_eq!(request.node_id, root_hash);
+        assert!(request.max_depth.is_none());
+    }
+
+    #[test]
+    fn test_tree_node_internal() {
+        let node = TreeNode::internal([1; 32], [2; 32], vec![[3; 32], [4; 32]]);
+
+        assert!(node.is_internal());
+        assert!(!node.is_leaf());
+        assert_eq!(node.child_count(), 2);
+        assert!(node.leaf_data.is_none());
+    }
+
+    #[test]
+    fn test_tree_node_leaf() {
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 12345, [5; 32]);
+        let leaf_data = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata);
+        let node = TreeNode::leaf([2; 32], [3; 32], leaf_data);
+
+        assert!(node.is_leaf());
+        assert!(!node.is_internal());
+        assert_eq!(node.child_count(), 0);
+        assert!(node.leaf_data.is_some());
+    }
+
+    #[test]
+    fn test_tree_node_roundtrip() {
+        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 999, [6; 32])
+            .with_version(5)
+            .with_parent([7; 32]);
+        let leaf_data = TreeLeafData::new([1; 32], vec![4, 5, 6], metadata);
+        let node = TreeNode::leaf([2; 32], [3; 32], leaf_data);
+
+        let encoded = borsh::to_vec(&node).expect("serialize");
+        let decoded: TreeNode = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(node, decoded);
+    }
+
+    #[test]
+    fn test_tree_node_response_roundtrip() {
+        let internal = TreeNode::internal([1; 32], [2; 32], vec![[3; 32]]);
+        let metadata = LeafMetadata::new(CrdtType::Rga, 100, [4; 32]);
+        let leaf_data = TreeLeafData::new([5; 32], vec![7, 8, 9], metadata);
+        let leaf = TreeNode::leaf([6; 32], [7; 32], leaf_data);
+
+        let response = TreeNodeResponse::new(vec![internal, leaf]);
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: TreeNodeResponse = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert_eq!(response, decoded);
+        assert!(decoded.has_leaves());
+        assert_eq!(decoded.leaves().len(), 1);
+    }
+
+    #[test]
+    fn test_tree_node_response_not_found() {
+        let response = TreeNodeResponse::not_found();
+
+        assert!(response.not_found);
+        assert!(response.nodes.is_empty());
+        assert!(!response.has_leaves());
+    }
+
+    #[test]
+    fn test_leaf_metadata_builder() {
+        let metadata = LeafMetadata::new(CrdtType::PnCounter, 500, [1; 32])
+            .with_version(10)
+            .with_parent([2; 32]);
+
+        assert_eq!(metadata.crdt_type, CrdtType::PnCounter);
+        assert_eq!(metadata.hlc_timestamp, 500);
+        assert_eq!(metadata.version, 10);
+        assert_eq!(metadata.parent_id, Some([2; 32]));
+    }
+
+    #[test]
+    fn test_crdt_type_variants() {
+        let types = vec![
+            CrdtType::LwwRegister,
+            CrdtType::GCounter,
+            CrdtType::PnCounter,
+            CrdtType::LwwSet,
+            CrdtType::OrSet,
+            CrdtType::Rga,
+            CrdtType::UnorderedMap,
+            CrdtType::UnorderedSet,
+            CrdtType::Vector,
+            CrdtType::Custom(42),
+        ];
+
+        for crdt_type in types {
+            let encoded = borsh::to_vec(&crdt_type).expect("serialize");
+            let decoded: CrdtType = borsh::from_slice(&encoded).expect("deserialize");
+            assert_eq!(crdt_type, decoded);
+        }
+    }
+
+    #[test]
+    fn test_compare_tree_nodes_equal() {
+        let local = TreeNode::internal([1; 32], [99; 32], vec![[2; 32]]);
+        let remote = TreeNode::internal([1; 32], [99; 32], vec![[2; 32]]);
+
+        let result = compare_tree_nodes(Some(&local), &remote);
+        assert_eq!(result, TreeCompareResult::Equal);
+        assert!(!result.needs_sync());
+    }
+
+    #[test]
+    fn test_compare_tree_nodes_local_missing() {
+        let remote = TreeNode::internal([1; 32], [2; 32], vec![[3; 32]]);
+
+        let result = compare_tree_nodes(None, &remote);
+        assert_eq!(result, TreeCompareResult::LocalMissing);
+        assert!(result.needs_sync());
+    }
+
+    #[test]
+    fn test_compare_tree_nodes_different() {
+        let local = TreeNode::internal([1; 32], [10; 32], vec![[2; 32]]);
+        let remote = TreeNode::internal([1; 32], [20; 32], vec![[2; 32], [3; 32]]);
+
+        let result = compare_tree_nodes(Some(&local), &remote);
+
+        match &result {
+            TreeCompareResult::Different { differing_children } => {
+                // [3; 32] is in remote but not in local
+                assert!(differing_children.contains(&[3; 32]));
+            }
+            _ => panic!("Expected Different result"),
+        }
+        assert!(result.needs_sync());
+    }
+
+    #[test]
+    fn test_tree_compare_result_needs_sync() {
+        assert!(!TreeCompareResult::Equal.needs_sync());
+        assert!(!TreeCompareResult::RemoteMissing.needs_sync());
+        assert!(TreeCompareResult::LocalMissing.needs_sync());
+        assert!(TreeCompareResult::Different {
+            differing_children: vec![]
+        }
+        .needs_sync());
     }
 }
