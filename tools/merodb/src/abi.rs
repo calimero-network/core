@@ -152,7 +152,8 @@ pub fn infer_schema_from_database(
                                     inner_type: Some(Box::new(TypeRef::string())),
                                 },
                                 CrdtType::GCounter | CrdtType::PnCounter => TypeRef::Collection {
-                                    // Counters are stored as Map<ExecutorId, u64> internally
+                                    // GCounter: Map<ExecutorId, u64>; PnCounter: two maps (pos/neg)
+                                    // Represented as single map for ABI purposes
                                     collection: CollectionType::Map {
                                         key: Box::new(TypeRef::string()),
                                         value: Box::new(TypeRef::Scalar(ScalarType::U64)),
@@ -214,12 +215,6 @@ pub fn infer_schema_from_database(
                                         inner_type: None,
                                     }
                                 }
-                                // Handle future CRDT types
-                                _ => TypeRef::Collection {
-                                    collection: CollectionType::Record { fields: Vec::new() },
-                                    crdt_type: None,
-                                    inner_type: None,
-                                },
                             }
                         } else {
                             // No CRDT type - default to LWW register

@@ -22,7 +22,6 @@ use serde::{Deserialize, Serialize};
 /// - **Special**: UserStorage, FrozenStorage, Custom
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[non_exhaustive]
 pub enum CrdtType {
     // =========================================================================
     // REGISTERS

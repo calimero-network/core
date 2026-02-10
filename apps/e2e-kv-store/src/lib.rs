@@ -882,7 +882,7 @@ impl E2eKvStore {
         self.crdt_pn_counters
             .get(&key)
             .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|c| c.value().unwrap_or(0) as i64)
+            .map(|c| c.value().unwrap_or(0))
             .ok_or_else(|| "PNCounter not found".to_owned())
     }
 
