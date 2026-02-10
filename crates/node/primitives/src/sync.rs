@@ -313,12 +313,12 @@ pub fn calculate_divergence(local: &SyncHandshake, remote: &SyncHandshake) -> f6
 ///
 /// | # | Condition | Selected Protocol |
 /// |---|-----------|-------------------|
-/// | 1 | `local.root_hash == remote.root_hash` | `None` |
-/// | 2 | `!local.has_state` (fresh node) | `Snapshot` |
-/// | 3 | `local.has_state` AND divergence > 50% | `HashComparison` |
-/// | 4 | `max_depth > 3` AND divergence < 20% | `SubtreePrefetch` |
-/// | 5 | `entity_count > 50` AND divergence < 10% | `BloomFilter` |
-/// | 6 | `max_depth <= 2` AND many children | `LevelWise` |
+/// | 1 | `root_hash` match | `None` |
+/// | 2 | `!has_state` (fresh node) | `Snapshot` |
+/// | 3 | `has_state` AND divergence >50% | `HashComparison` |
+/// | 4 | `max_depth` >3 AND divergence <20% | `SubtreePrefetch` |
+/// | 5 | `entity_count` >50 AND divergence <10% | `BloomFilter` |
+/// | 6 | `max_depth` 1-2 AND avg children/level >10 | `LevelWise` |
 /// | 7 | (default) | `HashComparison` |
 ///
 /// **CRITICAL (Invariant I5)**: Snapshot is NEVER selected for initialized nodes.
@@ -385,28 +385,26 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
     if remote.entity_count > 50 && divergence < 0.1 {
         return ProtocolSelection {
             protocol: SyncProtocol::BloomFilter {
-                filter_size: (remote.entity_count * 10).min(10_000), // ~10 bits per entity, max 10k
+                // ~10 bits per entity, max 10k; saturating to avoid overflow on huge counts
+                filter_size: remote.entity_count.saturating_mul(10).min(10_000),
                 false_positive_rate: 0.01,
             },
             reason: "large tree with small divergence, using bloom filter",
         };
     }
 
-    // Rule 6: Wide shallow tree
-    // "Many children" heuristic: entity_count / max_depth > 10
-    let avg_children_per_level = if remote.max_depth > 0 {
-        remote.entity_count / u64::from(remote.max_depth)
-    } else {
-        remote.entity_count
-    };
-
-    if remote.max_depth <= 2 && avg_children_per_level > 10 {
-        return ProtocolSelection {
-            protocol: SyncProtocol::LevelWise {
-                max_depth: remote.max_depth,
-            },
-            reason: "wide shallow tree, using level-wise sync",
-        };
+    // Rule 6: Wide shallow tree (depth 1-2 with many children per level)
+    // Skip depth=0 (no hierarchy) - LevelWise requires actual tree structure
+    if remote.max_depth >= 1 && remote.max_depth <= 2 {
+        let avg_children_per_level = remote.entity_count / u64::from(remote.max_depth);
+        if avg_children_per_level > 10 {
+            return ProtocolSelection {
+                protocol: SyncProtocol::LevelWise {
+                    max_depth: remote.max_depth,
+                },
+                reason: "wide shallow tree, using level-wise sync",
+            };
+        }
     }
 
     // Rule 7: Default fallback
@@ -422,9 +420,7 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
 /// Check if a protocol kind is supported by the remote peer.
 #[must_use]
 pub fn is_protocol_supported(protocol: &SyncProtocol, capabilities: &SyncCapabilities) -> bool {
-    capabilities
-        .supported_protocols
-        .contains(&protocol.kind())
+    capabilities.supported_protocols.contains(&protocol.kind())
 }
 
 /// Select protocol with fallback if preferred is not supported.
