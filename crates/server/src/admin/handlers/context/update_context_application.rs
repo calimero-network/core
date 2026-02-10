@@ -32,7 +32,12 @@ pub async fn handler(
         }
     };
 
-    info!(context_id=%context_id_result, application_id=%req.application_id, "Updating context application");
+    info!(
+        context_id=%context_id_result,
+        application_id=%req.application_id,
+        migrate_method=?req.migrate_method,
+        "Updating context application"
+    );
 
     let result = state
         .ctx_client
@@ -40,6 +45,7 @@ pub async fn handler(
             &context_id_result,
             &req.application_id,
             &req.executor_public_key,
+            req.migrate_method.clone(),
         )
         .await
         .map_err(parse_api_error);
