@@ -655,15 +655,11 @@ pub struct TreeNodeRequest {
     /// ID of the node to request (root hash or internal node hash).
     pub node_id: [u8; 32],
 
-    /// Maximum depth to traverse from this node.
+    /// Maximum depth to traverse from this node (private to enforce validation).
     ///
-    /// - `Some(n)` - Traverse up to n levels deep
-    /// - `None` - No limit specified (implementations SHOULD enforce MAX_TREE_DEPTH)
-    ///
-    /// Security: Implementations must cap at MAX_TREE_DEPTH (64) to prevent
-    /// resource exhaustion from malicious peers. Use `with_depth()` constructor
-    /// which enforces this limit automatically.
-    pub max_depth: Option<usize>,
+    /// Use `depth()` accessor which always clamps to MAX_TREE_DEPTH.
+    /// Use `with_depth()` constructor to set a depth limit.
+    max_depth: Option<usize>,
 }
 
 impl TreeNodeRequest {
@@ -829,7 +825,7 @@ impl TreeNode {
     /// Call this after deserializing from untrusted sources.
     /// Validates:
     /// - Children count within MAX_CHILDREN_PER_NODE
-    /// - Structural invariant: internal nodes have children, leaf nodes have data
+    /// - Structural invariant: must be either internal (has children) or leaf (has data)
     /// - Leaf data validity (value size within limits)
     #[must_use]
     pub fn is_valid(&self) -> bool {
@@ -838,10 +834,14 @@ impl TreeNode {
             return false;
         }
 
-        // Check structural invariant: a node cannot have both children AND leaf_data
-        // (internal nodes have children, leaf nodes have data, not both)
-        if !self.children.is_empty() && self.leaf_data.is_some() {
-            return false;
+        // Check structural invariant: a node must be exactly one of:
+        // - Internal: has children, no leaf_data
+        // - Leaf: has leaf_data, no children
+        // Empty nodes (no children AND no leaf_data) are invalid
+        match (&self.children.is_empty(), &self.leaf_data) {
+            (true, None) => return false,     // Empty node - invalid
+            (false, Some(_)) => return false, // Both children and data - invalid
+            _ => {} // Valid: either (children, None) or (empty, Some(data))
         }
 
         // Validate leaf data if present
@@ -976,17 +976,8 @@ impl LeafMetadata {
 ///
 /// Determines how entities are merged during sync.
 ///
-/// # TODO: Consolidate with storage CrdtType
-///
-/// This enum duplicates `calimero_storage::collections::CrdtType`.
-/// Both should be consolidated into `calimero-primitives` crate as a single
-/// source of truth. See: <https://github.com/calimero-network/core/issues/1912>
-///
-/// Current differences:
-/// - This enum has: `GCounter`, `LwwSet`, `OrSet`, `Custom(u32)`
-/// - Storage enum has: `Counter` (PN), `UserStorage`, `FrozenStorage`
-///
-/// When consolidating, ensure wire-protocol compatibility is maintained.
+/// TODO: Consolidate with `calimero_storage::collections::CrdtType` - see
+/// <https://github.com/calimero-network/core/issues/1912>
 #[derive(Clone, Copy, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum CrdtType {
     /// Last-Writer-Wins register (simple overwrite by HLC).
@@ -1060,7 +1051,11 @@ impl TreeCompareResult {
 
     /// Check if push (send to remote) is needed for bidirectional sync.
     ///
-    /// Returns true if local has data that remote doesn't.
+    /// Returns true if local has data that remote doesn't:
+    /// - `RemoteMissing`: entire local subtree needs pushing
+    /// - `Different` with `local_only_children`: those children need pushing
+    /// - `Different` with all empty vecs: this is a **leaf node comparison** where
+    ///   hashes differ, meaning local leaf data needs pushing for CRDT merge
     #[must_use]
     pub fn needs_push(&self) -> bool {
         match self {
@@ -1074,10 +1069,9 @@ impl TreeCompareResult {
                 if !local_only_children.is_empty() {
                     return true;
                 }
-                // Push needed for differing leaf nodes: when hashes differ but there are
-                // no children at all (all vecs empty), it means we compared two leaves
-                // with different content. The local leaf data needs to be pushed for
-                // CRDT merge.
+                // Leaf node detection: when all child vecs are empty but hashes differed,
+                // we compared two leaf nodes with different content. The local leaf data
+                // needs to be pushed for bidirectional CRDT merge.
                 remote_only_children.is_empty() && common_children.is_empty()
             }
             _ => false,
@@ -2184,16 +2178,24 @@ mod tests {
 
     #[test]
     fn test_tree_node_response_validation() {
-        // Valid response
+        // Valid response with internal node
         let valid_response =
-            TreeNodeResponse::new(vec![TreeNode::internal([1; 32], [2; 32], vec![])]);
+            TreeNodeResponse::new(vec![TreeNode::internal([1; 32], [2; 32], vec![[3; 32]])]);
         assert!(valid_response.is_valid());
+
+        // Valid response with leaf node
+        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let leaf_data = TreeLeafData::new([10; 32], vec![1, 2, 3], metadata);
+        let leaf_response =
+            TreeNodeResponse::new(vec![TreeNode::leaf([1; 32], [2; 32], leaf_data)]);
+        assert!(leaf_response.is_valid());
 
         // Response at limit is valid
         let mut nodes = Vec::new();
         for i in 0..MAX_NODES_PER_RESPONSE {
             let id = [i as u8; 32];
-            nodes.push(TreeNode::internal(id, id, vec![]));
+            // Use internal nodes with at least one child
+            nodes.push(TreeNode::internal(id, id, vec![[0; 32]]));
         }
         let at_limit = TreeNodeResponse::new(nodes);
         assert!(at_limit.is_valid());
@@ -2232,6 +2234,10 @@ mod tests {
         let valid_leaf_data = TreeLeafData::new([10; 32], vec![1, 2, 3], valid_metadata);
         let valid_leaf = TreeNode::leaf([1; 32], [2; 32], valid_leaf_data);
         assert!(valid_leaf.is_valid());
+
+        // Empty internal node (no children, no leaf_data) is invalid
+        let empty_node = TreeNode::internal([1; 32], [2; 32], vec![]);
+        assert!(!empty_node.is_valid());
     }
 
     #[test]
@@ -2240,17 +2246,23 @@ mod tests {
         let mut nodes = Vec::new();
         for i in 0..=MAX_NODES_PER_RESPONSE {
             let id = [i as u8; 32];
-            nodes.push(TreeNode::internal(id, id, vec![]));
+            // Use internal nodes with at least one child
+            nodes.push(TreeNode::internal(id, id, vec![[0; 32]]));
         }
         let over_limit = TreeNodeResponse::new(nodes);
         assert!(!over_limit.is_valid());
 
-        // Response with invalid nested node is invalid
+        // Response with invalid nested node is invalid (too many children)
         let over_children: Vec<[u8; 32]> =
             (0..=MAX_CHILDREN_PER_NODE).map(|i| [i as u8; 32]).collect();
         let invalid_node = TreeNode::internal([1; 32], [2; 32], over_children);
         let response_with_invalid = TreeNodeResponse::new(vec![invalid_node]);
         assert!(!response_with_invalid.is_valid());
+
+        // Response with empty internal node is invalid
+        let empty_node = TreeNode::internal([1; 32], [2; 32], vec![]);
+        let response_with_empty = TreeNodeResponse::new(vec![empty_node]);
+        assert!(!response_with_empty.is_valid());
     }
 
     #[test]
