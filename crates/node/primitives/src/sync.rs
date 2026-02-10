@@ -422,9 +422,7 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
 /// Check if a protocol kind is supported by the remote peer.
 #[must_use]
 pub fn is_protocol_supported(protocol: &SyncProtocol, capabilities: &SyncCapabilities) -> bool {
-    capabilities
-        .supported_protocols
-        .contains(&protocol.kind())
+    capabilities.supported_protocols.contains(&protocol.kind())
 }
 
 /// Select protocol with fallback if preferred is not supported.
@@ -444,18 +442,17 @@ pub fn select_protocol_with_fallback(
         return preferred;
     }
 
-    // Fallback: HashComparison is always safe for initialized nodes
-    if local.has_state {
-        let fallback = SyncProtocol::HashComparison {
-            root_hash: remote.root_hash,
-            divergent_subtrees: vec![],
+    // Fallback: HashComparison is safe for both initialized and fresh nodes.
+    // Fresh nodes will discover all entities differ and sync everything.
+    let fallback = SyncProtocol::HashComparison {
+        root_hash: remote.root_hash,
+        divergent_subtrees: vec![],
+    };
+    if is_protocol_supported(&fallback, remote_capabilities) {
+        return ProtocolSelection {
+            protocol: fallback,
+            reason: "fallback to hash comparison (preferred not supported)",
         };
-        if is_protocol_supported(&fallback, remote_capabilities) {
-            return ProtocolSelection {
-                protocol: fallback,
-                reason: "fallback to hash comparison (preferred not supported)",
-            };
-        }
     }
 
     // Last resort: None (will need manual intervention)
@@ -1074,6 +1071,35 @@ mod tests {
             selection.protocol,
             SyncProtocol::HashComparison { .. }
         ));
+        assert!(selection.reason.contains("fallback"));
+    }
+
+    #[test]
+    fn test_select_protocol_with_fallback_fresh_node_snapshot_unsupported() {
+        // Fresh node (no state) would prefer Snapshot
+        let local = SyncHandshake::new([0; 32], 0, 0, vec![]);
+        let remote = SyncHandshake::new([42; 32], 100, 5, vec![]);
+
+        // Remote only supports HashComparison, not Snapshot
+        let caps = SyncCapabilities {
+            supports_compression: true,
+            max_batch_size: 1000,
+            supported_protocols: vec![
+                SyncProtocolKind::None,
+                SyncProtocolKind::DeltaSync,
+                SyncProtocolKind::HashComparison,
+                // Note: Snapshot NOT included
+            ],
+        };
+
+        let selection = select_protocol_with_fallback(&local, &remote, &caps);
+
+        // Fresh node should fall back to HashComparison, NOT get None
+        assert!(
+            matches!(selection.protocol, SyncProtocol::HashComparison { .. }),
+            "Fresh node should fall back to HashComparison when Snapshot unsupported, got: {:?}",
+            selection.protocol
+        );
         assert!(selection.reason.contains("fallback"));
     }
 }
