@@ -2048,6 +2048,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-context-primitives",
  "calimero-node-primitives",
+ "calimero-prelude",
  "calimero-primitives",
  "calimero-runtime",
  "calimero-storage",
@@ -2296,7 +2297,9 @@ name = "calimero-prelude"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-primitives",
  "serde",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -2356,12 +2359,14 @@ version = "0.0.0"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
+ "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk-macros",
  "calimero-sys",
  "calimero-wasm-abi",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "trybuild",
 ]
 
@@ -2451,6 +2456,7 @@ name = "calimero-storage"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk",
  "calimero-storage-macros",
@@ -6835,6 +6841,56 @@ dependencies = [
  "tokio",
  "tower-http 0.5.2",
  "tracing",
+]
+
+[[package]]
+name = "migration-suite-v1"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "migration-suite-v2-add-field"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "migration-suite-v3-remove-field"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "migration-suite-v4-rename-field"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "migration-suite-v5-change-type"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
 ]
 
 [[package]]
