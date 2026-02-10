@@ -1967,11 +1967,11 @@ mod tests {
 
     #[test]
     fn test_leaf_metadata_builder() {
-        let metadata = LeafMetadata::new(CrdtType::Counter, 500, [1; 32])
+        let metadata = LeafMetadata::new(CrdtType::PnCounter, 500, [1; 32])
             .with_version(10)
             .with_parent([2; 32]);
 
-        assert_eq!(metadata.crdt_type, CrdtType::Counter);
+        assert_eq!(metadata.crdt_type, CrdtType::PnCounter);
         assert_eq!(metadata.hlc_timestamp, 500);
         assert_eq!(metadata.version, 10);
         assert_eq!(metadata.parent_id, Some([2; 32]));
@@ -1979,20 +1979,17 @@ mod tests {
 
     #[test]
     fn test_crdt_type_variants() {
-        // Test all variants in declaration order (discriminant order matters for Borsh)
         let types = vec![
             CrdtType::LwwRegister,
-            CrdtType::Counter,
+            CrdtType::GCounter,
+            CrdtType::PnCounter,
             CrdtType::Rga,
             CrdtType::UnorderedMap,
             CrdtType::UnorderedSet,
             CrdtType::Vector,
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,
-            CrdtType::Record,
             CrdtType::Custom("test".to_string()),
-            CrdtType::LwwSet,
-            CrdtType::OrSet,
         ];
 
         for crdt_type in types {
