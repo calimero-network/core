@@ -825,7 +825,7 @@ impl TreeNode {
     /// Call this after deserializing from untrusted sources.
     /// Validates:
     /// - Children count within MAX_CHILDREN_PER_NODE
-    /// - Structural invariant: must be either internal (has children) or leaf (has data)
+    /// - Structural invariant: must have exactly one of children OR leaf_data
     /// - Leaf data validity (value size within limits)
     #[must_use]
     pub fn is_valid(&self) -> bool {
@@ -834,14 +834,14 @@ impl TreeNode {
             return false;
         }
 
-        // Check structural invariant: a node must be exactly one of:
-        // - Internal: has children, no leaf_data
-        // - Leaf: has leaf_data, no children
-        // Empty nodes (no children AND no leaf_data) are invalid
-        match (&self.children.is_empty(), &self.leaf_data) {
-            (true, None) => return false,     // Empty node - invalid
-            (false, Some(_)) => return false, // Both children and data - invalid
-            _ => {} // Valid: either (children, None) or (empty, Some(data))
+        // Check structural invariant: must have exactly one of children or data
+        // - Internal nodes: non-empty children, no leaf_data
+        // - Leaf nodes: empty children, has leaf_data
+        let has_children = !self.children.is_empty();
+        let has_data = self.leaf_data.is_some();
+        if has_children == has_data {
+            // Invalid: either both present (ambiguous) or both absent (empty)
+            return false;
         }
 
         // Validate leaf data if present
@@ -980,25 +980,25 @@ impl LeafMetadata {
 /// <https://github.com/calimero-network/core/issues/1912>
 #[derive(Clone, Copy, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum CrdtType {
-    /// Last-Writer-Wins register (simple overwrite by HLC).
+    /// Last-Writer-Wins register. Merge: higher HLC timestamp wins.
     LwwRegister,
-    /// Grow-only counter.
+    /// Grow-only counter. Merge: take max of each node's count.
     GCounter,
-    /// Positive-negative counter.
+    /// Positive-negative counter. Merge: union of increment/decrement maps.
     PnCounter,
-    /// Last-Writer-Wins element set.
+    /// Last-Writer-Wins element set. Merge: per-element timestamp comparison.
     LwwSet,
-    /// Observed-Remove set.
+    /// Observed-Remove set. Merge: union of adds, respecting remove tombstones.
     OrSet,
-    /// Replicated Growable Array (ordered list).
+    /// Replicated Growable Array. Merge: interleave by (timestamp, node_id).
     Rga,
-    /// Unordered map with LWW values.
+    /// Unordered map. Merge: union of keys, recursive merge of values.
     UnorderedMap,
-    /// Unordered set.
+    /// Unordered set. Merge: union of all elements.
     UnorderedSet,
-    /// Vector (ordered collection).
+    /// Vector (ordered collection). Merge: element-wise by index.
     Vector,
-    /// Custom CRDT with named merge strategy.
+    /// Custom CRDT with app-defined merge via WASM callback.
     Custom(u32),
 }
 
@@ -1094,6 +1094,11 @@ pub const MAX_TREE_DEPTH: usize = 64;
 /// * `local` - Local tree node, or None if not present locally
 /// * `remote` - Remote tree node, or None if not present on remote
 ///
+/// # Precondition
+/// When both nodes are present, they must represent the same tree position
+/// (i.e., have matching IDs). Comparing nodes at different positions is a
+/// caller bug and will trigger a debug assertion.
+///
 /// # Returns
 /// * `Equal` - Hashes match, no sync needed
 /// * `Different` - Hashes differ, contains children needing traversal
@@ -1109,6 +1114,12 @@ pub fn compare_tree_nodes(
         (None, Some(_)) => TreeCompareResult::LocalMissing,
         (Some(_), None) => TreeCompareResult::RemoteMissing,
         (Some(local_node), Some(remote_node)) => {
+            // Verify precondition: nodes must represent the same tree position
+            debug_assert_eq!(
+                local_node.id, remote_node.id,
+                "compare_tree_nodes called with nodes at different tree positions"
+            );
+
             if local_node.hash == remote_node.hash {
                 TreeCompareResult::Equal
             } else {
@@ -2074,6 +2085,32 @@ mod tests {
             common_children: vec![],
         }
         .needs_sync());
+    }
+
+    #[test]
+    fn test_tree_compare_result_roundtrip() {
+        // Test all variants survive Borsh serialization roundtrip
+        let variants = vec![
+            TreeCompareResult::Equal,
+            TreeCompareResult::LocalMissing,
+            TreeCompareResult::RemoteMissing,
+            TreeCompareResult::Different {
+                remote_only_children: vec![[1; 32], [2; 32]],
+                local_only_children: vec![[3; 32]],
+                common_children: vec![[4; 32], [5; 32], [6; 32]],
+            },
+            TreeCompareResult::Different {
+                remote_only_children: vec![],
+                local_only_children: vec![],
+                common_children: vec![],
+            },
+        ];
+
+        for original in variants {
+            let encoded = borsh::to_vec(&original).expect("encode");
+            let decoded: TreeCompareResult = borsh::from_slice(&encoded).expect("decode");
+            assert_eq!(original, decoded);
+        }
     }
 
     // =========================================================================
