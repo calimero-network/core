@@ -674,7 +674,8 @@ impl TreeNodeRequest {
     pub fn with_depth(node_id: [u8; 32], max_depth: usize) -> Self {
         Self {
             node_id,
-            max_depth: Some(max_depth),
+            // Clamp to MAX_TREE_DEPTH to prevent resource exhaustion
+            max_depth: Some(max_depth.min(MAX_TREE_DEPTH)),
         }
     }
 
@@ -899,18 +900,28 @@ impl Default for CrdtType {
 }
 
 /// Result of comparing two tree nodes.
+///
+/// Used for Merkle tree traversal during HashComparison sync.
+/// Identifies which children need further traversal in both directions.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TreeCompareResult {
     /// Hashes match - no sync needed for this subtree.
     Equal,
     /// Hashes differ - need to recurse or fetch leaf.
+    ///
+    /// For internal nodes: lists children to recurse into.
+    /// For leaf nodes: both vecs will be empty, but Different still indicates
+    /// that the leaf data needs to be fetched and merged.
     Different {
-        /// IDs of differing children to recurse into.
+        /// IDs of children in remote but not in local (need to fetch).
         differing_children: Vec<[u8; 32]>,
+        /// IDs of children in local but not in remote (for bidirectional sync).
+        local_only_children: Vec<[u8; 32]>,
     },
     /// Local node missing - need to fetch from remote.
     LocalMissing,
-    /// Remote node missing - nothing to sync.
+    /// Remote node missing - local has data that remote doesn't.
+    /// For bidirectional sync, this means we may need to push to remote.
     RemoteMissing,
 }
 
@@ -922,30 +933,64 @@ impl TreeCompareResult {
     }
 }
 
+/// Maximum allowed tree depth for traversal requests.
+///
+/// This limit prevents resource exhaustion from malicious peers requesting
+/// extremely deep traversals. Most practical Merkle trees have depth < 32.
+pub const MAX_TREE_DEPTH: usize = 64;
+
 /// Compare local and remote tree nodes.
 ///
-/// Returns which children (if any) need further traversal.
+/// Returns which children (if any) need further traversal in both directions.
+/// This supports bidirectional sync where both nodes may have unique data.
+///
+/// # Arguments
+/// * `local` - Local tree node, or None if not present locally
+/// * `remote` - Remote tree node, or None if not present on remote
+///
+/// # Returns
+/// * `Equal` - Hashes match, no sync needed
+/// * `Different` - Hashes differ, contains children needing traversal
+/// * `LocalMissing` - Need to fetch from remote
+/// * `RemoteMissing` - Local has data remote doesn't (for bidirectional push)
 #[must_use]
-pub fn compare_tree_nodes(local: Option<&TreeNode>, remote: &TreeNode) -> TreeCompareResult {
-    match local {
-        None => TreeCompareResult::LocalMissing,
-        Some(local_node) => {
-            if local_node.hash == remote.hash {
+pub fn compare_tree_nodes(
+    local: Option<&TreeNode>,
+    remote: Option<&TreeNode>,
+) -> TreeCompareResult {
+    match (local, remote) {
+        (None, None) => TreeCompareResult::Equal,
+        (None, Some(_)) => TreeCompareResult::LocalMissing,
+        (Some(_), None) => TreeCompareResult::RemoteMissing,
+        (Some(local_node), Some(remote_node)) => {
+            if local_node.hash == remote_node.hash {
                 TreeCompareResult::Equal
             } else {
-                // Find differing children
-                let differing: Vec<[u8; 32]> = remote
+                // Use HashSet for O(1) lookups instead of O(n) Vec::contains
+                use std::collections::HashSet;
+
+                let local_children: HashSet<&[u8; 32]> = local_node.children.iter().collect();
+                let remote_children: HashSet<&[u8; 32]> = remote_node.children.iter().collect();
+
+                // Children in remote but not in local (need to fetch)
+                let differing_children: Vec<[u8; 32]> = remote_node
                     .children
                     .iter()
-                    .filter(|child_id| {
-                        // Child differs if not in local or hash differs
-                        !local_node.children.contains(child_id)
-                    })
+                    .filter(|child_id| !local_children.contains(child_id))
+                    .copied()
+                    .collect();
+
+                // Children in local but not in remote (for bidirectional sync)
+                let local_only_children: Vec<[u8; 32]> = local_node
+                    .children
+                    .iter()
+                    .filter(|child_id| !remote_children.contains(child_id))
                     .copied()
                     .collect();
 
                 TreeCompareResult::Different {
-                    differing_children: differing,
+                    differing_children,
+                    local_only_children,
                 }
             }
         }
@@ -1827,7 +1872,7 @@ mod tests {
         let local = TreeNode::internal([1; 32], [99; 32], vec![[2; 32]]);
         let remote = TreeNode::internal([1; 32], [99; 32], vec![[2; 32]]);
 
-        let result = compare_tree_nodes(Some(&local), &remote);
+        let result = compare_tree_nodes(Some(&local), Some(&remote));
         assert_eq!(result, TreeCompareResult::Equal);
         assert!(!result.needs_sync());
     }
@@ -1836,7 +1881,7 @@ mod tests {
     fn test_compare_tree_nodes_local_missing() {
         let remote = TreeNode::internal([1; 32], [2; 32], vec![[3; 32]]);
 
-        let result = compare_tree_nodes(None, &remote);
+        let result = compare_tree_nodes(None, Some(&remote));
         assert_eq!(result, TreeCompareResult::LocalMissing);
         assert!(result.needs_sync());
     }
@@ -1846,10 +1891,13 @@ mod tests {
         let local = TreeNode::internal([1; 32], [10; 32], vec![[2; 32]]);
         let remote = TreeNode::internal([1; 32], [20; 32], vec![[2; 32], [3; 32]]);
 
-        let result = compare_tree_nodes(Some(&local), &remote);
+        let result = compare_tree_nodes(Some(&local), Some(&remote));
 
         match &result {
-            TreeCompareResult::Different { differing_children } => {
+            TreeCompareResult::Different {
+                differing_children,
+                local_only_children: _,
+            } => {
                 // [3; 32] is in remote but not in local
                 assert!(differing_children.contains(&[3; 32]));
             }
@@ -1864,8 +1912,88 @@ mod tests {
         assert!(!TreeCompareResult::RemoteMissing.needs_sync());
         assert!(TreeCompareResult::LocalMissing.needs_sync());
         assert!(TreeCompareResult::Different {
-            differing_children: vec![]
+            differing_children: vec![],
+            local_only_children: vec![],
         }
         .needs_sync());
+    }
+
+    // =========================================================================
+    // Bug Fix Tests (AI Review Findings)
+    // =========================================================================
+
+    #[test]
+    fn test_compare_tree_nodes_leaf_content_differs() {
+        // CRITICAL: When both are leaves with different hashes but no children,
+        // we must still identify that sync is needed.
+        let local_metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let local_leaf = TreeLeafData::new([10; 32], vec![1, 2, 3], local_metadata);
+        let local = TreeNode::leaf([1; 32], [100; 32], local_leaf); // hash = [100; 32]
+
+        let remote_metadata = LeafMetadata::new(CrdtType::LwwRegister, 200, [1; 32]);
+        let remote_leaf = TreeLeafData::new([10; 32], vec![4, 5, 6], remote_metadata);
+        let remote = TreeNode::leaf([1; 32], [200; 32], remote_leaf); // hash = [200; 32]
+
+        let result = compare_tree_nodes(Some(&local), Some(&remote));
+
+        // Both are leaves, hashes differ, but no children
+        // The function MUST indicate that this node needs sync
+        match &result {
+            TreeCompareResult::Different {
+                differing_children,
+                local_only_children,
+            } => {
+                // For leaf nodes, differing_children will be empty (no children)
+                // but the Different result itself indicates sync is needed
+                assert!(differing_children.is_empty());
+                assert!(local_only_children.is_empty());
+            }
+            _ => panic!("Expected Different result for leaves with different content"),
+        }
+        assert!(result.needs_sync());
+    }
+
+    #[test]
+    fn test_compare_tree_nodes_remote_missing() {
+        // When local has a node but remote doesn't - bidirectional sync
+        let local = TreeNode::internal([1; 32], [2; 32], vec![[3; 32]]);
+
+        let result = compare_tree_nodes(Some(&local), None);
+        assert_eq!(result, TreeCompareResult::RemoteMissing);
+        assert!(!result.needs_sync()); // Nothing to pull from remote
+    }
+
+    #[test]
+    fn test_compare_tree_nodes_local_only_children() {
+        // Local has children that remote doesn't have - for bidirectional sync
+        let local = TreeNode::internal([1; 32], [10; 32], vec![[2; 32], [3; 32], [4; 32]]);
+        let remote = TreeNode::internal([1; 32], [20; 32], vec![[2; 32], [5; 32]]);
+
+        let result = compare_tree_nodes(Some(&local), Some(&remote));
+
+        match &result {
+            TreeCompareResult::Different {
+                differing_children,
+                local_only_children,
+            } => {
+                // [5; 32] is in remote but not in local
+                assert!(differing_children.contains(&[5; 32]));
+                // [3; 32] and [4; 32] are in local but not in remote
+                assert!(local_only_children.contains(&[3; 32]));
+                assert!(local_only_children.contains(&[4; 32]));
+            }
+            _ => panic!("Expected Different result"),
+        }
+    }
+
+    #[test]
+    fn test_tree_node_request_max_depth_validation() {
+        // MAX_TREE_DEPTH should be enforced
+        let request = TreeNodeRequest::with_depth([1; 32], MAX_TREE_DEPTH);
+        assert_eq!(request.max_depth, Some(MAX_TREE_DEPTH));
+
+        // Excessive depth should be clamped
+        let excessive = TreeNodeRequest::with_depth([1; 32], MAX_TREE_DEPTH + 100);
+        assert_eq!(excessive.max_depth, Some(MAX_TREE_DEPTH));
     }
 }
