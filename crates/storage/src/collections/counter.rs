@@ -244,13 +244,18 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
         // that a Counter with field name "X" won't collide with a user-created collection
         // named "X_positive" or "X_negative".
         //
-        // The positive map gets CrdtType::PnCounter as it represents the main counter entity.
+        // The positive map gets the appropriate CrdtType based on ALLOW_DECREMENT.
         // The negative map is internal and doesn't need special CRDT type.
+        let crdt_type = if ALLOW_DECREMENT {
+            CrdtType::PnCounter
+        } else {
+            CrdtType::GCounter
+        };
         Self {
             positive: UnorderedMap::new_with_field_name_and_crdt_type(
                 parent_id,
                 &format!("__counter_internal_{field_name}_positive"),
-                CrdtType::PnCounter,
+                crdt_type,
             ),
             // GCounter: negative map is never used, so use detached
             // PNCounter: negative map is used, so register it properly
@@ -280,8 +285,13 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
         // Positive map: always needs deterministic ID and entry migration
         self.positive
             .reassign_deterministic_id(&format!("__counter_internal_{field_name}_positive"));
-        // Update CRDT type after reassignment
-        self.positive.inner.storage.metadata.crdt_type = Some(CrdtType::PnCounter);
+        // Update CRDT type after reassignment using the correct type for this counter
+        let crdt_type = if ALLOW_DECREMENT {
+            CrdtType::PnCounter
+        } else {
+            CrdtType::GCounter
+        };
+        self.positive.inner.storage.metadata.crdt_type = Some(crdt_type);
 
         // Negative map: only for PNCounter (ALLOW_DECREMENT = true)
         // GCounter's negative map is detached and never used, so skip it
