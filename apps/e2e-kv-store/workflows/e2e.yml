@@ -15,7 +15,7 @@ steps:
   - name: Install application on node-1
     type: install_application
     node: e2e-node-1
-    path: apps/e2e-kv-store/res/e2e_kv_store.wasm
+    path: res/e2e_kv_store.wasm
     dev: true
     outputs:
       app_id: applicationId
