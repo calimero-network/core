@@ -21,6 +21,9 @@
 
 use tokio::time;
 
+// Re-export from primitives to maintain single source of truth
+pub use calimero_node_primitives::sync::DEFAULT_DELTA_SYNC_THRESHOLD;
+
 /// Default timeout for entire sync operation (30 seconds)
 pub const DEFAULT_SYNC_TIMEOUT_SECS: u64 = 30;
 
@@ -37,9 +40,6 @@ pub const DEFAULT_MAX_CONCURRENT_SYNCS: usize = 30;
 
 /// Default snapshot chunk size for full resync (64 KB)
 pub const DEFAULT_SNAPSHOT_CHUNK_SIZE: usize = 64 * 1024;
-
-/// Default delta sync threshold (switch to full resync after this many deltas)
-pub const DEFAULT_DELTA_SYNC_THRESHOLD: usize = 128;
 
 /// Synchronization configuration.
 ///
