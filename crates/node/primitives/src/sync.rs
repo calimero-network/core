@@ -302,7 +302,7 @@ pub struct ProtocolSelection {
 /// - >1.0 = local has more entities than remote
 #[must_use]
 pub fn calculate_divergence(local: &SyncHandshake, remote: &SyncHandshake) -> f64 {
-    let diff = (local.entity_count as i64 - remote.entity_count as i64).unsigned_abs();
+    let diff = local.entity_count.abs_diff(remote.entity_count);
     let denominator = remote.entity_count.max(1);
     diff as f64 / denominator as f64
 }
