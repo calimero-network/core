@@ -1054,25 +1054,30 @@ impl TreeCompareResult {
     /// Returns true if local has data that remote doesn't:
     /// - `RemoteMissing`: entire local subtree needs pushing
     /// - `Different` with `local_only_children`: those children need pushing
-    /// - `Different` with all empty vecs: this is a **leaf node comparison** where
-    ///   hashes differ, meaning local leaf data needs pushing for CRDT merge
+    /// - `Different` where local is a leaf (no `local_only` or `common` children):
+    ///   the local leaf data needs pushing for CRDT merge, even if remote has
+    ///   children (structural divergence where one peer has a leaf while another
+    ///   has expanded it into a subtree)
     #[must_use]
     pub fn needs_push(&self) -> bool {
         match self {
             Self::RemoteMissing => true,
             Self::Different {
-                remote_only_children,
                 local_only_children,
                 common_children,
+                ..
             } => {
                 // Push needed if we have local-only children
                 if !local_only_children.is_empty() {
                     return true;
                 }
-                // Leaf node detection: when all child vecs are empty but hashes differed,
-                // we compared two leaf nodes with different content. The local leaf data
-                // needs to be pushed for bidirectional CRDT merge.
-                remote_only_children.is_empty() && common_children.is_empty()
+                // Local leaf detection: when local has no children (both local_only
+                // and common are empty) but hashes differed, local is a leaf node
+                // with data that remote doesn't have. This covers both:
+                // - Two leaf nodes with different content
+                // - Structural divergence: local is a leaf, remote is an internal node
+                // In both cases, local leaf data needs to be pushed for CRDT merge.
+                common_children.is_empty()
             }
             _ => false,
         }
@@ -2297,13 +2302,14 @@ mod tests {
         };
         assert!(with_local_only.needs_push());
 
-        // Different with only remote_only_children (internal node) doesn't need push
+        // Different with only remote_only_children means local is a leaf (no children)
+        // while remote is an internal node - local leaf data needs push
         let with_remote_only = TreeCompareResult::Different {
             remote_only_children: vec![[1; 32]],
             local_only_children: vec![],
             common_children: vec![],
         };
-        assert!(!with_remote_only.needs_push());
+        assert!(with_remote_only.needs_push());
 
         // Different with only common_children (internal node) doesn't need push
         // - caller needs to recurse into common_children to determine if push is needed
