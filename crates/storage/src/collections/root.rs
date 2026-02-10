@@ -160,7 +160,57 @@ where
                                 ))?,
                             });
                         }
-                        Action::Add { .. } | Action::Update { .. } | Action::DeleteRef { .. } => {
+                        Action::Add {
+                            id,
+                            data,
+                            metadata,
+                            ancestors,
+                        } => {
+                            // Skip root - it will be processed after all children via root_snapshot
+                            // This ensures children are created before root merge happens
+                            if !id.is_root() {
+                                info!(
+                                    target: "storage::sync_child",
+                                    %id,
+                                    data_len = data.len(),
+                                    created_at = metadata.created_at,
+                                    updated_at = metadata.updated_at(),
+                                    "SYNC CHILD: Applying Action::Add for child entity"
+                                );
+                                <Interface<S>>::apply_action(Action::Add {
+                                    id,
+                                    data,
+                                    metadata,
+                                    ancestors,
+                                })?;
+                            }
+                        }
+                        Action::Update {
+                            id,
+                            data,
+                            metadata,
+                            ancestors,
+                        } => {
+                            // Skip root - it will be processed after all children via root_snapshot
+                            // This ensures children are created before root merge happens
+                            if !id.is_root() {
+                                info!(
+                                    target: "storage::sync_child",
+                                    %id,
+                                    data_len = data.len(),
+                                    created_at = metadata.created_at,
+                                    updated_at = metadata.updated_at(),
+                                    "SYNC CHILD: Applying Action::Update for child entity"
+                                );
+                                <Interface<S>>::apply_action(Action::Update {
+                                    id,
+                                    data,
+                                    metadata,
+                                    ancestors,
+                                })?;
+                            }
+                        }
+                        Action::DeleteRef { .. } => {
                             <Interface<S>>::apply_action(action)?;
                         }
                     };

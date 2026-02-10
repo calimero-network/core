@@ -1,0 +1,261 @@
+name: E2E - Rust Apps
+
+# Tests e2e-kv-store and xcall-example apps using locally-built Docker image.
+# Fast PR testing (~10 min) - builds amd64 binary + container locally.
+# Self-contained: doesn't depend on release.yml
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "apps/e2e-kv-store/**"
+      - "apps/xcall-example/**"
+      - ".github/workflows/e2e-rust-apps.yml"
+
+  pull_request:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "apps/e2e-kv-store/**"
+      - "apps/xcall-example/**"
+      - ".github/workflows/e2e-rust-apps.yml"
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CALIMERO_CONTRACTS_VERSION: "latest"
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  build-and-test:
+    name: Build & Test Apps (amd64)
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: e2e-rust-apps
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # Build merod binary and local Docker image (amd64 only)
+      - name: Build local merod image
+        uses: ./.github/actions/build-local-merod
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build apps
+      - name: Build e2e-kv-store app
+        run: |
+          cd apps/e2e-kv-store
+          ./build.sh
+
+      - name: Build xcall-example app
+        run: |
+          cd apps/xcall-example
+          ./build.sh
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Download Contracts
+        uses: ./.github/actions/download-contracts
+
+      # Run e2e-kv-store workflow
+      - name: Run e2e-kv-store Workflow
+        id: run_e2e_kv_store
+        run: |
+          mkdir -p docker-logs
+          cd apps/e2e-kv-store
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+              
+              if merobox bootstrap run \
+                  "workflows/e2e.yml" \
+                  --image merod:local \
+                  --e2e-mode \
+                  --near-devnet \
+                  --contracts-dir "$GITHUB_WORKSPACE/contracts/near"; then
+                  success=true
+                  break
+              else
+                  attempt=$((attempt + 1))
+              fi
+          done
+
+          # Collect logs
+          echo "Collecting Docker logs for e2e-kv-store workflow"
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+              if [ -n "$container" ]; then
+                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/e2e-kv-store-${container}.log" 2>&1 || true
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
+          else
+              echo "failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Run xcall-example workflow
+      - name: Run xcall-example Workflow
+        id: run_xcall
+        run: |
+          cd apps/xcall-example
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+              
+              if merobox bootstrap run \
+                  "workflows/xcall.yml" \
+                  --image merod:local \
+                  --e2e-mode \
+                  --near-devnet \
+                  --contracts-dir "$GITHUB_WORKSPACE/contracts/near"; then
+                  success=true
+                  break
+              else
+                  attempt=$((attempt + 1))
+              fi
+          done
+
+          # Collect logs
+          echo "Collecting Docker logs for xcall-example workflow"
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+              if [ -n "$container" ]; then
+                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/xcall-${container}.log" 2>&1 || true
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
+          else
+              echo "failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Workflow Data Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-rust-apps-data-${{ github.sha }}
+          path: |
+            apps/e2e-kv-store/res/*.wasm
+            apps/e2e-kv-store/res/abi.json
+            apps/e2e-kv-store/res/*.mpk
+            apps/e2e-kv-store/res/state-schema.json
+            apps/e2e-kv-store/data/
+            apps/xcall-example/res/*.wasm
+            apps/xcall-example/res/abi.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload Docker Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-rust-apps-docker-logs-${{ github.sha }}
+          path: docker-logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Check workflow results
+        if: steps.run_e2e_kv_store.outputs.failed == 'true' || steps.run_xcall.outputs.failed == 'true'
+        run: |
+          echo "Workflow failures detected:"
+          if [ "${{ steps.run_e2e_kv_store.outputs.failed }}" == "true" ]; then
+            echo "  - e2e-kv-store workflow failed"
+          fi
+          if [ "${{ steps.run_xcall.outputs.failed }}" == "true" ]; then
+            echo "  - xcall-example workflow failed"
+          fi
+          exit 1
+
+  comment:
+    name: Report Failed Workflow
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - name: Check if main job failed or was cancelled
+        id: check_status
+        run: |
+          if [ "${{ needs.build-and-test.result }}" != "success" ]; then
+            echo "job_failed=true" >> $GITHUB_OUTPUT
+            if [ "${{ needs.build-and-test.result }}" == "cancelled" ]; then
+              echo "was_cancelled=true" >> $GITHUB_OUTPUT
+            else
+              echo "was_cancelled=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "job_failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prepare Failure Comment
+        if: steps.check_status.outputs.job_failed == 'true' && steps.check_status.outputs.was_cancelled == 'false'
+        run: |
+          message="## E2E Rust Apps Failed
+
+          One or more E2E workflows (e2e-kv-store, xcall-example) failed after retries.
+
+          Please check the workflow logs for more details."
+
+          jq -n \
+            --arg pr '${{ github.event.number }}' \
+            --arg tag e2e-rust-apps-report \
+            --arg mode recreate \
+            --arg message "$message" \
+            '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+      - name: Upload Comment
+        if: steps.check_status.outputs.job_failed == 'true' && steps.check_status.outputs.was_cancelled == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-payload-rust-apps
+          path: payload.json
+
+      - name: Fail if main job failed or was cancelled
+        if: steps.check_status.outputs.job_failed == 'true'
+        run: |
+          if [ "${{ steps.check_status.outputs.was_cancelled }}" == "true" ]; then
+            echo "Workflow was cancelled"
+          else
+            echo "Workflow failed"
+          fi
+          exit 1

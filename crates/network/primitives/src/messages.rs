@@ -279,3 +279,17 @@ pub enum NetworkEvent {
 impl actix::Message for NetworkEvent {
     type Result = ();
 }
+
+/// Trait for dispatching network events.
+///
+/// This allows different dispatch mechanisms (Actix recipients, channels, etc.)
+/// to be used interchangeably by NetworkManager.
+pub trait NetworkEventDispatcher: Send + Sync {
+    /// Dispatch a network event.
+    ///
+    /// Returns `true` if dispatched successfully, `false` if dropped.
+    fn dispatch(&self, event: NetworkEvent) -> bool;
+}
+
+/// Boxed event dispatcher for type erasure.
+pub type BoxedEventDispatcher = Box<dyn NetworkEventDispatcher>;

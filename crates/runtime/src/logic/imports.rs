@@ -50,6 +50,11 @@ impl VMLogic<'_> {
             ) -> u32;
             fn storage_read(key_ptr: u64, register_id: u64) -> u32;
             fn storage_remove(key_ptr: u64, register_id: u64) -> u32;
+
+            // Private storage functions (node-local, NOT synchronized)
+            fn private_storage_read(key_ptr: u64, register_id: u64) -> u32;
+            fn private_storage_remove(key_ptr: u64, register_id: u64) -> u32;
+            fn private_storage_write(key_ptr: u64, value_ptr: u64) -> u32;
             fn js_crdt_map_new(register_id: u64) -> i32;
             fn js_crdt_map_get(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_map_insert(

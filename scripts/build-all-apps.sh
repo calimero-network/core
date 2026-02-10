@@ -6,6 +6,8 @@ set -ex
 BUILD_SCRIPTS=(
     "apps/abi_conformance/build.sh"
     "apps/access-control/build.sh"
+    "apps/demo-blockchain-integrations/build.sh"
+    "apps/access-control/build.sh"
     "apps/blobs/build.sh"
     "apps/collaborative-editor/build.sh"
     "apps/kv-store-init/build.sh"

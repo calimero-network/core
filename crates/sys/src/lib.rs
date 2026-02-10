@@ -29,6 +29,11 @@ wasm_imports! {
         fn storage_remove(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         fn storage_write(key: Ref<Buffer<'_>>, value: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         // --
+        // Private storage functions (node-local, NOT synchronized)
+        fn private_storage_read(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
+        fn private_storage_remove(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
+        fn private_storage_write(key: Ref<Buffer<'_>>, value: Ref<Buffer<'_>>) -> Bool;
+        // --
         fn fetch(
             url: Ref<Buffer<'_>>,
             method: Ref<Buffer<'_>>,

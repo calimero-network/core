@@ -124,7 +124,8 @@ impl<T> EntryHandle<T> {
     where
         T: BorshDeserialize,
     {
-        let Some(data) = env::storage_read(self.key) else {
+        // Use private storage functions (node-local, NOT synchronized)
+        let Some(data) = env::private_storage_read(self.key) else {
             return Ok(None);
         };
 
@@ -298,7 +299,8 @@ impl<T> EntryRef<T> {
         let data = borsh::to_vec(&self.data)
             .map_err(|e| crate::types::Error::msg(&format!("Failed to serialize state: {e}")))?;
 
-        let _ = env::storage_write(self.key, &data);
+        // Use private storage functions (node-local, NOT synchronized)
+        let _ = env::private_storage_write(self.key, &data);
         Ok(())
     }
 }
@@ -344,7 +346,8 @@ impl<T: BorshSerialize> Drop for EntryMut<'_, T> {
             ));
         });
 
-        let wrote = env::storage_write(self.key, &data);
+        // Use private storage functions (node-local, NOT synchronized)
+        let wrote = env::private_storage_write(self.key, &data);
         if !wrote {
             env::panic_str("Failed to write private storage state on drop");
         }

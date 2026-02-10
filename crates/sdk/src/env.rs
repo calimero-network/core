@@ -478,6 +478,103 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
     .unwrap_or_else(expected_boolean)
 }
 
+// ==================== Private Storage Functions ====================
+// These functions operate on node-local storage that is NOT synchronized across nodes.
+
+/// Reads a value from private (node-local) storage.
+///
+/// Private storage is NOT synchronized across nodes - it remains local to this node only.
+/// This is useful for storing secrets, node-specific configuration, or other data that
+/// should not be shared with other nodes in the context.
+///
+/// # Parameters
+///
+/// * `key` - The storage key to read
+///
+/// # Returns
+///
+/// * `Some(Vec<u8>)` - The value if found
+/// * `None` - If the key doesn't exist or private storage is not available
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use calimero_sdk::env;
+///
+/// if let Some(value) = env::private_storage_read(b"my_secret") {
+///     println!("Found private value: {:?}", value);
+/// }
+/// ```
+#[inline]
+pub fn private_storage_read(key: &[u8]) -> Option<Vec<u8>> {
+    unsafe { sys::private_storage_read(Ref::new(&Buffer::from(key)), DATA_REGISTER) }
+        .try_into()
+        .unwrap_or_else(expected_boolean::<bool>)
+        .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
+}
+
+/// Removes a value from private (node-local) storage.
+///
+/// Private storage is NOT synchronized across nodes - it remains local to this node only.
+///
+/// # Parameters
+///
+/// * `key` - The storage key to remove
+///
+/// # Returns
+///
+/// * `true` - If the key existed and was removed
+/// * `false` - If the key didn't exist or private storage is not available
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use calimero_sdk::env;
+///
+/// if env::private_storage_remove(b"my_secret") {
+///     println!("Private key was removed");
+/// }
+/// ```
+#[inline]
+pub fn private_storage_remove(key: &[u8]) -> bool {
+    unsafe { sys::private_storage_remove(Ref::new(&Buffer::from(key)), DATA_REGISTER).try_into() }
+        .unwrap_or_else(expected_boolean)
+}
+
+/// Writes a value to private (node-local) storage.
+///
+/// Private storage is NOT synchronized across nodes - it remains local to this node only.
+/// This is useful for storing secrets, node-specific configuration, or other data that
+/// should not be shared with other nodes in the context.
+///
+/// # Parameters
+///
+/// * `key` - The storage key to write to
+/// * `value` - The value to store
+///
+/// # Returns
+///
+/// * `true` - If the write operation succeeded
+/// * `false` - If the write operation failed or private storage is not available
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use calimero_sdk::env;
+///
+/// if env::private_storage_write(b"my_secret", b"secret_value") {
+///     println!("Private value stored successfully");
+/// }
+/// ```
+#[inline]
+pub fn private_storage_write(key: &[u8], value: &[u8]) -> bool {
+    unsafe {
+        sys::private_storage_write(Ref::new(&Buffer::from(key)), Ref::new(&Buffer::from(value)))
+            .try_into()
+    }
+    .unwrap_or_else(expected_boolean)
+}
+
 /// Fill the buffer with random bytes.
 #[inline]
 pub fn random_bytes(buf: &mut [u8]) {
