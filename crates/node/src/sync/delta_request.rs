@@ -117,6 +117,7 @@ impl SyncManager {
                             payload: parent_delta.actions,
                             hlc: parent_delta.hlc,
                             expected_root_hash: parent_delta.expected_root_hash,
+                            kind: calimero_dag::DeltaKind::Regular,
                         };
 
                         // Write deltas to DeltaStore. If parents are missing, DeltaStore marks it 'Pending'.

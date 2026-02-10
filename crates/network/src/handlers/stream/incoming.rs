@@ -25,7 +25,7 @@ impl StreamHandler<FromIncoming> for NetworkManager {
         FromIncoming(peer_id, stream, protocol): FromIncoming,
         _ctx: &mut Self::Context,
     ) {
-        self.event_recipient.do_send(NetworkEvent::StreamOpened {
+        let _ignored = self.event_dispatcher.dispatch(NetworkEvent::StreamOpened {
             peer_id,
             stream: Box::new(Stream::new(stream)),
             protocol,

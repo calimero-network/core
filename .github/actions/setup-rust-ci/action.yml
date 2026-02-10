@@ -1,0 +1,45 @@
+name: Setup Rust CI
+description: "Setup Rust toolchain and caching for CI workflows"
+
+inputs:
+  toolchain:
+    description: "Rust toolchain to install (stable, nightly, or specific version)"
+    required: false
+    default: "stable"
+  components:
+    description: "Additional rustup components to install (comma-separated)"
+    required: false
+    default: ""
+  targets:
+    description: "Additional rustup targets to install (comma-separated)"
+    required: false
+    default: ""
+  shared-key:
+    description: "Shared key for rust-cache (typically workflow name)"
+    required: true
+  cache-on-failure:
+    description: "Whether to save cache even when build fails"
+    required: false
+    default: "true"
+  save-if:
+    description: "Condition for saving cache (e.g., github.ref == 'refs/heads/master')"
+    required: false
+    default: "${{ github.ref == 'refs/heads/master' }}"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: v0-rust
+        shared-key: ${{ inputs.shared-key }}
+        cache-on-failure: ${{ inputs.cache-on-failure }}
+        save-if: ${{ inputs.save-if }}

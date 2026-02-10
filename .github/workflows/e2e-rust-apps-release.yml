@@ -1,0 +1,224 @@
+name: E2E - Rust Apps (Released Image)
+
+# Tests e2e-kv-store and xcall-example apps using the released Docker image from GHCR.
+# Validates that released images work correctly on master merges.
+# For fast PR testing with locally-built images, see e2e-rust-apps.yml
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "apps/e2e-kv-store/**"
+      - "apps/xcall-example/**"
+      - ".github/workflows/e2e-rust-apps-release.yml"
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CALIMERO_CONTRACTS_VERSION: "latest"
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  build-apps:
+    name: Build Apps
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: e2e-rust-apps-release
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build e2e-kv-store app
+        run: |
+          cd apps/e2e-kv-store
+          ./build.sh
+
+      - name: Build xcall-example app
+        run: |
+          cd apps/xcall-example
+          ./build.sh
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-rust-apps-release-build-artifacts
+          path: |
+            apps/e2e-kv-store/res/*.wasm
+            apps/e2e-kv-store/res/*.mpk
+            apps/e2e-kv-store/res/abi.json
+            apps/xcall-example/res/*.wasm
+            apps/xcall-example/res/abi.json
+          retention-days: 1
+
+  test:
+    name: Run Workflows
+    needs: build-apps
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-rust-apps-release-build-artifacts
+
+      - name: Determine Docker image tag
+        id: image-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./scripts/determine-image-tag.sh \
+              "${{ github.event_name }}" \
+              "${{ github.event.number }}" \
+              "${{ github.repository_owner }}" \
+              "${{ github.repository }}" \
+              "${{ github.head_ref }}" \
+              "$GH_TOKEN"
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Download Contracts
+        uses: ./.github/actions/download-contracts
+
+      - name: Run e2e-kv-store Workflow
+        id: run_e2e_kv_store
+        run: |
+          mkdir -p docker-logs
+          cd apps/e2e-kv-store
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+              
+              if merobox bootstrap run \
+                  "workflows/e2e.yml" \
+                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+                  --e2e-mode \
+                  --near-devnet \
+                  --contracts-dir "$GITHUB_WORKSPACE/contracts/near"; then
+                  success=true
+                  break
+              else
+                  attempt=$((attempt + 1))
+              fi
+          done
+
+          # Collect logs
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+              if [ -n "$container" ]; then
+                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/e2e-kv-store-${container}.log" 2>&1 || true
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
+          else
+              echo "failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run xcall-example Workflow
+        id: run_xcall
+        run: |
+          cd apps/xcall-example
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+              
+              if merobox bootstrap run \
+                  "workflows/xcall.yml" \
+                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+                  --e2e-mode \
+                  --near-devnet \
+                  --contracts-dir "$GITHUB_WORKSPACE/contracts/near"; then
+                  success=true
+                  break
+              else
+                  attempt=$((attempt + 1))
+              fi
+          done
+
+          # Collect logs
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+              if [ -n "$container" ]; then
+                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/xcall-${container}.log" 2>&1 || true
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
+          else
+              echo "failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Workflow Data Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-rust-apps-release-data-${{ github.sha }}
+          path: |
+            apps/e2e-kv-store/res/*.wasm
+            apps/e2e-kv-store/res/abi.json
+            apps/e2e-kv-store/res/*.mpk
+            apps/e2e-kv-store/res/state-schema.json
+            apps/e2e-kv-store/data/
+            apps/xcall-example/res/*.wasm
+            apps/xcall-example/res/abi.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload Docker Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-rust-apps-release-docker-logs-${{ github.sha }}
+          path: docker-logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Check workflow results
+        if: steps.run_e2e_kv_store.outputs.failed == 'true' || steps.run_xcall.outputs.failed == 'true'
+        run: |
+          echo "Workflow failures detected:"
+          if [ "${{ steps.run_e2e_kv_store.outputs.failed }}" == "true" ]; then
+            echo "  - e2e-kv-store workflow failed"
+          fi
+          if [ "${{ steps.run_xcall.outputs.failed }}" == "true" ]; then
+            echo "  - xcall-example workflow failed"
+          fi
+          exit 1

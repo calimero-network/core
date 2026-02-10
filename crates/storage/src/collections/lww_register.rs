@@ -49,11 +49,22 @@ impl<T> LwwRegister<T> {
     /// Create a new LWW register with the given value
     ///
     /// Uses current HLC timestamp and executor ID.
+    /// During merge mode, uses zero timestamp to ensure deterministic hashes.
     pub fn new(value: T) -> Self {
-        Self {
-            value,
-            timestamp: env::hlc_timestamp(),
-            node_id: env::executor_id(),
+        // During merge mode, use deterministic zero timestamp to prevent
+        // hash divergence from different nodes generating different timestamps.
+        if env::in_merge_mode() {
+            Self {
+                value,
+                timestamp: crate::logical_clock::HybridTimestamp::zero(),
+                node_id: [0; 32],
+            }
+        } else {
+            Self {
+                value,
+                timestamp: env::hlc_timestamp(),
+                node_id: env::executor_id(),
+            }
         }
     }
 
