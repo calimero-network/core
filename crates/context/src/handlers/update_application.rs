@@ -16,6 +16,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Event as RuntimeEvent;
 use calimero_storage::address::Id;
+use calimero_storage::delta::clear_pending_delta;
 use calimero_storage::entities::Metadata;
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::error::StorageError;
@@ -157,13 +158,11 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             public_key,
         );
 
-        ActorResponse::r#async(
-            task.into_actor(self)
-                .map_ok(move |_application, act, _ctx| {
-                    // Invalidate cached module so the next execution loads current bytecode from the node.
-                    if act.applications.remove(&application_id).is_some() {
-                        debug!(%context_id, %application_id, "Invalidated cached application module after update");
-                    }
+        ActorResponse::r#async(task.into_actor(self).map_ok(move |application, act, _ctx| {
+            let _ignored = act
+                .applications
+                .entry(application_id)
+                .or_insert(application);
 
                     if let Some(context) = act.contexts.get_mut(&context_id) {
                         context.meta.application_id = application_id;
@@ -748,21 +747,32 @@ fn write_migration_state(
 
     let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
     let result = with_runtime_env(runtime_env, || -> Result<_, StorageError> {
-        // Write the entry — this updates the entry's Index and propagates hashes
-        // up to the Merkle tree root via recalculate_ancestor_hashes_for.
-        let save_result = Interface::<MainStorage>::save_raw(root_entry_id, entry_bytes, metadata)?;
+        let write_result = (|| -> Result<_, StorageError> {
+            // Write the entry — this updates the entry's Index and propagates hashes
+            // up to the Merkle tree root via recalculate_ancestor_hashes_for.
+            let save_result =
+                Interface::<MainStorage>::save_raw(root_entry_id, entry_bytes, metadata)?;
 
-        if save_result.is_none() {
-            return Ok(None);
-        }
+            if save_result.is_none() {
+                return Ok(None);
+            }
 
-        // Read the Merkle tree root hash — same as the normal execution flow
-        // save_raw returns the *entry node's* full_hash, not the tree root's.
-        let root_hash = Index::<MainStorage>::get_hashes_for(Id::root())?
-            .map(|(full_hash, _)| full_hash)
-            .unwrap_or([0; 32]);
+            // Read the Merkle tree root hash — same as the normal execution flow
+            // save_raw returns the *entry node's* full_hash, not the tree root's.
+            let root_hash = Index::<MainStorage>::get_hashes_for(Id::root())?
+                .map(|(full_hash, _)| full_hash)
+                .unwrap_or([0; 32]);
 
-        Ok(Some(root_hash))
+            Ok(Some(root_hash))
+        })();
+
+        // `save_raw` pushes sync actions into thread-local DELTA_CONTEXT. This
+        // migration path does not emit a delta artifact, so explicitly discard
+        // pending actions to avoid contaminating subsequent operations on the
+        // same runtime thread.
+        clear_pending_delta();
+
+        write_result
     });
 
     match result {

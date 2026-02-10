@@ -313,6 +313,23 @@ pub fn commit_root(root_hash: &[u8; 32]) -> eyre::Result<()> {
     })
 }
 
+/// Discards pending delta actions/comparisons for the current thread.
+///
+/// This is useful for host-side storage flows that intentionally use
+/// `Interface::save_raw()` for index/hash maintenance but do not produce a
+/// sync artifact via `commit_root()` / `commit_causal_delta()`.
+///
+/// Note: this intentionally preserves `current_heads` so DAG head tracking is
+/// unaffected for the surrounding execution context.
+pub fn clear_pending_delta() {
+    DELTA_CONTEXT.with(|ctx| {
+        let mut context = ctx.borrow_mut();
+        context.actions.clear();
+        context.comparisons.clear();
+        context.max_hlc = None;
+    });
+}
+
 /// Resets the delta context for testing.
 ///
 /// Clears all pending actions, comparisons, and heads. Use this between

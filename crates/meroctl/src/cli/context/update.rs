@@ -150,7 +150,6 @@ impl UpdateCommand {
                         path,
                         metadata,
                         executor_id,
-                        migrate_method,
                     )
                     .await?;
                 }
@@ -169,7 +168,6 @@ async fn watch_app_and_update_context(
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
     member_public_key: PublicKey,
-    migrate_method: Option<String>,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
@@ -223,8 +221,7 @@ async fn watch_app_and_update_context(
             .application_id;
 
         let client = environment.client()?;
-        let request =
-            build_update_request(application_id, member_public_key, migrate_method.clone());
+        let request = build_update_request(application_id, member_public_key, None);
         let response = client
             .update_context_application(&context_id, request)
             .await?;
