@@ -478,7 +478,7 @@ pub fn select_protocol_with_fallback(
 /// This is a heuristic balance between:
 /// - Delta sync: O(missing) round trips, but exact
 /// - State sync: O(log n) comparisons, but may transfer more data
-pub const DEFAULT_DELTA_SYNC_THRESHOLD: usize = 150;
+pub const DEFAULT_DELTA_SYNC_THRESHOLD: usize = 128;
 
 /// Request for delta-based synchronization.
 ///
