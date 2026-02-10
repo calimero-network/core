@@ -20,9 +20,21 @@ use serde::{Deserialize, Serialize};
 /// - **Counters**: GCounter (grow-only), PnCounter (increment/decrement)
 /// - **Collections**: Rga, UnorderedMap, UnorderedSet, Vector
 /// - **Special**: UserStorage, FrozenStorage, Custom
+///
+/// # Borsh Discriminants
+///
+/// Explicit discriminants are used for backward compatibility with persisted data.
+/// The old storage `CrdtType` had `Counter` (now `PnCounter`) at discriminant 1.
+/// New variants like `GCounter` use discriminant 10+ to avoid conflicts.
+/// **Do not change these discriminant values** without a data migration strategy.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(BorshSerialize, BorshDeserialize),
+    borsh(use_discriminant = true)
+)]
 #[non_exhaustive]
+#[repr(u8)]
 pub enum CrdtType {
     // =========================================================================
     // REGISTERS
@@ -31,24 +43,19 @@ pub enum CrdtType {
     ///
     /// Wraps primitive types with timestamp-based conflict resolution.
     /// Merge: Higher HLC timestamp wins, with node ID as tie-breaker.
-    LwwRegister,
+    LwwRegister = 0,
 
     // =========================================================================
     // COUNTERS
     // =========================================================================
-    /// Grow-only Counter.
-    ///
-    /// Supports only increment operations; value can never decrease.
-    /// Internally tracks increments per executor.
-    /// Merge: Take maximum of each executor's count.
-    GCounter,
-
     /// Positive-Negative Counter.
     ///
     /// Supports both increment and decrement operations.
     /// Internally uses two maps: positive and negative counts per executor.
     /// Merge: Union of positive maps, union of negative maps, then compute difference.
-    PnCounter,
+    ///
+    /// Note: Uses discriminant 1 for backward compatibility with the old `Counter` variant.
+    PnCounter = 1,
 
     // =========================================================================
     // COLLECTIONS
@@ -58,7 +65,7 @@ pub enum CrdtType {
     /// CRDT for collaborative text editing and ordered sequences.
     /// Supports concurrent insertions and deletions with causal ordering.
     /// Merge: Interleave elements by (timestamp, node_id) ordering.
-    Rga,
+    Rga = 2,
 
     /// Unordered Map.
     ///
@@ -66,21 +73,21 @@ pub enum CrdtType {
     /// Keys are never lost once added (tombstoned but retained).
     /// Values are merged recursively if they implement Mergeable.
     /// Merge: Union of keys, recursive merge of values.
-    UnorderedMap,
+    UnorderedMap = 3,
 
     /// Unordered Set.
     ///
     /// Collection of unique values with add-wins semantics.
     /// Elements are never lost once added.
     /// Merge: Union of all elements from both sets.
-    UnorderedSet,
+    UnorderedSet = 4,
 
     /// Vector (ordered collection).
     ///
     /// Ordered list with append operations.
     /// Elements are identified by index + timestamp for ordering.
     /// Merge: Element-wise merge by index with timestamp ordering.
-    Vector,
+    Vector = 5,
 
     // =========================================================================
     // SPECIAL STORAGE
@@ -90,21 +97,32 @@ pub enum CrdtType {
     /// Per-user data storage with signature-based access control.
     /// Only the owning user (identified by executor ID) can modify their data.
     /// Merge: Latest update per user based on nonce/timestamp.
-    UserStorage,
+    UserStorage = 6,
 
     /// Frozen Storage.
     ///
     /// Write-once storage for immutable data.
     /// Data can be written once and never modified or deleted.
     /// Merge: First-write-wins (subsequent writes are no-ops).
-    FrozenStorage,
+    FrozenStorage = 7,
 
+    // Discriminant 8 was previously used by `Record` variant (now removed).
+    // Do not reuse discriminant 8 to avoid deserialization conflicts with old data.
     /// Custom CRDT with app-defined merge.
     ///
     /// For types annotated with `#[derive(CrdtState)]` that define custom merge logic.
     /// The string identifies the custom type name within the application.
     /// Merge: Dispatched to WASM runtime to call the app's merge function.
-    Custom(String),
+    Custom(String) = 9,
+
+    /// Grow-only Counter.
+    ///
+    /// Supports only increment operations; value can never decrease.
+    /// Internally tracks increments per executor.
+    /// Merge: Take maximum of each executor's count.
+    ///
+    /// Note: Uses discriminant 10 as this is a new variant not present in old storage format.
+    GCounter = 10,
 }
 
 impl Default for CrdtType {
@@ -239,6 +257,45 @@ mod tests {
             let bytes = borsh::to_vec(crdt_type).unwrap();
             let decoded: CrdtType = borsh::from_slice(&bytes).unwrap();
             assert_eq!(*crdt_type, decoded);
+        }
+    }
+
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn test_borsh_discriminants_backward_compatible() {
+        // Verify explicit discriminant values match the old storage format.
+        // These values MUST NOT change to maintain backward compatibility with persisted data.
+        //
+        // Old storage CrdtType discriminants:
+        //   LwwRegister = 0, Counter = 1, Rga = 2, UnorderedMap = 3,
+        //   UnorderedSet = 4, Vector = 5, UserStorage = 6, FrozenStorage = 7,
+        //   Record = 8 (removed), Custom = 9
+        //
+        // New mapping:
+        //   PnCounter = 1 (replaces old Counter which was semantically a PN-Counter)
+        //   GCounter = 10 (new variant, uses new discriminant)
+
+        let test_cases: &[(CrdtType, u8)] = &[
+            (CrdtType::LwwRegister, 0),
+            (CrdtType::PnCounter, 1), // Was 'Counter' in old format
+            (CrdtType::Rga, 2),
+            (CrdtType::UnorderedMap, 3),
+            (CrdtType::UnorderedSet, 4),
+            (CrdtType::Vector, 5),
+            (CrdtType::UserStorage, 6),
+            (CrdtType::FrozenStorage, 7),
+            // Discriminant 8 was 'Record', now removed
+            (CrdtType::Custom("".to_string()), 9),
+            (CrdtType::GCounter, 10), // New variant
+        ];
+
+        for (variant, expected_discriminant) in test_cases {
+            let bytes = borsh::to_vec(variant).unwrap();
+            assert_eq!(
+                bytes[0], *expected_discriminant,
+                "Discriminant mismatch for {:?}: expected {}, got {}",
+                variant, expected_discriminant, bytes[0]
+            );
         }
     }
 }
