@@ -690,12 +690,32 @@ impl TreeNodeRequest {
     pub fn root(root_hash: [u8; 32]) -> Self {
         Self::new(root_hash)
     }
+
+    /// Get the validated depth limit.
+    ///
+    /// Always clamps to MAX_TREE_DEPTH, even if raw field was set to a larger
+    /// value (e.g., via deserialization from an untrusted source).
+    ///
+    /// Use this instead of accessing `max_depth` directly when processing requests.
+    #[must_use]
+    pub fn depth(&self) -> Option<usize> {
+        self.max_depth.map(|d| d.min(MAX_TREE_DEPTH))
+    }
 }
+
+/// Maximum nodes per response to prevent memory exhaustion.
+///
+/// Limits the size of `TreeNodeResponse::nodes` to prevent DoS attacks
+/// from malicious peers sending oversized responses.
+pub const MAX_NODES_PER_RESPONSE: usize = 1000;
 
 /// Response containing tree nodes for hash comparison.
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct TreeNodeResponse {
     /// Nodes in the requested subtree.
+    ///
+    /// Limited to MAX_NODES_PER_RESPONSE entries. Use `is_valid()` to check
+    /// bounds after deserialization from untrusted sources.
     pub nodes: Vec<TreeNode>,
 
     /// True if the requested node was not found.
@@ -732,20 +752,45 @@ impl TreeNodeResponse {
     pub fn leaves(&self) -> Vec<&TreeNode> {
         self.nodes.iter().filter(|n| n.is_leaf()).collect()
     }
+
+    /// Check if response is within valid bounds.
+    ///
+    /// Call this after deserializing from untrusted sources to prevent
+    /// memory exhaustion attacks.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.nodes.len() <= MAX_NODES_PER_RESPONSE
+    }
 }
+
+/// Maximum children per node (typical Merkle trees use binary or small fanout).
+///
+/// This limit prevents memory exhaustion from malicious nodes with excessive children.
+pub const MAX_CHILDREN_PER_NODE: usize = 256;
 
 /// A node in the Merkle tree.
 ///
 /// Can be either an internal node (has children) or a leaf node (has data).
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct TreeNode {
-    /// Node ID (hash of this node's content).
+    /// Node ID - stable identifier derived from the node's position/key in the tree.
+    ///
+    /// For internal nodes: typically hash of path or concatenation of child keys.
+    /// For leaf nodes: typically hash of the entity key.
+    /// This ID remains stable even when content changes.
     pub id: [u8; 32],
 
-    /// Merkle hash (hash of children hashes or leaf content).
+    /// Merkle hash - changes when subtree content changes.
+    ///
+    /// For internal nodes: hash of all children's hashes (propagates changes up).
+    /// For leaf nodes: hash of the leaf data (key + value + metadata).
+    /// Used for efficient comparison: if hashes match, subtrees are identical.
     pub hash: [u8; 32],
 
     /// Child node IDs (empty for leaf nodes).
+    ///
+    /// Typically limited to MAX_CHILDREN_PER_NODE. Use `is_valid()` to check
+    /// bounds after deserialization from untrusted sources.
     pub children: Vec<[u8; 32]>,
 
     /// Leaf data (present only for leaf nodes).
@@ -773,6 +818,14 @@ impl TreeNode {
             children: vec![],
             leaf_data: Some(data),
         }
+    }
+
+    /// Check if node is within valid bounds.
+    ///
+    /// Call this after deserializing from untrusted sources.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.children.len() <= MAX_CHILDREN_PER_NODE
     }
 
     /// Check if this is a leaf node.
@@ -935,10 +988,27 @@ pub enum TreeCompareResult {
 }
 
 impl TreeCompareResult {
-    /// Check if sync is needed.
+    /// Check if sync (pull from remote) is needed.
+    ///
+    /// Returns true if local needs data from remote.
     #[must_use]
     pub fn needs_sync(&self) -> bool {
         !matches!(self, Self::Equal | Self::RemoteMissing)
+    }
+
+    /// Check if push (send to remote) is needed for bidirectional sync.
+    ///
+    /// Returns true if local has data that remote doesn't.
+    #[must_use]
+    pub fn needs_push(&self) -> bool {
+        match self {
+            Self::RemoteMissing => true,
+            Self::Different {
+                local_only_children,
+                ..
+            } => !local_only_children.is_empty(),
+            _ => false,
+        }
     }
 }
 
@@ -2004,5 +2074,74 @@ mod tests {
         // Excessive depth should be clamped
         let excessive = TreeNodeRequest::with_depth([1; 32], MAX_TREE_DEPTH + 100);
         assert_eq!(excessive.max_depth, Some(MAX_TREE_DEPTH));
+    }
+
+    #[test]
+    fn test_tree_node_request_depth_accessor() {
+        // depth() should always clamp, even if raw field is excessive
+        let mut request = TreeNodeRequest::new([1; 32]);
+        request.max_depth = Some(usize::MAX); // Simulate malicious deserialization
+
+        // depth() should clamp to MAX_TREE_DEPTH
+        assert_eq!(request.depth(), Some(MAX_TREE_DEPTH));
+
+        // None should remain None
+        let request_none = TreeNodeRequest::new([1; 32]);
+        assert_eq!(request_none.depth(), None);
+    }
+
+    #[test]
+    fn test_tree_node_response_validation() {
+        // Valid response
+        let valid_response =
+            TreeNodeResponse::new(vec![TreeNode::internal([1; 32], [2; 32], vec![])]);
+        assert!(valid_response.is_valid());
+
+        // Response at limit is valid
+        let mut nodes = Vec::new();
+        for i in 0..MAX_NODES_PER_RESPONSE {
+            let id = [i as u8; 32];
+            nodes.push(TreeNode::internal(id, id, vec![]));
+        }
+        let at_limit = TreeNodeResponse::new(nodes);
+        assert!(at_limit.is_valid());
+    }
+
+    #[test]
+    fn test_tree_node_validation() {
+        // Valid node with few children
+        let valid = TreeNode::internal([1; 32], [2; 32], vec![[3; 32], [4; 32]]);
+        assert!(valid.is_valid());
+
+        // Node at limit is valid
+        let children: Vec<[u8; 32]> = (0..MAX_CHILDREN_PER_NODE).map(|i| [i as u8; 32]).collect();
+        let at_limit = TreeNode::internal([1; 32], [2; 32], children);
+        assert!(at_limit.is_valid());
+    }
+
+    #[test]
+    fn test_tree_compare_result_needs_push() {
+        // RemoteMissing needs push
+        assert!(TreeCompareResult::RemoteMissing.needs_push());
+
+        // Different with local_only_children needs push
+        let with_local_only = TreeCompareResult::Different {
+            differing_children: vec![],
+            local_only_children: vec![[1; 32]],
+        };
+        assert!(with_local_only.needs_push());
+
+        // Different without local_only_children doesn't need push
+        let without_local_only = TreeCompareResult::Different {
+            differing_children: vec![[1; 32]],
+            local_only_children: vec![],
+        };
+        assert!(!without_local_only.needs_push());
+
+        // Equal doesn't need push
+        assert!(!TreeCompareResult::Equal.needs_push());
+
+        // LocalMissing doesn't need push
+        assert!(!TreeCompareResult::LocalMissing.needs_push());
     }
 }
