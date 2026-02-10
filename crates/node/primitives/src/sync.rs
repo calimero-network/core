@@ -654,8 +654,14 @@ pub struct TreeNodeRequest {
     /// ID of the node to request (root hash or internal node hash).
     pub node_id: [u8; 32],
 
-    /// Maximum depth to traverse (None = unlimited).
-    /// Useful for batching: request multiple levels at once.
+    /// Maximum depth to traverse from this node.
+    ///
+    /// - `Some(n)` - Traverse up to n levels deep
+    /// - `None` - No limit specified (implementations SHOULD enforce MAX_TREE_DEPTH)
+    ///
+    /// Security: Implementations must cap at MAX_TREE_DEPTH (64) to prevent
+    /// resource exhaustion from malicious peers. Use `with_depth()` constructor
+    /// which enforces this limit automatically.
     pub max_depth: Option<usize>,
 }
 
@@ -903,7 +909,10 @@ impl Default for CrdtType {
 ///
 /// Used for Merkle tree traversal during HashComparison sync.
 /// Identifies which children need further traversal in both directions.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// Note: Borsh derives are included for consistency with other sync types and
+/// potential future use in batched comparison responses over the wire.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum TreeCompareResult {
     /// Hashes match - no sync needed for this subtree.
     Equal,
