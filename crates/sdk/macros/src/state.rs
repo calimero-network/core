@@ -438,27 +438,244 @@ fn generate_mergeable_impl(
     }
 }
 
-/// Generate registration hook for automatic merge during sync
+/// Generate WASM exports for merge operations during sync.
+///
+/// This generates three exports:
+/// 1. `__calimero_register_merge` - Called once at module load to register the merge function
+/// 2. `__calimero_merge_root_state` - Called to merge root state during sync
+/// 3. `__calimero_merge` - Called to merge custom types (for CrdtType::Custom)
 fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>) -> TokenStream {
     quote! {
         // ============================================================================
-        // AUTO-GENERATED WASM Export for Merge Registration
+        // AUTO-GENERATED WASM Exports for CRDT Merge
         // ============================================================================
         //
-        // This function is called ONCE when the WASM module is loaded by the node runtime.
-        // It registers the app's merge function so that sync can automatically call it.
-        //
-        // Lifecycle:
-        // 1. WASM loads → runtime calls __calimero_register_merge()
-        // 2. Registration → stores merge function in global registry
-        // 3. Sync → automatically uses registered merge
+        // These functions enable automatic conflict resolution during state sync.
         //
         // Developer impact: ZERO - this is completely automatic!
         //
+
+        // ----------------------------------------------------------------------------
+        // Registration Hook
+        // ----------------------------------------------------------------------------
+        // Called ONCE when the WASM module is loaded by the node runtime.
+        // Registers the app's merge function in the global registry.
         #[cfg(target_arch = "wasm32")]
         #[no_mangle]
         pub extern "C" fn __calimero_register_merge() {
             ::calimero_storage::register_crdt_merge::<#ident #ty_generics>();
+        }
+
+        // ----------------------------------------------------------------------------
+        // Root State Merge Export
+        // ----------------------------------------------------------------------------
+        // Called by the runtime to merge root state during sync.
+        // Uses the registered Mergeable impl to perform the merge.
+        //
+        // Memory Protocol:
+        // - Input: Two pointers to Borsh-serialized state (local, remote)
+        // - Output: Pointer to MergeResult struct with status and data
+        // - Caller owns all input memory; callee owns output memory
+        //
+        #[cfg(target_arch = "wasm32")]
+        #[no_mangle]
+        pub extern "C" fn __calimero_merge_root_state(
+            local_ptr: u64,
+            local_len: u64,
+            remote_ptr: u64,
+            remote_len: u64,
+        ) -> u64 {
+            // Safety: The runtime guarantees valid pointers and lengths
+            let local_data = unsafe {
+                ::core::slice::from_raw_parts(local_ptr as *const u8, local_len as usize)
+            };
+            let remote_data = unsafe {
+                ::core::slice::from_raw_parts(remote_ptr as *const u8, remote_len as usize)
+            };
+
+            // Deserialize states
+            let local_result = ::calimero_sdk::borsh::from_slice::<#ident #ty_generics>(local_data);
+            let remote_result = ::calimero_sdk::borsh::from_slice::<#ident #ty_generics>(remote_data);
+
+            let merge_result = match (local_result, remote_result) {
+                (Ok(mut local), Ok(remote)) => {
+                    // Merge using the auto-generated Mergeable impl
+                    match ::calimero_storage::collections::Mergeable::merge(&mut local, &remote) {
+                        Ok(()) => {
+                            match ::calimero_sdk::borsh::to_vec(&local) {
+                                Ok(bytes) => __MergeResultInternal::Success(bytes),
+                                Err(e) => __MergeResultInternal::Error(
+                                    ::std::format!("Serialization failed: {}", e)
+                                ),
+                            }
+                        }
+                        Err(e) => __MergeResultInternal::Error(
+                            ::std::format!("Merge failed: {:?}", e)
+                        ),
+                    }
+                }
+                (Err(e), _) => __MergeResultInternal::Error(
+                    ::std::format!("Failed to deserialize local state: {}", e)
+                ),
+                (_, Err(e)) => __MergeResultInternal::Error(
+                    ::std::format!("Failed to deserialize remote state: {}", e)
+                ),
+            };
+
+            // Serialize the result and return pointer
+            let result_bytes = ::calimero_sdk::borsh::to_vec(&merge_result)
+                .expect("__MergeResultInternal serialization should not fail");
+            let ptr = result_bytes.as_ptr() as u64;
+            let len = result_bytes.len() as u64;
+            ::core::mem::forget(result_bytes);
+
+            // Return packed pointer (high 32 bits = ptr, low 32 bits = len)
+            (ptr << 32) | len
+        }
+
+        // ----------------------------------------------------------------------------
+        // Custom Type Merge Export
+        // ----------------------------------------------------------------------------
+        // Called by the runtime to merge custom types (CrdtType::Custom) during sync.
+        // Looks up the merge function by type name in the global registry.
+        //
+        // Memory Protocol:
+        // - Input: type_name (ptr, len) + local_data (ptr, len) + remote_data (ptr, len)
+        // - Output: Pointer to MergeResult struct with status and data
+        // - Caller owns all input memory; callee owns output memory
+        //
+        #[cfg(target_arch = "wasm32")]
+        #[no_mangle]
+        pub extern "C" fn __calimero_merge(
+            type_name_ptr: u64,
+            type_name_len: u64,
+            local_ptr: u64,
+            local_len: u64,
+            remote_ptr: u64,
+            remote_len: u64,
+        ) -> u64 {
+            // Safety: The runtime guarantees valid pointers and lengths
+            let type_name_bytes = unsafe {
+                ::core::slice::from_raw_parts(type_name_ptr as *const u8, type_name_len as usize)
+            };
+            let local_data = unsafe {
+                ::core::slice::from_raw_parts(local_ptr as *const u8, local_len as usize)
+            };
+            let remote_data = unsafe {
+                ::core::slice::from_raw_parts(remote_ptr as *const u8, remote_len as usize)
+            };
+
+            // Parse type name from UTF-8 bytes
+            let type_name = match ::core::str::from_utf8(type_name_bytes) {
+                Ok(name) => name,
+                Err(e) => {
+                    let error = __MergeResultInternal::Error(
+                        ::std::format!("Invalid UTF-8 in type name: {}", e)
+                    );
+                    let result_bytes = ::calimero_sdk::borsh::to_vec(&error)
+                        .expect("__MergeResultInternal serialization should not fail");
+                    let ptr = result_bytes.as_ptr() as u64;
+                    let len = result_bytes.len() as u64;
+                    ::core::mem::forget(result_bytes);
+                    return (ptr << 32) | len;
+                }
+            };
+
+            // Look up merge function by type name in the global registry
+            // Use timestamp 0 for both since CRDT merge is timestamp-independent
+            let merge_result = match ::calimero_storage::try_merge_by_type_name(
+                type_name,
+                local_data,
+                remote_data,
+                0,
+                0,
+            ) {
+                Some(Ok(merged_bytes)) => __MergeResultInternal::Success(merged_bytes),
+                Some(Err(e)) => __MergeResultInternal::Error(
+                    ::std::format!("Merge failed: {}", e)
+                ),
+                None => __MergeResultInternal::Error(
+                    ::std::format!("Type '{}' not found in merge registry", type_name)
+                ),
+            };
+
+            // Serialize the result and return pointer
+            let result_bytes = ::calimero_sdk::borsh::to_vec(&merge_result)
+                .expect("__MergeResultInternal serialization should not fail");
+            let ptr = result_bytes.as_ptr() as u64;
+            let len = result_bytes.len() as u64;
+            ::core::mem::forget(result_bytes);
+
+            // Return packed pointer (high 32 bits = ptr, low 32 bits = len)
+            (ptr << 32) | len
+        }
+
+        // Internal merge result type for WASM boundary
+        // Prefixed with __ to avoid conflicts with user types
+        // Manual BorshSerialize/BorshDeserialize to avoid requiring borsh in app's Cargo.toml
+        #[cfg(target_arch = "wasm32")]
+        #[doc(hidden)]
+        pub enum __MergeResultInternal {
+            Success(::std::vec::Vec<u8>),
+            Error(::std::string::String),
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        impl ::calimero_sdk::borsh::BorshSerialize for __MergeResultInternal {
+            fn serialize<W: ::std::io::Write>(&self, writer: &mut W) -> ::std::io::Result<()> {
+                match self {
+                    __MergeResultInternal::Success(data) => {
+                        writer.write_all(&[0u8])?;
+                        // Write Vec<u8>: length (u32) + bytes
+                        let len = data.len() as u32;
+                        writer.write_all(&len.to_le_bytes())?;
+                        writer.write_all(data)?;
+                    }
+                    __MergeResultInternal::Error(msg) => {
+                        writer.write_all(&[1u8])?;
+                        // Write String: length (u32) + bytes
+                        let bytes = msg.as_bytes();
+                        let len = bytes.len() as u32;
+                        writer.write_all(&len.to_le_bytes())?;
+                        writer.write_all(bytes)?;
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        impl ::calimero_sdk::borsh::BorshDeserialize for __MergeResultInternal {
+            fn deserialize_reader<R: ::std::io::Read>(reader: &mut R) -> ::std::io::Result<Self> {
+                let mut tag = [0u8; 1];
+                reader.read_exact(&mut tag)?;
+                match tag[0] {
+                    0 => {
+                        // Success: read Vec<u8>
+                        let mut len_bytes = [0u8; 4];
+                        reader.read_exact(&mut len_bytes)?;
+                        let len = u32::from_le_bytes(len_bytes) as usize;
+                        let mut data = ::std::vec![0u8; len];
+                        reader.read_exact(&mut data)?;
+                        Ok(__MergeResultInternal::Success(data))
+                    }
+                    1 => {
+                        // Error: read String
+                        let mut len_bytes = [0u8; 4];
+                        reader.read_exact(&mut len_bytes)?;
+                        let len = u32::from_le_bytes(len_bytes) as usize;
+                        let mut bytes = ::std::vec![0u8; len];
+                        reader.read_exact(&mut bytes)?;
+                        let msg = ::std::string::String::from_utf8(bytes)
+                            .map_err(|e| ::std::io::Error::new(::std::io::ErrorKind::InvalidData, e))?;
+                        Ok(__MergeResultInternal::Error(msg))
+                    }
+                    _ => Err(::std::io::Error::new(
+                        ::std::io::ErrorKind::InvalidData,
+                        "Invalid variant tag for __MergeResultInternal"
+                    )),
+                }
+            }
         }
     }
 }

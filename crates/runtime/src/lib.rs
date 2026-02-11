@@ -26,6 +26,9 @@ use store::Storage;
 
 pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
 
+// Re-export RuntimeMergeCallback for use by the sync system
+// Note: The callback is defined at the end of this file
+
 /// Validates a method name for WASM execution.
 ///
 /// Valid method names must:
@@ -446,7 +449,354 @@ impl Module {
 
         Ok(None)
     }
+
+    /// Check if this module has the `__calimero_merge_root_state` export.
+    ///
+    /// Returns `true` if the module exports the merge function, indicating
+    /// that it can participate in CRDT merge during sync.
+    #[must_use]
+    pub fn has_merge_export(&self) -> bool {
+        self.module
+            .exports()
+            .any(|e| e.name() == "__calimero_merge_root_state")
+    }
+
+    /// Check if this module has the `__calimero_merge` export for custom types.
+    #[must_use]
+    pub fn has_custom_merge_export(&self) -> bool {
+        self.module
+            .exports()
+            .any(|e| e.name() == "__calimero_merge")
+    }
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// WASM Merge Callback Implementation
+// ════════════════════════════════════════════════════════════════════════════
+
+use calimero_storage::{WasmMergeCallback, WasmMergeError};
+use std::time::Duration;
+
+/// Default timeout for WASM merge operations (5 seconds).
+pub const DEFAULT_MERGE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// WASM merge callback that calls into a compiled WASM module.
+///
+/// This callback implements `WasmMergeCallback` and can be used during state
+/// synchronization to merge custom types and root state via WASM exports.
+///
+/// # Example
+///
+/// ```ignore
+/// let engine = Engine::default();
+/// let module = engine.compile(&wasm_bytes)?;
+///
+/// if let Some(callback) = RuntimeMergeCallback::from_module(&module) {
+///     // Module has merge exports, can use for sync
+///     let merged = callback.merge_root_state(local_data, remote_data)?;
+/// }
+/// ```
+pub struct RuntimeMergeCallback {
+    engine: wasmer::Engine,
+    module: wasmer::Module,
+    timeout: Duration,
+}
+
+impl RuntimeMergeCallback {
+    /// Create a merge callback from a compiled module.
+    ///
+    /// Returns `Some` if the module has at least one merge export
+    /// (`__calimero_merge_root_state` or `__calimero_merge`).
+    /// Returns `None` if neither export exists.
+    #[must_use]
+    pub fn from_module(module: &Module) -> Option<Self> {
+        if module.has_merge_export() || module.has_custom_merge_export() {
+            Some(Self {
+                engine: module.engine.clone(),
+                module: module.module.clone(),
+                timeout: DEFAULT_MERGE_TIMEOUT,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Create a merge callback with a custom timeout.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Call the WASM merge function and extract the result.
+    ///
+    /// This handles:
+    /// 1. Creating a WASM instance
+    /// 2. Copying data to WASM memory
+    /// 3. Calling the merge function
+    /// 4. Extracting and deserializing the result
+    fn call_merge_function(
+        &self,
+        export_name: &str,
+        local_data: &[u8],
+        remote_data: &[u8],
+    ) -> Result<Vec<u8>, WasmMergeError> {
+        let mut store = Store::new(self.engine.clone());
+
+        // Create instance with empty imports (merge functions don't need host functions)
+        let imports = wasmer::Imports::new();
+        let instance = Instance::new(&mut store, &self.module, &imports)
+            .map_err(|e| WasmMergeError::MergeFailed(format!("Instance creation failed: {e}")))?;
+
+        // Get memory export
+        let memory = instance
+            .exports
+            .get_memory("memory")
+            .map_err(|e| WasmMergeError::MergeFailed(format!("Memory not found: {e}")))?;
+
+        // Allocate memory for input data
+        // Layout: [local_data][remote_data]
+        let local_ptr = 1024u64; // Start after some buffer for stack
+        let remote_ptr = local_ptr + local_data.len() as u64;
+        let total_needed = remote_ptr + remote_data.len() as u64;
+
+        // Ensure memory is large enough (grow if needed)
+        let current_pages = memory.view(&store).size().0 as u64;
+        let pages_needed = (total_needed / 65536) + 1;
+        if pages_needed > current_pages {
+            let _ = memory
+                .grow(&mut store, (pages_needed - current_pages) as u32)
+                .map_err(|e| WasmMergeError::MergeFailed(format!("Memory grow failed: {e}")))?;
+        }
+
+        // Copy data to WASM memory
+        let view = memory.view(&store);
+        view.write(local_ptr, local_data)
+            .map_err(|e| WasmMergeError::MergeFailed(format!("Write local failed: {e}")))?;
+        view.write(remote_ptr, remote_data)
+            .map_err(|e| WasmMergeError::MergeFailed(format!("Write remote failed: {e}")))?;
+
+        // Get and call the merge function
+        let merge_fn = instance
+            .exports
+            .get_typed_function::<(u64, u64, u64, u64), u64>(&store, export_name)
+            .map_err(|_| WasmMergeError::ExportNotFound(export_name.to_owned()))?;
+
+        // TODO: Add timeout support using tokio::time::timeout in async context
+        // For now, we call synchronously (timeout is a future enhancement)
+        let result = merge_fn
+            .call(
+                &mut store,
+                local_ptr,
+                local_data.len() as u64,
+                remote_ptr,
+                remote_data.len() as u64,
+            )
+            .map_err(|e| WasmMergeError::MergeFailed(format!("WASM call failed: {e}")))?;
+
+        // Unpack result (high 32 bits = ptr, low 32 bits = len)
+        let result_ptr = result >> 32;
+        let result_len = (result & 0xFFFF_FFFF) as usize;
+
+        if result_len == 0 {
+            return Err(WasmMergeError::MergeFailed(
+                "Empty result from WASM".to_owned(),
+            ));
+        }
+
+        // Read result from WASM memory
+        let view = memory.view(&store);
+        let mut result_bytes = vec![0u8; result_len];
+        view.read(result_ptr, &mut result_bytes)
+            .map_err(|e| WasmMergeError::MergeFailed(format!("Read result failed: {e}")))?;
+
+        // Parse Borsh-encoded result
+        Self::parse_merge_result(result_bytes)
+    }
+}
+
+impl RuntimeMergeCallback {
+    /// Call the `__calimero_merge` WASM export for custom type merging.
+    ///
+    /// This function handles the additional type_name parameter compared to root state merge.
+    fn call_custom_merge_function(
+        &self,
+        type_name: &str,
+        local_data: &[u8],
+        remote_data: &[u8],
+    ) -> Result<Vec<u8>, WasmMergeError> {
+        let mut store = Store::new(self.engine.clone());
+
+        // Create instance with empty imports (merge functions don't need host functions)
+        let imports = wasmer::Imports::new();
+        let instance = Instance::new(&mut store, &self.module, &imports)
+            .map_err(|e| WasmMergeError::MergeFailed(format!("Instance creation failed: {e}")))?;
+
+        // Get memory export
+        let memory = instance
+            .exports
+            .get_memory("memory")
+            .map_err(|e| WasmMergeError::MergeFailed(format!("Memory not found: {e}")))?;
+
+        // Allocate memory for input data
+        // Layout: [type_name][local_data][remote_data]
+        let type_name_bytes = type_name.as_bytes();
+        let type_name_ptr = 1024u64; // Start after some buffer for stack
+        let local_ptr = type_name_ptr + type_name_bytes.len() as u64;
+        let remote_ptr = local_ptr + local_data.len() as u64;
+        let total_needed = remote_ptr + remote_data.len() as u64;
+
+        // Ensure memory is large enough (grow if needed)
+        let current_pages = memory.view(&store).size().0 as u64;
+        let pages_needed = (total_needed / 65536) + 1;
+        if pages_needed > current_pages {
+            let _ = memory
+                .grow(&mut store, (pages_needed - current_pages) as u32)
+                .map_err(|e| WasmMergeError::MergeFailed(format!("Memory grow failed: {e}")))?;
+        }
+
+        // Copy data to WASM memory
+        let view = memory.view(&store);
+        view.write(type_name_ptr, type_name_bytes)
+            .map_err(|e| WasmMergeError::MergeFailed(format!("Write type_name failed: {e}")))?;
+        view.write(local_ptr, local_data)
+            .map_err(|e| WasmMergeError::MergeFailed(format!("Write local failed: {e}")))?;
+        view.write(remote_ptr, remote_data)
+            .map_err(|e| WasmMergeError::MergeFailed(format!("Write remote failed: {e}")))?;
+
+        // Get and call the merge function
+        // Signature: (type_name_ptr, type_name_len, local_ptr, local_len, remote_ptr, remote_len) -> u64
+        let merge_fn = instance
+            .exports
+            .get_typed_function::<(u64, u64, u64, u64, u64, u64), u64>(&store, "__calimero_merge")
+            .map_err(|_| WasmMergeError::ExportNotFound("__calimero_merge".to_owned()))?;
+
+        let result = merge_fn
+            .call(
+                &mut store,
+                type_name_ptr,
+                type_name_bytes.len() as u64,
+                local_ptr,
+                local_data.len() as u64,
+                remote_ptr,
+                remote_data.len() as u64,
+            )
+            .map_err(|e| WasmMergeError::MergeFailed(format!("WASM call failed: {e}")))?;
+
+        // Unpack result (high 32 bits = ptr, low 32 bits = len)
+        let result_ptr = result >> 32;
+        let result_len = (result & 0xFFFF_FFFF) as usize;
+
+        if result_len == 0 {
+            return Err(WasmMergeError::MergeFailed(
+                "Empty result from WASM".to_owned(),
+            ));
+        }
+
+        // Read result from WASM memory
+        let view = memory.view(&store);
+        let mut result_bytes = vec![0u8; result_len];
+        view.read(result_ptr, &mut result_bytes)
+            .map_err(|e| WasmMergeError::MergeFailed(format!("Read result failed: {e}")))?;
+
+        // Parse Borsh-encoded result (same as call_merge_function)
+        Self::parse_merge_result(result_bytes)
+    }
+
+    /// Parse the Borsh-encoded MergeResultInternal from WASM.
+    ///
+    /// Format: variant byte (0=Success, 1=Error) + length (4 bytes) + data
+    fn parse_merge_result(result_bytes: Vec<u8>) -> Result<Vec<u8>, WasmMergeError> {
+        if result_bytes.is_empty() {
+            return Err(WasmMergeError::MergeFailed("Empty result bytes".to_owned()));
+        }
+
+        match result_bytes[0] {
+            0 => {
+                // Success: next 4 bytes are length, then data
+                if result_bytes.len() < 5 {
+                    return Err(WasmMergeError::MergeFailed(
+                        "Invalid success result format".to_owned(),
+                    ));
+                }
+                let data_len = u32::from_le_bytes([
+                    result_bytes[1],
+                    result_bytes[2],
+                    result_bytes[3],
+                    result_bytes[4],
+                ]) as usize;
+                if result_bytes.len() < 5 + data_len {
+                    return Err(WasmMergeError::MergeFailed(
+                        "Truncated success data".to_owned(),
+                    ));
+                }
+                Ok(result_bytes[5..5 + data_len].to_vec())
+            }
+            1 => {
+                // Error: next 4 bytes are length, then error message
+                if result_bytes.len() < 5 {
+                    return Err(WasmMergeError::MergeFailed(
+                        "Invalid error result format".to_owned(),
+                    ));
+                }
+                let msg_len = u32::from_le_bytes([
+                    result_bytes[1],
+                    result_bytes[2],
+                    result_bytes[3],
+                    result_bytes[4],
+                ]) as usize;
+                let msg = if result_bytes.len() >= 5 + msg_len {
+                    String::from_utf8_lossy(&result_bytes[5..5 + msg_len]).to_string()
+                } else {
+                    "Unknown error".to_owned()
+                };
+                Err(WasmMergeError::MergeFailed(msg))
+            }
+            variant => Err(WasmMergeError::MergeFailed(format!(
+                "Unknown result variant: {variant}"
+            ))),
+        }
+    }
+}
+
+impl WasmMergeCallback for RuntimeMergeCallback {
+    fn merge_custom(
+        &self,
+        type_name: &str,
+        local_data: &[u8],
+        remote_data: &[u8],
+        _local_ts: u64,
+        _remote_ts: u64,
+    ) -> Result<Vec<u8>, WasmMergeError> {
+        debug!(
+            type_name,
+            local_len = local_data.len(),
+            remote_len = remote_data.len(),
+            "RuntimeMergeCallback::merge_custom called"
+        );
+
+        self.call_custom_merge_function(type_name, local_data, remote_data)
+    }
+
+    fn merge_root_state(
+        &self,
+        local_data: &[u8],
+        remote_data: &[u8],
+    ) -> Result<Vec<u8>, WasmMergeError> {
+        debug!(
+            local_len = local_data.len(),
+            remote_len = remote_data.len(),
+            "RuntimeMergeCallback::merge_root_state called"
+        );
+
+        self.call_merge_function("__calimero_merge_root_state", local_data, remote_data)
+    }
+}
+
+// Make RuntimeMergeCallback Send + Sync safe
+// The wasmer Module and Engine are designed to be Send + Sync
+unsafe impl Send for RuntimeMergeCallback {}
+unsafe impl Sync for RuntimeMergeCallback {}
 
 #[cfg(test)]
 mod integration_tests_package_usage {

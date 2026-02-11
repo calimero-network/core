@@ -2,9 +2,49 @@
 //!
 //! This module implements merge strategies for resolving conflicts when
 //! multiple nodes update the same data concurrently.
+//!
+//! # Architecture
+//!
+//! The merge system supports multiple dispatch mechanisms:
+//!
+//! 1. **Built-in CRDTs**: Merged directly in the storage layer (Counter, Map, etc.)
+//! 2. **Registered types**: Merged via the `MergeRegistry` using type name dispatch
+//! 3. **Custom WASM types**: Merged via `WasmMergeCallback` calling into the WASM runtime
+//!
+//! # WASM Merge Callback Flow
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │                     State Sync Flow                              │
+//! ├─────────────────────────────────────────────────────────────────┤
+//! │                                                                  │
+//! │  compare_trees()                                                 │
+//! │       │                                                          │
+//! │       ▼                                                          │
+//! │  CrdtType::Custom { type_name }                                  │
+//! │       │                                                          │
+//! │       ▼                                                          │
+//! │  WasmMergeCallback::merge_custom(type_name, local, remote)      │
+//! │       │                                                          │
+//! │       ▼                                                          │
+//! │  ┌────────────────────────────────────────┐                     │
+//! │  │  WASM Runtime                           │                     │
+//! │  │  ├── Lookup merge fn by type_name      │                     │
+//! │  │  ├── Deserialize local + remote        │                     │
+//! │  │  ├── Call Mergeable::merge()           │                     │
+//! │  │  └── Serialize result                  │                     │
+//! │  └────────────────────────────────────────┘                     │
+//! │       │                                                          │
+//! │       ▼                                                          │
+//! │  Merged bytes returned to storage layer                         │
+//! │                                                                  │
+//! └─────────────────────────────────────────────────────────────────┘
+//! ```
 
 pub mod registry;
-pub use registry::{register_crdt_merge, try_merge_registered};
+pub use registry::{
+    register_crdt_merge, try_merge_by_type_name, try_merge_registered, MergeRegistry,
+};
 
 #[cfg(test)]
 pub use registry::clear_merge_registry;
@@ -101,4 +141,363 @@ pub fn merge_root_state(
 pub trait CrdtMerge: BorshSerialize + BorshDeserialize {
     /// Merge another instance into self using CRDT semantics.
     fn crdt_merge(&mut self, other: &Self);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// WASM Merge Callback
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Error type for WASM merge operations.
+#[derive(Debug)]
+pub enum WasmMergeError {
+    /// The type name is not recognized by the WASM module.
+    UnknownType(String),
+    /// The WASM merge function returned an error.
+    MergeFailed(String),
+    /// Failed to serialize/deserialize data for WASM boundary.
+    SerializationError(String),
+    /// WASM call timed out.
+    Timeout(String),
+    /// WASM export not found in module.
+    ExportNotFound(String),
+}
+
+impl std::fmt::Display for WasmMergeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownType(name) => write!(f, "Unknown type for WASM merge: {name}"),
+            Self::MergeFailed(msg) => write!(f, "WASM merge failed: {msg}"),
+            Self::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
+            Self::Timeout(msg) => write!(f, "WASM merge timed out: {msg}"),
+            Self::ExportNotFound(name) => write!(f, "WASM export not found: {name}"),
+        }
+    }
+}
+
+impl std::error::Error for WasmMergeError {}
+
+/// Callback trait for merging custom types via WASM.
+///
+/// This trait is implemented by the runtime layer to provide WASM merge
+/// functionality during state synchronization. When the storage layer
+/// encounters a `CrdtType::Custom { type_name }`, it calls this callback
+/// to merge the data using the app's custom merge logic.
+///
+/// # Implementation Notes
+///
+/// The runtime layer should:
+/// 1. Extract the WASM module for the current context
+/// 2. Look up the merge function by type name
+/// 3. Call into WASM with the serialized local and remote data
+/// 4. Return the merged result
+///
+/// # Example
+///
+/// ```ignore
+/// struct RuntimeMergeCallback {
+///     wasm_module: WasmModule,
+/// }
+///
+/// impl WasmMergeCallback for RuntimeMergeCallback {
+///     fn merge_custom(
+///         &self,
+///         type_name: &str,
+///         local_data: &[u8],
+///         remote_data: &[u8],
+///         local_ts: u64,
+///         remote_ts: u64,
+///     ) -> Result<Vec<u8>, WasmMergeError> {
+///         // Call WASM merge function
+///         self.wasm_module.call_merge(type_name, local_data, remote_data)
+///     }
+///
+///     fn merge_root_state(
+///         &self,
+///         local_data: &[u8],
+///         remote_data: &[u8],
+///     ) -> Result<Vec<u8>, WasmMergeError> {
+///         // Call WASM root state merge function
+///         self.wasm_module.call_merge_root_state(local_data, remote_data)
+///     }
+/// }
+/// ```
+pub trait WasmMergeCallback: Send + Sync {
+    /// Merge two instances of a custom type using WASM merge logic.
+    ///
+    /// # Arguments
+    /// * `type_name` - The name of the custom type (from `CrdtType::Custom`)
+    /// * `local_data` - Borsh-serialized local data
+    /// * `remote_data` - Borsh-serialized remote data
+    /// * `local_ts` - Timestamp of local data
+    /// * `remote_ts` - Timestamp of remote data
+    ///
+    /// # Returns
+    /// Borsh-serialized merged result, or error if merge fails.
+    ///
+    /// # Errors
+    /// Returns `WasmMergeError` if the WASM merge callback fails or the type is not registered.
+    fn merge_custom(
+        &self,
+        type_name: &str,
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_ts: u64,
+        remote_ts: u64,
+    ) -> Result<Vec<u8>, WasmMergeError>;
+
+    /// Merge root state using the app's WASM merge logic.
+    ///
+    /// Root state merges always use the app's custom merge implementation
+    /// since the root state type is application-defined.
+    ///
+    /// # Arguments
+    /// * `local_data` - Borsh-serialized local root state
+    /// * `remote_data` - Borsh-serialized remote root state
+    ///
+    /// # Returns
+    /// Borsh-serialized merged root state.
+    ///
+    /// # Errors
+    /// Returns `WasmMergeError` if the WASM merge callback fails.
+    fn merge_root_state(
+        &self,
+        local_data: &[u8],
+        remote_data: &[u8],
+    ) -> Result<Vec<u8>, WasmMergeError>;
+}
+
+/// A no-op callback that falls back to LWW for custom types.
+///
+/// Used when no WASM callback is available (e.g., tests, non-WASM contexts).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopMergeCallback;
+
+impl WasmMergeCallback for NoopMergeCallback {
+    fn merge_custom(
+        &self,
+        _type_name: &str,
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_ts: u64,
+        remote_ts: u64,
+    ) -> Result<Vec<u8>, WasmMergeError> {
+        // Fallback to LWW
+        if remote_ts >= local_ts {
+            Ok(remote_data.to_vec())
+        } else {
+            Ok(local_data.to_vec())
+        }
+    }
+
+    fn merge_root_state(
+        &self,
+        local_data: &[u8],
+        _remote_data: &[u8],
+    ) -> Result<Vec<u8>, WasmMergeError> {
+        // Without WASM, just return local (no way to merge)
+        Ok(local_data.to_vec())
+    }
+}
+
+/// A callback that uses the in-process merge registry (global).
+///
+/// This is useful when the WASM module has already registered its merge
+/// function via `register_crdt_merge`. The runtime calls this after WASM
+/// initialization to use the registered merge functions.
+///
+/// # Example
+///
+/// ```ignore
+/// // After WASM module loads and calls __calimero_register_merge:
+/// let callback = RegistryMergeCallback;
+///
+/// // During sync:
+/// compare_trees_with_callback(data, index, Some(&callback));
+/// ```
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RegistryMergeCallback;
+
+impl WasmMergeCallback for RegistryMergeCallback {
+    fn merge_custom(
+        &self,
+        type_name: &str,
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_ts: u64,
+        remote_ts: u64,
+    ) -> Result<Vec<u8>, WasmMergeError> {
+        match try_merge_by_type_name(type_name, local_data, remote_data, local_ts, remote_ts) {
+            Some(Ok(merged)) => Ok(merged),
+            Some(Err(e)) => Err(WasmMergeError::MergeFailed(e.to_string())),
+            None => Err(WasmMergeError::UnknownType(type_name.to_owned())),
+        }
+    }
+
+    fn merge_root_state(
+        &self,
+        local_data: &[u8],
+        remote_data: &[u8],
+    ) -> Result<Vec<u8>, WasmMergeError> {
+        // Use the brute-force registry merge for root state
+        match try_merge_registered(local_data, remote_data, 0, 0) {
+            Some(Ok(merged)) => Ok(merged),
+            Some(Err(e)) => Err(WasmMergeError::MergeFailed(e.to_string())),
+            None => Err(WasmMergeError::ExportNotFound(
+                "No registered merge function for root state".to_owned(),
+            )),
+        }
+    }
+}
+
+/// A callback that uses an injected `MergeRegistry` (for testing).
+///
+/// This allows tests to create isolated registries without global state.
+///
+/// # Example
+///
+/// ```ignore
+/// let mut registry = MergeRegistry::new();
+/// registry.register::<MyState>();
+///
+/// let callback = InjectableRegistryCallback::new(&registry);
+/// compare_trees_with_callback(data, index, Some(&callback));
+/// ```
+pub struct InjectableRegistryCallback<'a> {
+    registry: &'a MergeRegistry,
+}
+
+impl<'a> InjectableRegistryCallback<'a> {
+    /// Creates a new callback with the given registry.
+    #[must_use]
+    pub const fn new(registry: &'a MergeRegistry) -> Self {
+        Self { registry }
+    }
+}
+
+impl WasmMergeCallback for InjectableRegistryCallback<'_> {
+    fn merge_custom(
+        &self,
+        type_name: &str,
+        local_data: &[u8],
+        remote_data: &[u8],
+        local_ts: u64,
+        remote_ts: u64,
+    ) -> Result<Vec<u8>, WasmMergeError> {
+        match self.registry.try_merge_by_type_name(
+            type_name,
+            local_data,
+            remote_data,
+            local_ts,
+            remote_ts,
+        ) {
+            Some(Ok(merged)) => Ok(merged),
+            Some(Err(e)) => Err(WasmMergeError::MergeFailed(e.to_string())),
+            None => Err(WasmMergeError::UnknownType(type_name.to_owned())),
+        }
+    }
+
+    fn merge_root_state(
+        &self,
+        local_data: &[u8],
+        remote_data: &[u8],
+    ) -> Result<Vec<u8>, WasmMergeError> {
+        // Use the brute-force registry merge for root state
+        match self.registry.try_merge(local_data, remote_data, 0, 0) {
+            Some(Ok(merged)) => Ok(merged),
+            Some(Err(e)) => Err(WasmMergeError::MergeFailed(e.to_string())),
+            None => Err(WasmMergeError::ExportNotFound(
+                "No registered merge function for root state".to_owned(),
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod callback_tests {
+    use super::*;
+    use crate::collections::Mergeable;
+
+    // PURE test type - NO storage operations!
+    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Debug, Clone, PartialEq)]
+    struct PureState {
+        value: i64,
+    }
+
+    impl Mergeable for PureState {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.value += other.value; // G-Counter semantics
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_noop_callback_uses_lww() {
+        let callback = NoopMergeCallback;
+
+        let local = vec![1, 2, 3];
+        let remote = vec![4, 5, 6];
+
+        // Remote wins when remote_ts >= local_ts
+        let result = callback
+            .merge_custom("AnyType", &local, &remote, 100, 200)
+            .unwrap();
+        assert_eq!(result, remote);
+
+        // Local wins when local_ts > remote_ts
+        let result = callback
+            .merge_custom("AnyType", &local, &remote, 200, 100)
+            .unwrap();
+        assert_eq!(result, local);
+    }
+
+    #[test]
+    fn test_registry_callback_uses_registered_merge() {
+        let mut registry = MergeRegistry::new();
+        registry.register::<PureState>();
+
+        let state1 = PureState { value: 2 };
+        let state2 = PureState { value: 1 };
+
+        let bytes1 = borsh::to_vec(&state1).unwrap();
+        let bytes2 = borsh::to_vec(&state2).unwrap();
+
+        let callback = InjectableRegistryCallback::new(&registry);
+        let merged_bytes = callback
+            .merge_custom("PureState", &bytes1, &bytes2, 100, 200)
+            .expect("Merge should succeed");
+
+        let merged: PureState = borsh::from_slice(&merged_bytes).unwrap();
+        assert_eq!(merged.value, 3); // 2 + 1
+    }
+
+    #[test]
+    fn test_registry_callback_unknown_type() {
+        let registry = MergeRegistry::new();
+        let callback = InjectableRegistryCallback::new(&registry);
+
+        let bytes = vec![1, 2, 3];
+        let result = callback.merge_custom("UnknownType", &bytes, &bytes, 100, 200);
+
+        assert!(matches!(result, Err(WasmMergeError::UnknownType(_))));
+    }
+
+    #[test]
+    fn test_injectable_registry_root_state_merge() {
+        let mut registry = MergeRegistry::new();
+        registry.register::<PureState>();
+
+        let state1 = PureState { value: 5 };
+        let state2 = PureState { value: 3 };
+
+        let bytes1 = borsh::to_vec(&state1).unwrap();
+        let bytes2 = borsh::to_vec(&state2).unwrap();
+
+        let callback = InjectableRegistryCallback::new(&registry);
+        let merged_bytes = callback
+            .merge_root_state(&bytes1, &bytes2)
+            .expect("Root state merge should succeed");
+
+        let merged: PureState = borsh::from_slice(&merged_bytes).unwrap();
+        assert_eq!(merged.value, 8); // 5 + 3
+    }
 }
