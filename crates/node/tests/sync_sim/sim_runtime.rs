@@ -124,7 +124,9 @@ impl SimRuntime {
     /// Create with configuration.
     pub fn with_config(config: SimConfig) -> Self {
         let rng = SimRng::new(config.seed);
-        let network = NetworkRouter::with_faults(config.seed + 1, config.fault_config.clone());
+        // Use wrapping_add to avoid overflow panic when seed is u64::MAX
+        let network =
+            NetworkRouter::with_faults(config.seed.wrapping_add(1), config.fault_config.clone());
 
         Self {
             config,

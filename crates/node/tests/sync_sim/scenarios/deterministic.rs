@@ -56,19 +56,27 @@ pub fn generate_deep_tree_entities(
 }
 
 /// Generate entities forming a wide shallow tree.
+///
+/// For depth=1, only key[0] varies (256 unique prefix values).
+/// For depth=2, both key[0] and key[1] vary (65536 unique prefix values).
 pub fn generate_shallow_wide_tree(
     count: usize,
     depth: u32,
     seed: u64,
 ) -> Vec<(EntityId, Vec<u8>, EntityMetadata)> {
-    assert!(depth <= 2, "shallow tree depth must be <= 2");
+    assert!(
+        depth >= 1 && depth <= 2,
+        "shallow tree depth must be 1 or 2"
+    );
 
     (0..count)
         .map(|i| {
             let mut key = [0u8; 32];
-            // All keys share first (32 - depth) bytes → shallow tree
-            key[0] = (i / 256) as u8; // Level 1 fanout
-            key[1] = (i % 256) as u8; // Level 2 fanout (if depth=2)
+            // Vary key bytes based on depth
+            key[0] = (i % 256) as u8; // Level 1 fanout (always used)
+            if depth >= 2 {
+                key[1] = (i / 256) as u8; // Level 2 fanout (only for depth=2)
+            }
             key[24..32].copy_from_slice(&(seed + i as u64).to_le_bytes());
 
             let id = EntityId::from_bytes(key);
