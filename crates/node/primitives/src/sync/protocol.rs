@@ -5,6 +5,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use super::handshake::{SyncCapabilities, SyncHandshake};
+use super::subtree::{DEEP_TREE_THRESHOLD, MAX_DIVERGENCE_RATIO};
 
 // =============================================================================
 // Protocol Kind (Discriminant-only)
@@ -236,7 +237,11 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
     }
 
     // Rule 4: Deep tree with localized changes
-    if remote.max_depth > 3 && divergence < 0.2 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "DEEP_TREE_THRESHOLD is always small (currently 3)"
+    )]
+    if remote.max_depth > DEEP_TREE_THRESHOLD as u32 && divergence < MAX_DIVERGENCE_RATIO {
         return ProtocolSelection {
             protocol: SyncProtocol::SubtreePrefetch {
                 subtree_roots: vec![], // Will be populated during sync
