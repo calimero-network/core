@@ -40,7 +40,7 @@
 //! All types have `is_valid()` methods that should be called after deserializing
 //! from untrusted sources to prevent resource exhaustion attacks.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -370,7 +370,8 @@ impl LevelCompareResult {
 /// Compare local and remote nodes at a level.
 ///
 /// Takes a map of local node hashes and the remote response,
-/// and categorizes each node.
+/// and categorizes each node. Deduplicates remote nodes by ID to ensure
+/// each node appears in exactly one category.
 #[must_use]
 pub fn compare_level_nodes(
     local_hashes: &HashMap<[u8; 32], [u8; 32]>,
@@ -378,8 +379,14 @@ pub fn compare_level_nodes(
 ) -> LevelCompareResult {
     let mut result = LevelCompareResult::default();
 
-    // Check each remote node against local
+    // Deduplicate remote nodes by ID, keeping the first occurrence
+    let mut remote_by_id: HashMap<[u8; 32], &LevelNode> = HashMap::new();
     for node in &remote.nodes {
+        remote_by_id.entry(node.id).or_insert(node);
+    }
+
+    // Check each deduplicated remote node against local
+    for node in remote_by_id.values() {
         match local_hashes.get(&node.id) {
             Some(local_hash) if *local_hash == node.hash => {
                 result.matching.push(node.id);
@@ -394,9 +401,8 @@ pub fn compare_level_nodes(
     }
 
     // Find nodes that exist locally but not in remote response
-    let remote_ids: HashSet<_> = remote.nodes.iter().map(|n| n.id).collect();
     for local_id in local_hashes.keys() {
-        if !remote_ids.contains(local_id) {
+        if !remote_by_id.contains_key(local_id) {
             result.remote_missing.push(*local_id);
         }
     }
@@ -411,10 +417,12 @@ pub fn compare_level_nodes(
 /// Check if LevelWise sync is appropriate for a tree.
 ///
 /// Returns true if LevelWise is likely more efficient than HashComparison.
+/// Requires depth >= 1 because depth-0 trees have no hierarchy to traverse.
 #[must_use]
 pub fn should_use_levelwise(tree_depth: usize, avg_children_per_level: usize) -> bool {
     // LevelWise is better for wide, shallow trees
-    tree_depth <= 2 && avg_children_per_level > 10
+    // Depth must be >= 1 (depth=0 has no levels to traverse breadth-first)
+    tree_depth >= 1 && tree_depth <= 2 && avg_children_per_level > 10
 }
 
 // =============================================================================
@@ -751,7 +759,9 @@ mod tests {
         // Wide shallow tree - YES
         assert!(should_use_levelwise(2, 15));
         assert!(should_use_levelwise(1, 100));
-        assert!(should_use_levelwise(0, 50));
+
+        // Depth 0 - NO (no hierarchy to traverse)
+        assert!(!should_use_levelwise(0, 50));
 
         // Deep tree - NO
         assert!(!should_use_levelwise(3, 15));
@@ -764,16 +774,17 @@ mod tests {
 
     #[test]
     fn test_should_use_levelwise_boundary_conditions() {
-        // Exactly at depth threshold (depth <= 2)
-        assert!(should_use_levelwise(2, 15)); // depth = 2, <= 2
+        // Exactly at depth threshold (depth >= 1 && depth <= 2)
+        assert!(should_use_levelwise(1, 15)); // depth = 1, in range
+        assert!(should_use_levelwise(2, 15)); // depth = 2, in range
         assert!(!should_use_levelwise(3, 15)); // depth = 3, > 2
 
         // Exactly at children threshold (> 10)
         assert!(!should_use_levelwise(2, 10)); // exactly 10, not > 10
         assert!(should_use_levelwise(2, 11)); // 11, > 10
 
-        // Edge cases
-        assert!(should_use_levelwise(0, 100)); // depth 0 with many children
+        // Edge cases - depth 0 always returns false (no hierarchy)
+        assert!(!should_use_levelwise(0, 100)); // depth 0 not suitable
         assert!(!should_use_levelwise(0, 0)); // depth 0 with no children
     }
 
@@ -1165,20 +1176,22 @@ mod tests {
         let mut local_hashes = HashMap::new();
         local_hashes.insert([1; 32], [10; 32]);
 
-        // Remote has duplicate IDs (malicious)
+        // Remote has duplicate IDs (malicious) - second occurrence has different hash
         let remote_nodes = vec![
             LevelNode::internal([1; 32], [10; 32], None), // First occurrence - matches
-            LevelNode::internal([1; 32], [11; 32], None), // Duplicate ID, different hash
+            LevelNode::internal([1; 32], [11; 32], None), // Duplicate ID, different hash (ignored)
         ];
         let response = LevelWiseResponse::new(0, remote_nodes, false);
 
         let result = compare_level_nodes(&local_hashes, &response);
 
-        // First occurrence matches, second differs
-        // This is technically valid behavior - compare processes each node
+        // Duplicates are deduplicated - only first occurrence is considered
+        // ID [1; 32] appears only once in exactly one category (matching)
         assert_eq!(result.matching.len(), 1);
-        assert_eq!(result.differing.len(), 1);
-        // Same ID appears in both categories - application should handle this
+        assert_eq!(result.differing.len(), 0);
+        assert_eq!(result.local_missing.len(), 0);
+        assert_eq!(result.remote_missing.len(), 0);
+        assert_eq!(result.total_compared(), 1);
     }
 
     #[test]
@@ -1232,8 +1245,9 @@ mod tests {
         // Both extreme
         assert!(!should_use_levelwise(usize::MAX, usize::MAX));
 
-        // Zero both
+        // Zero depth - always false (no hierarchy)
         assert!(!should_use_levelwise(0, 0));
+        assert!(!should_use_levelwise(0, usize::MAX));
     }
 
     #[test]
