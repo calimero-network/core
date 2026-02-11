@@ -148,9 +148,13 @@ impl SimRuntime {
     pub fn add_node(&mut self, id: impl Into<NodeId>) -> NodeId {
         let id = id.into();
         let node = SimNode::new(id.clone());
+        // Only add to node_order if this is a new node (not already in the map)
+        let is_new = !self.nodes.contains_key(&id);
         self.nodes.insert(id.clone(), node);
-        self.node_order.push(id.clone());
-        self.node_order.sort();
+        if is_new {
+            self.node_order.push(id.clone());
+            self.node_order.sort();
+        }
         id
     }
 
@@ -182,9 +186,13 @@ impl SimRuntime {
     /// Add a pre-configured node.
     pub fn add_existing_node(&mut self, node: SimNode) -> NodeId {
         let id = node.id().clone();
+        // Only add to node_order if this is a new node (not already in the map)
+        let is_new = !self.nodes.contains_key(&id);
         self.nodes.insert(id.clone(), node);
-        self.node_order.push(id.clone());
-        self.node_order.sort();
+        if is_new {
+            self.node_order.push(id.clone());
+            self.node_order.sort();
+        }
         id
     }
 
@@ -398,11 +406,17 @@ impl SimRuntime {
                 };
 
                 // Check timer still exists (might have been cancelled)
-                let Some(_timer) =
+                // and that fire_time matches current time (timer might have been rescheduled)
+                let Some(timer) =
                     sim_node.get_timer(crate::sync_sim::types::TimerId::new(timer_id))
                 else {
                     return true;
                 };
+
+                // If this event is from an old schedule (timer was rescheduled), ignore it
+                if timer.fire_time != time {
+                    return true;
+                }
 
                 // Process timeout
                 let actions = Self::handle_timeout_static(timer_id);
@@ -689,7 +703,7 @@ mod tests {
         rt.step();
 
         // Network should be partitioned
-        assert!(rt.network().partitions().has_partitions());
+        assert!(rt.network().partitions().has_partitions(rt.now()));
     }
 
     #[test]

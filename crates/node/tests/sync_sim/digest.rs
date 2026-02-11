@@ -28,6 +28,12 @@ pub fn hash_metadata(metadata: &EntityMetadata) -> [u8; 32] {
     };
 
     hasher.update([crdt_discriminant]);
+
+    // For Custom CRDT types, also hash the custom type name to distinguish them
+    if let calimero_primitives::crdt::CrdtType::Custom(custom_name) = &metadata.crdt_type {
+        hasher.update(custom_name.as_bytes());
+    }
+
     hasher.update(metadata.hlc_timestamp.to_le_bytes());
     hasher.update(metadata.version.to_le_bytes());
     hasher.update(metadata.collection_id);

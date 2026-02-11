@@ -129,14 +129,19 @@ impl PartitionManager {
         false
     }
 
-    /// Get number of active partitions.
-    pub fn partition_count(&self) -> usize {
-        self.partitions.len()
+    /// Get number of active partitions at the given time.
+    pub fn partition_count(&self, now: SimTime) -> usize {
+        self.partitions
+            .iter()
+            .filter(|p| p.end_time.map_or(true, |end| end > now))
+            .count()
     }
 
-    /// Check if there are any active partitions.
-    pub fn has_partitions(&self) -> bool {
-        !self.partitions.is_empty()
+    /// Check if there are any active partitions at the given time.
+    pub fn has_partitions(&self, now: SimTime) -> bool {
+        self.partitions
+            .iter()
+            .any(|p| p.end_time.map_or(true, |end| end > now))
     }
 
     /// Invalidate the cache.
@@ -275,11 +280,11 @@ mod tests {
             None,
         );
 
-        assert!(manager.has_partitions());
+        assert!(manager.has_partitions(SimTime::ZERO));
 
         manager.clear();
 
-        assert!(!manager.has_partitions());
+        assert!(!manager.has_partitions(SimTime::ZERO));
         assert!(!manager.is_partitioned(&NodeId::new("a"), &NodeId::new("b"), SimTime::ZERO));
     }
 }
