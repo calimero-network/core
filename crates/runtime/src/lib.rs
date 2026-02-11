@@ -475,10 +475,12 @@ impl Module {
 // ════════════════════════════════════════════════════════════════════════════
 
 use calimero_storage::{WasmMergeCallback, WasmMergeError};
-use std::time::Duration;
+use wasmer::{Function, Value};
 
-/// Default timeout for WASM merge operations (5 seconds).
-pub const DEFAULT_MERGE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Memory offset for merge data allocation.
+/// Uses 65536 (start of second page) to avoid corrupting the first page which
+/// contains static data segments, stack, and heap metadata in typical Rust WASM modules.
+const MERGE_DATA_OFFSET: u64 = 65536;
 
 /// WASM merge callback that calls into a compiled WASM module.
 ///
@@ -499,7 +501,6 @@ pub const DEFAULT_MERGE_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct RuntimeMergeCallback {
     engine: wasmer::Engine,
     module: wasmer::Module,
-    timeout: Duration,
 }
 
 impl RuntimeMergeCallback {
@@ -514,37 +515,67 @@ impl RuntimeMergeCallback {
             Some(Self {
                 engine: module.engine.clone(),
                 module: module.module.clone(),
-                timeout: DEFAULT_MERGE_TIMEOUT,
             })
         } else {
             None
         }
     }
 
-    /// Create a merge callback with a custom timeout.
-    #[must_use]
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
-        self
+    /// Create stub imports for all host functions declared by the module.
+    ///
+    /// The WASM spec requires all declared imports to be provided at instantiation.
+    /// Merge functions are designed to be pure and shouldn't call host functions,
+    /// so we provide stubs that return default values (and would indicate a bug
+    /// if actually invoked during merge).
+    fn create_stub_imports(&self, store: &mut Store) -> wasmer::Imports {
+        let mut imports = wasmer::Imports::new();
+
+        for import in self.module.imports() {
+            if import.module() == "env" {
+                if let wasmer::ExternType::Function(func_type) = import.ty() {
+                    // Create a stub function that returns default values
+                    // Merge functions shouldn't call host functions, so this is safe
+                    let results_arity = func_type.results().len();
+                    let stub = Function::new(store, func_type, move |_args| {
+                        // Return default values (zeros) for all result types
+                        Ok((0..results_arity).map(|_| Value::I64(0)).collect())
+                    });
+                    imports.define("env", import.name(), stub);
+                }
+            }
+        }
+
+        imports
     }
 
-    /// Call the WASM merge function and extract the result.
+    /// Shared helper for executing merge functions.
     ///
-    /// This handles:
-    /// 1. Creating a WASM instance
-    /// 2. Copying data to WASM memory
-    /// 3. Calling the merge function
-    /// 4. Extracting and deserializing the result
-    fn call_merge_function(
+    /// This handles common logic for both root state and custom type merging:
+    /// - Instance creation with stub imports
+    /// - Memory allocation and data copying
+    /// - Result extraction and parsing
+    fn execute_merge<F>(
         &self,
-        export_name: &str,
         local_data: &[u8],
         remote_data: &[u8],
-    ) -> Result<Vec<u8>, WasmMergeError> {
+        type_name: Option<&str>,
+        call_fn: F,
+    ) -> Result<Vec<u8>, WasmMergeError>
+    where
+        F: FnOnce(
+            &Instance,
+            &mut Store,
+            u64,
+            u64,
+            u64,
+            u64,
+            Option<(u64, u64)>,
+        ) -> Result<u64, WasmMergeError>,
+    {
         let mut store = Store::new(self.engine.clone());
 
-        // Create instance with empty imports (merge functions don't need host functions)
-        let imports = wasmer::Imports::new();
+        // Create stub imports for all host functions declared by the module
+        let imports = self.create_stub_imports(&mut store);
         let instance = Instance::new(&mut store, &self.module, &imports)
             .map_err(|e| WasmMergeError::MergeFailed(format!("Instance creation failed: {e}")))?;
 
@@ -554,9 +585,13 @@ impl RuntimeMergeCallback {
             .get_memory("memory")
             .map_err(|e| WasmMergeError::MergeFailed(format!("Memory not found: {e}")))?;
 
-        // Allocate memory for input data
-        // Layout: [local_data][remote_data]
-        let local_ptr = 1024u64; // Start after some buffer for stack
+        // Calculate memory layout based on whether we have a type name
+        let type_name_bytes = type_name.map(str::as_bytes);
+        let type_name_len = type_name_bytes.map_or(0, |b| b.len() as u64);
+
+        // Layout: [type_name (optional)][local_data][remote_data]
+        let type_name_ptr = MERGE_DATA_OFFSET;
+        let local_ptr = type_name_ptr + type_name_len;
         let remote_ptr = local_ptr + local_data.len() as u64;
         let total_needed = remote_ptr + remote_data.len() as u64;
 
@@ -571,28 +606,26 @@ impl RuntimeMergeCallback {
 
         // Copy data to WASM memory
         let view = memory.view(&store);
+        if let Some(bytes) = type_name_bytes {
+            view.write(type_name_ptr, bytes)
+                .map_err(|e| WasmMergeError::MergeFailed(format!("Write type_name failed: {e}")))?;
+        }
         view.write(local_ptr, local_data)
             .map_err(|e| WasmMergeError::MergeFailed(format!("Write local failed: {e}")))?;
         view.write(remote_ptr, remote_data)
             .map_err(|e| WasmMergeError::MergeFailed(format!("Write remote failed: {e}")))?;
 
-        // Get and call the merge function
-        let merge_fn = instance
-            .exports
-            .get_typed_function::<(u64, u64, u64, u64), u64>(&store, export_name)
-            .map_err(|_| WasmMergeError::ExportNotFound(export_name.to_owned()))?;
-
-        // TODO: Add timeout support using tokio::time::timeout in async context
-        // For now, we call synchronously (timeout is a future enhancement)
-        let result = merge_fn
-            .call(
-                &mut store,
-                local_ptr,
-                local_data.len() as u64,
-                remote_ptr,
-                remote_data.len() as u64,
-            )
-            .map_err(|e| WasmMergeError::MergeFailed(format!("WASM call failed: {e}")))?;
+        // Call the merge function
+        let type_name_info = type_name.map(|_| (type_name_ptr, type_name_len));
+        let result = call_fn(
+            &instance,
+            &mut store,
+            local_ptr,
+            local_data.len() as u64,
+            remote_ptr,
+            remote_data.len() as u64,
+            type_name_info,
+        )?;
 
         // Unpack result (high 32 bits = ptr, low 32 bits = len)
         let result_ptr = result >> 32;
@@ -613,106 +646,78 @@ impl RuntimeMergeCallback {
         // Parse Borsh-encoded result
         Self::parse_merge_result(result_bytes)
     }
-}
 
-impl RuntimeMergeCallback {
+    /// Call the WASM merge function for root state.
+    fn call_merge_function(
+        &self,
+        export_name: &str,
+        local_data: &[u8],
+        remote_data: &[u8],
+    ) -> Result<Vec<u8>, WasmMergeError> {
+        let export_name = export_name.to_owned();
+        self.execute_merge(
+            local_data,
+            remote_data,
+            None,
+            |instance, store, local_ptr, local_len, remote_ptr, remote_len, _type_name_info| {
+                let merge_fn = instance
+                    .exports
+                    .get_typed_function::<(u64, u64, u64, u64), u64>(store, &export_name)
+                    .map_err(|_| WasmMergeError::ExportNotFound(export_name.clone()))?;
+
+                merge_fn
+                    .call(store, local_ptr, local_len, remote_ptr, remote_len)
+                    .map_err(|e| WasmMergeError::MergeFailed(format!("WASM call failed: {e}")))
+            },
+        )
+    }
+
     /// Call the `__calimero_merge` WASM export for custom type merging.
-    ///
-    /// This function handles the additional type_name parameter compared to root state merge.
     fn call_custom_merge_function(
         &self,
         type_name: &str,
         local_data: &[u8],
         remote_data: &[u8],
     ) -> Result<Vec<u8>, WasmMergeError> {
-        let mut store = Store::new(self.engine.clone());
+        self.execute_merge(
+            local_data,
+            remote_data,
+            Some(type_name),
+            |instance, store, local_ptr, local_len, remote_ptr, remote_len, type_name_info| {
+                // Call the registration hook to populate the merge registry
+                if let Ok(register_fn) = instance
+                    .exports
+                    .get_typed_function::<(), ()>(store, "__calimero_register_merge")
+                {
+                    register_fn.call(store).map_err(|e| {
+                        WasmMergeError::MergeFailed(format!("Registration hook failed: {e}"))
+                    })?;
+                }
 
-        // Create instance with empty imports (merge functions don't need host functions)
-        let imports = wasmer::Imports::new();
-        let instance = Instance::new(&mut store, &self.module, &imports)
-            .map_err(|e| WasmMergeError::MergeFailed(format!("Instance creation failed: {e}")))?;
+                let (type_name_ptr, type_name_len) =
+                    type_name_info.expect("type_name_info must be Some for custom merge");
 
-        // Call the registration hook to populate the merge registry.
-        // This is required before calling __calimero_merge, which looks up
-        // merge functions by type name in the registry.
-        if let Ok(register_fn) = instance
-            .exports
-            .get_typed_function::<(), ()>(&store, "__calimero_register_merge")
-        {
-            register_fn.call(&mut store).map_err(|e| {
-                WasmMergeError::MergeFailed(format!("Registration hook failed: {e}"))
-            })?;
-        }
+                let merge_fn = instance
+                    .exports
+                    .get_typed_function::<(u64, u64, u64, u64, u64, u64), u64>(
+                        store,
+                        "__calimero_merge",
+                    )
+                    .map_err(|_| WasmMergeError::ExportNotFound("__calimero_merge".to_owned()))?;
 
-        // Get memory export
-        let memory = instance
-            .exports
-            .get_memory("memory")
-            .map_err(|e| WasmMergeError::MergeFailed(format!("Memory not found: {e}")))?;
-
-        // Allocate memory for input data
-        // Layout: [type_name][local_data][remote_data]
-        let type_name_bytes = type_name.as_bytes();
-        let type_name_ptr = 1024u64; // Start after some buffer for stack
-        let local_ptr = type_name_ptr + type_name_bytes.len() as u64;
-        let remote_ptr = local_ptr + local_data.len() as u64;
-        let total_needed = remote_ptr + remote_data.len() as u64;
-
-        // Ensure memory is large enough (grow if needed)
-        let current_pages = memory.view(&store).size().0 as u64;
-        let pages_needed = (total_needed / 65536) + 1;
-        if pages_needed > current_pages {
-            let _ = memory
-                .grow(&mut store, (pages_needed - current_pages) as u32)
-                .map_err(|e| WasmMergeError::MergeFailed(format!("Memory grow failed: {e}")))?;
-        }
-
-        // Copy data to WASM memory
-        let view = memory.view(&store);
-        view.write(type_name_ptr, type_name_bytes)
-            .map_err(|e| WasmMergeError::MergeFailed(format!("Write type_name failed: {e}")))?;
-        view.write(local_ptr, local_data)
-            .map_err(|e| WasmMergeError::MergeFailed(format!("Write local failed: {e}")))?;
-        view.write(remote_ptr, remote_data)
-            .map_err(|e| WasmMergeError::MergeFailed(format!("Write remote failed: {e}")))?;
-
-        // Get and call the merge function
-        // Signature: (type_name_ptr, type_name_len, local_ptr, local_len, remote_ptr, remote_len) -> u64
-        let merge_fn = instance
-            .exports
-            .get_typed_function::<(u64, u64, u64, u64, u64, u64), u64>(&store, "__calimero_merge")
-            .map_err(|_| WasmMergeError::ExportNotFound("__calimero_merge".to_owned()))?;
-
-        let result = merge_fn
-            .call(
-                &mut store,
-                type_name_ptr,
-                type_name_bytes.len() as u64,
-                local_ptr,
-                local_data.len() as u64,
-                remote_ptr,
-                remote_data.len() as u64,
-            )
-            .map_err(|e| WasmMergeError::MergeFailed(format!("WASM call failed: {e}")))?;
-
-        // Unpack result (high 32 bits = ptr, low 32 bits = len)
-        let result_ptr = result >> 32;
-        let result_len = (result & 0xFFFF_FFFF) as usize;
-
-        if result_len == 0 {
-            return Err(WasmMergeError::MergeFailed(
-                "Empty result from WASM".to_owned(),
-            ));
-        }
-
-        // Read result from WASM memory
-        let view = memory.view(&store);
-        let mut result_bytes = vec![0u8; result_len];
-        view.read(result_ptr, &mut result_bytes)
-            .map_err(|e| WasmMergeError::MergeFailed(format!("Read result failed: {e}")))?;
-
-        // Parse Borsh-encoded result (same as call_merge_function)
-        Self::parse_merge_result(result_bytes)
+                merge_fn
+                    .call(
+                        store,
+                        type_name_ptr,
+                        type_name_len,
+                        local_ptr,
+                        local_len,
+                        remote_ptr,
+                        remote_len,
+                    )
+                    .map_err(|e| WasmMergeError::MergeFailed(format!("WASM call failed: {e}")))
+            },
+        )
     }
 
     /// Parse the Borsh-encoded MergeResultInternal from WASM.
