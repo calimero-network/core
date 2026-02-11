@@ -49,11 +49,15 @@ pub struct TreeNodeRequest {
     /// ID of the node to request (root hash or internal node hash).
     pub node_id: [u8; 32],
 
-    /// Maximum depth to traverse from this node (private to enforce validation).
+    /// Maximum depth to traverse from this node.
     ///
-    /// Use `depth()` accessor which always clamps to MAX_TREE_DEPTH.
-    /// Use `with_depth()` constructor to set a depth limit.
-    pub max_depth: Option<usize>,
+    /// This field is private to enforce validation. Use constructors and accessors:
+    /// - `new()` / `with_depth()` - create requests with validated depth
+    /// - `depth()` - get clamped value (always <= MAX_TREE_DEPTH)
+    ///
+    /// This prevents DoS attacks where an attacker sends a request with an
+    /// extremely large depth value to cause resource exhaustion.
+    max_depth: Option<usize>,
 }
 
 impl TreeNodeRequest {
@@ -778,22 +782,71 @@ mod tests {
 
     #[test]
     fn test_tree_node_request_max_depth_validation() {
+        // Constructors should clamp to MAX_TREE_DEPTH
         let request = TreeNodeRequest::with_depth([1; 32], MAX_TREE_DEPTH);
-        assert_eq!(request.max_depth, Some(MAX_TREE_DEPTH));
+        assert_eq!(request.depth(), Some(MAX_TREE_DEPTH));
 
+        // Excessive depth should be clamped by constructor
         let excessive = TreeNodeRequest::with_depth([1; 32], MAX_TREE_DEPTH + 100);
-        assert_eq!(excessive.max_depth, Some(MAX_TREE_DEPTH));
+        assert_eq!(excessive.depth(), Some(MAX_TREE_DEPTH));
     }
 
     #[test]
     fn test_tree_node_request_depth_accessor() {
-        let mut request = TreeNodeRequest::new([1; 32]);
-        request.max_depth = Some(usize::MAX);
-
-        assert_eq!(request.depth(), Some(MAX_TREE_DEPTH));
-
+        // depth() returns None when no depth is set
         let request_none = TreeNodeRequest::new([1; 32]);
         assert_eq!(request_none.depth(), None);
+
+        // depth() returns Some with clamped value when set
+        let request_with_depth = TreeNodeRequest::with_depth([1; 32], 5);
+        assert_eq!(request_with_depth.depth(), Some(5));
+    }
+
+    #[test]
+    fn test_tree_node_request_depth_clamping_on_deserialize() {
+        // Simulate an attacker sending a malicious request with excessive depth
+        // by manually constructing the serialized bytes with a huge max_depth value
+        let node_id = [1u8; 32];
+        let malicious_depth: usize = usize::MAX;
+
+        // Create a request and serialize it
+        let mut bytes = Vec::new();
+        // node_id: 32 bytes
+        bytes.extend_from_slice(&node_id);
+        // max_depth: Option<usize> - 1 byte tag (Some = 1) + usize (8 bytes on 64-bit)
+        bytes.push(1); // Some variant
+        bytes.extend_from_slice(&malicious_depth.to_le_bytes());
+
+        // Deserialize the malicious request
+        let request: TreeNodeRequest = borsh::from_slice(&bytes).expect("deserialize");
+
+        // The depth() accessor should clamp to MAX_TREE_DEPTH
+        assert_eq!(
+            request.depth(),
+            Some(MAX_TREE_DEPTH),
+            "depth() must clamp deserialized values to MAX_TREE_DEPTH"
+        );
+    }
+
+    #[test]
+    fn test_tree_node_request_private_field_enforces_validation() {
+        // This test documents that max_depth is private and cannot be set directly
+        // The only ways to create a TreeNodeRequest are:
+        // 1. TreeNodeRequest::new() - no depth limit
+        // 2. TreeNodeRequest::with_depth() - clamped depth limit
+        // 3. Deserialization - depth() accessor clamps when read
+
+        // Verify new() creates request without depth limit
+        let no_depth = TreeNodeRequest::new([0; 32]);
+        assert_eq!(no_depth.depth(), None);
+
+        // Verify with_depth() clamps excessive values
+        let clamped = TreeNodeRequest::with_depth([0; 32], 999_999);
+        assert_eq!(clamped.depth(), Some(MAX_TREE_DEPTH));
+
+        // Verify reasonable values pass through
+        let reasonable = TreeNodeRequest::with_depth([0; 32], 3);
+        assert_eq!(reasonable.depth(), Some(3));
     }
 
     #[test]

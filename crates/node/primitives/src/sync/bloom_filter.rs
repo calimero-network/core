@@ -16,6 +16,12 @@ pub const DEFAULT_BLOOM_FP_RATE: f32 = 0.01; // 1%
 /// Minimum bits per element for reasonable FP rate.
 const MIN_BITS_PER_ELEMENT: usize = 8;
 
+/// Minimum allowed false positive rate (prevents ln(0) = -inf).
+const MIN_FP_RATE: f32 = 0.0001;
+
+/// Maximum allowed false positive rate (above this a bloom filter is pointless).
+const MAX_FP_RATE: f32 = 0.5;
+
 /// FNV-1a 64-bit offset basis.
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 
@@ -52,9 +58,18 @@ impl DeltaIdBloomFilter {
     ///
     /// # Arguments
     /// * `expected_items` - Expected number of items to insert
-    /// * `fp_rate` - Desired false positive rate (0.0 to 1.0)
+    /// * `fp_rate` - Desired false positive rate (clamped to 0.0001..0.5)
+    ///
+    /// # Notes
+    /// The `fp_rate` is clamped to avoid mathematical errors:
+    /// - Values <= 0 would cause `ln()` to produce `-inf` or `NaN`
+    /// - Values >= 0.5 make the bloom filter nearly useless
     #[must_use]
     pub fn new(expected_items: usize, fp_rate: f32) -> Self {
+        // Clamp fp_rate to valid range to prevent mathematical errors
+        // ln(0) = -inf, ln(negative) = NaN
+        let fp_rate = fp_rate.clamp(MIN_FP_RATE, MAX_FP_RATE);
+
         // Calculate optimal number of bits: m = -n * ln(p) / (ln(2)^2)
         let ln2_sq = std::f64::consts::LN_2 * std::f64::consts::LN_2;
         let num_bits = if expected_items == 0 {
@@ -109,9 +124,16 @@ impl DeltaIdBloomFilter {
     }
 
     /// Compute hash positions using double hashing technique.
+    ///
+    /// Uses stack-allocated buffer for h2 computation to avoid heap allocation.
     fn compute_positions(&self, id: &[u8; 32]) -> Vec<usize> {
         let h1 = Self::hash_fnv1a(id);
-        let h2 = Self::hash_fnv1a(&[id.as_slice(), &[0xFF]].concat());
+
+        // Use stack-allocated buffer instead of Vec::concat() for h2
+        let mut buf = [0u8; 33];
+        buf[..32].copy_from_slice(id);
+        buf[32] = 0xFF;
+        let h2 = Self::hash_fnv1a(&buf);
 
         (0..self.num_hashes as u64)
             .map(|i| {
@@ -452,5 +474,82 @@ mod tests {
         assert_eq!(filter.bit_count(), 1024);
         assert_eq!(filter.hash_count(), 7);
         assert_eq!(filter.item_count(), 0);
+    }
+
+    #[test]
+    fn test_bloom_filter_fp_rate_clamping_zero() {
+        // fp_rate = 0 would cause ln(0) = -inf, should be clamped to MIN_FP_RATE
+        let filter = DeltaIdBloomFilter::new(100, 0.0);
+
+        // Filter should be created successfully without panic
+        assert!(filter.bit_count() > 0);
+        assert!(filter.hash_count() > 0);
+
+        // Should still work correctly
+        let id = [42u8; 32];
+        assert!(!filter.contains(&id));
+    }
+
+    #[test]
+    fn test_bloom_filter_fp_rate_clamping_negative() {
+        // Negative fp_rate would cause ln(negative) = NaN, should be clamped
+        let filter = DeltaIdBloomFilter::new(100, -0.5);
+
+        // Filter should be created successfully without panic
+        assert!(filter.bit_count() > 0);
+        assert!(filter.hash_count() > 0);
+    }
+
+    #[test]
+    fn test_bloom_filter_fp_rate_clamping_too_high() {
+        // fp_rate > 0.5 makes bloom filter nearly useless, should be clamped
+        let filter = DeltaIdBloomFilter::new(100, 0.99);
+
+        // Filter should be created with reasonable parameters
+        assert!(filter.bit_count() > 0);
+        assert!(filter.hash_count() > 0);
+
+        // With clamped fp_rate of 0.5, filter should still have some utility
+        let mut filter = filter;
+        let id = [1u8; 32];
+        filter.insert(&id);
+        assert!(filter.contains(&id));
+    }
+
+    #[test]
+    fn test_bloom_filter_fp_rate_edge_cases() {
+        // Test various edge case fp_rates
+        let test_cases = [
+            (f32::NEG_INFINITY, "negative infinity"),
+            (f32::INFINITY, "positive infinity"),
+            (f32::NAN, "NaN"),
+            (-1.0, "negative one"),
+            (0.0, "zero"),
+            (1.0, "one"),
+            (2.0, "greater than one"),
+        ];
+
+        for (fp_rate, description) in test_cases {
+            let filter = DeltaIdBloomFilter::new(100, fp_rate);
+            assert!(
+                filter.bit_count() > 0,
+                "Filter with fp_rate {} ({}) should have positive bit count",
+                fp_rate,
+                description
+            );
+        }
+    }
+
+    #[test]
+    fn test_bloom_filter_compute_positions_deterministic() {
+        // Verify that compute_positions returns consistent results
+        let filter = DeltaIdBloomFilter::new(100, 0.01);
+        let id = [0xAB; 32];
+
+        let positions1 = filter.compute_positions(&id);
+        let positions2 = filter.compute_positions(&id);
+
+        assert_eq!(positions1, positions2);
+        assert_eq!(positions1.len(), filter.hash_count() as usize);
     }
 }
