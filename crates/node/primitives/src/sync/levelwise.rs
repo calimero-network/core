@@ -107,6 +107,10 @@ impl LevelWiseRequest {
     /// Request children of specific parents at a given level.
     #[must_use]
     pub fn for_parents(level: usize, parent_ids: Vec<[u8; 32]>) -> Self {
+        debug_assert!(
+            parent_ids.len() <= MAX_PARENTS_PER_REQUEST,
+            "parent_ids exceeds MAX_PARENTS_PER_REQUEST ({MAX_PARENTS_PER_REQUEST})"
+        );
         Self {
             level,
             parent_ids: Some(parent_ids),
@@ -346,9 +350,12 @@ impl LevelCompareResult {
     }
 
     /// Get all node IDs that need further processing.
+    ///
+    /// Returns differing nodes first, then locally missing nodes.
     #[must_use]
     pub fn nodes_to_process(&self) -> Vec<[u8; 32]> {
-        let mut result = self.differing.clone();
+        let mut result = Vec::with_capacity(self.differing.len() + self.local_missing.len());
+        result.extend(self.differing.iter().copied());
         result.extend(self.local_missing.iter().copied());
         result
     }
@@ -417,12 +424,12 @@ pub fn compare_level_nodes(
 /// Check if LevelWise sync is appropriate for a tree.
 ///
 /// Returns true if LevelWise is likely more efficient than HashComparison.
-/// Requires depth >= 1 because depth-0 trees have no hierarchy to traverse.
+/// Requires `max_depth >= 1` because depth-0 trees have no hierarchy to traverse.
 #[must_use]
-pub fn should_use_levelwise(tree_depth: usize, avg_children_per_level: usize) -> bool {
+pub fn should_use_levelwise(max_depth: usize, avg_children_per_level: usize) -> bool {
     // LevelWise is better for wide, shallow trees
     // Depth must be >= 1 (depth=0 has no levels to traverse breadth-first)
-    tree_depth >= 1 && tree_depth <= 2 && avg_children_per_level > 10
+    (1..=2).contains(&max_depth) && avg_children_per_level > 10
 }
 
 // =============================================================================
@@ -496,11 +503,14 @@ mod tests {
         let at_parent_limit = LevelWiseRequest::for_parents(0, parents);
         assert!(at_parent_limit.is_valid());
 
-        // Invalid request over parent limit
+        // Invalid request over parent limit (construct directly to bypass debug_assert)
         let parents: Vec<[u8; 32]> = (0..=MAX_PARENTS_PER_REQUEST)
             .map(|i| [i as u8; 32])
             .collect();
-        let over_parent_limit = LevelWiseRequest::for_parents(0, parents);
+        let over_parent_limit = LevelWiseRequest {
+            level: 0,
+            parent_ids: Some(parents),
+        };
         assert!(!over_parent_limit.is_valid());
     }
 
@@ -801,11 +811,14 @@ mod tests {
         let valid = LevelWiseRequest::for_parents(0, parents);
         assert!(valid.is_valid());
 
-        // Request exceeding parent limit should be invalid
+        // Request exceeding parent limit should be invalid (construct directly to bypass debug_assert)
         let parents: Vec<[u8; 32]> = (0..=MAX_PARENTS_PER_REQUEST)
             .map(|i| [i as u8; 32])
             .collect();
-        let invalid = LevelWiseRequest::for_parents(0, parents);
+        let invalid = LevelWiseRequest {
+            level: 0,
+            parent_ids: Some(parents),
+        };
         assert!(!invalid.is_valid());
     }
 
