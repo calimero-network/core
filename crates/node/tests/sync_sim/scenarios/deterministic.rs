@@ -23,18 +23,27 @@ pub fn generate_entities(count: usize, seed: u64) -> Vec<(EntityId, Vec<u8>, Ent
 /// Generate entities forming a deep tree structure.
 ///
 /// Keys are structured to produce `max_depth` in Merkle tree.
+/// Depth is clamped to 24 (max usable key bytes before seed region).
 pub fn generate_deep_tree_entities(
     count: usize,
     depth: u32,
     seed: u64,
 ) -> Vec<(EntityId, Vec<u8>, EntityMetadata)> {
+    // Clamp depth: key[0..24] available, key[24..32] reserved for seed
+    let safe_depth = depth.min(24);
+
     (0..count)
         .map(|i| {
             let mut key = [0u8; 32];
             // Spread across tree levels
-            for d in 0..depth {
-                // Guard against division by zero when count < 2^d
-                key[d as usize] = ((i / (count / (1 << d)).max(1)) % 256) as u8;
+            for d in 0..safe_depth {
+                // Use checked_shl to avoid overflow, default to 1 if overflow
+                let divisor = 1usize
+                    .checked_shl(d)
+                    .and_then(|shift| count.checked_div(shift))
+                    .unwrap_or(1)
+                    .max(1);
+                key[d as usize] = ((i / divisor) % 256) as u8;
             }
             key[24..32].copy_from_slice(&(seed + i as u64).to_le_bytes());
 
