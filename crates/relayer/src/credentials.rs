@@ -3,8 +3,6 @@
 use calimero_context_config::client::config::Credentials;
 use calimero_context_config::client::protocol::near::Credentials as ClientNearCredentials;
 
-use crate::constants::protocols;
-
 /// Protocol-specific signing credentials
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -32,14 +30,12 @@ impl From<ProtocolCredentials> for Credentials {
     }
 }
 
-/// Create credentials from environment variables
-pub fn from_env(protocol: &str) -> Option<ProtocolCredentials> {
-    let prefix = protocol.to_uppercase();
-
+/// Create NEAR credentials from environment variables.
+pub fn from_env() -> Option<ProtocolCredentials> {
     // Get environment variables
-    let account_id = std::env::var(format!("{}_ACCOUNT_ID", prefix)).ok();
-    let public_key = std::env::var(format!("{}_PUBLIC_KEY", prefix)).ok();
-    let secret_key = std::env::var(format!("{}_SECRET_KEY", prefix)).ok();
+    let account_id = std::env::var("NEAR_ACCOUNT_ID").ok();
+    let public_key = std::env::var("NEAR_PUBLIC_KEY").ok();
+    let secret_key = std::env::var("NEAR_SECRET_KEY").ok();
 
     // Helper function to check if all required credentials are present and non-empty
     let has_required_creds =
@@ -49,15 +45,13 @@ pub fn from_env(protocol: &str) -> Option<ProtocolCredentials> {
                 && secret_key.as_ref().map_or(false, |s| !s.is_empty())
         };
 
-    // Create credentials based on protocol
-    match protocol {
-        protocols::near::NAME if has_required_creds(&account_id, &public_key, &secret_key) => {
-            Some(ProtocolCredentials::Near {
-                account_id: account_id.unwrap(),
-                public_key: public_key.unwrap(),
-                secret_key: secret_key.unwrap(),
-            })
-        }
-        _ => None,
+    if has_required_creds(&account_id, &public_key, &secret_key) {
+        Some(ProtocolCredentials::Near {
+            account_id: account_id.unwrap(),
+            public_key: public_key.unwrap(),
+            secret_key: secret_key.unwrap(),
+        })
+    } else {
+        None
     }
 }

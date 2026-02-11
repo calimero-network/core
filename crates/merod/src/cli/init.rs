@@ -1,4 +1,3 @@
-use alloy::signers::local::PrivateKeySigner;
 use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, NodeMode,
     ServerConfig, SyncConfig,
@@ -9,8 +8,7 @@ use calimero_context_config::client::config::{
     ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
 };
 use calimero_context_config::client::protocol::{
-    ethereum as ethereum_protocol, icp as icp_protocol, mock_relayer as mock_relayer_protocol,
-    near as near_protocol, starknet as starknet_protocol,
+    near as near_protocol,
 };
 use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
@@ -27,17 +25,12 @@ use calimero_store_rocksdb::RocksDB;
 use clap::{Parser, ValueEnum};
 use core::net::IpAddr;
 use core::time::Duration;
-use ed25519_consensus::SigningKey as IcpSigningKey;
 use eyre::{bail, Result as EyreResult, WrapErr};
 use hex::encode;
-use ic_agent::export::Principal;
-use ic_agent::identity::{BasicIdentity, Identity};
 use libp2p::identity::Keypair;
 use mero_auth::config::{AuthConfig as EmbeddedAuthConfig, StorageConfig as AuthStorageConfig};
 use multiaddr::{Multiaddr, Protocol};
 use near_crypto::{KeyType, SecretKey};
-use rand::rngs::OsRng;
-use starknet::signers::SigningKey;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tokio::fs::{self, create_dir, create_dir_all};
@@ -45,7 +38,7 @@ use tracing::{info, warn};
 use url::Url;
 
 use super::auth_mode::AuthModeArg;
-use crate::{cli, defaults, docker};
+use crate::{cli, defaults};
 
 // Sync configuration - aggressive defaults for fast CRDT convergence
 const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -76,59 +69,11 @@ const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[
         ],
         protocol: ConfigProtocol::Near,
     },
-    ProtocolConfig {
-        name: "starknet",
-        default_network: "sepolia",
-        default_contract: "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c",
-        signer_type: ClientSelectedSigner::Relayer,
-        networks: &[
-            (
-                "mainnet",
-                "https://cloud.argent-api.com/v1/starknet/mainnet/rpc/v0.7",
-            ),
-            ("sepolia", "https://free-rpc.nethermind.io/sepolia-juno/"),
-        ],
-        protocol: ConfigProtocol::Starknet,
-    },
-    ProtocolConfig {
-        name: "icp",
-        default_network: "local",
-        default_contract: "bkyz2-fmaaa-aaaaa-qaaaq-cai",
-        signer_type: ClientSelectedSigner::Local,
-        networks: &[
-            ("ic", "https://ic0.app"),
-            ("local", "http://127.0.0.1:4943"), // Will be overridden if in Docker
-        ],
-        protocol: ConfigProtocol::Icp,
-    },
-    ProtocolConfig {
-        name: "ethereum",
-        default_network: "sepolia",
-        default_contract: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB", // Sepolia ContextConfig address
-        signer_type: ClientSelectedSigner::Relayer,
-        networks: &[
-            ("local", "http://127.0.0.1:8545"), // Will be overridden if in Docker
-            ("sepolia", "https://sepolia.drpc.org"),
-        ],
-        protocol: ConfigProtocol::Ethereum,
-    },
-    ProtocolConfig {
-        name: "mock-relayer",
-        default_network: "local",
-        default_contract: "mock-context-config",
-        signer_type: ClientSelectedSigner::Relayer,
-        networks: &[("local", "http://localhost:9812")],
-        protocol: ConfigProtocol::MockRelayer,
-    },
 ];
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ConfigProtocol {
     Near,
-    Starknet,
-    Icp,
-    Ethereum,
-    MockRelayer,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -344,21 +289,9 @@ impl InitCommand {
             };
 
             for (network_name, rpc_url) in config.networks {
-                // Use host.docker.internal (or Linux fallback) for local networks when running in Docker
-                let final_rpc_url =
-                    if *network_name == "local" && std::path::Path::new("/.dockerenv").exists() {
-                        match config.name {
-                            "icp" => docker::get_docker_host_for_port(4943),
-                            "ethereum" => docker::get_docker_host_for_port(8545),
-                            _ => rpc_url.to_string(),
-                        }
-                    } else {
-                        rpc_url.to_string()
-                    };
-
                 let _ignored = local_config.signers.insert(
                     network_name.to_string(),
-                    generate_local_signer(final_rpc_url.parse()?, config.protocol)?,
+                    generate_local_signer(rpc_url.parse()?, config.protocol)?,
                 );
             }
 
@@ -369,7 +302,7 @@ impl InitCommand {
 
         let relayer = self
             .relayer_url
-            .unwrap_or_else(|| defaults::default_relayer_url(self.protocol));
+            .unwrap_or_else(defaults::default_relayer_url);
 
         let client_config = ClientConfig {
             signer: ClientSigner {
@@ -480,77 +413,5 @@ fn generate_local_signer(
                 }),
             })
         }
-        ConfigProtocol::Starknet => {
-            let keypair = SigningKey::from_random();
-            let secret_key = SigningKey::secret_scalar(&keypair);
-            let public_key = keypair.verifying_key().scalar();
-
-            Ok(ClientLocalSigner {
-                rpc_url,
-                credentials: Credentials::Starknet(starknet_protocol::Credentials {
-                    account_id: public_key,
-                    public_key,
-                    secret_key,
-                }),
-            })
-        }
-        ConfigProtocol::Icp => {
-            let mut rng = OsRng;
-
-            let signing_key = IcpSigningKey::new(&mut rng);
-            let identity = BasicIdentity::from_signing_key(signing_key.clone());
-
-            let public_key = identity.public_key().unwrap();
-            let account_id = Principal::self_authenticating(&public_key);
-
-            Ok(ClientLocalSigner {
-                rpc_url,
-                credentials: Credentials::Icp(icp_protocol::Credentials {
-                    account_id,
-                    public_key: encode(&account_id),
-                    secret_key: encode(&signing_key),
-                }),
-            })
-        }
-
-        ConfigProtocol::Ethereum => {
-            // For local networks, use Anvil default account (has funds)
-            // For other networks, generate a random account
-            let (account_id, secret_key_hex) = if rpc_url.host_str() == Some("127.0.0.1")
-                || rpc_url.host_str() == Some("localhost")
-                || rpc_url.host_str() == Some("host.docker.internal")
-                || rpc_url.host_str() == Some("172.17.0.1")
-            {
-                // Use Anvil default account for local devnet
-                (
-                    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".to_string(),
-                    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-                        .to_string(),
-                )
-            } else {
-                // Generate random account for other networks
-                let secp = PrivateKeySigner::random();
-                let address = secp.address();
-                let secret_key = secp.to_bytes();
-                let secret_key_hex = encode(secret_key);
-                (address.to_string(), secret_key_hex)
-            };
-
-            Ok(ClientLocalSigner {
-                rpc_url,
-                credentials: Credentials::Ethereum(ethereum_protocol::Credentials {
-                    account_id,
-                    secret_key: secret_key_hex,
-                }),
-            })
-        }
-        ConfigProtocol::MockRelayer => Ok(ClientLocalSigner {
-            rpc_url,
-            credentials: Credentials::Raw(mock_relayer_protocol::Credentials {
-                account_id: None,
-                public_key: "mock-public-key".to_string(),
-                secret_key: "mock-secret-key".to_string(),
-            }),
-        }),
     }
 }

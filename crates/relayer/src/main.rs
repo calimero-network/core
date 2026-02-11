@@ -14,11 +14,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
-    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig, RawCredentials,
+    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
 };
 use calimero_context_config::client::relayer::{RelayRequest, ServerError};
 use calimero_context_config::client::transport::{
-    Operation, Transport, TransportArguments, TransportRequest,
+    Transport, TransportArguments, TransportRequest,
 };
 use calimero_context_config::client::Client;
 use clap::Parser;
@@ -37,51 +37,18 @@ mod constants;
 mod credentials;
 mod metrics;
 mod middleware;
-mod mock;
 
 use config::RelayerConfig;
 use constants::{protocols, DEFAULT_ADDR, DEFAULT_RELAYER_URL};
 use metrics::RelayerMetrics;
-use mock::MockRelayer;
 use prometheus_client::registry::Registry;
 
 /// Normalize protocol name to prevent cardinality explosion
 /// Only known protocols are tracked individually, others are aggregated as "other"
 fn normalize_protocol_name(protocol: &str) -> &str {
     match protocol {
-        protocols::near::NAME | protocols::mock_relayer::NAME => protocol,
+        protocols::near::NAME => protocol,
         _ => "other",
-    }
-}
-
-/// Normalize method name to prevent cardinality explosion
-/// Only known methods from handlers.rs are tracked individually, others are aggregated
-fn normalize_method_name<'a>(operation: &'a Operation<'a>) -> &'a str {
-    match operation {
-        Operation::Read { method } => match method.as_ref() {
-            // Known read methods (from handlers.rs)
-            "application"
-            | "application_revision"
-            | "members"
-            | "members_revision"
-            | "has_member"
-            | "privileges"
-            | "get_proxy_contract"
-            | "fetch_nonce"
-            | "proposals"
-            | "proposal"
-            | "get_number_of_active_proposals"
-            | "get_number_of_proposal_approvals"
-            | "get_proposal_approvers"
-            | "get_context_value"
-            | "get_context_storage_entries" => method.as_ref(),
-            _ => "other_read",
-        },
-        Operation::Write { method } => match method.as_ref() {
-            // Known write methods (from handlers.rs)
-            "mutate" | "proxy_mutate" => method.as_ref(),
-            _ => "other_write",
-        },
     }
 }
 
@@ -89,7 +56,6 @@ fn normalize_method_name<'a>(operation: &'a Operation<'a>) -> &'a str {
 #[derive(Clone)]
 struct RelayerService {
     config: RelayerConfig,
-    mock_relayer: Option<MockRelayer>,
     metrics: Option<std::sync::Arc<RelayerMetrics>>,
     registry: Option<std::sync::Arc<Registry>>,
 }
@@ -101,22 +67,8 @@ impl RelayerService {
         metrics: Option<std::sync::Arc<RelayerMetrics>>,
         registry: Option<std::sync::Arc<Registry>>,
     ) -> Self {
-        // Initialize mock relayer if the mock-relayer protocol is enabled
-        let mock_relayer = if config
-            .protocols
-            .get(protocols::mock_relayer::NAME)
-            .map(|p| p.enabled)
-            .unwrap_or(false)
-        {
-            info!("Mock relayer protocol enabled");
-            Some(MockRelayer::new())
-        } else {
-            None
-        };
-
         Self {
             config,
-            mock_relayer,
             metrics,
             registry,
         }
@@ -149,25 +101,6 @@ impl RelayerService {
 
             // Add protocol signer configuration
             let mut signers = BTreeMap::new();
-
-            // Mock relayer doesn't need real credentials but we still need
-            // a local signer entry to keep params and signer config in sync.
-            if protocol_name == protocols::mock_relayer::NAME {
-                drop(signers.insert(
-                    protocol_config.network.clone(),
-                    ClientLocalSigner {
-                        rpc_url: protocol_config.rpc_url.clone(),
-                        credentials: Credentials::Raw(RawCredentials {
-                            account_id: None,
-                            public_key: "mock-relayer-public-key".into(),
-                            secret_key: "mock-relayer-secret-key".into(),
-                        }),
-                    },
-                ));
-
-                drop(protocols.insert(protocol_name.clone(), ClientLocalConfig { signers }));
-                continue;
-            }
 
             // Create credentials only if explicitly provided
             let credentials = if let Some(creds) = protocol_config.credentials.as_ref() {
@@ -228,8 +161,7 @@ impl RelayerService {
         // Create blockchain client from relayer config
         let transports = self.create_client()?;
 
-        // Clone mock relayer and metrics for the async task
-        let mock_relayer = self.mock_relayer.clone();
+        // Clone metrics for the async task
         let metrics = self.metrics.clone();
 
         let handle = async move {
@@ -247,81 +179,6 @@ impl RelayerService {
 
                 if let Some(ref metrics) = metrics {
                     metrics.inc_protocol_requests(protocol_name);
-                }
-
-                // Check if this is a mock-relayer request
-                if request.protocol == protocols::mock_relayer::NAME {
-                    if let Some(ref mock) = mock_relayer {
-                        debug!(
-                            "Handling mock-relayer request for operation: {:?}",
-                            request.operation
-                        );
-
-                        // Normalize method name to prevent cardinality explosion
-                        // Only track known methods from whitelist, aggregate unknown ones
-                        let method_name = normalize_method_name(&request.operation);
-
-                        if let Some(ref metrics) = metrics {
-                            metrics.inc_mock_operations(method_name);
-                        }
-
-                        // Handle mock relayer result similar to regular transport
-                        // Ok(Ok(...)) = operation succeeded
-                        // Ok(Err(...)) = operation failed (protocol supported but operation error)
-                        let res = match mock.handle_request(request).await {
-                            Ok(data) => Ok(Ok(data)),
-                            Err(e) => {
-                                debug!("Mock relayer operation error: {:?}", e);
-                                Ok(Err(eyre::eyre!("Mock relayer error: {e:?}")))
-                            }
-                        };
-
-                        let duration = start.elapsed();
-                        if let Some(ref metrics) = metrics {
-                            let (status, error_type) = match &res {
-                                Ok(Ok(_)) => ("success", None),
-                                Ok(Err(_)) => ("error", Some("mock_relayer_error")),
-                                Err(_) => {
-                                    // This should never happen with current implementation,
-                                    // but handle gracefully instead of panicking
-                                    tracing::error!("Unexpected Err variant from mock relayer");
-                                    ("error", Some("unexpected_error"))
-                                }
-                            };
-
-                            metrics.record_protocol_duration(
-                                protocol_name,
-                                status,
-                                duration.as_secs_f64(),
-                            );
-
-                            if let Some(error_type) = error_type {
-                                metrics.inc_protocol_errors(protocol_name, error_type);
-                            }
-                        }
-
-                        let _ignored = res_tx.send(res);
-                        continue;
-                    } else {
-                        // Mock relayer not enabled
-                        let duration = start.elapsed();
-
-                        if let Some(ref metrics) = metrics {
-                            metrics.record_protocol_duration(
-                                protocol_name,
-                                "error",
-                                duration.as_secs_f64(),
-                            );
-                            metrics.inc_protocol_errors(protocol_name, "unsupported_protocol");
-                        }
-
-                        let res = Err(ServerError::UnsupportedProtocol {
-                            found: protocols::mock_relayer::NAME.into(),
-                            expected: vec![].into(),
-                        });
-                        let _ignored = res_tx.send(res);
-                        continue;
-                    }
                 }
 
                 let args = TransportArguments {
@@ -483,21 +340,6 @@ struct Cli {
     #[arg(short, long, value_name = "PATH")]
     pub config: Option<std::path::PathBuf>,
 
-    /// Enable mock relayer protocol
-    #[arg(long)]
-    pub enable_mock_relayer: bool,
-
-    /// Network for mock relayer (default: "local")
-    #[arg(long, value_name = "NETWORK")]
-    pub mock_relayer_network: Option<String>,
-
-    /// RPC URL for mock relayer (default: "http://localhost:9812")
-    #[arg(long, value_name = "URL")]
-    pub mock_relayer_rpc_url: Option<String>,
-
-    /// Contract ID for mock relayer (default: "mock-context-config")
-    #[arg(long, value_name = "CONTRACT_ID")]
-    pub mock_relayer_contract_id: Option<String>,
 }
 
 #[tokio::main]
@@ -523,36 +365,6 @@ async fn main() -> EyreResult<()> {
     // Override listen address from CLI if provided
     if let Some(listen) = cli.listen {
         config.listen = listen;
-    }
-
-    // Apply mock relayer CLI flags
-    if cli.enable_mock_relayer {
-        let mock_config = config
-            .protocols
-            .entry(protocols::mock_relayer::NAME.to_owned())
-            .or_insert_with(|| config::ProtocolConfig {
-                enabled: true,
-                network: protocols::mock_relayer::DEFAULT_NETWORK.to_owned(),
-                rpc_url: protocols::mock_relayer::DEFAULT_RPC_URL.parse().unwrap(),
-                contract_id: protocols::mock_relayer::DEFAULT_CONTRACT_ID.to_owned(),
-                credentials: None,
-            });
-
-        mock_config.enabled = true;
-
-        if let Some(network) = cli.mock_relayer_network {
-            mock_config.network = network;
-        }
-
-        if let Some(rpc_url) = cli.mock_relayer_rpc_url {
-            mock_config.rpc_url = rpc_url
-                .parse()
-                .map_err(|e| eyre::eyre!("Invalid mock relayer RPC URL: {e}"))?;
-        }
-
-        if let Some(contract_id) = cli.mock_relayer_contract_id {
-            mock_config.contract_id = contract_id;
-        }
     }
 
     // Initialize metrics registry

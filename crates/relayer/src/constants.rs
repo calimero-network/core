@@ -22,13 +22,4 @@ pub mod protocols {
         pub const DEFAULT_CONTRACT_ID: &str = "v0-6.config.calimero-context.testnet";
         // Note: All credentials must be provided via environment variables
     }
-
-    /// Mock Relayer Protocol configuration
-    pub mod mock_relayer {
-        pub const NAME: &str = "mock-relayer";
-        pub const DEFAULT_NETWORK: &str = "local";
-        pub const DEFAULT_RPC_URL: &str = "http://localhost:9812";
-        pub const DEFAULT_CONTRACT_ID: &str = "mock-context-config";
-        // Note: No credentials needed for mock protocol
-    }
 }
