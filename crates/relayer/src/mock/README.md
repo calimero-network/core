@@ -14,7 +14,7 @@ The mock relayer is an in-memory implementation of the Calimero relayer that sim
 
 ## Overview
 
-The mock relayer provides a complete simulation of context configuration and proxy contract operations that would normally occur on blockchains like NEAR, Ethereum, Starknet, or ICP. All state is maintained in-memory using Rust's standard collections (`BTreeMap`, `BTreeSet`).
+The mock relayer provides a complete simulation of context configuration and proxy contract operations that would normally occur on NEAR. All state is maintained in-memory using Rust's standard collections (`BTreeMap`, `BTreeSet`).
 
 ### Key Benefits
 

@@ -536,12 +536,10 @@ End-to-end tests validate real nodes with actual network communication. These te
    - Verifies CRDT consistency
    - Tests event handler execution
 
-2. **`merobox-proposals.yml`** - Tests blockchain integration proposals:
+2. **`e2e-blockchain.yml`** - Tests blockchain integration proposals:
 
    - NEAR protocol proposals
-   - ICP protocol proposals
-   - Ethereum protocol proposals
-   - Validates cross-chain integration scenarios
+   - Validates NEAR integration scenarios
 
 3. **`test-sdk-js.yml`** - Ensures JavaScript SDK compatibility:
    - Builds SDK JS examples
@@ -556,7 +554,7 @@ End-to-end tests validate real nodes with actual network communication. These te
 - ✅ Event handler execution
 - ✅ G-Counter CRDT consistency
 - ✅ Network resilience
-- ✅ Cross-chain integration (NEAR, ICP, Ethereum)
+- ✅ NEAR blockchain integration
 - ✅ JavaScript SDK compatibility
 
 ## Documentation

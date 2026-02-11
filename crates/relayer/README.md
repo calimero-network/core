@@ -1,6 +1,6 @@
 # Calimero Relayer
 
-The `mero-relayer` is a standalone relay server for external client interactions with the Calimero network. It forwards requests to the appropriate blockchain protocols based on its own configuration and operates independently of the main `merod` node.
+The `mero-relayer` is a standalone relay server for external client interactions with the Calimero network. It forwards requests to the configured NEAR transport and operates independently of the main `merod` node.
 
 ## Usage
 
@@ -40,9 +40,6 @@ mero-relayer
 
 **Default Configuration:**
 - **Near Protocol**: ✅ Enabled (requires `NEAR_DEFAULT_SECRET_KEY` environment variable)
-- **Starknet**: ❌ Disabled (enable with `ENABLE_STARKNET=true`)
-- **ICP**: ❌ Disabled (enable with `ENABLE_ICP=true`)
-- **Ethereum**: ❌ Disabled (enable with `ENABLE_ETHEREUM=true`)
 
 **Security Note**: For security reasons, secret keys are **never** hardcoded. Even default configurations require environment variables for credentials.
 
@@ -59,7 +56,7 @@ nano .env  # or your preferred editor
 
 #### 2. Environment Variables (Custom Configuration)
 
-To customize protocols or credentials, use environment variables:
+To customize NEAR network settings or credentials, use environment variables:
 
 ```bash
 # Basic relayer settings
@@ -73,32 +70,6 @@ export NEAR_CONTRACT_ID="v0-6.config.calimero-context.testnet"
 export NEAR_ACCOUNT_ID="<PUT_YOUR_ACCOUNT_ID_HERE>"
 export NEAR_PUBLIC_KEY="<PUT_YOUR_PUBLIC_KEY_HERE>"
 export NEAR_SECRET_KEY="<PUT_YOUR_SECRET_KEY_HERE>"
-
-# Starknet Protocol Configuration
-export ENABLE_STARKNET=true
-export STARKNET_NETWORK="sepolia"
-export STARKNET_RPC_URL="https://free-rpc.nethermind.io/sepolia-juno/"
-export STARKNET_CONTRACT_ID="0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
-export STARKNET_ACCOUNT_ID="<PUT_YOUR_ACCOUNT_ID_HERE>"
-export STARKNET_PUBLIC_KEY="<PUT_YOUR_PUBLIC_KEY_HERE>"
-export STARKNET_SECRET_KEY="<PUT_YOUR_SECRET_KEY_HERE>"
-
-# ICP Protocol Configuration
-export ENABLE_ICP=true
-export ICP_NETWORK="local"
-export ICP_RPC_URL="http://127.0.0.1:4943"
-export ICP_CONTRACT_ID="bkyz2-fmaaa-aaaaa-qaaaq-cai"
-export ICP_ACCOUNT_ID="<PUT_YOUR_ACCOUNT_ID_HERE>"
-export ICP_PUBLIC_KEY="<PUT_YOUR_PUBLIC_KEY_HERE>"
-export ICP_SECRET_KEY="<PUT_YOUR_SECRET_KEY_HERE>"
-
-# Ethereum Protocol Configuration
-export ENABLE_ETHEREUM=true
-export ETHEREUM_NETWORK="sepolia"
-export ETHEREUM_RPC_URL="https://sepolia.drpc.org"
-export ETHEREUM_CONTRACT_ID="0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB"
-export ETHEREUM_ACCOUNT_ID="<PUT_YOUR_ACCOUNT_ID_HERE>"
-export ETHEREUM_SECRET_KEY="<PUT_YOUR_SECRET_KEY_HERE>"
 ```
 
 #### 3. Configuration File
@@ -119,12 +90,6 @@ type = "near"
 account_id = "<PUT_YOUR_ACCOUNT_ID_HERE>"
 public_key = "<PUT_YOUR_PUBLIC_KEY_HERE>"
 secret_key = "<PUT_YOUR_SECRET_KEY_HERE>"
-
-[protocols.starknet]
-network = "sepolia"
-rpc_url = "https://free-rpc.nethermind.io/sepolia-juno/"
-contract_id = "<PUT_CONTRACT_ID_HERE>"
-# ... credentials
 ```
 
 Then run:
@@ -152,32 +117,26 @@ mero-relayer --listen 127.0.0.1:63529
 - `PORT`: Override port (used by `addr_from_str` parser)
 - `RUST_LOG`: Set logging level (e.g., `RUST_LOG=info`)
 
-### Protocol Configuration Pattern
-For each protocol (`NEAR`, `STARKNET`, `ICP`, `ETHEREUM`), use these patterns:
+### NEAR Protocol Configuration
+Use the following variables for NEAR relayer configuration:
 
-**Basic Protocol Settings:**
-- `ENABLE_{PROTOCOL}`: Enable/disable protocol (true/false)
-- `{PROTOCOL}_NETWORK`: Network name (e.g., "testnet", "mainnet", "local")
-- `{PROTOCOL}_RPC_URL`: RPC endpoint URL
-- `{PROTOCOL}_CONTRACT_ID`: Contract address/ID
+**Basic protocol settings:**
+- `ENABLE_NEAR`: Enable/disable NEAR support (true/false)
+- `NEAR_NETWORK`: Network name (for example, `testnet` or `mainnet`)
+- `NEAR_RPC_URL`: RPC endpoint URL
+- `NEAR_CONTRACT_ID`: Contract account ID
 
-**Protocol Credentials:**
-- `{PROTOCOL}_ACCOUNT_ID`: Account address/ID/principal
-- `{PROTOCOL}_PUBLIC_KEY`: Public key (Near, Starknet, ICP only)
-- `{PROTOCOL}_SECRET_KEY`: Private/secret key
+**NEAR credentials:**
+- `NEAR_ACCOUNT_ID`: Account ID
+- `NEAR_PUBLIC_KEY`: Public key
+- `NEAR_SECRET_KEY`: Secret key
 
-**Examples:**
+**Example:**
 ```bash
-# Near
 ENABLE_NEAR=true
 NEAR_ACCOUNT_ID=<PUT_YOUR_ACCOUNT_ID_HERE>
 NEAR_PUBLIC_KEY=<PUT_YOUR_PUBLIC_KEY_HERE>
 NEAR_SECRET_KEY=<PUT_YOUR_SECRET_KEY_HERE>
-
-# Ethereum
-ENABLE_ETHEREUM=true
-ETHEREUM_ACCOUNT_ID=<PUT_YOUR_ACCOUNT_ID_HERE>
-ETHEREUM_SECRET_KEY=<PUT_YOUR_SECRET_KEY_HERE>
 ```
 
 ## API

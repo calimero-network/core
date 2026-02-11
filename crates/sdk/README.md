@@ -643,7 +643,7 @@ cargo test -p my-app --test integration
 E2E tests are automatically run via GitHub Actions workflows on every pull request:
 
 - **`merobox-workflows.yml`** - Runs merobox workflows for all applications to validate functionality
-- **`merobox-proposals.yml`** - Tests blockchain integration proposals (NEAR, ICP, Ethereum)
+- **`e2e-blockchain.yml`** - Tests NEAR blockchain integration proposals
 - **`test-sdk-js.yml`** - Ensures JavaScript SDK compatibility with core changes
 
 **Test Pyramid**:

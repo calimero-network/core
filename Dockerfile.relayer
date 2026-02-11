@@ -67,29 +67,11 @@ ENV RUST_LOG="info"
 
 # Enable/disable blockchain protocols
 ENV ENABLE_NEAR=true
-ENV ENABLE_STARKNET=false
-ENV ENABLE_ICP=false
-ENV ENABLE_ETHEREUM=false
 
 # NEAR configuration
 ENV NEAR_NETWORK="testnet"
 ENV NEAR_RPC_URL="https://rpc.testnet.near.org"
 ENV NEAR_CONTRACT_ID=""
-
-# Starknet configuration  
-ENV STARKNET_NETWORK="sepolia"
-ENV STARKNET_RPC_URL="https://free-rpc.nethermind.io/sepolia-juno/"
-ENV STARKNET_CONTRACT_ID=""
-
-# ICP configuration
-ENV ICP_NETWORK="local"
-ENV ICP_RPC_URL="http://127.0.0.1:4943"
-ENV ICP_CONTRACT_ID=""
-
-# Ethereum configuration
-ENV ETHEREUM_NETWORK="sepolia"
-ENV ETHEREUM_RPC_URL="https://sepolia.drpc.org"
-ENV ETHEREUM_CONTRACT_ID=""
 
 # Default relayer URL for client configuration (can be overridden via environment)
 ENV DEFAULT_RELAYER_URL=""
