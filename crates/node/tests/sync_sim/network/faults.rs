@@ -178,6 +178,15 @@ impl FaultConfig {
         if self.slow_node_factor < 0.0 {
             return Err("slow_node_factor must be non-negative".to_string());
         }
+        // Prevent overflow when converting to microseconds (ms * 1000)
+        // Max safe value is usize::MAX / 1000
+        const MAX_REORDER_WINDOW_MS: u64 = (usize::MAX / 1000) as u64;
+        if self.reorder_window_ms > MAX_REORDER_WINDOW_MS {
+            return Err(format!(
+                "reorder_window_ms must be <= {} to prevent overflow",
+                MAX_REORDER_WINDOW_MS
+            ));
+        }
         Ok(())
     }
 }

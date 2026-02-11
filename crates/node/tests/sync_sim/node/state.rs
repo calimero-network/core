@@ -286,7 +286,16 @@ impl SimNode {
     }
 
     /// Restart the node after crash.
+    ///
+    /// Only has an effect if the node is currently crashed.
+    /// This prevents spurious or duplicate restart events from
+    /// incorrectly incrementing the session on healthy nodes.
     pub fn restart(&mut self) {
+        // Only restart if the node is actually crashed
+        if !self.is_crashed {
+            return;
+        }
+
         // Increment session
         self.session += 1;
         // out_seq already reset in crash()

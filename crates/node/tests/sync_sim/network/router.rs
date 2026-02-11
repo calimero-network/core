@@ -162,9 +162,14 @@ impl NetworkRouter {
         // Apply reorder: add random delay within reorder window
         // This causes messages to potentially arrive out of order
         if self.fault_config.reorder_window_ms > 0 {
-            let reorder_delay_micros = self
-                .rng
-                .gen_range_usize(self.fault_config.reorder_window_ms as usize * 1000);
+            // Use saturating arithmetic to prevent overflow with large reorder_window_ms values
+            let window_micros = (self.fault_config.reorder_window_ms as usize).saturating_mul(1000);
+            // Ensure we have a valid range (at least 1) for gen_range_usize
+            let reorder_delay_micros = if window_micros > 0 {
+                self.rng.gen_range_usize(window_micros)
+            } else {
+                0
+            };
             delivery_delay = delivery_delay + SimDuration::from_micros(reorder_delay_micros as u64);
             self.metrics.messages_reordered += 1;
         }

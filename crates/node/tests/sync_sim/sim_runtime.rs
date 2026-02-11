@@ -370,6 +370,32 @@ impl SimRuntime {
             return false;
         };
 
+        // For TimerFired events, check if the timer is still valid BEFORE advancing time.
+        // This prevents cancelled/rescheduled timers from causing spurious time jumps
+        // that could skip past max_time before convergence is detected.
+        if let SimEvent::TimerFired { ref node, timer_id } = event {
+            let timer_id_typed = crate::sync_sim::types::TimerId::new(timer_id);
+            let is_stale = match self.nodes.get(node) {
+                None => true, // Node doesn't exist
+                Some(sim_node) => {
+                    if sim_node.is_crashed {
+                        true // Crashed nodes don't process timers
+                    } else {
+                        match sim_node.get_timer(timer_id_typed) {
+                            None => true,                                   // Timer was cancelled
+                            Some(entry) if entry.fire_time != time => true, // Stale (rescheduled)
+                            Some(_) => false,                               // Valid timer
+                        }
+                    }
+                }
+            };
+
+            if is_stale {
+                // Don't advance time or count as processed for stale timer events
+                return true;
+            }
+        }
+
         // Advance clock
         self.clock.advance_to(time);
         self.events_processed += 1;
@@ -412,26 +438,12 @@ impl SimRuntime {
             }
 
             SimEvent::TimerFired { node, timer_id } => {
+                // Timer validity was already checked above before advancing time
                 let node_id = node.clone();
                 let timer_id_typed = crate::sync_sim::types::TimerId::new(timer_id);
 
-                let Some(sim_node) = self.nodes.get_mut(&node) else {
-                    return true;
-                };
-
-                // Crashed nodes cannot process timer events
-                if sim_node.is_crashed {
-                    return true;
-                }
-
-                // Check timer still exists and fire_time matches (handles rescheduled timers)
-                // If the timer was rescheduled, the stored fire_time won't match this event's time
-                let timer = sim_node.get_timer(timer_id_typed);
-                match timer {
-                    None => return true,                                   // Timer was cancelled
-                    Some(entry) if entry.fire_time != time => return true, // Stale event from before reschedule
-                    Some(_) => {}                                          // Valid timer fire
-                }
+                // SAFETY: We already verified the node exists and timer is valid above
+                let sim_node = self.nodes.get_mut(&node).unwrap();
 
                 // Remove the fired timer from the node
                 sim_node.cancel_timer(timer_id_typed);
@@ -469,9 +481,16 @@ impl SimRuntime {
 
             SimEvent::PartitionEnd { groups } => {
                 use crate::sync_sim::network::PartitionSpec;
-                self.network.partitions_mut().remove_partitions(|spec| {
-                    matches!(spec, PartitionSpec::Bidirectional { groups: g } if *g == groups)
-                });
+                // Normalize groups for order-independent comparison
+                let normalized_target = Self::normalize_partition_groups(&groups);
+                self.network
+                    .partitions_mut()
+                    .remove_partitions(|spec| match spec {
+                        PartitionSpec::Bidirectional { groups: g } => {
+                            Self::normalize_partition_groups(g) == normalized_target
+                        }
+                        _ => false,
+                    });
             }
         }
 
@@ -489,6 +508,23 @@ impl SimRuntime {
     fn handle_timeout_static(_timer_id: u64) -> SyncActions {
         // Protocol-specific handling will be implemented in later phases
         SyncActions::new()
+    }
+
+    /// Normalize partition groups for order-independent comparison.
+    ///
+    /// Sorts both inner node vectors and outer group vector to ensure
+    /// equivalent partitions compare equal regardless of construction order.
+    fn normalize_partition_groups(groups: &[Vec<NodeId>]) -> Vec<Vec<NodeId>> {
+        let mut normalized: Vec<Vec<NodeId>> = groups
+            .iter()
+            .map(|g| {
+                let mut sorted = g.clone();
+                sorted.sort();
+                sorted
+            })
+            .collect();
+        normalized.sort();
+        normalized
     }
 
     /// Apply actions from a node.

@@ -2,6 +2,8 @@
 //!
 //! See spec §10 - Property-based tests over seeds.
 
+use std::collections::HashSet;
+
 use calimero_primitives::crdt::CrdtType;
 
 use crate::sync_sim::actions::EntityMetadata;
@@ -129,8 +131,18 @@ impl RandomScenario {
                 self.rng.gen_range_usize(range_size + 1) + min
             };
 
-            // Add entities
-            for _ in 0..entity_count {
+            // Track inserted entity IDs to avoid duplicates
+            // This ensures the final entity count respects the configured range
+            let mut inserted_ids: HashSet<EntityId> = HashSet::new();
+
+            // Add entities, skipping duplicates to ensure we reach the target count
+            // Use a maximum attempt count to prevent infinite loops in edge cases
+            let max_attempts = entity_count * 10;
+            let mut attempts = 0;
+
+            while inserted_ids.len() < entity_count && attempts < max_attempts {
+                attempts += 1;
+
                 if self
                     .rng
                     .bool_with_probability(self.config.shared_entity_probability)
@@ -139,14 +151,28 @@ impl RandomScenario {
                     // Use shared entity
                     let idx = self.rng.gen_range_usize(shared_pool.len());
                     let (id, data, metadata) = &shared_pool[idx];
+
+                    // Skip if this entity was already inserted
+                    if inserted_ids.contains(id) {
+                        continue;
+                    }
+
+                    inserted_ids.insert(*id);
                     node.insert_entity_with_metadata(*id, data.clone(), metadata.clone());
                 } else {
-                    // Create unique entity
+                    // Create unique entity (EntityId from random u64 is almost certainly unique)
                     let id = EntityId::from_u64(self.rng.gen_u64());
+
+                    // Skip if this entity was already inserted (extremely unlikely but safe)
+                    if inserted_ids.contains(&id) {
+                        continue;
+                    }
+
                     let data = self.random_data();
                     let crdt_type = self.random_crdt_type();
                     let timestamp = self.rng.gen_u64();
                     let metadata = EntityMetadata::new(crdt_type, timestamp);
+                    inserted_ids.insert(id);
                     node.insert_entity_with_metadata(id, data, metadata);
                 }
             }

@@ -26,7 +26,10 @@ pub fn hash_metadata(metadata: &EntityMetadata) -> [u8; 32] {
         calimero_primitives::crdt::CrdtType::FrozenStorage => hasher.update([8u8]),
         calimero_primitives::crdt::CrdtType::Custom(s) => {
             hasher.update([9u8]);
-            // Include the custom type identifier to differentiate different custom types
+            // Include length delimiter to ensure unambiguous serialization
+            // (prevents different custom_type + hlc_timestamp combinations from hashing identically)
+            let len = s.len() as u64;
+            hasher.update(len.to_le_bytes());
             hasher.update(s.as_bytes());
         }
     };
@@ -294,5 +297,25 @@ mod tests {
 
         // Same custom type should have same hash
         assert_eq!(h1, h3, "Custom('type_a') should match itself");
+    }
+
+    #[test]
+    fn test_metadata_hash_custom_type_length_delimiter() {
+        // Test that different custom type + timestamp combinations don't collide
+        // due to ambiguous serialization (the length delimiter prevents this)
+
+        // Create a scenario where without length delimiter, bytes could align:
+        // Custom("a") followed by timestamp bytes vs Custom("ab") with different timestamp
+        let m1 = EntityMetadata::new(CrdtType::Custom("a".to_string()), 0x6200_0000_0000_0000);
+        let m2 = EntityMetadata::new(CrdtType::Custom("ab".to_string()), 0);
+
+        let h1 = hash_metadata(&m1);
+        let h2 = hash_metadata(&m2);
+
+        // These should produce different hashes due to the length delimiter
+        assert_ne!(
+            h1, h2,
+            "Custom('a') with timestamp and Custom('ab') should differ due to length delimiter"
+        );
     }
 }
