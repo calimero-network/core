@@ -249,8 +249,9 @@ impl SyncManager {
 
         // Check Invariant I5: Snapshot sync should only be used for fresh nodes
         // OR for crash recovery (detected by sync-in-progress marker).
-        // OR when explicitly forced for divergence recovery.
         // This prevents accidental state overwrites on initialized nodes.
+        // NOTE: force=true is reserved for exceptional cases like test fixtures;
+        // divergence recovery must NOT bypass this check (see I5).
         let is_crash_recovery = self.check_sync_in_progress(context_id)?.is_some();
         if !force && !is_crash_recovery {
             // Check both state keys and context metadata to determine initialization.
