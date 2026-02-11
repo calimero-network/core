@@ -380,6 +380,11 @@ impl SimRuntime {
                     return true;
                 };
 
+                // Crashed nodes cannot receive messages
+                if node.is_crashed {
+                    return true;
+                }
+
                 if node.is_duplicate(&msg_id) {
                     return true;
                 }
@@ -401,6 +406,11 @@ impl SimRuntime {
                 let Some(sim_node) = self.nodes.get_mut(&node) else {
                     return true;
                 };
+
+                // Crashed nodes cannot process timer events
+                if sim_node.is_crashed {
+                    return true;
+                }
 
                 // Check timer still exists (might have been cancelled)
                 if sim_node.get_timer(timer_id_typed).is_none() {

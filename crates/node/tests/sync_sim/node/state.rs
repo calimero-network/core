@@ -97,6 +97,8 @@ pub struct SimNode {
     sender_sessions: HashMap<String, u64>,
     /// Whether node has been initialized (ever had state).
     pub has_state: bool,
+    /// Whether node is currently crashed (offline).
+    pub is_crashed: bool,
 }
 
 impl SimNode {
@@ -116,6 +118,7 @@ impl SimNode {
             processed_order: Vec::new(),
             sender_sessions: HashMap::new(),
             has_state: false,
+            is_crashed: false,
         }
     }
 
@@ -279,6 +282,7 @@ impl SimNode {
         self.processed_order.clear();
         self.sender_sessions.clear();
         self.out_seq = 0;
+        self.is_crashed = true;
     }
 
     /// Restart the node after crash.
@@ -287,6 +291,7 @@ impl SimNode {
         self.session += 1;
         // out_seq already reset in crash()
         // State machine already Idle from crash()
+        self.is_crashed = false;
     }
 
     /// Insert entity directly (for test setup).
