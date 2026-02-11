@@ -11,16 +11,17 @@ use super::hash_comparison::TreeLeafData;
 // =============================================================================
 
 /// Default false positive rate for Bloom filters.
-pub const DEFAULT_BLOOM_FP_RATE: f32 = 0.01; // 1%
+/// Uses f64 for consistency with wire protocol (SyncProtocol::BloomFilter).
+pub const DEFAULT_BLOOM_FP_RATE: f64 = 0.01; // 1%
 
 /// Minimum bits per element for reasonable FP rate.
 const MIN_BITS_PER_ELEMENT: usize = 8;
 
 /// Minimum allowed false positive rate (prevents ln(0) = -inf).
-const MIN_FP_RATE: f32 = 0.0001;
+const MIN_FP_RATE: f64 = 0.0001;
 
 /// Maximum allowed false positive rate (above this a bloom filter is pointless).
-const MAX_FP_RATE: f32 = 0.5;
+const MAX_FP_RATE: f64 = 0.5;
 
 /// Minimum number of bits (prevents division by zero and ensures some utility).
 const MIN_NUM_BITS: usize = 64;
@@ -74,7 +75,7 @@ impl DeltaIdBloomFilter {
     /// - Values <= 0 would cause `ln()` to produce `-inf` or `NaN`
     /// - Values >= 0.5 make the bloom filter nearly useless
     #[must_use]
-    pub fn new(expected_items: usize, fp_rate: f32) -> Self {
+    pub fn new(expected_items: usize, fp_rate: f64) -> Self {
         // Clamp fp_rate to valid range to prevent mathematical errors
         // ln(0) = -inf, ln(negative) = NaN
         let fp_rate = fp_rate.clamp(MIN_FP_RATE, MAX_FP_RATE);
@@ -82,15 +83,17 @@ impl DeltaIdBloomFilter {
         // Calculate optimal number of bits: m = -n * ln(p) / (ln(2)^2)
         let ln2_sq = std::f64::consts::LN_2 * std::f64::consts::LN_2;
         let num_bits = if expected_items == 0 {
+            // Use minimum size with reasonable defaults for empty filter
+            // 64 bits with 4 hashes gives ~6% FP rate for 1 item
             MIN_NUM_BITS
         } else {
-            let m = -(expected_items as f64) * (fp_rate as f64).ln() / ln2_sq;
+            let m = -(expected_items as f64) * fp_rate.ln() / ln2_sq;
             (m.ceil() as usize).max(expected_items * MIN_BITS_PER_ELEMENT)
         };
 
         // Calculate optimal number of hashes: k = (m/n) * ln(2)
         let num_hashes = if expected_items == 0 {
-            4
+            4 // Reasonable default for empty/small filters
         } else {
             let k = (num_bits as f64 / expected_items as f64) * std::f64::consts::LN_2;
             (k.ceil() as u8).clamp(MIN_NUM_HASHES, MAX_NUM_HASHES)
@@ -140,36 +143,43 @@ impl DeltaIdBloomFilter {
         hash
     }
 
-    /// Compute hash positions using double hashing technique.
+    /// Compute the two base hashes for double hashing.
     ///
-    /// Uses stack-allocated buffer for h2 computation to avoid heap allocation.
-    /// Returns empty Vec if filter is invalid (num_bits=0) to prevent panic.
-    fn compute_positions(&self, id: &[u8; 32]) -> Vec<usize> {
-        // Guard against division by zero from malicious deserialization
-        if self.num_bits == 0 {
-            return Vec::new();
-        }
-
+    /// Returns (h1, h2) where positions are computed as: h1 + i * h2 (mod num_bits)
+    /// Uses stack-allocated buffer for h2 to avoid heap allocation.
+    #[inline]
+    fn compute_hashes(id: &[u8; 32]) -> (u64, u64) {
         let h1 = Self::hash_fnv1a(id);
 
-        // Use stack-allocated buffer instead of Vec::concat() for h2
+        // Use stack-allocated buffer for h2 computation
         let mut buf = [0u8; 33];
         buf[..32].copy_from_slice(id);
         buf[32] = 0xFF;
         let h2 = Self::hash_fnv1a(&buf);
 
-        (0..self.num_hashes as u64)
-            .map(|i| {
-                let combined = h1.wrapping_add(i.wrapping_mul(h2));
-                (combined as usize) % self.num_bits
-            })
-            .collect()
+        (h1, h2)
+    }
+
+    /// Compute a single hash position using double hashing.
+    #[inline]
+    fn position_at(&self, h1: u64, h2: u64, i: u64) -> usize {
+        let combined = h1.wrapping_add(i.wrapping_mul(h2));
+        (combined as usize) % self.num_bits
     }
 
     /// Insert an ID into the filter.
+    ///
+    /// Computes hash positions inline to avoid Vec allocation.
     pub fn insert(&mut self, id: &[u8; 32]) {
-        let positions = self.compute_positions(id);
-        for pos in positions {
+        // Guard against invalid filter state
+        if self.num_bits == 0 || self.num_hashes == 0 {
+            return;
+        }
+
+        let (h1, h2) = Self::compute_hashes(id);
+
+        for i in 0..self.num_hashes as u64 {
+            let pos = self.position_at(h1, h2, i);
             let byte_idx = pos / 8;
             let bit_idx = pos % 8;
             self.bits[byte_idx] |= 1 << bit_idx;
@@ -181,16 +191,19 @@ impl DeltaIdBloomFilter {
     ///
     /// Returns `true` if the ID is possibly in the set (may be false positive).
     /// Returns `false` if the ID is definitely not in the set.
+    ///
+    /// Computes hash positions inline to avoid Vec allocation.
     #[must_use]
     pub fn contains(&self, id: &[u8; 32]) -> bool {
-        let positions = self.compute_positions(id);
-
-        // Invalid filter (no positions) should return false, not true
-        if positions.is_empty() {
+        // Invalid filter should return false
+        if self.num_bits == 0 || self.num_hashes == 0 {
             return false;
         }
 
-        for pos in positions {
+        let (h1, h2) = Self::compute_hashes(id);
+
+        for i in 0..self.num_hashes as u64 {
+            let pos = self.position_at(h1, h2, i);
             let byte_idx = pos / 8;
             let bit_idx = pos % 8;
             if self.bits[byte_idx] & (1 << bit_idx) == 0 {
@@ -265,13 +278,14 @@ pub struct BloomFilterRequest {
     pub filter: DeltaIdBloomFilter,
 
     /// False positive rate used to build the filter.
-    pub false_positive_rate: f32,
+    /// Uses f64 for consistency with wire protocol.
+    pub false_positive_rate: f64,
 }
 
 impl BloomFilterRequest {
     /// Create a new Bloom filter request.
     #[must_use]
-    pub fn new(filter: DeltaIdBloomFilter, false_positive_rate: f32) -> Self {
+    pub fn new(filter: DeltaIdBloomFilter, false_positive_rate: f64) -> Self {
         Self {
             filter,
             false_positive_rate,
@@ -280,7 +294,7 @@ impl BloomFilterRequest {
 
     /// Create a request by building a filter from entity IDs.
     #[must_use]
-    pub fn from_ids(ids: &[[u8; 32]], fp_rate: f32) -> Self {
+    pub fn from_ids(ids: &[[u8; 32]], fp_rate: f64) -> Self {
         let mut filter = DeltaIdBloomFilter::new(ids.len(), fp_rate);
         for id in ids {
             filter.insert(id);
@@ -562,13 +576,13 @@ mod tests {
     fn test_bloom_filter_fp_rate_edge_cases() {
         // Test various edge case fp_rates
         let test_cases = [
-            (f32::NEG_INFINITY, "negative infinity"),
-            (f32::INFINITY, "positive infinity"),
-            (f32::NAN, "NaN"),
-            (-1.0, "negative one"),
-            (0.0, "zero"),
-            (1.0, "one"),
-            (2.0, "greater than one"),
+            (f64::NEG_INFINITY, "negative infinity"),
+            (f64::INFINITY, "positive infinity"),
+            (f64::NAN, "NaN"),
+            (-1.0_f64, "negative one"),
+            (0.0_f64, "zero"),
+            (1.0_f64, "one"),
+            (2.0_f64, "greater than one"),
         ];
 
         for (fp_rate, description) in test_cases {
@@ -583,16 +597,36 @@ mod tests {
     }
 
     #[test]
-    fn test_bloom_filter_compute_positions_deterministic() {
-        // Verify that compute_positions returns consistent results
-        let filter = DeltaIdBloomFilter::new(100, 0.01);
+    fn test_bloom_filter_hashing_deterministic() {
+        // Verify that hash computation is deterministic
         let id = [0xAB; 32];
 
-        let positions1 = filter.compute_positions(&id);
-        let positions2 = filter.compute_positions(&id);
+        let (h1_a, h2_a) = DeltaIdBloomFilter::compute_hashes(&id);
+        let (h1_b, h2_b) = DeltaIdBloomFilter::compute_hashes(&id);
 
-        assert_eq!(positions1, positions2);
-        assert_eq!(positions1.len(), filter.hash_count() as usize);
+        assert_eq!(h1_a, h1_b);
+        assert_eq!(h2_a, h2_b);
+
+        // Different IDs should produce different hashes
+        let other_id = [0xCD; 32];
+        let (h1_other, h2_other) = DeltaIdBloomFilter::compute_hashes(&other_id);
+        assert_ne!(h1_a, h1_other);
+    }
+
+    #[test]
+    fn test_bloom_filter_insert_contains_deterministic() {
+        // Verify that insert/contains are deterministic across filter instances
+        let mut filter1 = DeltaIdBloomFilter::new(100, 0.01);
+        let mut filter2 = DeltaIdBloomFilter::new(100, 0.01);
+
+        let id = [0xAB; 32];
+        filter1.insert(&id);
+        filter2.insert(&id);
+
+        // Both filters should have the same bits set
+        assert_eq!(filter1.bits(), filter2.bits());
+        assert!(filter1.contains(&id));
+        assert!(filter2.contains(&id));
     }
 
     #[test]
