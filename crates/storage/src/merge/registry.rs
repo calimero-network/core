@@ -132,6 +132,9 @@ impl MergeRegistry {
     ///
     /// This is more efficient than `try_merge` because it looks up
     /// directly by type name instead of trying all registered functions.
+    ///
+    /// Type names are normalized by extracting the simple name (removing module path),
+    /// so both `my_app::MyState` and `MyState` will match a registered `MyState` type.
     pub fn try_merge_by_type_name(
         &self,
         type_name: &str,
@@ -140,15 +143,22 @@ impl MergeRegistry {
         existing_ts: u64,
         incoming_ts: u64,
     ) -> Option<Result<Vec<u8>, Box<dyn std::error::Error>>> {
+        // Normalize the type name by extracting the simple name (same as during registration)
+        let simple_name = type_name.rsplit("::").next().unwrap_or(type_name);
         self.by_type_name
-            .get(type_name)
+            .get(simple_name)
             .map(|merge_fn| merge_fn(existing, incoming, existing_ts, incoming_ts))
     }
 
     /// Check if a type name is registered.
+    ///
+    /// Type names are normalized by extracting the simple name (removing module path),
+    /// so both `my_app::MyState` and `MyState` will match a registered `MyState` type.
     #[must_use]
     pub fn contains_type_name(&self, type_name: &str) -> bool {
-        self.by_type_name.contains_key(type_name)
+        // Normalize the type name by extracting the simple name (same as during registration)
+        let simple_name = type_name.rsplit("::").next().unwrap_or(type_name);
+        self.by_type_name.contains_key(simple_name)
     }
 
     /// Clear all registrations.
@@ -315,6 +325,9 @@ pub fn try_merge_registered(
 ///
 /// This is more efficient than `try_merge_registered` because it looks up
 /// directly by type name instead of trying all registered functions.
+///
+/// Type names are normalized by extracting the simple name (removing module path),
+/// so both `my_app::MyState` and `MyState` will match a registered `MyState` type.
 pub fn try_merge_by_type_name(
     type_name: &str,
     existing: &[u8],
@@ -324,10 +337,14 @@ pub fn try_merge_by_type_name(
 ) -> Option<Result<Vec<u8>, Box<dyn std::error::Error>>> {
     let name_registry = NAME_REGISTRY.read().ok()?;
 
-    if let Some(merge_fn) = name_registry.get(type_name) {
+    // Normalize the type name by extracting the simple name (same as during registration)
+    let simple_name = type_name.rsplit("::").next().unwrap_or(type_name);
+
+    if let Some(merge_fn) = name_registry.get(simple_name) {
         tracing::debug!(
             target: "storage::merge",
             type_name,
+            simple_name,
             "Found registered merge function by type name"
         );
         return Some(merge_fn(existing, incoming, existing_ts, incoming_ts));
@@ -336,6 +353,7 @@ pub fn try_merge_by_type_name(
     tracing::debug!(
         target: "storage::merge",
         type_name,
+        simple_name,
         "No registered merge function for type name"
     );
 
