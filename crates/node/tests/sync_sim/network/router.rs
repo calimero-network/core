@@ -143,8 +143,8 @@ impl NetworkRouter {
         effect_metrics: &mut EffectMetrics,
     ) {
         self.metrics.messages_sent += 1;
-        // Estimate message size (stack size; heap allocations not fully captured)
-        let msg_size = std::mem::size_of_val(&msg.msg) as u64;
+        // Estimate message size including heap-allocated payload data
+        let msg_size = msg.msg.wire_size() as u64;
         self.metrics.bytes_sent += msg_size;
 
         // Check for partition at send time
@@ -168,6 +168,9 @@ impl NetworkRouter {
 
         // Apply reorder: add random delay within reorder window
         // This causes messages to potentially arrive out of order
+        // Note: We do not count this as a "reordered" message here because
+        // actual reordering depends on relative delivery times with other messages.
+        // A message with reorder delay can still arrive in original order.
         if self.fault_config.reorder_window_ms > 0 {
             // Use saturating arithmetic to prevent overflow with large reorder_window_ms values
             let reorder_window_micros =
@@ -179,8 +182,6 @@ impl NetworkRouter {
                 0
             };
             delivery_delay = delivery_delay + SimDuration::from_micros(reorder_delay_micros as u64);
-            self.metrics.messages_reordered += 1;
-            effect_metrics.record_reorder();
         }
 
         let delivery_time = now + delivery_delay;
@@ -374,9 +375,10 @@ mod tests {
             router.route_message(now, msg, &NodeId::new("alice"), &mut queue, &mut effects);
         }
 
-        // Reorder metric should be counted
-        assert_eq!(router.metrics.messages_reordered, 10);
-        assert_eq!(effects.messages_reordered, 10);
+        // Reorder metric is not counted at send time because we cannot detect
+        // actual reordering until delivery (it depends on relative timing).
+        assert_eq!(router.metrics.messages_reordered, 0);
+        assert_eq!(effects.messages_reordered, 0);
 
         // Collect delivery times
         let mut delivery_times = Vec::new();

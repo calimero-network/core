@@ -203,6 +203,55 @@ pub enum SyncMessage {
     SyncError { code: u32, message: String },
 }
 
+impl SyncMessage {
+    /// Estimate the wire size of this message in bytes.
+    ///
+    /// This accounts for heap-allocated data (Vec, String) to provide
+    /// a more accurate estimate of network payload size than `size_of_val`.
+    pub fn wire_size(&self) -> usize {
+        // Base discriminant overhead (1 byte for enum tag in typical serialization)
+        let base = 1;
+
+        match self {
+            SyncMessage::Handshake(req) => base + req.wire_size(),
+            SyncMessage::HandshakeResponse(resp) => base + resp.wire_size(),
+            SyncMessage::SnapshotRequest { page: _ } => base + 4,
+            SyncMessage::SnapshotPage {
+                page: _,
+                entities,
+                has_more: _,
+                total_pages: _,
+            } => base + 4 + entities.iter().map(|e| e.wire_size()).sum::<usize>() + 1 + 4,
+            SyncMessage::SnapshotComplete { success: _, error } => {
+                base + 1 + error.as_ref().map_or(0, |s| s.len())
+            }
+            SyncMessage::HashCompareRequest {
+                node_hash: _,
+                level: _,
+            } => base + 32 + 4,
+            SyncMessage::HashCompareResponse {
+                node_hash: _,
+                children,
+                has_more: _,
+            } => {
+                // Each child is (hash: 32 bytes, is_leaf: 1 byte)
+                base + 32 + children.len() * 33 + 1
+            }
+            SyncMessage::EntityRequest { ids } => base + ids.len() * 16,
+            SyncMessage::EntityResponse { entities } => {
+                base + entities.iter().map(|e| e.wire_size()).sum::<usize>()
+            }
+            SyncMessage::DeltaHeads { heads } => base + heads.len() * 32,
+            SyncMessage::DeltaRequest { ids } => base + ids.len() * 32,
+            SyncMessage::DeltaResponse { deltas } => {
+                base + deltas.iter().map(|d| d.wire_size()).sum::<usize>()
+            }
+            SyncMessage::SyncComplete { success: _ } => base + 1,
+            SyncMessage::SyncError { code: _, message } => base + 4 + message.len(),
+        }
+    }
+}
+
 /// Handshake request (initiator → responder).
 #[derive(Debug, Clone)]
 pub struct HandshakeRequest {
@@ -220,6 +269,13 @@ pub struct HandshakeRequest {
     pub has_state: bool,
 }
 
+impl HandshakeRequest {
+    /// Estimate wire size in bytes.
+    pub fn wire_size(&self) -> usize {
+        4 + 32 + 8 + 4 + (self.dag_heads.len() * 32) + 1
+    }
+}
+
 /// Handshake response (responder → initiator).
 #[derive(Debug, Clone)]
 pub struct HandshakeResponse {
@@ -231,6 +287,14 @@ pub struct HandshakeResponse {
     pub entity_count: u64,
     /// Reason for protocol selection (for debugging).
     pub reason: String,
+}
+
+impl HandshakeResponse {
+    /// Estimate wire size in bytes.
+    pub fn wire_size(&self) -> usize {
+        // Protocol enum ~16 bytes max, root_hash 32, entity_count 8, reason string
+        16 + 32 + 8 + self.reason.len()
+    }
 }
 
 /// Selected sync protocol.
@@ -263,6 +327,14 @@ pub struct EntityTransfer {
     pub metadata: EntityMetadata,
 }
 
+impl EntityTransfer {
+    /// Estimate wire size in bytes.
+    pub fn wire_size(&self) -> usize {
+        // EntityId is 16 bytes, data is Vec<u8>, metadata is ~48 bytes
+        16 + self.data.len() + 48
+    }
+}
+
 /// Delta data for transfer.
 #[derive(Debug, Clone)]
 pub struct DeltaTransfer {
@@ -274,6 +346,44 @@ pub struct DeltaTransfer {
     pub operations: Vec<StorageOp>,
     /// HLC timestamp.
     pub hlc_timestamp: u64,
+}
+
+impl DeltaTransfer {
+    /// Estimate wire size in bytes.
+    pub fn wire_size(&self) -> usize {
+        // DeltaId is 32 bytes, parents are 32 bytes each, hlc_timestamp is 8 bytes
+        32 + (self.parents.len() * 32)
+            + self
+                .operations
+                .iter()
+                .map(|op| op.wire_size())
+                .sum::<usize>()
+            + 8
+    }
+}
+
+impl StorageOp {
+    /// Estimate wire size in bytes.
+    pub fn wire_size(&self) -> usize {
+        // Tag byte + content
+        let base = 1;
+        match self {
+            StorageOp::Insert {
+                id: _,
+                data,
+                metadata: _,
+            }
+            | StorageOp::Update {
+                id: _,
+                data,
+                metadata: _,
+            } => {
+                // EntityId 16 + data + metadata ~48
+                base + 16 + data.len() + 48
+            }
+            StorageOp::Remove { id: _ } => base + 16,
+        }
+    }
 }
 
 #[cfg(test)]

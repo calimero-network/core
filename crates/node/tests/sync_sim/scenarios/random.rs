@@ -172,6 +172,17 @@ impl RandomScenario {
                 }
             }
 
+            // Verify that we reached the requested entity count
+            assert!(
+                inserted_ids.len() == entity_count,
+                "RandomScenario: failed to generate {} entities for node {} (got {} after {} attempts). \
+                 Consider reducing shared_entity_probability or entity_count.",
+                entity_count,
+                i,
+                inserted_ids.len(),
+                attempts
+            );
+
             nodes.push(node);
         }
 
