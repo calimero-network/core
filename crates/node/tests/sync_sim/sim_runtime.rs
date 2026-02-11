@@ -292,7 +292,14 @@ impl SimRuntime {
                 return StopCondition::MaxEvents;
             }
 
-            // Check convergence
+            // If there are events pending, process them before checking convergence.
+            // This ensures scheduled events are executed before declaring convergence.
+            if !self.queue.is_empty() {
+                self.step();
+                continue;
+            }
+
+            // Queue is empty - now check convergence
             if self.check_convergence().is_converged() {
                 self.metrics.convergence.mark_converged(
                     self.clock.now(),
@@ -302,18 +309,14 @@ impl SimRuntime {
                 return StopCondition::Converged;
             }
 
-            // Check deadlock
-            if self.queue.is_empty() {
-                if self.is_deadlocked() {
-                    self.metrics.convergence.mark_failed("deadlock".to_string());
-                    return StopCondition::Deadlock;
-                }
-                // Nothing to do but not converged/deadlocked - shouldn't happen
-                return StopCondition::Manual;
+            // Check deadlock (queue empty but not converged)
+            if self.is_deadlocked() {
+                self.metrics.convergence.mark_failed("deadlock".to_string());
+                return StopCondition::Deadlock;
             }
 
-            // Process next event
-            self.step();
+            // Nothing to do but not converged/deadlocked - shouldn't happen
+            return StopCondition::Manual;
         }
     }
 
