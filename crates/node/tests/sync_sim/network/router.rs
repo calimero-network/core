@@ -152,7 +152,18 @@ impl NetworkRouter {
         // Calculate delivery time with latency and jitter
         let base_latency = SimDuration::from_millis(self.fault_config.base_latency_ms);
         let jitter = SimDuration::from_millis(self.fault_config.latency_jitter_ms);
-        let delivery_delay = self.rng.duration_with_jitter(base_latency, jitter);
+        let mut delivery_delay = self.rng.duration_with_jitter(base_latency, jitter);
+
+        // Apply reorder: add random delay within reorder window
+        // This causes messages to potentially arrive out of order
+        if self.fault_config.reorder_window_ms > 0 {
+            let reorder_delay_micros = self
+                .rng
+                .gen_range_usize(self.fault_config.reorder_window_ms as usize * 1000);
+            delivery_delay = delivery_delay + SimDuration::from_micros(reorder_delay_micros as u64);
+            self.metrics.messages_reordered += 1;
+        }
+
         let delivery_time = now + delivery_delay;
 
         // Create the delivery event
@@ -310,5 +321,47 @@ mod tests {
         // Should be within base ± jitter
         assert!(delay.as_millis() >= 90);
         assert!(delay.as_millis() <= 110);
+    }
+
+    #[test]
+    fn test_router_reorder() {
+        let mut router = NetworkRouter::with_faults(
+            42,
+            FaultConfig {
+                base_latency_ms: 10,
+                latency_jitter_ms: 0,
+                reorder_window_ms: 50, // 50ms reorder window
+                ..Default::default()
+            },
+        );
+        let mut queue = EventQueue::new();
+        let now = SimTime::ZERO;
+
+        // Send multiple messages
+        for seq in 0..10 {
+            let msg = OutgoingMessage {
+                to: NodeId::new("bob"),
+                msg: SyncMessage::SyncComplete { success: true },
+                msg_id: MessageId::new("alice", 1, seq),
+            };
+            router.route_message(now, msg, &NodeId::new("alice"), &mut queue);
+        }
+
+        // Reorder metric should be counted
+        assert_eq!(router.metrics.messages_reordered, 10);
+
+        // Collect delivery times
+        let mut delivery_times = Vec::new();
+        while let Some((time, _, _)) = queue.pop() {
+            delivery_times.push(time);
+        }
+
+        // With reorder, delay should be base + random(0..reorder_window)
+        // So delays should be between 10ms and 60ms
+        for time in &delivery_times {
+            let delay_ms = time.as_millis();
+            assert!(delay_ms >= 10, "delay {} should be >= 10", delay_ms);
+            assert!(delay_ms <= 60, "delay {} should be <= 60", delay_ms);
+        }
     }
 }
