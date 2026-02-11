@@ -92,7 +92,7 @@ pub enum SyncProtocol {
         /// **Note**: Validation of bounds is performed when constructing the actual
         /// bloom filter, not at protocol negotiation time. Invalid values will cause
         /// filter construction to fail gracefully.
-        false_positive_rate: f64,
+        false_positive_rate: f32,
     },
 
     /// Subtree prefetch for deep localized changes.

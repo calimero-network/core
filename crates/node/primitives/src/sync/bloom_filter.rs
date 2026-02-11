@@ -207,6 +207,24 @@ impl DeltaIdBloomFilter {
     pub fn bits(&self) -> &[u8] {
         &self.bits
     }
+
+    /// Check if the filter is structurally valid.
+    ///
+    /// Call this after deserializing from untrusted sources to prevent
+    /// index-out-of-bounds panics. Validates that `bits.len()` is consistent
+    /// with `num_bits`.
+    ///
+    /// # Security
+    /// A malicious peer could craft a filter with `num_bits` exceeding
+    /// `bits.len() * 8`, which would cause `contains()` and `insert()` to
+    /// panic with an index-out-of-bounds error.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        // The bits vector must have enough bytes to hold num_bits
+        // Required bytes = (num_bits + 7) / 8
+        let required_bytes = (self.num_bits + 7) / 8;
+        self.bits.len() >= required_bytes
+    }
 }
 
 // =============================================================================
@@ -244,6 +262,15 @@ impl BloomFilterRequest {
             filter.insert(id);
         }
         Self::new(filter, fp_rate)
+    }
+
+    /// Check if the request is structurally valid.
+    ///
+    /// Call this after deserializing from untrusted sources to prevent
+    /// denial-of-service attacks via malformed bloom filters.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.filter.is_valid()
     }
 }
 
@@ -551,5 +578,79 @@ mod tests {
 
         assert_eq!(positions1, positions2);
         assert_eq!(positions1.len(), filter.hash_count() as usize);
+    }
+
+    #[test]
+    fn test_bloom_filter_is_valid_well_formed() {
+        // A properly constructed filter should be valid
+        let filter = DeltaIdBloomFilter::new(100, 0.01);
+        assert!(filter.is_valid());
+
+        let filter = DeltaIdBloomFilter::with_params(1024, 7);
+        assert!(filter.is_valid());
+    }
+
+    #[test]
+    fn test_bloom_filter_is_valid_after_roundtrip() {
+        // Filter should remain valid after serialization/deserialization
+        let mut filter = DeltaIdBloomFilter::new(50, 0.01);
+        filter.insert(&[1u8; 32]);
+        filter.insert(&[2u8; 32]);
+
+        let encoded = borsh::to_vec(&filter).expect("serialize");
+        let decoded: DeltaIdBloomFilter = borsh::from_slice(&encoded).expect("deserialize");
+
+        assert!(decoded.is_valid());
+    }
+
+    #[test]
+    fn test_bloom_filter_is_valid_malformed_num_bits_too_large() {
+        // Simulate a malicious filter with num_bits exceeding bits.len() * 8
+        // This would cause index-out-of-bounds if not validated
+        let mut filter = DeltaIdBloomFilter::new(10, 0.01);
+
+        // Serialize, tamper with num_bits, deserialize
+        let mut encoded = borsh::to_vec(&filter).expect("serialize");
+
+        // The serialization format is: bits (Vec<u8>), num_bits (usize), num_hashes (u8), item_count (usize)
+        // Vec<u8> is serialized as length (u32) + bytes
+        // We need to find and modify num_bits
+        // For simplicity, create a filter directly via unsafe memory manipulation pattern:
+        // Create a minimal filter and manually construct invalid one via serialization
+
+        // Let's create a filter with explicit small bits but large num_bits via borsh
+        // We'll craft the bytes manually:
+        // - bits: Vec<u8> with 1 byte -> len(4 bytes, little endian) + data(1 byte) = [1, 0, 0, 0, 0]
+        // - num_bits: usize with 1_000_000 -> [64, 66, 15, 0, 0, 0, 0, 0] (8 bytes little endian)
+        // - num_hashes: u8 = 4 -> [4]
+        // - item_count: usize = 0 -> [0, 0, 0, 0, 0, 0, 0, 0]
+
+        let malicious_bytes: Vec<u8> = vec![
+            // bits: Vec<u8> with length 1, data [0]
+            1, 0, 0, 0, // length = 1
+            0, // bits[0] = 0
+            // num_bits: 1_000_000 (little endian u64)
+            64, 66, 15, 0, 0, 0, 0, 0, // num_bits = 1_000_000
+            // num_hashes: 4
+            4, // item_count: 0 (little endian u64)
+            0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+
+        let malformed: DeltaIdBloomFilter =
+            borsh::from_slice(&malicious_bytes).expect("deserialize malicious filter");
+
+        // The filter should be detected as invalid
+        assert!(
+            !malformed.is_valid(),
+            "malformed filter should be detected as invalid"
+        );
+    }
+
+    #[test]
+    fn test_bloom_filter_request_is_valid() {
+        let ids = [[1u8; 32], [2u8; 32]];
+        let request = BloomFilterRequest::from_ids(&ids, 0.01);
+
+        assert!(request.is_valid());
     }
 }
