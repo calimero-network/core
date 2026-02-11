@@ -749,8 +749,9 @@ impl SyncManager {
 
                     // Note: request_snapshot_sync opens its own stream, existing stream
                     // will be closed when this function returns
+                    // force=false: This is bootstrap for uninitialized nodes
                     match self
-                        .request_snapshot_sync(context_id, chosen_peer)
+                        .request_snapshot_sync(context_id, chosen_peer, false)
                         .await
                         .wrap_err("snapshot sync")
                     {
@@ -1403,7 +1404,13 @@ impl SyncManager {
         self.node_state
             .start_sync_session(context_id, sync_start_hlc);
 
-        let result = self.request_snapshot_sync(context_id, peer_id).await?;
+        // force=false: Enforce Invariant I5 - only allow snapshot on fresh nodes.
+        // If the node has state, this will fail, which is correct - divergence
+        // or pruned history on initialized nodes cannot be safely resolved via
+        // snapshot overwrite. CRDT merge must be used instead.
+        let result = self
+            .request_snapshot_sync(context_id, peer_id, false)
+            .await?;
         info!(%context_id, records = result.applied_records, "Snapshot sync completed");
 
         // End buffering and get any deltas that arrived during sync
