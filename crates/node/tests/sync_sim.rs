@@ -125,6 +125,12 @@ mod tests {
         let a = rt.add_node("alice");
         let b = rt.add_node("bob");
 
+        // Before any messages, system should be converged (empty state)
+        assert!(
+            rt.check_convergence().is_converged(),
+            "Empty system should be converged"
+        );
+
         // Inject message with longer delay
         rt.inject_message(
             a,
@@ -133,11 +139,23 @@ mod tests {
             SimDuration::from_millis(100),
         );
 
-        // Network router counts in-flight messages
-        // However, inject_message routes through the network which may drop or delay
-        // The convergence check uses network.in_flight_count()
-        // For a more reliable test, we should check if the queue has events pending
-        assert!(!rt.check_convergence().is_converged() || rt.events_processed() == 0);
+        // With a message in flight, system should NOT be converged (C1 violated)
+        assert!(
+            !rt.check_convergence().is_converged(),
+            "System with in-flight message should not be converged"
+        );
+        assert_eq!(
+            rt.network().in_flight_count(),
+            1,
+            "Should have 1 message in flight"
+        );
+
+        // After processing the message, system should be converged again
+        rt.step();
+        assert!(
+            rt.check_convergence().is_converged(),
+            "System should be converged after message delivered"
+        );
     }
 
     // =========================================================================
