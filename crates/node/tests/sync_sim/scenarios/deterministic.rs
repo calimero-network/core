@@ -33,7 +33,8 @@ pub fn generate_deep_tree_entities(
             let mut key = [0u8; 32];
             // Spread across tree levels
             for d in 0..depth {
-                key[d as usize] = ((i / (count / (1 << d).max(1))) % 256) as u8;
+                // Guard against division by zero when count < 2^d
+                key[d as usize] = ((i / (count / (1 << d)).max(1)) % 256) as u8;
             }
             key[24..32].copy_from_slice(&(seed + i as u64).to_le_bytes());
 
@@ -387,5 +388,20 @@ mod tests {
                 assert_ne!(hashes[i], hashes[j]);
             }
         }
+    }
+
+    #[test]
+    fn test_deep_tree_small_count_no_panic() {
+        // Regression test: ensure no division by zero when count < 2^depth
+        // Previously this would panic with "attempt to divide by zero"
+        let entities = generate_deep_tree_entities(3, 10, 1); // 3 entities, depth 10 (2^10 = 1024 > 3)
+        assert_eq!(entities.len(), 3);
+
+        // Also test edge cases
+        let entities = generate_deep_tree_entities(1, 5, 1);
+        assert_eq!(entities.len(), 1);
+
+        let entities = generate_deep_tree_entities(0, 5, 1);
+        assert_eq!(entities.len(), 0);
     }
 }
