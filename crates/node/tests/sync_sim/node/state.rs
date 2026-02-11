@@ -2,7 +2,7 @@
 //!
 //! Wraps storage, DAG, and sync state machine.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use calimero_primitives::crdt::CrdtType;
 
@@ -88,6 +88,10 @@ pub struct SimNode {
     next_timer_id: u64,
     /// Processed message IDs (for deduplication).
     processed_messages: HashSet<MessageId>,
+    /// Last seen session per sender (for stale message detection).
+    sender_sessions: HashMap<String, u64>,
+    /// Maximum size of processed_messages before eviction.
+    max_processed_messages: usize,
     /// Whether node has been initialized (ever had state).
     pub has_state: bool,
 }
@@ -106,6 +110,8 @@ impl SimNode {
             timers: Vec::new(),
             next_timer_id: 0,
             processed_messages: HashSet::new(),
+            sender_sessions: HashMap::new(),
+            max_processed_messages: 10000,
             has_state: false,
         }
     }
@@ -131,17 +137,42 @@ impl SimNode {
 
     /// Check if message was already processed.
     pub fn is_duplicate(&self, msg_id: &MessageId) -> bool {
-        // Stale session
-        if msg_id.session < self.session {
-            return true;
+        // Check if message is from a stale session of the sender
+        if let Some(&known_session) = self.sender_sessions.get(&msg_id.sender) {
+            if msg_id.session < known_session {
+                return true;
+            }
         }
         self.processed_messages.contains(msg_id)
     }
 
     /// Mark message as processed.
     pub fn mark_processed(&mut self, msg_id: MessageId) {
+        // Update the sender's known session
+        let sender_session = self
+            .sender_sessions
+            .entry(msg_id.sender.clone())
+            .or_insert(0);
+        if msg_id.session > *sender_session {
+            *sender_session = msg_id.session;
+        }
+
+        // Evict oldest entries if we're at capacity
+        if self.processed_messages.len() >= self.max_processed_messages {
+            // Simple eviction: clear half the entries
+            // In a real implementation, we'd use LRU, but for simulation this is sufficient
+            let to_remove: Vec<_> = self
+                .processed_messages
+                .iter()
+                .take(self.max_processed_messages / 2)
+                .cloned()
+                .collect();
+            for id in to_remove {
+                self.processed_messages.remove(&id);
+            }
+        }
+
         self.processed_messages.insert(msg_id);
-        // TODO: Add LRU eviction to prevent unbounded growth
     }
 
     /// Get state digest.
@@ -237,6 +268,7 @@ impl SimNode {
         self.sync_state = SyncState::Idle;
         self.delta_buffer.clear();
         self.processed_messages.clear();
+        self.sender_sessions.clear();
         self.out_seq = 0;
     }
 
@@ -316,10 +348,13 @@ mod tests {
         node.mark_processed(msg_id.clone());
         assert!(node.is_duplicate(&msg_id));
 
-        // Stale session
-        let old_msg = MessageId::new("bob", 0, 0);
-        node.session = 1;
-        assert!(node.is_duplicate(&old_msg)); // Old session
+        // Stale sender session - message from sender's old session
+        // First, process a message from bob's session 1
+        let new_msg = MessageId::new("bob", 1, 0);
+        node.mark_processed(new_msg);
+        // Now a message from bob's session 0 should be stale
+        let old_msg = MessageId::new("bob", 0, 5);
+        assert!(node.is_duplicate(&old_msg)); // Sender's old session
     }
 
     #[test]

@@ -292,8 +292,8 @@ impl SimRuntime {
                 return StopCondition::MaxEvents;
             }
 
-            // Check convergence
-            if self.check_convergence().is_converged() {
+            // Check convergence - only if queue is empty (no pending events)
+            if self.queue.is_empty() && self.check_convergence().is_converged() {
                 self.metrics.convergence.mark_converged(
                     self.clock.now(),
                     self.messages_sent,
@@ -397,12 +397,15 @@ impl SimRuntime {
                     return true;
                 };
 
+                let timer_id_typed = crate::sync_sim::types::TimerId::new(timer_id);
+
                 // Check timer still exists (might have been cancelled)
-                let Some(_timer) =
-                    sim_node.get_timer(crate::sync_sim::types::TimerId::new(timer_id))
-                else {
+                let Some(_timer) = sim_node.get_timer(timer_id_typed) else {
                     return true;
                 };
+
+                // Remove the timer after it fires (one-shot behavior)
+                sim_node.cancel_timer(timer_id_typed);
 
                 // Process timeout
                 let actions = Self::handle_timeout_static(timer_id);
@@ -531,6 +534,9 @@ impl SimRuntime {
                 msg_id,
             },
         );
+
+        // Track for convergence accounting
+        self.network.increment_in_flight();
     }
 
     /// Crash a node after delay.

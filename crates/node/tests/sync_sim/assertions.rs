@@ -34,6 +34,8 @@ pub fn majority_digest(nodes: &mut [SimNode]) -> Option<StateDigest> {
 }
 
 /// Compute divergence percentage between two nodes.
+///
+/// Considers entities as matching only if they have the same ID, data, and metadata.
 pub fn divergence_percentage(a: &SimNode, b: &SimNode) -> f64 {
     let a_count = a.entity_count();
     let b_count = b.entity_count();
@@ -42,20 +44,22 @@ pub fn divergence_percentage(a: &SimNode, b: &SimNode) -> f64 {
         return 0.0;
     }
 
-    // Count shared entities
-    let mut shared = 0;
-    for entity in a.storage.iter() {
-        if b.storage.get(&entity.id).is_some() {
-            shared += 1;
+    // Count entities that are identical (same ID, data, and metadata)
+    let mut identical = 0;
+    for entity_a in a.storage.iter() {
+        if let Some(entity_b) = b.storage.get(&entity_a.id) {
+            if entity_a.data == entity_b.data && entity_a.metadata == entity_b.metadata {
+                identical += 1;
+            }
         }
     }
 
-    let total = a_count + b_count - shared;
+    let total = a_count + b_count - identical;
     if total == 0 {
         return 0.0;
     }
 
-    let different = total - shared;
+    let different = total - identical;
     different as f64 / total as f64
 }
 

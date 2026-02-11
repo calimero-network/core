@@ -33,7 +33,9 @@ pub fn generate_deep_tree_entities(
             let mut key = [0u8; 32];
             // Spread across tree levels
             for d in 0..depth {
-                key[d as usize] = ((i / (count / (1 << d).max(1))) % 256) as u8;
+                // Ensure divisor is at least 1 to prevent divide by zero
+                let divisor = (count / (1_usize << d).max(1)).max(1);
+                key[d as usize] = ((i / divisor) % 256) as u8;
             }
             key[24..32].copy_from_slice(&(seed + i as u64).to_le_bytes());
 

@@ -124,6 +124,11 @@ impl NetworkRouter {
         self.in_flight_count
     }
 
+    /// Increment in-flight count (for injected messages).
+    pub fn increment_in_flight(&mut self) {
+        self.in_flight_count += 1;
+    }
+
     /// Route a message, potentially applying faults.
     ///
     /// Returns events to schedule (may be empty if message lost, or multiple if duplicated).
@@ -152,7 +157,19 @@ impl NetworkRouter {
         // Calculate delivery time with latency and jitter
         let base_latency = SimDuration::from_millis(self.fault_config.base_latency_ms);
         let jitter = SimDuration::from_millis(self.fault_config.latency_jitter_ms);
-        let delivery_delay = self.rng.duration_with_jitter(base_latency, jitter);
+        let mut delivery_delay = self.rng.duration_with_jitter(base_latency, jitter);
+
+        // Apply reorder window: add random offset within the window
+        if self.fault_config.reorder_window_ms > 0 {
+            let reorder_offset = self
+                .rng
+                .gen_range_u64(self.fault_config.reorder_window_ms + 1);
+            delivery_delay = delivery_delay + SimDuration::from_millis(reorder_offset);
+            if reorder_offset > 0 {
+                self.metrics.messages_reordered += 1;
+            }
+        }
+
         let delivery_time = now + delivery_delay;
 
         // Create the delivery event

@@ -174,10 +174,14 @@ pub fn check_convergence(input: &ConvergenceInput) -> ConvergenceResult {
         *digest_counts.entry(node.digest).or_default() += 1;
     }
 
-    // Find majority
+    // Find majority with deterministic tie-break (by digest bytes)
     let majority_digest = digest_counts
         .iter()
-        .max_by_key(|(_, count)| *count)
+        .max_by(|(digest_a, count_a), (digest_b, count_b)| {
+            count_a
+                .cmp(count_b)
+                .then_with(|| digest_a.0.cmp(&digest_b.0))
+        })
         .map(|(digest, _)| *digest);
 
     // Find differing nodes

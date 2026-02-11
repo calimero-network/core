@@ -44,8 +44,14 @@ impl RandomScenarioConfig {
     }
 
     /// Builder: set entity count range.
+    ///
+    /// If min > max, the values are swapped.
     pub fn with_entity_count(mut self, min: usize, max: usize) -> Self {
-        self.entity_count_range = (min, max);
+        if min > max {
+            self.entity_count_range = (max, min);
+        } else {
+            self.entity_count_range = (min, max);
+        }
         self
     }
 
@@ -117,10 +123,21 @@ impl RandomScenario {
                 continue;
             }
 
-            // Determine entity count
-            let entity_count = self.rng.gen_range_usize(
-                self.config.entity_count_range.1 - self.config.entity_count_range.0,
-            ) + self.config.entity_count_range.0;
+            // Determine entity count (guard against inverted range)
+            let (min_count, max_count) =
+                if self.config.entity_count_range.0 <= self.config.entity_count_range.1 {
+                    self.config.entity_count_range
+                } else {
+                    (
+                        self.config.entity_count_range.1,
+                        self.config.entity_count_range.0,
+                    )
+                };
+            let entity_count = if max_count == min_count {
+                min_count
+            } else {
+                self.rng.gen_range_usize(max_count - min_count) + min_count
+            };
 
             // Add entities
             for _ in 0..entity_count {
