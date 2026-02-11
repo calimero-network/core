@@ -70,6 +70,7 @@
 //! - **Metrics collection**: Protocol cost, work done, effects
 
 pub mod actions;
+#[macro_use]
 pub mod assertions;
 pub mod convergence;
 pub mod digest;
@@ -107,11 +108,8 @@ pub mod prelude {
     pub use super::sim_runtime::{SimConfig, SimRuntime, StopCondition};
     pub use super::types::{DeltaId, EntityId, MessageId, NodeId, StateDigest, TimerId, TimerKind};
 
-    // Re-export macros
-    pub use crate::{
-        assert_buffer_empty, assert_converged, assert_entity_count, assert_has_entity, assert_idle,
-        assert_no_entity, assert_not_converged,
-    };
+    // Note: assertion macros (assert_converged!, assert_entity_count!, etc.) are available
+    // via `#[macro_use]` on the assertions module and don't need explicit re-export.
 }
 
 // Re-export for external use

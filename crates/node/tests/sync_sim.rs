@@ -27,6 +27,7 @@
 //! }
 //! ```
 
+#[macro_use]
 #[path = "sync_sim/mod.rs"]
 pub mod sync_sim;
 

@@ -70,7 +70,9 @@ pub fn divergence_percentage(a: &SimNode, b: &SimNode) -> f64 {
 }
 
 /// Assert that nodes have converged.
-#[macro_export]
+///
+/// Note: `macro_rules!` macros in a module are automatically available
+/// to sibling modules without `#[macro_export]` when accessed via the parent.
 macro_rules! assert_converged {
     ($($node:expr),+ $(,)?) => {{
         let nodes: &mut [&mut $crate::sync_sim::node::SimNode] = &mut [$(&mut $node),+];
@@ -90,7 +92,6 @@ macro_rules! assert_converged {
 }
 
 /// Assert that nodes have NOT converged.
-#[macro_export]
 macro_rules! assert_not_converged {
     ($($node:expr),+ $(,)?) => {{
         let nodes: &mut [&mut $crate::sync_sim::node::SimNode] = &mut [$(&mut $node),+];
@@ -103,7 +104,6 @@ macro_rules! assert_not_converged {
 }
 
 /// Assert that a node has specific entity count.
-#[macro_export]
 macro_rules! assert_entity_count {
     ($node:expr, $count:expr) => {{
         let actual = $node.entity_count();
@@ -120,7 +120,6 @@ macro_rules! assert_entity_count {
 }
 
 /// Assert that a node has an entity.
-#[macro_export]
 macro_rules! assert_has_entity {
     ($node:expr, $id:expr) => {{
         if !$node.has_entity(&$id) {
@@ -130,7 +129,6 @@ macro_rules! assert_has_entity {
 }
 
 /// Assert that a node does not have an entity.
-#[macro_export]
 macro_rules! assert_no_entity {
     ($node:expr, $id:expr) => {{
         if $node.has_entity(&$id) {
@@ -140,7 +138,6 @@ macro_rules! assert_no_entity {
 }
 
 /// Assert that a node is in idle sync state.
-#[macro_export]
 macro_rules! assert_idle {
     ($node:expr) => {{
         if !$node.sync_state.is_idle() {
@@ -154,7 +151,6 @@ macro_rules! assert_idle {
 }
 
 /// Assert that a node has empty delta buffer.
-#[macro_export]
 macro_rules! assert_buffer_empty {
     ($node:expr) => {{
         if !$node.delta_buffer.is_empty() {
