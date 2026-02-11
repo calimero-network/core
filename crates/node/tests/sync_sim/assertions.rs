@@ -50,11 +50,8 @@ pub fn divergence_percentage(a: &SimNode, b: &SimNode) -> f64 {
     let mut shared = 0;
     for entity_a in a.storage.iter() {
         if let Some(entity_b) = b.storage.get(&entity_a.id) {
-            // Only count as shared if content matches
-            if entity_a.data == entity_b.data
-                && entity_a.metadata.crdt_type == entity_b.metadata.crdt_type
-                && entity_a.metadata.hlc_timestamp == entity_b.metadata.hlc_timestamp
-            {
+            // Only count as shared if data and all metadata fields match
+            if entity_a.data == entity_b.data && entity_a.metadata == entity_b.metadata {
                 shared += 1;
             }
         }
