@@ -27,6 +27,8 @@ pub fn hash_metadata(metadata: &EntityMetadata) -> [u8; 32] {
         calimero_primitives::crdt::CrdtType::Custom(s) => {
             hasher.update([9u8]);
             // Include the custom type identifier to differentiate different custom types
+            // Encode length first to prevent ambiguous serialization (e.g., "ab" + timestamp vs "a" + different timestamp)
+            hasher.update((s.len() as u64).to_le_bytes());
             hasher.update(s.as_bytes());
         }
     };
