@@ -126,8 +126,8 @@ impl SimRuntime {
     /// Create with configuration.
     pub fn with_config(config: SimConfig) -> Self {
         // Note: drain_inbox_per_tick is not yet implemented.
-        // Assert in debug builds to catch unintended usage.
-        debug_assert!(
+        // Assert to prevent unintended usage that would silently use different semantics.
+        assert!(
             !config.drain_inbox_per_tick,
             "drain_inbox_per_tick is not yet implemented; messages are processed one at a time"
         );
@@ -339,26 +339,36 @@ impl SimRuntime {
                 continue;
             }
 
-            // Queue is empty - now check convergence
-            if self.check_convergence().is_converged() {
-                self.metrics.convergence.mark_converged(
-                    self.clock.now(),
-                    self.messages_sent,
-                    self.events_processed,
-                );
-                return StopCondition::Converged;
-            }
+            // Queue is empty - determine final state
+            return self.handle_empty_queue();
+        }
+    }
 
-            // Check deadlock (queue empty but not converged)
-            if self.is_deadlocked() {
-                self.metrics.convergence.mark_failed("deadlock".to_string());
-                return StopCondition::Deadlock;
-            }
+    /// Handle empty queue state - determine if converged, deadlocked, or diverged.
+    fn handle_empty_queue(&mut self) -> StopCondition {
+        let convergence = self.check_convergence();
 
-            // Queue empty, not converged, not deadlocked - system is diverged
+        if convergence.is_converged() {
+            self.metrics.convergence.mark_converged(
+                self.clock.now(),
+                self.messages_sent,
+                self.events_processed,
+            );
+            return StopCondition::Converged;
+        }
+
+        if self.is_deadlocked() {
+            self.metrics.convergence.mark_failed("deadlock".to_string());
+            return StopCondition::Deadlock;
+        }
+
+        if convergence.is_diverged() {
             self.metrics.convergence.mark_failed("diverged".to_string());
             return StopCondition::Diverged;
         }
+
+        // Queue empty but state is indeterminate (shouldn't normally happen)
+        StopCondition::Manual
     }
 
     /// Run until convergence or timeout.
@@ -386,12 +396,8 @@ impl SimRuntime {
             }
 
             if self.queue.is_empty() {
-                // Queue empty - check if system is diverged
-                if self.check_convergence().is_diverged() {
-                    self.metrics.convergence.mark_failed("diverged".to_string());
-                    return StopCondition::Diverged;
-                }
-                return StopCondition::Manual;
+                // Queue empty - determine final state
+                return self.handle_empty_queue();
             }
 
             // Check if the next event would exceed max_time before processing it.
@@ -453,6 +459,8 @@ impl SimRuntime {
             } => {
                 // Check partition at delivery time
                 if !self.network.should_deliver(&from, &to, time) {
+                    // Record the partition drop in effect metrics
+                    self.metrics.effects.record_drop();
                     return true;
                 }
 
@@ -614,13 +622,21 @@ impl SimRuntime {
         // Route messages
         for msg in actions.messages {
             self.messages_sent += 1;
-            self.metrics.protocol.record_message(0); // TODO: actual size
+            // Compute size once for both protocol and network metrics
+            let msg_size = msg.msg.estimated_size();
+            self.metrics.protocol.record_message(msg_size);
 
             // Clone node_id before borrow
             let from = node_id.clone();
             let now = self.clock.now();
-            self.network
-                .route_message(now, msg, &from, &mut self.queue, &mut self.metrics.effects);
+            self.network.route_message(
+                now,
+                msg,
+                msg_size,
+                &from,
+                &mut self.queue,
+                &mut self.metrics.effects,
+            );
         }
     }
 
@@ -659,6 +675,32 @@ impl SimRuntime {
 
         // Track in-flight message for convergence checking
         self.network.increment_in_flight();
+        Some(())
+    }
+
+    /// Send a message through the network router (with fault injection).
+    ///
+    /// Unlike `inject_message`, this method routes through the normal network path,
+    /// applying any configured faults (loss, latency, reorder, duplicate).
+    ///
+    /// Returns None if the sender node doesn't exist.
+    pub fn send_message(&mut self, from: NodeId, to: NodeId, msg: SyncMessage) -> Option<()> {
+        let msg_id = {
+            let node = self.nodes.get_mut(&from)?;
+            node.next_message_id()
+        };
+
+        let outgoing = crate::sync_sim::actions::OutgoingMessage { to, msg, msg_id };
+        let msg_size = outgoing.msg.estimated_size();
+        let now = self.clock.now();
+        self.network.route_message(
+            now,
+            outgoing,
+            msg_size,
+            &from,
+            &mut self.queue,
+            &mut self.metrics.effects,
+        );
         Some(())
     }
 

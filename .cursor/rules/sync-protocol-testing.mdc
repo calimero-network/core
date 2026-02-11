@@ -1,0 +1,65 @@
+# Sync Protocol Testing Requirements
+
+## Scope
+
+This rule applies when working on sync protocol issues #1768 through #1785.
+
+## Mandatory Simulation Tests
+
+When implementing any sync protocol issue, you MUST:
+
+1. **Write simulation tests** using the sync_sim framework
+2. **Place tests in the correct location:**
+   - Protocol behavior tests → `crates/node/tests/sync_scenarios/`
+   - Compliance tests (issue #1785) → `crates/node/tests/sync_compliance/`
+3. **Read the agent guide first:** `crates/node/tests/sync_sim/AGENT_GUIDE.md`
+
+## Test Requirements
+
+Each sync protocol change MUST have tests that verify:
+
+1. **Happy path**: Normal operation converges correctly
+2. **Fault tolerance**: Behavior under message loss, latency, reorder
+3. **Partition tolerance**: Behavior during and after network partitions
+4. **Edge cases**: Empty state, single node, maximum load
+
+## Example Test Structure
+
+```rust
+#[test]
+fn test_issue_NNNN_feature_name() {
+    let mut rt = SimRuntime::with_seed(42);
+    
+    // Setup scenario relevant to the issue
+    let scenario = Scenario::...;
+    rt.apply_scenario(scenario);
+    
+    // Trigger the specific behavior being tested
+    // ...
+    
+    // Run simulation
+    rt.run();
+    
+    // Assert expected outcomes
+    assert_converged!(rt);
+}
+```
+
+## PR Checklist
+
+Before submitting a PR for sync protocol issues:
+
+- [ ] Simulation tests added in `sync_scenarios/` or `sync_compliance/`
+- [ ] Tests cover happy path and at least one fault scenario
+- [ ] Tests are deterministic (use fixed seeds)
+- [ ] All existing simulation tests pass (`cargo test --test sync_sim`)
+- [ ] Referenced CIP section in test comments
+
+## Framework Documentation
+
+Full framework documentation: `crates/node/tests/sync_sim/AGENT_GUIDE.md`
+
+Key imports:
+```rust
+use crate::sync_sim::prelude::*;
+```

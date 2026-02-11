@@ -14,6 +14,8 @@ pub fn hash_metadata(metadata: &EntityMetadata) -> [u8; 32] {
     let mut hasher = Sha256::new();
 
     // CrdtType discriminant
+    // IMPORTANT: These discriminant values must remain stable for digest compatibility.
+    // Changing them will cause different digests for the same data across versions.
     match &metadata.crdt_type {
         calimero_primitives::crdt::CrdtType::LwwRegister => hasher.update([0u8]),
         calimero_primitives::crdt::CrdtType::GCounter => hasher.update([1u8]),
