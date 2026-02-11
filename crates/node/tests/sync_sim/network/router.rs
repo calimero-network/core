@@ -5,6 +5,7 @@
 use super::faults::FaultConfig;
 use super::partition::PartitionManager;
 use crate::sync_sim::actions::{OutgoingMessage, SyncMessage};
+use crate::sync_sim::metrics::EffectMetrics;
 use crate::sync_sim::runtime::{EventQueue, SimDuration, SimRng, SimTime};
 use crate::sync_sim::types::{MessageId, NodeId};
 
@@ -132,14 +133,19 @@ impl NetworkRouter {
     /// Route a message, potentially applying faults.
     ///
     /// Returns events to schedule (may be empty if message lost, or multiple if duplicated).
+    /// Also updates the provided `effect_metrics` to reflect any network faults applied.
     pub fn route_message(
         &mut self,
         now: SimTime,
         msg: OutgoingMessage,
         from: &NodeId,
         queue: &mut EventQueue<SimEvent>,
+        effect_metrics: &mut EffectMetrics,
     ) {
         self.metrics.messages_sent += 1;
+        // Estimate message size (stack size; heap allocations not fully captured)
+        let msg_size = std::mem::size_of_val(&msg.msg) as u64;
+        self.metrics.bytes_sent += msg_size;
 
         // Check for partition at send time
         // Note: We also check at delivery time (spec §12.2)
@@ -151,6 +157,7 @@ impl NetworkRouter {
             .bool_with_probability(self.fault_config.message_loss_rate)
         {
             self.metrics.messages_dropped_loss += 1;
+            effect_metrics.record_drop();
             return;
         }
 
@@ -173,6 +180,7 @@ impl NetworkRouter {
             };
             delivery_delay = delivery_delay + SimDuration::from_micros(reorder_delay_micros as u64);
             self.metrics.messages_reordered += 1;
+            effect_metrics.record_reorder();
         }
 
         let delivery_time = now + delivery_delay;
@@ -195,6 +203,7 @@ impl NetworkRouter {
             .bool_with_probability(self.fault_config.duplicate_rate)
         {
             self.metrics.messages_duplicated += 1;
+            effect_metrics.record_duplicate();
 
             // Schedule duplicate with additional delay
             let dup_delay = self.rng.duration_with_jitter(base_latency, jitter);
@@ -241,6 +250,7 @@ mod tests {
     fn test_router_basic_delivery() {
         let mut router = NetworkRouter::new(42);
         let mut queue = EventQueue::new();
+        let mut effects = EffectMetrics::default();
         let now = SimTime::ZERO;
 
         let msg = OutgoingMessage {
@@ -249,7 +259,7 @@ mod tests {
             msg_id: MessageId::new("alice", 1, 1),
         };
 
-        router.route_message(now, msg, &NodeId::new("alice"), &mut queue);
+        router.route_message(now, msg, &NodeId::new("alice"), &mut queue, &mut effects);
 
         assert_eq!(router.metrics.messages_sent, 1);
         assert!(!queue.is_empty());
@@ -265,6 +275,7 @@ mod tests {
             },
         );
         let mut queue = EventQueue::new();
+        let mut effects = EffectMetrics::default();
         let now = SimTime::ZERO;
 
         let msg = OutgoingMessage {
@@ -273,10 +284,11 @@ mod tests {
             msg_id: MessageId::new("alice", 1, 1),
         };
 
-        router.route_message(now, msg, &NodeId::new("alice"), &mut queue);
+        router.route_message(now, msg, &NodeId::new("alice"), &mut queue, &mut effects);
 
         assert_eq!(router.metrics.messages_sent, 1);
         assert_eq!(router.metrics.messages_dropped_loss, 1);
+        assert_eq!(effects.messages_dropped, 1);
         assert!(queue.is_empty()); // Message was lost
     }
 
@@ -290,6 +302,7 @@ mod tests {
             },
         );
         let mut queue = EventQueue::new();
+        let mut effects = EffectMetrics::default();
         let now = SimTime::ZERO;
 
         let msg = OutgoingMessage {
@@ -298,10 +311,11 @@ mod tests {
             msg_id: MessageId::new("alice", 1, 1),
         };
 
-        router.route_message(now, msg, &NodeId::new("alice"), &mut queue);
+        router.route_message(now, msg, &NodeId::new("alice"), &mut queue, &mut effects);
 
         assert_eq!(router.metrics.messages_sent, 1);
         assert_eq!(router.metrics.messages_duplicated, 1);
+        assert_eq!(effects.messages_duplicated, 1);
         assert_eq!(queue.len(), 2); // Original + duplicate
     }
 
@@ -316,6 +330,7 @@ mod tests {
             },
         );
         let mut queue = EventQueue::new();
+        let mut effects = EffectMetrics::default();
         let now = SimTime::from_millis(1000);
 
         let msg = OutgoingMessage {
@@ -324,7 +339,7 @@ mod tests {
             msg_id: MessageId::new("alice", 1, 1),
         };
 
-        router.route_message(now, msg, &NodeId::new("alice"), &mut queue);
+        router.route_message(now, msg, &NodeId::new("alice"), &mut queue, &mut effects);
 
         let (delivery_time, _, _) = queue.pop().unwrap();
         let delay = delivery_time - now;
@@ -346,6 +361,7 @@ mod tests {
             },
         );
         let mut queue = EventQueue::new();
+        let mut effects = EffectMetrics::default();
         let now = SimTime::ZERO;
 
         // Send multiple messages
@@ -355,11 +371,12 @@ mod tests {
                 msg: SyncMessage::SyncComplete { success: true },
                 msg_id: MessageId::new("alice", 1, seq),
             };
-            router.route_message(now, msg, &NodeId::new("alice"), &mut queue);
+            router.route_message(now, msg, &NodeId::new("alice"), &mut queue, &mut effects);
         }
 
         // Reorder metric should be counted
         assert_eq!(router.metrics.messages_reordered, 10);
+        assert_eq!(effects.messages_reordered, 10);
 
         // Collect delivery times
         let mut delivery_times = Vec::new();
