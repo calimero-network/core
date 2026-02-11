@@ -370,6 +370,24 @@ impl SimRuntime {
             return false;
         };
 
+        // For timer events, check if timer is still valid BEFORE advancing clock.
+        // Cancelled or rescheduled timers should not advance simulation time.
+        if let SimEvent::TimerFired { node, timer_id } = &event {
+            let timer_id_typed = crate::sync_sim::types::TimerId::new(*timer_id);
+            if let Some(sim_node) = self.nodes.get(node) {
+                // Skip if node is crashed
+                if sim_node.is_crashed {
+                    return true;
+                }
+                // Skip if timer was cancelled or rescheduled
+                match sim_node.get_timer(timer_id_typed) {
+                    None => return true,                                   // Timer was cancelled
+                    Some(entry) if entry.fire_time != time => return true, // Stale event from reschedule
+                    Some(_) => {}                                          // Valid timer, proceed
+                }
+            }
+        }
+
         // Advance clock
         self.clock.advance_to(time);
         self.events_processed += 1;
@@ -452,8 +470,11 @@ impl SimRuntime {
 
             SimEvent::NodeRestart { node } => {
                 if let Some(n) = self.nodes.get_mut(&node) {
-                    n.restart();
-                    self.metrics.effects.record_restart();
+                    // Only restart if node is actually crashed to avoid spurious session increments
+                    if n.is_crashed {
+                        n.restart();
+                        self.metrics.effects.record_restart();
+                    }
                 }
             }
 
@@ -469,8 +490,23 @@ impl SimRuntime {
 
             SimEvent::PartitionEnd { groups } => {
                 use crate::sync_sim::network::PartitionSpec;
+                // Normalize groups for comparison (sort each group and sort groups by first element)
+                // This ensures partition matching is independent of group/node ordering
+                let normalize = |groups: &Vec<Vec<NodeId>>| -> Vec<Vec<NodeId>> {
+                    let mut normalized: Vec<Vec<NodeId>> = groups
+                        .iter()
+                        .map(|g| {
+                            let mut sorted = g.clone();
+                            sorted.sort();
+                            sorted
+                        })
+                        .collect();
+                    normalized.sort_by(|a, b| a.first().cmp(&b.first()));
+                    normalized
+                };
+                let target = normalize(&groups);
                 self.network.partitions_mut().remove_partitions(|spec| {
-                    matches!(spec, PartitionSpec::Bidirectional { groups: g } if *g == groups)
+                    matches!(spec, PartitionSpec::Bidirectional { groups: g } if normalize(g) == target)
                 });
             }
         }
