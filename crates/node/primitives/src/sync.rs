@@ -8,6 +8,7 @@
 //! - **HashComparison**: Merkle tree traversal sync ([`hash_comparison`])
 //! - **BloomFilter**: Bloom filter-based sync for large trees ([`bloom_filter`])
 //! - **Snapshot**: Full state transfer for fresh nodes ([`snapshot`])
+//! - **SubtreePrefetch**: Subtree prefetch for deep trees with clustered changes ([`subtree`])
 //!
 //! # Module Organization
 //!
@@ -20,7 +21,8 @@
 //! ├── delta.rs           # DeltaSyncRequest, DeltaPayload, etc.
 //! ├── hash_comparison.rs # TreeNode, TreeNodeRequest, compare_tree_nodes()
 //! ├── bloom_filter.rs    # DeltaIdBloomFilter, BloomFilterRequest, etc.
-//! └── snapshot.rs        # SnapshotPage, BroadcastMessage, StreamMessage, etc.
+//! ├── snapshot.rs        # SnapshotPage, BroadcastMessage, StreamMessage, etc.
+//! └── subtree.rs         # SubtreePrefetchRequest, SubtreeData, etc.
 //! ```
 
 #![expect(single_use_lifetimes, reason = "borsh shenanigans")]
@@ -35,6 +37,7 @@ pub mod handshake;
 pub mod hash_comparison;
 pub mod protocol;
 pub mod snapshot;
+pub mod subtree;
 
 // =============================================================================
 // Re-exports
@@ -74,4 +77,11 @@ pub use snapshot::{
     BroadcastMessage, InitPayload, MessagePayload, SnapshotBoundaryRequest,
     SnapshotBoundaryResponse, SnapshotCursor, SnapshotError, SnapshotPage, SnapshotStreamRequest,
     StreamMessage,
+};
+
+// Subtree prefetch types
+pub use subtree::{
+    should_use_subtree_prefetch, SubtreeData, SubtreePrefetchRequest, SubtreePrefetchResponse,
+    DEEP_TREE_THRESHOLD, DEFAULT_SUBTREE_MAX_DEPTH, MAX_CLUSTERED_SUBTREES, MAX_DIVERGENCE_RATIO,
+    MAX_ENTITIES_PER_SUBTREE, MAX_SUBTREES_PER_REQUEST, MAX_SUBTREE_DEPTH, MAX_TOTAL_ENTITIES,
 };
