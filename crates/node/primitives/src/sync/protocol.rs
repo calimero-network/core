@@ -5,6 +5,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use super::handshake::{SyncCapabilities, SyncHandshake};
+use super::levelwise::should_use_levelwise;
 
 // =============================================================================
 // Protocol Kind (Discriminant-only)
@@ -258,17 +259,20 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
     }
 
     // Rule 6: Wide shallow tree (depth 1-2 with many children per level)
-    // Skip depth=0 (no hierarchy) - LevelWise requires actual tree structure
-    if remote.max_depth >= 1 && remote.max_depth <= 2 {
-        let avg_children_per_level = remote.entity_count / u64::from(remote.max_depth);
-        if avg_children_per_level > 10 {
-            return ProtocolSelection {
-                protocol: SyncProtocol::LevelWise {
-                    max_depth: remote.max_depth,
-                },
-                reason: "wide shallow tree, using level-wise sync",
-            };
-        }
+    // Delegate to the canonical heuristic in levelwise module
+    let max_depth_usize = remote.max_depth as usize;
+    let avg_children_per_level = if remote.max_depth > 0 {
+        (remote.entity_count / u64::from(remote.max_depth)) as usize
+    } else {
+        0
+    };
+    if should_use_levelwise(max_depth_usize, avg_children_per_level) {
+        return ProtocolSelection {
+            protocol: SyncProtocol::LevelWise {
+                max_depth: remote.max_depth,
+            },
+            reason: "wide shallow tree, using level-wise sync",
+        };
     }
 
     // Rule 7: Default fallback
