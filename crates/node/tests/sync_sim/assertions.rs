@@ -19,6 +19,9 @@ pub fn all_converged(nodes: &mut [SimNode]) -> bool {
 }
 
 /// Get the majority digest from nodes.
+///
+/// Uses deterministic tiebreaker (lexicographic digest ordering) to match
+/// the implementation in convergence.rs.
 pub fn majority_digest(nodes: &mut [SimNode]) -> Option<StateDigest> {
     use std::collections::HashMap;
 
@@ -28,9 +31,14 @@ pub fn majority_digest(nodes: &mut [SimNode]) -> Option<StateDigest> {
     }
 
     counts
-        .into_iter()
-        .max_by_key(|(_, count)| *count)
-        .map(|(digest, _)| digest)
+        .iter()
+        .max_by(|(d1, c1), (d2, c2)| {
+            c1.cmp(c2).then_with(|| {
+                // On count tie, use lexicographic ordering of digest bytes for determinism
+                d1.0.cmp(&d2.0)
+            })
+        })
+        .map(|(digest, _)| *digest)
 }
 
 /// Compute divergence percentage between two nodes.
