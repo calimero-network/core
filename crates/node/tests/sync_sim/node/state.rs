@@ -2,7 +2,7 @@
 //!
 //! Wraps storage, DAG, and sync state machine.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use calimero_primitives::crdt::CrdtType;
 
@@ -91,8 +91,8 @@ pub struct SimNode {
     next_timer_id: u64,
     /// Processed message IDs (for deduplication), bounded to MAX_PROCESSED_MESSAGES.
     processed_messages: HashSet<MessageId>,
-    /// Ordered list for LRU-like eviction of processed messages.
-    processed_order: Vec<MessageId>,
+    /// Ordered deque for O(1) LRU-like eviction of processed messages.
+    processed_order: VecDeque<MessageId>,
     /// Highest session seen from each sender (for stale message detection).
     sender_sessions: HashMap<String, u64>,
     /// Whether node has been initialized (ever had state).
@@ -115,7 +115,7 @@ impl SimNode {
             timers: Vec::new(),
             next_timer_id: 0,
             processed_messages: HashSet::new(),
-            processed_order: Vec::new(),
+            processed_order: VecDeque::new(),
             sender_sessions: HashMap::new(),
             has_state: false,
             is_crashed: false,
@@ -172,12 +172,11 @@ impl SimNode {
 
         // Only add if not already present
         if self.processed_messages.insert(msg_id.clone()) {
-            self.processed_order.push(msg_id);
+            self.processed_order.push_back(msg_id);
 
-            // Evict oldest entries if over limit
+            // Evict oldest entries if over limit (O(1) with VecDeque::pop_front)
             while self.processed_messages.len() > MAX_PROCESSED_MESSAGES {
-                if let Some(oldest) = self.processed_order.first().cloned() {
-                    self.processed_order.remove(0);
+                if let Some(oldest) = self.processed_order.pop_front() {
                     self.processed_messages.remove(&oldest);
                 } else {
                     break;
