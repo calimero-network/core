@@ -22,6 +22,15 @@ const MIN_FP_RATE: f32 = 0.0001;
 /// Maximum allowed false positive rate (above this a bloom filter is pointless).
 const MAX_FP_RATE: f32 = 0.5;
 
+/// Minimum number of bits (prevents division by zero and ensures some utility).
+const MIN_NUM_BITS: usize = 64;
+
+/// Minimum number of hash functions (0 hashes = always returns true).
+const MIN_NUM_HASHES: u8 = 1;
+
+/// Maximum number of hash functions (diminishing returns beyond this).
+const MAX_NUM_HASHES: u8 = 16;
+
 /// FNV-1a 64-bit offset basis.
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 
@@ -73,7 +82,7 @@ impl DeltaIdBloomFilter {
         // Calculate optimal number of bits: m = -n * ln(p) / (ln(2)^2)
         let ln2_sq = std::f64::consts::LN_2 * std::f64::consts::LN_2;
         let num_bits = if expected_items == 0 {
-            64 // Minimum size
+            MIN_NUM_BITS
         } else {
             let m = -(expected_items as f64) * (fp_rate as f64).ln() / ln2_sq;
             (m.ceil() as usize).max(expected_items * MIN_BITS_PER_ELEMENT)
@@ -84,7 +93,7 @@ impl DeltaIdBloomFilter {
             4
         } else {
             let k = (num_bits as f64 / expected_items as f64) * std::f64::consts::LN_2;
-            (k.ceil() as u8).clamp(1, 16)
+            (k.ceil() as u8).clamp(MIN_NUM_HASHES, MAX_NUM_HASHES)
         };
 
         let num_bytes = (num_bits + 7) / 8;
@@ -98,8 +107,16 @@ impl DeltaIdBloomFilter {
     }
 
     /// Create a filter with explicit parameters.
+    ///
+    /// # Arguments
+    /// * `num_bits` - Number of bits (clamped to minimum 64 to prevent division by zero)
+    /// * `num_hashes` - Number of hash functions (clamped to 1..16)
     #[must_use]
     pub fn with_params(num_bits: usize, num_hashes: u8) -> Self {
+        // Clamp to prevent division by zero and ensure filter has some utility
+        let num_bits = num_bits.max(MIN_NUM_BITS);
+        let num_hashes = num_hashes.clamp(MIN_NUM_HASHES, MAX_NUM_HASHES);
+
         let num_bytes = (num_bits + 7) / 8;
         Self {
             bits: vec![0; num_bytes],
@@ -126,7 +143,13 @@ impl DeltaIdBloomFilter {
     /// Compute hash positions using double hashing technique.
     ///
     /// Uses stack-allocated buffer for h2 computation to avoid heap allocation.
+    /// Returns empty Vec if filter is invalid (num_bits=0) to prevent panic.
     fn compute_positions(&self, id: &[u8; 32]) -> Vec<usize> {
+        // Guard against division by zero from malicious deserialization
+        if self.num_bits == 0 {
+            return Vec::new();
+        }
+
         let h1 = Self::hash_fnv1a(id);
 
         // Use stack-allocated buffer instead of Vec::concat() for h2
@@ -161,6 +184,12 @@ impl DeltaIdBloomFilter {
     #[must_use]
     pub fn contains(&self, id: &[u8; 32]) -> bool {
         let positions = self.compute_positions(id);
+
+        // Invalid filter (no positions) should return false, not true
+        if positions.is_empty() {
+            return false;
+        }
+
         for pos in positions {
             let byte_idx = pos / 8;
             let bit_idx = pos % 8;
@@ -206,6 +235,19 @@ impl DeltaIdBloomFilter {
     #[must_use]
     pub fn bits(&self) -> &[u8] {
         &self.bits
+    }
+
+    /// Check if the filter is valid.
+    ///
+    /// Call this after deserializing from untrusted sources.
+    /// Constructors (`new()`, `with_params()`) always create valid filters,
+    /// but deserialization can produce invalid state.
+    ///
+    /// Returns `false` if `num_bits` is 0 (would cause division by zero)
+    /// or `num_hashes` is 0 (filter would always return true).
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.num_bits > 0 && self.num_hashes > 0
     }
 }
 
@@ -551,5 +593,94 @@ mod tests {
 
         assert_eq!(positions1, positions2);
         assert_eq!(positions1.len(), filter.hash_count() as usize);
+    }
+
+    #[test]
+    fn test_bloom_filter_with_params_clamps_num_bits() {
+        // num_bits=0 should be clamped to MIN_NUM_BITS (64)
+        let filter = DeltaIdBloomFilter::with_params(0, 4);
+        assert_eq!(filter.bit_count(), 64);
+        assert!(filter.is_valid());
+
+        // Should work correctly after clamping
+        let id = [1u8; 32];
+        assert!(!filter.contains(&id));
+    }
+
+    #[test]
+    fn test_bloom_filter_with_params_clamps_num_hashes() {
+        // num_hashes=0 should be clamped to 1
+        let filter = DeltaIdBloomFilter::with_params(128, 0);
+        assert_eq!(filter.hash_count(), 1);
+        assert!(filter.is_valid());
+
+        // num_hashes > 16 should be clamped to 16
+        let filter_high = DeltaIdBloomFilter::with_params(128, 255);
+        assert_eq!(filter_high.hash_count(), 16);
+    }
+
+    #[test]
+    fn test_bloom_filter_is_valid() {
+        // Valid filter created via new()
+        let valid_new = DeltaIdBloomFilter::new(100, 0.01);
+        assert!(valid_new.is_valid());
+
+        // Valid filter created via with_params() (clamped)
+        let valid_params = DeltaIdBloomFilter::with_params(0, 0);
+        assert!(valid_params.is_valid()); // Clamped to valid values
+    }
+
+    #[test]
+    fn test_bloom_filter_malicious_deserialization_num_bits_zero() {
+        // Simulate deserializing a malicious bloom filter with num_bits=0
+        // This could come from an attacker trying to cause division by zero
+
+        // Manually construct serialized bytes with num_bits=0
+        let mut bytes = Vec::new();
+        // bits: Vec<u8> - length (4 bytes little-endian) + data
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // empty vec
+                                                      // num_bits: usize (8 bytes on 64-bit)
+        bytes.extend_from_slice(&0usize.to_le_bytes()); // MALICIOUS: 0
+                                                        // num_hashes: u8
+        bytes.push(4);
+        // item_count: usize
+        bytes.extend_from_slice(&0usize.to_le_bytes());
+
+        let filter: DeltaIdBloomFilter = borsh::from_slice(&bytes).expect("deserialize");
+
+        // is_valid() should detect the invalid state
+        assert!(
+            !filter.is_valid(),
+            "Filter with num_bits=0 should be invalid"
+        );
+
+        // Operations should not panic, but return safe defaults
+        let id = [1u8; 32];
+        // contains() should return false (no positions to check)
+        assert!(!filter.contains(&id));
+    }
+
+    #[test]
+    fn test_bloom_filter_malicious_deserialization_num_hashes_zero() {
+        // Simulate deserializing a filter with num_hashes=0
+
+        let mut bytes = Vec::new();
+        // bits: Vec<u8>
+        bytes.extend_from_slice(&8u32.to_le_bytes()); // 8 bytes
+        bytes.extend_from_slice(&[0u8; 8]); // 64 bits
+                                            // num_bits: usize
+        bytes.extend_from_slice(&64usize.to_le_bytes());
+        // num_hashes: u8
+        bytes.push(0); // MALICIOUS: 0
+                       // item_count: usize
+        bytes.extend_from_slice(&0usize.to_le_bytes());
+
+        let filter: DeltaIdBloomFilter = borsh::from_slice(&bytes).expect("deserialize");
+
+        // is_valid() should detect the invalid state
+        assert!(
+            !filter.is_valid(),
+            "Filter with num_hashes=0 should be invalid"
+        );
     }
 }
