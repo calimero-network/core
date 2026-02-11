@@ -16,7 +16,9 @@
 //! | 7 | (default) | `HashComparison` |
 
 use calimero_node_primitives::sync::handshake::SyncHandshake;
-use calimero_node_primitives::sync::protocol::{select_protocol, SyncProtocol};
+use calimero_node_primitives::sync::protocol::{
+    calculate_divergence, select_protocol, SyncProtocol,
+};
 
 use crate::sync_sim::prelude::*;
 
@@ -128,14 +130,8 @@ fn test_cip23_rule3_high_divergence_hash_comparison() {
     // Preconditions
     assert!(hs_a.has_state);
     assert!(hs_b.has_state);
-    // Calculate divergence
-    let max_count = hs_a.entity_count.max(hs_b.entity_count) as f64;
-    let min_count = hs_a.entity_count.min(hs_b.entity_count) as f64;
-    let divergence = if max_count > 0.0 {
-        1.0 - (min_count / max_count)
-    } else {
-        0.0
-    };
+    // Calculate divergence using production formula
+    let divergence = calculate_divergence(&hs_a, &hs_b);
     assert!(
         divergence > 0.5,
         "Precondition: divergence > 50%, got {:.2}%",
@@ -189,14 +185,8 @@ fn test_cip23_rule4_deep_tree_subtree_prefetch() {
         "Precondition: max_depth > 3, got {}",
         hs_b.max_depth
     );
-    // divergence < 20%
-    let max_count = hs_a.entity_count.max(hs_b.entity_count) as f64;
-    let min_count = hs_a.entity_count.min(hs_b.entity_count) as f64;
-    let divergence = if max_count > 0.0 {
-        1.0 - (min_count / max_count)
-    } else {
-        0.0
-    };
+    // divergence < 20% using production formula
+    let divergence = calculate_divergence(&hs_a, &hs_b);
     assert!(
         divergence < 0.2,
         "Precondition: divergence < 20%, got {:.2}%",
@@ -428,10 +418,8 @@ fn test_cip23_all_rules_reachable() {
             select_protocol(&hs_a, &hs_b).protocol,
             SyncProtocol::HashComparison { .. }
         ) {
-            // Only count as R3 if divergence > 50%
-            let max = hs_a.entity_count.max(hs_b.entity_count) as f64;
-            let min = hs_a.entity_count.min(hs_b.entity_count) as f64;
-            let div = 1.0 - (min / max);
+            // Only count as R3 if divergence > 50% using production formula
+            let div = calculate_divergence(&hs_a, &hs_b);
             if div > 0.5 {
                 rules_hit[2] = true;
             }

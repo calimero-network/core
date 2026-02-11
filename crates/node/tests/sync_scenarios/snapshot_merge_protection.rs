@@ -256,10 +256,9 @@ fn test_protection_holds_across_random_seeds() {
         let mut rt = SimRuntime::new(seed);
 
         // Create two diverged nodes (both have state)
-        let nodes = Scenario::n_nodes_diverged(2);
-        let a = rt.add_existing_node(nodes.into_iter().next().unwrap());
-        let b_node = Scenario::n_nodes_diverged(2).into_iter().nth(1).unwrap();
-        let b = rt.add_existing_node(b_node);
+        let mut nodes = Scenario::n_nodes_diverged(2).into_iter();
+        let a = rt.add_existing_node(nodes.next().unwrap());
+        let b = rt.add_existing_node(nodes.next().unwrap());
 
         let hs_a = rt.node_mut(&a).unwrap().build_handshake();
         let hs_b = rt.node_mut(&b).unwrap().build_handshake();

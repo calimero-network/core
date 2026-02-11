@@ -100,6 +100,9 @@ pub struct SimNode {
     pub has_state: bool,
     /// Whether node is currently crashed (offline).
     pub is_crashed: bool,
+    /// Explicit tree depth for protocol negotiation tests.
+    /// When set, `build_handshake` uses this value instead of estimating from entity count.
+    pub tree_depth: Option<u32>,
 }
 
 impl SimNode {
@@ -120,6 +123,7 @@ impl SimNode {
             sender_sessions: HashMap::new(),
             has_state: false,
             is_crashed: false,
+            tree_depth: None,
         }
     }
 
@@ -329,16 +333,23 @@ impl SimNode {
         let root_hash = self.root_hash();
         let entity_count = self.entity_count() as u64;
 
-        // Estimate max_depth from entity count (log2-ish for balanced tree)
-        let max_depth = if entity_count == 0 {
-            0
-        } else {
-            (64 - entity_count.leading_zeros()).min(32)
-        };
+        // Use explicit tree_depth if set, otherwise estimate from entity count (log2-ish for balanced tree)
+        let max_depth = self.tree_depth.unwrap_or_else(|| {
+            if entity_count == 0 {
+                0
+            } else {
+                (64 - entity_count.leading_zeros()).min(32)
+            }
+        });
 
         let dag_heads: Vec<[u8; 32]> = self.dag_heads.iter().map(|d| d.0).collect();
 
         SyncHandshake::new(root_hash, entity_count, max_depth, dag_heads)
+    }
+
+    /// Set explicit tree depth for protocol negotiation testing.
+    pub fn set_tree_depth(&mut self, depth: u32) {
+        self.tree_depth = Some(depth);
     }
 }
 

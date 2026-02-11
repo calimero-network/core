@@ -173,6 +173,10 @@ impl Scenario {
             b.insert_entity_with_metadata(id, data, metadata);
         }
 
+        // Set explicit tree depth for accurate protocol selection
+        a.set_tree_depth(5);
+        b.set_tree_depth(5);
+
         (a, b)
     }
 
@@ -213,6 +217,10 @@ impl Scenario {
         for (id, data, metadata) in generate_shallow_wide_tree(40, 2, 2) {
             b.insert_entity_with_metadata(id, data, metadata);
         }
+
+        // Set explicit tree depth for accurate protocol selection
+        a.set_tree_depth(2);
+        b.set_tree_depth(2);
 
         (a, b)
     }
