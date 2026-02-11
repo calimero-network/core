@@ -134,7 +134,10 @@ impl RandomScenario {
             // Add entities, tracking inserted IDs to avoid duplicate overwrites
             // that would reduce final entity count below the target
             let mut inserted_ids: HashSet<EntityId> = HashSet::new();
-            let max_attempts = entity_count * 3; // Retry limit to avoid infinite loops
+            // Use larger retry budget to handle coupon-collector behavior when sampling from shared pool.
+            // With high shared_entity_probability, we need O(n*ln(n)) attempts to collect n unique items.
+            // Using (entity_count + pool_size) * 5 provides sufficient margin.
+            let max_attempts = (entity_count + shared_pool.len()).saturating_mul(5);
             let mut attempts = 0;
 
             while inserted_ids.len() < entity_count && attempts < max_attempts {
@@ -215,15 +218,25 @@ impl RandomScenario {
         Self::new(seed, config).generate()
     }
 
-    /// Scenario with one fresh node joining.
+    /// Scenario with exactly one fresh node joining.
+    ///
+    /// Creates `existing_count` initialized nodes with shared state, plus one fresh
+    /// (empty) node. The fresh node is always the last node in the returned vector.
     pub fn fresh_join_random(seed: u64, existing_count: usize) -> Vec<SimNode> {
+        // Generate initialized nodes with no fresh probability
         let config = RandomScenarioConfig::default()
-            .with_nodes(existing_count + 1)
+            .with_nodes(existing_count)
             .with_entity_count(50, 100)
-            .with_fresh_probability(1.0 / (existing_count + 1) as f64)
+            .with_fresh_probability(0.0) // No fresh nodes in this batch
             .with_shared_probability(0.8);
 
-        Self::new(seed, config).generate()
+        let mut nodes = Self::new(seed, config).generate();
+
+        // Add exactly one fresh node
+        let fresh = SimNode::new(format!("node-{}", existing_count));
+        nodes.push(fresh);
+
+        nodes
     }
 
     /// Heavy divergence scenario.
@@ -296,16 +309,22 @@ mod tests {
 
     #[test]
     fn test_fresh_join() {
-        // Run multiple times to catch the fresh node case
-        let mut found_fresh = false;
-        for seed in 0..100 {
-            let nodes = RandomScenario::fresh_join_random(seed, 3);
-            if nodes.iter().any(|n| !n.has_any_state()) {
-                found_fresh = true;
-                break;
-            }
+        let nodes = RandomScenario::fresh_join_random(42, 3);
+
+        // Should have exactly 4 nodes: 3 existing + 1 fresh
+        assert_eq!(nodes.len(), 4);
+
+        // First 3 nodes should have state
+        for node in &nodes[..3] {
+            assert!(
+                node.has_any_state(),
+                "existing node {} should have state",
+                node.id()
+            );
         }
-        assert!(found_fresh, "Should have generated at least one fresh node");
+
+        // Last node should be fresh (no state)
+        assert!(!nodes[3].has_any_state(), "fresh node should have no state");
     }
 
     #[test]

@@ -58,12 +58,14 @@ impl SimRng {
     /// Generate a random duration with base ± jitter.
     ///
     /// Returns a duration in range [base - jitter, base + jitter], clamped to >= 0.
+    /// Uses saturating arithmetic to avoid overflow with large duration values.
     pub fn duration_with_jitter(&mut self, base: SimDuration, jitter: SimDuration) -> SimDuration {
-        let base_micros = base.as_micros() as i64;
-        let jitter_micros = jitter.as_micros() as i64;
+        let base_micros = base.as_micros();
+        let jitter_micros = jitter.as_micros();
 
-        let min = (base_micros - jitter_micros).max(0) as u64;
-        let max = (base_micros + jitter_micros) as u64;
+        // Use saturating operations to prevent underflow/overflow
+        let min = base_micros.saturating_sub(jitter_micros);
+        let max = base_micros.saturating_add(jitter_micros);
 
         SimDuration::from_micros(self.inner.gen_range(min..=max))
     }
