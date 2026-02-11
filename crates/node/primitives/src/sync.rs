@@ -8,6 +8,7 @@
 //! - **HashComparison**: Merkle tree traversal sync ([`hash_comparison`])
 //! - **BloomFilter**: Bloom filter-based sync for large trees ([`bloom_filter`])
 //! - **Snapshot**: Full state transfer for fresh nodes ([`snapshot`])
+//! - **LevelWise**: Level-by-level sync for wide shallow trees ([`levelwise`])
 //!
 //! # Module Organization
 //!
@@ -20,7 +21,8 @@
 //! ├── delta.rs           # DeltaSyncRequest, DeltaPayload, etc.
 //! ├── hash_comparison.rs # TreeNode, TreeNodeRequest, compare_tree_nodes()
 //! ├── bloom_filter.rs    # DeltaIdBloomFilter, BloomFilterRequest, etc.
-//! └── snapshot.rs        # SnapshotPage, BroadcastMessage, StreamMessage, etc.
+//! ├── snapshot.rs        # SnapshotPage, BroadcastMessage, StreamMessage, etc.
+//! └── levelwise.rs       # LevelWiseRequest, LevelWiseResponse, etc.
 //! ```
 
 #![expect(single_use_lifetimes, reason = "borsh shenanigans")]
@@ -33,6 +35,7 @@ pub mod bloom_filter;
 pub mod delta;
 pub mod handshake;
 pub mod hash_comparison;
+pub mod levelwise;
 pub mod protocol;
 pub mod snapshot;
 
@@ -74,4 +77,10 @@ pub use snapshot::{
     BroadcastMessage, InitPayload, MessagePayload, SnapshotBoundaryRequest,
     SnapshotBoundaryResponse, SnapshotCursor, SnapshotError, SnapshotPage, SnapshotStreamRequest,
     StreamMessage,
+};
+
+// LevelWise sync types
+pub use levelwise::{
+    compare_level_nodes, should_use_levelwise, LevelCompareResult, LevelNode, LevelWiseRequest,
+    LevelWiseResponse, MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST,
 };
