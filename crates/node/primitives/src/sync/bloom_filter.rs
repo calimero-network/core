@@ -185,6 +185,15 @@ impl DeltaIdBloomFilter {
     pub fn bits(&self) -> &[u8] {
         &self.bits
     }
+
+    /// Check if filter is within valid bounds.
+    ///
+    /// Call this after deserializing from untrusted sources to prevent
+    /// division-by-zero panics. Validates that num_bits > 0.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.num_bits > 0
+    }
 }
 
 // =============================================================================
@@ -452,5 +461,20 @@ mod tests {
         assert_eq!(filter.bit_count(), 1024);
         assert_eq!(filter.hash_count(), 7);
         assert_eq!(filter.item_count(), 0);
+    }
+
+    #[test]
+    fn test_bloom_filter_is_valid() {
+        // Valid filter created via new()
+        let valid_filter = DeltaIdBloomFilter::new(100, 0.01);
+        assert!(valid_filter.is_valid());
+
+        // Valid filter created via with_params()
+        let valid_params = DeltaIdBloomFilter::with_params(64, 4);
+        assert!(valid_params.is_valid());
+
+        // Invalid filter with zero bits (could come from malicious deserialization)
+        let invalid_filter = DeltaIdBloomFilter::with_params(0, 4);
+        assert!(!invalid_filter.is_valid());
     }
 }

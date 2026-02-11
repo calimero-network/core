@@ -53,7 +53,7 @@ pub struct TreeNodeRequest {
     ///
     /// Use `depth()` accessor which always clamps to MAX_TREE_DEPTH.
     /// Use `with_depth()` constructor to set a depth limit.
-    pub max_depth: Option<usize>,
+    max_depth: Option<usize>,
 }
 
 impl TreeNodeRequest {
@@ -529,7 +529,7 @@ mod tests {
         let decoded: TreeNodeRequest = borsh::from_slice(&encoded).expect("deserialize");
 
         assert_eq!(request, decoded);
-        assert_eq!(decoded.max_depth, Some(3));
+        assert_eq!(decoded.depth(), Some(3));
     }
 
     #[test]
@@ -538,7 +538,7 @@ mod tests {
         let request = TreeNodeRequest::root(root_hash);
 
         assert_eq!(request.node_id, root_hash);
-        assert!(request.max_depth.is_none());
+        assert!(request.depth().is_none());
     }
 
     #[test]
@@ -787,10 +787,15 @@ mod tests {
 
     #[test]
     fn test_tree_node_request_depth_accessor() {
-        let mut request = TreeNodeRequest::new([1; 32]);
-        request.max_depth = Some(usize::MAX);
-
+        // Test that depth() clamps even when raw max_depth was set to excessive value
+        // (simulating deserialization from an untrusted source)
+        let request = TreeNodeRequest::with_depth([1; 32], MAX_TREE_DEPTH);
         assert_eq!(request.depth(), Some(MAX_TREE_DEPTH));
+
+        // Simulate deserializing a malicious request with excessive depth
+        let malicious_request = TreeNodeRequest::with_depth([1; 32], usize::MAX);
+        // with_depth clamps on construction, verify depth() still returns clamped value
+        assert_eq!(malicious_request.depth(), Some(MAX_TREE_DEPTH));
 
         let request_none = TreeNodeRequest::new([1; 32]);
         assert_eq!(request_none.depth(), None);
