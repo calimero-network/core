@@ -16,6 +16,12 @@ fn test_panic_hook_logs_structured_info() {
         .output()
         .expect("failed to run merod");
 
+    assert!(
+        !out.status.success(),
+        "merod should exit with error when panicking; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
     let stderr = String::from_utf8_lossy(&out.stderr);
 
     assert!(
@@ -41,6 +47,12 @@ fn test_panic_hook_handles_string_payload() {
         .env("MEROD_TEST_PANIC", "string")
         .output()
         .expect("failed to run merod");
+
+    assert!(
+        !out.status.success(),
+        "merod should exit with error when panicking; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let stderr = String::from_utf8_lossy(&out.stderr);
 
