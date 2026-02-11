@@ -78,11 +78,7 @@ impl DeltaIdBloomFilter {
     pub fn new(expected_items: usize, fp_rate: f64) -> Self {
         // Handle NaN explicitly, then clamp to valid range
         // NaN.clamp() returns NaN, which would propagate through calculations
-        let fp_rate = if fp_rate.is_nan() {
-            DEFAULT_BLOOM_FP_RATE
-        } else {
-            fp_rate.clamp(MIN_FP_RATE, MAX_FP_RATE)
-        };
+        let fp_rate = Self::clamp_fp_rate(fp_rate);
 
         // Calculate optimal number of bits: m = -n * ln(p) / (ln(2)^2)
         let ln2_sq = std::f64::consts::LN_2 * std::f64::consts::LN_2;
@@ -280,9 +276,24 @@ impl DeltaIdBloomFilter {
             return false;
         }
         // Check structural consistency: bits array must be large enough
-        // to hold num_bits bits. Required bytes = (num_bits + 7) / 8
-        let required_bytes = (self.num_bits + 7) / 8;
-        self.bits.len() >= required_bytes
+        // to hold num_bits bits. Use saturating_mul to avoid overflow when
+        // bits.len() is large; if it saturates to usize::MAX, the comparison
+        // is still valid since num_bits cannot exceed usize::MAX.
+        self.num_bits <= self.bits.len().saturating_mul(8)
+    }
+
+    /// Clamp a false positive rate to the valid range.
+    ///
+    /// This is the same clamping applied in `new()`:
+    /// - NaN → `DEFAULT_BLOOM_FP_RATE` (0.01)
+    /// - Values clamped to \[0.0001, 0.5\]
+    #[must_use]
+    pub fn clamp_fp_rate(fp_rate: f64) -> f64 {
+        if fp_rate.is_nan() {
+            DEFAULT_BLOOM_FP_RATE
+        } else {
+            fp_rate.clamp(MIN_FP_RATE, MAX_FP_RATE)
+        }
     }
 }
 
@@ -317,11 +328,14 @@ impl BloomFilterRequest {
     /// Create a request by building a filter from entity IDs.
     #[must_use]
     pub fn from_ids(ids: &[[u8; 32]], fp_rate: f64) -> Self {
-        let mut filter = DeltaIdBloomFilter::new(ids.len(), fp_rate);
+        // Use the same clamped fp_rate that DeltaIdBloomFilter::new() uses
+        // to ensure metadata matches what was actually used to build the filter
+        let clamped_fp_rate = DeltaIdBloomFilter::clamp_fp_rate(fp_rate);
+        let mut filter = DeltaIdBloomFilter::new(ids.len(), clamped_fp_rate);
         for id in ids {
             filter.insert(id);
         }
-        Self::new(filter, fp_rate)
+        Self::new(filter, clamped_fp_rate)
     }
 }
 
@@ -794,5 +808,91 @@ mod tests {
         // bits.len() should be >= (num_bits + 7) / 8
         let required_bytes = (filter.bit_count() + 7) / 8;
         assert!(filter.bits().len() >= required_bytes);
+    }
+
+    #[test]
+    fn test_bloom_filter_malicious_deserialization_num_bits_max() {
+        // Test that is_valid() handles num_bits near usize::MAX without overflow
+        // A malicious peer could send a filter with num_bits = usize::MAX
+        // The old implementation would compute (usize::MAX + 7) / 8 which overflows
+
+        let mut bytes = Vec::new();
+        // bits: Vec<u8> - empty
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // empty vec
+                                                      // num_bits: usize - MALICIOUS: usize::MAX
+        bytes.extend_from_slice(&usize::MAX.to_le_bytes());
+        // num_hashes: u8
+        bytes.push(4);
+        // item_count: usize
+        bytes.extend_from_slice(&0usize.to_le_bytes());
+
+        let filter: DeltaIdBloomFilter = borsh::from_slice(&bytes).expect("deserialize");
+
+        // is_valid() MUST detect this attack without overflow/panic
+        assert!(
+            !filter.is_valid(),
+            "Filter with num_bits=usize::MAX but empty bits should be invalid"
+        );
+
+        // Operations should not panic
+        let id = [0xAB; 32];
+        assert!(!filter.contains(&id));
+    }
+
+    #[test]
+    fn test_bloom_filter_from_ids_clamps_fp_rate() {
+        // Test that from_ids stores the clamped FP rate, not the original
+
+        // Test with NaN - should use DEFAULT_BLOOM_FP_RATE
+        let ids = [[1u8; 32], [2u8; 32]];
+        let request = BloomFilterRequest::from_ids(&ids, f64::NAN);
+        assert_eq!(
+            request.false_positive_rate, DEFAULT_BLOOM_FP_RATE,
+            "NaN should be clamped to DEFAULT_BLOOM_FP_RATE"
+        );
+
+        // Test with negative - should use MIN_FP_RATE
+        let request = BloomFilterRequest::from_ids(&ids, -1.0);
+        assert_eq!(
+            request.false_positive_rate, MIN_FP_RATE,
+            "Negative should be clamped to MIN_FP_RATE"
+        );
+
+        // Test with too high - should use MAX_FP_RATE
+        let request = BloomFilterRequest::from_ids(&ids, 0.99);
+        assert_eq!(
+            request.false_positive_rate, MAX_FP_RATE,
+            "Value > 0.5 should be clamped to MAX_FP_RATE"
+        );
+
+        // Test with valid value - should remain unchanged
+        let request = BloomFilterRequest::from_ids(&ids, 0.02);
+        assert_eq!(
+            request.false_positive_rate, 0.02,
+            "Valid FP rate should remain unchanged"
+        );
+    }
+
+    #[test]
+    fn test_clamp_fp_rate() {
+        // Test the clamp_fp_rate helper function directly
+        assert_eq!(
+            DeltaIdBloomFilter::clamp_fp_rate(f64::NAN),
+            DEFAULT_BLOOM_FP_RATE
+        );
+        assert_eq!(DeltaIdBloomFilter::clamp_fp_rate(-1.0), MIN_FP_RATE);
+        assert_eq!(DeltaIdBloomFilter::clamp_fp_rate(0.0), MIN_FP_RATE);
+        assert_eq!(DeltaIdBloomFilter::clamp_fp_rate(0.99), MAX_FP_RATE);
+        assert_eq!(
+            DeltaIdBloomFilter::clamp_fp_rate(f64::INFINITY),
+            MAX_FP_RATE
+        );
+        assert_eq!(
+            DeltaIdBloomFilter::clamp_fp_rate(f64::NEG_INFINITY),
+            MIN_FP_RATE
+        );
+        // Valid values should pass through
+        assert_eq!(DeltaIdBloomFilter::clamp_fp_rate(0.01), 0.01);
+        assert_eq!(DeltaIdBloomFilter::clamp_fp_rate(0.1), 0.1);
     }
 }
