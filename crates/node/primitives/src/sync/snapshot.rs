@@ -48,13 +48,13 @@ pub const MAX_SNAPSHOT_PAGE_SIZE: u32 = 4 * 1024 * 1024;
 ///
 /// Limits the size of `SnapshotEntityPage::entities` to prevent
 /// memory exhaustion from malicious peers.
-pub const MAX_ENTITIES_PER_PAGE: usize = 10_000;
+pub const MAX_ENTITIES_PER_PAGE: usize = 1_000;
 
 /// Maximum total pages in a snapshot transfer.
 ///
 /// Prevents unbounded memory allocation during snapshot reception.
-/// At 256KB per page, this allows ~256GB total transfer.
-pub const MAX_SNAPSHOT_PAGES: usize = 1_000_000;
+/// At 256KB per page, this allows ~2.5GB total transfer.
+pub const MAX_SNAPSHOT_PAGES: usize = 10_000;
 
 /// Maximum entity data size (1 MB).
 ///
@@ -64,7 +64,14 @@ pub const MAX_ENTITY_DATA_SIZE: usize = 1_048_576;
 /// Maximum DAG heads in a snapshot completion message.
 ///
 /// Limits the size of `SnapshotComplete::dag_heads`.
-pub const MAX_DAG_HEADS: usize = 1000;
+pub const MAX_DAG_HEADS: usize = 100;
+
+/// Maximum compressed payload size (8 MB).
+///
+/// Limits the size of compressed snapshot page payloads to prevent
+/// memory exhaustion before decompression. Set higher than uncompressed
+/// limit to allow for edge cases where compression expands data.
+pub const MAX_COMPRESSED_PAYLOAD_SIZE: usize = 8 * 1024 * 1024;
 
 // =============================================================================
 // Snapshot Boundary Types
@@ -166,6 +173,8 @@ impl SnapshotPage {
     pub fn is_valid(&self) -> bool {
         self.uncompressed_len <= MAX_SNAPSHOT_PAGE_SIZE
             && self.page_count <= MAX_SNAPSHOT_PAGES as u64
+            && self.sent_count <= self.page_count
+            && self.payload.len() <= MAX_COMPRESSED_PAYLOAD_SIZE
     }
 }
 
@@ -360,6 +369,16 @@ impl SnapshotEntityPage {
             return false;
         }
 
+        // Check page number is within bounds (page_number is 0-indexed)
+        if self.total_pages > 0 && self.page_number >= self.total_pages {
+            return false;
+        }
+
+        // Check is_last coherence: if is_last, must be the final page
+        if self.is_last && self.total_pages > 0 && self.page_number + 1 != self.total_pages {
+            return false;
+        }
+
         // Validate all entities
         self.entities.iter().all(SnapshotEntity::is_valid)
     }
@@ -480,7 +499,15 @@ impl SnapshotVerifyResult {
                     computed: *computed,
                 })
             }
-            _ => Some(SnapshotError::InvalidBoundary),
+            Self::EntityCountMismatch { expected, actual } => {
+                Some(SnapshotError::EntityCountMismatch {
+                    expected: *expected,
+                    actual: *actual,
+                })
+            }
+            Self::MissingPages { missing } => Some(SnapshotError::MissingPages {
+                missing: missing.clone(),
+            }),
         }
     }
 }
@@ -517,6 +544,12 @@ pub enum SnapshotError {
 
     /// Decompression failed.
     DecompressionFailed,
+
+    /// Entity count does not match expected count.
+    EntityCountMismatch { expected: usize, actual: usize },
+
+    /// Some pages are missing from the snapshot transfer.
+    MissingPages { missing: Vec<usize> },
 }
 
 // =============================================================================
@@ -860,8 +893,23 @@ mod tests {
 
         // Invalid page: over total pages limit
         let entity = make_entity(1, vec![1]);
-        let over_pages = SnapshotEntityPage::new(0, MAX_SNAPSHOT_PAGES + 1, vec![entity], true);
+        let over_pages = SnapshotEntityPage::new(0, MAX_SNAPSHOT_PAGES + 1, vec![entity], false);
         assert!(!over_pages.is_valid());
+
+        // Invalid page: page_number >= total_pages
+        let entity = make_entity(1, vec![1]);
+        let invalid_page_num = SnapshotEntityPage::new(5, 3, vec![entity], false);
+        assert!(!invalid_page_num.is_valid());
+
+        // Invalid page: is_last but not the final page
+        let entity = make_entity(1, vec![1]);
+        let invalid_last = SnapshotEntityPage::new(0, 3, vec![entity], true);
+        assert!(!invalid_last.is_valid());
+
+        // Valid page: is_last and is the final page
+        let entity = make_entity(1, vec![1]);
+        let valid_last = SnapshotEntityPage::new(2, 3, vec![entity], true);
+        assert!(valid_last.is_valid());
     }
 
     #[test]
@@ -962,7 +1010,14 @@ mod tests {
             actual: 99,
         };
         assert!(!result.is_valid());
-        assert!(result.to_error().is_some());
+        let error = result.to_error().unwrap();
+        assert!(matches!(
+            error,
+            SnapshotError::EntityCountMismatch {
+                expected: 100,
+                actual: 99
+            }
+        ));
     }
 
     #[test]
@@ -971,7 +1026,13 @@ mod tests {
             missing: vec![3, 5, 7],
         };
         assert!(!result.is_valid());
-        assert!(result.to_error().is_some());
+        let error = result.to_error().unwrap();
+        match error {
+            SnapshotError::MissingPages { missing } => {
+                assert_eq!(missing, vec![3, 5, 7]);
+            }
+            _ => panic!("Expected MissingPages error"),
+        }
     }
 
     // =========================================================================
@@ -1012,6 +1073,13 @@ mod tests {
             },
             SnapshotError::TransferInterrupted { pages_received: 5 },
             SnapshotError::DecompressionFailed,
+            SnapshotError::EntityCountMismatch {
+                expected: 100,
+                actual: 99,
+            },
+            SnapshotError::MissingPages {
+                missing: vec![3, 5, 7],
+            },
         ];
 
         for error in errors {
@@ -1138,6 +1206,26 @@ mod tests {
             sent_count: 10,
         };
         assert!(!too_many.is_valid());
+
+        // Invalid: sent_count > page_count
+        let invalid_sent = SnapshotPage {
+            payload: vec![1, 2, 3],
+            uncompressed_len: 100,
+            cursor: None,
+            page_count: 5,
+            sent_count: 10,
+        };
+        assert!(!invalid_sent.is_valid());
+
+        // Invalid: oversized compressed payload
+        let oversized_payload = SnapshotPage {
+            payload: vec![0u8; MAX_COMPRESSED_PAYLOAD_SIZE + 1],
+            uncompressed_len: 100,
+            cursor: None,
+            page_count: 10,
+            sent_count: 10,
+        };
+        assert!(!oversized_payload.is_valid());
     }
 
     // =========================================================================

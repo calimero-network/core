@@ -239,6 +239,17 @@ impl SyncManager {
     ) -> Result<SnapshotSyncResult> {
         info!(%context_id, %peer_id, "Starting snapshot sync");
 
+        // Check Invariant I5: Snapshot sync should only be used for fresh nodes
+        // OR for crash recovery (detected by sync-in-progress marker).
+        // This prevents accidental state overwrites on initialized nodes.
+        let is_crash_recovery = self.check_sync_in_progress(context_id)?.is_some();
+        if !is_crash_recovery {
+            let handle = self.context_client.datastore_handle();
+            let has_state = !collect_context_state_keys(&handle, context_id)?.is_empty();
+            calimero_node_primitives::sync::check_snapshot_safety(has_state)
+                .map_err(|e| eyre::eyre!("Snapshot safety check failed: {:?}", e))?;
+        }
+
         let mut stream = self.network_client.open_stream(peer_id).await?;
         let boundary = self
             .request_snapshot_boundary(context_id, &mut stream)
