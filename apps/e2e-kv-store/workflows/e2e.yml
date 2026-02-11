@@ -645,28 +645,28 @@ steps:
     statements:
       - 'json_equal({{wrong_guess}}, {"output": false})'
 
-  # NESTED CRDT - COUNTERS (sequential to work around merge bug)
+  # NESTED CRDT - G-COUNTERS (grow-only, sequential to work around merge bug)
 
-  - name: Increment counter on node-1
+  - name: Increment G-Counter on node-1
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{node1_key}}"
-    method: increment_counter
+    method: increment_g_counter
     args:
       key: "visits"
 
-  - name: Increment counter again on node-1
+  - name: Increment G-Counter again on node-1
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{node1_key}}"
-    method: increment_counter
+    method: increment_g_counter
     args:
       key: "visits"
 
   # Sync before node-2 increments
-  - name: Wait for sync after node-1 counter increments
+  - name: Wait for sync after node-1 G-Counter increments
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
@@ -676,16 +676,16 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  - name: Increment counter on node-2
+  - name: Increment G-Counter on node-2
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
     executor_public_key: "{{public_key_e2e-node-2}}"
-    method: increment_counter
+    method: increment_g_counter
     args:
       key: "visits"
 
-  - name: Wait for sync after node-2 counter increment
+  - name: Wait for sync after node-2 G-Counter increment
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
@@ -695,21 +695,123 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  - name: Get counter on node-1
+  - name: Get G-Counter on node-1
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
     executor_public_key: "{{node1_key}}"
-    method: get_counter
+    method: get_g_counter
     args:
       key: "visits"
     outputs:
-      counter_value: result
+      g_counter_value: result
 
-  - name: Assert counter is 3
+  - name: Assert G-Counter is 3
     type: json_assert
     statements:
-      - 'json_equal({{counter_value}}, {"output": 3})'
+      - 'json_equal({{g_counter_value}}, {"output": 3})'
+
+  # NESTED CRDT - PN-COUNTERS (supports increment AND decrement)
+
+  - name: Increment PN-Counter on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: increment_pn_counter
+    args:
+      key: "balance"
+
+  - name: Increment PN-Counter again on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: increment_pn_counter
+    args:
+      key: "balance"
+
+  - name: Increment PN-Counter third time on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: increment_pn_counter
+    args:
+      key: "balance"
+
+  # Now decrement on node-1
+  - name: Decrement PN-Counter on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: decrement_pn_counter
+    args:
+      key: "balance"
+
+  # Sync before node-2 operations
+  - name: Wait for sync after node-1 PN-Counter operations
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get PN-Counter on node-2 after sync (should be 2)
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: get_pn_counter
+    args:
+      key: "balance"
+    outputs:
+      pn_counter_after_sync: result
+
+  - name: Assert PN-Counter is 2 after node-1 ops
+    type: json_assert
+    statements:
+      - 'json_equal({{pn_counter_after_sync}}, {"output": 2})'
+
+  # Node-2 decrements
+  - name: Decrement PN-Counter on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_e2e-node-2}}"
+    method: decrement_pn_counter
+    args:
+      key: "balance"
+
+  - name: Wait for sync after node-2 PN-Counter decrement
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get PN-Counter on node-1 (should be 1 after all ops)
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_pn_counter
+    args:
+      key: "balance"
+    outputs:
+      pn_counter_final: result
+
+  - name: Assert PN-Counter is 1 (3 inc - 2 dec = 1)
+    type: json_assert
+    statements:
+      - 'json_equal({{pn_counter_final}}, {"output": 1})'
 
   # NESTED CRDT - LWW REGISTERS (concurrent writes - later timestamp wins)
 

@@ -146,33 +146,14 @@ pub fn infer_schema_from_database(
                         // Infer type from crdt_type
                         let type_ref = if let Some(crdt_type) = index.metadata.crdt_type {
                             match crdt_type {
-                                CrdtType::UnorderedMap => {
-                                    // Default to Map<String, String> - can be refined later
-                                    TypeRef::Collection {
-                                        collection: CollectionType::Map {
-                                            key: Box::new(TypeRef::string()),
-                                            value: Box::new(TypeRef::string()),
-                                        },
-                                        crdt_type: Some(CrdtCollectionType::UnorderedMap),
-                                        inner_type: None,
-                                    }
-                                }
-                                CrdtType::Vector => TypeRef::Collection {
-                                    collection: CollectionType::List {
-                                        items: Box::new(TypeRef::string()),
-                                    },
-                                    crdt_type: Some(CrdtCollectionType::Vector),
-                                    inner_type: None,
+                                CrdtType::LwwRegister => TypeRef::Collection {
+                                    collection: CollectionType::Record { fields: Vec::new() },
+                                    crdt_type: Some(CrdtCollectionType::LwwRegister),
+                                    inner_type: Some(Box::new(TypeRef::string())),
                                 },
-                                CrdtType::UnorderedSet => TypeRef::Collection {
-                                    collection: CollectionType::List {
-                                        items: Box::new(TypeRef::string()),
-                                    },
-                                    crdt_type: Some(CrdtCollectionType::UnorderedSet),
-                                    inner_type: None,
-                                },
-                                CrdtType::Counter => TypeRef::Collection {
-                                    // Counter is stored as Map<String, u64> internally
+                                CrdtType::GCounter | CrdtType::PnCounter => TypeRef::Collection {
+                                    // GCounter: Map<ExecutorId, u64>; PnCounter: two maps (pos/neg)
+                                    // Represented as single map for ABI purposes
                                     collection: CollectionType::Map {
                                         key: Box::new(TypeRef::string()),
                                         value: Box::new(TypeRef::Scalar(ScalarType::U64)),
@@ -185,10 +166,30 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
                                     inner_type: None,
                                 },
-                                CrdtType::LwwRegister => TypeRef::Collection {
-                                    collection: CollectionType::Record { fields: Vec::new() },
-                                    crdt_type: Some(CrdtCollectionType::LwwRegister),
-                                    inner_type: Some(Box::new(TypeRef::string())),
+                                CrdtType::UnorderedMap => {
+                                    // Default to Map<String, String> - can be refined later
+                                    TypeRef::Collection {
+                                        collection: CollectionType::Map {
+                                            key: Box::new(TypeRef::string()),
+                                            value: Box::new(TypeRef::string()),
+                                        },
+                                        crdt_type: Some(CrdtCollectionType::UnorderedMap),
+                                        inner_type: None,
+                                    }
+                                }
+                                CrdtType::UnorderedSet => TypeRef::Collection {
+                                    collection: CollectionType::List {
+                                        items: Box::new(TypeRef::string()),
+                                    },
+                                    crdt_type: Some(CrdtCollectionType::UnorderedSet),
+                                    inner_type: None,
+                                },
+                                CrdtType::Vector => TypeRef::Collection {
+                                    collection: CollectionType::List {
+                                        items: Box::new(TypeRef::string()),
+                                    },
+                                    crdt_type: Some(CrdtCollectionType::Vector),
+                                    inner_type: None,
                                 },
                                 CrdtType::UserStorage => TypeRef::Collection {
                                     collection: CollectionType::Map {
@@ -206,14 +207,6 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::UnorderedMap),
                                     inner_type: None,
                                 },
-                                CrdtType::Record => {
-                                    // Record type - would need to inspect children to infer fields
-                                    TypeRef::Collection {
-                                        collection: CollectionType::Record { fields: Vec::new() },
-                                        crdt_type: None,
-                                        inner_type: None,
-                                    }
-                                }
                                 CrdtType::Custom(_) => {
                                     // Custom type - can't infer without schema
                                     TypeRef::Collection {
