@@ -9,6 +9,7 @@
 //! - **BloomFilter**: Bloom filter-based sync for large trees ([`bloom_filter`])
 //! - **Snapshot**: Full state transfer for fresh nodes ([`snapshot`])
 //! - **SubtreePrefetch**: Subtree prefetch for deep trees with clustered changes ([`subtree`])
+//! - **LevelWise**: Level-by-level sync for wide shallow trees ([`levelwise`])
 //!
 //! # Module Organization
 //!
@@ -22,7 +23,8 @@
 //! ├── hash_comparison.rs # TreeNode, TreeNodeRequest, compare_tree_nodes()
 //! ├── bloom_filter.rs    # DeltaIdBloomFilter, BloomFilterRequest, etc.
 //! ├── snapshot.rs        # SnapshotPage, BroadcastMessage, StreamMessage, etc.
-//! └── subtree.rs         # SubtreePrefetchRequest, SubtreeData, etc.
+//! ├── subtree.rs         # SubtreePrefetchRequest, SubtreeData, etc.
+//! └── levelwise.rs       # LevelWiseRequest, LevelWiseResponse, etc.
 //! ```
 
 #![expect(single_use_lifetimes, reason = "borsh shenanigans")]
@@ -35,6 +37,7 @@ pub mod bloom_filter;
 pub mod delta;
 pub mod handshake;
 pub mod hash_comparison;
+pub mod levelwise;
 pub mod protocol;
 pub mod snapshot;
 pub mod subtree;
@@ -84,4 +87,10 @@ pub use subtree::{
     should_use_subtree_prefetch, SubtreeData, SubtreePrefetchRequest, SubtreePrefetchResponse,
     DEEP_TREE_THRESHOLD, DEFAULT_SUBTREE_MAX_DEPTH, MAX_CLUSTERED_SUBTREES, MAX_DIVERGENCE_RATIO,
     MAX_ENTITIES_PER_SUBTREE, MAX_SUBTREES_PER_REQUEST, MAX_SUBTREE_DEPTH, MAX_TOTAL_ENTITIES,
+};
+
+// LevelWise sync types
+pub use levelwise::{
+    compare_level_nodes, should_use_levelwise, LevelCompareResult, LevelNode, LevelWiseRequest,
+    LevelWiseResponse, MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST,
 };
