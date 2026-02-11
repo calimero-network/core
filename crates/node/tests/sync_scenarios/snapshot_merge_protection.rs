@@ -250,21 +250,28 @@ fn test_simulation_runtime_negotiation() {
 }
 
 /// Protection holds across 100 random seeds.
+///
+/// Uses `RandomScenario::two_nodes_random(seed)` to generate varied node
+/// configurations for each seed, ensuring actual coverage of different
+/// entity counts, tree depths, and divergence levels.
 #[test]
 fn test_protection_holds_across_random_seeds() {
     for seed in 0..100 {
         let mut rt = SimRuntime::new(seed);
 
-        // Create two diverged nodes (both have state)
-        let nodes = Scenario::n_nodes_diverged(2);
-        let a = rt.add_existing_node(nodes.into_iter().next().unwrap());
-        let b_node = Scenario::n_nodes_diverged(2).into_iter().nth(1).unwrap();
+        // Create two diverged nodes using seed-based random generation.
+        // Each seed produces different entity counts, data, and tree structure.
+        let mut nodes = RandomScenario::two_nodes_random(seed);
+        let b_node = nodes.pop().unwrap();
+        let a_node = nodes.pop().unwrap();
+
+        let a = rt.add_existing_node(a_node);
         let b = rt.add_existing_node(b_node);
 
         let hs_a = rt.node_mut(&a).unwrap().build_handshake();
         let hs_b = rt.node_mut(&b).unwrap().build_handshake();
 
-        // Both should have state
+        // Both should have state (RandomScenario default has fresh_node_probability=0.0)
         if !hs_a.has_state || !hs_b.has_state {
             continue;
         }

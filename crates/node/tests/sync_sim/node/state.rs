@@ -100,6 +100,9 @@ pub struct SimNode {
     pub has_state: bool,
     /// Whether node is currently crashed (offline).
     pub is_crashed: bool,
+    /// Optional override for max_depth in handshake.
+    /// Used by scenarios that need to control the depth independently of entity count.
+    pub handshake_depth_override: Option<u32>,
 }
 
 impl SimNode {
@@ -120,6 +123,7 @@ impl SimNode {
             sender_sessions: HashMap::new(),
             has_state: false,
             is_crashed: false,
+            handshake_depth_override: None,
         }
     }
 
@@ -325,20 +329,34 @@ impl SimNode {
     /// Build a SyncHandshake for this node.
     ///
     /// Used for protocol negotiation testing.
+    ///
+    /// If `handshake_depth_override` is set, uses that value for max_depth.
+    /// Otherwise estimates max_depth from entity count (log2 approximation).
     pub fn build_handshake(&mut self) -> SyncHandshake {
         let root_hash = self.root_hash();
         let entity_count = self.entity_count() as u64;
 
-        // Estimate max_depth from entity count (log2-ish for balanced tree)
-        let max_depth = if entity_count == 0 {
-            0
-        } else {
-            (64 - entity_count.leading_zeros()).min(32)
-        };
+        // Use override if set, otherwise estimate max_depth from entity count
+        let max_depth = self.handshake_depth_override.unwrap_or_else(|| {
+            if entity_count == 0 {
+                0
+            } else {
+                (64 - entity_count.leading_zeros()).min(32)
+            }
+        });
 
         let dag_heads: Vec<[u8; 32]> = self.dag_heads.iter().map(|d| d.0).collect();
 
         SyncHandshake::new(root_hash, entity_count, max_depth, dag_heads)
+    }
+
+    /// Set the max_depth override for handshake generation.
+    ///
+    /// This allows scenarios to control the reported tree depth independently
+    /// of the actual entity count, which is necessary for testing specific
+    /// protocol selection rules.
+    pub fn set_handshake_depth(&mut self, depth: u32) {
+        self.handshake_depth_override = Some(depth);
     }
 }
 
