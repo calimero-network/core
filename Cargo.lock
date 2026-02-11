@@ -2243,6 +2243,7 @@ dependencies = [
  "lz4_flex",
  "prometheus-client",
  "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
