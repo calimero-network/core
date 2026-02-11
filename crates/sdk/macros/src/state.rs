@@ -500,7 +500,13 @@ fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>
             let merge_result = match (local_result, remote_result) {
                 (Ok(mut local), Ok(remote)) => {
                     // Merge using the auto-generated Mergeable impl
-                    match ::calimero_storage::collections::Mergeable::merge(&mut local, &remote) {
+                    // CRITICAL: Use merge mode to prevent timestamp generation during merge.
+                    // Without this, different nodes generate different timestamps, causing
+                    // hash divergence even when logical state is identical.
+                    let merge_outcome = ::calimero_storage::env::with_merge_mode(|| {
+                        ::calimero_storage::collections::Mergeable::merge(&mut local, &remote)
+                    });
+                    match merge_outcome {
                         Ok(()) => {
                             match ::calimero_sdk::borsh::to_vec(&local) {
                                 Ok(bytes) => __MergeResultInternal::Success(bytes),

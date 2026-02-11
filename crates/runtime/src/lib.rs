@@ -632,6 +632,18 @@ impl RuntimeMergeCallback {
         let instance = Instance::new(&mut store, &self.module, &imports)
             .map_err(|e| WasmMergeError::MergeFailed(format!("Instance creation failed: {e}")))?;
 
+        // Call the registration hook to populate the merge registry.
+        // This is required before calling __calimero_merge, which looks up
+        // merge functions by type name in the registry.
+        if let Ok(register_fn) = instance
+            .exports
+            .get_typed_function::<(), ()>(&store, "__calimero_register_merge")
+        {
+            register_fn.call(&mut store).map_err(|e| {
+                WasmMergeError::MergeFailed(format!("Registration hook failed: {e}"))
+            })?;
+        }
+
         // Get memory export
         let memory = instance
             .exports

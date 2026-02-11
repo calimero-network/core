@@ -93,9 +93,14 @@ impl MergeRegistry {
             let incoming_state = borsh::from_slice::<T>(incoming)
                 .map_err(|e| format!("Failed to deserialize incoming state: {e}"))?;
 
-            existing_state
-                .merge(&incoming_state)
-                .map_err(|e| format!("Merge failed: {e}"))?;
+            // CRITICAL: Use merge mode to prevent timestamp generation during merge.
+            // Without this, different nodes generate different timestamps, causing
+            // hash divergence even when logical state is identical.
+            crate::env::with_merge_mode(|| {
+                existing_state
+                    .merge(&incoming_state)
+                    .map_err(|e| format!("Merge failed: {e}"))
+            })?;
 
             borsh::to_vec(&existing_state).map_err(|e| format!("Serialization failed: {e}").into())
         };
