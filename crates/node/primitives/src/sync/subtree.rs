@@ -84,9 +84,13 @@ pub struct SubtreePrefetchRequest {
 
     /// Maximum depth to traverse within each subtree (None = unlimited).
     ///
-    /// Use `depth()` accessor which always clamps to MAX_SUBTREE_DEPTH.
-    /// Use `with_depth()` constructor to set a depth limit.
-    pub max_depth: Option<usize>,
+    /// This field is private to enforce validation. Use constructors and accessors:
+    /// - `new()` / `with_depth()` / `unlimited_depth()` - create requests with validated depth
+    /// - `depth()` - get clamped value (always <= MAX_SUBTREE_DEPTH)
+    ///
+    /// This prevents DoS attacks where an attacker sends a request with an
+    /// extremely large depth value to cause resource exhaustion.
+    max_depth: Option<usize>,
 }
 
 impl SubtreePrefetchRequest {
@@ -126,12 +130,14 @@ impl SubtreePrefetchRequest {
     /// Get the validated depth limit.
     ///
     /// Always clamps to MAX_SUBTREE_DEPTH, even if raw field was set to a larger
-    /// value (e.g., via deserialization from an untrusted source).
+    /// value (e.g., via deserialization from an untrusted source). Returns
+    /// MAX_SUBTREE_DEPTH when no depth limit was set (unlimited_depth).
     ///
     /// Use this instead of accessing `max_depth` directly when processing requests.
     #[must_use]
-    pub fn depth(&self) -> Option<usize> {
-        self.max_depth.map(|d| d.min(MAX_SUBTREE_DEPTH))
+    pub fn depth(&self) -> usize {
+        self.max_depth
+            .map_or(MAX_SUBTREE_DEPTH, |d| d.min(MAX_SUBTREE_DEPTH))
     }
 
     /// Number of subtrees requested.
@@ -149,10 +155,12 @@ impl SubtreePrefetchRequest {
     /// Check if request is within valid bounds.
     ///
     /// Call this after deserializing from untrusted sources to prevent
-    /// resource exhaustion attacks.
+    /// resource exhaustion attacks. Validates both subtree roots count and
+    /// max_depth limit.
     #[must_use]
     pub fn is_valid(&self) -> bool {
         self.subtree_roots.len() <= MAX_SUBTREES_PER_REQUEST
+            && self.max_depth.map_or(true, |d| d <= MAX_SUBTREE_DEPTH)
     }
 }
 
@@ -435,7 +443,7 @@ mod tests {
         let request = SubtreePrefetchRequest::with_depth(roots, 10);
 
         assert_eq!(request.max_depth, Some(10));
-        assert_eq!(request.depth(), Some(10));
+        assert_eq!(request.depth(), 10);
     }
 
     #[test]
@@ -444,7 +452,7 @@ mod tests {
         let request = SubtreePrefetchRequest::with_depth(roots, 0);
 
         assert_eq!(request.max_depth, Some(0));
-        assert_eq!(request.depth(), Some(0));
+        assert_eq!(request.depth(), 0);
     }
 
     #[test]
@@ -464,11 +472,11 @@ mod tests {
         let mut request = SubtreePrefetchRequest::new(vec![[1u8; 32]]);
         request.max_depth = Some(usize::MAX); // Simulate untrusted deserialization
 
-        assert_eq!(request.depth(), Some(MAX_SUBTREE_DEPTH));
+        assert_eq!(request.depth(), MAX_SUBTREE_DEPTH);
 
-        // Test None case
+        // Test None case - depth() should return MAX_SUBTREE_DEPTH for unlimited
         let request_none = SubtreePrefetchRequest::unlimited_depth(vec![[1u8; 32]]);
-        assert_eq!(request_none.depth(), None);
+        assert_eq!(request_none.depth(), MAX_SUBTREE_DEPTH);
     }
 
     #[test]
@@ -477,7 +485,8 @@ mod tests {
         let request = SubtreePrefetchRequest::unlimited_depth(roots);
 
         assert!(request.max_depth.is_none());
-        assert!(request.depth().is_none());
+        // depth() should return MAX_SUBTREE_DEPTH when max_depth is None
+        assert_eq!(request.depth(), MAX_SUBTREE_DEPTH);
     }
 
     #[test]
@@ -891,7 +900,10 @@ mod tests {
         let mut request = SubtreePrefetchRequest::new(vec![[1u8; 32]]);
         request.max_depth = Some(usize::MAX); // Simulate untrusted deserialization
 
-        assert_eq!(request.depth(), Some(MAX_SUBTREE_DEPTH));
+        assert_eq!(request.depth(), MAX_SUBTREE_DEPTH);
+
+        // is_valid() should reject requests with excessive max_depth
+        assert!(!request.is_valid());
     }
 
     #[test]
