@@ -41,6 +41,10 @@ pub enum ProposalsSubcommand {
             default_value = "20"
         )]
         limit: usize,
+
+        /// Display the latest proposal only (shorthand for --limit 1)
+        #[arg(long, short, help = "Display the latest proposal only")]
+        latest: bool,
     },
     #[command(about = "Create a proposal and immediately approve it")]
     CreateAndApprove {
@@ -88,8 +92,12 @@ impl ProposalsCommand {
             ProposalsSubcommand::List {
                 context,
                 offset,
-                limit,
+                mut limit,
+                latest,
             } => {
+                if latest {
+                    limit = 1;
+                }
                 let client = environment.client()?;
 
                 let context_id = client
