@@ -174,10 +174,15 @@ pub fn check_convergence(input: &ConvergenceInput) -> ConvergenceResult {
         *digest_counts.entry(node.digest).or_default() += 1;
     }
 
-    // Find majority
+    // Find majority with deterministic tiebreaker (sort by digest value on ties)
     let majority_digest = digest_counts
         .iter()
-        .max_by_key(|(_, count)| *count)
+        .max_by(|(d1, c1), (d2, c2)| {
+            c1.cmp(c2).then_with(|| {
+                // On count tie, use lexicographic ordering of digest bytes for determinism
+                d1.0.cmp(&d2.0)
+            })
+        })
         .map(|(digest, _)| *digest);
 
     // Find differing nodes
@@ -387,5 +392,42 @@ mod tests {
             nodes: vec![node, make_node("b", [2; 32])],
         };
         assert!(is_deadlocked(&input, true));
+    }
+
+    #[test]
+    fn test_majority_digest_tiebreaker() {
+        // With two digests having equal count, should deterministically pick
+        // the lexicographically greater digest (for consistent results)
+        let input = ConvergenceInput {
+            in_flight_messages: 0,
+            nodes: vec![
+                make_node("a", [1; 32]), // digest [1; 32]
+                make_node("b", [2; 32]), // digest [2; 32]
+            ],
+        };
+
+        let result = check_convergence(&input);
+        if let ConvergenceResult::Diverged(diff) = result {
+            // With tie, should pick the lexicographically greater digest [2; 32]
+            assert_eq!(
+                diff.majority_digest,
+                Some(StateDigest::from_bytes([2; 32])),
+                "Majority should be deterministic on tie"
+            );
+        } else {
+            panic!("Expected diverged result");
+        }
+
+        // Run multiple times to verify determinism
+        for _ in 0..10 {
+            let result = check_convergence(&input);
+            if let ConvergenceResult::Diverged(diff) = result {
+                assert_eq!(
+                    diff.majority_digest,
+                    Some(StateDigest::from_bytes([2; 32])),
+                    "Majority should be consistent across calls"
+                );
+            }
+        }
     }
 }
