@@ -49,42 +49,6 @@ impl Default for RelayerConfig {
             },
         ));
 
-        // Default Starknet configuration (disabled by default)
-        drop(protocols.insert(
-            protocols::starknet::NAME.to_owned(),
-            ProtocolConfig {
-                enabled: false,
-                network: protocols::starknet::DEFAULT_NETWORK.to_owned(),
-                rpc_url: protocols::starknet::DEFAULT_RPC_URL.parse().unwrap(),
-                contract_id: protocols::starknet::DEFAULT_CONTRACT_ID.to_owned(),
-                credentials: None,
-            },
-        ));
-
-        // Default ICP configuration (disabled by default)
-        drop(protocols.insert(
-            protocols::icp::NAME.to_owned(),
-            ProtocolConfig {
-                enabled: false,
-                network: protocols::icp::DEFAULT_NETWORK.to_owned(),
-                rpc_url: protocols::icp::DEFAULT_RPC_URL.parse().unwrap(),
-                contract_id: protocols::icp::DEFAULT_CONTRACT_ID.to_owned(),
-                credentials: None,
-            },
-        ));
-
-        // Default Ethereum configuration (disabled by default)
-        drop(protocols.insert(
-            protocols::ethereum::NAME.to_owned(),
-            ProtocolConfig {
-                enabled: false,
-                network: protocols::ethereum::DEFAULT_NETWORK.to_owned(),
-                rpc_url: protocols::ethereum::DEFAULT_RPC_URL.parse().unwrap(),
-                contract_id: protocols::ethereum::DEFAULT_CONTRACT_ID.to_owned(),
-                credentials: None,
-            },
-        ));
-
         // Default Mock Relayer configuration (disabled by default)
         drop(protocols.insert(
             protocols::mock_relayer::NAME.to_owned(),

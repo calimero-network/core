@@ -9,18 +9,11 @@ license.workspace = true
 publish = true
 
 [dependencies]
-alloy = { workspace = true, optional = true }
-alloy-sol-types = { workspace = true, optional = true }
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
-candid = { workspace = true, optional = true }
-ed25519-consensus = { workspace = true, optional = true }
 ed25519-dalek.workspace = true
 either = { workspace = true, optional = true }
-ethabi = { workspace = true, optional = true }
 eyre = { workspace = true, optional = true }
-hex = { workspace = true, optional = true }
-ic-agent = { workspace = true, optional = true }
 near-crypto = { workspace = true, optional = true }
 near-jsonrpc-client = { workspace = true, optional = true }
 near-jsonrpc-primitives = { workspace = true, optional = true }
@@ -28,20 +21,14 @@ near-primitives = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-starknet = { workspace = true, optional = true }
-starknet-crypto = { workspace = true, optional = true }
-starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "macros"], optional = true }
 url = { workspace = true, optional = true }
+
 [features]
 default = []
 
 client = [
   "near_client",
-  "icp_client",
-  "starknet_client",
-  "ethereum_client",
   "dep:either",
   "dep:eyre",
   "reqwest/json",
@@ -49,20 +36,3 @@ client = [
 ]
 
 near_client = ["dep:near-crypto", "dep:near-jsonrpc-client", "dep:near-jsonrpc-primitives", "dep:near-primitives"]
-
-icp = ["candid"]
-
-icp_client = ["icp", "dep:ic-agent", "dep:ed25519-consensus"]
-
-starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-crypto", "dep:starknet-types-core"]
-
-ethereum = [
-  "alloy",
-  "alloy-sol-types",
-  "ethabi",
-  "dep:tokio"
-]
-
-ethereum_client = [
-  "ethereum"
-]

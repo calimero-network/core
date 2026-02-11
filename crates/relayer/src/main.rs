@@ -49,11 +49,7 @@ use prometheus_client::registry::Registry;
 /// Only known protocols are tracked individually, others are aggregated as "other"
 fn normalize_protocol_name(protocol: &str) -> &str {
     match protocol {
-        protocols::near::NAME
-        | protocols::starknet::NAME
-        | protocols::icp::NAME
-        | protocols::ethereum::NAME
-        | protocols::mock_relayer::NAME => protocol,
+        protocols::near::NAME | protocols::mock_relayer::NAME => protocol,
         _ => "other",
     }
 }

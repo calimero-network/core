@@ -2072,18 +2072,11 @@ dependencies = [
 name = "calimero-context-config"
 version = "0.0.0"
 dependencies = [
- "alloy",
- "alloy-sol-types",
  "borsh",
  "bs58 0.5.1",
- "candid",
- "ed25519-consensus",
  "ed25519-dalek",
  "either",
- "ethabi",
  "eyre",
- "hex",
- "ic-agent",
  "near-crypto",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
@@ -2091,11 +2084,7 @@ dependencies = [
  "reqwest 0.12.24",
  "serde",
  "serde_json",
- "starknet",
- "starknet-crypto",
- "starknet-types-core",
  "thiserror 1.0.69",
- "tokio",
  "url",
 ]
 
@@ -4047,23 +4036,6 @@ dependencies = [
  "sha3",
  "thiserror 1.0.69",
  "uuid 0.8.2",
-]
-
-[[package]]
-name = "ethabi"
-version = "18.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7413c5f74cc903ea37386a8965a936cbeb334bd270862fdece542c1b2dcbc898"
-dependencies = [
- "ethereum-types",
- "hex",
- "once_cell",
- "regex",
- "serde",
- "serde_json",
- "sha3",
- "thiserror 1.0.69",
- "uint 0.9.5",
 ]
 
 [[package]]

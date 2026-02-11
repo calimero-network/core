@@ -23,34 +23,6 @@ pub mod protocols {
         // Note: All credentials must be provided via environment variables
     }
 
-    /// Starknet Protocol configuration  
-    pub mod starknet {
-        pub const NAME: &str = "starknet";
-        pub const DEFAULT_NETWORK: &str = "sepolia";
-        pub const DEFAULT_RPC_URL: &str = "https://free-rpc.nethermind.io/sepolia-juno/";
-        pub const DEFAULT_CONTRACT_ID: &str =
-            "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c";
-        // Note: All credentials must be provided via environment variables
-    }
-
-    /// ICP Protocol configuration
-    pub mod icp {
-        pub const NAME: &str = "icp";
-        pub const DEFAULT_NETWORK: &str = "local";
-        pub const DEFAULT_RPC_URL: &str = "http://127.0.0.1:4943";
-        pub const DEFAULT_CONTRACT_ID: &str = "bkyz2-fmaaa-aaaaa-qaaaq-cai";
-        // Note: All credentials must be provided via environment variables
-    }
-
-    /// Ethereum Protocol configuration
-    pub mod ethereum {
-        pub const NAME: &str = "ethereum";
-        pub const DEFAULT_NETWORK: &str = "sepolia";
-        pub const DEFAULT_RPC_URL: &str = "https://sepolia.drpc.org";
-        pub const DEFAULT_CONTRACT_ID: &str = "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB";
-        // Note: All credentials must be provided via environment variables
-    }
-
     /// Mock Relayer Protocol configuration
     pub mod mock_relayer {
         pub const NAME: &str = "mock-relayer";

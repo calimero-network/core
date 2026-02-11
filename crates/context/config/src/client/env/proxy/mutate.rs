@@ -110,15 +110,9 @@ impl<'a, T> ContextProxyMutate<'a, T> {
 
 // Protocol-specific implementations
 // These modules contain the actual Method trait implementations for each blockchain protocol
-#[cfg(feature = "ethereum_client")]
-mod ethereum;
-#[cfg(feature = "icp_client")]
-mod icp;
 mod mock_relayer;
 #[cfg(feature = "near_client")]
 mod near;
-#[cfg(feature = "starknet_client")]
-mod starknet;
 
 impl<'a, T: Transport> ContextProxyMutateRequest<'a, T> {
     /// Sends the mutation request with the provided signing key.

@@ -16,11 +16,8 @@ mod utils {
     #![expect(clippy::type_repetition_in_bounds, reason = "Useful for clarity")]
 
     use super::Method;
-    use crate::client::protocol::ethereum::Ethereum;
-    use crate::client::protocol::icp::Icp;
     use crate::client::protocol::mock_relayer::MockRelayer;
     use crate::client::protocol::near::Near;
-    use crate::client::protocol::starknet::Starknet;
     use crate::client::protocol::Protocol;
     use crate::client::transport::Transport;
     use crate::client::{CallClient, ClientError, Operation};
@@ -32,24 +29,15 @@ mod utils {
     ) -> Result<R, ClientError<T>>
     where
         M: Method<Near, Returns = R>,
-        M: Method<Starknet, Returns = R>,
-        M: Method<Icp, Returns = R>,
-        M: Method<Ethereum, Returns = R>,
         M: Method<MockRelayer, Returns = R>,
     {
         match &*client.protocol {
             Near::PROTOCOL => client.send::<Near, _>(params).await,
-            Starknet::PROTOCOL => client.send::<Starknet, _>(params).await,
-            Icp::PROTOCOL => client.send::<Icp, _>(params).await,
-            Ethereum::PROTOCOL => client.send::<Ethereum, _>(params).await,
             MockRelayer::PROTOCOL => client.send::<MockRelayer, _>(params).await,
             unsupported_protocol => Err(ClientError::UnsupportedProtocol {
                 found: unsupported_protocol.to_owned(),
                 expected: vec![
                     Near::PROTOCOL.into(),
-                    Starknet::PROTOCOL.into(),
-                    Icp::PROTOCOL.into(),
-                    Ethereum::PROTOCOL.into(),
                     MockRelayer::PROTOCOL.into(),
                 ]
                 .into(),
