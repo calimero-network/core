@@ -19,10 +19,17 @@ use cli::RootCommand;
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
-    // Used by integration test to verify panic hook logs structured info without panicking in-process.
-    if std::env::var("MEROD_TEST_PANIC").as_deref() == Ok("1") {
-        setup()?;
-        panic!("test panic message");
+    // Used by integration tests to verify panic hook logs structured info without panicking in-process.
+    match std::env::var("MEROD_TEST_PANIC").as_deref() {
+        Ok("1") => {
+            setup()?;
+            panic!("test panic message");
+        }
+        Ok("string") => {
+            setup()?;
+            std::panic::panic_any(String::from("string payload panic"));
+        }
+        _ => {}
     }
 
     setup()?;
