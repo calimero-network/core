@@ -179,6 +179,9 @@ impl Scenario {
     /// Rule 5: Large tree + small diff → BloomFilter.
     ///
     /// Creates nodes with mostly shared state and small difference.
+    ///
+    /// Requirements for Rule 5: `entity_count > 50 AND divergence < 10% AND NOT (max_depth > 3)`
+    /// Since Rule 4 (SubtreePrefetch) fires when `max_depth > 3`, we must set depth ≤ 3.
     pub fn force_bloom_filter() -> (SimNode, SimNode) {
         let mut a = SimNode::new("a");
         let mut b = SimNode::new("b");
@@ -195,6 +198,10 @@ impl Scenario {
             b.insert_entity_with_metadata(id, data, metadata);
         }
 
+        // Override depth to 3 to avoid triggering Rule 4 (SubtreePrefetch requires depth > 3)
+        a.set_handshake_depth(3);
+        b.set_handshake_depth(3);
+
         assert!(b.entity_count() > 50);
         (a, b)
     }
@@ -202,6 +209,9 @@ impl Scenario {
     /// Rule 6: Wide shallow tree → LevelWise.
     ///
     /// Creates shallow tree structures.
+    ///
+    /// Requirements for Rule 6: `max_depth 1-2 AND avg_children/level > 10`
+    /// We must override depth to 2 to ensure Rule 4 (SubtreePrefetch) doesn't fire first.
     pub fn force_levelwise() -> (SimNode, SimNode) {
         let mut a = SimNode::new("a");
         let mut b = SimNode::new("b");
@@ -213,6 +223,11 @@ impl Scenario {
         for (id, data, metadata) in generate_shallow_wide_tree(40, 2, 2) {
             b.insert_entity_with_metadata(id, data, metadata);
         }
+
+        // Override depth to 2 to avoid triggering Rule 4 (SubtreePrefetch requires depth > 3)
+        // and to match Rule 6 requirements (max_depth 1-2)
+        a.set_handshake_depth(2);
+        b.set_handshake_depth(2);
 
         (a, b)
     }
