@@ -412,9 +412,13 @@ impl SimRuntime {
                     return true;
                 }
 
-                // Check timer still exists (might have been cancelled)
-                if sim_node.get_timer(timer_id_typed).is_none() {
-                    return true;
+                // Check timer still exists and fire_time matches (handles rescheduled timers)
+                // If the timer was rescheduled, the stored fire_time won't match this event's time
+                let timer = sim_node.get_timer(timer_id_typed);
+                match timer {
+                    None => return true,                                   // Timer was cancelled
+                    Some(entry) if entry.fire_time != time => return true, // Stale event from before reschedule
+                    Some(_) => {}                                          // Valid timer fire
                 }
 
                 // Remove the fired timer from the node
