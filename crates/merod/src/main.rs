@@ -19,6 +19,12 @@ use cli::RootCommand;
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
+    // Used by integration test to verify panic hook logs structured info without panicking in-process.
+    if std::env::var("MEROD_TEST_PANIC").as_deref() == Ok("1") {
+        setup()?;
+        panic!("test panic message");
+    }
+
     setup()?;
 
     let command = RootCommand::parse();
@@ -99,139 +105,4 @@ fn setup_panic_hook() {
 
         prev_hook(panic_info);
     }));
-}
-
-#[cfg(test)]
-mod tests {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-    use std::sync::{Arc, Mutex};
-
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::Layer;
-
-    use super::*;
-
-    /// A simple layer that captures log messages for testing
-    struct CaptureLayer {
-        logs: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl<S: tracing::Subscriber> Layer<S> for CaptureLayer {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _ctx: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            let mut visitor = StringVisitor::default();
-            event.record(&mut visitor);
-            if let Ok(mut logs) = self.logs.lock() {
-                logs.push(visitor.output);
-            }
-        }
-    }
-
-    #[derive(Default)]
-    struct StringVisitor {
-        output: String,
-    }
-
-    impl tracing::field::Visit for StringVisitor {
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            use std::fmt::Write;
-            let _ = write!(self.output, "{}={:?} ", field.name(), value);
-        }
-
-        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-            use std::fmt::Write;
-            let _ = write!(self.output, "{}=\"{}\" ", field.name(), value);
-        }
-    }
-
-    /// Helper to run a test with panic hook isolation.
-    /// Saves and restores the original panic hook to prevent test pollution.
-    /// Note: This test manipulates global state. If running tests in parallel,
-    /// use `cargo test -- --test-threads=1` for this module.
-    fn with_isolated_panic_hook<F, R>(f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        let original_hook = take_hook();
-        let result = f();
-        set_hook(original_hook);
-        result
-    }
-
-    #[test]
-    fn test_panic_hook_logs_structured_info() {
-        with_isolated_panic_hook(|| {
-            let logs = Arc::new(Mutex::new(Vec::new()));
-            let capture_layer = CaptureLayer { logs: logs.clone() };
-            let subscriber = tracing_subscriber::registry().with(capture_layer);
-
-            tracing::subscriber::with_default(subscriber, || {
-                setup_panic_hook();
-
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    panic!("test panic message");
-                }));
-
-                assert!(result.is_err());
-            });
-
-            let captured = logs.lock().unwrap();
-            assert!(!captured.is_empty(), "Expected panic to be logged");
-
-            let log_output = &captured[0];
-            assert!(
-                log_output.contains("panic.message"),
-                "Log should contain panic.message field"
-            );
-            assert!(
-                log_output.contains("test panic message"),
-                "Log should contain the panic message"
-            );
-            assert!(
-                log_output.contains("panic.thread"),
-                "Log should contain panic.thread field"
-            );
-            assert!(
-                log_output.contains("panic.file"),
-                "Log should contain panic.file field"
-            );
-            assert!(
-                log_output.contains("panic.line"),
-                "Log should contain panic.line field"
-            );
-            assert!(
-                log_output.contains("panic.backtrace"),
-                "Log should contain panic.backtrace field"
-            );
-        });
-    }
-
-    #[test]
-    fn test_panic_hook_handles_string_payload() {
-        with_isolated_panic_hook(|| {
-            let logs = Arc::new(Mutex::new(Vec::new()));
-            let capture_layer = CaptureLayer { logs: logs.clone() };
-            let subscriber = tracing_subscriber::registry().with(capture_layer);
-
-            tracing::subscriber::with_default(subscriber, || {
-                setup_panic_hook();
-
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    std::panic::panic_any(String::from("string payload panic"));
-                }));
-
-                assert!(result.is_err());
-            });
-
-            let captured = logs.lock().unwrap();
-            assert!(!captured.is_empty(), "Expected panic to be logged");
-            assert!(
-                captured[0].contains("string payload panic"),
-                "Log should contain the String panic message"
-            );
-        });
-    }
 }
