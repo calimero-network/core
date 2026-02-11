@@ -64,10 +64,18 @@ struct ActivePartition {
     /// The partition specification.
     spec: PartitionSpec,
     /// When the partition started.
-    #[allow(dead_code)]
     start_time: SimTime,
     /// When the partition ends (None = permanent until explicitly removed).
     end_time: Option<SimTime>,
+}
+
+impl ActivePartition {
+    /// Check if this partition is active at the given time.
+    fn is_active_at(&self, now: SimTime) -> bool {
+        let started = self.start_time <= now;
+        let not_ended = self.end_time.map_or(true, |end| end > now);
+        started && not_ended
+    }
 }
 
 /// Manages active network partitions.
@@ -115,13 +123,13 @@ impl PartitionManager {
 
     /// Check if communication from `from` to `to` is blocked at time `now`.
     pub fn is_partitioned(&mut self, from: &NodeId, to: &NodeId, now: SimTime) -> bool {
-        // Remove expired partitions
+        // Remove fully expired partitions (end_time has passed)
         self.partitions
             .retain(|p| p.end_time.map_or(true, |end| end > now));
 
-        // Check each active partition
+        // Check each partition that is active at this time
         for partition in &self.partitions {
-            if partition.spec.blocks(from, to) {
+            if partition.is_active_at(now) && partition.spec.blocks(from, to) {
                 return true;
             }
         }
@@ -129,12 +137,25 @@ impl PartitionManager {
         false
     }
 
-    /// Get number of active partitions.
+    /// Get number of active partitions at the given time.
+    pub fn partition_count_at(&self, now: SimTime) -> usize {
+        self.partitions
+            .iter()
+            .filter(|p| p.is_active_at(now))
+            .count()
+    }
+
+    /// Get number of stored partitions (may include not-yet-started or expired).
     pub fn partition_count(&self) -> usize {
         self.partitions.len()
     }
 
-    /// Check if there are any active partitions.
+    /// Check if there are any active partitions at the given time.
+    pub fn has_partitions_at(&self, now: SimTime) -> bool {
+        self.partitions.iter().any(|p| p.is_active_at(now))
+    }
+
+    /// Check if there are any stored partitions.
     pub fn has_partitions(&self) -> bool {
         !self.partitions.is_empty()
     }
@@ -150,7 +171,7 @@ impl PartitionManager {
         let mut blocked = Vec::new();
 
         for partition in &self.partitions {
-            if partition.end_time.map_or(true, |end| end > now) {
+            if partition.is_active_at(now) {
                 for from in nodes {
                     for to in nodes {
                         if from != to && partition.spec.blocks(from, to) {
