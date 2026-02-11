@@ -199,18 +199,16 @@ mod tests {
         let a = rt.add_node("alice");
         let b = rt.add_node("bob");
 
-        // All messages should be lost
-        rt.inject_message(
-            a,
-            b,
-            SyncMessage::SyncComplete { success: true },
-            SimDuration::from_millis(10),
-        )
-        .expect("sender node should exist");
+        // Send message through network router (with fault injection)
+        rt.send_message(a, b, SyncMessage::SyncComplete { success: true })
+            .expect("sender node should exist");
 
-        // Queue should be empty (message lost at send time)
-        // Note: The inject_message uses node's next_message_id, then routes through network
-        // But with 100% loss, message is dropped
+        // Verify message was dropped due to loss
+        assert_eq!(
+            rt.network().metrics.messages_dropped_loss,
+            1,
+            "Message should have been dropped due to 100% loss rate"
+        );
     }
 
     // =========================================================================

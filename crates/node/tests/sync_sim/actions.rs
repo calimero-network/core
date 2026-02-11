@@ -203,6 +203,63 @@ pub enum SyncMessage {
     SyncError { code: u32, message: String },
 }
 
+impl SyncMessage {
+    /// Estimate the total size of this message including heap allocations.
+    ///
+    /// This provides a rough approximation of the wire-format size for metrics.
+    pub fn estimated_size(&self) -> usize {
+        use std::mem::size_of;
+
+        // Base stack size of the enum
+        let base = size_of::<Self>();
+
+        // Add heap allocation sizes for each variant
+        let heap_size = match self {
+            SyncMessage::Handshake(req) => req.dag_heads.len() * size_of::<DeltaId>(),
+            SyncMessage::HandshakeResponse(resp) => resp.reason.len(),
+            SyncMessage::SnapshotRequest { .. } => 0,
+            SyncMessage::SnapshotPage { entities, .. } => entities
+                .iter()
+                .map(|e| e.data.len() + size_of::<EntityTransfer>())
+                .sum(),
+            SyncMessage::SnapshotComplete { error, .. } => {
+                error.as_ref().map(|s| s.len()).unwrap_or(0)
+            }
+            SyncMessage::HashCompareRequest { .. } => 0,
+            SyncMessage::HashCompareResponse { children, .. } => {
+                children.len() * size_of::<([u8; 32], bool)>()
+            }
+            SyncMessage::EntityRequest { ids } => ids.len() * size_of::<EntityId>(),
+            SyncMessage::EntityResponse { entities } => entities
+                .iter()
+                .map(|e| e.data.len() + size_of::<EntityTransfer>())
+                .sum(),
+            SyncMessage::DeltaHeads { heads } => heads.len() * size_of::<DeltaId>(),
+            SyncMessage::DeltaRequest { ids } => ids.len() * size_of::<DeltaId>(),
+            SyncMessage::DeltaResponse { deltas } => deltas
+                .iter()
+                .map(|d| {
+                    d.parents.len() * size_of::<DeltaId>()
+                        + d.operations
+                            .iter()
+                            .map(|op| match op {
+                                StorageOp::Insert { data, .. } | StorageOp::Update { data, .. } => {
+                                    data.len() + size_of::<StorageOp>()
+                                }
+                                StorageOp::Remove { .. } => size_of::<StorageOp>(),
+                            })
+                            .sum::<usize>()
+                        + size_of::<DeltaTransfer>()
+                })
+                .sum(),
+            SyncMessage::SyncComplete { .. } => 0,
+            SyncMessage::SyncError { message, .. } => message.len(),
+        };
+
+        base + heap_size
+    }
+}
+
 /// Handshake request (initiator → responder).
 #[derive(Debug, Clone)]
 pub struct HandshakeRequest {
