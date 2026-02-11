@@ -170,9 +170,10 @@ impl DeltaIdBloomFilter {
     /// Insert an ID into the filter.
     ///
     /// Computes hash positions inline to avoid Vec allocation.
+    /// Silently returns if filter is invalid (use `is_valid()` to check).
     pub fn insert(&mut self, id: &[u8; 32]) {
-        // Guard against invalid filter state
-        if self.num_bits == 0 || self.num_hashes == 0 {
+        // Guard against invalid filter state (including malicious deserialization)
+        if !self.is_valid() {
             return;
         }
 
@@ -182,7 +183,10 @@ impl DeltaIdBloomFilter {
             let pos = self.position_at(h1, h2, i);
             let byte_idx = pos / 8;
             let bit_idx = pos % 8;
-            self.bits[byte_idx] |= 1 << bit_idx;
+            // Defense-in-depth: bounds check (should never fail if is_valid() passed)
+            if byte_idx < self.bits.len() {
+                self.bits[byte_idx] |= 1 << bit_idx;
+            }
         }
         self.item_count += 1;
     }
@@ -193,10 +197,11 @@ impl DeltaIdBloomFilter {
     /// Returns `false` if the ID is definitely not in the set.
     ///
     /// Computes hash positions inline to avoid Vec allocation.
+    /// Returns `false` if filter is invalid (use `is_valid()` to check).
     #[must_use]
     pub fn contains(&self, id: &[u8; 32]) -> bool {
-        // Invalid filter should return false
-        if self.num_bits == 0 || self.num_hashes == 0 {
+        // Guard against invalid filter state (including malicious deserialization)
+        if !self.is_valid() {
             return false;
         }
 
@@ -206,6 +211,10 @@ impl DeltaIdBloomFilter {
             let pos = self.position_at(h1, h2, i);
             let byte_idx = pos / 8;
             let bit_idx = pos % 8;
+            // Defense-in-depth: bounds check (should never fail if is_valid() passed)
+            if byte_idx >= self.bits.len() {
+                return false;
+            }
             if self.bits[byte_idx] & (1 << bit_idx) == 0 {
                 return false;
             }
@@ -256,11 +265,19 @@ impl DeltaIdBloomFilter {
     /// Constructors (`new()`, `with_params()`) always create valid filters,
     /// but deserialization can produce invalid state.
     ///
-    /// Returns `false` if `num_bits` is 0 (would cause division by zero)
-    /// or `num_hashes` is 0 (filter would always return true).
+    /// Returns `false` if:
+    /// - `num_bits` is 0 (would cause division by zero)
+    /// - `num_hashes` is 0 (filter would always return true)
+    /// - `bits.len() * 8 < num_bits` (would cause out-of-bounds access)
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.num_bits > 0 && self.num_hashes > 0
+        if self.num_bits == 0 || self.num_hashes == 0 {
+            return false;
+        }
+        // Check structural consistency: bits array must be large enough
+        // to hold num_bits bits. Required bytes = (num_bits + 7) / 8
+        let required_bytes = (self.num_bits + 7) / 8;
+        self.bits.len() >= required_bytes
     }
 }
 
@@ -716,5 +733,50 @@ mod tests {
             !filter.is_valid(),
             "Filter with num_hashes=0 should be invalid"
         );
+    }
+
+    #[test]
+    fn test_bloom_filter_malicious_deserialization_bits_too_small() {
+        // HIGH SEVERITY: Simulate attack where num_bits exceeds bits.len() * 8
+        // This would cause out-of-bounds panic without proper validation
+
+        let mut bytes = Vec::new();
+        // bits: Vec<u8> - only 1 byte (8 bits of actual storage)
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // length = 1
+        bytes.push(0u8); // only 1 byte = 8 bits
+                         // num_bits: usize - MALICIOUS: claims 1 million bits!
+        bytes.extend_from_slice(&1_000_000usize.to_le_bytes());
+        // num_hashes: u8
+        bytes.push(4);
+        // item_count: usize
+        bytes.extend_from_slice(&0usize.to_le_bytes());
+
+        let filter: DeltaIdBloomFilter = borsh::from_slice(&bytes).expect("deserialize");
+
+        // is_valid() MUST detect this attack
+        assert!(
+            !filter.is_valid(),
+            "Filter with bits.len()=1 but num_bits=1000000 should be invalid"
+        );
+
+        // Operations MUST NOT panic, even on invalid filter
+        let id = [0xAB; 32];
+        // contains() should safely return false without panicking
+        assert!(!filter.contains(&id));
+
+        // insert() should safely do nothing without panicking
+        let mut filter_mut = filter;
+        filter_mut.insert(&id); // Should not panic!
+    }
+
+    #[test]
+    fn test_bloom_filter_structural_consistency() {
+        // Test that valid filters pass structural consistency check
+        let filter = DeltaIdBloomFilter::new(100, 0.01);
+        assert!(filter.is_valid());
+
+        // bits.len() should be >= (num_bits + 7) / 8
+        let required_bytes = (filter.bit_count() + 7) / 8;
+        assert!(filter.bits().len() >= required_bytes);
     }
 }
