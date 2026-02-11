@@ -5,15 +5,15 @@
 //!
 //! ## Categories (from issue #1785)
 //!
-//! - Negotiation compliance
-//! - Buffering compliance  
-//! - CRDT merge compliance
-//! - Convergence compliance
-//! - Security compliance
+//! - `negotiation.rs` - CIP §2.3 Protocol negotiation compliance
+//! - Buffering compliance (TODO)
+//! - CRDT merge compliance (TODO)
+//! - Convergence compliance (TODO)
+//! - Security compliance (TODO)
 //!
 //! ## Adding Tests
 //!
 //! See `../sync_sim/AGENT_GUIDE.md` for framework usage.
 //! Each test should reference the specific CIP section it validates.
 
-// Compliance tests will be added when implementing issue #1785
+pub mod negotiation;

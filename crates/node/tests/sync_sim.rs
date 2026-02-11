@@ -31,6 +31,12 @@
 #[path = "sync_sim/mod.rs"]
 pub mod sync_sim;
 
+#[path = "sync_scenarios/mod.rs"]
+pub mod sync_scenarios;
+
+#[path = "sync_compliance/mod.rs"]
+pub mod sync_compliance;
+
 // Re-export prelude for convenience
 pub use sync_sim::prelude::*;
 
