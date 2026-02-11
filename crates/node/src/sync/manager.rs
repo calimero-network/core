@@ -1404,9 +1404,12 @@ impl SyncManager {
         self.node_state
             .start_sync_session(context_id, sync_start_hlc);
 
-        // force=true: This is divergence recovery where existing state is expected
+        // force=false: Enforce Invariant I5 - only allow snapshot on fresh nodes.
+        // If the node has state, this will fail, which is correct - divergence
+        // or pruned history on initialized nodes cannot be safely resolved via
+        // snapshot overwrite. CRDT merge must be used instead.
         let result = self
-            .request_snapshot_sync(context_id, peer_id, true)
+            .request_snapshot_sync(context_id, peer_id, false)
             .await?;
         info!(%context_id, records = result.applied_records, "Snapshot sync completed");
 
