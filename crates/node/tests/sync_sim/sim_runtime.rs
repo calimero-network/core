@@ -512,6 +512,9 @@ impl SimRuntime {
     // =========================================================================
 
     /// Inject a message directly into the queue.
+    ///
+    /// Note: This bypasses fault injection (loss, reorder, etc.) but properly
+    /// accounts for the message in convergence tracking.
     pub fn inject_message(
         &mut self,
         from: NodeId,
@@ -534,6 +537,9 @@ impl SimRuntime {
                 msg_id,
             },
         );
+
+        // Track in-flight message for convergence checking
+        self.network.increment_in_flight();
     }
 
     /// Crash a node after delay.

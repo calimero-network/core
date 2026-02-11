@@ -124,6 +124,11 @@ impl NetworkRouter {
         self.in_flight_count
     }
 
+    /// Increment in-flight count (for manually injected messages).
+    pub fn increment_in_flight(&mut self) {
+        self.in_flight_count += 1;
+    }
+
     /// Route a message, potentially applying faults.
     ///
     /// Returns events to schedule (may be empty if message lost, or multiple if duplicated).
