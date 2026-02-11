@@ -393,16 +393,19 @@ impl SimRuntime {
 
             SimEvent::TimerFired { node, timer_id } => {
                 let node_id = node.clone();
+                let timer_id_typed = crate::sync_sim::types::TimerId::new(timer_id);
+
                 let Some(sim_node) = self.nodes.get_mut(&node) else {
                     return true;
                 };
 
                 // Check timer still exists (might have been cancelled)
-                let Some(_timer) =
-                    sim_node.get_timer(crate::sync_sim::types::TimerId::new(timer_id))
-                else {
+                if sim_node.get_timer(timer_id_typed).is_none() {
                     return true;
-                };
+                }
+
+                // Remove the fired timer from the node
+                sim_node.cancel_timer(timer_id_typed);
 
                 // Process timeout
                 let actions = Self::handle_timeout_static(timer_id);
@@ -721,5 +724,41 @@ mod tests {
 
         // Storage should be preserved
         assert_eq!(node.entity_count(), 1);
+    }
+
+    #[test]
+    fn test_fired_timer_is_removed() {
+        use crate::sync_sim::types::TimerKind;
+
+        let mut rt = SimRuntime::new(42);
+        let a = rt.add_node("alice");
+
+        // Set a timer on the node
+        let timer_id = {
+            let node = rt.node_mut(&a).unwrap();
+            let tid = node.next_timer_id();
+            node.set_timer(tid, SimTime::from_millis(100), TimerKind::Sync);
+            tid
+        };
+
+        // Schedule the timer event
+        rt.schedule(
+            SimTime::from_millis(100),
+            SimEvent::TimerFired {
+                node: a.clone(),
+                timer_id: timer_id.0,
+            },
+        );
+
+        // Before firing, timer should exist
+        assert!(rt.node(&a).unwrap().get_timer(timer_id).is_some());
+        assert_eq!(rt.node(&a).unwrap().sync_timer_count(), 1);
+
+        // Process the timer event
+        rt.step();
+
+        // After firing, timer should be removed
+        assert!(rt.node(&a).unwrap().get_timer(timer_id).is_none());
+        assert_eq!(rt.node(&a).unwrap().sync_timer_count(), 0);
     }
 }
