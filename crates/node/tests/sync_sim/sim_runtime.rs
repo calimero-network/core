@@ -126,8 +126,8 @@ impl SimRuntime {
     /// Create with configuration.
     pub fn with_config(config: SimConfig) -> Self {
         // Note: drain_inbox_per_tick is not yet implemented.
-        // Assert in debug builds to catch unintended usage.
-        debug_assert!(
+        // Assert to prevent unintended usage that would silently use different semantics.
+        assert!(
             !config.drain_inbox_per_tick,
             "drain_inbox_per_tick is not yet implemented; messages are processed one at a time"
         );
@@ -386,11 +386,29 @@ impl SimRuntime {
             }
 
             if self.queue.is_empty() {
-                // Queue empty - check if system is diverged
+                // Queue empty - check convergence and deadlock like run() does
+                if self.check_convergence().is_converged() {
+                    self.metrics.convergence.mark_converged(
+                        self.clock.now(),
+                        self.messages_sent,
+                        self.events_processed,
+                    );
+                    return StopCondition::Converged;
+                }
+
+                // Check deadlock (queue empty but not converged)
+                if self.is_deadlocked() {
+                    self.metrics.convergence.mark_failed("deadlock".to_string());
+                    return StopCondition::Deadlock;
+                }
+
+                // Queue empty, not converged, not deadlocked - system is diverged
                 if self.check_convergence().is_diverged() {
                     self.metrics.convergence.mark_failed("diverged".to_string());
                     return StopCondition::Diverged;
                 }
+
+                // No events left but predicate not satisfied
                 return StopCondition::Manual;
             }
 
@@ -453,6 +471,8 @@ impl SimRuntime {
             } => {
                 // Check partition at delivery time
                 if !self.network.should_deliver(&from, &to, time) {
+                    // Record the partition drop in effect metrics
+                    self.metrics.effects.record_drop();
                     return true;
                 }
 
@@ -614,7 +634,9 @@ impl SimRuntime {
         // Route messages
         for msg in actions.messages {
             self.messages_sent += 1;
-            self.metrics.protocol.record_message(0); // TODO: actual size
+            self.metrics
+                .protocol
+                .record_message(msg.msg.estimated_size());
 
             // Clone node_id before borrow
             let from = node_id.clone();
