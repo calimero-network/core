@@ -145,12 +145,18 @@ impl SimRuntime {
     // =========================================================================
 
     /// Add a node to the simulation.
+    ///
+    /// If a node with the same ID already exists, it will be replaced
+    /// but not duplicated in node_order.
     pub fn add_node(&mut self, id: impl Into<NodeId>) -> NodeId {
         let id = id.into();
+        let is_new = !self.nodes.contains_key(&id);
         let node = SimNode::new(id.clone());
         self.nodes.insert(id.clone(), node);
-        self.node_order.push(id.clone());
-        self.node_order.sort();
+        if is_new {
+            self.node_order.push(id.clone());
+            self.node_order.sort();
+        }
         id
     }
 
@@ -180,11 +186,17 @@ impl SimRuntime {
     }
 
     /// Add a pre-configured node.
+    ///
+    /// If a node with the same ID already exists, it will be replaced
+    /// but not duplicated in node_order.
     pub fn add_existing_node(&mut self, node: SimNode) -> NodeId {
         let id = node.id().clone();
+        let is_new = !self.nodes.contains_key(&id);
         self.nodes.insert(id.clone(), node);
-        self.node_order.push(id.clone());
-        self.node_order.sort();
+        if is_new {
+            self.node_order.push(id.clone());
+            self.node_order.sort();
+        }
         id
     }
 
