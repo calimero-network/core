@@ -89,14 +89,14 @@ pub fn compute_state_digest(entities: &[DigestEntity]) -> StateDigest {
 }
 
 /// Builder for incremental digest computation with caching.
+///
+/// Uses HashMap internally for O(1) amortized upsert/remove operations.
 #[derive(Debug, Default)]
 pub struct DigestCache {
     /// Cached digest (None if invalidated).
     cached: Option<StateDigest>,
-    /// Entities for digest computation.
-    entities: Vec<DigestEntity>,
-    /// Whether the entity list is sorted.
-    sorted: bool,
+    /// Entities by ID for O(1) lookup/upsert/remove.
+    entities: std::collections::HashMap<EntityId, DigestEntity>,
 }
 
 impl DigestCache {
@@ -105,21 +105,16 @@ impl DigestCache {
         Self::default()
     }
 
-    /// Add or update an entity.
+    /// Add or update an entity. O(1) amortized.
     pub fn upsert(&mut self, entity: DigestEntity) {
         self.cached = None;
-        self.sorted = false;
-
-        // Remove existing if present
-        self.entities.retain(|e| e.id != entity.id);
-        self.entities.push(entity);
+        self.entities.insert(entity.id, entity);
     }
 
-    /// Remove an entity.
+    /// Remove an entity. O(1) amortized.
     pub fn remove(&mut self, id: &EntityId) {
-        if self.entities.iter().any(|e| &e.id == id) {
+        if self.entities.remove(id).is_some() {
             self.cached = None;
-            self.entities.retain(|e| &e.id != id);
         }
     }
 
@@ -129,7 +124,9 @@ impl DigestCache {
             return digest;
         }
 
-        let digest = compute_state_digest(&self.entities);
+        // Collect and sort for deterministic hashing
+        let entities: Vec<_> = self.entities.values().cloned().collect();
+        let digest = compute_state_digest(&entities);
         self.cached = Some(digest);
         digest
     }
@@ -138,7 +135,6 @@ impl DigestCache {
     pub fn clear(&mut self) {
         self.cached = None;
         self.entities.clear();
-        self.sorted = false;
     }
 
     /// Get entity count.
@@ -151,23 +147,21 @@ impl DigestCache {
         self.entities.is_empty()
     }
 
-    /// Get entity by ID.
+    /// Get entity by ID. O(1).
     pub fn get(&self, id: &EntityId) -> Option<&DigestEntity> {
-        self.entities.iter().find(|e| &e.id == id)
+        self.entities.get(id)
     }
 
-    /// Iterate over entities.
+    /// Iterate over entities (unordered).
     pub fn iter(&self) -> impl Iterator<Item = &DigestEntity> {
-        self.entities.iter()
+        self.entities.values()
     }
 
-    /// Get all entities (sorted by ID).
-    pub fn entities_sorted(&mut self) -> &[DigestEntity] {
-        if !self.sorted {
-            self.entities.sort_by_key(|e| e.id);
-            self.sorted = true;
-        }
-        &self.entities
+    /// Get all entities sorted by ID.
+    pub fn entities_sorted(&self) -> Vec<DigestEntity> {
+        let mut entities: Vec<_> = self.entities.values().cloned().collect();
+        entities.sort_by_key(|e| e.id);
+        entities
     }
 }
 
