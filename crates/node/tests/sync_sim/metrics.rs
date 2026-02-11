@@ -239,6 +239,10 @@ impl ConvergenceMetrics {
     pub fn mark_failed(&mut self, reason: String) {
         self.converged = false;
         self.failure_reason = Some(reason);
+        // Clear any prior success timestamps to avoid inconsistent state
+        self.time_to_converge = None;
+        self.messages_to_converge = 0;
+        self.events_to_converge = 0;
     }
 }
 

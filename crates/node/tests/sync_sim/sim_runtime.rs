@@ -86,6 +86,8 @@ pub enum StopCondition {
     Converged,
     /// System deadlocked.
     Deadlock,
+    /// System quiesced in a diverged state (not converged, not deadlocked, no pending events).
+    Diverged,
     /// Manually stopped.
     Manual,
 }
@@ -123,6 +125,13 @@ impl SimRuntime {
 
     /// Create with configuration.
     pub fn with_config(config: SimConfig) -> Self {
+        // Note: drain_inbox_per_tick is not yet implemented.
+        // Assert in debug builds to catch unintended usage.
+        debug_assert!(
+            !config.drain_inbox_per_tick,
+            "drain_inbox_per_tick is not yet implemented; messages are processed one at a time"
+        );
+
         let rng = SimRng::new(config.seed);
         // Use wrapping_add to avoid overflow panic when seed is u64::MAX
         let network =
@@ -280,7 +289,17 @@ impl SimRuntime {
     // =========================================================================
 
     /// Schedule an event.
+    ///
+    /// # Panics
+    /// Panics if `time` is before the current simulation time, as this would
+    /// cause a clock advancement error when the event is processed.
     pub fn schedule(&mut self, time: SimTime, event: SimEvent) {
+        assert!(
+            time >= self.clock.now(),
+            "Cannot schedule event in the past: event time {} < current time {}",
+            time,
+            self.clock.now()
+        );
         self.queue.schedule(time, event);
     }
 
@@ -309,6 +328,13 @@ impl SimRuntime {
             // If there are events pending, process them before checking convergence.
             // This ensures scheduled events are executed before declaring convergence.
             if !self.queue.is_empty() {
+                // Check if the next event would exceed max_time before processing it.
+                // This prevents executing events beyond the configured time bound.
+                if let Some(next_time) = self.queue.peek_time() {
+                    if next_time >= self.config.max_time {
+                        return StopCondition::MaxTime;
+                    }
+                }
                 self.step();
                 continue;
             }
@@ -329,8 +355,9 @@ impl SimRuntime {
                 return StopCondition::Deadlock;
             }
 
-            // Nothing to do but not converged/deadlocked - shouldn't happen
-            return StopCondition::Manual;
+            // Queue empty, not converged, not deadlocked - system is diverged
+            self.metrics.convergence.mark_failed("diverged".to_string());
+            return StopCondition::Diverged;
         }
     }
 
@@ -359,7 +386,19 @@ impl SimRuntime {
             }
 
             if self.queue.is_empty() {
+                // Queue empty - check if system is diverged
+                if self.check_convergence().is_diverged() {
+                    self.metrics.convergence.mark_failed("diverged".to_string());
+                    return StopCondition::Diverged;
+                }
                 return StopCondition::Manual;
+            }
+
+            // Check if the next event would exceed max_time before processing it.
+            if let Some(next_time) = self.queue.peek_time() {
+                if next_time >= self.config.max_time {
+                    return StopCondition::MaxTime;
+                }
             }
 
             self.step();
@@ -373,19 +412,29 @@ impl SimRuntime {
         };
 
         // For timer events, check if timer is still valid BEFORE advancing clock.
-        // Cancelled or rescheduled timers should not advance simulation time.
+        // Cancelled or rescheduled timers should not advance simulation time, but they
+        // still count toward the event budget since they were dequeued and processed.
         if let SimEvent::TimerFired { node, timer_id } = &event {
             let timer_id_typed = crate::sync_sim::types::TimerId::new(*timer_id);
             if let Some(sim_node) = self.nodes.get(node) {
                 // Skip if node is crashed
                 if sim_node.is_crashed {
+                    self.events_processed += 1;
                     return true;
                 }
                 // Skip if timer was cancelled or rescheduled
                 match sim_node.get_timer(timer_id_typed) {
-                    None => return true,                                   // Timer was cancelled
-                    Some(entry) if entry.fire_time != time => return true, // Stale event from reschedule
-                    Some(_) => {}                                          // Valid timer, proceed
+                    None => {
+                        // Timer was cancelled
+                        self.events_processed += 1;
+                        return true;
+                    }
+                    Some(entry) if entry.fire_time != time => {
+                        // Stale event from reschedule
+                        self.events_processed += 1;
+                        return true;
+                    }
+                    Some(_) => {} // Valid timer, proceed
                 }
             }
         }
@@ -569,8 +618,9 @@ impl SimRuntime {
 
             // Clone node_id before borrow
             let from = node_id.clone();
+            let now = self.clock.now();
             self.network
-                .route_message(self.clock.now(), msg, &from, &mut self.queue);
+                .route_message(now, msg, &from, &mut self.queue, &mut self.metrics.effects);
         }
     }
 
