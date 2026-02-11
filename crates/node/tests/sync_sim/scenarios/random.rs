@@ -44,8 +44,11 @@ impl RandomScenarioConfig {
     }
 
     /// Builder: set entity count range.
+    ///
+    /// If min > max, they will be swapped to ensure valid range.
     pub fn with_entity_count(mut self, min: usize, max: usize) -> Self {
-        self.entity_count_range = (min, max);
+        // Ensure min <= max to prevent underflow
+        self.entity_count_range = if min <= max { (min, max) } else { (max, min) };
         self
     }
 
@@ -118,9 +121,13 @@ impl RandomScenario {
             }
 
             // Determine entity count
-            let entity_count = self.rng.gen_range_usize(
-                self.config.entity_count_range.1 - self.config.entity_count_range.0,
-            ) + self.config.entity_count_range.0;
+            let (min, max) = self.config.entity_count_range;
+            let range_size = max.saturating_sub(min);
+            let entity_count = if range_size == 0 {
+                min
+            } else {
+                self.rng.gen_range_usize(range_size + 1) + min
+            };
 
             // Add entities
             for _ in 0..entity_count {
@@ -316,6 +323,40 @@ mod tests {
                 node.id(),
                 node.entity_count()
             );
+        }
+    }
+
+    #[test]
+    fn test_entity_count_range_swap() {
+        // Test that min > max is handled gracefully
+        let config = RandomScenarioConfig::default().with_entity_count(100, 50);
+
+        // Should have swapped to (50, 100)
+        assert_eq!(config.entity_count_range, (50, 100));
+    }
+
+    #[test]
+    fn test_entity_count_range_equal() {
+        // Test that min == max works
+        let config = RandomScenarioConfig::default()
+            .with_nodes(2)
+            .with_entity_count(50, 50)
+            .with_shared_probability(0.0); // No shared to ensure exact count
+
+        let mut scenario = RandomScenario::new(42, config);
+        let nodes = scenario.generate();
+
+        // All nodes should have exactly 50 entities (or 0 if fresh)
+        for node in &nodes {
+            if node.has_any_state() {
+                assert_eq!(
+                    node.entity_count(),
+                    50,
+                    "node {} has {} entities",
+                    node.id(),
+                    node.entity_count()
+                );
+            }
         }
     }
 }
