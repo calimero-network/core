@@ -77,9 +77,11 @@ pub use bloom_filter::{
 
 // Snapshot and wire protocol types
 pub use snapshot::{
-    BroadcastMessage, InitPayload, MessagePayload, SnapshotBoundaryRequest,
-    SnapshotBoundaryResponse, SnapshotCursor, SnapshotError, SnapshotPage, SnapshotStreamRequest,
-    StreamMessage,
+    check_snapshot_safety, BroadcastMessage, InitPayload, MessagePayload, SnapshotBoundaryRequest,
+    SnapshotBoundaryResponse, SnapshotComplete, SnapshotCursor, SnapshotEntity, SnapshotEntityPage,
+    SnapshotError, SnapshotPage, SnapshotRequest, SnapshotStreamRequest, SnapshotVerifyResult,
+    StreamMessage, DEFAULT_SNAPSHOT_PAGE_SIZE, MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS,
+    MAX_ENTITIES_PER_PAGE, MAX_ENTITY_DATA_SIZE, MAX_SNAPSHOT_PAGES, MAX_SNAPSHOT_PAGE_SIZE,
 };
 
 // Subtree prefetch types
