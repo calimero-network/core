@@ -34,6 +34,10 @@ pub fn majority_digest(nodes: &mut [SimNode]) -> Option<StateDigest> {
 }
 
 /// Compute divergence percentage between two nodes.
+///
+/// Entities are considered "shared" only if they have the same ID AND
+/// the same content (data + metadata). This catches cases where both nodes
+/// have an entity with the same ID but different values.
 pub fn divergence_percentage(a: &SimNode, b: &SimNode) -> f64 {
     let a_count = a.entity_count();
     let b_count = b.entity_count();
@@ -42,11 +46,17 @@ pub fn divergence_percentage(a: &SimNode, b: &SimNode) -> f64 {
         return 0.0;
     }
 
-    // Count shared entities
+    // Count truly shared entities (same ID AND same content)
     let mut shared = 0;
-    for entity in a.storage.iter() {
-        if b.storage.get(&entity.id).is_some() {
-            shared += 1;
+    for entity_a in a.storage.iter() {
+        if let Some(entity_b) = b.storage.get(&entity_a.id) {
+            // Only count as shared if content matches
+            if entity_a.data == entity_b.data
+                && entity_a.metadata.crdt_type == entity_b.metadata.crdt_type
+                && entity_a.metadata.hlc_timestamp == entity_b.metadata.hlc_timestamp
+            {
+                shared += 1;
+            }
         }
     }
 
@@ -226,6 +236,27 @@ mod tests {
         // 1 shared, 1 unique = 2 total, 1 different = 50%
         let div = divergence_percentage(&a, &b);
         assert!((div - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_divergence_content_aware() {
+        let mut a = SimNode::new("a");
+        let mut b = SimNode::new("b");
+
+        // Same ID but different content should be considered divergent
+        let id = EntityId::from_u64(1);
+        a.insert_entity(id, vec![1, 2, 3], CrdtType::LwwRegister);
+        b.insert_entity(id, vec![4, 5, 6], CrdtType::LwwRegister); // Different data!
+
+        // Both have 1 entity, but they conflict
+        // total = 1 + 1 - 0 (shared) = 2, different = 2
+        // divergence = 2/2 = 100%
+        let div = divergence_percentage(&a, &b);
+        assert!(
+            (div - 1.0).abs() < 0.001,
+            "Expected 100% divergence for conflicting content, got {}",
+            div
+        );
     }
 
     #[test]
