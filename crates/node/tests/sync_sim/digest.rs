@@ -13,21 +13,24 @@ use super::types::{EntityId, StateDigest};
 pub fn hash_metadata(metadata: &EntityMetadata) -> [u8; 32] {
     let mut hasher = Sha256::new();
 
-    // CrdtType discriminant (1 byte conceptually, but we use debug string for simplicity)
-    let crdt_discriminant = match &metadata.crdt_type {
-        calimero_primitives::crdt::CrdtType::LwwRegister => 0u8,
-        calimero_primitives::crdt::CrdtType::GCounter => 1u8,
-        calimero_primitives::crdt::CrdtType::PnCounter => 2u8,
-        calimero_primitives::crdt::CrdtType::Rga => 3u8,
-        calimero_primitives::crdt::CrdtType::UnorderedMap => 4u8,
-        calimero_primitives::crdt::CrdtType::UnorderedSet => 5u8,
-        calimero_primitives::crdt::CrdtType::Vector => 6u8,
-        calimero_primitives::crdt::CrdtType::UserStorage => 7u8,
-        calimero_primitives::crdt::CrdtType::FrozenStorage => 8u8,
-        calimero_primitives::crdt::CrdtType::Custom(_) => 9u8,
+    // CrdtType discriminant
+    match &metadata.crdt_type {
+        calimero_primitives::crdt::CrdtType::LwwRegister => hasher.update([0u8]),
+        calimero_primitives::crdt::CrdtType::GCounter => hasher.update([1u8]),
+        calimero_primitives::crdt::CrdtType::PnCounter => hasher.update([2u8]),
+        calimero_primitives::crdt::CrdtType::Rga => hasher.update([3u8]),
+        calimero_primitives::crdt::CrdtType::UnorderedMap => hasher.update([4u8]),
+        calimero_primitives::crdt::CrdtType::UnorderedSet => hasher.update([5u8]),
+        calimero_primitives::crdt::CrdtType::Vector => hasher.update([6u8]),
+        calimero_primitives::crdt::CrdtType::UserStorage => hasher.update([7u8]),
+        calimero_primitives::crdt::CrdtType::FrozenStorage => hasher.update([8u8]),
+        calimero_primitives::crdt::CrdtType::Custom(s) => {
+            hasher.update([9u8]);
+            // Include the custom type identifier to differentiate different custom types
+            hasher.update(s.as_bytes());
+        }
     };
 
-    hasher.update([crdt_discriminant]);
     hasher.update(metadata.hlc_timestamp.to_le_bytes());
     hasher.update(metadata.version.to_le_bytes());
     hasher.update(metadata.collection_id);
@@ -276,5 +279,26 @@ mod tests {
         let h2 = hash_metadata(&m2);
 
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_metadata_hash_different_custom_types() {
+        // Different custom type identifiers should produce different hashes
+        let m1 = EntityMetadata::new(CrdtType::Custom("type_a".to_string()), 100);
+        let m2 = EntityMetadata::new(CrdtType::Custom("type_b".to_string()), 100);
+        let m3 = EntityMetadata::new(CrdtType::Custom("type_a".to_string()), 100);
+
+        let h1 = hash_metadata(&m1);
+        let h2 = hash_metadata(&m2);
+        let h3 = hash_metadata(&m3);
+
+        // Different custom types should have different hashes
+        assert_ne!(
+            h1, h2,
+            "Custom('type_a') and Custom('type_b') should differ"
+        );
+
+        // Same custom type should have same hash
+        assert_eq!(h1, h3, "Custom('type_a') should match itself");
     }
 }
