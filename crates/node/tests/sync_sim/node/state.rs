@@ -2,7 +2,7 @@
 //!
 //! Wraps storage, DAG, and sync state machine.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use calimero_primitives::crdt::CrdtType;
 
@@ -88,6 +88,8 @@ pub struct SimNode {
     next_timer_id: u64,
     /// Processed message IDs (for deduplication).
     processed_messages: HashSet<MessageId>,
+    /// Highest session seen from each sender (for stale message detection).
+    sender_sessions: HashMap<String, u64>,
     /// Whether node has been initialized (ever had state).
     pub has_state: bool,
 }
@@ -106,6 +108,7 @@ impl SimNode {
             timers: Vec::new(),
             next_timer_id: 0,
             processed_messages: HashSet::new(),
+            sender_sessions: HashMap::new(),
             has_state: false,
         }
     }
@@ -130,16 +133,32 @@ impl SimNode {
     }
 
     /// Check if message was already processed.
+    ///
+    /// A message is considered duplicate if:
+    /// 1. We've seen a newer session from this sender (message is stale), OR
+    /// 2. We've already processed this exact message ID
     pub fn is_duplicate(&self, msg_id: &MessageId) -> bool {
-        // Stale session
-        if msg_id.session < self.session {
-            return true;
+        // Check if we've seen a newer session from this sender
+        if let Some(&last_session) = self.sender_sessions.get(&msg_id.sender) {
+            if msg_id.session < last_session {
+                // Stale session from this sender
+                return true;
+            }
         }
         self.processed_messages.contains(msg_id)
     }
 
     /// Mark message as processed.
     pub fn mark_processed(&mut self, msg_id: MessageId) {
+        // Update the highest session seen from this sender
+        let current = self
+            .sender_sessions
+            .entry(msg_id.sender.clone())
+            .or_insert(0);
+        if msg_id.session > *current {
+            *current = msg_id.session;
+        }
+
         self.processed_messages.insert(msg_id);
         // TODO: Add LRU eviction to prevent unbounded growth
     }
@@ -231,12 +250,13 @@ impl SimNode {
     /// Crash the node (see spec §6).
     pub fn crash(&mut self) {
         // Preserve: storage, DAG (dag_heads)
-        // Lose: timers, sync state, buffer, processed messages, out_seq
+        // Lose: timers, sync state, buffer, processed messages, sender sessions, out_seq
 
         self.timers.clear();
         self.sync_state = SyncState::Idle;
         self.delta_buffer.clear();
         self.processed_messages.clear();
+        self.sender_sessions.clear();
         self.out_seq = 0;
     }
 
@@ -315,11 +335,28 @@ mod tests {
         assert!(!node.is_duplicate(&msg_id));
         node.mark_processed(msg_id.clone());
         assert!(node.is_duplicate(&msg_id));
+    }
 
-        // Stale session
-        let old_msg = MessageId::new("bob", 0, 0);
-        node.session = 1;
-        assert!(node.is_duplicate(&old_msg)); // Old session
+    #[test]
+    fn test_duplicate_detection_sender_session() {
+        let mut node = SimNode::new("alice");
+
+        // Process a message from bob's session 1
+        let msg_session1 = MessageId::new("bob", 1, 0);
+        assert!(!node.is_duplicate(&msg_session1));
+        node.mark_processed(msg_session1);
+
+        // A message from bob's older session 0 should be stale
+        let old_msg = MessageId::new("bob", 0, 5);
+        assert!(node.is_duplicate(&old_msg)); // Stale sender session
+
+        // A message from bob's current session 1 (different seq) should not be duplicate
+        let msg_session1_seq1 = MessageId::new("bob", 1, 1);
+        assert!(!node.is_duplicate(&msg_session1_seq1));
+
+        // A message from charlie should be independent
+        let charlie_msg = MessageId::new("charlie", 0, 0);
+        assert!(!node.is_duplicate(&charlie_msg));
     }
 
     #[test]
