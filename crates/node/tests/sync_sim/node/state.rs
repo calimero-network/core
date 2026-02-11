@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use calimero_node_primitives::sync::handshake::SyncHandshake;
 use calimero_primitives::crdt::CrdtType;
 
 use crate::sync_sim::actions::{EntityMetadata, StorageOp};
@@ -319,6 +320,25 @@ impl SimNode {
     /// Check if entity exists.
     pub fn has_entity(&self, id: &EntityId) -> bool {
         self.storage.get(id).is_some()
+    }
+
+    /// Build a SyncHandshake for this node.
+    ///
+    /// Used for protocol negotiation testing.
+    pub fn build_handshake(&mut self) -> SyncHandshake {
+        let root_hash = self.root_hash();
+        let entity_count = self.entity_count() as u64;
+
+        // Estimate max_depth from entity count (log2-ish for balanced tree)
+        let max_depth = if entity_count == 0 {
+            0
+        } else {
+            (64 - entity_count.leading_zeros()).min(32)
+        };
+
+        let dag_heads: Vec<[u8; 32]> = self.dag_heads.iter().map(|d| d.0).collect();
+
+        SyncHandshake::new(root_hash, entity_count, max_depth, dag_heads)
     }
 }
 
