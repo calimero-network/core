@@ -544,15 +544,17 @@ impl SimRuntime {
     ///
     /// Note: This bypasses fault injection (loss, reorder, etc.) but properly
     /// accounts for the message in convergence tracking.
+    ///
+    /// Returns None if the sender node doesn't exist.
     pub fn inject_message(
         &mut self,
         from: NodeId,
         to: NodeId,
         msg: SyncMessage,
         delay: SimDuration,
-    ) {
+    ) -> Option<()> {
         let msg_id = {
-            let node = self.nodes.get_mut(&from).unwrap();
+            let node = self.nodes.get_mut(&from)?;
             node.next_message_id()
         };
 
@@ -569,6 +571,7 @@ impl SimRuntime {
 
         // Track in-flight message for convergence checking
         self.network.increment_in_flight();
+        Some(())
     }
 
     /// Crash a node after delay.
@@ -701,7 +704,8 @@ mod tests {
             b,
             SyncMessage::SyncComplete { success: true },
             SimDuration::from_millis(50),
-        );
+        )
+        .expect("sender node should exist");
 
         // Message should be queued
         assert!(!rt.queue.is_empty());

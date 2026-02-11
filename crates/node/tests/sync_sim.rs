@@ -138,7 +138,8 @@ mod tests {
             b,
             SyncMessage::SyncComplete { success: true },
             SimDuration::from_millis(100),
-        );
+        )
+        .expect("sender node should exist");
 
         // With a message in flight, system should NOT be converged (C1 violated)
         assert!(
@@ -181,7 +182,8 @@ mod tests {
             b,
             SyncMessage::SyncComplete { success: true },
             SimDuration::from_millis(10),
-        );
+        )
+        .expect("sender node should exist");
         rt.step(); // Process message
 
         // Message was dropped
@@ -203,7 +205,8 @@ mod tests {
             b,
             SyncMessage::SyncComplete { success: true },
             SimDuration::from_millis(10),
-        );
+        )
+        .expect("sender node should exist");
 
         // Queue should be empty (message lost at send time)
         // Note: The inject_message uses node's next_message_id, then routes through network
