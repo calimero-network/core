@@ -15,16 +15,14 @@ pub mod utils;
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
 use env::Method;
 use macros::transport;
-use protocol::{mock_relayer, near, Protocol};
+use protocol::{near, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
 type MaybeNear = Option<near::NearTransport<'static>>;
-type MaybeMockRelayer = Option<mock_relayer::MockRelayerTransport<'static>>;
 
 transport! {
     pub type LocalTransports = (
-        MaybeNear,
-        MaybeMockRelayer
+        MaybeNear
     );
 }
 
@@ -96,47 +94,7 @@ impl Client<AnyTransport> {
             }
         }
 
-        let mut mock_relayer_transport = None;
-
-        'skipped: {
-            if let Some(mock_relayer_config) = config.signer.local.protocols.get("mock-relayer") {
-                let Some(e) = config.params.get("mock-relayer") else {
-                    eyre::bail!(
-                        "missing config specification for `{}` signer",
-                        "mock-relayer"
-                    );
-                };
-
-                if !matches!(e.signer, ClientSelectedSigner::Local) {
-                    break 'skipped;
-                }
-
-                let mut config = mock_relayer::MockRelayerConfig {
-                    networks: Default::default(),
-                };
-
-                for (network, signer) in &mock_relayer_config.signers {
-                    let Credentials::Raw(credentials) = &signer.credentials else {
-                        eyre::bail!("expected Raw credentials but got {:?}", signer.credentials)
-                    };
-
-                    let _ignored = config.networks.insert(
-                        network.clone().into(),
-                        mock_relayer::NetworkConfig {
-                            rpc_url: signer.rpc_url.clone(),
-                            credentials: credentials.clone(),
-                        },
-                    );
-                }
-
-                mock_relayer_transport = Some(mock_relayer::MockRelayerTransport::new(&config));
-            }
-        }
-
-        let all_transports = transport!(
-            near_transport,
-            mock_relayer_transport
-        );
+        let all_transports = transport!(near_transport);
 
         Ok(Client::new(all_transports))
     }

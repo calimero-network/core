@@ -110,6 +110,4 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
     }
 }
 
-// Protocol-specific implementations
-pub mod mock_relayer;
 pub mod near;

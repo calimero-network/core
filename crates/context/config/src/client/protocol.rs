@@ -1,4 +1,3 @@
-pub mod mock_relayer;
 pub mod near;
 
 pub trait Protocol {

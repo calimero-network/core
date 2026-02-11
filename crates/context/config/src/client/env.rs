@@ -16,7 +16,6 @@ mod utils {
     #![expect(clippy::type_repetition_in_bounds, reason = "Useful for clarity")]
 
     use super::Method;
-    use crate::client::protocol::mock_relayer::MockRelayer;
     use crate::client::protocol::near::Near;
     use crate::client::protocol::Protocol;
     use crate::client::transport::Transport;
@@ -29,18 +28,12 @@ mod utils {
     ) -> Result<R, ClientError<T>>
     where
         M: Method<Near, Returns = R>,
-        M: Method<MockRelayer, Returns = R>,
     {
         match &*client.protocol {
             Near::PROTOCOL => client.send::<Near, _>(params).await,
-            MockRelayer::PROTOCOL => client.send::<MockRelayer, _>(params).await,
             unsupported_protocol => Err(ClientError::UnsupportedProtocol {
                 found: unsupported_protocol.to_owned(),
-                expected: vec![
-                    Near::PROTOCOL.into(),
-                    MockRelayer::PROTOCOL.into(),
-                ]
-                .into(),
+                expected: vec![Near::PROTOCOL.into()].into(),
             }),
         }
     }
