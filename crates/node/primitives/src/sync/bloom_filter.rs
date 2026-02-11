@@ -76,9 +76,13 @@ impl DeltaIdBloomFilter {
     /// - Values >= 0.5 make the bloom filter nearly useless
     #[must_use]
     pub fn new(expected_items: usize, fp_rate: f64) -> Self {
-        // Clamp fp_rate to valid range to prevent mathematical errors
-        // ln(0) = -inf, ln(negative) = NaN
-        let fp_rate = fp_rate.clamp(MIN_FP_RATE, MAX_FP_RATE);
+        // Handle NaN explicitly, then clamp to valid range
+        // NaN.clamp() returns NaN, which would propagate through calculations
+        let fp_rate = if fp_rate.is_nan() {
+            DEFAULT_BLOOM_FP_RATE
+        } else {
+            fp_rate.clamp(MIN_FP_RATE, MAX_FP_RATE)
+        };
 
         // Calculate optimal number of bits: m = -n * ln(p) / (ln(2)^2)
         let ln2_sq = std::f64::consts::LN_2 * std::f64::consts::LN_2;
@@ -88,7 +92,8 @@ impl DeltaIdBloomFilter {
             MIN_NUM_BITS
         } else {
             let m = -(expected_items as f64) * fp_rate.ln() / ln2_sq;
-            (m.ceil() as usize).max(expected_items * MIN_BITS_PER_ELEMENT)
+            // Use saturating_mul to prevent overflow for huge expected_items
+            (m.ceil() as usize).max(expected_items.saturating_mul(MIN_BITS_PER_ELEMENT))
         };
 
         // Calculate optimal number of hashes: k = (m/n) * ln(2)
@@ -611,6 +616,17 @@ mod tests {
                 description
             );
         }
+    }
+
+    #[test]
+    fn test_bloom_filter_nan_uses_default() {
+        // NaN fp_rate should use DEFAULT_BLOOM_FP_RATE
+        let nan_filter = DeltaIdBloomFilter::new(100, f64::NAN);
+        let default_filter = DeltaIdBloomFilter::new(100, DEFAULT_BLOOM_FP_RATE);
+
+        // Both should produce the same sized filter
+        assert_eq!(nan_filter.bit_count(), default_filter.bit_count());
+        assert_eq!(nan_filter.hash_count(), default_filter.hash_count());
     }
 
     #[test]
