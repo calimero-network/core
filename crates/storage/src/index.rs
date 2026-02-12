@@ -48,6 +48,38 @@ pub struct EntityIndex {
     pub deleted_at: Option<u64>,
 }
 
+impl EntityIndex {
+    /// Returns the entity ID.
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.id
+    }
+
+    /// Returns the parent ID, if any.
+    #[must_use]
+    pub fn parent_id(&self) -> Option<Id> {
+        self.parent_id
+    }
+
+    /// Returns the children, if any.
+    #[must_use]
+    pub fn children(&self) -> Option<&[ChildInfo]> {
+        self.children.as_deref()
+    }
+
+    /// Returns the full hash (entity + all descendants).
+    #[must_use]
+    pub fn full_hash(&self) -> [u8; 32] {
+        self.full_hash
+    }
+
+    /// Returns the own hash (entity data only).
+    #[must_use]
+    pub fn own_hash(&self) -> [u8; 32] {
+        self.own_hash
+    }
+}
+
 /// Entity index manager.
 #[derive(Debug)]
 pub struct Index<S: StorageAdaptor>(PhantomData<S>);
@@ -198,7 +230,10 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     /// Collection param is ignored - entity only has one collection.
     /// Kept in API for backwards compatibility.
-    pub(crate) fn get_children_of(parent_id: Id) -> Result<Vec<ChildInfo>, StorageError> {
+    ///
+    /// # Errors
+    /// Returns `StorageError` if index cannot be loaded or deserialized.
+    pub fn get_children_of(parent_id: Id) -> Result<Vec<ChildInfo>, StorageError> {
         let index = Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
         Ok(index.children.unwrap_or_default())
@@ -226,7 +261,13 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Loads entity index from storage.
-    pub(crate) fn get_index(id: Id) -> Result<Option<EntityIndex>, StorageError> {
+    ///
+    /// Returns the full `EntityIndex` for an entity if it exists.
+    /// Used by sync protocols to traverse the Merkle tree.
+    ///
+    /// # Errors
+    /// Returns `StorageError` if index cannot be loaded or deserialized.
+    pub fn get_index(id: Id) -> Result<Option<EntityIndex>, StorageError> {
         match S::storage_read(Key::Index(id)) {
             Some(data) => Ok(Some(
                 EntityIndex::try_from_slice(&data).map_err(StorageError::DeserializationError)?,
