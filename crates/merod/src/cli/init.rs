@@ -7,9 +7,7 @@ use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
     ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
 };
-use calimero_context_config::client::protocol::{
-    near as near_protocol,
-};
+use calimero_context_config::client::protocol::near as near_protocol;
 use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
@@ -57,19 +55,17 @@ struct ProtocolConfig<'a> {
 }
 
 /// Protocol configurations for all supported protocols
-const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[
-    ProtocolConfig {
-        name: "near",
-        default_network: "testnet",
-        default_contract: "v0-6.config.calimero-context.testnet",
-        signer_type: ClientSelectedSigner::Relayer,
-        networks: &[
-            ("mainnet", "https://rpc.mainnet.near.org"),
-            ("testnet", "https://rpc.testnet.near.org"),
-        ],
-        protocol: ConfigProtocol::Near,
-    },
-];
+const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[ProtocolConfig {
+    name: "near",
+    default_network: "testnet",
+    default_contract: "v0-6.config.calimero-context.testnet",
+    signer_type: ClientSelectedSigner::Relayer,
+    networks: &[
+        ("mainnet", "https://rpc.mainnet.near.org"),
+        ("testnet", "https://rpc.testnet.near.org"),
+    ],
+    protocol: ConfigProtocol::Near,
+}];
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ConfigProtocol {

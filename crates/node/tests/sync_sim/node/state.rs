@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use calimero_node_primitives::sync::handshake::SyncHandshake;
-use calimero_node_primitives::sync::state_machine::{LocalSyncState, build_handshake};
+use calimero_node_primitives::sync::state_machine::{build_handshake, LocalSyncState};
 use calimero_primitives::crdt::CrdtType;
 
 use crate::sync_sim::actions::{EntityMetadata, StorageOp};
@@ -520,7 +520,7 @@ impl LocalSyncState for SimNode {
     fn root_hash(&self) -> [u8; 32] {
         // Compute digest without using cache (trait requires &self, cache needs &mut self)
         // This is acceptable for protocol negotiation which is infrequent
-        use crate::sync_sim::digest::{DigestEntity, compute_state_digest};
+        use crate::sync_sim::digest::{compute_state_digest, DigestEntity};
         let entities: Vec<DigestEntity> = self.storage.iter().cloned().collect();
         compute_state_digest(&entities).0
     }

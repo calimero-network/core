@@ -17,9 +17,7 @@ use calimero_context_config::client::config::{
     ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
 };
 use calimero_context_config::client::relayer::{RelayRequest, ServerError};
-use calimero_context_config::client::transport::{
-    Transport, TransportArguments, TransportRequest,
-};
+use calimero_context_config::client::transport::{Transport, TransportArguments, TransportRequest};
 use calimero_context_config::client::Client;
 use clap::Parser;
 use color_eyre::install;
@@ -339,7 +337,6 @@ struct Cli {
     /// Configuration file path (optional, uses environment variables if not provided)
     #[arg(short, long, value_name = "PATH")]
     pub config: Option<std::path::PathBuf>,
-
 }
 
 #[tokio::main]
