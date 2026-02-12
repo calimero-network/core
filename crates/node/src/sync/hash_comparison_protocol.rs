@@ -37,9 +37,9 @@
 use crate::sync::helpers::generate_nonce;
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
-    compare_tree_nodes, create_runtime_env, InitPayload, LeafMetadata, MessagePayload,
-    StreamMessage, SyncProtocolExecutor, SyncTransport, TreeCompareResult, TreeLeafData, TreeNode,
-    TreeNodeResponse, MAX_NODES_PER_RESPONSE,
+    InitPayload, LeafMetadata, MAX_NODES_PER_RESPONSE, MessagePayload, StreamMessage,
+    SyncProtocolExecutor, SyncTransport, TreeCompareResult, TreeLeafData, TreeNode,
+    TreeNodeResponse, compare_tree_nodes, create_runtime_env, get_local_tree_node,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
@@ -50,7 +50,7 @@ use calimero_storage::index::Index;
 use calimero_storage::interface::Interface;
 use calimero_storage::store::MainStorage;
 use calimero_store::Store;
-use eyre::{bail, Result};
+use eyre::{Result, bail};
 use tracing::{debug, info, trace, warn};
 
 /// Maximum number of pending node requests (DFS stack depth limit).
@@ -380,67 +380,6 @@ async fn run_responder_impl<T: SyncTransport>(
 // Helper Functions
 // =============================================================================
 
-/// Get a tree node from the local Merkle tree Index.
-fn get_local_tree_node(
-    context_id: ContextId,
-    node_id: &[u8; 32],
-    is_root_request: bool,
-) -> Result<Option<TreeNode>> {
-    let entity_id = if is_root_request {
-        Id::new(*context_id.as_ref())
-    } else {
-        Id::new(*node_id)
-    };
-
-    let index = match Index::<MainStorage>::get_index(entity_id) {
-        Ok(Some(idx)) => idx,
-        Ok(None) => return Ok(None),
-        Err(e) => {
-            warn!(%context_id, %entity_id, error = %e, "Failed to get index");
-            return Ok(None);
-        }
-    };
-
-    let full_hash = index.full_hash();
-    let children_ids: Vec<[u8; 32]> = index
-        .children()
-        .map(|children| children.iter().map(|c| *c.id().as_bytes()).collect())
-        .unwrap_or_default();
-
-    if children_ids.is_empty() {
-        // Leaf node
-        if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-            let metadata = LeafMetadata::new(
-                index
-                    .metadata
-                    .crdt_type
-                    .clone()
-                    .unwrap_or(CrdtType::LwwRegister),
-                index.metadata.updated_at(),
-                [0u8; 32],
-            );
-            let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
-            Ok(Some(TreeNode::leaf(
-                *entity_id.as_bytes(),
-                full_hash,
-                leaf_data,
-            )))
-        } else {
-            Ok(Some(TreeNode::internal(
-                *entity_id.as_bytes(),
-                full_hash,
-                vec![],
-            )))
-        }
-    } else {
-        Ok(Some(TreeNode::internal(
-            *entity_id.as_bytes(),
-            full_hash,
-            children_ids,
-        )))
-    }
-}
-
 /// Apply leaf data using CRDT merge (Invariant I5).
 ///
 /// This function must be called within a `with_runtime_env` scope.
@@ -460,6 +399,13 @@ fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) -> Res
     let mut metadata = Metadata::default();
     metadata.crdt_type = Some(leaf.metadata.crdt_type.clone());
     metadata.updated_at = leaf.metadata.hlc_timestamp.into();
+
+    // Preserve existing storage_type for updates to avoid "Cannot change StorageType" error.
+    // When updating User or Frozen entities, the action's metadata must match the existing
+    // storage_type, otherwise Interface::apply_action will reject the update.
+    if let Some(ref idx) = existing_index {
+        metadata.storage_type = idx.metadata.storage_type.clone();
+    }
 
     let action = if existing_index.is_some() {
         // Update existing entity
