@@ -40,6 +40,7 @@ pub mod hash_comparison;
 pub mod levelwise;
 pub mod protocol;
 pub mod snapshot;
+pub mod state_machine;
 pub mod subtree;
 
 // =============================================================================
@@ -95,4 +96,10 @@ pub use subtree::{
 pub use levelwise::{
     compare_level_nodes, should_use_levelwise, LevelCompareResult, LevelNode, LevelWiseRequest,
     LevelWiseResponse, MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST,
+};
+
+// State machine types (shared between SyncManager and SimNode)
+pub use state_machine::{
+    build_handshake, build_handshake_from_raw, estimate_entity_count, estimate_max_depth,
+    LocalSyncState,
 };
