@@ -1,6 +1,16 @@
 //! Convergence checking for simulation.
 //!
-//! See spec §8 - Convergence Definition.
+//! See [Simulation Framework Spec](https://github.com/calimero-network/specs/blob/main/sync/simulation-framework.md):
+//! - §8: Convergence Definition
+//! - §8.1: Formal Properties (C1-C5)
+//! - §8.2: Efficient Checking
+//!
+//! System has **converged** when ALL of:
+//! - C1: Network quiescent (no messages in flight)
+//! - C2: All nodes idle (sync_state == Idle)
+//! - C3: No pending buffers (delta buffers empty)
+//! - C4: No pending sync timers
+//! - C5: State digests equal
 
 use std::collections::HashMap;
 

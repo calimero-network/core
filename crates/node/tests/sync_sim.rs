@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn test_scenario_force_none() {
-        let (mut a, mut b) = Scenario::force_none();
+        let (a, b) = Scenario::force_none();
         assert_eq!(a.root_hash(), b.root_hash());
     }
 

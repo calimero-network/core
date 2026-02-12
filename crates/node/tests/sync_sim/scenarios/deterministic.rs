@@ -1,6 +1,23 @@
-//! Deterministic test scenarios.
+//! Deterministic test scenarios for protocol negotiation.
 //!
-//! See spec §15 - Protocol Negotiation Tests.
+//! See [Simulation Framework Spec](https://github.com/calimero-network/specs/blob/main/sync/simulation-framework.md):
+//! - §15: Protocol Negotiation Tests (CIP §2.3)
+//! - §15.1: Forced Scenarios Table
+//! - §15.2: Scenario Builders
+//! - §15.5: Tree Structure Helpers
+//!
+//! Each scenario forces specific handshake parameters to trigger deterministic
+//! protocol selection per CIP §2.3 rules:
+//!
+//! | Scenario                    | Expected Protocol  |
+//! |-----------------------------|-------------------|
+//! | `force_none()`              | None (same hash)  |
+//! | `force_snapshot()`          | Snapshot          |
+//! | `force_hash_high_divergence()` | HashComparison |
+//! | `force_subtree_prefetch()`  | SubtreePrefetch   |
+//! | `force_bloom_filter()`      | BloomFilter       |
+//! | `force_levelwise()`         | LevelWise         |
+//! | `force_delta_sync()`        | DeltaSync         |
 
 use calimero_primitives::crdt::CrdtType;
 
@@ -153,24 +170,27 @@ impl Scenario {
 
     /// Rule 4: Deep tree + low divergence → SubtreePrefetch.
     ///
-    /// Creates deep tree structures with small difference.
+    /// Creates deep tree structures (max_depth > 3) with small difference.
+    /// Uses hierarchical insertion to build actual tree depth in storage.
     pub fn force_subtree_prefetch() -> (SimNode, SimNode) {
         let mut a = SimNode::new("a");
         let mut b = SimNode::new("b");
 
-        // Shared base (80 entities)
-        let shared = generate_deep_tree_entities(80, 5, 1);
+        const TREE_DEPTH: u32 = 5; // Must be > 3 for SubtreePrefetch
+
+        // Shared base (80 entities) - inserted hierarchically
+        let shared = generate_deep_tree_entities(80, TREE_DEPTH, 1);
         for (id, data, metadata) in &shared {
-            a.insert_entity_with_metadata(*id, data.clone(), metadata.clone());
-            b.insert_entity_with_metadata(*id, data.clone(), metadata.clone());
+            a.insert_entity_hierarchical(*id, data.clone(), metadata.clone(), TREE_DEPTH);
+            b.insert_entity_hierarchical(*id, data.clone(), metadata.clone(), TREE_DEPTH);
         }
 
         // A has 5 extra, B has 15 extra → 15% divergence
-        for (id, data, metadata) in generate_deep_tree_entities(5, 5, 2) {
-            a.insert_entity_with_metadata(id, data, metadata);
+        for (id, data, metadata) in generate_deep_tree_entities(5, TREE_DEPTH, 2) {
+            a.insert_entity_hierarchical(id, data, metadata, TREE_DEPTH);
         }
-        for (id, data, metadata) in generate_deep_tree_entities(15, 5, 3) {
-            b.insert_entity_with_metadata(id, data, metadata);
+        for (id, data, metadata) in generate_deep_tree_entities(15, TREE_DEPTH, 3) {
+            b.insert_entity_hierarchical(id, data, metadata, TREE_DEPTH);
         }
 
         (a, b)
@@ -201,17 +221,21 @@ impl Scenario {
 
     /// Rule 6: Wide shallow tree → LevelWise.
     ///
-    /// Creates shallow tree structures.
+    /// Creates shallow tree structures (max_depth ≤ 2) with many children per level.
+    /// Uses hierarchical insertion with depth=1 to create wide, flat structure.
     pub fn force_levelwise() -> (SimNode, SimNode) {
         let mut a = SimNode::new("a");
         let mut b = SimNode::new("b");
 
+        const TREE_DEPTH: u32 = 1; // Must be ≤ 2 for LevelWise
+
         // Shallow trees (depth ≤ 2) with many children per level
+        // Need entity_count / max_depth > 10 (avg children per level)
         for (id, data, metadata) in generate_shallow_wide_tree(36, 2, 1) {
-            a.insert_entity_with_metadata(id, data, metadata);
+            a.insert_entity_hierarchical(id, data, metadata, TREE_DEPTH);
         }
         for (id, data, metadata) in generate_shallow_wide_tree(40, 2, 2) {
-            b.insert_entity_with_metadata(id, data, metadata);
+            b.insert_entity_hierarchical(id, data, metadata, TREE_DEPTH);
         }
 
         (a, b)
@@ -355,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_force_none() {
-        let (mut a, mut b) = Scenario::force_none();
+        let (a, b) = Scenario::force_none();
         assert_eq!(a.root_hash(), b.root_hash());
         assert!(a.has_any_state());
         assert!(b.has_any_state());
@@ -386,19 +410,19 @@ mod tests {
 
     #[test]
     fn test_n_nodes_synced() {
-        let mut nodes = Scenario::n_nodes_synced(5);
+        let nodes = Scenario::n_nodes_synced(5);
         assert_eq!(nodes.len(), 5);
 
-        let hashes: Vec<_> = nodes.iter_mut().map(|n| n.storage.digest()).collect();
+        let hashes: Vec<_> = nodes.iter().map(|n| n.state_digest()).collect();
         assert!(hashes.windows(2).all(|w| w[0] == w[1]));
     }
 
     #[test]
     fn test_n_nodes_diverged() {
-        let mut nodes = Scenario::n_nodes_diverged(5);
+        let nodes = Scenario::n_nodes_diverged(5);
         assert_eq!(nodes.len(), 5);
 
-        let hashes: Vec<_> = nodes.iter_mut().map(|n| n.storage.digest()).collect();
+        let hashes: Vec<_> = nodes.iter().map(|n| n.state_digest()).collect();
         // All different
         for i in 0..hashes.len() {
             for j in (i + 1)..hashes.len() {
@@ -420,5 +444,119 @@ mod tests {
 
         let entities = generate_deep_tree_entities(0, 5, 1);
         assert_eq!(entities.len(), 0);
+    }
+
+    // =========================================================================
+    // Tree Structure Verification Tests
+    // =========================================================================
+    // These tests verify that tree structure affects protocol selection per CIP §2.3
+
+    #[test]
+    fn test_subtree_prefetch_has_deep_tree() {
+        use calimero_node_primitives::sync::state_machine::LocalSyncState;
+
+        let (a, b) = Scenario::force_subtree_prefetch();
+
+        // SubtreePrefetch requires max_depth > 3
+        // Tree depth should be > 3 (deep tree condition)
+        let depth_a = a.max_depth();
+        let depth_b = b.max_depth();
+
+        assert!(
+            depth_b > 3,
+            "SubtreePrefetch scenario should have max_depth > 3, got {}",
+            depth_b
+        );
+
+        // Both nodes should have similar depth (deep tree structure)
+        assert!(
+            depth_a > 0 && depth_b > 0,
+            "Both nodes should have non-zero depth"
+        );
+    }
+
+    #[test]
+    fn test_levelwise_has_shallow_tree() {
+        use calimero_node_primitives::sync::state_machine::LocalSyncState;
+
+        let (a, b) = Scenario::force_levelwise();
+
+        // LevelWise requires max_depth <= 2
+        let depth_a = a.max_depth();
+        let depth_b = b.max_depth();
+
+        assert!(
+            depth_a <= 2 && depth_b <= 2,
+            "LevelWise scenario should have max_depth <= 2, got a={}, b={}",
+            depth_a,
+            depth_b
+        );
+    }
+
+    #[test]
+    fn test_deep_tree_entities_produce_depth() {
+        use calimero_node_primitives::sync::state_machine::LocalSyncState;
+
+        let mut node = SimNode::new("test");
+
+        const TREE_DEPTH: u32 = 5;
+
+        // Add entities with deep tree structure using hierarchical insertion
+        for (id, data, metadata) in generate_deep_tree_entities(50, TREE_DEPTH, 1) {
+            node.insert_entity_hierarchical(id, data, metadata, TREE_DEPTH);
+        }
+
+        let depth = node.max_depth();
+
+        // With depth parameter 5, we should get meaningful depth > 3
+        assert!(
+            depth > 3,
+            "Deep tree entities should produce depth > 3, got {}",
+            depth
+        );
+    }
+
+    #[test]
+    fn test_shallow_tree_entities_produce_low_depth() {
+        use calimero_node_primitives::sync::state_machine::LocalSyncState;
+
+        let mut node = SimNode::new("test");
+
+        const TREE_DEPTH: u32 = 1;
+
+        // Add entities with shallow tree structure using hierarchical insertion
+        for (id, data, metadata) in generate_shallow_wide_tree(50, 1, 1) {
+            node.insert_entity_hierarchical(id, data, metadata, TREE_DEPTH);
+        }
+
+        let depth = node.max_depth();
+
+        // Shallow tree should have depth <= 2
+        assert!(
+            depth <= 2,
+            "Shallow tree entities should produce depth <= 2, got {}",
+            depth
+        );
+    }
+
+    #[test]
+    fn test_tree_structure_affects_handshake() {
+        use calimero_node_primitives::sync::state_machine::LocalSyncState;
+
+        // Deep tree scenario
+        let (_, deep_b) = Scenario::force_subtree_prefetch();
+        let deep_depth = deep_b.max_depth();
+
+        // Shallow tree scenario
+        let (_, shallow_b) = Scenario::force_levelwise();
+        let shallow_depth = shallow_b.max_depth();
+
+        // Deep tree should have higher depth than shallow tree
+        assert!(
+            deep_depth > shallow_depth,
+            "Deep tree depth ({}) should be > shallow tree depth ({})",
+            deep_depth,
+            shallow_depth
+        );
     }
 }

@@ -276,7 +276,7 @@ mod tests {
         // (#6) Verify FIFO order by checking entity values
         // Each entity should have the expected value from its delta
         for i in 1..=5 {
-            let entity = node.storage.get(&EntityId::from_u64(100 + i)).unwrap();
+            let entity = node.get_entity(&EntityId::from_u64(100 + i)).unwrap();
             assert_eq!(
                 entity.data,
                 format!("delta_{}", i).as_bytes(),
@@ -331,7 +331,7 @@ mod tests {
 
         // Verify the entity has the LAST value (from delta 3, applied last in FIFO order)
         let node = rt.node(&node_id).unwrap();
-        let entity = node.storage.get(&EntityId::from_u64(999)).unwrap();
+        let entity = node.get_entity(&EntityId::from_u64(999)).unwrap();
         assert_eq!(
             entity.data, b"value_3",
             "Entity should have value_3 because delta_3 was replayed last (FIFO)"
@@ -433,9 +433,7 @@ mod tests {
         // In real implementation, this happens via SnapshotPage messages
         let source_entities: Vec<_> = {
             let s = rt.node(&source_id).unwrap();
-            s.storage
-                .entities_sorted()
-                .into_iter()
+            s.iter_entities()
                 .map(|e| (e.id, e.data.clone(), e.metadata.clone()))
                 .collect()
         };
@@ -567,23 +565,23 @@ mod tests {
 
         // Verify the correct entities exist (ids 3, 4, 5)
         assert!(
-            node.storage.get(&EntityId::from_u64(3)).is_some(),
+            node.has_entity(&EntityId::from_u64(3)),
             "Entity 3 should exist"
         );
         assert!(
-            node.storage.get(&EntityId::from_u64(4)).is_some(),
+            node.has_entity(&EntityId::from_u64(4)),
             "Entity 4 should exist"
         );
         assert!(
-            node.storage.get(&EntityId::from_u64(5)).is_some(),
+            node.has_entity(&EntityId::from_u64(5)),
             "Entity 5 should exist"
         );
         assert!(
-            node.storage.get(&EntityId::from_u64(1)).is_none(),
+            !node.has_entity(&EntityId::from_u64(1)),
             "Entity 1 should NOT exist (was evicted)"
         );
         assert!(
-            node.storage.get(&EntityId::from_u64(2)).is_none(),
+            !node.has_entity(&EntityId::from_u64(2)),
             "Entity 2 should NOT exist (was evicted)"
         );
     }

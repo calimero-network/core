@@ -266,25 +266,25 @@ mod tests {
 
     #[test]
     fn test_random_scenario_deterministic() {
-        let mut nodes1 = RandomScenario::two_nodes_random(42);
-        let mut nodes2 = RandomScenario::two_nodes_random(42);
+        let nodes1 = RandomScenario::two_nodes_random(42);
+        let nodes2 = RandomScenario::two_nodes_random(42);
 
         assert_eq!(nodes1.len(), nodes2.len());
 
-        for (n1, n2) in nodes1.iter_mut().zip(nodes2.iter_mut()) {
+        for (n1, n2) in nodes1.iter().zip(nodes2.iter()) {
             assert_eq!(n1.entity_count(), n2.entity_count());
-            assert_eq!(n1.storage.digest(), n2.storage.digest());
+            assert_eq!(n1.state_digest(), n2.state_digest());
         }
     }
 
     #[test]
     fn test_random_scenario_different_seeds() {
-        let mut nodes1 = RandomScenario::two_nodes_random(42);
-        let mut nodes2 = RandomScenario::two_nodes_random(43);
+        let nodes1 = RandomScenario::two_nodes_random(42);
+        let nodes2 = RandomScenario::two_nodes_random(43);
 
         // Very unlikely to have same digests
-        let digests1: Vec<_> = nodes1.iter_mut().map(|n| n.storage.digest()).collect();
-        let digests2: Vec<_> = nodes2.iter_mut().map(|n| n.storage.digest()).collect();
+        let digests1: Vec<_> = nodes1.iter().map(|n| n.state_digest()).collect();
+        let digests2: Vec<_> = nodes2.iter().map(|n| n.state_digest()).collect();
 
         assert_ne!(digests1, digests2);
     }
@@ -334,7 +334,7 @@ mod tests {
         // With low shared probability, nodes should have mostly different entities
         let all_ids: Vec<_> = nodes
             .iter()
-            .flat_map(|n| n.storage.iter().map(|e| e.id))
+            .flat_map(|n| n.iter_entities().map(|e| e.id))
             .collect();
 
         // Count unique IDs
