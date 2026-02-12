@@ -30,7 +30,15 @@ use tracing::{debug, error, info, warn};
 use crate::utils::choose_stream;
 
 use super::config::SyncConfig;
-use super::tracking::{SyncProtocol, SyncState};
+use super::tracking::SyncState;
+// Internal SyncProtocol for metrics (3 variants)
+use super::tracking::SyncProtocol as TrackingSyncProtocol;
+// Full SyncProtocol from primitives for protocol selection (7 variants, CIP §2.3)
+// Uses shared state machine types for consistent behavior with simulation
+use calimero_node_primitives::sync::{
+    build_handshake_from_raw, estimate_entity_count, estimate_max_depth, select_protocol,
+    SyncHandshake, SyncProtocol,
+};
 
 /// Network synchronization manager.
 ///
@@ -79,6 +87,46 @@ impl SyncManager {
         }
     }
 
+    /// Build `SyncHandshake` from local context state for protocol negotiation.
+    ///
+    /// Uses shared estimation functions from `calimero_node_primitives::sync::state_machine`
+    /// to ensure consistent behavior between production (`SyncManager`) and simulation (`SimNode`).
+    ///
+    /// # Arguments
+    ///
+    /// * `context` - The context to build a handshake for.
+    ///
+    /// # Returns
+    ///
+    /// A `SyncHandshake` containing the context's current state summary.
+    fn build_local_handshake(context: &calimero_primitives::context::Context) -> SyncHandshake {
+        let root_hash = *context.root_hash;
+        let dag_heads = context.dag_heads.clone();
+
+        // Use shared estimation functions for consistency with simulation
+        let entity_count = estimate_entity_count(root_hash, dag_heads.len());
+        let max_depth = estimate_max_depth(entity_count);
+
+        build_handshake_from_raw(root_hash, entity_count, max_depth, dag_heads)
+    }
+
+    /// Build `SyncHandshake` from peer state for protocol negotiation.
+    ///
+    /// Uses shared estimation functions from `calimero_node_primitives::sync::state_machine`
+    /// to ensure consistent behavior between production (`SyncManager`) and simulation (`SimNode`).
+    fn build_remote_handshake(
+        peer_root_hash: calimero_primitives::hash::Hash,
+        peer_dag_heads: &[[u8; DIGEST_SIZE]],
+    ) -> SyncHandshake {
+        let root_hash = *peer_root_hash;
+
+        // Use shared estimation functions for consistency with simulation
+        let entity_count = estimate_entity_count(root_hash, peer_dag_heads.len());
+        let max_depth = estimate_max_depth(entity_count);
+
+        build_handshake_from_raw(root_hash, entity_count, max_depth, peer_dag_heads.to_vec())
+    }
+
     pub async fn start(mut self) {
         let mut next_sync = time::interval(self.sync_config.frequency);
 
@@ -100,8 +148,8 @@ impl SyncManager {
             let took = Instant::saturating_duration_since(&now, start);
 
             let _ignored = state.entry(context_id).and_modify(|state| match result {
-                Ok(Ok(protocol)) => {
-                    state.on_success(peer_id, protocol);
+                Ok(Ok(ref protocol)) => {
+                    state.on_success(peer_id, TrackingSyncProtocol::from(protocol));
                     info!(
                         %context_id,
                         ?took,
@@ -848,7 +896,10 @@ impl SyncManager {
                                 }
                             }
 
-                            return Ok(Some(SyncProtocol::SnapshotSync));
+                            return Ok(Some(SyncProtocol::Snapshot {
+                                compressed: false,
+                                verified: true,
+                            }));
                         }
                         Err(e) => {
                             warn!(
@@ -920,96 +971,135 @@ impl SyncManager {
             .await?;
 
         if let Some((peer_root_hash, peer_dag_heads)) = peer_state {
-            if *context.root_hash != *peer_root_hash {
-                info!(
-                    %context_id,
-                    %chosen_peer,
-                    our_root_hash = %context.root_hash,
-                    peer_root_hash = %peer_root_hash,
-                    our_heads_count = context.dag_heads.len(),
-                    peer_heads_count = peer_dag_heads.len(),
-                    "Root hash mismatch with peer, triggering DAG catchup"
-                );
+            // Build handshakes for protocol selection (CIP §2.3)
+            // Uses shared functions from calimero_node_primitives::sync::state_machine
+            let local_hs = Self::build_local_handshake(context);
+            let remote_hs = Self::build_remote_handshake(peer_root_hash, &peer_dag_heads);
 
-                let our_heads_set: std::collections::HashSet<_> =
-                    context.dag_heads.iter().collect();
-                let peer_heads_set: std::collections::HashSet<_> = peer_dag_heads.iter().collect();
+            // Select optimal sync protocol based on state comparison
+            let selection = select_protocol(&local_hs, &remote_hs);
 
-                // Heads peer has that we don't have
-                let missing_from_peer: Vec<_> = peer_dag_heads
-                    .iter()
-                    .filter(|h| !our_heads_set.contains(h))
-                    .cloned()
-                    .collect();
+            debug!(
+                %context_id,
+                protocol = ?selection.protocol,
+                reason = %selection.reason,
+                "Protocol selected per CIP §2.3"
+            );
 
-                // Heads we have that peer doesn't have
-                let peer_missing: Vec<_> = context
-                    .dag_heads
-                    .iter()
-                    .filter(|h| !peer_heads_set.contains(h))
-                    .cloned()
-                    .collect();
-
-                if !missing_from_peer.is_empty() {
-                    // Peer has heads we don't have, request them
-                    info!(
+            // Dispatch based on selected protocol
+            match selection.protocol {
+                SyncProtocol::None => {
+                    debug!(
                         %context_id,
                         %chosen_peer,
-                        missing_count = missing_from_peer.len(),
-                        "Peer has DAG heads we don't have, requesting them"
+                        root_hash = %context.root_hash,
+                        "Already in sync"
                     );
-
-                    let result = self
-                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
-                        .await
-                        .wrap_err("request DAG heads and sync")?;
-
-                    // If peer had no data or unexpected response, return error to try next peer
-                    if matches!(result, SyncProtocol::None) {
-                        bail!("Peer has no data or unexpected response for this context, will try next peer");
-                    }
-
-                    return Ok(Some(result));
-                } else if !peer_missing.is_empty() {
-                    // We have heads peer doesn't have - we are ahead, no need to sync FROM them
-                    // The peer will request from us when they sync
-                    info!(
-                        %context_id,
-                        %chosen_peer,
-                        our_extra_heads = peer_missing.len(),
-                        "We have DAG heads peer doesn't have - we are ahead, skipping sync from this peer"
-                    );
-                    // Return None to indicate no sync needed from this peer
                     return Ok(None);
-                } else {
-                    // Truly same heads but different root hash - this is a state divergence
-                    // that can only be resolved via snapshot sync (DAG sync won't help
-                    // since there are no missing deltas on either side)
-                    warn!(
+                }
+                SyncProtocol::Snapshot { compressed, .. } => {
+                    // Snapshot sync - use existing handler
+                    info!(
                         %context_id,
                         %chosen_peer,
-                        our_root_hash = %context.root_hash,
-                        peer_root_hash = %peer_root_hash,
-                        our_heads_count = context.dag_heads.len(),
-                        peer_heads_count = peer_dag_heads.len(),
-                        "STATE DIVERGENCE: Truly same DAG heads but different root hash - forcing snapshot sync"
+                        compressed,
+                        reason = %selection.reason,
+                        "Initiating snapshot sync"
                     );
-
-                    // Force snapshot sync to reconcile state
                     let result = self
                         .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
                         .await
-                        .wrap_err("snapshot sync for state divergence")?;
+                        .wrap_err("snapshot sync")?;
+                    return Ok(Some(result));
+                }
+                SyncProtocol::DeltaSync { .. } => {
+                    // Delta sync - use existing DAG heads request mechanism
+                    info!(
+                        %context_id,
+                        %chosen_peer,
+                        reason = %selection.reason,
+                        "Initiating delta sync via DAG heads request"
+                    );
+                    let result = self
+                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+                        .await
+                        .wrap_err("delta sync")?;
+
+                    if matches!(result, SyncProtocol::None) {
+                        bail!("Peer has no data for this context");
+                    }
 
                     return Ok(Some(result));
                 }
-            } else {
-                debug!(
-                    %context_id,
-                    %chosen_peer,
-                    root_hash = %context.root_hash,
-                    "Root hash matches peer, node is truly in sync"
-                );
+                SyncProtocol::HashComparison { .. } => {
+                    // HashComparison not yet implemented, fall back to DAG heads request
+                    // which is the closest available mechanism
+                    warn!(
+                        %context_id,
+                        reason = %selection.reason,
+                        "HashComparison not yet implemented, falling back to DAG catchup"
+                    );
+                    let result = self
+                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+                        .await
+                        .wrap_err("hash comparison fallback")?;
+
+                    if matches!(result, SyncProtocol::None) {
+                        // If DAG catchup doesn't work, try snapshot as last resort
+                        info!(
+                            %context_id,
+                            "DAG catchup failed, falling back to snapshot sync"
+                        );
+                        let result = self
+                            .fallback_to_snapshot_sync(
+                                context_id,
+                                our_identity,
+                                chosen_peer,
+                                stream,
+                            )
+                            .await
+                            .wrap_err("snapshot fallback")?;
+                        return Ok(Some(result));
+                    }
+
+                    return Ok(Some(result));
+                }
+                SyncProtocol::BloomFilter { .. } => {
+                    warn!(
+                        %context_id,
+                        reason = %selection.reason,
+                        "BloomFilter not yet implemented, falling back to snapshot"
+                    );
+                    let result = self
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .await
+                        .wrap_err("bloom filter fallback")?;
+                    return Ok(Some(result));
+                }
+                SyncProtocol::SubtreePrefetch { .. } => {
+                    warn!(
+                        %context_id,
+                        reason = %selection.reason,
+                        "SubtreePrefetch not yet implemented, falling back to snapshot"
+                    );
+                    let result = self
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .await
+                        .wrap_err("subtree prefetch fallback")?;
+                    return Ok(Some(result));
+                }
+                SyncProtocol::LevelWise { .. } => {
+                    warn!(
+                        %context_id,
+                        reason = %selection.reason,
+                        "LevelWise not yet implemented, falling back to snapshot"
+                    );
+                    let result = self
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .await
+                        .wrap_err("level-wise fallback")?;
+                    return Ok(Some(result));
+                }
             }
         }
 
@@ -1376,7 +1466,9 @@ impl SyncManager {
                 }
 
                 // Return a non-None protocol to signal success (prevents trying next peer)
-                Ok(SyncProtocol::DagCatchup)
+                Ok(SyncProtocol::DeltaSync {
+                    missing_delta_ids: vec![],
+                })
             }
             _ => {
                 warn!(%context_id, "Unexpected response to DAG heads request, trying next peer");
@@ -1442,7 +1534,10 @@ impl SyncManager {
             }
         }
 
-        Ok(SyncProtocol::SnapshotSync)
+        Ok(SyncProtocol::Snapshot {
+            compressed: false,
+            verified: true,
+        })
     }
 
     /// Replay buffered deltas after snapshot sync completes.
@@ -1795,5 +1890,192 @@ impl SyncManager {
         };
 
         Ok(Some(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_node_primitives::sync::SyncHandshake;
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::{Context, ContextId};
+    use calimero_primitives::hash::Hash;
+
+    use super::SyncManager;
+
+    /// Helper to create a test context with given state
+    fn make_context(root_hash: [u8; 32], dag_heads: Vec<[u8; 32]>) -> Context {
+        Context::with_dag_heads(
+            ContextId::from([1; 32]),
+            ApplicationId::from([2; 32]),
+            Hash::from(root_hash),
+            dag_heads,
+        )
+    }
+
+    // =========================================================================
+    // Tests for build_local_handshake() using shared state machine functions
+    // =========================================================================
+
+    /// Fresh node (zero root_hash) should have has_state=false and entity_count=0
+    #[test]
+    fn test_build_local_handshake_fresh_node() {
+        let context = make_context([0; 32], vec![]);
+
+        // Use SyncManager's static method which now uses shared estimation functions
+        let handshake = SyncManager::build_local_handshake(&context);
+
+        assert!(
+            !handshake.has_state,
+            "Fresh node should have has_state=false"
+        );
+        assert_eq!(
+            handshake.entity_count, 0,
+            "Fresh node should have entity_count=0"
+        );
+        assert_eq!(handshake.max_depth, 0, "Fresh node should have max_depth=0");
+        assert_eq!(handshake.root_hash, [0; 32]);
+    }
+
+    /// Initialized node should have has_state=true and entity_count >= 1
+    #[test]
+    fn test_build_local_handshake_initialized_node() {
+        let context = make_context([42; 32], vec![[1; 32], [2; 32]]);
+
+        let handshake = SyncManager::build_local_handshake(&context);
+
+        assert!(
+            handshake.has_state,
+            "Initialized node should have has_state=true"
+        );
+        assert_eq!(
+            handshake.entity_count, 2,
+            "Entity count should match dag_heads length"
+        );
+        assert!(
+            handshake.max_depth >= 1,
+            "Initialized node should have max_depth >= 1"
+        );
+        assert_eq!(handshake.root_hash, [42; 32]);
+        assert_eq!(handshake.dag_heads.len(), 2);
+    }
+
+    /// Initialized node with empty dag_heads should still have entity_count >= 1
+    #[test]
+    fn test_build_local_handshake_initialized_no_heads() {
+        let context = make_context([42; 32], vec![]);
+
+        let handshake = SyncManager::build_local_handshake(&context);
+
+        assert!(handshake.has_state);
+        assert_eq!(
+            handshake.entity_count, 1,
+            "Initialized node with no heads should have entity_count=1 (minimum)"
+        );
+    }
+
+    // =========================================================================
+    // Tests for build_remote_handshake()
+    // =========================================================================
+
+    /// Test building remote handshake from peer state
+    #[test]
+    fn test_build_remote_handshake_with_state() {
+        let peer_root_hash = Hash::from([99; 32]);
+        let peer_dag_heads: Vec<[u8; 32]> = vec![[10; 32], [20; 32], [30; 32]];
+
+        let handshake = SyncManager::build_remote_handshake(peer_root_hash, &peer_dag_heads);
+
+        assert!(handshake.has_state);
+        assert_eq!(handshake.root_hash, [99; 32]);
+        assert_eq!(handshake.entity_count, 3);
+        assert_eq!(handshake.dag_heads.len(), 3);
+    }
+
+    /// Test building remote handshake from fresh peer
+    #[test]
+    fn test_build_remote_handshake_fresh_peer() {
+        let peer_root_hash = Hash::from([0; 32]);
+        let peer_dag_heads: Vec<[u8; 32]> = vec![];
+
+        let handshake = SyncManager::build_remote_handshake(peer_root_hash, &peer_dag_heads);
+
+        assert!(!handshake.has_state);
+        assert_eq!(handshake.root_hash, [0; 32]);
+        assert_eq!(handshake.entity_count, 0);
+        assert_eq!(handshake.max_depth, 0);
+    }
+
+    // =========================================================================
+    // Tests for protocol selection integration
+    // =========================================================================
+
+    /// Test that select_protocol is called correctly with built handshakes
+    #[test]
+    fn test_protocol_selection_fresh_to_initialized() {
+        use calimero_node_primitives::sync::{select_protocol, SyncProtocol};
+
+        // Fresh local node
+        let local_hs = SyncHandshake::new([0; 32], 0, 0, vec![]);
+
+        // Initialized remote node
+        let remote_hs = SyncHandshake::new([42; 32], 100, 4, vec![[1; 32]]);
+
+        let selection = select_protocol(&local_hs, &remote_hs);
+
+        assert!(
+            matches!(selection.protocol, SyncProtocol::Snapshot { .. }),
+            "Fresh node syncing from initialized should use Snapshot, got {:?}",
+            selection.protocol
+        );
+        assert!(
+            selection.reason.contains("fresh node"),
+            "Reason should mention fresh node"
+        );
+    }
+
+    /// Test that same root hash results in None protocol
+    #[test]
+    fn test_protocol_selection_already_synced() {
+        use calimero_node_primitives::sync::{select_protocol, SyncProtocol};
+
+        let local_hs = SyncHandshake::new([42; 32], 50, 3, vec![[1; 32]]);
+        let remote_hs = SyncHandshake::new([42; 32], 100, 4, vec![[2; 32]]);
+
+        let selection = select_protocol(&local_hs, &remote_hs);
+
+        assert!(
+            matches!(selection.protocol, SyncProtocol::None),
+            "Same root hash should result in None, got {:?}",
+            selection.protocol
+        );
+    }
+
+    /// Test max_depth calculation for various entity counts
+    #[test]
+    fn test_max_depth_calculation() {
+        // Test the log16 approximation: log16(n) ≈ log2(n) / 4
+        let test_cases: Vec<(u64, u32)> = vec![
+            (0, 0),   // No entities
+            (1, 1),   // Single entity -> depth 1
+            (16, 1),  // 16 entities -> log2(16)/4 = 4/4 = 1
+            (256, 2), // 256 entities -> log2(256)/4 = 8/4 = 2
+        ];
+
+        for (entity_count, expected_min_depth) in test_cases {
+            let max_depth = if entity_count == 0 {
+                0
+            } else {
+                let log2_approx = 64u32.saturating_sub(entity_count.leading_zeros());
+                (log2_approx / 4).max(1).min(32)
+            };
+
+            assert!(
+                max_depth >= expected_min_depth,
+                "entity_count={} should have max_depth >= {}, got {}",
+                entity_count,
+                expected_min_depth,
+                max_depth
+            );
+        }
     }
 }
