@@ -3,7 +3,7 @@
 //! **Purpose**: Coordinates periodic syncs, selects peers, and delegates to protocols.
 //! **Strategy**: Try delta sync first, fallback to state sync on failure.
 
-use std::collections::{hash_map, HashMap};
+use std::collections::{hash_map, HashMap, HashSet};
 use std::pin::pin;
 
 use calimero_context_primitives::client::ContextClient;
@@ -975,6 +975,40 @@ impl SyncManager {
             // Uses shared functions from calimero_node_primitives::sync::state_machine
             let local_hs = Self::build_local_handshake(context);
             let remote_hs = Self::build_remote_handshake(peer_root_hash, &peer_dag_heads);
+
+            // STATE DIVERGENCE DETECTION: Check if both nodes have the same DAG heads
+            // but different root hashes. This indicates state divergence that cannot
+            // be resolved via delta sync (since no deltas are missing).
+            if local_hs.has_state
+                && remote_hs.has_state
+                && local_hs.root_hash != remote_hs.root_hash
+            {
+                // Check if DAG heads are identical
+                let local_heads: HashSet<_> = local_hs.dag_heads.iter().collect();
+                let peer_heads: HashSet<_> = peer_dag_heads.iter().collect();
+
+                if local_heads == peer_heads {
+                    // STATE DIVERGENCE: Same DAG heads but different root hashes.
+                    // This is a critical condition that cannot be resolved automatically.
+                    // The old code detected this and returned an error to trigger backoff.
+                    error!(
+                        %context_id,
+                        %chosen_peer,
+                        local_root_hash = %context.root_hash,
+                        peer_root_hash = %peer_root_hash,
+                        dag_heads_count = local_heads.len(),
+                        "STATE DIVERGENCE: Same DAG heads but different root hash. \
+                         This indicates inconsistent state that cannot be resolved via delta sync. \
+                         Manual intervention may be required."
+                    );
+                    bail!(
+                        "State divergence detected: same DAG heads but different root hashes \
+                         (local={}, peer={}). Cannot reconcile automatically.",
+                        context.root_hash,
+                        peer_root_hash
+                    );
+                }
+            }
 
             // Select optimal sync protocol based on state comparison
             let selection = select_protocol(&local_hs, &remote_hs);
