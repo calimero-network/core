@@ -31,11 +31,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use calimero_primitives::context::ContextId;
+use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::identity::PublicKey;
+use calimero_storage::address::Id;
 use calimero_storage::env::RuntimeEnv;
-use calimero_storage::store::Key;
-use calimero_store::{key, types, Store};
+use calimero_storage::index::Index;
+use calimero_storage::interface::Interface;
+use calimero_storage::store::{Key, MainStorage};
+use calimero_store::{Store, key, types};
+use eyre::Result;
 use tracing::warn;
+
+use super::hash_comparison::{LeafMetadata, TreeLeafData, TreeNode};
 
 /// Create a `RuntimeEnv` that bridges `calimero-storage` to a `Store`.
 ///
@@ -70,6 +77,107 @@ pub fn create_runtime_env(
         *context_id.as_ref(),
         *executor_id.as_ref(),
     )
+}
+
+/// Get a tree node from the local Merkle tree Index.
+///
+/// This is a shared helper used by both `HashComparisonProtocol` and `SyncManager`
+/// to avoid code duplication. Must be called within a `with_runtime_env` context.
+///
+/// # Arguments
+///
+/// * `context_id` - The context being synchronized
+/// * `node_id` - The ID of the node to look up
+/// * `is_root_request` - If true, looks up the context root instead of `node_id`
+///
+/// # Returns
+///
+/// * `Ok(Some(TreeNode))` - The tree node (leaf or internal)
+/// * `Ok(None)` - Node not found
+/// * `Err(_)` - On storage errors
+pub fn get_local_tree_node(
+    context_id: ContextId,
+    node_id: &[u8; 32],
+    is_root_request: bool,
+) -> Result<Option<TreeNode>> {
+    // Determine the entity ID to look up
+    let entity_id = if is_root_request {
+        // For root request, look up the context root
+        Id::new(*context_id.as_ref())
+    } else {
+        // For child requests, node_id IS the entity ID
+        Id::new(*node_id)
+    };
+
+    // Get the entity's index from the Merkle tree
+    let index = match Index::<MainStorage>::get_index(entity_id) {
+        Ok(Some(idx)) => idx,
+        Ok(None) => return Ok(None),
+        Err(e) => {
+            warn!(
+                %context_id,
+                %entity_id,
+                error = %e,
+                "Failed to get index for entity"
+            );
+            return Ok(None);
+        }
+    };
+
+    // Get the full hash from the index
+    let full_hash = index.full_hash();
+
+    // Get children IDs from the index
+    let children_ids: Vec<[u8; 32]> = index
+        .children()
+        .map(|children| {
+            children
+                .iter()
+                .map(|child| *child.id().as_bytes())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Determine if this is a leaf or internal node
+    if children_ids.is_empty() {
+        // Leaf node - try to get entity data
+        if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
+            let metadata = LeafMetadata::new(
+                // Get CRDT type from index metadata if available
+                index
+                    .metadata
+                    .crdt_type
+                    .clone()
+                    .unwrap_or(CrdtType::LwwRegister),
+                index.metadata.updated_at(),
+                // Collection ID - use parent if available
+                [0u8; 32],
+            );
+
+            let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
+
+            Ok(Some(TreeNode::leaf(
+                *entity_id.as_bytes(),
+                full_hash,
+                leaf_data,
+            )))
+        } else {
+            // Index exists but no entry data - treat as internal node with no children
+            // This can happen for collection containers
+            Ok(Some(TreeNode::internal(
+                *entity_id.as_bytes(),
+                full_hash,
+                vec![],
+            )))
+        }
+    } else {
+        // Internal node with children
+        Ok(Some(TreeNode::internal(
+            *entity_id.as_bytes(),
+            full_hash,
+            children_ids,
+        )))
+    }
 }
 
 /// Storage callback closures that bridge `calimero-storage` Key API to the Store.

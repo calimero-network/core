@@ -117,5 +117,5 @@ pub use transport::{EncryptionState, SyncTransport};
 // Protocol trait (common interface for all sync protocols)
 pub use protocol_trait::SyncProtocolExecutor;
 
-// Storage bridge (RuntimeEnv creation for sync protocols)
-pub use storage_bridge::create_runtime_env;
+// Storage bridge (RuntimeEnv creation and helpers for sync protocols)
+pub use storage_bridge::{create_runtime_env, get_local_tree_node};
