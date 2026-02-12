@@ -26,6 +26,7 @@ use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::{blobs::BlobId, context::ContextId};
 use dashmap::DashMap;
+use libp2p::PeerId;
 use futures_util::StreamExt;
 use tracing::{debug, error, warn};
 
@@ -123,6 +124,8 @@ pub(crate) struct NodeState {
     pub(crate) node_mode: NodeMode,
     /// Active sync sessions (for delta buffering during snapshot sync).
     pub(crate) sync_sessions: Arc<DashMap<ContextId, SyncSession>>,
+    /// Last time we triggered a sync for (context_id, peer) - used to throttle repeated triggers.
+    pub(crate) sync_trigger_throttle: Arc<DashMap<(ContextId, PeerId), Instant>>,
 }
 
 impl NodeState {
@@ -134,7 +137,24 @@ impl NodeState {
             accept_mock_tee,
             node_mode,
             sync_sessions: Arc::new(DashMap::new()),
+            sync_trigger_throttle: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Returns true if we should trigger a sync for (context_id, peer) (not throttled), and records
+    /// this trigger. Used to avoid spamming the sync manager when many deltas with missing parents
+    /// arrive from the same peer.
+    pub(crate) fn should_trigger_sync_for(&self, context_id: ContextId, peer: PeerId) -> bool {
+        const THROTTLE: Duration = Duration::from_secs(2);
+        let now = Instant::now();
+        let key = (context_id, peer);
+        if let Some(prev) = self.sync_trigger_throttle.get(&key) {
+            if now.duration_since(*prev) < THROTTLE {
+                return false;
+            }
+        }
+        self.sync_trigger_throttle.insert(key, now);
+        true
     }
 
     /// Check if we should buffer a delta (during snapshot sync).

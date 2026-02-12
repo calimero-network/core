@@ -253,7 +253,7 @@ pub async fn handle_state_delta(
                 "Delta pending due to missing parents - requesting them from peer"
             );
 
-            if let Err(e) = request_missing_deltas(
+            let request_failed = request_missing_deltas(
                 network_client,
                 sync_timeout,
                 context_id,
@@ -263,8 +263,24 @@ pub async fn handle_state_delta(
                 delta_store_ref.clone(),
             )
             .await
-            {
-                warn!(?e, %context_id, ?source, "Failed to request missing deltas");
+            .is_err();
+
+            if request_failed {
+                warn!(%context_id, ?source, "Failed to request missing deltas");
+            }
+
+            // Trigger immediate sync only when point-to-point request failed, so we catch up via
+            // full DAG heads exchange instead of waiting for the next interval. Throttle by
+            // (context_id, source) to avoid spamming the sync manager when many deltas with
+            // missing parents arrive from the same peer.
+            if request_failed && node_state.should_trigger_sync_for(context_id, source) {
+                if let Err(e) = node_clients
+                    .node
+                    .sync(Some(&context_id), Some(&source))
+                    .await
+                {
+                    warn!(%context_id, ?source, ?e, "Failed to trigger sync after pending delta");
+                }
             }
         } else {
             warn!(
