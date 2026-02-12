@@ -2,18 +2,43 @@
 //!
 //! Wraps storage, DAG, and sync state machine.
 //!
+//! See [Simulation Framework Spec](https://github.com/calimero-network/specs/blob/main/sync/simulation-framework.md):
+//! - §2: Architecture Overview
+//! - §3: Side-Effect Model (`SyncActions`)
+//! - §6: Crash/Restart Semantics
+//!
+//! # Storage Architecture (Spec §5, §7)
+//!
+//! `SimNode` uses a hybrid storage approach:
+//! - `SimStorage`: Real Merkle tree backed by `calimero-storage::Index<MainStorage>`
+//!   for accurate tree structure, hash propagation, and sync protocol testing.
+//! - `entity_metadata`: Simulation-specific metadata cache (`HashMap<EntityId, EntityMetadata>`)
+//!   since the storage layer's `Metadata` type doesn't have all simulation fields (CrdtType, etc.)
+//!
+//! This allows testing real Merkle tree behavior while maintaining backward-compatible APIs.
+//!
+//! # LocalSyncState Implementation
+//!
 //! `SimNode` implements `LocalSyncState` trait from `calimero_node_primitives::sync`
-//! to share protocol logic with production `SyncManager`.
+//! to share protocol logic with production `SyncManager`. This ensures:
+//! - Protocol selection uses the same `select_protocol()` function
+//! - Handshake building follows the same structure
+//! - Both environments can be tested with the same test scenarios
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use calimero_node_primitives::sync::handshake::SyncHandshake;
 use calimero_node_primitives::sync::state_machine::{build_handshake, LocalSyncState};
+use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
+use calimero_primitives::identity::PublicKey;
+use calimero_storage::address::Id;
+use calimero_storage::entities::Metadata;
 
 use crate::sync_sim::actions::{EntityMetadata, StorageOp};
-use crate::sync_sim::digest::{DigestCache, DigestEntity};
+use crate::sync_sim::digest::DigestEntity;
 use crate::sync_sim::runtime::SimTime;
+use crate::sync_sim::storage::SimStorage;
 use crate::sync_sim::types::{
     DeltaId, EntityId, MessageId, NodeId, StateDigest, TimerId, TimerKind,
 };
@@ -74,6 +99,9 @@ pub struct TimerEntry {
 const MAX_PROCESSED_MESSAGES: usize = 10_000;
 
 /// Simulated node.
+///
+/// Uses real Merkle tree storage (`SimStorage`) for accurate sync protocol testing
+/// while maintaining simulation-specific metadata in a separate cache.
 #[derive(Debug)]
 pub struct SimNode {
     /// Node ID.
@@ -82,8 +110,12 @@ pub struct SimNode {
     pub session: u64,
     /// Outgoing message sequence counter.
     pub out_seq: u64,
-    /// Storage with digest caching.
-    pub storage: DigestCache,
+    /// Merkle tree storage backed by real `calimero-storage` implementation.
+    storage: SimStorage,
+    /// Simulation-specific entity metadata cache.
+    /// Stored separately because `calimero-storage::Metadata` doesn't include
+    /// simulation fields like `CrdtType`, `hlc_timestamp`, `version`, `collection_id`.
+    entity_metadata: HashMap<EntityId, EntityMetadata>,
     /// DAG heads.
     pub dag_heads: Vec<DeltaId>,
     /// Delta buffer (references to DAG entries).
@@ -111,12 +143,22 @@ pub struct SimNode {
 
 impl SimNode {
     /// Create a new node.
+    ///
+    /// Creates unique `ContextId` and `PublicKey` derived from the node ID
+    /// for isolated storage instances.
     pub fn new(id: impl Into<NodeId>) -> Self {
+        let node_id = id.into();
+
+        // Create deterministic context/executor IDs from node name
+        let context_id = Self::create_context_id(&node_id);
+        let executor_id = Self::create_executor_id(&node_id);
+
         Self {
-            id: id.into(),
+            id: node_id,
             session: 0,
             out_seq: 0,
-            storage: DigestCache::new(),
+            storage: SimStorage::new(context_id, executor_id),
+            entity_metadata: HashMap::new(),
             dag_heads: vec![DeltaId::ZERO],
             delta_buffer: Vec::new(),
             buffered_operations: HashMap::new(),
@@ -129,6 +171,26 @@ impl SimNode {
             has_state: false,
             is_crashed: false,
         }
+    }
+
+    /// Create a deterministic ContextId from node name.
+    fn create_context_id(node_id: &NodeId) -> ContextId {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"sim_context:");
+        hasher.update(node_id.as_str().as_bytes());
+        let hash: [u8; 32] = hasher.finalize().into();
+        ContextId::from(hash)
+    }
+
+    /// Create a deterministic PublicKey from node name.
+    fn create_executor_id(node_id: &NodeId) -> PublicKey {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"sim_executor:");
+        hasher.update(node_id.as_str().as_bytes());
+        let hash: [u8; 32] = hasher.finalize().into();
+        PublicKey::from(hash)
     }
 
     /// Get node ID.
@@ -194,24 +256,61 @@ impl SimNode {
         }
     }
 
-    /// Get state digest.
-    pub fn state_digest(&mut self) -> StateDigest {
-        self.storage.digest()
+    /// Get state digest (root hash of Merkle tree).
+    pub fn state_digest(&self) -> StateDigest {
+        StateDigest(self.storage.root_hash())
     }
 
-    /// Get entity count.
+    /// Get entity count (real entities only, excludes root and intermediate nodes).
+    ///
+    /// Uses `entity_metadata.len()` as the source of truth because:
+    /// - Only "real" entities (inserted via `insert_entity*` methods) have metadata
+    /// - Intermediate nodes created by `insert_entity_hierarchical` don't have metadata
+    /// - This matches what production would count as entities
     pub fn entity_count(&self) -> usize {
-        self.storage.len()
+        self.entity_metadata.len()
     }
 
     /// Get root hash (for handshake).
-    pub fn root_hash(&mut self) -> [u8; 32] {
-        self.storage.digest().0
+    pub fn root_hash(&self) -> [u8; 32] {
+        self.storage.root_hash()
     }
 
-    /// Check if node has any state.
+    /// Check if node has any state (real entities).
     pub fn has_any_state(&self) -> bool {
-        self.has_state || !self.storage.is_empty()
+        self.has_state || !self.entity_metadata.is_empty()
+    }
+
+    /// Get tree statistics for debugging/testing.
+    ///
+    /// Returns (real_entities, total_tree_nodes, tree_depth).
+    /// - `real_entities`: Count of actual entities (with metadata)
+    /// - `total_tree_nodes`: All nodes in tree (includes root + intermediate)
+    /// - `tree_depth`: Max depth from root to leaf
+    pub fn tree_stats(&self) -> (usize, usize, u32) {
+        let real_entities = self.entity_metadata.len();
+        let total_tree_nodes = self.storage.entity_count();
+        let tree_depth = self.storage.max_depth();
+        (real_entities, total_tree_nodes, tree_depth)
+    }
+
+    // =========================================================================
+    // Type Conversions (EntityId ↔ Id, EntityMetadata ↔ Metadata)
+    // =========================================================================
+
+    /// Convert simulation EntityId to storage Id.
+    fn entity_id_to_storage_id(entity_id: EntityId) -> Id {
+        Id::new(entity_id.0)
+    }
+
+    /// Convert simulation EntityMetadata to storage Metadata.
+    ///
+    /// Note: Storage Metadata doesn't have all simulation fields, so we store
+    /// the full EntityMetadata separately in `entity_metadata` cache.
+    fn entity_metadata_to_storage_metadata(_metadata: &EntityMetadata) -> Metadata {
+        // Storage Metadata is simpler - use defaults for now
+        // The simulation-specific fields are stored in entity_metadata cache
+        Metadata::default()
     }
 
     /// Get DAG heads.
@@ -236,11 +335,21 @@ impl SimNode {
     pub fn apply_storage_op(&mut self, op: StorageOp) {
         match op {
             StorageOp::Insert { id, data, metadata } | StorageOp::Update { id, data, metadata } => {
-                self.storage.upsert(DigestEntity { id, data, metadata });
+                let storage_id = Self::entity_id_to_storage_id(id);
+                let storage_metadata = Self::entity_metadata_to_storage_metadata(&metadata);
+
+                // Store in real Merkle tree
+                self.storage.add_entity(storage_id, &data, storage_metadata);
+
+                // Cache simulation metadata
+                self.entity_metadata.insert(id, metadata);
+
                 self.has_state = true;
             }
             StorageOp::Remove { id } => {
-                self.storage.remove(&id);
+                let storage_id = Self::entity_id_to_storage_id(id);
+                self.storage.remove_entity(storage_id);
+                self.entity_metadata.remove(&id);
             }
         }
     }
@@ -341,8 +450,7 @@ impl SimNode {
     /// Insert entity directly (for test setup).
     pub fn insert_entity(&mut self, id: EntityId, data: Vec<u8>, crdt_type: CrdtType) {
         let metadata = EntityMetadata::new(crdt_type, 0);
-        self.storage.upsert(DigestEntity { id, data, metadata });
-        self.has_state = true;
+        self.insert_entity_with_metadata(id, data, metadata);
     }
 
     /// Insert entity with full metadata.
@@ -352,18 +460,128 @@ impl SimNode {
         data: Vec<u8>,
         metadata: EntityMetadata,
     ) {
-        self.storage.upsert(DigestEntity { id, data, metadata });
+        let storage_id = Self::entity_id_to_storage_id(id);
+        let storage_metadata = Self::entity_metadata_to_storage_metadata(&metadata);
+
+        // Store in real Merkle tree
+        self.storage.add_entity(storage_id, &data, storage_metadata);
+
+        // Cache simulation metadata
+        self.entity_metadata.insert(id, metadata);
+
         self.has_state = true;
     }
 
-    /// Get entity.
-    pub fn get_entity(&self, id: &EntityId) -> Option<&DigestEntity> {
-        self.storage.get(id)
+    /// Insert entity with hierarchical placement based on key prefix depth.
+    ///
+    /// This method creates a tree structure by:
+    /// 1. Using the first `depth` bytes of the key to determine parent chain
+    /// 2. Creating intermediate nodes as needed
+    /// 3. Placing the entity at the correct depth level
+    ///
+    /// For example, with depth=3 and key [1,2,3,...]:
+    /// - root -> node[1,0,0...] -> node[1,2,0...] -> entity[1,2,3,...]
+    pub fn insert_entity_hierarchical(
+        &mut self,
+        id: EntityId,
+        data: Vec<u8>,
+        metadata: EntityMetadata,
+        depth: u32,
+    ) {
+        let key = id.0;
+        let depth = depth.min(24) as usize; // Clamp to safe depth
+
+        // Ensure storage is initialized
+        if self.storage.is_empty() {
+            self.storage.init_root();
+        }
+
+        // Build parent chain based on key prefix
+        let mut parent_id = self.storage.root_id();
+
+        for d in 1..=depth {
+            // Create intermediate node ID from key prefix
+            let mut intermediate_key = [0u8; 32];
+            intermediate_key[..d].copy_from_slice(&key[..d]);
+
+            let intermediate_id = Id::new(intermediate_key);
+
+            // Create intermediate node if it doesn't exist
+            if !self.storage.has_entity(intermediate_id) {
+                self.storage.add_entity_with_parent(
+                    intermediate_id,
+                    parent_id,
+                    &[], // Empty data for intermediate nodes
+                    Metadata::default(),
+                );
+            }
+
+            parent_id = intermediate_id;
+        }
+
+        // Add the actual entity under the deepest intermediate node
+        let storage_id = Self::entity_id_to_storage_id(id);
+        let storage_metadata = Self::entity_metadata_to_storage_metadata(&metadata);
+        self.storage
+            .add_entity_with_parent(storage_id, parent_id, &data, storage_metadata);
+
+        // Cache simulation metadata
+        self.entity_metadata.insert(id, metadata);
+
+        self.has_state = true;
     }
 
-    /// Check if entity exists.
+    /// Get entity by ID (real entities only).
+    ///
+    /// Returns a reconstructed `DigestEntity` combining data from storage
+    /// and metadata from the cache. Returns `None` if:
+    /// - Entity doesn't exist in storage, OR
+    /// - Entity is an intermediate node (no metadata)
+    pub fn get_entity(&self, id: &EntityId) -> Option<DigestEntity> {
+        // Only return entities that have metadata (real entities, not intermediate nodes)
+        let metadata = self.entity_metadata.get(id)?;
+
+        let storage_id = Self::entity_id_to_storage_id(*id);
+
+        // Get data from storage
+        let data = self.storage.get_entity_data(storage_id)?;
+
+        Some(DigestEntity {
+            id: *id,
+            data,
+            metadata: metadata.clone(),
+        })
+    }
+
+    /// Check if a real entity exists (excludes intermediate nodes).
+    ///
+    /// Returns true only for entities that have metadata (inserted via `insert_entity*`).
     pub fn has_entity(&self, id: &EntityId) -> bool {
-        self.storage.get(id).is_some()
+        self.entity_metadata.contains_key(id)
+    }
+
+    /// Check if any node exists in storage at this ID (includes intermediate nodes).
+    ///
+    /// Use `has_entity()` for checking real entities.
+    pub fn has_storage_node(&self, id: &EntityId) -> bool {
+        let storage_id = Self::entity_id_to_storage_id(*id);
+        self.storage.has_entity(storage_id)
+    }
+
+    /// Iterate over all real entities (excludes root and intermediate nodes).
+    ///
+    /// Only returns entities that have metadata (i.e., were inserted via `insert_entity*`).
+    /// Intermediate nodes created by `insert_entity_hierarchical` are excluded.
+    pub fn iter_entities(&self) -> impl Iterator<Item = DigestEntity> + '_ {
+        // Use entity_metadata as source of truth for "real" entities
+        self.entity_metadata
+            .keys()
+            .filter_map(move |id| self.get_entity(id))
+    }
+
+    /// Get all entity IDs (real entities only, excludes intermediate nodes).
+    pub fn entity_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.entity_metadata.keys().copied()
     }
 
     /// Build a SyncHandshake for this node.
@@ -392,30 +610,26 @@ impl SimNode {
 /// 2. Handshake building follows the same structure
 /// 3. Both environments can be tested with the same test scenarios
 ///
-/// Note: `root_hash()` computes the digest fresh (without caching) to satisfy
-/// the `&self` requirement of the trait. This is acceptable for protocol
-/// negotiation which happens infrequently.
+/// Now uses real Merkle tree storage via `SimStorage`.
 impl LocalSyncState for SimNode {
     fn root_hash(&self) -> [u8; 32] {
-        // Compute digest without using cache (trait requires &self, cache needs &mut self)
-        // This is acceptable for protocol negotiation which is infrequent
-        use crate::sync_sim::digest::{compute_state_digest, DigestEntity};
-        let entities: Vec<DigestEntity> = self.storage.iter().cloned().collect();
-        compute_state_digest(&entities).0
+        // Use real Merkle tree root hash from SimStorage
+        self.storage.root_hash()
     }
 
     fn entity_count(&self) -> u64 {
-        // Use actual storage count for precise simulation
-        self.storage.len() as u64
+        // Use actual storage count (excludes root)
+        self.entity_count() as u64
     }
 
     fn max_depth(&self) -> u32 {
-        // Estimate max_depth from entity count (log2-ish for balanced tree)
-        let count = self.entity_count();
-        if count == 0 {
-            0
+        // Use real tree depth from SimStorage
+        // Subtract 1 to exclude root from depth calculation (root is implementation detail)
+        let depth = self.storage.max_depth();
+        if depth > 0 {
+            depth - 1
         } else {
-            (64u32 - count.leading_zeros()).min(32)
+            0
         }
     }
 
@@ -580,5 +794,106 @@ mod tests {
         let d2 = node.state_digest();
         assert_ne!(d2, StateDigest::ZERO);
         assert_ne!(d2, d1);
+    }
+
+    #[test]
+    fn test_hierarchical_insertion_excludes_intermediate_nodes() {
+        let mut node = SimNode::new("alice");
+
+        // Insert 3 entities hierarchically with depth=3
+        // This creates intermediate nodes at depth 1, 2, 3 for each unique prefix
+        let key1 = EntityId::from_bytes([
+            1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0,
+        ]);
+        let key2 = EntityId::from_bytes([
+            1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0,
+            0, 0, 0,
+        ]);
+        let key3 = EntityId::from_bytes([
+            2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0,
+            0, 0, 0,
+        ]);
+
+        let metadata = EntityMetadata::new(CrdtType::LwwRegister, 0);
+
+        node.insert_entity_hierarchical(key1, vec![1], metadata.clone(), 3);
+        node.insert_entity_hierarchical(key2, vec![2], metadata.clone(), 3);
+        node.insert_entity_hierarchical(key3, vec![3], metadata.clone(), 3);
+
+        // Should count only 3 real entities, not intermediate nodes
+        assert_eq!(node.entity_count(), 3, "Should count only real entities");
+
+        // Verify tree has more nodes (root + intermediate + real entities)
+        let (real, total, depth) = node.tree_stats();
+        assert_eq!(real, 3, "Should have 3 real entities");
+        assert!(
+            total > 3,
+            "Tree should have intermediate nodes: got {}",
+            total
+        );
+        assert!(depth > 1, "Tree should have depth > 1: got {}", depth);
+
+        // iter_entities should only return the 3 real entities
+        let entities: Vec<_> = node.iter_entities().collect();
+        assert_eq!(
+            entities.len(),
+            3,
+            "iter_entities should return only real entities"
+        );
+
+        // has_entity should only return true for real entities
+        assert!(node.has_entity(&key1));
+        assert!(node.has_entity(&key2));
+        assert!(node.has_entity(&key3));
+
+        // Intermediate node IDs should NOT be returned by has_entity
+        let intermediate = EntityId::from_bytes([
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0,
+        ]);
+        assert!(
+            !node.has_entity(&intermediate),
+            "Intermediate nodes should not be 'real' entities"
+        );
+
+        // But has_storage_node should return true for intermediate nodes
+        assert!(
+            node.has_storage_node(&intermediate),
+            "Intermediate nodes should exist in storage"
+        );
+    }
+
+    #[test]
+    fn test_hierarchical_insertion_reuses_intermediate_nodes() {
+        let mut node = SimNode::new("alice");
+
+        // Insert two entities that share the same prefix [1,1,...]
+        let key1 = EntityId::from_bytes([
+            1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0,
+        ]);
+        let key2 = EntityId::from_bytes([
+            1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0,
+            0, 0, 0,
+        ]);
+
+        let metadata = EntityMetadata::new(CrdtType::LwwRegister, 0);
+
+        node.insert_entity_hierarchical(key1, vec![1], metadata.clone(), 3);
+        let (_, total_after_first, _) = node.tree_stats();
+
+        node.insert_entity_hierarchical(key2, vec![2], metadata.clone(), 3);
+        let (real, total_after_second, _) = node.tree_stats();
+
+        // Second insertion should reuse intermediate nodes [1,0,0...] and [1,1,0...]
+        // So total should only increase by: 1 new intermediate at depth 3 + 1 real entity = 2
+        assert_eq!(real, 2);
+        assert!(
+            total_after_second < total_after_first + 4,
+            "Should reuse intermediate nodes: first={}, second={}",
+            total_after_first,
+            total_after_second
+        );
     }
 }

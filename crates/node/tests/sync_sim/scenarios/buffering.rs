@@ -365,9 +365,7 @@ mod tests {
         // In real implementation, this happens via SnapshotPage messages
         let source_entities: Vec<_> = {
             let s = rt.node(&source_id).unwrap();
-            s.storage
-                .entities_sorted()
-                .into_iter()
+            s.iter_entities()
                 .map(|e| (e.id, e.data.clone(), e.metadata.clone()))
                 .collect()
         };
