@@ -355,16 +355,7 @@ impl SimNode {
     pub fn apply_storage_op(&mut self, op: StorageOp) {
         match op {
             StorageOp::Insert { id, data, metadata } | StorageOp::Update { id, data, metadata } => {
-                let storage_id = Self::entity_id_to_storage_id(id);
-                let storage_metadata = Self::entity_metadata_to_storage_metadata(&metadata);
-
-                // Store in real Merkle tree
-                self.storage.add_entity(storage_id, &data, storage_metadata);
-
-                // Cache simulation metadata
-                self.entity_metadata.insert(id, metadata);
-
-                self.has_state = true;
+                self.insert_entity_with_metadata(id, data, metadata);
             }
             StorageOp::Remove { id } => {
                 let storage_id = Self::entity_id_to_storage_id(id);
