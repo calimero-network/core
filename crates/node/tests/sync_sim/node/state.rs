@@ -773,6 +773,8 @@ impl LocalSyncState for SimNode {
     /// levels of entities exist below the root, which influences protocol
     /// selection (e.g., `SubtreePrefetch` for deep trees vs `Levelwise` for shallow).
     fn max_depth(&self) -> u32 {
+        // Use real tree depth from SimStorage
+        // Subtract 1 to exclude root from depth calculation (root is implementation detail)
         let depth = self.storage.max_depth();
         if depth > 0 {
             depth - 1
