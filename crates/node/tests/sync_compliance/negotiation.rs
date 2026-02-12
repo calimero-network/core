@@ -276,8 +276,7 @@ fn test_cip23_rule6_wide_shallow_levelwise() {
     let avg_children = hs_remote.entity_count / u64::from(hs_remote.max_depth);
     assert!(
         avg_children > 10,
-        "Precondition: avg_children > 10, got {}",
-        avg_children
+        "Precondition: avg_children > 10, got {avg_children}"
     );
 
     let selection = select_protocol(&hs_local, &hs_remote);
@@ -512,8 +511,7 @@ fn test_cip23_deterministic_selection() {
         assert_eq!(
             std::mem::discriminant(&result.protocol),
             std::mem::discriminant(&baseline.protocol),
-            "Protocol selection changed on iteration {}!",
-            i
+            "Protocol selection changed on iteration {i}!"
         );
     }
 }

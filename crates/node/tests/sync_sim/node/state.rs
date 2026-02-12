@@ -28,7 +28,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use calimero_node_primitives::sync::handshake::SyncHandshake;
+use calimero_node_primitives::sync::protocol::SyncProtocol;
 use calimero_node_primitives::sync::state_machine::{build_handshake, LocalSyncState};
+
+use crate::sync_sim::actions::SelectedProtocol;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::identity::PublicKey;
@@ -155,6 +158,9 @@ pub struct SimNode {
     pub has_state: bool,
     /// Whether node is currently crashed (offline).
     pub is_crashed: bool,
+    /// Forced protocol override for testing.
+    /// When set, `select_protocol_for_sync()` returns this instead of auto-selecting.
+    forced_protocol: Option<SelectedProtocol>,
 }
 
 impl SimNode {
@@ -197,6 +203,7 @@ impl SimNode {
             sender_sessions: HashMap::new(),
             has_state: false,
             is_crashed: false,
+            forced_protocol: None,
         }
     }
 
@@ -728,6 +735,87 @@ impl SimNode {
     pub fn build_handshake(&mut self) -> SyncHandshake {
         // Use the shared build_handshake function via LocalSyncState trait
         build_handshake(self)
+    }
+
+    // =========================================================================
+    // Protocol Forcing (for testing)
+    // =========================================================================
+
+    /// Force a specific protocol for testing.
+    ///
+    /// When set, `select_protocol_for_sync()` returns this protocol instead of
+    /// auto-selecting based on handshake parameters.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut alice = SimNode::new("alice");
+    /// alice.force_protocol(SelectedProtocol::HashComparison);
+    /// // Now any sync initiated by alice will use HashComparison
+    /// ```
+    pub fn force_protocol(&mut self, protocol: SelectedProtocol) {
+        self.forced_protocol = Some(protocol);
+    }
+
+    /// Clear forced protocol, returning to auto-selection.
+    pub fn clear_forced_protocol(&mut self) {
+        self.forced_protocol = None;
+    }
+
+    /// Get the forced protocol, if any.
+    pub fn forced_protocol(&self) -> Option<&SelectedProtocol> {
+        self.forced_protocol.as_ref()
+    }
+
+    /// Select protocol for sync with another node.
+    ///
+    /// If a protocol has been forced via `force_protocol()`, returns that.
+    /// Otherwise, uses the standard `select_protocol()` function.
+    ///
+    /// # Arguments
+    ///
+    /// * `remote` - The remote node's handshake
+    ///
+    /// # Returns
+    ///
+    /// The selected protocol and reason.
+    pub fn select_protocol_for_sync(
+        &mut self,
+        remote: &SyncHandshake,
+    ) -> (SelectedProtocol, String) {
+        // Check for forced protocol first
+        if let Some(protocol) = &self.forced_protocol {
+            return (protocol.clone(), "forced for testing".to_string());
+        }
+
+        // Build our handshake and use standard selection
+        let local = self.build_handshake();
+        let selection = calimero_node_primitives::sync::protocol::select_protocol(&local, remote);
+
+        // Convert SyncProtocol to SelectedProtocol
+        let protocol = Self::sync_protocol_to_selected(&selection.protocol);
+        (protocol, selection.reason.to_string())
+    }
+
+    /// Convert from primitives SyncProtocol to sim SelectedProtocol.
+    pub fn sync_protocol_to_selected(protocol: &SyncProtocol) -> SelectedProtocol {
+        match protocol {
+            SyncProtocol::None => SelectedProtocol::None,
+            SyncProtocol::Snapshot { compressed, .. } => SelectedProtocol::Snapshot {
+                compressed: *compressed,
+            },
+            SyncProtocol::HashComparison { .. } => SelectedProtocol::HashComparison,
+            SyncProtocol::DeltaSync { missing_delta_ids } => SelectedProtocol::DeltaSync {
+                missing_count: missing_delta_ids.len(),
+            },
+            SyncProtocol::BloomFilter { filter_size, .. } => SelectedProtocol::BloomFilter {
+                filter_size: *filter_size,
+            },
+            SyncProtocol::SubtreePrefetch { .. } => SelectedProtocol::SubtreePrefetch,
+            SyncProtocol::LevelWise { max_depth } => SelectedProtocol::LevelWise {
+                max_depth: *max_depth,
+            },
+        }
     }
 }
 

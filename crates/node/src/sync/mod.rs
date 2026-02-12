@@ -25,6 +25,7 @@
 mod blobs;
 mod config;
 mod delta_request;
+mod hash_comparison;
 mod helpers;
 mod key;
 mod manager;
