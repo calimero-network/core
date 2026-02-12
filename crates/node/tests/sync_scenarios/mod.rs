@@ -10,6 +10,7 @@
 //! ## Test Categories
 //!
 //! - `snapshot_merge_protection.rs` - Invariant I5 protection tests
+//! - `protocol_dispatch.rs` - Protocol dispatch integration tests
 //! - `negotiation.rs` - Protocol negotiation tests
 //! - `snapshot.rs` - Snapshot sync path tests
 //! - `hash_compare.rs` - Hash comparison sync tests
@@ -17,4 +18,5 @@
 //! - `partitions.rs` - Network partition tests
 //! - `failures.rs` - Fault tolerance tests
 
+pub mod protocol_dispatch;
 pub mod snapshot_merge_protection;

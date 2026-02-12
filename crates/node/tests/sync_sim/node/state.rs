@@ -1,10 +1,14 @@
 //! Simulated node state.
 //!
 //! Wraps storage, DAG, and sync state machine.
+//!
+//! `SimNode` implements `LocalSyncState` trait from `calimero_node_primitives::sync`
+//! to share protocol logic with production `SyncManager`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use calimero_node_primitives::sync::handshake::SyncHandshake;
+use calimero_node_primitives::sync::state_machine::{build_handshake, LocalSyncState};
 use calimero_primitives::crdt::CrdtType;
 
 use crate::sync_sim::actions::{EntityMetadata, StorageOp};
@@ -324,21 +328,64 @@ impl SimNode {
 
     /// Build a SyncHandshake for this node.
     ///
-    /// Used for protocol negotiation testing.
+    /// Uses the shared `build_handshake()` function from `calimero_node_primitives::sync`
+    /// to ensure consistent behavior between simulation and production.
+    ///
+    /// Note: Unlike `SyncManager` which estimates entity_count from dag_heads,
+    /// `SimNode` provides the actual entity count from storage. This gives more
+    /// accurate protocol selection in simulation while using the same selection logic.
     pub fn build_handshake(&mut self) -> SyncHandshake {
-        let root_hash = self.root_hash();
-        let entity_count = self.entity_count() as u64;
+        // Use the shared build_handshake function via LocalSyncState trait
+        build_handshake(self)
+    }
+}
 
+// =============================================================================
+// LocalSyncState Implementation
+// =============================================================================
+
+/// Implement `LocalSyncState` to enable shared protocol logic between
+/// `SimNode` (simulation) and `SyncManager` (production).
+///
+/// This ensures that:
+/// 1. Protocol selection uses the same `select_protocol()` function
+/// 2. Handshake building follows the same structure
+/// 3. Both environments can be tested with the same test scenarios
+///
+/// Note: `root_hash()` computes the digest fresh (without caching) to satisfy
+/// the `&self` requirement of the trait. This is acceptable for protocol
+/// negotiation which happens infrequently.
+impl LocalSyncState for SimNode {
+    fn root_hash(&self) -> [u8; 32] {
+        // Compute digest without using cache (trait requires &self, cache needs &mut self)
+        // This is acceptable for protocol negotiation which is infrequent
+        use crate::sync_sim::digest::{compute_state_digest, DigestEntity};
+        let entities: Vec<DigestEntity> = self.storage.iter().cloned().collect();
+        compute_state_digest(&entities).0
+    }
+
+    fn entity_count(&self) -> u64 {
+        // Use actual storage count for precise simulation
+        self.storage.len() as u64
+    }
+
+    fn max_depth(&self) -> u32 {
         // Estimate max_depth from entity count (log2-ish for balanced tree)
-        let max_depth = if entity_count == 0 {
+        let count = self.entity_count();
+        if count == 0 {
             0
         } else {
-            (64 - entity_count.leading_zeros()).min(32)
-        };
+            (64u32 - count.leading_zeros()).min(32)
+        }
+    }
 
-        let dag_heads: Vec<[u8; 32]> = self.dag_heads.iter().map(|d| d.0).collect();
+    fn dag_heads(&self) -> Vec<[u8; 32]> {
+        self.dag_heads.iter().map(|d| d.0).collect()
+    }
 
-        SyncHandshake::new(root_hash, entity_count, max_depth, dag_heads)
+    fn has_state(&self) -> bool {
+        // Use explicit has_state flag for simulation consistency
+        self.has_state
     }
 }
 
