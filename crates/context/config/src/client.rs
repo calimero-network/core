@@ -76,9 +76,7 @@ impl Client<AnyTransport> {
                 };
 
                 for (network, signer) in &near_config.signers {
-                    let Credentials::Near(credentials) = &signer.credentials else {
-                        eyre::bail!("expected Near credentials but got {:?}", signer.credentials)
-                    };
+                    let Credentials::Near(credentials) = &signer.credentials;
 
                     let _ignored = config.networks.insert(
                         network.clone().into(),
