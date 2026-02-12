@@ -102,6 +102,13 @@ const MAX_PROCESSED_MESSAGES: usize = 10_000;
 /// Matches production default from `calimero_node_primitives::delta_buffer::DEFAULT_BUFFER_CAPACITY`.
 pub const DEFAULT_SIM_BUFFER_CAPACITY: usize = 10_000;
 
+/// Maximum depth for hierarchical entity insertion.
+///
+/// Key bytes 0..24 are used for tree depth, bytes 24..32 are reserved for
+/// seed/uniqueness in test entity generation. This matches the key layout
+/// in `generate_deep_tree_entities()`.
+const MAX_HIERARCHICAL_DEPTH: usize = 24;
+
 /// Simulated node.
 ///
 /// Uses real Merkle tree storage (`SimStorage`) for accurate sync protocol testing
@@ -352,19 +359,14 @@ impl SimNode {
     }
 
     /// Apply storage operation.
+    ///
+    /// Delegates to `insert_entity_with_metadata` for Insert/Update to avoid
+    /// duplicating the dual-write logic (storage + metadata cache).
     pub fn apply_storage_op(&mut self, op: StorageOp) {
         match op {
             StorageOp::Insert { id, data, metadata } | StorageOp::Update { id, data, metadata } => {
-                let storage_id = Self::entity_id_to_storage_id(id);
-                let storage_metadata = Self::entity_metadata_to_storage_metadata(&metadata);
-
-                // Store in real Merkle tree
-                self.storage.add_entity(storage_id, &data, storage_metadata);
-
-                // Cache simulation metadata
-                self.entity_metadata.insert(id, metadata);
-
-                self.has_state = true;
+                // Delegate to avoid duplicating dual-write logic
+                self.insert_entity_with_metadata(id, data, metadata);
             }
             StorageOp::Remove { id } => {
                 let storage_id = Self::entity_id_to_storage_id(id);
@@ -612,7 +614,7 @@ impl SimNode {
         depth: u32,
     ) {
         let key = id.0;
-        let depth = depth.min(24) as usize; // Clamp to safe depth
+        let depth = (depth as usize).min(MAX_HIERARCHICAL_DEPTH);
 
         // Ensure storage is initialized
         if self.storage.is_empty() {
@@ -753,9 +755,24 @@ impl LocalSyncState for SimNode {
         self.entity_count() as u64
     }
 
+    /// Returns the maximum depth of the Merkle tree, excluding the root.
+    ///
+    /// # Semantics
+    ///
+    /// - `SimStorage::max_depth()` returns the raw tree depth (root-inclusive):
+    ///   - Empty tree: 0
+    ///   - Root only: 1
+    ///   - Root + children: 2
+    ///
+    /// - `LocalSyncState::max_depth()` returns protocol-visible depth (root-exclusive):
+    ///   - Empty tree: 0
+    ///   - Root only (no entities): 0
+    ///   - Entities at depth 1: 1
+    ///
+    /// This matches the protocol's expectation where depth indicates how many
+    /// levels of entities exist below the root, which influences protocol
+    /// selection (e.g., `SubtreePrefetch` for deep trees vs `Levelwise` for shallow).
     fn max_depth(&self) -> u32 {
-        // Use real tree depth from SimStorage
-        // Subtract 1 to exclude root from depth calculation (root is implementation detail)
         let depth = self.storage.max_depth();
         if depth > 0 {
             depth - 1
