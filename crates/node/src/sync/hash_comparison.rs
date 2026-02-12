@@ -252,11 +252,6 @@ impl SyncManager {
                 );
             }
 
-            // Get local node from our Merkle tree
-            let local_node = with_runtime_env(runtime_env.clone(), || {
-                self.get_local_tree_node_from_index(context_id, &node_id, is_root_request)
-            })?;
-
             // Request node from peer
             let request_msg = StreamMessage::Init {
                 context_id,
@@ -333,9 +328,25 @@ impl SyncManager {
                         stats.entities_merged += 1;
                     }
                 } else {
-                    // Internal node: compare with local and queue differing children
+                    // Internal node: look up LOCAL version of THIS node (not the parent!)
+                    // BUG FIX: Previously we compared all nodes against local_node (the parent),
+                    // but when max_depth > 0, the response includes children which must be
+                    // compared against their own local versions.
+                    //
+                    // Determine if this specific node is the root:
+                    // - If remote_node.id matches the originally requested node_id AND is_root_request is true
+                    let is_this_node_root = is_root_request && remote_node.id == node_id;
+
+                    let local_version = with_runtime_env(runtime_env.clone(), || {
+                        self.get_local_tree_node_from_index(
+                            context_id,
+                            &remote_node.id,
+                            is_this_node_root,
+                        )
+                    })?;
+
                     let compare_result =
-                        compare_tree_nodes(local_node.as_ref(), Some(&remote_node));
+                        compare_tree_nodes(local_version.as_ref(), Some(&remote_node));
 
                     match compare_result {
                         TreeCompareResult::Equal => {
