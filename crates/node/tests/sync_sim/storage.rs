@@ -103,6 +103,19 @@ impl SimStorage {
         self.context_id
     }
 
+    /// Get a reference to the underlying Store.
+    ///
+    /// This allows using `HashComparisonProtocol` and other protocol
+    /// implementations that operate on `&Store` directly.
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
+    /// Get the executor ID.
+    pub fn executor_id(&self) -> PublicKey {
+        self.executor_id
+    }
+
     /// Get the root entity ID for this storage.
     ///
     /// The root ID is derived from the context ID and must be used

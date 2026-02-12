@@ -1104,8 +1104,8 @@ async fn request_key_share_with_peer(
             .get_identity(context_id, &their_identity)?
             .ok_or_eyre("expected peer identity to exist")?;
 
-        let mut sequence_id_out: usize = 0;
-        let mut sequence_id_in: usize = 0;
+        let mut sequence_id_out: u64 = 0;
+        let mut sequence_id_in: u64 = 0;
 
         // Step 4: Challenge/Response authentication
         // Protocol must match sync/key.rs exactly:

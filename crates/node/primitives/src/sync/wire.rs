@@ -71,7 +71,7 @@ pub enum StreamMessage<'a> {
     /// Follow-up message in an ongoing sync operation.
     Message {
         /// Sequence number for ordering.
-        sequence_id: usize,
+        sequence_id: u64,
         /// The message payload.
         payload: MessagePayload<'a>,
         /// Nonce for the next message.

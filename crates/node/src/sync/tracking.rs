@@ -136,12 +136,12 @@ impl Default for SyncState {
 /// Prevents message reordering attacks and protocol confusion.
 #[derive(Debug, Default)]
 pub(crate) struct Sequencer {
-    current: usize,
+    current: u64,
 }
 
 impl Sequencer {
     /// Get next sequence ID and advance counter.
-    pub(crate) fn next(&mut self) -> usize {
+    pub(crate) fn next(&mut self) -> u64 {
         let id = self.current;
         self.current += 1;
         id
@@ -153,7 +153,7 @@ impl Sequencer {
     ///
     /// Returns error if the provided ID doesn't match the expected sequence.
     /// This indicates out-of-order messages or a protocol violation.
-    pub(crate) fn expect(&mut self, expected: usize) -> eyre::Result<()> {
+    pub(crate) fn expect(&mut self, expected: u64) -> eyre::Result<()> {
         if self.current != expected {
             bail!("sequence error: expected {}, at {}", expected, self.current);
         }

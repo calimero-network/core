@@ -115,19 +115,19 @@ const DEFAULT_RECV_TIMEOUT: Duration = Duration::from_secs(30);
 /// // Use with protocol
 /// hash_comparison_sync(&mut transport, context_id, ...).await?;
 /// ```
-pub struct StreamTransport {
-    /// The underlying libp2p stream.
-    stream: Stream,
+pub struct StreamTransport<'a> {
+    /// The underlying libp2p stream (mutable reference).
+    stream: &'a mut Stream,
     /// Encryption state.
     encryption: EncryptionState,
     /// Default timeout for recv operations.
     recv_timeout: Duration,
 }
 
-impl StreamTransport {
+impl<'a> StreamTransport<'a> {
     /// Create a new transport wrapper around a libp2p stream.
     #[must_use]
-    pub fn new(stream: Stream) -> Self {
+    pub fn new(stream: &'a mut Stream) -> Self {
         Self {
             stream,
             encryption: EncryptionState::new(),
@@ -137,30 +137,18 @@ impl StreamTransport {
 
     /// Create with a custom default receive timeout.
     #[must_use]
-    pub fn with_timeout(stream: Stream, timeout: Duration) -> Self {
+    #[expect(dead_code, reason = "Future API for custom timeouts")]
+    pub fn with_timeout(stream: &'a mut Stream, timeout: Duration) -> Self {
         Self {
             stream,
             encryption: EncryptionState::new(),
             recv_timeout: timeout,
         }
     }
-
-    /// Get mutable reference to the underlying stream.
-    ///
-    /// Useful for operations that need direct stream access.
-    pub fn inner_mut(&mut self) -> &mut Stream {
-        &mut self.stream
-    }
-
-    /// Consume the transport and return the underlying stream.
-    #[must_use]
-    pub fn into_inner(self) -> Stream {
-        self.stream
-    }
 }
 
 #[async_trait]
-impl SyncTransport for StreamTransport {
+impl SyncTransport for StreamTransport<'_> {
     async fn send(&mut self, message: &StreamMessage<'_>) -> eyre::Result<()> {
         let encoded = borsh::to_vec(message)?;
         let encrypted = self.encryption.encrypt(encoded)?;
@@ -201,7 +189,6 @@ impl SyncTransport for StreamTransport {
     }
 
     async fn close(&mut self) -> eyre::Result<()> {
-        use futures_util::SinkExt as _;
         self.stream.close().await?;
         Ok(())
     }

@@ -35,9 +35,10 @@ use super::tracking::SyncState;
 use super::tracking::SyncProtocol as TrackingSyncProtocol;
 // Full SyncProtocol from primitives for protocol selection (7 variants, CIP §2.3)
 // Uses shared state machine types for consistent behavior with simulation
+use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtocol};
 use calimero_node_primitives::sync::{
     build_handshake_from_raw, estimate_entity_count, estimate_max_depth, select_protocol,
-    SyncHandshake, SyncProtocol,
+    SyncHandshake, SyncProtocol, SyncProtocolExecutor,
 };
 
 /// Network synchronization manager.
@@ -1039,15 +1040,23 @@ impl SyncManager {
                         "Starting HashComparison sync"
                     );
 
-                    match self
-                        .hash_comparison_sync(
-                            context_id,
-                            chosen_peer,
-                            our_identity,
-                            stream,
-                            root_hash,
-                        )
-                        .await
+                    // Wrap stream in transport abstraction
+                    let mut transport = super::stream::StreamTransport::new(stream);
+
+                    // Get store for protocol execution
+                    let store = self.context_client.datastore_handle().into_inner();
+                    let config = HashComparisonConfig {
+                        remote_root_hash: root_hash,
+                    };
+
+                    match HashComparisonProtocol::run_initiator(
+                        &mut transport,
+                        &store,
+                        context_id,
+                        our_identity,
+                        config,
+                    )
+                    .await
                     {
                         Ok(stats) => {
                             info!(
@@ -1940,11 +1949,13 @@ impl SyncManager {
                 max_depth,
             } => {
                 // Handle tree node request from peer (HashComparison sync)
+                // Wrap stream in transport abstraction
+                let mut transport = super::stream::StreamTransport::new(stream);
                 self.handle_tree_node_request(
                     requested_context_id,
                     node_id,
                     max_depth,
-                    stream,
+                    &mut transport,
                     nonce,
                 )
                 .await?
