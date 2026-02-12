@@ -568,6 +568,71 @@ impl SimRuntime {
                     matches!(spec, PartitionSpec::Bidirectional { groups: g } if normalize(g) == target)
                 });
             }
+
+            // =========================================================================
+            // Delta Buffering Events (Invariant I6)
+            // =========================================================================
+            SimEvent::GossipDelta {
+                to,
+                delta_id,
+                operations,
+            } => {
+                let Some(node) = self.nodes.get_mut(&to) else {
+                    return true;
+                };
+
+                // Crashed nodes cannot receive deltas
+                if node.is_crashed {
+                    return true;
+                }
+
+                // Invariant I6: If sync is active, buffer the delta instead of applying
+                if node.sync_state.is_active() {
+                    node.buffer_delta(delta_id);
+                    // Store operations in a pending map for later replay
+                    node.buffer_operations(delta_id, operations);
+                } else {
+                    // Apply delta immediately
+                    for op in operations {
+                        node.apply_storage_op(op);
+                        self.metrics.work.record_write();
+                    }
+                }
+            }
+
+            SimEvent::SyncStart { node } => {
+                use crate::sync_sim::node::SyncState;
+                if let Some(n) = self.nodes.get_mut(&node) {
+                    if !n.is_crashed {
+                        // Transition to syncing state (simulates snapshot sync starting)
+                        n.sync_state = SyncState::SnapshotTransfer {
+                            peer: NodeId::new("peer"),
+                            page: 0,
+                        };
+                    }
+                }
+            }
+
+            SimEvent::SyncComplete { node } => {
+                use crate::sync_sim::node::SyncState;
+                if let Some(n) = self.nodes.get_mut(&node) {
+                    if !n.is_crashed && n.sync_state.is_active() {
+                        // Replay buffered deltas before transitioning to idle
+                        let buffered_ops = n.drain_buffered_operations();
+                        for (_delta_id, operations) in buffered_ops {
+                            for op in operations {
+                                n.apply_storage_op(op);
+                            }
+                        }
+
+                        // Clear the delta ID buffer
+                        n.clear_buffer();
+
+                        // Transition to idle
+                        n.sync_state = SyncState::Idle;
+                    }
+                }
+            }
         }
 
         true
@@ -727,6 +792,44 @@ impl SimRuntime {
     pub fn schedule_heal(&mut self, groups: Vec<Vec<NodeId>>, delay: SimDuration) {
         let time = self.clock.now() + delay;
         self.queue.schedule(time, SimEvent::PartitionEnd { groups });
+    }
+
+    // =========================================================================
+    // Delta Buffering Helpers (Invariant I6)
+    // =========================================================================
+
+    /// Schedule a gossip delta to arrive at a node.
+    ///
+    /// If the node is syncing, the delta will be buffered.
+    /// If the node is idle, the delta will be applied immediately.
+    pub fn schedule_gossip_delta(
+        &mut self,
+        to: NodeId,
+        delta_id: crate::sync_sim::types::DeltaId,
+        operations: Vec<crate::sync_sim::actions::StorageOp>,
+        delay: SimDuration,
+    ) {
+        let time = self.clock.now() + delay;
+        self.queue.schedule(
+            time,
+            SimEvent::GossipDelta {
+                to,
+                delta_id,
+                operations,
+            },
+        );
+    }
+
+    /// Start sync on a node (transitions to SnapshotTransfer state).
+    pub fn schedule_sync_start(&mut self, node: NodeId, delay: SimDuration) {
+        let time = self.clock.now() + delay;
+        self.queue.schedule(time, SimEvent::SyncStart { node });
+    }
+
+    /// Complete sync on a node (replays buffered deltas and transitions to Idle).
+    pub fn schedule_sync_complete(&mut self, node: NodeId, delay: SimDuration) {
+        let time = self.clock.now() + delay;
+        self.queue.schedule(time, SimEvent::SyncComplete { node });
     }
 }
 

@@ -88,18 +88,14 @@ pub(crate) struct NodeManagers {
 #[derive(Debug)]
 pub(crate) enum SyncSessionState {
     /// Buffering deltas during snapshot sync.
-    BufferingDeltas {
-        /// Number of deltas buffered so far.
-        buffered_count: usize,
-        /// HLC timestamp when sync started.
-        sync_start_hlc: u64,
-    },
+    /// The sync_start_hlc is stored in the DeltaBuffer itself.
+    BufferingDeltas,
 }
 
 impl SyncSessionState {
     /// Check if we should buffer incoming deltas.
     pub fn should_buffer_deltas(&self) -> bool {
-        matches!(self, Self::BufferingDeltas { .. })
+        matches!(self, Self::BufferingDeltas)
     }
 }
 
@@ -110,6 +106,8 @@ pub(crate) struct SyncSession {
     pub state: SyncSessionState,
     /// Buffer for deltas received during sync.
     pub delta_buffer: calimero_node_primitives::delta_buffer::DeltaBuffer,
+    /// Timestamp of last drop warning (for rate limiting).
+    pub last_drop_warning: Option<Instant>,
 }
 
 /// Mutable runtime state
@@ -146,45 +144,145 @@ impl NodeState {
             .map_or(false, |session| session.state.should_buffer_deltas())
     }
 
-    /// Buffer a delta during snapshot sync.
+    /// Buffer a delta during snapshot sync (Invariant I6).
     ///
-    /// Returns true if successfully buffered, false if buffer is full or no session.
+    /// Returns true if successfully buffered, false if no active session.
+    ///
+    /// If the buffer is full, the oldest delta is evicted (oldest-first policy)
+    /// and a rate-limited warning is logged. Drops are tracked via metrics.
     pub(crate) fn buffer_delta(
         &self,
         context_id: &ContextId,
         delta: calimero_node_primitives::delta_buffer::BufferedDelta,
     ) -> bool {
         if let Some(mut session) = self.sync_sessions.get_mut(context_id) {
-            session.delta_buffer.push(delta).is_ok()
+            let delta_id = delta.id;
+            let added_without_eviction = session.delta_buffer.push(delta);
+
+            if !added_without_eviction {
+                // Delta was added but oldest was evicted - log rate-limited warning
+                let should_warn = session
+                    .last_drop_warning
+                    .map_or(true, |last| last.elapsed() > Duration::from_secs(5));
+
+                if should_warn {
+                    session.last_drop_warning = Some(Instant::now());
+                    warn!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        drops = session.delta_buffer.drops(),
+                        buffer_size = session.delta_buffer.len(),
+                        capacity = session.delta_buffer.capacity(),
+                        "Delta buffer overflow - evicted oldest delta (I6 violation risk)"
+                    );
+                }
+            }
+
+            true // Delta was buffered (possibly with eviction)
         } else {
-            false
+            false // No active session
         }
     }
 
     /// Start a sync session for a context (enables delta buffering).
+    ///
+    /// Buffer capacity defaults to 10,000 deltas per context.
     pub(crate) fn start_sync_session(&self, context_id: ContextId, sync_start_hlc: u64) {
+        self.start_sync_session_with_capacity(
+            context_id,
+            sync_start_hlc,
+            calimero_node_primitives::delta_buffer::DEFAULT_BUFFER_CAPACITY,
+        );
+    }
+
+    /// Start a sync session with custom buffer capacity.
+    pub(crate) fn start_sync_session_with_capacity(
+        &self,
+        context_id: ContextId,
+        sync_start_hlc: u64,
+        capacity: usize,
+    ) {
         use calimero_node_primitives::delta_buffer::DeltaBuffer;
+
+        debug!(
+            %context_id,
+            sync_start_hlc,
+            capacity,
+            "Starting sync session with delta buffering"
+        );
 
         self.sync_sessions.insert(
             context_id,
             SyncSession {
-                state: SyncSessionState::BufferingDeltas {
-                    buffered_count: 0,
-                    sync_start_hlc,
-                },
-                delta_buffer: DeltaBuffer::new(1000, sync_start_hlc), // Max 1000 buffered deltas
+                state: SyncSessionState::BufferingDeltas,
+                delta_buffer: DeltaBuffer::new(capacity, sync_start_hlc),
+                last_drop_warning: None,
             },
         );
     }
 
     /// End a sync session and return buffered deltas for replay.
+    ///
+    /// Call this after sync completes successfully. Buffered deltas should be
+    /// replayed in FIFO order to preserve causality.
     pub(crate) fn end_sync_session(
         &self,
         context_id: &ContextId,
     ) -> Option<Vec<calimero_node_primitives::delta_buffer::BufferedDelta>> {
-        self.sync_sessions
-            .remove(context_id)
-            .map(|(_, mut session)| session.delta_buffer.drain())
+        if let Some((_, mut session)) = self.sync_sessions.remove(context_id) {
+            let drops = session.delta_buffer.drops();
+            let buffered_count = session.delta_buffer.len();
+
+            if drops > 0 {
+                warn!(
+                    %context_id,
+                    drops,
+                    buffered_count,
+                    "Sync session ended with {} dropped deltas (I6 partial violation)",
+                    drops
+                );
+            } else {
+                debug!(
+                    %context_id,
+                    buffered_count,
+                    "Sync session ended successfully"
+                );
+            }
+
+            Some(session.delta_buffer.drain())
+        } else {
+            None
+        }
+    }
+
+    /// Cancel a sync session and discard buffered deltas.
+    ///
+    /// Call this on sync error/failure. Buffered deltas are discarded since
+    /// the sync didn't complete and the context state may be inconsistent.
+    pub(crate) fn cancel_sync_session(&self, context_id: &ContextId) {
+        if let Some((_, session)) = self.sync_sessions.remove(context_id) {
+            let drops = session.delta_buffer.drops();
+            let buffered_count = session.delta_buffer.len();
+
+            warn!(
+                %context_id,
+                buffered_count,
+                drops,
+                "Sync session cancelled - discarding buffered deltas"
+            );
+        }
+    }
+
+    /// Get buffer metrics for a context (for observability).
+    #[allow(dead_code)]
+    pub(crate) fn get_buffer_metrics(&self, context_id: &ContextId) -> Option<(usize, u64, usize)> {
+        self.sync_sessions.get(context_id).map(|session| {
+            (
+                session.delta_buffer.len(),
+                session.delta_buffer.drops(),
+                session.delta_buffer.capacity(),
+            )
+        })
     }
 
     /// Evict blobs from cache based on age, count, and memory limits

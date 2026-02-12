@@ -1478,6 +1478,10 @@ impl SyncManager {
     }
 
     /// Fall back to full snapshot sync when delta sync is not possible.
+    ///
+    /// Implements Invariant I6: Deltas received during sync are buffered and
+    /// replayed after sync completes. On error, buffered deltas are discarded
+    /// via `cancel_sync_session()`.
     async fn fallback_to_snapshot_sync(
         &self,
         context_id: ContextId,
@@ -1487,7 +1491,7 @@ impl SyncManager {
     ) -> eyre::Result<SyncProtocol> {
         info!(%context_id, %peer_id, "Initiating snapshot sync");
 
-        // Start buffering deltas that arrive during snapshot sync
+        // Start buffering deltas that arrive during snapshot sync (Invariant I6)
         // Use current time as sync start HLC
         let sync_start_hlc = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1500,9 +1504,15 @@ impl SyncManager {
         // If the node has state, this will fail, which is correct - divergence
         // or pruned history on initialized nodes cannot be safely resolved via
         // snapshot overwrite. CRDT merge must be used instead.
-        let result = self
-            .request_snapshot_sync(context_id, peer_id, false)
-            .await?;
+        let result = match self.request_snapshot_sync(context_id, peer_id, false).await {
+            Ok(r) => r,
+            Err(e) => {
+                // Cancel sync session on failure - discard buffered deltas
+                // since the context state is inconsistent
+                self.node_state.cancel_sync_session(&context_id);
+                return Err(e);
+            }
+        };
         info!(%context_id, records = result.applied_records, "Snapshot sync completed");
 
         // End buffering and get any deltas that arrived during sync

@@ -88,6 +88,9 @@ pub struct SimNode {
     pub dag_heads: Vec<DeltaId>,
     /// Delta buffer (references to DAG entries).
     pub delta_buffer: Vec<DeltaId>,
+    /// Buffered operations for replay after sync completes (Invariant I6).
+    /// Maps delta_id -> operations to apply.
+    buffered_operations: HashMap<DeltaId, Vec<crate::sync_sim::actions::StorageOp>>,
     /// Sync state machine state.
     pub sync_state: SyncState,
     /// Active timers.
@@ -116,6 +119,7 @@ impl SimNode {
             storage: DigestCache::new(),
             dag_heads: vec![DeltaId::ZERO],
             delta_buffer: Vec::new(),
+            buffered_operations: HashMap::new(),
             sync_state: SyncState::Idle,
             timers: Vec::new(),
             next_timer_id: 0,
@@ -274,14 +278,50 @@ impl SimNode {
         self.delta_buffer.clear();
     }
 
+    /// Buffer operations for a delta (for replay after sync completes).
+    ///
+    /// This implements Invariant I6: deltas arriving during sync are buffered
+    /// and replayed after sync completes.
+    pub fn buffer_operations(
+        &mut self,
+        delta_id: DeltaId,
+        operations: Vec<crate::sync_sim::actions::StorageOp>,
+    ) {
+        self.buffered_operations.insert(delta_id, operations);
+    }
+
+    /// Drain all buffered operations for replay.
+    ///
+    /// Returns operations in FIFO order (based on delta_buffer order).
+    pub fn drain_buffered_operations(
+        &mut self,
+    ) -> Vec<(DeltaId, Vec<crate::sync_sim::actions::StorageOp>)> {
+        // Return in FIFO order based on delta_buffer
+        let mut result = Vec::new();
+        for delta_id in &self.delta_buffer {
+            if let Some(ops) = self.buffered_operations.remove(delta_id) {
+                result.push((*delta_id, ops));
+            }
+        }
+        // Clear any remaining orphaned operations
+        self.buffered_operations.clear();
+        result
+    }
+
+    /// Get count of buffered operations.
+    pub fn buffered_operations_count(&self) -> usize {
+        self.buffered_operations.len()
+    }
+
     /// Crash the node (see spec §6).
     pub fn crash(&mut self) {
         // Preserve: storage, DAG (dag_heads)
-        // Lose: timers, sync state, buffer, processed messages, sender sessions, out_seq
+        // Lose: timers, sync state, buffer, buffered operations, processed messages, sender sessions, out_seq
 
         self.timers.clear();
         self.sync_state = SyncState::Idle;
         self.delta_buffer.clear();
+        self.buffered_operations.clear();
         self.processed_messages.clear();
         self.processed_order.clear();
         self.sender_sessions.clear();
