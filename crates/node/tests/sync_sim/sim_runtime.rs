@@ -609,11 +609,14 @@ impl SimRuntime {
                 if node.sync_state.is_active() {
                     let added_without_eviction = node.buffer_delta(delta_id);
                     if !added_without_eviction {
-                        // Buffer overflow - oldest delta was evicted (I6 violation risk)
+                        // Buffer overflow or zero capacity - record drop metric
                         self.metrics.effects.record_buffer_drop();
                     }
-                    // Store operations in a pending map for later replay
-                    node.buffer_operations(delta_id, operations);
+                    // Only store operations if the delta is actually in the buffer
+                    // (i.e., was not dropped due to zero capacity)
+                    if node.delta_buffer.contains(&delta_id) {
+                        node.buffer_operations(delta_id, operations);
+                    }
                 } else {
                     // Apply delta immediately
                     for op in operations {

@@ -146,7 +146,13 @@ impl NodeState {
 
     /// Buffer a delta during snapshot sync (Invariant I6).
     ///
-    /// Returns true if successfully buffered, false if no active session.
+    /// Returns `Some(PushResult)` if there was an active session, `None` if no session.
+    ///
+    /// The `PushResult` indicates what happened:
+    /// - `Added`: Delta was buffered successfully
+    /// - `Duplicate`: Delta ID was already buffered (no action)
+    /// - `Evicted(id)`: Delta was buffered but oldest was evicted
+    /// - `DroppedZeroCapacity(id)`: Delta was dropped (zero capacity)
     ///
     /// If the buffer is full, the oldest delta is evicted (oldest-first policy)
     /// and a rate-limited warning is logged. Drops are tracked via metrics.
@@ -154,13 +160,15 @@ impl NodeState {
         &self,
         context_id: &ContextId,
         delta: calimero_node_primitives::delta_buffer::BufferedDelta,
-    ) -> bool {
+    ) -> Option<calimero_node_primitives::delta_buffer::PushResult> {
+        use calimero_node_primitives::delta_buffer::PushResult;
+
         if let Some(mut session) = self.sync_sessions.get_mut(context_id) {
             let incoming_delta_id = delta.id;
-            let evicted = session.delta_buffer.push(delta);
+            let result = session.delta_buffer.push(delta);
 
-            if let Some(evicted_id) = evicted {
-                // A delta was evicted - log rate-limited warning
+            if result.had_data_loss() {
+                // A delta was lost - log rate-limited warning
                 let should_warn = session.last_drop_warning.map_or(true, |last| {
                     last.elapsed()
                         > Duration::from_secs(constants::DELTA_BUFFER_DROP_WARNING_RATE_LIMIT_S)
@@ -168,21 +176,31 @@ impl NodeState {
 
                 if should_warn {
                     session.last_drop_warning = Some(Instant::now());
+                    let (evicted_id, reason) = match &result {
+                        PushResult::Evicted(id) => (id, "buffer overflow"),
+                        PushResult::DroppedZeroCapacity(id) => (id, "zero capacity"),
+                        _ => unreachable!(),
+                    };
                     warn!(
                         %context_id,
-                        evicted_delta_id = ?evicted_id,
+                        lost_delta_id = ?evicted_id,
                         incoming_delta_id = ?incoming_delta_id,
+                        reason = reason,
                         drops = session.delta_buffer.drops(),
                         buffer_size = session.delta_buffer.len(),
                         capacity = session.delta_buffer.capacity(),
-                        "Delta buffer overflow - evicted delta (I6 violation risk)"
+                        "Delta buffer data loss - {} (I6 violation risk)",
+                        reason
                     );
                 }
+
+                // TODO (#4): Export drops to Prometheus metrics
+                // metrics::counter!("calimero_sync_buffer_drops", "context_id" => context_id.to_string()).increment(1);
             }
 
-            true // Delta was buffered (possibly with eviction)
+            Some(result)
         } else {
-            false // No active session
+            None // No active session
         }
     }
 
@@ -198,13 +216,28 @@ impl NodeState {
     }
 
     /// Start a sync session with custom buffer capacity.
+    ///
+    /// # Capacity Warning (#7)
+    ///
+    /// If capacity is below `MIN_RECOMMENDED_CAPACITY`, a warning is logged.
+    /// Zero capacity is valid but will drop ALL deltas.
     pub(crate) fn start_sync_session_with_capacity(
         &self,
         context_id: ContextId,
         sync_start_hlc: u64,
         capacity: usize,
     ) {
-        use calimero_node_primitives::delta_buffer::DeltaBuffer;
+        use calimero_node_primitives::delta_buffer::{DeltaBuffer, MIN_RECOMMENDED_CAPACITY};
+
+        // (#7) Warn if capacity is below recommended minimum
+        if capacity < MIN_RECOMMENDED_CAPACITY {
+            warn!(
+                %context_id,
+                capacity,
+                min_recommended = MIN_RECOMMENDED_CAPACITY,
+                "Delta buffer capacity below recommended minimum - may cause excessive data loss"
+            );
+        }
 
         debug!(
             %context_id,

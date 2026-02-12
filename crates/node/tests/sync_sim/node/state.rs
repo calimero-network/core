@@ -91,7 +91,8 @@ pub struct SimNode {
     /// DAG heads.
     pub dag_heads: Vec<DeltaId>,
     /// Delta buffer (references to DAG entries).
-    pub delta_buffer: Vec<DeltaId>,
+    /// Uses VecDeque for O(1) FIFO eviction (#5: performance fix).
+    pub delta_buffer: VecDeque<DeltaId>,
     /// Buffered operations for replay after sync completes (Invariant I6).
     /// Maps delta_id -> operations to apply.
     buffered_operations: HashMap<DeltaId, Vec<crate::sync_sim::actions::StorageOp>>,
@@ -133,7 +134,7 @@ impl SimNode {
             out_seq: 0,
             storage: DigestCache::new(),
             dag_heads: vec![DeltaId::ZERO],
-            delta_buffer: Vec::new(),
+            delta_buffer: VecDeque::new(), // VecDeque for O(1) FIFO eviction
             buffered_operations: HashMap::new(),
             buffer_capacity,
             buffer_drops: 0,
@@ -286,26 +287,40 @@ impl SimNode {
     /// Buffer a delta (during sync).
     ///
     /// Implements FIFO eviction when buffer is full. Returns `true` if added without
-    /// eviction, `false` if oldest delta was evicted.
+    /// eviction, `false` if oldest delta was evicted or dropped.
+    ///
+    /// # Edge case: zero capacity
+    ///
+    /// If capacity is 0, the incoming delta is immediately dropped (not added)
+    /// and this method returns `false`. This matches production `DeltaBuffer::push`.
+    ///
+    /// # Performance (#5)
+    ///
+    /// Uses `VecDeque::pop_front()` for O(1) FIFO eviction instead of O(n) `Vec::remove(0)`.
     pub fn buffer_delta(&mut self, delta_id: DeltaId) -> bool {
-        // Don't buffer duplicates
+        // Handle zero capacity: drop incoming delta immediately (matches production)
+        if self.buffer_capacity == 0 {
+            self.buffer_drops += 1;
+            return false; // Dropped immediately
+        }
+
+        // Don't buffer duplicates (#2: deduplication prevents replay attacks)
         if self.delta_buffer.contains(&delta_id) {
-            return true;
+            return true; // Already buffered, no action needed
         }
 
         // Check capacity - evict oldest if full
         if self.delta_buffer.len() >= self.buffer_capacity {
-            // Evict oldest delta (front of buffer) - FIFO policy
-            if let Some(evicted_id) = self.delta_buffer.first().copied() {
-                self.delta_buffer.remove(0);
+            // Evict oldest delta (front of buffer) - FIFO policy, O(1) with VecDeque
+            if let Some(evicted_id) = self.delta_buffer.pop_front() {
                 // Also remove its buffered operations
                 self.buffered_operations.remove(&evicted_id);
                 self.buffer_drops += 1;
             }
-            self.delta_buffer.push(delta_id);
+            self.delta_buffer.push_back(delta_id);
             false // Added with eviction
         } else {
-            self.delta_buffer.push(delta_id);
+            self.delta_buffer.push_back(delta_id);
             true // Added without eviction
         }
     }
@@ -675,5 +690,68 @@ mod tests {
         let d2 = node.state_digest();
         assert_ne!(d2, StateDigest::ZERO);
         assert_ne!(d2, d1);
+    }
+
+    /// Test: Zero capacity buffer drops all deltas immediately (#8 bug fix).
+    ///
+    /// Verifies that when buffer_capacity is 0:
+    /// 1. Deltas are NOT added to the buffer
+    /// 2. buffer_drops is incremented
+    /// 3. buffer_delta returns false
+    #[test]
+    fn test_zero_capacity_drops_all() {
+        let mut node = SimNode::with_buffer_capacity("zero_cap", 0);
+
+        assert_eq!(node.buffer_size(), 0);
+        assert_eq!(node.buffer_drops(), 0);
+
+        // First delta should be dropped, not added
+        let result = node.buffer_delta(DeltaId::from_bytes([1; 32]));
+        assert!(!result, "Should return false when dropped");
+        assert_eq!(node.buffer_size(), 0, "Buffer should remain empty");
+        assert_eq!(node.buffer_drops(), 1, "Should increment drops");
+
+        // Second delta also dropped
+        let result = node.buffer_delta(DeltaId::from_bytes([2; 32]));
+        assert!(!result);
+        assert_eq!(node.buffer_size(), 0);
+        assert_eq!(node.buffer_drops(), 2);
+
+        // Third delta also dropped
+        let result = node.buffer_delta(DeltaId::from_bytes([3; 32]));
+        assert!(!result);
+        assert_eq!(node.buffer_size(), 0);
+        assert_eq!(node.buffer_drops(), 3);
+    }
+
+    /// Test: Buffer eviction with VecDeque is O(1) and preserves FIFO order.
+    #[test]
+    fn test_buffer_fifo_eviction_order() {
+        let mut node = SimNode::with_buffer_capacity("evict_test", 3);
+
+        // Fill buffer
+        node.buffer_delta(DeltaId::from_bytes([1; 32]));
+        node.buffer_delta(DeltaId::from_bytes([2; 32]));
+        node.buffer_delta(DeltaId::from_bytes([3; 32]));
+        assert_eq!(node.buffer_size(), 3);
+        assert_eq!(node.buffer_drops(), 0);
+
+        // Add 4th - should evict 1st
+        let result = node.buffer_delta(DeltaId::from_bytes([4; 32]));
+        assert!(!result, "Should return false when eviction occurred");
+        assert_eq!(node.buffer_size(), 3);
+        assert_eq!(node.buffer_drops(), 1);
+
+        // Add 5th - should evict 2nd
+        node.buffer_delta(DeltaId::from_bytes([5; 32]));
+        assert_eq!(node.buffer_size(), 3);
+        assert_eq!(node.buffer_drops(), 2);
+
+        // Verify buffer contains [3, 4, 5] in FIFO order
+        assert!(node.delta_buffer.contains(&DeltaId::from_bytes([3; 32])));
+        assert!(node.delta_buffer.contains(&DeltaId::from_bytes([4; 32])));
+        assert!(node.delta_buffer.contains(&DeltaId::from_bytes([5; 32])));
+        assert!(!node.delta_buffer.contains(&DeltaId::from_bytes([1; 32])));
+        assert!(!node.delta_buffer.contains(&DeltaId::from_bytes([2; 32])));
     }
 }
