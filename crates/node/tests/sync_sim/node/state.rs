@@ -290,12 +290,18 @@ impl SimNode {
 
     /// Get entity count (real entities only, excludes root and intermediate nodes).
     ///
-    /// Uses `entity_metadata.len()` as the source of truth because:
-    /// - Only "real" entities (inserted via `insert_entity*` methods) have metadata
-    /// - Intermediate nodes created by `insert_entity_hierarchical` don't have metadata
-    /// - This matches what production would count as entities
+    /// Counts entities that have BOTH metadata AND storage data, ensuring consistency
+    /// with `iter_entities()` and `has_entity()`. This excludes:
+    /// - Intermediate nodes created by `insert_entity_hierarchical` (no metadata)
+    /// - Entities with metadata but missing storage data (consistency guarantee)
     pub fn entity_count(&self) -> usize {
-        self.entity_metadata.len()
+        self.entity_metadata
+            .keys()
+            .filter(|id| {
+                let storage_id = Self::entity_id_to_storage_id(**id);
+                self.storage.get_entity_data(storage_id).is_some()
+            })
+            .count()
     }
 
     /// Get root hash (for handshake).
@@ -688,9 +694,14 @@ impl SimNode {
 
     /// Check if a real entity exists (excludes intermediate nodes).
     ///
-    /// Returns true only for entities that have metadata (inserted via `insert_entity*`).
+    /// Returns true only for entities that have BOTH metadata (inserted via `insert_entity*`)
+    /// AND storage data. This ensures consistency with `get_entity()` and `iter_entities()`.
     pub fn has_entity(&self, id: &EntityId) -> bool {
-        self.entity_metadata.contains_key(id)
+        if !self.entity_metadata.contains_key(id) {
+            return false;
+        }
+        let storage_id = Self::entity_id_to_storage_id(*id);
+        self.storage.get_entity_data(storage_id).is_some()
     }
 
     /// Check if any node exists in storage at this ID (includes intermediate nodes).
@@ -710,11 +721,6 @@ impl SimNode {
         self.entity_metadata
             .keys()
             .filter_map(move |id| self.get_entity(id))
-    }
-
-    /// Get all entity IDs (real entities only, excludes intermediate nodes).
-    pub fn entity_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
-        self.entity_metadata.keys().copied()
     }
 
     /// Build a SyncHandshake for this node.
