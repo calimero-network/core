@@ -42,6 +42,7 @@ pub mod protocol;
 pub mod snapshot;
 pub mod state_machine;
 pub mod subtree;
+pub mod transport;
 pub mod wire;
 
 // =============================================================================
@@ -107,3 +108,6 @@ pub use state_machine::{
     build_handshake, build_handshake_from_raw, estimate_entity_count, estimate_max_depth,
     LocalSyncState,
 };
+
+// Transport abstraction (for production streams and simulation)
+pub use transport::{EncryptionState, SyncTransport};

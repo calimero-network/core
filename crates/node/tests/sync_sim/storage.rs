@@ -228,6 +228,41 @@ impl SimStorage {
         count
     }
 
+    /// Count only leaf nodes (actual entities, excluding intermediate nodes).
+    ///
+    /// This is useful for getting the "real" entity count after sync,
+    /// where intermediate nodes shouldn't be counted.
+    pub fn leaf_count(&self) -> usize {
+        let root_id = self.root_id();
+        self.with_index(|| self.count_leaves_recursive(root_id, true))
+    }
+
+    /// Recursively count leaf nodes.
+    fn count_leaves_recursive(&self, id: Id, is_root: bool) -> usize {
+        let index = match Index::<MainStorage>::get_index(id).ok().flatten() {
+            Some(idx) => idx,
+            None => return 0,
+        };
+
+        let children = index.children();
+        let has_children = children.as_ref().map_or(false, |c| !c.is_empty());
+
+        if has_children {
+            // Internal node: count children recursively
+            children
+                .unwrap()
+                .iter()
+                .map(|child| self.count_leaves_recursive(child.id(), false))
+                .sum()
+        } else if is_root {
+            // Empty root doesn't count
+            0
+        } else {
+            // Leaf node
+            1
+        }
+    }
+
     /// Check if the tree is empty (no root or root has no data).
     pub fn is_empty(&self) -> bool {
         let root_id = self.root_id();
@@ -340,6 +375,54 @@ impl SimStorage {
             use calimero_storage::store::StorageAdaptor;
             MainStorage::storage_read(Key::Entry(id))
         })
+    }
+
+    /// Update entity data by ID.
+    ///
+    /// This updates an existing entity's data or creates it if it doesn't exist.
+    /// For new entities, creates them as direct children of root.
+    pub fn update_entity_data(&self, id: Id, data: &[u8]) {
+        self.with_index(|| {
+            // Check if entity exists by trying to get its index
+            let exists = Index::<MainStorage>::get_index(id).ok().flatten().is_some();
+
+            if exists {
+                // Update existing entity - no ancestors needed for update
+                let action = Action::Update {
+                    id,
+                    data: data.to_vec(),
+                    ancestors: vec![],
+                    metadata: Metadata::default(),
+                };
+                let _ = Interface::<MainStorage>::apply_action(action);
+            } else {
+                // Create new entity as child of root
+                // First ensure root exists
+                let root_id = self.root_id();
+                if Index::<MainStorage>::get_index(root_id)
+                    .ok()
+                    .flatten()
+                    .is_none()
+                {
+                    let root_action = Action::Update {
+                        id: root_id,
+                        data: vec![],
+                        ancestors: vec![],
+                        metadata: Metadata::default(),
+                    };
+                    let _ = Interface::<MainStorage>::apply_action(root_action);
+                }
+
+                // Add new entity under root
+                let action = Action::Add {
+                    id,
+                    data: data.to_vec(),
+                    ancestors: vec![ChildInfo::new(root_id, [0; 32], Metadata::default())],
+                    metadata: Metadata::default(),
+                };
+                let _ = Interface::<MainStorage>::apply_action(action);
+            }
+        });
     }
 
     /// Remove an entity by marking it as deleted (creates tombstone).
@@ -596,5 +679,131 @@ mod tests {
         storage.remove_entity(id);
         // Entity index still exists (tombstone) but is marked deleted
         assert!(storage.is_deleted(id));
+    }
+
+    #[test]
+    fn test_update_entity_data_creates_entity() {
+        let storage = SimStorage::new(test_context_id(), test_executor_id());
+
+        // Initially empty
+        assert_eq!(storage.entity_count(), 0, "should start empty");
+
+        // Update entity (doesn't exist, should create it)
+        let entity_id = Id::new([42u8; 32]);
+        storage.update_entity_data(entity_id, b"hello");
+
+        // Verify entity was created
+        let count = storage.entity_count();
+        eprintln!("entity_count after update_entity_data: {}", count);
+
+        // Should have at least 2: root + the new entity
+        assert!(count >= 2, "should have root + entity, got {}", count);
+
+        // Verify data is readable
+        let data = storage.get_entity_data(entity_id);
+        assert_eq!(data, Some(b"hello".to_vec()), "data should be stored");
+    }
+
+    #[test]
+    fn test_update_entity_data_vs_add_entity() {
+        // Compare update_entity_data with add_entity
+        let storage1 = SimStorage::new(test_context_id(), test_executor_id());
+        let storage2 = SimStorage::new(test_context_id(), test_executor_id());
+
+        let entity_id = Id::new([42u8; 32]);
+
+        // Method 1: add_entity (the production-like way)
+        storage1.add_entity(entity_id, b"hello", Metadata::default());
+
+        // Method 2: update_entity_data (used by sync)
+        storage2.update_entity_data(entity_id, b"hello");
+
+        eprintln!("add_entity count: {}", storage1.entity_count());
+        eprintln!("update_entity_data count: {}", storage2.entity_count());
+
+        // Both should have same structure
+        assert_eq!(
+            storage1.entity_count(),
+            storage2.entity_count(),
+            "both methods should result in same entity count"
+        );
+
+        // Both should be able to read the data
+        assert_eq!(storage1.get_entity_data(entity_id), Some(b"hello".to_vec()));
+        assert_eq!(storage2.get_entity_data(entity_id), Some(b"hello".to_vec()));
+    }
+
+    #[test]
+    fn test_clone_shares_underlying_db() {
+        // This tests if cloning SimStorage shares the underlying database
+        let storage = SimStorage::new(test_context_id(), test_executor_id());
+        let cloned = storage.clone();
+
+        // Initially both empty
+        assert_eq!(storage.entity_count(), 0);
+        assert_eq!(cloned.entity_count(), 0);
+
+        // Write via clone
+        let entity_id = Id::new([42u8; 32]);
+        cloned.update_entity_data(entity_id, b"hello");
+
+        // Both should see the data
+        eprintln!(
+            "original count after clone write: {}",
+            storage.entity_count()
+        );
+        eprintln!("cloned count after clone write: {}", cloned.entity_count());
+
+        assert_eq!(
+            cloned.entity_count(),
+            storage.entity_count(),
+            "clone and original should see same entity count"
+        );
+
+        // Original should be able to read the data written via clone
+        let original_data = storage.get_entity_data(entity_id);
+        eprintln!("original sees data: {:?}", original_data);
+        assert_eq!(
+            original_data,
+            Some(b"hello".to_vec()),
+            "original should see data written via clone"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clone_shares_db_across_async_tasks() {
+        // Simulate what the protocol does: clone storage, spawn async task, write, check original
+        use crate::sync_sim::node::SimNode;
+
+        let ctx = ContextId::from([0xCA; 32]);
+        let node = SimNode::new_in_context("test", ctx);
+
+        // Clone the storage (like protocol does)
+        let cloned_storage = node.storage().clone();
+
+        // Spawn async task that writes to cloned storage
+        let write_task = async move {
+            let entity_id = Id::new([42u8; 32]);
+            cloned_storage.update_entity_data(entity_id, b"async-write");
+            cloned_storage.leaf_count() // Count only leaves
+        };
+
+        // Run the task
+        let count_in_task = write_task.await;
+
+        // The data should be visible in original (1 leaf entity)
+        assert_eq!(count_in_task, 1, "should have 1 leaf entity");
+        assert_eq!(
+            count_in_task,
+            node.storage().leaf_count(),
+            "original should see same leaf count as task"
+        );
+
+        // Node entity_count uses leaf_count, so should match
+        assert_eq!(
+            node.entity_count(),
+            count_in_task,
+            "node.entity_count should match leaf count"
+        );
     }
 }

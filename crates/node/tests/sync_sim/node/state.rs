@@ -164,12 +164,24 @@ pub struct SimNode {
 }
 
 impl SimNode {
+    /// Default shared context ID for simulation.
+    /// All nodes in a simulation typically share this context.
+    pub const DEFAULT_CONTEXT_ID: [u8; 32] = [0xCA; 32]; // "Calimero"
+
     /// Create a new node with default buffer capacity.
     ///
     /// Creates unique `ContextId` and `PublicKey` derived from the node ID
     /// for isolated storage instances.
     pub fn new(id: impl Into<NodeId>) -> Self {
         Self::with_buffer_capacity(id, DEFAULT_SIM_BUFFER_CAPACITY)
+    }
+
+    /// Create a new node in a shared context.
+    ///
+    /// Nodes that sync together should share the same context ID.
+    /// This is the correct way to create nodes for sync testing.
+    pub fn new_in_context(id: impl Into<NodeId>, context_id: ContextId) -> Self {
+        Self::with_context_and_buffer(id, context_id, DEFAULT_SIM_BUFFER_CAPACITY)
     }
 
     /// Create a new node with custom buffer capacity.
@@ -182,6 +194,19 @@ impl SimNode {
 
         // Create deterministic context/executor IDs from node name
         let context_id = Self::create_context_id(&node_id);
+        Self::with_context_and_buffer(node_id, context_id, buffer_capacity)
+    }
+
+    /// Create a new node with specific context and buffer capacity.
+    ///
+    /// This is the most flexible constructor, allowing full control over
+    /// context ID (for shared contexts) and buffer capacity (for I6 testing).
+    pub fn with_context_and_buffer(
+        id: impl Into<NodeId>,
+        context_id: ContextId,
+        buffer_capacity: usize,
+    ) -> Self {
+        let node_id = id.into();
         let executor_id = Self::create_executor_id(&node_id);
 
         Self {
@@ -302,12 +327,30 @@ impl SimNode {
     /// - Intermediate nodes created by `insert_entity_hierarchical` don't have metadata
     /// - This matches what production would count as entities
     pub fn entity_count(&self) -> usize {
-        self.entity_metadata.len()
+        // Use actual storage leaf count (source of truth).
+        // This counts only leaf nodes (actual entities), excluding intermediate nodes.
+        // This ensures sync results are visible while hierarchical structures are counted correctly.
+        self.storage.leaf_count()
     }
 
     /// Get root hash (for handshake).
     pub fn root_hash(&self) -> [u8; 32] {
         self.storage.root_hash()
+    }
+
+    /// Get context ID.
+    pub fn context_id(&self) -> ContextId {
+        self.storage.context_id()
+    }
+
+    /// Get reference to storage.
+    pub fn storage(&self) -> &SimStorage {
+        &self.storage
+    }
+
+    /// Get mutable reference to storage.
+    pub fn storage_mut(&mut self) -> &mut SimStorage {
+        &mut self.storage
     }
 
     /// Check if node has any state (real entities).
