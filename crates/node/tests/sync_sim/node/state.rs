@@ -286,8 +286,15 @@ impl SimNode {
     /// Buffer a delta (during sync).
     ///
     /// Implements FIFO eviction when buffer is full. Returns `true` if added without
-    /// eviction, `false` if oldest delta was evicted.
+    /// eviction, `false` if oldest delta was evicted or dropped.
     pub fn buffer_delta(&mut self, delta_id: DeltaId) -> bool {
+        // Handle zero capacity: drop incoming delta immediately
+        // (matches production DeltaBuffer::push behavior)
+        if self.buffer_capacity == 0 {
+            self.buffer_drops += 1;
+            return false;
+        }
+
         // Don't buffer duplicates
         if self.delta_buffer.contains(&delta_id) {
             return true;
