@@ -29,6 +29,18 @@ pub enum SimEvent {
     PartitionStart { groups: Vec<Vec<NodeId>> },
     /// Partition end.
     PartitionEnd { groups: Vec<Vec<NodeId>> },
+    /// Gossip delta arrives (simulates BroadcastMessage::StateDelta).
+    /// This tests Invariant I6 - deltas arriving during sync must be buffered.
+    GossipDelta {
+        to: NodeId,
+        delta_id: crate::sync_sim::types::DeltaId,
+        /// Storage operations in the delta.
+        operations: Vec<crate::sync_sim::actions::StorageOp>,
+    },
+    /// Sync session starts on a node (for explicit state control in tests).
+    SyncStart { node: NodeId },
+    /// Sync session completes (triggers buffer replay).
+    SyncComplete { node: NodeId },
 }
 
 /// Message in flight with delivery metadata.

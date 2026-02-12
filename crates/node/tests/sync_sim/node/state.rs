@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use calimero_node_primitives::sync::handshake::SyncHandshake;
-use calimero_node_primitives::sync::state_machine::{build_handshake, LocalSyncState};
+use calimero_node_primitives::sync::state_machine::{LocalSyncState, build_handshake};
 use calimero_primitives::crdt::CrdtType;
 
 use crate::sync_sim::actions::{EntityMetadata, StorageOp};
@@ -73,6 +73,10 @@ pub struct TimerEntry {
 /// Maximum number of processed messages to track before eviction.
 const MAX_PROCESSED_MESSAGES: usize = 10_000;
 
+/// Default buffer capacity for delta buffering during sync.
+/// Matches production default from `calimero_node_primitives::delta_buffer::DEFAULT_BUFFER_CAPACITY`.
+pub const DEFAULT_SIM_BUFFER_CAPACITY: usize = 10_000;
+
 /// Simulated node.
 #[derive(Debug)]
 pub struct SimNode {
@@ -87,7 +91,15 @@ pub struct SimNode {
     /// DAG heads.
     pub dag_heads: Vec<DeltaId>,
     /// Delta buffer (references to DAG entries).
-    pub delta_buffer: Vec<DeltaId>,
+    /// Uses VecDeque for O(1) FIFO eviction (#5: performance fix).
+    pub delta_buffer: VecDeque<DeltaId>,
+    /// Buffered operations for replay after sync completes (Invariant I6).
+    /// Maps delta_id -> operations to apply.
+    buffered_operations: HashMap<DeltaId, Vec<crate::sync_sim::actions::StorageOp>>,
+    /// Buffer capacity (for FIFO eviction testing).
+    buffer_capacity: usize,
+    /// Number of deltas dropped due to buffer overflow.
+    buffer_drops: u64,
     /// Sync state machine state.
     pub sync_state: SyncState,
     /// Active timers.
@@ -107,15 +119,25 @@ pub struct SimNode {
 }
 
 impl SimNode {
-    /// Create a new node.
+    /// Create a new node with default buffer capacity.
     pub fn new(id: impl Into<NodeId>) -> Self {
+        Self::with_buffer_capacity(id, DEFAULT_SIM_BUFFER_CAPACITY)
+    }
+
+    /// Create a new node with custom buffer capacity.
+    ///
+    /// Useful for testing buffer overflow behavior (Invariant I6).
+    pub fn with_buffer_capacity(id: impl Into<NodeId>, buffer_capacity: usize) -> Self {
         Self {
             id: id.into(),
             session: 0,
             out_seq: 0,
             storage: DigestCache::new(),
             dag_heads: vec![DeltaId::ZERO],
-            delta_buffer: Vec::new(),
+            delta_buffer: VecDeque::new(), // VecDeque for O(1) FIFO eviction
+            buffered_operations: HashMap::new(),
+            buffer_capacity,
+            buffer_drops: 0,
             sync_state: SyncState::Idle,
             timers: Vec::new(),
             next_timer_id: 0,
@@ -263,9 +285,43 @@ impl SimNode {
     }
 
     /// Buffer a delta (during sync).
-    pub fn buffer_delta(&mut self, delta_id: DeltaId) {
-        if !self.delta_buffer.contains(&delta_id) {
-            self.delta_buffer.push(delta_id);
+    ///
+    /// Implements FIFO eviction when buffer is full. Returns `true` if added without
+    /// eviction, `false` if oldest delta was evicted or dropped.
+    ///
+    /// # Edge case: zero capacity
+    ///
+    /// If capacity is 0, the incoming delta is immediately dropped (not added)
+    /// and this method returns `false`. This matches production `DeltaBuffer::push`.
+    ///
+    /// # Performance (#5)
+    ///
+    /// Uses `VecDeque::pop_front()` for O(1) FIFO eviction instead of O(n) `Vec::remove(0)`.
+    pub fn buffer_delta(&mut self, delta_id: DeltaId) -> bool {
+        // Handle zero capacity: drop incoming delta immediately (matches production)
+        if self.buffer_capacity == 0 {
+            self.buffer_drops += 1;
+            return false; // Dropped immediately
+        }
+
+        // Don't buffer duplicates (#2: deduplication prevents replay attacks)
+        if self.delta_buffer.contains(&delta_id) {
+            return true; // Already buffered, no action needed
+        }
+
+        // Check capacity - evict oldest if full
+        if self.delta_buffer.len() >= self.buffer_capacity {
+            // Evict oldest delta (front of buffer) - FIFO policy, O(1) with VecDeque
+            if let Some(evicted_id) = self.delta_buffer.pop_front() {
+                // Also remove its buffered operations
+                self.buffered_operations.remove(&evicted_id);
+                self.buffer_drops += 1;
+            }
+            self.delta_buffer.push_back(delta_id);
+            false // Added with eviction
+        } else {
+            self.delta_buffer.push_back(delta_id);
+            true // Added without eviction
         }
     }
 
@@ -274,14 +330,119 @@ impl SimNode {
         self.delta_buffer.clear();
     }
 
+    /// Reset buffer state for a new sync session.
+    ///
+    /// Clears both delta_buffer and buffered_operations to match production
+    /// behavior where `start_sync_session` creates a fresh `DeltaBuffer`.
+    /// This ensures stale buffered deltas from a previous interrupted sync
+    /// are discarded when a new sync session starts.
+    pub fn reset_buffer_state(&mut self) {
+        self.delta_buffer.clear();
+        self.buffered_operations.clear();
+    }
+
+    /// Get buffer drops count.
+    pub fn buffer_drops(&self) -> u64 {
+        self.buffer_drops
+    }
+
+    /// Set buffer capacity (for testing overflow scenarios).
+    pub fn set_buffer_capacity(&mut self, capacity: usize) {
+        self.buffer_capacity = capacity;
+    }
+
+    /// Buffer operations for a delta (for replay after sync completes).
+    ///
+    /// This implements Invariant I6: deltas arriving during sync are buffered
+    /// and replayed after sync completes.
+    pub fn buffer_operations(
+        &mut self,
+        delta_id: DeltaId,
+        operations: Vec<crate::sync_sim::actions::StorageOp>,
+    ) {
+        self.buffered_operations.insert(delta_id, operations);
+    }
+
+    /// Drain all buffered operations for replay.
+    ///
+    /// Returns operations in FIFO order (based on delta_buffer order).
+    ///
+    /// # Debug assertions
+    ///
+    /// In debug builds, asserts that there are no orphaned operations (operations
+    /// whose delta_id is not in the delta_buffer). This would indicate a bug in
+    /// the buffering logic.
+    pub fn drain_buffered_operations(
+        &mut self,
+    ) -> Vec<(DeltaId, Vec<crate::sync_sim::actions::StorageOp>)> {
+        // Return in FIFO order based on delta_buffer
+        let mut result = Vec::new();
+        for delta_id in &self.delta_buffer {
+            if let Some(ops) = self.buffered_operations.remove(delta_id) {
+                result.push((*delta_id, ops));
+            }
+        }
+
+        // Check for orphaned operations (bug indicator)
+        let orphan_count = self.buffered_operations.len();
+        debug_assert!(
+            orphan_count == 0,
+            "Found {} orphaned buffered operations (delta_id not in delta_buffer). \
+             This indicates a bug in the buffering logic.",
+            orphan_count
+        );
+
+        // Clear any remaining orphaned operations (graceful degradation in release)
+        self.buffered_operations.clear();
+        result
+    }
+
+    /// Get count of buffered operations.
+    pub fn buffered_operations_count(&self) -> usize {
+        self.buffered_operations.len()
+    }
+
+    /// Finish sync session: replay buffered operations, clear buffers, reset state.
+    ///
+    /// This atomically performs all cleanup needed after sync completes:
+    /// 1. Drains and applies all buffered operations
+    /// 2. Clears the delta ID buffer
+    /// 3. Resets sync state to Idle
+    ///
+    /// Returns the number of storage operations applied (for metrics).
+    pub fn finish_sync(&mut self) -> usize {
+        if !self.sync_state.is_active() {
+            return 0;
+        }
+
+        // Replay buffered deltas
+        let buffered_ops = self.drain_buffered_operations();
+        let mut ops_applied = 0;
+        for (_delta_id, operations) in buffered_ops {
+            for op in operations {
+                self.apply_storage_op(op);
+                ops_applied += 1;
+            }
+        }
+
+        // Clear the delta ID buffer
+        self.clear_buffer();
+
+        // Transition to idle
+        self.sync_state = SyncState::Idle;
+
+        ops_applied
+    }
+
     /// Crash the node (see spec §6).
     pub fn crash(&mut self) {
         // Preserve: storage, DAG (dag_heads)
-        // Lose: timers, sync state, buffer, processed messages, sender sessions, out_seq
+        // Lose: timers, sync state, buffer, buffered operations, processed messages, sender sessions, out_seq
 
         self.timers.clear();
         self.sync_state = SyncState::Idle;
         self.delta_buffer.clear();
+        self.buffered_operations.clear();
         self.processed_messages.clear();
         self.processed_order.clear();
         self.sender_sessions.clear();
@@ -359,7 +520,7 @@ impl LocalSyncState for SimNode {
     fn root_hash(&self) -> [u8; 32] {
         // Compute digest without using cache (trait requires &self, cache needs &mut self)
         // This is acceptable for protocol negotiation which is infrequent
-        use crate::sync_sim::digest::{compute_state_digest, DigestEntity};
+        use crate::sync_sim::digest::{DigestEntity, compute_state_digest};
         let entities: Vec<DigestEntity> = self.storage.iter().cloned().collect();
         compute_state_digest(&entities).0
     }
@@ -540,5 +701,68 @@ mod tests {
         let d2 = node.state_digest();
         assert_ne!(d2, StateDigest::ZERO);
         assert_ne!(d2, d1);
+    }
+
+    /// Test: Zero capacity buffer drops all deltas immediately (#8 bug fix).
+    ///
+    /// Verifies that when buffer_capacity is 0:
+    /// 1. Deltas are NOT added to the buffer
+    /// 2. buffer_drops is incremented
+    /// 3. buffer_delta returns false
+    #[test]
+    fn test_zero_capacity_drops_all() {
+        let mut node = SimNode::with_buffer_capacity("zero_cap", 0);
+
+        assert_eq!(node.buffer_size(), 0);
+        assert_eq!(node.buffer_drops(), 0);
+
+        // First delta should be dropped, not added
+        let result = node.buffer_delta(DeltaId::from_bytes([1; 32]));
+        assert!(!result, "Should return false when dropped");
+        assert_eq!(node.buffer_size(), 0, "Buffer should remain empty");
+        assert_eq!(node.buffer_drops(), 1, "Should increment drops");
+
+        // Second delta also dropped
+        let result = node.buffer_delta(DeltaId::from_bytes([2; 32]));
+        assert!(!result);
+        assert_eq!(node.buffer_size(), 0);
+        assert_eq!(node.buffer_drops(), 2);
+
+        // Third delta also dropped
+        let result = node.buffer_delta(DeltaId::from_bytes([3; 32]));
+        assert!(!result);
+        assert_eq!(node.buffer_size(), 0);
+        assert_eq!(node.buffer_drops(), 3);
+    }
+
+    /// Test: Buffer eviction with VecDeque is O(1) and preserves FIFO order.
+    #[test]
+    fn test_buffer_fifo_eviction_order() {
+        let mut node = SimNode::with_buffer_capacity("evict_test", 3);
+
+        // Fill buffer
+        node.buffer_delta(DeltaId::from_bytes([1; 32]));
+        node.buffer_delta(DeltaId::from_bytes([2; 32]));
+        node.buffer_delta(DeltaId::from_bytes([3; 32]));
+        assert_eq!(node.buffer_size(), 3);
+        assert_eq!(node.buffer_drops(), 0);
+
+        // Add 4th - should evict 1st
+        let result = node.buffer_delta(DeltaId::from_bytes([4; 32]));
+        assert!(!result, "Should return false when eviction occurred");
+        assert_eq!(node.buffer_size(), 3);
+        assert_eq!(node.buffer_drops(), 1);
+
+        // Add 5th - should evict 2nd
+        node.buffer_delta(DeltaId::from_bytes([5; 32]));
+        assert_eq!(node.buffer_size(), 3);
+        assert_eq!(node.buffer_drops(), 2);
+
+        // Verify buffer contains [3, 4, 5] in FIFO order
+        assert!(node.delta_buffer.contains(&DeltaId::from_bytes([3; 32])));
+        assert!(node.delta_buffer.contains(&DeltaId::from_bytes([4; 32])));
+        assert!(node.delta_buffer.contains(&DeltaId::from_bytes([5; 32])));
+        assert!(!node.delta_buffer.contains(&DeltaId::from_bytes([1; 32])));
+        assert!(!node.delta_buffer.contains(&DeltaId::from_bytes([2; 32])));
     }
 }

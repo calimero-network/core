@@ -2,6 +2,7 @@
 //!
 //! See spec §15 - Protocol Negotiation Tests.
 
+pub mod buffering;
 pub mod deterministic;
 pub mod random;
 

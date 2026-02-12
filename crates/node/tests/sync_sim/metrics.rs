@@ -111,6 +111,8 @@ pub struct EffectMetrics {
     pub node_restarts: u64,
     /// Partition events.
     pub partitions: u64,
+    /// Delta buffer drops due to overflow (Invariant I6 violation risk).
+    pub buffer_drops: u64,
 }
 
 impl EffectMetrics {
@@ -154,6 +156,11 @@ impl EffectMetrics {
         self.partitions += 1;
     }
 
+    /// Record buffer drop (Invariant I6 violation risk).
+    pub fn record_buffer_drop(&mut self) {
+        self.buffer_drops += 1;
+    }
+
     /// Merge from another.
     pub fn merge(&mut self, other: &EffectMetrics) {
         self.messages_dropped += other.messages_dropped;
@@ -164,6 +171,7 @@ impl EffectMetrics {
         self.node_crashes += other.node_crashes;
         self.node_restarts += other.node_restarts;
         self.partitions += other.partitions;
+        self.buffer_drops += other.buffer_drops;
     }
 }
 
