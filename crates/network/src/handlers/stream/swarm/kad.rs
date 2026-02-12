@@ -76,12 +76,13 @@ impl EventHandler<Event> for NetworkManager {
                                 let context_id = ContextId::from(context_id_bytes);
 
                                 // Emit network event
-                                self.event_recipient
-                                    .do_send(NetworkEvent::BlobProvidersFound {
+                                let _ignored = self.event_dispatcher.dispatch(
+                                    NetworkEvent::BlobProvidersFound {
                                         blob_id,
                                         context_id: Some(context_id),
                                         providers: peers.clone(),
-                                    });
+                                    },
+                                );
                             }
 
                             Ok(peers)

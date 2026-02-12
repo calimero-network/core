@@ -8,7 +8,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeSeq;
 use serde::Serialize;
 
-use super::Collection;
+use super::{Collection, CrdtType};
 use crate::collections::error::StoreError;
 use crate::store::{MainStorage, StorageAdaptor};
 
@@ -42,9 +42,31 @@ impl<V> Vector<V, MainStorage>
 where
     V: BorshSerialize + BorshDeserialize,
 {
-    /// Create a new vector collection.
+    /// Create a new vector collection with a random ID.
+    ///
+    /// Use this for nested collections stored as values in other maps.
+    /// Merge happens by the parent map's key, so the nested collection's ID
+    /// doesn't affect sync semantics.
+    ///
+    /// For top-level state fields, use `new_with_field_name` instead.
     pub fn new() -> Self {
         Self::new_internal()
+    }
+
+    /// Create a new vector collection with a deterministic ID.
+    ///
+    /// The `field_name` is used to generate a deterministic collection ID,
+    /// ensuring the same code produces the same ID across all nodes.
+    ///
+    /// Use this for top-level state fields (the `#[app::state]` macro does this
+    /// automatically).
+    ///
+    /// # Example
+    /// ```ignore
+    /// let items = Vector::<String>::new_with_field_name("items");
+    /// ```
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        Self::new_with_field_name_internal(None, field_name)
     }
 }
 
@@ -58,6 +80,33 @@ where
         Self {
             inner: Collection::new(None),
         }
+    }
+
+    /// Create a new vector collection with deterministic ID (internal)
+    pub(super) fn new_with_field_name_internal(
+        parent_id: Option<crate::address::Id>,
+        field_name: &str,
+    ) -> Self {
+        Self {
+            inner: Collection::new_with_field_name_and_crdt_type(
+                parent_id,
+                field_name,
+                CrdtType::Vector,
+            ),
+        }
+    }
+
+    /// Reassigns the vector's ID to a deterministic ID based on field name.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all top-level collections have deterministic IDs regardless of how they were
+    /// created in `init()`.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this vector
+    pub fn reassign_deterministic_id(&mut self, field_name: &str) {
+        self.inner
+            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::Vector);
     }
 
     /// Add a value to the end of the vector.

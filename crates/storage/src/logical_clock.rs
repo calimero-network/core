@@ -134,6 +134,12 @@ const DEFAULT_ID: NonZeroU128 = match NonZeroU128::new(1) {
 pub struct HybridTimestamp(Timestamp);
 
 impl HybridTimestamp {
+    /// Zero timestamp for deterministic initialization during merge.
+    #[must_use]
+    pub fn zero() -> Self {
+        Self(Timestamp::new(NTP64(0), ID::from(DEFAULT_ID)))
+    }
+
     /// Create a new hybrid timestamp.
     #[must_use]
     pub const fn new(ts: Timestamp) -> Self {

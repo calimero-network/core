@@ -25,7 +25,7 @@ docker run -d \
 export NEAR_DEFAULT_SECRET_KEY="your-secret-key-here"
 docker-compose -f docker-compose.relayer.yml up -d
 
-# Development with local blockchain networks
+# Development setup
 ./scripts/relayer/start-dev.sh
 ```
 
@@ -41,9 +41,6 @@ The relayer supports the following environment variables:
 
 #### Protocol Control
 - `ENABLE_NEAR`: Enable Near protocol (default: `true`)
-- `ENABLE_STARKNET`: Enable Starknet protocol (default: `false`)
-- `ENABLE_ICP`: Enable ICP protocol (default: `false`)  
-- `ENABLE_ETHEREUM`: Enable Ethereum protocol (default: `false`)
 
 #### Near Protocol
 - `NEAR_NETWORK`: Network name (default: `testnet`)
@@ -53,32 +50,6 @@ The relayer supports the following environment variables:
 - `NEAR_PUBLIC_KEY`: Public key (custom credentials)
 - `NEAR_SECRET_KEY`: Secret key (custom credentials)
 - `NEAR_DEFAULT_SECRET_KEY`: Default secret key for testnet
-
-#### Starknet Protocol
-- `STARKNET_NETWORK`: Network name (default: `sepolia`)
-- `STARKNET_RPC_URL`: RPC endpoint
-- `STARKNET_CONTRACT_ID`: Contract address
-- `STARKNET_ACCOUNT_ID`: Account ID
-- `STARKNET_PUBLIC_KEY`: Public key
-- `STARKNET_SECRET_KEY`: Secret key
-- `STARKNET_DEFAULT_SECRET_KEY`: Default secret key
-
-#### ICP Protocol
-- `ICP_NETWORK`: Network name (default: `local`)
-- `ICP_RPC_URL`: RPC endpoint (default: `http://host.docker.internal:4943`)
-- `ICP_CONTRACT_ID`: Contract ID
-- `ICP_ACCOUNT_ID`: Principal ID
-- `ICP_PUBLIC_KEY`: Public key
-- `ICP_SECRET_KEY`: Secret key
-- `ICP_DEFAULT_SECRET_KEY`: Default secret key
-
-#### Ethereum Protocol
-- `ETHEREUM_NETWORK`: Network name (default: `sepolia`)
-- `ETHEREUM_RPC_URL`: RPC endpoint
-- `ETHEREUM_CONTRACT_ID`: Contract address
-- `ETHEREUM_ACCOUNT_ID`: Account address
-- `ETHEREUM_SECRET_KEY`: Private key
-- `ETHEREUM_DEFAULT_SECRET_KEY`: Default private key
 
 ## Deployment Scenarios
 
@@ -95,8 +66,6 @@ services:
     environment:
       - ENABLE_NEAR=true
       - NEAR_SECRET_KEY=${NEAR_PROD_SECRET_KEY}
-      - ENABLE_ETHEREUM=true  
-      - ETHEREUM_SECRET_KEY=${ETHEREUM_PROD_SECRET_KEY}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:63529/health"]
@@ -108,20 +77,14 @@ services:
 ```bash
 # Deploy to production
 export NEAR_PROD_SECRET_KEY="ed25519:..."
-export ETHEREUM_PROD_SECRET_KEY="0x..."
 docker-compose -f docker-compose.prod.yml up -d
 ```
 
 ### 2. Development Environment
 
 ```bash
-# Start development environment with local networks
+# Start development environment
 ./scripts/relayer/start-dev.sh
-
-# This will start:
-# - ICP dfx local network
-# - Ethereum Anvil devnet  
-# - Relayer with development credentials
 ```
 
 ### 3. Testing Environment
@@ -129,7 +92,6 @@ docker-compose -f docker-compose.prod.yml up -d
 ```bash
 # Start with testnet credentials (set your own secret keys)
 export NEAR_DEFAULT_SECRET_KEY="your-near-secret-key-here"
-export STARKNET_DEFAULT_SECRET_KEY="your-starknet-secret-key-here"
 
 docker-compose -f docker-compose.relayer.yml up -d
 ```
@@ -252,8 +214,7 @@ docker service create \
 
 # Kubernetes secrets
 kubectl create secret generic relayer-secrets \
-  --from-literal=near-secret-key="ed25519:..." \
-  --from-literal=ethereum-secret-key="0x..."
+  --from-literal=near-secret-key="ed25519:..."
 ```
 
 ### 2. Network Security
@@ -352,4 +313,4 @@ curl -X POST http://localhost:63529/ \
 - `./scripts/relayer/start-dev.sh` - Start development environment
 - `./scripts/relayer/start-prod.sh` - Start production environment
 
-Both scripts handle dependency setup (dfx, anvil) and service orchestration.
+Both scripts handle relayer service orchestration.

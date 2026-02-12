@@ -268,20 +268,6 @@ pub enum WalletType {
         #[serde(rename = "networkId")]
         network_id: NearNetworkId,
     },
-    ETH {
-        #[serde(rename = "chainId")]
-        chain_id: u64,
-    },
-    STARKNET {
-        #[serde(rename = "walletName")]
-        wallet_name: String,
-    },
-    ICP {
-        #[serde(rename = "canisterId")]
-        canister_id: String,
-        #[serde(rename = "walletName")]
-        wallet_name: String,
-    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

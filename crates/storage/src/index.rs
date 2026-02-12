@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
+use tracing::info;
 
 use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata, UpdatedAt};
@@ -45,6 +46,38 @@ pub struct EntityIndex {
     /// Enables proper conflict resolution (delete vs update) in distributed scenarios.
     /// Garbage collected after retention period (default: 1 day).
     pub deleted_at: Option<u64>,
+}
+
+impl EntityIndex {
+    /// Returns the entity ID.
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.id
+    }
+
+    /// Returns the parent ID, if any.
+    #[must_use]
+    pub fn parent_id(&self) -> Option<Id> {
+        self.parent_id
+    }
+
+    /// Returns the children, if any.
+    #[must_use]
+    pub fn children(&self) -> Option<&[ChildInfo]> {
+        self.children.as_deref()
+    }
+
+    /// Returns the full hash (entity + all descendants).
+    #[must_use]
+    pub fn full_hash(&self) -> [u8; 32] {
+        self.full_hash
+    }
+
+    /// Returns the own hash (entity data only).
+    #[must_use]
+    pub fn own_hash(&self) -> [u8; 32] {
+        self.own_hash
+    }
 }
 
 /// Entity index manager.
@@ -197,7 +230,10 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     /// Collection param is ignored - entity only has one collection.
     /// Kept in API for backwards compatibility.
-    pub(crate) fn get_children_of(parent_id: Id) -> Result<Vec<ChildInfo>, StorageError> {
+    ///
+    /// # Errors
+    /// Returns `StorageError` if index cannot be loaded or deserialized.
+    pub fn get_children_of(parent_id: Id) -> Result<Vec<ChildInfo>, StorageError> {
         let index = Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
         Ok(index.children.unwrap_or_default())
@@ -225,7 +261,13 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Loads entity index from storage.
-    pub(crate) fn get_index(id: Id) -> Result<Option<EntityIndex>, StorageError> {
+    ///
+    /// Returns the full `EntityIndex` for an entity if it exists.
+    /// Used by sync protocols to traverse the Merkle tree.
+    ///
+    /// # Errors
+    /// Returns `StorageError` if index cannot be loaded or deserialized.
+    pub fn get_index(id: Id) -> Result<Option<EntityIndex>, StorageError> {
         match S::storage_read(Key::Index(id)) {
             Some(data) => Ok(Some(
                 EntityIndex::try_from_slice(&data).map_err(StorageError::DeserializationError)?,
@@ -264,12 +306,23 @@ impl<S: StorageAdaptor> Index<S> {
         while let Some(parent_id) = Self::get_parent_id(current_id)? {
             let mut parent_index =
                 Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
+            let old_full_hash = parent_index.full_hash;
 
             // Update the child's hash in the parent's children list
             if let Some(children) = &mut parent_index.children {
                 if let Some(child) = children.iter_mut().find(|c| c.id() == current_id) {
                     let new_child_hash = Self::calculate_full_merkle_hash_for(current_id)?;
                     if child.merkle_hash() != new_child_hash {
+                        // Log when a child's hash changes and affects the root
+                        if parent_id.is_root() {
+                            info!(
+                                target: "storage::merkle",
+                                child_id = %current_id,
+                                old_child_hash = %hex::encode(child.merkle_hash()),
+                                new_child_hash = %hex::encode(&new_child_hash),
+                                "ROOT MERKLE: Child hash updated"
+                            );
+                        }
                         *child = ChildInfo::new(current_id, new_child_hash, child.metadata.clone());
                     }
                 }
@@ -280,6 +333,20 @@ impl<S: StorageAdaptor> Index<S> {
                 parent_index.own_hash,
                 &parent_index.children,
             )?;
+
+            // Log when root hash changes
+            if parent_id.is_root() && old_full_hash != parent_index.full_hash {
+                let children_count = parent_index.children.as_ref().map(|c| c.len()).unwrap_or(0);
+                info!(
+                    target: "storage::merkle",
+                    parent_id = %parent_id,
+                    old_full_hash = %hex::encode(&old_full_hash),
+                    new_full_hash = %hex::encode(&parent_index.full_hash),
+                    children_count,
+                    "ROOT MERKLE: Root hash recalculated from ancestor"
+                );
+            }
+
             Self::save_index(&parent_index)?;
             current_id = parent_id;
         }
@@ -309,10 +376,28 @@ impl<S: StorageAdaptor> Index<S> {
         Self::mark_deleted(id, time_now())
     }
 
+    /// Removes a child reference from a parent without creating a tombstone.
+    ///
+    /// Used when reassigning collection IDs - we need to remove the old child
+    /// reference from the parent but don't want to create a tombstone since
+    /// the collection is being moved, not deleted.
+    pub(crate) fn remove_child_reference_only(
+        parent_id: Id,
+        child_id: Id,
+    ) -> Result<(), StorageError> {
+        Self::update_parent_after_child_removal(parent_id, child_id)?;
+        Self::recalculate_ancestor_hashes_for(parent_id)?;
+        Ok(())
+    }
+
     /// Updates parent's children list and hash after child removal.
     ///
     /// Step 2 of deletion: Remove child from parent's index and recalculate hash.
-    fn update_parent_after_child_removal(parent_id: Id, child_id: Id) -> Result<(), StorageError> {
+    /// Made pub(crate) so Interface::apply_delete_ref_action can use it.
+    pub(crate) fn update_parent_after_child_removal(
+        parent_id: Id,
+        child_id: Id,
+    ) -> Result<(), StorageError> {
         let mut parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
@@ -357,11 +442,39 @@ impl<S: StorageAdaptor> Index<S> {
         updated_at: Option<UpdatedAt>,
     ) -> Result<[u8; 32], StorageError> {
         let mut index = Self::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
+        let old_own_hash = index.own_hash;
+        let old_full_hash = index.full_hash;
         index.own_hash = merkle_hash;
         index.full_hash = Self::calculate_full_hash_for_children(index.own_hash, &index.children)?;
         if let Some(updated_at) = updated_at {
             index.metadata.updated_at = updated_at;
         }
+
+        // Log detailed info for root entity hash updates
+        if id.is_root() {
+            let children_count = index.children.as_ref().map(|c| c.len()).unwrap_or(0);
+            let children_hashes: Vec<String> = index
+                .children
+                .as_ref()
+                .map(|c| {
+                    c.iter()
+                        .map(|child| format!("{}:{}", child.id(), hex::encode(child.merkle_hash())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            info!(
+                target: "storage::merkle",
+                %id,
+                old_own_hash = %hex::encode(&old_own_hash),
+                new_own_hash = %hex::encode(&merkle_hash),
+                old_full_hash = %hex::encode(&old_full_hash),
+                new_full_hash = %hex::encode(&index.full_hash),
+                children_count,
+                children_hashes = ?children_hashes,
+                "ROOT MERKLE: Hash update for root entity"
+            );
+        }
+
         Self::save_index(&index)?;
         <Index<S>>::recalculate_ancestor_hashes_for(id)?;
         Ok(index.full_hash)

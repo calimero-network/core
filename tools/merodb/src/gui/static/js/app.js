@@ -214,9 +214,9 @@ export class App {
                         this.state.currentStateSchemaFile = stateSchemaInput.files[0];
                     }
                     
-                    if (!this.state.currentStateSchemaFile) {
-                        UIManager.showMessage('warning-message', 'No state schema file found. Please select a file first.');
-                        return;
+                    // Schema file is optional - can use schema inference
+                    if (!this.state.currentStateSchemaFile && !this.state.currentStateSchemaFileContent) {
+                        console.log('[App] No schema file - will use schema inference');
                     }
                 }
                 await this.loadDatabase();

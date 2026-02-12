@@ -21,6 +21,7 @@ use std::ops::{Deref, DerefMut};
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::address::Id;
+use crate::collections::CrdtType;
 use crate::env::time_now;
 
 /// Marker trait for atomic, persistable entities.
@@ -177,10 +178,22 @@ pub struct Element {
 }
 
 impl Element {
+    /// Returns a timestamp for element creation/update.
+    /// During merge mode, returns 0 to ensure deterministic hashes.
+    /// Outside merge mode, returns the current time.
+    #[inline]
+    fn timestamp_for_operation() -> u64 {
+        if crate::env::in_merge_mode() {
+            0
+        } else {
+            time_now()
+        }
+    }
+
     /// Creates a new element (marked dirty, empty hash until saved).
     #[must_use]
     pub fn new(id: Option<Id>) -> Self {
-        let timestamp = time_now();
+        let timestamp = Self::timestamp_for_operation();
         let element_id = id.unwrap_or_else(Id::random);
         Self {
             id: element_id,
@@ -189,6 +202,50 @@ impl Element {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
+                crdt_type: None,
+                field_name: None,
+            },
+            merkle_hash: [0; 32],
+        }
+    }
+
+    /// Creates a new element with field name for schema inference.
+    #[must_use]
+    pub fn new_with_field_name(id: Option<Id>, field_name: Option<String>) -> Self {
+        let timestamp = Self::timestamp_for_operation();
+        let element_id = id.unwrap_or_else(Id::random);
+        Self {
+            id: element_id,
+            is_dirty: true,
+            metadata: Metadata {
+                created_at: timestamp,
+                updated_at: timestamp.into(),
+                storage_type: StorageType::Public,
+                crdt_type: None,
+                field_name,
+            },
+            merkle_hash: [0; 32],
+        }
+    }
+
+    /// Creates a new element with field name and CRDT type.
+    #[must_use]
+    pub fn new_with_field_name_and_crdt_type(
+        id: Option<Id>,
+        field_name: Option<String>,
+        crdt_type: CrdtType,
+    ) -> Self {
+        let timestamp = Self::timestamp_for_operation();
+        let element_id = id.unwrap_or_else(Id::random);
+        Self {
+            id: element_id,
+            is_dirty: true,
+            metadata: Metadata {
+                created_at: timestamp,
+                updated_at: timestamp.into(),
+                storage_type: StorageType::Public,
+                crdt_type: Some(crdt_type),
+                field_name,
             },
             merkle_hash: [0; 32],
         }
@@ -197,7 +254,7 @@ impl Element {
     /// Creates the root element.
     #[must_use]
     pub fn root() -> Self {
-        let timestamp = time_now();
+        let timestamp = Self::timestamp_for_operation();
         Self {
             id: Id::root(),
             is_dirty: true,
@@ -205,6 +262,8 @@ impl Element {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::Public,
+                crdt_type: None,
+                field_name: None,
             },
             merkle_hash: [0; 32],
         }
@@ -241,9 +300,15 @@ impl Element {
     }
 
     /// Marks dirty and updates timestamp.
+    ///
+    /// When in merge mode (during CRDT sync), timestamp generation is skipped
+    /// to ensure deterministic results across nodes. See `crate::env::in_merge_mode()`.
     pub fn update(&mut self) {
         self.is_dirty = true;
-        *self.metadata.updated_at = time_now();
+        // Skip timestamp generation during merge to ensure deterministic hashes
+        if !crate::env::in_merge_mode() {
+            *self.metadata.updated_at = time_now();
+        }
     }
 
     /// Returns the last update timestamp.
@@ -281,6 +346,20 @@ impl Element {
     pub fn set_frozen_domain(&mut self) {
         self.metadata.storage_type = StorageType::Frozen;
         self.update(); // Mark as dirty
+    }
+
+    /// Reassigns the element's ID and field name for deterministic ID generation.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all collections have deterministic IDs based on their field names.
+    ///
+    /// # Arguments
+    /// * `new_id` - The new deterministic ID
+    /// * `field_name` - The field name for metadata
+    pub fn reassign_id_and_field_name(&mut self, new_id: Id, field_name: &str) {
+        self.id = new_id;
+        self.metadata.field_name = Some(field_name.to_string());
+        self.is_dirty = true;
     }
 }
 
@@ -333,7 +412,7 @@ impl Default for StorageType {
 
 /// System metadata (timestamps in u64 nanoseconds).
 #[derive(
-    BorshDeserialize, BorshSerialize, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
+    BorshSerialize, BorshDeserialize, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
 )]
 #[non_exhaustive]
 pub struct Metadata {
@@ -346,6 +425,20 @@ pub struct Metadata {
     /// different characteristics of handling in the node.
     /// See `StorageType`.
     pub storage_type: StorageType,
+
+    /// CRDT type for merge dispatch during state synchronization.
+    ///
+    /// - Built-in types (Counter, Map, etc.) merge in storage layer
+    /// - Custom types dispatch to WASM for app-defined merge
+    /// - None indicates legacy data (falls back to LWW)
+    pub crdt_type: Option<CrdtType>,
+
+    /// Field name for schema inference.
+    ///
+    /// - Stored when entity is created via `new_with_field_name()`
+    /// - Enables schema inference from database without external schema file
+    /// - None for legacy data or entities created without field name
+    pub field_name: Option<String>,
 }
 
 impl Metadata {
@@ -356,6 +449,49 @@ impl Metadata {
             created_at,
             updated_at: updated_at.into(),
             storage_type: StorageType::default(),
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    /// Creates metadata with CRDT type.
+    #[must_use]
+    pub fn with_crdt_type(created_at: u64, updated_at: u64, crdt_type: CrdtType) -> Self {
+        Self {
+            created_at,
+            updated_at: updated_at.into(),
+            storage_type: StorageType::default(),
+            crdt_type: Some(crdt_type),
+            field_name: None,
+        }
+    }
+
+    /// Creates metadata with field name.
+    #[must_use]
+    pub fn with_field_name(created_at: u64, updated_at: u64, field_name: String) -> Self {
+        Self {
+            created_at,
+            updated_at: updated_at.into(),
+            storage_type: StorageType::default(),
+            crdt_type: None,
+            field_name: Some(field_name),
+        }
+    }
+
+    /// Creates metadata with CRDT type and field name.
+    #[must_use]
+    pub fn with_crdt_type_and_field_name(
+        created_at: u64,
+        updated_at: u64,
+        crdt_type: CrdtType,
+        field_name: String,
+    ) -> Self {
+        Self {
+            created_at,
+            updated_at: updated_at.into(),
+            storage_type: StorageType::default(),
+            crdt_type: Some(crdt_type),
+            field_name: Some(field_name),
         }
     }
 
@@ -376,6 +512,10 @@ impl Metadata {
         *self.updated_at
     }
 }
+
+// Metadata uses standard Borsh serialization via derive.
+// Breaking change: Old data without crdt_type/field_name fields will fail to deserialize.
+// This is intentional - we require fresh nodes with the new data format.
 
 /// Update timestamp (PartialEq always true for CRDT semantics).
 #[derive(BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Ord, PartialOrd)]

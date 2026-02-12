@@ -37,6 +37,7 @@ export class StateTreeVisualizer {
      */
     async load() {
         // Check if we have schema content (from file or local storage)
+        // Schema is optional - if not provided, backend will infer it from database
         if (!this.state.currentStateSchemaFile && !this.state.currentStateSchemaFileContent) {
             // Try to load from local storage
             try {
@@ -45,10 +46,10 @@ export class StateTreeVisualizer {
                     this.state.currentStateSchemaFileContent = savedContent;
                     console.log('[StateTreeVisualizer] Loaded schema from local storage');
                 } else {
-                    throw new Error('State schema file is required for state tree visualization');
+                    console.log('[StateTreeVisualizer] No schema file provided - will use schema inference');
                 }
             } catch (err) {
-                throw new Error('State schema file is required for state tree visualization');
+                console.log('[StateTreeVisualizer] No schema file provided - will use schema inference');
             }
         }
 
@@ -371,17 +372,109 @@ export class StateTreeVisualizer {
                     return '';
                 });
 
-            // Add node ID labels
+            // Add node labels - show field name for Field nodes, truncated ID otherwise
             nodeEnter.append('text')
                 .attr('dy', '0.31em')
                 .attr('x', d => (d.children || d._children) ? -10 : 10)
                 .attr('text-anchor', d => (d.children || d._children) ? 'end' : 'start')
                 .text(d => {
+                    // For Field nodes, show the field name
+                    if (d.data.type === 'Field' && d.data.field) {
+                        return d.data.field;
+                    }
+                    // For StateRoot, show "Root"
+                    if (d.data.type === 'StateRoot') {
+                        return 'Root';
+                    }
+                    // For Entry nodes, show meaningful data
+                    if ((d.data.type === 'Entry' || d.data.type === 'VectorEntry') && d.data.data) {
+                        // Counter entries: show value (the count) with icon
+                        if (d.data.data.key && d.data.data.value) {
+                            const val = d.data.data.value.parsed ?? d.data.data.value;
+                            const valType = d.data.data.value?.type;
+                            // If value is a Counter, show "key: 🔢 N"
+                            if (valType === 'Counter' && typeof val === 'number') {
+                                const key = d.data.data.key.parsed || d.data.data.key;
+                                const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
+                                return `${keyStr}: 🔢 ${val}`;
+                            }
+                            // If value is a number (legacy Counter format), show "key: 🔢 N"
+                            if (typeof val === 'number') {
+                                const key = d.data.data.key.parsed || d.data.data.key;
+                                const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
+                                return `${keyStr}: 🔢 ${val}`;
+                            }
+                            // If value is a NestedCollection, show "key: type" with children count
+                            if (valType === 'NestedCollection') {
+                                const key = d.data.data.key.parsed || d.data.data.key;
+                                const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
+                                const crdtType = d.data.data.value.crdt_type || 'Collection';
+                                const nestedChildren = d.data.data.value.children || [];
+                                const childCount = d.data.data.value.children_count || nestedChildren.length;
+                                
+                                // If we have nested children, show them inline
+                                if (nestedChildren.length > 0 && nestedChildren.length <= 4) {
+                                    // For UnorderedSet, keys ARE the values (show as set items)
+                                    // For UnorderedMap, show key=value pairs
+                                    const isSet = crdtType === 'UnorderedSet' || nestedChildren.every(c => c.value_hex);
+                                    if (isSet) {
+                                        const items = nestedChildren.map(c => c.key).join(', ');
+                                        return `${keyStr}: {${items.length > 30 ? items.substring(0, 27) + '...' : items}}`;
+                                    } else {
+                                        const preview = nestedChildren.map(c => `${c.key}=${c.value || '?'}`).join(', ');
+                                        return `${keyStr}: {${preview.length > 30 ? preview.substring(0, 27) + '...' : preview}}`;
+                                    }
+                                }
+                                return `${keyStr}: 📦 ${crdtType} [${childCount}]`;
+                            }
+                            // Otherwise show "key → value" for regular maps
+                            const key = d.data.data.key.parsed || d.data.data.key;
+                            const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
+                            const valStr = typeof val === 'string' ? val : JSON.stringify(val);
+                            const display = `${keyStr} → ${valStr}`;
+                            return display.length > 30 ? display.substring(0, 27) + '...' : display;
+                        }
+                        // VectorEntry without key: show value directly
+                        if (d.data.data.value && d.data.type === 'VectorEntry') {
+                            const val = d.data.data.value.parsed ?? d.data.data.value;
+                            const valType = d.data.data.value?.type;
+                            if (valType === 'Counter' && typeof val === 'number') {
+                                return `🔢 ${val}`;
+                            }
+                            return typeof val === 'number' ? `🔢 ${val}` : JSON.stringify(val);
+                        }
+                        // Map entries with only key: show key
+                        if (d.data.data.key) {
+                            const key = d.data.data.key.parsed || d.data.data.key;
+                            const keyStr = typeof key === 'string' ? key : JSON.stringify(key);
+                            return keyStr.length > 25 ? keyStr.substring(0, 22) + '...' : keyStr;
+                        }
+                        // Vector entries: show item value
+                        if (d.data.data.item) {
+                            const item = d.data.data.item.parsed || d.data.data.item;
+                            const itemStr = typeof item === 'string' ? item : JSON.stringify(item);
+                            return itemStr.length > 35 ? itemStr.substring(0, 32) + '...' : itemStr;
+                        }
+                        // Set entries or other: show value
+                        if (d.data.data.value) {
+                            const val = d.data.data.value.parsed || d.data.data.value;
+                            const valStr = typeof val === 'string' ? val : JSON.stringify(val);
+                            return valStr.length > 25 ? valStr.substring(0, 22) + '...' : valStr;
+                        }
+                    }
+                    // Fallback to truncated ID
                     const id = d.data.id || 'N/A';
                     return id !== 'N/A' ? `${id.substring(0, 8)}...` : 'N/A';
                 })
-                .style('font-size', '10px')
-                .style('fill', '#bbb')
+                .style('font-size', '11px')
+                .style('fill', d => {
+                    // Color code by type
+                    if (d.data.type === 'StateRoot') return '#ffa500'; // Orange for root
+                    if (d.data.type === 'Field') return '#61afef'; // Blue for fields
+                    if (d.data.type === 'Entry') return '#98c379'; // Green for entries
+                    return '#bbb';
+                })
+                .style('font-weight', d => d.data.type === 'Field' ? 'bold' : 'normal')
                 .style('pointer-events', 'none');
 
             // Transition nodes to their new position
@@ -612,9 +705,11 @@ export class StateTreeVisualizer {
         html += `  <span class="visualization__tooltip-label">Type:</span>`;
         html += `  <span class="visualization__tooltip-value">${data.type || 'N/A'}</span>`;
         html += `</div>`;
+        // Calculate children count from actual tree structure
+        const childrenCount = (node.children?.length || 0) + (node._children?.length || 0);
         html += `<div class="visualization__tooltip-row">`;
         html += `  <span class="visualization__tooltip-label">Children:</span>`;
-        html += `  <span class="visualization__tooltip-value">${data.children_count || 0}</span>`;
+        html += `  <span class="visualization__tooltip-value">${childrenCount}</span>`;
         html += `</div>`;
         html += `</div>`;
 
@@ -712,47 +807,64 @@ export class StateTreeVisualizer {
             html += `</div>`;
         }
 
-        html += '<div class="visualization__tooltip-section">';
-        html += `<div class="visualization__tooltip-title">Hashes</div>`;
-        html += `<div class="visualization__tooltip-row">`;
-        html += `  <span class="visualization__tooltip-label">ID:</span>`;
-        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(data.id, 'ID')}</span>`;
-        html += `</div>`;
-        html += `<div class="visualization__tooltip-row">`;
-        html += `  <span class="visualization__tooltip-label">Full Hash:</span>`;
-        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(data.full_hash, 'Full Hash')}</span>`;
-        html += `</div>`;
-        html += `<div class="visualization__tooltip-row">`;
-        html += `  <span class="visualization__tooltip-label">Own Hash:</span>`;
-        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(data.own_hash, 'Own Hash')}</span>`;
-        html += `</div>`;
-        // Use the parent node's ID from the D3 hierarchy instead of data.parent_id
-        // This ensures the displayed parent ID matches what's shown in the tree
-        if (node.parent) {
-            html += `<div class="visualization__tooltip-row">`;
-            html += `  <span class="visualization__tooltip-label">Parent ID:</span>`;
-            html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(node.parent.data.id, 'Parent ID')}</span>`;
+        // Hashes section - only show if we have hash data
+        const hasHashData = data.id || data.full_hash || data.own_hash || node.parent;
+        if (hasHashData) {
+            html += '<div class="visualization__tooltip-section">';
+            html += `<div class="visualization__tooltip-title">Hashes</div>`;
+            if (data.id) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">ID:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(data.id, 'ID')}</span>`;
+                html += `</div>`;
+            }
+            if (data.full_hash) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Full Hash:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(data.full_hash, 'Full Hash')}</span>`;
+                html += `</div>`;
+            }
+            if (data.own_hash) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Own Hash:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(data.own_hash, 'Own Hash')}</span>`;
+                html += `</div>`;
+            }
+            // Use the parent node's ID from the D3 hierarchy
+            if (node.parent) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Parent ID:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatHash(node.parent.data.id, 'Parent ID')}</span>`;
+                html += `</div>`;
+            }
             html += `</div>`;
         }
-        html += `</div>`;
 
-        html += '<div class="visualization__tooltip-section">';
-        html += `<div class="visualization__tooltip-title">Timestamps</div>`;
-        html += `<div class="visualization__tooltip-row">`;
-        html += `  <span class="visualization__tooltip-label">Created:</span>`;
-        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(data.created_at)}</span>`;
-        html += `</div>`;
-        html += `<div class="visualization__tooltip-row">`;
-        html += `  <span class="visualization__tooltip-label">Updated:</span>`;
-        html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(data.updated_at)}</span>`;
-        html += `</div>`;
-        if (data.deleted_at) {
-            html += `<div class="visualization__tooltip-row">`;
-            html += `  <span class="visualization__tooltip-label">Deleted:</span>`;
-            html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(data.deleted_at)}</span>`;
+        // Timestamps section - only show if we have timestamp data
+        const hasTimestampData = data.created_at || data.updated_at || data.deleted_at;
+        if (hasTimestampData) {
+            html += '<div class="visualization__tooltip-section">';
+            html += `<div class="visualization__tooltip-title">Timestamps</div>`;
+            if (data.created_at) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Created:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(data.created_at)}</span>`;
+                html += `</div>`;
+            }
+            if (data.updated_at) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Updated:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(data.updated_at)}</span>`;
+                html += `</div>`;
+            }
+            if (data.deleted_at) {
+                html += `<div class="visualization__tooltip-row">`;
+                html += `  <span class="visualization__tooltip-label">Deleted:</span>`;
+                html += `  <span class="visualization__tooltip-value">${TooltipManager.formatTimestamp(data.deleted_at)}</span>`;
+                html += `</div>`;
+            }
             html += `</div>`;
         }
-        html += `</div>`;
 
         return html;
     }
@@ -895,13 +1007,29 @@ export class StateTreeVisualizer {
             // Check if item is deleted
             const isDeleted = data.deleted_at !== null && data.deleted_at !== undefined;
             
+            // Determine fill color based on type
+            let textFill = isDeleted ? '#888' : '#d4d4d4';
+            if (!isDeleted && d._typeClass) {
+                // Use CSS class color for typed fields
+                const typeColorMap = {
+                    'field-type-unordered_map': '#61afef',
+                    'field-type-unordered_set': '#c678dd',
+                    'field-type-vector': '#e5c07b',
+                    'field-type-counter': '#98c379',
+                    'field-type-rga': '#d19a66',
+                    'field-type-lww_register': '#56b6c2'
+                };
+                textFill = typeColorMap[d._typeClass] || textFill;
+            }
+            
             // Create text element that can wrap
             const text = g.append('text')
                 .attr('x', (!d.children && !d._children) ? 8 : 0) // Offset for leaf nodes with circles
                 .attr('y', nodeHeight / 2)
                 .attr('dy', '0.35em')
-                .attr('font-size', '11px')
-                .attr('fill', isDeleted ? '#888' : '#d4d4d4') // Grayed out for deleted
+                .attr('font-size', '12px')
+                .attr('font-weight', data.type === 'Field' ? '500' : '400')
+                .attr('fill', textFill)
                 .attr('opacity', isDeleted ? 0.6 : 1.0); // Reduced opacity for deleted
             
             let labelText = '';
@@ -931,6 +1059,22 @@ export class StateTreeVisualizer {
                     }
                 }
                 
+                // Icon mapping for field types
+                const typeIcons = {
+                    'UnorderedMap': '🗺️',
+                    'UnorderedSet': '📦',
+                    'Vector': '📋',
+                    'LwwRegister': '📝',
+                    'Counter': '🔢',
+                    'Rga': '📜',
+                    'unordered_map': '🗺️',
+                    'unordered_set': '📦',
+                    'vector': '📋',
+                    'lww_register': '📝',
+                    'counter': '🔢',
+                    'rga': '📜'
+                };
+                
                 // Format type info nicely
                 if (typeInfo) {
                     // Convert common type names to readable format
@@ -943,45 +1087,95 @@ export class StateTreeVisualizer {
                         'Rga': 'rga'
                     };
                     const readableType = typeMap[typeInfo] || typeInfo.toLowerCase();
+                    const icon = typeIcons[typeInfo] || typeIcons[readableType] || '📁';
+                    
+                    // Add child count for collections
+                    const childCount = d._children ? d._children.length : (d.children ? d.children.length : 0);
+                    const countStr = childCount > 0 ? ` [${childCount}]` : '';
+                    
                     if (counterValue !== null) {
-                        labelText = `${fieldName} (${readableType}) = ${counterValue}`;
+                        labelText = `${icon} ${fieldName}: ${readableType}${countStr} = ${counterValue}`;
                     } else {
-                        labelText = `${fieldName} (${readableType})`;
+                        labelText = `${icon} ${fieldName}: ${readableType}${countStr}`;
                     }
+                    
+                    // Store type info for styling
+                    d._typeClass = `field-type-${readableType}`;
                 } else {
                     if (counterValue !== null) {
-                        labelText = `${fieldName} = ${counterValue}`;
+                        labelText = `📁 ${fieldName} = ${counterValue}`;
                     } else {
-                        labelText = fieldName;
+                        labelText = `📁 ${fieldName}`;
                     }
                 }
             }
-            // For Entry types, show key: value format
+            // For Entry types, show meaningful data
             else if (data.type === 'Entry') {
                 if (data.data) {
                     const stateData = data.data;
                     let keyStr = '';
                     let valueStr = '';
+                    let itemStr = '';
                     
-                    // Get key
+                    // Get key (for Map entries)
                     if (stateData.key && stateData.key.parsed !== undefined) {
-                        keyStr = JSON.stringify(stateData.key.parsed, null, 0);
+                        const key = stateData.key.parsed;
+                        if (typeof key === 'string') {
+                            keyStr = `"${key}"`;
+                        } else {
+                            keyStr = JSON.stringify(key, null, 0);
+                        }
                     } else if (stateData.key) {
                         keyStr = String(stateData.key);
                     }
                     
-                    // Get value
+                    // Get value (for Map/Counter entries)
                     if (stateData.value && stateData.value.parsed !== undefined) {
-                        valueStr = JSON.stringify(stateData.value.parsed, null, 0);
+                        const val = stateData.value.parsed;
+                        // Handle LwwRegister values (show inner value)
+                        if (val && typeof val === 'object' && val.value !== undefined && val.clock !== undefined) {
+                            valueStr = typeof val.value === 'string' ? `"${val.value}"` : JSON.stringify(val.value, null, 0);
+                        } else if (typeof val === 'string') {
+                            valueStr = `"${val}"`;
+                        } else if (typeof val === 'number') {
+                            valueStr = String(val);
+                        } else {
+                            valueStr = JSON.stringify(val, null, 0);
+                        }
                     } else if (stateData.value) {
                         valueStr = String(stateData.value);
                     }
                     
-                    // Format as "key: value"
+                    // Get item (for Vector/Set entries)
+                    if (stateData.item && stateData.item.parsed !== undefined) {
+                        const item = stateData.item.parsed;
+                        // Handle LwwRegister wrapped items
+                        if (item && typeof item === 'object' && item.value !== undefined && item.clock !== undefined) {
+                            itemStr = typeof item.value === 'string' ? `"${item.value}"` : JSON.stringify(item.value, null, 0);
+                        } else if (typeof item === 'string') {
+                            itemStr = `"${item}"`;
+                        } else {
+                            itemStr = JSON.stringify(item, null, 0);
+                        }
+                    } else if (stateData.item) {
+                        itemStr = String(stateData.item);
+                    }
+                    
+                    // Truncate long values
+                    const maxLen = 60;
+                    if (valueStr.length > maxLen) valueStr = valueStr.substring(0, maxLen) + '...';
+                    if (itemStr.length > maxLen) itemStr = itemStr.substring(0, maxLen) + '...';
+                    
+                    // Determine display format based on what data is available
                     if (keyStr && valueStr) {
-                        labelText = `${keyStr}: ${valueStr}`;
+                        // Counter: if value is a number, show "key → value"
+                        // Map: show "key → value"
+                        labelText = `${keyStr} → ${valueStr}`;
+                    } else if (itemStr) {
+                        // Vector/Set entry: just show the item value
+                        labelText = itemStr;
                     } else if (keyStr) {
-                        labelText = `Key: ${keyStr}`;
+                        labelText = keyStr;
                     } else if (valueStr) {
                         labelText = valueStr;
                     } else {

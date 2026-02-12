@@ -750,5 +750,6 @@ fn create_test_delta(
         payload: actions,
         hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
         expected_root_hash,
+        kind: calimero_dag::DeltaKind::Regular,
     }
 }

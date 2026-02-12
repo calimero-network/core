@@ -121,6 +121,14 @@
     pointer-events: none;
 }
 
+/* Field Type Colors */
+.field-type-unordered_map { color: #61afef !important; }
+.field-type-unordered_set { color: #c678dd !important; }
+.field-type-vector { color: #e5c07b !important; }
+.field-type-counter { color: #98c379 !important; }
+.field-type-rga { color: #d19a66 !important; }
+.field-type-lww_register { color: #56b6c2 !important; }
+
 /* State Tree Links */
 .state-link {
     stroke: var(--color-link-default);

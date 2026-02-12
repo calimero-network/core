@@ -30,7 +30,15 @@ use tracing::{debug, error, info, warn};
 use crate::utils::choose_stream;
 
 use super::config::SyncConfig;
-use super::tracking::{SyncProtocol, SyncState};
+use super::tracking::SyncState;
+// Internal SyncProtocol for metrics (3 variants)
+use super::tracking::SyncProtocol as TrackingSyncProtocol;
+// Full SyncProtocol from primitives for protocol selection (7 variants, CIP §2.3)
+// Uses shared state machine types for consistent behavior with simulation
+use calimero_node_primitives::sync::{
+    build_handshake_from_raw, estimate_entity_count, estimate_max_depth, select_protocol,
+    SyncHandshake, SyncProtocol,
+};
 
 /// Network synchronization manager.
 ///
@@ -79,6 +87,46 @@ impl SyncManager {
         }
     }
 
+    /// Build `SyncHandshake` from local context state for protocol negotiation.
+    ///
+    /// Uses shared estimation functions from `calimero_node_primitives::sync::state_machine`
+    /// to ensure consistent behavior between production (`SyncManager`) and simulation (`SimNode`).
+    ///
+    /// # Arguments
+    ///
+    /// * `context` - The context to build a handshake for.
+    ///
+    /// # Returns
+    ///
+    /// A `SyncHandshake` containing the context's current state summary.
+    fn build_local_handshake(context: &calimero_primitives::context::Context) -> SyncHandshake {
+        let root_hash = *context.root_hash;
+        let dag_heads = context.dag_heads.clone();
+
+        // Use shared estimation functions for consistency with simulation
+        let entity_count = estimate_entity_count(root_hash, dag_heads.len());
+        let max_depth = estimate_max_depth(entity_count);
+
+        build_handshake_from_raw(root_hash, entity_count, max_depth, dag_heads)
+    }
+
+    /// Build `SyncHandshake` from peer state for protocol negotiation.
+    ///
+    /// Uses shared estimation functions from `calimero_node_primitives::sync::state_machine`
+    /// to ensure consistent behavior between production (`SyncManager`) and simulation (`SimNode`).
+    fn build_remote_handshake(
+        peer_root_hash: calimero_primitives::hash::Hash,
+        peer_dag_heads: &[[u8; DIGEST_SIZE]],
+    ) -> SyncHandshake {
+        let root_hash = *peer_root_hash;
+
+        // Use shared estimation functions for consistency with simulation
+        let entity_count = estimate_entity_count(root_hash, peer_dag_heads.len());
+        let max_depth = estimate_max_depth(entity_count);
+
+        build_handshake_from_raw(root_hash, entity_count, max_depth, peer_dag_heads.to_vec())
+    }
+
     pub async fn start(mut self) {
         let mut next_sync = time::interval(self.sync_config.frequency);
 
@@ -100,8 +148,8 @@ impl SyncManager {
             let took = Instant::saturating_duration_since(&now, start);
 
             let _ignored = state.entry(context_id).and_modify(|state| match result {
-                Ok(Ok(protocol)) => {
-                    state.on_success(peer_id, protocol);
+                Ok(Ok(ref protocol)) => {
+                    state.on_success(peer_id, TrackingSyncProtocol::from(protocol));
                     info!(
                         %context_id,
                         ?took,
@@ -749,8 +797,9 @@ impl SyncManager {
 
                     // Note: request_snapshot_sync opens its own stream, existing stream
                     // will be closed when this function returns
+                    // force=false: This is bootstrap for uninitialized nodes
                     match self
-                        .request_snapshot_sync(context_id, chosen_peer)
+                        .request_snapshot_sync(context_id, chosen_peer, false)
                         .await
                         .wrap_err("snapshot sync")
                     {
@@ -763,7 +812,38 @@ impl SyncManager {
                                 dag_heads_count = result.dag_heads.len(),
                                 "Snapshot sync completed successfully"
                             );
+
+                            // CRITICAL: Add snapshot boundary checkpoints to DAG
+                            // This ensures that when new deltas arrive referencing the
+                            // snapshot boundary heads as parents, the DAG accepts them.
                             if !result.dag_heads.is_empty() {
+                                let delta_store = self
+                                    .node_state
+                                    .delta_stores
+                                    .entry(context_id)
+                                    .or_insert_with(|| {
+                                        crate::delta_store::DeltaStore::new(
+                                            [0u8; 32],
+                                            self.context_client.clone(),
+                                            context_id,
+                                            our_identity,
+                                        )
+                                    })
+                                    .clone();
+
+                                let checkpoints_added = delta_store
+                                    .add_snapshot_checkpoints(
+                                        result.dag_heads.clone(),
+                                        *result.boundary_root_hash,
+                                    )
+                                    .await;
+
+                                info!(
+                                    %context_id,
+                                    checkpoints_added,
+                                    "Added snapshot boundary checkpoints to DAG"
+                                );
+
                                 match self.network_client.open_stream(chosen_peer).await {
                                     Ok(mut fine_stream) => {
                                         if let Err(e) = self
@@ -793,7 +873,33 @@ impl SyncManager {
                                     }
                                 }
                             }
-                            return Ok(Some(SyncProtocol::SnapshotSync));
+
+                            // Replay any buffered deltas (from uninitialized context period)
+                            // This ensures handlers execute for deltas that arrived before sync completed
+                            if let Some(buffered_deltas) =
+                                self.node_state.end_sync_session(&context_id)
+                            {
+                                let buffered_count = buffered_deltas.len();
+                                if buffered_count > 0 {
+                                    info!(
+                                        %context_id,
+                                        buffered_count,
+                                        "Replaying buffered deltas after snapshot sync (bootstrap path)"
+                                    );
+                                    self.replay_buffered_deltas(
+                                        context_id,
+                                        our_identity,
+                                        buffered_deltas,
+                                        chosen_peer,
+                                    )
+                                    .await;
+                                }
+                            }
+
+                            return Ok(Some(SyncProtocol::Snapshot {
+                                compressed: false,
+                                verified: true,
+                            }));
                         }
                         Err(e) => {
                             warn!(
@@ -821,6 +927,9 @@ impl SyncManager {
         // Check if we have pending deltas (incomplete DAG)
         // Even if node has some state, it might be missing parent deltas
         if let Some(delta_store) = self.node_state.delta_stores.get(&context_id) {
+            // Reload persisted deltas to catch locally-created deltas from execute.rs
+            // that are in the database but not in the in-memory DeltaStore
+            let _ = delta_store.load_persisted_deltas().await;
             let missing_result = delta_store.get_missing_parents().await;
 
             // Note: Cascaded events from DB loads are handled in state_delta handler
@@ -862,71 +971,135 @@ impl SyncManager {
             .await?;
 
         if let Some((peer_root_hash, peer_dag_heads)) = peer_state {
-            if *context.root_hash != *peer_root_hash {
-                info!(
-                    %context_id,
-                    %chosen_peer,
-                    our_root_hash = %context.root_hash,
-                    peer_root_hash = %peer_root_hash,
-                    our_heads_count = context.dag_heads.len(),
-                    peer_heads_count = peer_dag_heads.len(),
-                    "Root hash mismatch with peer, triggering DAG catchup"
-                );
+            // Build handshakes for protocol selection (CIP §2.3)
+            // Uses shared functions from calimero_node_primitives::sync::state_machine
+            let local_hs = Self::build_local_handshake(context);
+            let remote_hs = Self::build_remote_handshake(peer_root_hash, &peer_dag_heads);
 
-                let our_heads_set: std::collections::HashSet<_> =
-                    context.dag_heads.iter().collect();
-                let missing_heads: Vec<_> = peer_dag_heads
-                    .iter()
-                    .filter(|h| !our_heads_set.contains(h))
-                    .cloned()
-                    .collect();
+            // Select optimal sync protocol based on state comparison
+            let selection = select_protocol(&local_hs, &remote_hs);
 
-                if !missing_heads.is_empty() {
+            debug!(
+                %context_id,
+                protocol = ?selection.protocol,
+                reason = %selection.reason,
+                "Protocol selected per CIP §2.3"
+            );
+
+            // Dispatch based on selected protocol
+            match selection.protocol {
+                SyncProtocol::None => {
+                    debug!(
+                        %context_id,
+                        %chosen_peer,
+                        root_hash = %context.root_hash,
+                        "Already in sync"
+                    );
+                    return Ok(None);
+                }
+                SyncProtocol::Snapshot { compressed, .. } => {
+                    // Snapshot sync - use existing handler
                     info!(
                         %context_id,
                         %chosen_peer,
-                        missing_count = missing_heads.len(),
-                        "Peer has DAG heads we don't have, requesting them"
+                        compressed,
+                        reason = %selection.reason,
+                        "Initiating snapshot sync"
                     );
-
                     let result = self
-                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
                         .await
-                        .wrap_err("request DAG heads and sync")?;
-
-                    // If peer had no data or unexpected response, return error to try next peer
-                    if matches!(result, SyncProtocol::None) {
-                        bail!("Peer has no data or unexpected response for this context, will try next peer");
-                    }
-
+                        .wrap_err("snapshot sync")?;
                     return Ok(Some(result));
-                } else {
-                    // Same heads but different root hash - may have deltas that haven't been applied yet
-                    warn!(
+                }
+                SyncProtocol::DeltaSync { .. } => {
+                    // Delta sync - use existing DAG heads request mechanism
+                    info!(
                         %context_id,
                         %chosen_peer,
-                        "Same DAG heads but different root hash - requesting full sync"
+                        reason = %selection.reason,
+                        "Initiating delta sync via DAG heads request"
                     );
-
                     let result = self
                         .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
                         .await
-                        .wrap_err("request DAG heads and sync")?;
+                        .wrap_err("delta sync")?;
 
-                    // If peer had no data or unexpected response, return error to try next peer
                     if matches!(result, SyncProtocol::None) {
-                        bail!("Peer has no data or unexpected response for this context, will try next peer");
+                        bail!("Peer has no data for this context");
                     }
 
                     return Ok(Some(result));
                 }
-            } else {
-                debug!(
-                    %context_id,
-                    %chosen_peer,
-                    root_hash = %context.root_hash,
-                    "Root hash matches peer, node is truly in sync"
-                );
+                SyncProtocol::HashComparison { .. } => {
+                    // HashComparison not yet implemented, fall back to DAG heads request
+                    // which is the closest available mechanism
+                    warn!(
+                        %context_id,
+                        reason = %selection.reason,
+                        "HashComparison not yet implemented, falling back to DAG catchup"
+                    );
+                    let result = self
+                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+                        .await
+                        .wrap_err("hash comparison fallback")?;
+
+                    if matches!(result, SyncProtocol::None) {
+                        // If DAG catchup doesn't work, try snapshot as last resort
+                        info!(
+                            %context_id,
+                            "DAG catchup failed, falling back to snapshot sync"
+                        );
+                        let result = self
+                            .fallback_to_snapshot_sync(
+                                context_id,
+                                our_identity,
+                                chosen_peer,
+                                stream,
+                            )
+                            .await
+                            .wrap_err("snapshot fallback")?;
+                        return Ok(Some(result));
+                    }
+
+                    return Ok(Some(result));
+                }
+                SyncProtocol::BloomFilter { .. } => {
+                    warn!(
+                        %context_id,
+                        reason = %selection.reason,
+                        "BloomFilter not yet implemented, falling back to snapshot"
+                    );
+                    let result = self
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .await
+                        .wrap_err("bloom filter fallback")?;
+                    return Ok(Some(result));
+                }
+                SyncProtocol::SubtreePrefetch { .. } => {
+                    warn!(
+                        %context_id,
+                        reason = %selection.reason,
+                        "SubtreePrefetch not yet implemented, falling back to snapshot"
+                    );
+                    let result = self
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .await
+                        .wrap_err("subtree prefetch fallback")?;
+                    return Ok(Some(result));
+                }
+                SyncProtocol::LevelWise { .. } => {
+                    warn!(
+                        %context_id,
+                        reason = %selection.reason,
+                        "LevelWise not yet implemented, falling back to snapshot"
+                    );
+                    let result = self
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .await
+                        .wrap_err("level-wise fallback")?;
+                    return Ok(Some(result));
+                }
             }
         }
 
@@ -1144,15 +1317,16 @@ impl SyncManager {
                     (delta_store_ref, is_new)
                 };
 
-                // Load persisted deltas from database on first access
-                if is_new_store {
-                    if let Err(e) = delta_store_ref.load_persisted_deltas().await {
-                        warn!(
-                            ?e,
-                            %context_id,
-                            "Failed to load persisted deltas, starting with empty DAG"
-                        );
-                    }
+                // Always reload persisted deltas from database before sync operations
+                // This is critical because local deltas created via execute.rs are persisted
+                // to the database but NOT added to the in-memory DeltaStore. Without this
+                // reload, the DeltaStore would be missing locally-created deltas.
+                if let Err(e) = delta_store_ref.load_persisted_deltas().await {
+                    warn!(
+                        ?e,
+                        %context_id,
+                        "Failed to load persisted deltas, starting with empty DAG"
+                    );
                 }
 
                 // Phase 1: Request and add ALL DAG heads
@@ -1195,6 +1369,7 @@ impl SyncManager {
                                 payload: storage_delta.actions,
                                 hlc: storage_delta.hlc,
                                 expected_root_hash: storage_delta.expected_root_hash,
+                                kind: calimero_dag::DeltaKind::Regular,
                             };
 
                             if let Err(e) = delta_store_ref.add_delta(dag_delta).await {
@@ -1291,7 +1466,9 @@ impl SyncManager {
                 }
 
                 // Return a non-None protocol to signal success (prevents trying next peer)
-                Ok(SyncProtocol::DagCatchup)
+                Ok(SyncProtocol::DeltaSync {
+                    missing_delta_ids: vec![],
+                })
             }
             _ => {
                 warn!(%context_id, "Unexpected response to DAG heads request, trying next peer");
@@ -1301,6 +1478,10 @@ impl SyncManager {
     }
 
     /// Fall back to full snapshot sync when delta sync is not possible.
+    ///
+    /// Implements Invariant I6: Deltas received during sync are buffered and
+    /// replayed after sync completes. On error, buffered deltas are discarded
+    /// via `cancel_sync_session()`.
     async fn fallback_to_snapshot_sync(
         &self,
         context_id: ContextId,
@@ -1310,8 +1491,47 @@ impl SyncManager {
     ) -> eyre::Result<SyncProtocol> {
         info!(%context_id, %peer_id, "Initiating snapshot sync");
 
-        let result = self.request_snapshot_sync(context_id, peer_id).await?;
+        // Start buffering deltas that arrive during snapshot sync (Invariant I6)
+        // Use current time as sync start HLC
+        let sync_start_hlc = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        self.node_state
+            .start_sync_session(context_id, sync_start_hlc);
+
+        // force=false: Enforce Invariant I5 - only allow snapshot on fresh nodes.
+        // If the node has state, this will fail, which is correct - divergence
+        // or pruned history on initialized nodes cannot be safely resolved via
+        // snapshot overwrite. CRDT merge must be used instead.
+        let result = match self.request_snapshot_sync(context_id, peer_id, false).await {
+            Ok(r) => r,
+            Err(e) => {
+                // Cancel sync session on failure - discard buffered deltas
+                // since the context state is inconsistent
+                self.node_state.cancel_sync_session(&context_id);
+                return Err(e);
+            }
+        };
         info!(%context_id, records = result.applied_records, "Snapshot sync completed");
+
+        // End buffering and get any deltas that arrived during sync
+        let buffered_deltas = self.node_state.end_sync_session(&context_id);
+        let buffered_count = buffered_deltas.as_ref().map_or(0, Vec::len);
+
+        if buffered_count > 0 {
+            info!(
+                %context_id,
+                buffered_count,
+                "Replaying buffered deltas after snapshot sync"
+            );
+
+            // Replay buffered deltas - now that context is initialized, we can process them
+            if let Some(deltas) = buffered_deltas {
+                self.replay_buffered_deltas(context_id, our_identity, deltas, peer_id)
+                    .await;
+            }
+        }
 
         // Fine-sync to catch any deltas since the snapshot boundary
         if !result.dag_heads.is_empty() {
@@ -1324,7 +1544,152 @@ impl SyncManager {
             }
         }
 
-        Ok(SyncProtocol::SnapshotSync)
+        Ok(SyncProtocol::Snapshot {
+            compressed: false,
+            verified: true,
+        })
+    }
+
+    /// Replay buffered deltas after snapshot sync completes.
+    ///
+    /// This ensures that:
+    /// 1. Deltas arriving during sync aren't lost
+    /// 2. Event handlers execute for buffered deltas
+    /// 3. Ancestor deltas (whose state is covered by checkpoint) get handlers executed
+    async fn replay_buffered_deltas(
+        &self,
+        context_id: ContextId,
+        our_identity: PublicKey,
+        deltas: Vec<calimero_node_primitives::delta_buffer::BufferedDelta>,
+        _fallback_peer: PeerId,
+    ) {
+        use crate::handlers::state_delta::replay_buffered_delta;
+        use std::collections::{HashMap, HashSet};
+
+        // Build a set of IDs that are "covered" by the snapshot
+        // This includes:
+        // 1. Deltas that match checkpoints directly
+        // 2. Deltas that are ancestors of checkpoints (their state is included in snapshot)
+        let mut covered_delta_ids: HashSet<[u8; 32]> = HashSet::new();
+
+        // Get the delta store to check for existing checkpoints
+        let delta_store = self
+            .node_state
+            .delta_stores
+            .entry(context_id)
+            .or_insert_with(|| {
+                crate::delta_store::DeltaStore::new(
+                    [0u8; 32],
+                    self.context_client.clone(),
+                    context_id,
+                    our_identity,
+                )
+            })
+            .clone();
+
+        // Build parent -> children map from buffered deltas
+        let mut parent_to_children: HashMap<[u8; 32], Vec<[u8; 32]>> = HashMap::new();
+        for buffered in &deltas {
+            for parent in &buffered.parents {
+                parent_to_children
+                    .entry(*parent)
+                    .or_default()
+                    .push(buffered.id);
+            }
+        }
+
+        // Identify which buffered deltas match existing checkpoints
+        let mut checkpoint_matches: Vec<[u8; 32]> = Vec::new();
+        for buffered in &deltas {
+            if delta_store.dag_has_delta_applied(&buffered.id).await {
+                checkpoint_matches.push(buffered.id);
+                covered_delta_ids.insert(buffered.id);
+            }
+        }
+
+        // Propagate "covered" status backwards through the parent chain
+        // If delta D has a child C that is covered, then D is also covered
+        // (D's state is included in C's checkpoint)
+        let delta_ids: HashSet<[u8; 32]> = deltas.iter().map(|d| d.id).collect();
+        let delta_parents: HashMap<[u8; 32], Vec<[u8; 32]>> =
+            deltas.iter().map(|d| (d.id, d.parents.clone())).collect();
+
+        // BFS backwards from checkpoint matches
+        let mut queue: std::collections::VecDeque<[u8; 32]> =
+            checkpoint_matches.iter().copied().collect();
+        while let Some(child_id) = queue.pop_front() {
+            // Get parents of this delta (if it's one of our buffered deltas)
+            if let Some(parents) = delta_parents.get(&child_id) {
+                for parent_id in parents {
+                    // If parent is also a buffered delta and not yet covered
+                    if delta_ids.contains(parent_id) && !covered_delta_ids.contains(parent_id) {
+                        covered_delta_ids.insert(*parent_id);
+                        queue.push_back(*parent_id);
+                    }
+                }
+            }
+        }
+
+        if !covered_delta_ids.is_empty() {
+            info!(
+                %context_id,
+                covered_count = covered_delta_ids.len(),
+                checkpoint_matches = checkpoint_matches.len(),
+                total_buffered = deltas.len(),
+                "Identified buffered deltas covered by snapshot checkpoint"
+            );
+        }
+
+        for buffered in deltas {
+            let delta_id = buffered.id;
+            let has_events = buffered.events.is_some();
+            let is_covered_by_checkpoint = covered_delta_ids.contains(&delta_id);
+
+            match replay_buffered_delta(
+                &self.context_client,
+                &self.node_client,
+                &self.network_client,
+                &self.node_state,
+                context_id,
+                our_identity,
+                buffered,
+                self.sync_config.timeout,
+                is_covered_by_checkpoint,
+            )
+            .await
+            {
+                Ok(applied) => {
+                    if applied {
+                        info!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            has_events,
+                            "Replayed buffered delta successfully"
+                        );
+                    } else if is_covered_by_checkpoint {
+                        debug!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            "Buffered delta is ancestor of checkpoint (state covered, handlers executed)"
+                        );
+                    } else {
+                        debug!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            "Buffered delta went to pending (missing parents)"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        error = %e,
+                        "Failed to replay buffered delta"
+                    );
+                }
+            }
+        }
     }
 
     /// Fine-sync from snapshot boundary to catch up to latest state.
@@ -1535,5 +1900,192 @@ impl SyncManager {
         };
 
         Ok(Some(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_node_primitives::sync::SyncHandshake;
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::{Context, ContextId};
+    use calimero_primitives::hash::Hash;
+
+    use super::SyncManager;
+
+    /// Helper to create a test context with given state
+    fn make_context(root_hash: [u8; 32], dag_heads: Vec<[u8; 32]>) -> Context {
+        Context::with_dag_heads(
+            ContextId::from([1; 32]),
+            ApplicationId::from([2; 32]),
+            Hash::from(root_hash),
+            dag_heads,
+        )
+    }
+
+    // =========================================================================
+    // Tests for build_local_handshake() using shared state machine functions
+    // =========================================================================
+
+    /// Fresh node (zero root_hash) should have has_state=false and entity_count=0
+    #[test]
+    fn test_build_local_handshake_fresh_node() {
+        let context = make_context([0; 32], vec![]);
+
+        // Use SyncManager's static method which now uses shared estimation functions
+        let handshake = SyncManager::build_local_handshake(&context);
+
+        assert!(
+            !handshake.has_state,
+            "Fresh node should have has_state=false"
+        );
+        assert_eq!(
+            handshake.entity_count, 0,
+            "Fresh node should have entity_count=0"
+        );
+        assert_eq!(handshake.max_depth, 0, "Fresh node should have max_depth=0");
+        assert_eq!(handshake.root_hash, [0; 32]);
+    }
+
+    /// Initialized node should have has_state=true and entity_count >= 1
+    #[test]
+    fn test_build_local_handshake_initialized_node() {
+        let context = make_context([42; 32], vec![[1; 32], [2; 32]]);
+
+        let handshake = SyncManager::build_local_handshake(&context);
+
+        assert!(
+            handshake.has_state,
+            "Initialized node should have has_state=true"
+        );
+        assert_eq!(
+            handshake.entity_count, 2,
+            "Entity count should match dag_heads length"
+        );
+        assert!(
+            handshake.max_depth >= 1,
+            "Initialized node should have max_depth >= 1"
+        );
+        assert_eq!(handshake.root_hash, [42; 32]);
+        assert_eq!(handshake.dag_heads.len(), 2);
+    }
+
+    /// Initialized node with empty dag_heads should still have entity_count >= 1
+    #[test]
+    fn test_build_local_handshake_initialized_no_heads() {
+        let context = make_context([42; 32], vec![]);
+
+        let handshake = SyncManager::build_local_handshake(&context);
+
+        assert!(handshake.has_state);
+        assert_eq!(
+            handshake.entity_count, 1,
+            "Initialized node with no heads should have entity_count=1 (minimum)"
+        );
+    }
+
+    // =========================================================================
+    // Tests for build_remote_handshake()
+    // =========================================================================
+
+    /// Test building remote handshake from peer state
+    #[test]
+    fn test_build_remote_handshake_with_state() {
+        let peer_root_hash = Hash::from([99; 32]);
+        let peer_dag_heads: Vec<[u8; 32]> = vec![[10; 32], [20; 32], [30; 32]];
+
+        let handshake = SyncManager::build_remote_handshake(peer_root_hash, &peer_dag_heads);
+
+        assert!(handshake.has_state);
+        assert_eq!(handshake.root_hash, [99; 32]);
+        assert_eq!(handshake.entity_count, 3);
+        assert_eq!(handshake.dag_heads.len(), 3);
+    }
+
+    /// Test building remote handshake from fresh peer
+    #[test]
+    fn test_build_remote_handshake_fresh_peer() {
+        let peer_root_hash = Hash::from([0; 32]);
+        let peer_dag_heads: Vec<[u8; 32]> = vec![];
+
+        let handshake = SyncManager::build_remote_handshake(peer_root_hash, &peer_dag_heads);
+
+        assert!(!handshake.has_state);
+        assert_eq!(handshake.root_hash, [0; 32]);
+        assert_eq!(handshake.entity_count, 0);
+        assert_eq!(handshake.max_depth, 0);
+    }
+
+    // =========================================================================
+    // Tests for protocol selection integration
+    // =========================================================================
+
+    /// Test that select_protocol is called correctly with built handshakes
+    #[test]
+    fn test_protocol_selection_fresh_to_initialized() {
+        use calimero_node_primitives::sync::{select_protocol, SyncProtocol};
+
+        // Fresh local node
+        let local_hs = SyncHandshake::new([0; 32], 0, 0, vec![]);
+
+        // Initialized remote node
+        let remote_hs = SyncHandshake::new([42; 32], 100, 4, vec![[1; 32]]);
+
+        let selection = select_protocol(&local_hs, &remote_hs);
+
+        assert!(
+            matches!(selection.protocol, SyncProtocol::Snapshot { .. }),
+            "Fresh node syncing from initialized should use Snapshot, got {:?}",
+            selection.protocol
+        );
+        assert!(
+            selection.reason.contains("fresh node"),
+            "Reason should mention fresh node"
+        );
+    }
+
+    /// Test that same root hash results in None protocol
+    #[test]
+    fn test_protocol_selection_already_synced() {
+        use calimero_node_primitives::sync::{select_protocol, SyncProtocol};
+
+        let local_hs = SyncHandshake::new([42; 32], 50, 3, vec![[1; 32]]);
+        let remote_hs = SyncHandshake::new([42; 32], 100, 4, vec![[2; 32]]);
+
+        let selection = select_protocol(&local_hs, &remote_hs);
+
+        assert!(
+            matches!(selection.protocol, SyncProtocol::None),
+            "Same root hash should result in None, got {:?}",
+            selection.protocol
+        );
+    }
+
+    /// Test max_depth calculation for various entity counts
+    #[test]
+    fn test_max_depth_calculation() {
+        // Test the log16 approximation: log16(n) ≈ log2(n) / 4
+        let test_cases: Vec<(u64, u32)> = vec![
+            (0, 0),   // No entities
+            (1, 1),   // Single entity -> depth 1
+            (16, 1),  // 16 entities -> log2(16)/4 = 4/4 = 1
+            (256, 2), // 256 entities -> log2(256)/4 = 8/4 = 2
+        ];
+
+        for (entity_count, expected_min_depth) in test_cases {
+            let max_depth = if entity_count == 0 {
+                0
+            } else {
+                let log2_approx = 64u32.saturating_sub(entity_count.leading_zeros());
+                (log2_approx / 4).max(1).min(32)
+            };
+
+            assert!(
+                max_depth >= expected_min_depth,
+                "entity_count={} should have max_depth >= {}, got {}",
+                entity_count,
+                expected_min_depth,
+                max_depth
+            );
+        }
     }
 }

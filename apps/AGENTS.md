@@ -28,9 +28,11 @@ cd apps/kv-store && ./build.sh
 
 | App                      | Purpose                | Good Example For       |
 | ------------------------ | ---------------------- | ---------------------- |
+| `demo-blockchain-integrations` | NEAR/ICP/Ethereum proposals | Blockchain integration E2E |
 | `kv-store`               | Simple key-value store | Basic CRDT usage       |
 | `kv-store-init`          | KV with custom init    | `#[app::init]` pattern |
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
+| `migrations/migration-suite-v1..v5` | Migration examples     | Schema change patterns |
 | `access-control`         | Permission management  | Authorization patterns |
 | `blobs`                  | Blob storage demo      | Blob operations        |
 | `collaborative-editor`   | Collaborative text     | Complex CRDTs          |

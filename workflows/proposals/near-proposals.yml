@@ -11,7 +11,7 @@ steps:
   - name: Install Proposals Application on Node 1
     type: install_application
     node: near-prop-1
-    url: "https://github.com/calimero-network/demo-blockchain-integrations/raw/refs/heads/master/logic/res/blockchain.wasm"
+    path: ../../apps/demo-blockchain-integrations/res/blockchain.wasm
     dev: true
     outputs:
       app_id: applicationId

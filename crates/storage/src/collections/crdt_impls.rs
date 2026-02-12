@@ -104,20 +104,34 @@ impl<T: Clone> Mergeable for LwwRegister<T> {
 }
 
 // ============================================================================
-// Counter (both G-Counter and PN-Counter modes)
+// Counter (G-Counter and PN-Counter have distinct CrdtTypes)
 // ============================================================================
 
-impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> CrdtMeta for Counter<ALLOW_DECREMENT, S> {
+impl<S: StorageAdaptor> CrdtMeta for Counter<false, S> {
     fn crdt_type() -> CrdtType {
-        CrdtType::Counter
+        CrdtType::GCounter
     }
 
     fn storage_strategy() -> StorageStrategy {
-        StorageStrategy::Blob // Counter stores as blob
+        StorageStrategy::Blob
     }
 
     fn can_contain_crdts() -> bool {
-        false // Counter is a primitive value
+        false
+    }
+}
+
+impl<S: StorageAdaptor> CrdtMeta for Counter<true, S> {
+    fn crdt_type() -> CrdtType {
+        CrdtType::PnCounter
+    }
+
+    fn storage_strategy() -> StorageStrategy {
+        StorageStrategy::Blob
+    }
+
+    fn can_contain_crdts() -> bool {
+        false
     }
 }
 
@@ -482,14 +496,14 @@ mod tests {
     #[test]
     fn test_gcounter_is_crdt() {
         assert!(GCounter::<MainStorage>::is_crdt());
-        assert_eq!(GCounter::<MainStorage>::crdt_type(), CrdtType::Counter);
+        assert_eq!(GCounter::<MainStorage>::crdt_type(), CrdtType::GCounter);
         assert!(!GCounter::<MainStorage>::can_contain_crdts());
     }
 
     #[test]
     fn test_pncounter_is_crdt() {
         assert!(PNCounter::<MainStorage>::is_crdt());
-        assert_eq!(PNCounter::<MainStorage>::crdt_type(), CrdtType::Counter);
+        assert_eq!(PNCounter::<MainStorage>::crdt_type(), CrdtType::PnCounter);
         assert!(!PNCounter::<MainStorage>::can_contain_crdts());
     }
 
@@ -534,11 +548,11 @@ mod tests {
     fn test_counter_custom_storage_is_crdt() {
         use crate::store::mocked::MockedStorage;
 
-        type CustomCounter = Counter<false, MockedStorage<0>>;
+        type CustomGCounter = Counter<false, MockedStorage<0>>;
 
-        assert!(CustomCounter::is_crdt());
-        assert_eq!(CustomCounter::crdt_type(), CrdtType::Counter);
-        assert!(!CustomCounter::can_contain_crdts());
+        assert!(CustomGCounter::is_crdt());
+        assert_eq!(CustomGCounter::crdt_type(), CrdtType::GCounter);
+        assert!(!CustomGCounter::can_contain_crdts());
     }
 
     #[test]

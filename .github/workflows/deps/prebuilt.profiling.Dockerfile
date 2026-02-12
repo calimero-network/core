@@ -15,8 +15,6 @@ LABEL org.opencontainers.image.description="Calimero Node with Profiling Tools" 
 # Install base dependencies and profiling tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    # Profiling tools
-    linux-tools-generic \
     linux-tools-common \
     # Memory profiling
     heaptrack \

@@ -130,11 +130,25 @@ impl Message for SyncRequest {
     type Result = ();
 }
 
+/// Parameters for executing a state migration during application update.
+///
+/// When updating a context's application, an optional migration function can be
+/// specified to transform the existing state to the new application's schema.
+/// The migration function is embedded in the new application's WASM module and
+/// decorated with `#[app::migrate]`.
+#[derive(Debug, Clone)]
+pub struct MigrationParams {
+    /// Name of the migration function to execute (e.g., `migrate_v1_to_v2`).
+    pub method: String,
+}
+
 #[derive(Debug)]
 pub struct UpdateApplicationRequest {
     pub context_id: ContextId,
     pub application_id: ApplicationId,
     pub public_key: PublicKey,
+    /// Optional migration parameters for state transformation during update.
+    pub migration: Option<MigrationParams>,
 }
 
 impl Message for UpdateApplicationRequest {

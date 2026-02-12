@@ -43,7 +43,7 @@ use std::collections::BTreeMap;
 use borsh::{from_slice, to_vec};
 use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::address::Id;
 use crate::constants;
@@ -107,8 +107,6 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `ActionNotAllowed` if Compare action is passed directly
     ///
     pub fn apply_action(action: Action) -> Result<(), StorageError> {
-        crate::env::log("apply_action");
-
         // Verify that the action timestamp is not too far in the future
         // to prevent LWW Time Drift attacks.
         verify_action_timestamp(&action)?;
@@ -138,16 +136,6 @@ impl<S: StorageAdaptor> Interface<S> {
                             data_len = data.len(),
                             "Interface::apply_action received upsert user action"
                         );
-                        crate::env::log(&format!(
-                            "Interface::apply_action received upsert user action: \
-                            \n=== Id: {id};\
-                            \n=== created_at: {0};  updated_at: {1};\
-                            \n=== owner: {owner}; data_len: {2}",
-                            metadata.created_at,
-                            metadata.updated_at(),
-                            data.len()
-                        ));
-
                         let sig_data = signature_data.as_ref().ok_or(StorageError::InvalidData(
                             "Remote User action must be signed".to_owned(),
                         ))?;
@@ -167,31 +155,11 @@ impl<S: StorageAdaptor> Interface<S> {
 
                         let payload = action.payload_for_signing();
 
-                        crate::env::log(&format!(
-                            "Interface::apply_action received upsert user action: sig data \
-                            \n=== Signature: {:?}; signature_len: {}, nonce: {}; \
-                            \n=== owner: {}; owner_bytes: {:?} \
-                            \n=== payload: {:?}",
-                            sig_data.signature,
-                            sig_data.signature.len(),
-                            sig_data.nonce,
-                            owner,
-                            owner.digest(),
-                            payload,
-                        ));
-                        crate::env::log("Interface::apply_action received upsert user action: getting last nonce from storage");
-
                         // Replay protection check
                         let new_nonce = sig_data.nonce;
                         let last_nonce = <Index<S>>::get_metadata(*id)?
                             .map(|m| *m.updated_at)
                             .unwrap_or(0);
-
-                        crate::env::log(&format!(
-                            "Interface::apply_action received upsert user action: last nonce from storage \
-                            \n=== new_nonce: {}; last_nonce: {}",
-                            new_nonce, last_nonce
-                        ));
 
                         if new_nonce <= last_nonce {
                             return Err(StorageError::NonceReplay(Box::new((*owner, new_nonce))));
@@ -202,12 +170,6 @@ impl<S: StorageAdaptor> Interface<S> {
                             owner.digest(),
                             &payload,
                         );
-
-                        crate::env::log(&format!(
-                            "Interface::apply_action received upsert user action: verify signature\
-                            \n=== Id: {id}; Signature_verification_result: {0}; owner: {owner:?}; owner:{owner}",
-                            verification_result,
-                        ));
 
                         if !verification_result {
                             return Err(StorageError::InvalidSignature);
@@ -228,8 +190,8 @@ impl<S: StorageAdaptor> Interface<S> {
             }
             Action::DeleteRef { id, metadata, .. } => {
                 // Get the metadata of the item being deleted to check its domain
-                let existing_metadata =
-                    <Index<S>>::get_metadata(*id)?.ok_or(StorageError::IndexNotFound(*id))?;
+                let existing_metadata = <Index<S>>::get_metadata(*id)?
+                    .ok_or_else(|| StorageError::IndexNotFound(*id))?;
 
                 match existing_metadata.storage_type {
                     StorageType::Frozen => {
@@ -417,7 +379,6 @@ impl<S: StorageAdaptor> Interface<S> {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
             Action::DeleteRef { id, deleted_at, .. } => {
-                debug!(%id, deleted_at, "Applying DeleteRef action");
                 Self::apply_delete_ref_action(id, deleted_at)?;
             }
         };
@@ -434,16 +395,15 @@ impl<S: StorageAdaptor> Interface<S> {
     /// 1. Already deleted - update tombstone if newer
     /// 2. Exists locally - compare timestamps (LWW)
     /// 3. Never seen - ignore (could create tombstone in future)
+    ///
+    /// IMPORTANT: When deletion wins, we must also update the parent's children
+    /// list and recalculate ancestor hashes. This ensures convergence with nodes
+    /// that performed the deletion locally.
     fn apply_delete_ref_action(id: Id, deleted_at: u64) -> Result<(), StorageError> {
         // Guard: Already deleted, check if this deletion is newer
         if <Index<S>>::is_deleted(id)? {
             // Already has tombstone, use later deletion timestamp
             let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
-            debug!(
-                %id,
-                deleted_at,
-                "DeleteRef ignored because entity already tombstoned"
-            );
             return Ok(());
         }
 
@@ -451,34 +411,30 @@ impl<S: StorageAdaptor> Interface<S> {
         let Some(metadata) = <Index<S>>::get_metadata(id)? else {
             // Entity doesn't exist - no tombstone needed
             // CRDT rationale: Deleting non-existent entity is idempotent no-op.
-            // We don't create "preventive tombstones" because:
-            // - Storage efficiency: Avoid bloat from phantom deletions
-            // - CRDT convergence: If entity never existed, all peers agree (empty set)
-            // - Idempotency: Safe to call remove_child_from multiple times
-            debug!(%id, deleted_at, "DeleteRef ignored because entity metadata missing");
             return Ok(());
         };
 
         // Guard: Local update is newer, deletion loses
         if deleted_at < *metadata.updated_at {
             // Local update wins, ignore older deletion
-            debug!(
-                %id,
-                deleted_at,
-                local_updated_at = metadata.updated_at(),
-                "DeleteRef ignored because local update is newer"
-            );
             return Ok(());
         }
+
+        // Get parent ID BEFORE deleting - we need it to update the Merkle tree
+        let parent_id = <Index<S>>::get_parent_id(id)?;
 
         // Deletion wins - apply it
         let _ignored = S::storage_remove(Key::Entry(id));
         let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
-        debug!(
-            %id,
-            deleted_at,
-            "DeleteRef applied - entity removed and tombstone updated"
-        );
+
+        // CRITICAL: Update parent's children list and recalculate hashes
+        // Without this, the receiving node would have a different root hash than
+        // the node that performed the deletion locally.
+        if let Some(parent_id) = parent_id {
+            // Remove child from parent's children list and recalculate hashes
+            <Index<S>>::update_parent_after_child_removal(parent_id, id)?;
+            <Index<S>>::recalculate_ancestor_hashes_for(parent_id)?;
+        }
 
         Ok(())
     }
@@ -951,22 +907,61 @@ impl<S: StorageAdaptor> Interface<S> {
         let incoming_created_at = metadata.created_at;
         let incoming_updated_at = metadata.updated_at();
 
+        // Compute incoming data hash for tracing
+        let incoming_hash: [u8; 32] = Sha256::digest(data).into();
+
         let last_metadata = <Index<S>>::get_metadata(id)?;
         let final_data = if let Some(last_metadata) = &last_metadata {
             if last_metadata.updated_at > metadata.updated_at {
                 return Ok(None);
             } else if id.is_root() {
-                // Root entity (app state) - ALWAYS merge to preserve CRDTs like G-Counter
-                // Even if incoming is newer, we merge to avoid losing concurrent updates
+                // Root entity (app state) - ALWAYS merge using CRDT semantics.
+                // The Mergeable impl (auto-generated by #[app::state]) handles:
+                // - Counter: G-Counter merge (union of contributions from all nodes)
+                // - UnorderedMap: Per-key LWW with proper timestamp handling
+                // - Other CRDTs: Their respective merge logic
+                //
+                // This enables handlers to increment counters independently on each node,
+                // with all contributions properly merged during sync.
                 if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
-                    Self::try_merge_data(
+                    let existing_hash: [u8; 32] = Sha256::digest(&existing_data).into();
+                    info!(
+                        target: "storage::root_merge",
+                        %id,
+                        existing_len = existing_data.len(),
+                        existing_hash = %hex::encode(&existing_hash),
+                        incoming_len = data.len(),
+                        incoming_hash = %hex::encode(&incoming_hash),
+                        existing_updated_at = *last_metadata.updated_at,
+                        incoming_updated_at,
+                        "ROOT MERGE: Starting CRDT merge for root entity"
+                    );
+                    let merged = Self::try_merge_data(
                         id,
                         &existing_data,
                         data,
                         *last_metadata.updated_at,
                         *metadata.updated_at,
-                    )?
+                    )?;
+                    let merged_hash: [u8; 32] = Sha256::digest(&merged).into();
+                    info!(
+                        target: "storage::root_merge",
+                        %id,
+                        merged_len = merged.len(),
+                        merged_hash = %hex::encode(&merged_hash),
+                        same_as_existing = (merged_hash == existing_hash),
+                        same_as_incoming = (merged_hash == incoming_hash),
+                        "ROOT MERGE: Completed CRDT merge"
+                    );
+                    merged
                 } else {
+                    info!(
+                        target: "storage::root_merge",
+                        %id,
+                        incoming_len = data.len(),
+                        incoming_hash = %hex::encode(&incoming_hash),
+                        "ROOT MERGE: No existing data, using incoming directly"
+                    );
                     data.to_vec()
                 }
             } else if last_metadata.updated_at == metadata.updated_at {
@@ -988,14 +983,31 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         } else {
             if id.is_root() {
+                info!(
+                    target: "storage::root_merge",
+                    %id,
+                    incoming_len = data.len(),
+                    incoming_hash = %hex::encode(&incoming_hash),
+                    "ROOT MERGE: First time creating root entity"
+                );
                 <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata.clone()))?;
             }
             data.to_vec()
         };
 
-        let own_hash = Sha256::digest(&final_data).into();
+        let own_hash: [u8; 32] = Sha256::digest(&final_data).into();
 
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
+
+        if id.is_root() {
+            info!(
+                target: "storage::root_merge",
+                %id,
+                own_hash = %hex::encode(&own_hash),
+                full_hash = %hex::encode(&full_hash),
+                "ROOT MERGE: Final hashes after Merkle tree update"
+            );
+        }
 
         _ = S::storage_write(Key::Entry(id), &final_data);
 
@@ -1007,6 +1019,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Attempt to merge two versions of data using CRDT semantics.
     ///
     /// Returns the merged data, falling back to LWW (newer data) on failure.
+    /// Merge mode is enabled to prevent timestamp generation during merge operations.
     fn try_merge_data(
         _id: Id,
         existing: &[u8],
@@ -1016,8 +1029,13 @@ impl<S: StorageAdaptor> Interface<S> {
     ) -> Result<Vec<u8>, StorageError> {
         use crate::merge::merge_root_state;
 
-        // Attempt CRDT merge
-        match merge_root_state(existing, incoming, existing_timestamp, incoming_timestamp) {
+        // Attempt CRDT merge with merge mode enabled
+        // This prevents timestamp generation during merge to ensure deterministic hashes
+        let result = crate::env::with_merge_mode(|| {
+            merge_root_state(existing, incoming, existing_timestamp, incoming_timestamp)
+        });
+
+        match result {
             Ok(merged) => Ok(merged),
             Err(_) => {
                 // Merge failed - fall back to LWW
@@ -1159,10 +1177,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     }
                     (existing, new) => {
                         // All other combinations are invalid
-                        crate::env::log(&format!(
-                            "Invalid storage type change attempted: {:?} -> {:?}",
-                            existing, new
-                        ));
+                        debug!(?existing, ?new, "Invalid storage type change attempted");
                         Err(StorageError::ActionNotAllowed(
                             "Cannot change StorageType (e.g., User->Public/User->Frozen/etc)"
                                 .to_owned(),

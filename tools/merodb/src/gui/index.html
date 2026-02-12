@@ -35,7 +35,7 @@
                 <div class="form-container">
                     <div class="form-container__icon">📊</div>
                     <h2 class="form-container__title">Load Database</h2>
-                    <p class="form-container__description">Specify the database path and optionally upload a state schema file for state decoding</p>
+                    <p class="form-container__description">Specify the database path. Schema file is optional - if not provided, schema will be inferred from database metadata</p>
 
                     <form id="load-form" class="form">
                         <div class="form-group">
@@ -63,7 +63,7 @@
                                 >
                                 <span id="state-schema-filename" class="file-button__filename">No file chosen</span>
                             </div>
-                            <small class="form-group__hint">Required for state deserialization</small>
+                            <small class="form-group__hint">Optional - schema will be inferred from database if not provided</small>
                         </div>
 
                         <button type="submit" id="load-button" class="btn btn--primary">Load Database</button>

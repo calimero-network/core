@@ -580,7 +580,7 @@ mod tests {
     use super::*;
 
     use crate::logic::{
-        tests::{setup_vm, SimpleMockStorage},
+        tests::{prepare_guest_buf_descriptor, setup_vm, SimpleMockStorage},
         Cow, VMContext, VMLimits, VMLogic,
     };
     use wasmer::{AsStoreMut, Store};
@@ -598,5 +598,199 @@ mod tests {
             err,
             VMLogicError::HostError(HostError::BlobsNotSupported)
         ));
+    }
+
+    /// Verifies that `blob_open` returns an error when the node client is not configured.
+    #[test]
+    fn test_blob_open_without_client_returns_an_error() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Prepare a blob ID in guest memory
+        let blob_id = [1u8; DIGEST_SIZE];
+        let blob_id_ptr = 100u64;
+        host.borrow_memory().write(blob_id_ptr, &blob_id).unwrap();
+
+        let blob_id_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, blob_id_buf_ptr, blob_id_ptr, DIGEST_SIZE as u64);
+
+        let err = host.blob_open(blob_id_buf_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::BlobsNotSupported)
+        ));
+    }
+
+    /// Verifies that `blob_write` returns an error when the node client is not configured.
+    #[test]
+    fn test_blob_write_without_client_returns_an_error() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Prepare data to write
+        let data = vec![1, 2, 3, 4, 5];
+        let data_ptr = 100u64;
+        host.borrow_memory().write(data_ptr, &data).unwrap();
+
+        let data_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, data_buf_ptr, data_ptr, data.len() as u64);
+
+        // Using an invalid fd (0) should fail because node_client is None
+        let err = host.blob_write(0, data_buf_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::BlobsNotSupported)
+        ));
+    }
+
+    /// Verifies that `blob_read` returns an error when the node client is not configured.
+    #[test]
+    fn test_blob_read_without_client_returns_an_error() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Prepare destination buffer in guest memory
+        let dest_len = 32u64;
+        let dest_ptr = 100u64;
+        let dest_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, dest_buf_ptr, dest_ptr, dest_len);
+
+        // Using an invalid fd (0) should fail because node_client is None
+        let err = host.blob_read(0, dest_buf_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::BlobsNotSupported)
+        ));
+    }
+
+    /// Verifies that `blob_close` returns an error when the node client is not configured.
+    #[test]
+    fn test_blob_close_without_client_returns_an_error() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Prepare destination buffer for blob ID in guest memory
+        let dest_ptr = 100u64;
+        let dest_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, dest_buf_ptr, dest_ptr, DIGEST_SIZE as u64);
+
+        // Using an invalid fd (0) should fail because node_client is None
+        let err = host.blob_close(0, dest_buf_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::BlobsNotSupported)
+        ));
+    }
+
+    /// Verifies that `blob_close` returns an error when the destination buffer
+    /// has incorrect size (not 32 bytes).
+    #[test]
+    fn test_blob_close_with_incorrect_buffer_size() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+
+        // Manually set node_client to Some by injecting a simple way to bypass
+        // the BlobsNotSupported check. Since we can't easily mock the node client,
+        // we test the buffer size check that happens before the node_client check.
+        // Note: The current implementation checks node_client before buffer size,
+        // so we test that the buffer size error is returned when node_client is None
+        // but with an invalid buffer size that would fail even if node_client was set.
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Prepare destination buffer with incorrect size (not 32 bytes)
+        let dest_ptr = 100u64;
+        let dest_buf_ptr = 16u64;
+        // Use 16 bytes instead of required 32 bytes
+        prepare_guest_buf_descriptor(&host, dest_buf_ptr, dest_ptr, 16u64);
+
+        // The function should fail due to incorrect buffer size
+        let err = host.blob_close(0, dest_buf_ptr).unwrap_err();
+        // Note: With no node_client, we get InvalidMemoryAccess first due to size check
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::InvalidMemoryAccess)
+        ));
+    }
+
+    /// Verifies that `blob_announce_to_context` returns an error when the node
+    /// client is not configured.
+    #[test]
+    fn test_blob_announce_to_context_without_client_returns_an_error() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Prepare blob ID in guest memory
+        let blob_id = [1u8; DIGEST_SIZE];
+        let blob_id_ptr = 100u64;
+        host.borrow_memory().write(blob_id_ptr, &blob_id).unwrap();
+        let blob_id_buf_ptr = 16u64;
+        prepare_guest_buf_descriptor(&host, blob_id_buf_ptr, blob_id_ptr, DIGEST_SIZE as u64);
+
+        // Prepare context ID in guest memory
+        let context_id = [2u8; DIGEST_SIZE];
+        let context_id_ptr = 200u64;
+        host.borrow_memory()
+            .write(context_id_ptr, &context_id)
+            .unwrap();
+        let context_id_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(
+            &host,
+            context_id_buf_ptr,
+            context_id_ptr,
+            DIGEST_SIZE as u64,
+        );
+
+        let err = host
+            .blob_announce_to_context(blob_id_buf_ptr, context_id_buf_ptr)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::BlobsNotSupported)
+        ));
+    }
+
+    /// Tests that BlobReadHandle Debug implementation works correctly.
+    #[test]
+    fn test_blob_read_handle_debug() {
+        let blob_id = BlobId::from([0u8; DIGEST_SIZE]);
+        let handle = BlobReadHandle {
+            blob_id,
+            stream: None,
+            current_chunk_cursor: None,
+            position: 0,
+        };
+
+        let debug_str = format!("{:?}", handle);
+        assert!(debug_str.contains("BlobReadHandle"));
+        assert!(debug_str.contains("blob_id"));
+        assert!(debug_str.contains("<stream>"));
+        assert!(debug_str.contains("position"));
+    }
+
+    /// Tests that BlobHandle enum correctly wraps Read and Write handles.
+    #[test]
+    fn test_blob_handle_enum_debug() {
+        let blob_id = BlobId::from([0u8; DIGEST_SIZE]);
+        let read_handle = BlobHandle::Read(BlobReadHandle {
+            blob_id,
+            stream: None,
+            current_chunk_cursor: None,
+            position: 0,
+        });
+
+        let debug_str = format!("{:?}", read_handle);
+        assert!(debug_str.contains("Read"));
+        assert!(debug_str.contains("BlobReadHandle"));
     }
 }

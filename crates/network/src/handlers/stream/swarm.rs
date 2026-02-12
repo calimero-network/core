@@ -62,7 +62,7 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 address,
             } => {
                 let local_peer_id = *self.swarm.local_peer_id();
-                self.event_recipient.do_send(NetworkEvent::ListeningOn {
+                let _ignored = self.event_dispatcher.dispatch(NetworkEvent::ListeningOn {
                     listener_id,
                     address: address.with(Protocol::P2p(local_peer_id)),
                 });

@@ -68,11 +68,11 @@ impl NestedCrdtTest {
     #[app::init]
     pub fn init() -> NestedCrdtTest {
         NestedCrdtTest {
-            counters: UnorderedMap::new(),
-            registers: UnorderedMap::new(),
-            metadata: UnorderedMap::new(),
-            metrics: Vector::new(),
-            tags: UnorderedMap::new(),
+            counters: UnorderedMap::new_with_field_name("counters"),
+            registers: UnorderedMap::new_with_field_name("registers"),
+            metadata: UnorderedMap::new_with_field_name("metadata"),
+            metrics: Vector::new_with_field_name("metrics"),
+            tags: UnorderedMap::new_with_field_name("tags"),
         }
     }
 

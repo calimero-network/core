@@ -1,253 +1,105 @@
+//! Sync protocol types for state synchronization between nodes.
+//!
+//! This module provides types for the various sync protocols:
+//!
+//! - **Handshake**: Initial negotiation between peers ([`handshake`])
+//! - **Protocol Selection**: Choosing the optimal sync strategy ([`protocol`])
+//! - **Delta Sync**: DAG-based delta synchronization ([`delta`])
+//! - **HashComparison**: Merkle tree traversal sync ([`hash_comparison`])
+//! - **BloomFilter**: Bloom filter-based sync for large trees ([`bloom_filter`])
+//! - **Snapshot**: Full state transfer for fresh nodes ([`snapshot`])
+//! - **SubtreePrefetch**: Subtree prefetch for deep trees with clustered changes ([`subtree`])
+//! - **LevelWise**: Level-by-level sync for wide shallow trees ([`levelwise`])
+//!
+//! # Module Organization
+//!
+//! Each sync protocol has its own module with types and tests:
+//!
+//! ```text
+//! sync/
+//! ├── handshake.rs       # SyncHandshake, SyncCapabilities, etc.
+//! ├── protocol.rs        # SyncProtocol, SyncProtocolKind, select_protocol()
+//! ├── delta.rs           # DeltaSyncRequest, DeltaPayload, etc.
+//! ├── hash_comparison.rs # TreeNode, TreeNodeRequest, compare_tree_nodes()
+//! ├── bloom_filter.rs    # DeltaIdBloomFilter, BloomFilterRequest, etc.
+//! ├── snapshot.rs        # SnapshotPage, BroadcastMessage, StreamMessage, etc.
+//! ├── subtree.rs         # SubtreePrefetchRequest, SubtreeData, etc.
+//! └── levelwise.rs       # LevelWiseRequest, LevelWiseResponse, etc.
+//! ```
+
 #![expect(single_use_lifetimes, reason = "borsh shenanigans")]
 
-use std::borrow::Cow;
-
-use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_crypto::Nonce;
-use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
-use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::ContextId;
-use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
-
 // =============================================================================
-// Snapshot Sync Types
+// Submodules
 // =============================================================================
 
-/// Request to negotiate a snapshot boundary for sync.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub struct SnapshotBoundaryRequest {
-    /// Context being synchronized.
-    pub context_id: ContextId,
+pub mod bloom_filter;
+pub mod delta;
+pub mod handshake;
+pub mod hash_comparison;
+pub mod levelwise;
+pub mod protocol;
+pub mod snapshot;
+pub mod state_machine;
+pub mod subtree;
 
-    /// Optional hint for boundary timestamp (nanoseconds since epoch).
-    pub requested_cutoff_timestamp: Option<u64>,
-}
+// =============================================================================
+// Re-exports
+// =============================================================================
 
-/// Response to snapshot boundary negotiation.
-///
-/// Contains the authoritative boundary state that the responder will serve
-/// for the duration of this sync session.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub struct SnapshotBoundaryResponse {
-    /// Authoritative boundary timestamp (nanoseconds since epoch).
-    pub boundary_timestamp: u64,
+// Handshake types
+pub use handshake::{
+    SyncCapabilities, SyncHandshake, SyncHandshakeResponse, SYNC_PROTOCOL_VERSION,
+};
 
-    /// Root hash for the boundary state; must be verified after apply.
-    pub boundary_root_hash: Hash,
+// Protocol types and selection
+pub use protocol::{
+    calculate_divergence, is_protocol_supported, select_protocol, select_protocol_with_fallback,
+    ProtocolSelection, SyncProtocol, SyncProtocolKind,
+};
 
-    /// Peer's DAG heads at the boundary; used for fine-sync after snapshot.
-    pub dag_heads: Vec<[u8; 32]>,
-}
+// Delta sync types
+pub use delta::{
+    DeltaApplyResult, DeltaPayload, DeltaSyncRequest, DeltaSyncResponse,
+    DEFAULT_DELTA_SYNC_THRESHOLD,
+};
 
-/// Request to stream snapshot pages.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub struct SnapshotStreamRequest {
-    /// Context being synchronized.
-    pub context_id: ContextId,
+// Hash comparison types
+pub use hash_comparison::{
+    compare_tree_nodes, CrdtType, LeafMetadata, TreeCompareResult, TreeLeafData, TreeNode,
+    TreeNodeRequest, TreeNodeResponse, MAX_CHILDREN_PER_NODE, MAX_LEAF_VALUE_SIZE,
+    MAX_NODES_PER_RESPONSE, MAX_TREE_DEPTH,
+};
 
-    /// Boundary root hash from the negotiated boundary.
-    pub boundary_root_hash: Hash,
+// Bloom filter types
+pub use bloom_filter::{
+    BloomFilterRequest, BloomFilterResponse, DeltaIdBloomFilter, DEFAULT_BLOOM_FP_RATE,
+};
 
-    /// Maximum number of pages to send in a burst.
-    pub page_limit: u16,
+// Snapshot and wire protocol types
+pub use snapshot::{
+    check_snapshot_safety, BroadcastMessage, InitPayload, MessagePayload, SnapshotBoundaryRequest,
+    SnapshotBoundaryResponse, SnapshotComplete, SnapshotCursor, SnapshotEntity, SnapshotEntityPage,
+    SnapshotError, SnapshotPage, SnapshotRequest, SnapshotStreamRequest, SnapshotVerifyResult,
+    StreamMessage, DEFAULT_SNAPSHOT_PAGE_SIZE, MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS,
+    MAX_ENTITIES_PER_PAGE, MAX_ENTITY_DATA_SIZE, MAX_SNAPSHOT_PAGES, MAX_SNAPSHOT_PAGE_SIZE,
+};
 
-    /// Maximum uncompressed bytes per page.
-    pub byte_limit: u32,
+// Subtree prefetch types
+pub use subtree::{
+    should_use_subtree_prefetch, SubtreeData, SubtreePrefetchRequest, SubtreePrefetchResponse,
+    DEEP_TREE_THRESHOLD, DEFAULT_SUBTREE_MAX_DEPTH, MAX_CLUSTERED_SUBTREES, MAX_DIVERGENCE_RATIO,
+    MAX_ENTITIES_PER_SUBTREE, MAX_SUBTREES_PER_REQUEST, MAX_SUBTREE_DEPTH, MAX_TOTAL_ENTITIES,
+};
 
-    /// Optional cursor to resume paging.
-    pub resume_cursor: Option<Vec<u8>>,
-}
+// LevelWise sync types
+pub use levelwise::{
+    compare_level_nodes, should_use_levelwise, LevelCompareResult, LevelNode, LevelWiseRequest,
+    LevelWiseResponse, MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST,
+};
 
-/// A page of snapshot data.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub struct SnapshotPage {
-    /// Compressed payload (lz4).
-    pub payload: Vec<u8>,
-    /// Expected size after decompression.
-    pub uncompressed_len: u32,
-    /// Next cursor; `None` indicates completion.
-    pub cursor: Option<Vec<u8>>,
-    /// Total pages in this stream (estimate).
-    pub page_count: u64,
-    /// Pages sent so far.
-    pub sent_count: u64,
-}
-
-/// Cursor for resuming snapshot pagination.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub struct SnapshotCursor {
-    /// Last key sent in canonical order.
-    pub last_key: [u8; 32],
-}
-
-/// Errors that can occur during snapshot sync.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub enum SnapshotError {
-    /// Peer's delta history is pruned; full snapshot required.
-    SnapshotRequired,
-    /// The requested boundary is invalid or no longer available.
-    InvalidBoundary,
-    /// Resume cursor is invalid or expired.
-    ResumeCursorInvalid,
-}
-
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[non_exhaustive]
-#[expect(clippy::large_enum_variant, reason = "Of no consequence here")]
-pub enum BroadcastMessage<'a> {
-    StateDelta {
-        context_id: ContextId,
-        author_id: PublicKey,
-
-        /// DAG: Unique delta ID (content hash)
-        delta_id: [u8; 32],
-
-        /// DAG: Parent delta IDs (for causal ordering)
-        parent_ids: Vec<[u8; 32]>,
-
-        /// Hybrid Logical Clock timestamp for causal ordering
-        hlc: calimero_storage::logical_clock::HybridTimestamp,
-
-        root_hash: Hash, // todo! shouldn't be cleartext
-        artifact: Cow<'a, [u8]>,
-        nonce: Nonce,
-
-        /// Execution events that were emitted during the state change.
-        /// This field is encrypted along with the artifact.
-        events: Option<Cow<'a, [u8]>>,
-    },
-
-    /// Hash heartbeat for divergence detection
-    ///
-    /// Periodically broadcast by nodes to allow peers to detect silent divergence.
-    /// If a peer has a different hash for the same DAG heads, it indicates a problem.
-    HashHeartbeat {
-        context_id: ContextId,
-        /// Current root hash
-        root_hash: Hash,
-        /// Current DAG head(s)
-        dag_heads: Vec<[u8; 32]>,
-    },
-
-    /// Specialized node discovery request
-    ///
-    /// Broadcast by a node to discover and invite specialized nodes (e.g., read-only TEE nodes).
-    /// Specialized nodes receiving this will respond via request-response protocol
-    /// to the message source (available from gossipsub message).
-    ///
-    /// Note: context_id is NOT included - it's tracked internally by the requesting
-    /// node using the nonce as the lookup key.
-    SpecializedNodeDiscovery {
-        /// Random nonce to bind verification to this request
-        nonce: [u8; 32],
-        /// Type of specialized node being invited
-        node_type: SpecializedNodeType,
-    },
-
-    /// Confirmation that a specialized node has joined a context
-    ///
-    /// Broadcast by specialized nodes on the context topic after successfully joining.
-    /// The inviting node receives this and removes the pending invite entry.
-    SpecializedNodeJoinConfirmation {
-        /// The nonce from the original discovery request
-        nonce: [u8; 32],
-    },
-}
-
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-pub enum StreamMessage<'a> {
-    Init {
-        context_id: ContextId,
-        party_id: PublicKey,
-        payload: InitPayload,
-        next_nonce: Nonce,
-    },
-    Message {
-        sequence_id: usize,
-        payload: MessagePayload<'a>,
-        next_nonce: Nonce,
-    },
-    /// Other peers must not learn anything about the node's state if anything goes wrong.
-    OpaqueError,
-}
-
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
-pub enum InitPayload {
-    BlobShare {
-        blob_id: BlobId,
-    },
-    KeyShare,
-    /// Request a specific delta by ID (for DAG gap filling)
-    DeltaRequest {
-        context_id: ContextId,
-        delta_id: [u8; 32],
-    },
-    /// Request peer's current DAG heads for catchup
-    DagHeadsRequest {
-        context_id: ContextId,
-    },
-    /// Request snapshot boundary negotiation.
-    SnapshotBoundaryRequest {
-        context_id: ContextId,
-        requested_cutoff_timestamp: Option<u64>,
-    },
-    /// Request to stream snapshot pages.
-    SnapshotStreamRequest {
-        context_id: ContextId,
-        boundary_root_hash: Hash,
-        page_limit: u16,
-        byte_limit: u32,
-        resume_cursor: Option<Vec<u8>>,
-    },
-}
-
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-pub enum MessagePayload<'a> {
-    BlobShare {
-        chunk: Cow<'a, [u8]>,
-    },
-    KeyShare {
-        sender_key: PrivateKey,
-    },
-    /// Response to DeltaRequest containing the requested delta
-    DeltaResponse {
-        delta: Cow<'a, [u8]>,
-    },
-    /// Delta not found response
-    DeltaNotFound,
-    /// Response to DagHeadsRequest containing peer's current heads and root hash
-    DagHeadsResponse {
-        dag_heads: Vec<[u8; 32]>,
-        root_hash: Hash,
-    },
-    /// Challenge to prove ownership of claimed identity
-    Challenge {
-        challenge: [u8; 32],
-    },
-    /// Response to challenge with signature (Ed25519 signature is 64 bytes)
-    ChallengeResponse {
-        signature: [u8; 64],
-    },
-    /// Response to SnapshotBoundaryRequest
-    SnapshotBoundaryResponse {
-        /// Authoritative boundary timestamp (nanoseconds since epoch).
-        boundary_timestamp: u64,
-        /// Root hash for the boundary state.
-        boundary_root_hash: Hash,
-        /// Peer's DAG heads at the boundary.
-        dag_heads: Vec<[u8; 32]>,
-    },
-    /// A page of snapshot data.
-    SnapshotPage {
-        payload: Cow<'a, [u8]>,
-        uncompressed_len: u32,
-        cursor: Option<Vec<u8>>,
-        page_count: u64,
-        sent_count: u64,
-    },
-    /// Snapshot sync error.
-    SnapshotError {
-        error: SnapshotError,
-    },
-}
+// State machine types (shared between SyncManager and SimNode)
+pub use state_machine::{
+    build_handshake, build_handshake_from_raw, estimate_entity_count, estimate_max_depth,
+    LocalSyncState,
+};

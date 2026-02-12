@@ -1,0 +1,249 @@
+name: E2E - Blockchain Proposals
+
+# Tests blockchain integration (NEAR) using locally-built Docker image.
+# Builds merod/meroctl once and shares via artifact to test jobs.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "workflows/proposals/**"
+      - "scripts/download-contracts.sh"
+      - ".github/workflows/e2e-blockchain.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "workflows/proposals/**"
+      - "scripts/download-contracts.sh"
+      - ".github/workflows/e2e-blockchain.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CALIMERO_CONTRACTS_VERSION: latest
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  build-merod:
+    name: Build Merod Image
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: e2e-blockchain
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build local merod image
+        uses: ./.github/actions/build-local-merod
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Export Docker image
+        run: |
+          docker save merod:local -o merod-local.tar
+          gzip merod-local.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-blockchain-merod-image
+          path: merod-local.tar.gz
+          retention-days: 1
+
+  build-blockchain-app:
+    name: Build Blockchain App
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: e2e-blockchain
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build blockchain app
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo build -p blockchain --target wasm32-unknown-unknown --profile app-release
+
+      - name: Copy wasm to res
+        run: |
+          mkdir -p apps/demo-blockchain-integrations/res
+          cp target/wasm32-unknown-unknown/app-release/blockchain.wasm apps/demo-blockchain-integrations/res/
+
+      - name: Upload blockchain app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-blockchain-app
+          path: apps/demo-blockchain-integrations/res/blockchain.wasm
+          retention-days: 1
+
+  download-contracts:
+    name: Download Contracts
+    runs-on: big-machine
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Contracts
+        uses: ./.github/actions/download-contracts
+
+      - name: Upload contracts artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-blockchain-contracts
+          path: contracts
+          retention-days: 1
+
+  near:
+    name: Test NEAR Proposals
+    needs: [build-merod, download-contracts, build-blockchain-app]
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download contracts artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-blockchain-contracts
+          path: contracts
+
+      - name: Download blockchain app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-blockchain-app
+          path: apps/demo-blockchain-integrations/res
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-blockchain-merod-image
+
+      - name: Load Docker image
+        run: |
+          gunzip merod-local.tar.gz
+          docker load -i merod-local.tar
+          docker images merod:local
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Run NEAR Proposals Workflow
+        run: |
+          cd workflows/proposals
+          merobox bootstrap run \
+              near-proposals.yml \
+              --image merod:local \
+              --e2e-mode \
+              --near-devnet \
+              --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
+
+      - name: Collect Docker Logs
+        if: always()
+        run: |
+          mkdir -p docker-logs
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+            if [ -n "$container" ]; then
+              docker logs "$container" > "docker-logs/${container}.log" 2>&1 || true
+            fi
+          done
+
+      - name: Upload Workflow Data Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-blockchain-near-data-${{ github.sha }}
+          path: |
+            workflows/proposals/**/*.wasm
+            workflows/proposals/**/*.mpk
+            workflows/proposals/**/abi.json
+            workflows/proposals/**/state-schema.json
+            workflows/proposals/**/data/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload Docker Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-blockchain-near-docker-logs-${{ github.sha }}
+          path: docker-logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+  comment:
+    name: Report Failed Workflows
+    needs: [near]
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - name: Check workflow results
+        id: check
+        run: |
+          failed_workflows=()
+
+          if [ "${{ needs.near.result }}" != "success" ]; then
+            failed_workflows+=("near")
+          fi
+
+          if [ ${#failed_workflows[@]} -gt 0 ]; then
+            echo "has_failures=true" >> $GITHUB_OUTPUT
+            printf '%s\n' "${failed_workflows[@]}" > failed_workflows.txt
+          else
+            echo "has_failures=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prepare Failure Comment
+        if: steps.check.outputs.has_failures == 'true'
+        run: |
+          failed_list=$(cat failed_workflows.txt | sed 's/^/- /')
+          message="## E2E Blockchain Proposals Failed
+
+          The following proposal workflow(s) failed:
+          $failed_list
+
+          Please check the workflow logs for more details."
+
+          jq -n \
+            --arg pr '${{ github.event.number }}' \
+            --arg tag e2e-blockchain-report \
+            --arg mode recreate \
+            --arg message "$message" \
+            '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+      - name: Upload Comment
+        if: steps.check.outputs.has_failures == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-payload-blockchain
+          path: payload.json
+
+      - name: Fail if any workflow failed
+        if: steps.check.outputs.has_failures == 'true'
+        run: |
+          echo "One or more proposal workflows failed"
+          exit 1

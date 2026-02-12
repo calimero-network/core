@@ -1,5 +1,7 @@
 //! Storage configuration constants.
 
+pub use calimero_prelude::root_storage_key;
+
 /// Tombstone retention period in nanoseconds (1 day).
 ///
 /// Tombstones are kept for this duration to enable CRDT conflict resolution

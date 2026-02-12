@@ -20,12 +20,19 @@ exclude = [
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",
+    "./apps/migrations/migration-suite-v1",
+    "./apps/migrations/migration-suite-v2-add-field",
+    "./apps/migrations/migration-suite-v3-remove-field",
+    "./apps/migrations/migration-suite-v4-rename-field",
+    "./apps/migrations/migration-suite-v5-change-type",
     "./apps/nested-crdt-test",
     "./apps/team-metrics-macro",
     "./apps/team-metrics-custom",
     "./apps/private_data",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
+    "./apps/demo-blockchain-integrations",
+    "./apps/e2e-kv-store",
     "./crates/merod",
     "./crates/version",
     "./crates/meroctl",
@@ -74,10 +81,16 @@ members = [
     "./crates/wasm-abi",
 
     "./apps/access-control",
+    "./apps/e2e-kv-store",
     "./apps/kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",
+    "./apps/migrations/migration-suite-v1",
+    "./apps/migrations/migration-suite-v2-add-field",
+    "./apps/migrations/migration-suite-v3-remove-field",
+    "./apps/migrations/migration-suite-v4-rename-field",
+    "./apps/migrations/migration-suite-v5-change-type",
     "./apps/nested-crdt-test",
     "./apps/team-metrics-macro",
     "./apps/team-metrics-custom",
@@ -87,6 +100,7 @@ members = [
     "./apps/abi_conformance",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
+    "./apps/demo-blockchain-integrations",
 
     "./tools/calimero-abi",
     "./tools/merodb",
@@ -232,6 +246,7 @@ calimero-network = { path = "./crates/network" }
 calimero-network-primitives = { path = "./crates/network/primitives" }
 calimero-node = { path = "./crates/node" }
 calimero-node-primitives = { path = "./crates/node/primitives" }
+calimero-prelude = { path = "./crates/prelude" }
 calimero-primitives = { path = "./crates/primitives" }
 calimero-runtime = { path = "./crates/runtime" }
 calimero-sdk = { path = "./crates/sdk" }

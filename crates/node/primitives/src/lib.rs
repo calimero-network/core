@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod bundle;
 pub mod client;
+pub mod delta_buffer;
 pub mod messages;
 pub mod sync;
 

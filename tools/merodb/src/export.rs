@@ -1,6 +1,7 @@
 pub mod cli;
 
 use borsh::BorshDeserialize;
+use calimero_storage::collections::CrdtType;
 use calimero_store::types::ContextDagDelta as StoreContextDagDelta;
 use calimero_wasm_abi::schema::{
     CollectionType, CrdtCollectionType, Field, Manifest, ScalarType, TypeDef, TypeRef,
@@ -88,6 +89,47 @@ struct MapField {
     value_type: TypeRef,
 }
 
+/// Try to decode entry data with a specific field definition
+fn try_decode_with_field(
+    entry_bytes: &[u8],
+    field: &Field,
+    index: &EntityIndex,
+    manifest: &Manifest,
+) -> Option<Value> {
+    match &field.type_ {
+        TypeRef::Collection {
+            collection: CollectionType::Map { key, value },
+            ..
+        } => {
+            let map_field = MapField {
+                name: field.name.clone(),
+                key_type: (**key).clone(),
+                value_type: (**value).clone(),
+            };
+            decode_map_entry(entry_bytes, &map_field, manifest)
+                .ok()
+                .map(|decoded| add_index_metadata(decoded, index))
+                .flatten()
+        }
+        TypeRef::Collection {
+            collection: CollectionType::List { items },
+            ..
+        } => decode_list_entry(entry_bytes, field, items, manifest)
+            .ok()
+            .map(|decoded| add_index_metadata(decoded, index))
+            .flatten(),
+        TypeRef::Collection {
+            collection: CollectionType::Record { .. },
+            crdt_type,
+            inner_type,
+        } => decode_record_entry(entry_bytes, field, crdt_type, inner_type, manifest)
+            .ok()
+            .map(|decoded| add_index_metadata(decoded, index))
+            .flatten(),
+        _ => None,
+    }
+}
+
 /// Try to decode a collection entry by looking up the actual entry data from an EntityIndex
 /// Supports Map entries (Entry<(K, V)>) and List entries (Entry<T>)
 fn try_decode_collection_entry_from_index(
@@ -169,6 +211,27 @@ fn try_decode_collection_entry_from_index(
         "[try_decode_collection_entry_from_index] Found {} fields in state root",
         record_fields.len()
     );
+
+    // First, try to match by field_name if available (most direct and efficient)
+    if let Some(ref field_name) = index.metadata.field_name {
+        eprintln!(
+            "[try_decode_collection_entry_from_index] Using field_name from metadata: {}",
+            field_name
+        );
+        if let Some(field) = record_fields.iter().find(|f| f.name == *field_name) {
+            eprintln!(
+                "[try_decode_collection_entry_from_index] Found matching field by name: {}",
+                field_name
+            );
+            // Try to decode with this specific field
+            return try_decode_with_field(&entry_bytes, field, index, manifest);
+        } else {
+            eprintln!(
+                "[try_decode_collection_entry_from_index] Field name '{}' not found in schema, falling back to all fields",
+                field_name
+            );
+        }
+    }
 
     // If we have a parent_id, try to find the collection field that matches it
     // Otherwise, try all collection fields
@@ -627,6 +690,8 @@ fn decode_state_entry(
             "own_hash": hex::encode(index.own_hash),
             "created_at": index.metadata.created_at,
             "updated_at": *index.metadata.updated_at,
+            "field_name": index.metadata.field_name,
+            "crdt_type": index.metadata.crdt_type.as_ref().map(|c| format!("{:?}", c)),
             "deleted_at": index.deleted_at
         }));
     } else {
@@ -934,24 +999,24 @@ fn decode_scalar_entry(bytes: &[u8], field: &Field, manifest: &Manifest) -> Resu
 }
 
 // EntityIndex structure for decoding
-#[derive(borsh::BorshDeserialize)]
-struct EntityIndex {
-    id: Id,
-    parent_id: Option<Id>,
-    children: Option<Vec<ChildInfo>>,
-    full_hash: [u8; 32],
-    own_hash: [u8; 32],
-    metadata: Metadata,
-    deleted_at: Option<u64>,
+#[derive(borsh::BorshDeserialize, Clone)]
+pub(crate) struct EntityIndex {
+    pub(crate) id: Id,
+    pub(crate) parent_id: Option<Id>,
+    pub(crate) children: Option<Vec<ChildInfo>>,
+    pub(crate) full_hash: [u8; 32],
+    pub(crate) own_hash: [u8; 32],
+    pub(crate) metadata: Metadata,
+    pub(crate) deleted_at: Option<u64>,
 }
 
-#[derive(borsh::BorshDeserialize)]
-struct Id {
+#[derive(borsh::BorshDeserialize, Clone)]
+pub(crate) struct Id {
     bytes: [u8; 32],
 }
 
 impl Id {
-    const fn as_bytes(&self) -> &[u8; 32] {
+    pub(crate) const fn as_bytes(&self) -> &[u8; 32] {
         &self.bytes
     }
 }
@@ -1334,6 +1399,8 @@ fn try_manual_entity_index_decode(
                         created_at,
                         updated_at: UpdatedAt(updated_at_val),
                         storage_type,
+                        crdt_type: None,
+                        field_name: None,
                     };
 
                     let child_info = ChildInfo {
@@ -1408,12 +1475,14 @@ fn try_manual_entity_index_decode(
             created_at: 0,
             updated_at: UpdatedAt(0),
             storage_type: StorageType::Public,
+            crdt_type: None,
+            field_name: None,
         },
         deleted_at: None,
     })
 }
 
-#[derive(borsh::BorshDeserialize)]
+#[derive(borsh::BorshDeserialize, Clone)]
 #[expect(
     dead_code,
     reason = "Fields required for Borsh deserialization structure"
@@ -1424,18 +1493,64 @@ struct ChildInfo {
     metadata: Metadata,
 }
 
-#[derive(borsh::BorshDeserialize)]
+#[derive(Clone)]
 #[expect(
     dead_code,
     reason = "Fields required for Borsh deserialization structure"
 )]
-struct Metadata {
-    created_at: u64,
-    updated_at: UpdatedAt,
-    storage_type: StorageType,
+pub(crate) struct Metadata {
+    pub(crate) created_at: u64,
+    pub(crate) updated_at: UpdatedAt,
+    pub(crate) storage_type: StorageType,
+    pub(crate) crdt_type: Option<CrdtType>,
+    pub(crate) field_name: Option<String>,
 }
 
-#[derive(borsh::BorshDeserialize)]
+// Custom BorshDeserialize for backward compatibility with old Metadata that doesn't have field_name
+impl borsh::BorshDeserialize for Metadata {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> Result<Self, std::io::Error> {
+        let created_at = u64::deserialize_reader(reader)?;
+        let updated_at = UpdatedAt::deserialize_reader(reader)?;
+        let storage_type = StorageType::deserialize_reader(reader)?;
+
+        // Try to deserialize crdt_type (may not exist in old format)
+        let crdt_type = match <Option<CrdtType>>::deserialize_reader(reader) {
+            Ok(ct) => ct,
+            Err(e) => {
+                if matches!(e.kind(), std::io::ErrorKind::UnexpectedEof) {
+                    None
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+
+        // Try to deserialize field_name (may not exist in old format)
+        let field_name = match <Option<String>>::deserialize_reader(reader) {
+            Ok(fn_val) => fn_val,
+            Err(e) => {
+                if matches!(e.kind(), std::io::ErrorKind::UnexpectedEof) {
+                    None
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+
+        Ok(Metadata {
+            created_at,
+            updated_at,
+            storage_type,
+            crdt_type,
+            field_name,
+        })
+    }
+}
+
+// CrdtType is now imported from calimero_storage::collections::CrdtType
+// to ensure Borsh serialization compatibility with the storage layer.
+
+#[derive(borsh::BorshDeserialize, Clone)]
 #[expect(
     dead_code,
     reason = "Variants required for Borsh deserialization structure"
@@ -1449,7 +1564,7 @@ enum StorageType {
     Frozen,
 }
 
-#[derive(borsh::BorshDeserialize)]
+#[derive(borsh::BorshDeserialize, Clone)]
 #[expect(
     dead_code,
     reason = "Fields required for Borsh deserialization structure"
@@ -1459,7 +1574,7 @@ struct SignatureData {
     nonce: u64,
 }
 
-#[derive(borsh::BorshDeserialize)]
+#[derive(borsh::BorshDeserialize, Clone)]
 struct UpdatedAt(u64);
 
 impl Deref for UpdatedAt {
@@ -2059,8 +2174,44 @@ fn decode_state_root_bfs(
         fields.len()
     );
 
+    // PRE-FILTER: Build a mapping from field_name to (state_key, EntityIndex) for children that have field_name
+    // This allows direct field matching instead of sequential iteration
+    let mut field_name_to_child: std::collections::HashMap<String, (String, EntityIndex)> =
+        std::collections::HashMap::new();
+    for child_info in &root_children {
+        let child_element_id = hex::encode(child_info.id.as_bytes());
+        if let Some(state_key) = element_to_state.get(&child_element_id) {
+            let child_key_bytes = match hex::decode(state_key) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            let mut child_key = Vec::with_capacity(64);
+            child_key.extend_from_slice(context_id);
+            child_key.extend_from_slice(&child_key_bytes);
+
+            if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
+                if let Ok(child_index) = borsh::from_slice::<EntityIndex>(&child_value) {
+                    if let Some(ref field_name) = child_index.metadata.field_name {
+                        eprintln!(
+                            "[decode_state_root_bfs] Found collection root with field_name='{}': id={}, {} children",
+                            field_name,
+                            child_element_id,
+                            child_index.children.as_ref().map(|c| c.len()).unwrap_or(0)
+                        );
+                        field_name_to_child
+                            .insert(field_name.clone(), (state_key.clone(), child_index));
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "[decode_state_root_bfs] Pre-filtered {} collection roots with field_name",
+        field_name_to_child.len()
+    );
+
     // For each field in the state root schema, find and decode its children using BFS
-    // Match children to fields by iterating through root's children
+    // Match children to fields by field_name first, then fall back to sequential matching
     let mut used_children = std::collections::HashSet::new();
     for field in fields {
         eprintln!("[decode_state_root_bfs] Decoding field: {}", field.name);
@@ -2079,52 +2230,93 @@ fn decode_state_root_bfs(
         };
 
         let field_value = if field_value {
-            // Find an unused child that is a collection root
+            // FIRST: Try to find by field_name (direct match)
             let mut matched_child = None;
-            for child_info in &root_children {
-                let child_element_id = hex::encode(child_info.id.as_bytes());
-                if used_children.contains(&child_element_id) {
-                    continue;
-                }
-
-                // Check if this child is a collection root by loading its EntityIndex
-                if let Some(state_key) = element_to_state.get(&child_element_id) {
-                    let child_key_bytes = hex::decode(state_key).wrap_err_with(|| {
-                        format!("Failed to decode child_state_key: {}", state_key)
-                    })?;
-                    let mut child_key = Vec::with_capacity(64);
-                    child_key.extend_from_slice(context_id);
-                    child_key.extend_from_slice(&child_key_bytes);
-
-                    if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
-                        // Try standard Borsh deserialization first
-                        let child_index = match borsh::from_slice::<EntityIndex>(&child_value) {
-                            Ok(index) => {
-                                eprintln!("[decode_state_root_bfs] Successfully decoded collection root EntityIndex for field {}: {} children", field.name, index.children.as_ref().map(|c| c.len()).unwrap_or(0));
-                                index
-                            }
-                            Err(e) => {
-                                // Try manual deserialization as fallback
-                                eprintln!("[decode_state_root_bfs] Failed to decode collection root EntityIndex for field {} using Borsh: {}. Attempting manual decode...", field.name, e);
-                                match try_manual_entity_index_decode(&child_value, context_id) {
-                                    Ok(index) => {
-                                        eprintln!("[decode_state_root_bfs] Successfully decoded collection root EntityIndex manually for field {}: {} children", field.name, index.children.as_ref().map(|c| c.len()).unwrap_or(0));
-                                        index
-                                    }
-                                    Err(manual_err) => {
-                                        eprintln!("[decode_state_root_bfs] Manual decode also failed for collection root: {}", manual_err);
-                                        continue; // Skip this child
-                                    }
-                                }
-                            }
-                        };
-                        // This is a collection root - it matches this collection field
-                        matched_child = Some((state_key.clone(), child_index));
-                        used_children.insert(child_element_id);
-                        break;
-                    }
+            if let Some((state_key, child_index)) = field_name_to_child.get(&field.name) {
+                let child_element_id = hex::encode(child_index.id.as_bytes());
+                if !used_children.contains(&child_element_id) {
+                    eprintln!(
+                        "[decode_state_root_bfs] Direct field_name match for '{}': {} children",
+                        field.name,
+                        child_index.children.as_ref().map(|c| c.len()).unwrap_or(0)
+                    );
+                    matched_child = Some((state_key.clone(), child_index.clone()));
+                    used_children.insert(child_element_id);
                 }
             }
+
+            // FALLBACK: If no direct match, try sequential matching (for legacy data)
+            if matched_child.is_none() {
+                eprintln!(
+                    "[decode_state_root_bfs] No direct field_name match for '{}', trying sequential",
+                    field.name
+                );
+                for child_info in &root_children {
+                    let child_element_id = hex::encode(child_info.id.as_bytes());
+                    if used_children.contains(&child_element_id) {
+                        continue;
+                    }
+
+                    // Check if this child is a collection root by loading its EntityIndex
+                    if let Some(state_key) = element_to_state.get(&child_element_id) {
+                        let child_key_bytes = hex::decode(state_key).wrap_err_with(|| {
+                            format!("Failed to decode child_state_key: {}", state_key)
+                        })?;
+                        let mut child_key = Vec::with_capacity(64);
+                        child_key.extend_from_slice(context_id);
+                        child_key.extend_from_slice(&child_key_bytes);
+
+                        if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
+                            // Try standard Borsh deserialization first
+                            let child_index = match borsh::from_slice::<EntityIndex>(&child_value) {
+                                Ok(index) => {
+                                    eprintln!("[decode_state_root_bfs] Successfully decoded collection root EntityIndex for field {}: {} children, field_name={:?}", 
+                                    field.name, index.children.as_ref().map(|c| c.len()).unwrap_or(0), index.metadata.field_name);
+                                    index
+                                }
+                                Err(e) => {
+                                    // Try manual deserialization as fallback
+                                    eprintln!("[decode_state_root_bfs] Failed to decode collection root EntityIndex for field {} using Borsh: {}. Attempting manual decode...", field.name, e);
+                                    match try_manual_entity_index_decode(&child_value, context_id) {
+                                        Ok(index) => {
+                                            eprintln!("[decode_state_root_bfs] Successfully decoded collection root EntityIndex manually for field {}: {} children, field_name={:?}", 
+                                            field.name, index.children.as_ref().map(|c| c.len()).unwrap_or(0), index.metadata.field_name);
+                                            index
+                                        }
+                                        Err(manual_err) => {
+                                            eprintln!("[decode_state_root_bfs] Manual decode also failed for collection root: {}", manual_err);
+                                            continue; // Skip this child
+                                        }
+                                    }
+                                }
+                            };
+
+                            // Match by field_name if available, otherwise fall back to sequential matching
+                            let field_name_matches = child_index
+                                .metadata
+                                .field_name
+                                .as_ref()
+                                .map(|fn_| fn_ == &field.name)
+                                .unwrap_or(false);
+
+                            if field_name_matches {
+                                // This child's field_name matches the schema field
+                                eprintln!("[decode_state_root_bfs] Found matching child for field {} by field_name", field.name);
+                                matched_child = Some((state_key.clone(), child_index.clone()));
+                                used_children.insert(child_element_id);
+                                break;
+                            } else if child_index.metadata.field_name.is_none() {
+                                // Legacy data without field_name - use sequential matching as fallback
+                                eprintln!("[decode_state_root_bfs] Child has no field_name, using sequential match for field {}", field.name);
+                                matched_child = Some((state_key.clone(), child_index.clone()));
+                                used_children.insert(child_element_id);
+                                break;
+                            }
+                            // If field_name exists but doesn't match, continue to next child
+                        }
+                    }
+                }
+            } // end fallback
 
             if let Some((collection_root_key, collection_root_index)) = matched_child {
                 // Decode this collection field using the found collection root
@@ -2152,7 +2344,7 @@ fn decode_state_root_bfs(
             }
         } else {
             // Non-collection field - could be a Record (Counter, etc.) or scalar
-            // Try to find a child that matches this field
+            // Try to find a child that matches this field by field_name
             // For Record types like Counter, they're stored as children of the root
             let mut matched_child = None;
             for child_info in &root_children {
@@ -2161,7 +2353,7 @@ fn decode_state_root_bfs(
                     continue;
                 }
 
-                // Check if this child matches the field by trying to decode it
+                // Check if this child matches the field by field_name first
                 if let Some(state_key) = element_to_state.get(&child_element_id) {
                     let child_key_bytes = hex::decode(state_key).wrap_err_with(|| {
                         format!("Failed to decode child_state_key: {}", state_key)
@@ -2171,6 +2363,21 @@ fn decode_state_root_bfs(
                     child_key.extend_from_slice(&child_key_bytes);
 
                     if let Ok(Some(child_value)) = db.get_cf(state_cf, &child_key) {
+                        // First try to decode as EntityIndex to check field_name
+                        if let Ok(child_index) = borsh::from_slice::<EntityIndex>(&child_value) {
+                            // Check if field_name matches
+                            if let Some(ref child_field_name) = child_index.metadata.field_name {
+                                if child_field_name != &field.name {
+                                    // This child's field_name doesn't match - skip to next child
+                                    eprintln!("[decode_state_root_bfs] Skipping child {} for field {} - field_name is '{}'", 
+                                        child_element_id, field.name, child_field_name);
+                                    continue;
+                                }
+                                eprintln!("[decode_state_root_bfs] Found matching child {} for field {} by field_name", 
+                                    child_element_id, field.name);
+                            }
+                        }
+
                         eprintln!("[decode_state_root_bfs] Attempting to decode child {} for field {} (value length: {})", child_element_id, field.name, child_value.len());
                         // First, try to decode directly as the field's type (for Counter, etc.)
                         // This handles cases where the value is stored as Entry<T> where T is the field type
@@ -2839,6 +3046,188 @@ fn decode_collection_field_with_root(
     }
 }
 
+/// Read the actual value of a Counter by summing entries in its positive and negative maps
+#[cfg(feature = "gui")]
+fn read_counter_value(
+    db: &DBWithThreadMode<SingleThreaded>,
+    state_cf: &rocksdb::ColumnFamily,
+    context_id: &[u8],
+    positive_id: &[u8],
+    negative_id: &[u8],
+) -> i64 {
+    use sha2::{Digest, Sha256};
+
+    let mut total: i64 = 0;
+
+    // Helper to sum values from a counter map (positive or negative)
+    let sum_map_values = |map_id: &[u8]| -> i64 {
+        let mut sum: i64 = 0;
+
+        // Find the EntityIndex for this map to get its children
+        let mut key_bytes_for_hash = Vec::with_capacity(33);
+        key_bytes_for_hash.push(0u8); // Key::Index variant
+        key_bytes_for_hash.extend_from_slice(map_id);
+        let map_state_key = Sha256::digest(&key_bytes_for_hash);
+
+        let mut full_key = Vec::with_capacity(64);
+        full_key.extend_from_slice(context_id);
+        full_key.extend_from_slice(&map_state_key);
+
+        if let Ok(Some(map_value)) = db.get_cf(state_cf, &full_key) {
+            if let Ok(map_index) = borsh::from_slice::<EntityIndex>(&map_value) {
+                // For each child in the map, read its Entry to get the count value
+                if let Some(children) = &map_index.children {
+                    for child_info in children {
+                        // Calculate Key::Entry for this child
+                        let mut entry_key_bytes = Vec::with_capacity(33);
+                        entry_key_bytes.push(1u8); // Key::Entry variant
+                        entry_key_bytes.extend_from_slice(child_info.id.as_bytes());
+                        let entry_state_key = Sha256::digest(&entry_key_bytes);
+
+                        let mut entry_full_key = Vec::with_capacity(64);
+                        entry_full_key.extend_from_slice(context_id);
+                        entry_full_key.extend_from_slice(&entry_state_key);
+
+                        if let Ok(Some(entry_value)) = db.get_cf(state_cf, &entry_full_key) {
+                            // Entry format: (key: String, value: u64, element_id: Id)
+                            // Parse key length, skip key, read u64 value
+                            if entry_value.len() >= 12 {
+                                // minimum: 4 (len) + 0 (key) + 8 (u64)
+                                let key_len = u32::from_le_bytes([
+                                    entry_value[0],
+                                    entry_value[1],
+                                    entry_value[2],
+                                    entry_value[3],
+                                ]) as usize;
+
+                                let value_offset = 4 + key_len;
+                                if entry_value.len() >= value_offset + 8 {
+                                    let count = u64::from_le_bytes([
+                                        entry_value[value_offset],
+                                        entry_value[value_offset + 1],
+                                        entry_value[value_offset + 2],
+                                        entry_value[value_offset + 3],
+                                        entry_value[value_offset + 4],
+                                        entry_value[value_offset + 5],
+                                        entry_value[value_offset + 6],
+                                        entry_value[value_offset + 7],
+                                    ]);
+                                    // Use saturating conversion to avoid overflow
+                                    // u64 values > i64::MAX will be clamped to i64::MAX
+                                    let count_i64 = i64::try_from(count).unwrap_or(i64::MAX);
+                                    sum = sum.saturating_add(count_i64);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        sum
+    };
+
+    total = total.saturating_add(sum_map_values(positive_id));
+    total = total.saturating_sub(sum_map_values(negative_id));
+
+    total
+}
+
+/// Read children of a nested collection and return their entries as JSON
+#[cfg(feature = "gui")]
+fn read_nested_collection_entries(
+    db: &DBWithThreadMode<SingleThreaded>,
+    state_cf: &rocksdb::ColumnFamily,
+    context_id: &[u8],
+    collection_id: &[u8],
+) -> Vec<Value> {
+    use sha2::{Digest, Sha256};
+
+    let mut results = Vec::new();
+
+    // Look up the EntityIndex for this collection
+    let mut key_bytes = Vec::with_capacity(33);
+    key_bytes.push(0u8); // Key::Index variant
+    key_bytes.extend_from_slice(collection_id);
+    let state_key = Sha256::digest(&key_bytes);
+
+    let mut full_key = Vec::with_capacity(64);
+    full_key.extend_from_slice(context_id);
+    full_key.extend_from_slice(&state_key);
+
+    let Ok(Some(index_bytes)) = db.get_cf(state_cf, &full_key) else {
+        return results;
+    };
+
+    let Ok(index) = borsh::from_slice::<EntityIndex>(&index_bytes) else {
+        return results;
+    };
+
+    // Read each child entry
+    if let Some(children) = &index.children {
+        for child_info in children {
+            // Get Key::Entry for this child
+            let mut entry_key_bytes = Vec::with_capacity(33);
+            entry_key_bytes.push(1u8); // Key::Entry variant
+            entry_key_bytes.extend_from_slice(child_info.id.as_bytes());
+            let entry_state_key = Sha256::digest(&entry_key_bytes);
+
+            let mut entry_full_key = Vec::with_capacity(64);
+            entry_full_key.extend_from_slice(context_id);
+            entry_full_key.extend_from_slice(&entry_state_key);
+
+            let Ok(Some(entry_value)) = db.get_cf(state_cf, &entry_full_key) else {
+                continue;
+            };
+
+            // Try to parse the entry as (key: String, value)
+            if entry_value.len() >= 4 {
+                let key_len = u32::from_le_bytes([
+                    entry_value[0],
+                    entry_value[1],
+                    entry_value[2],
+                    entry_value[3],
+                ]) as usize;
+
+                if key_len > 0 && key_len < 1000 && entry_value.len() >= 4 + key_len {
+                    if let Ok(key_str) = std::str::from_utf8(&entry_value[4..4 + key_len]) {
+                        let value_bytes = &entry_value[4 + key_len..];
+
+                        // Try to parse value as a string (LwwRegister<String>)
+                        if value_bytes.len() >= 4 {
+                            let val_len = u32::from_le_bytes([
+                                value_bytes[0],
+                                value_bytes[1],
+                                value_bytes[2],
+                                value_bytes[3],
+                            ]) as usize;
+
+                            if val_len > 0 && val_len < 10000 && value_bytes.len() >= 4 + val_len {
+                                if let Ok(val_str) =
+                                    std::str::from_utf8(&value_bytes[4..4 + val_len])
+                                {
+                                    results.push(json!({
+                                        "key": key_str,
+                                        "value": val_str,
+                                    }));
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Fallback: show key with hex value
+                        results.push(json!({
+                            "key": key_str,
+                            "value_hex": hex::encode(value_bytes),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
 #[cfg(feature = "gui")]
 fn decode_collection_entries_bfs(
     db: &DBWithThreadMode<SingleThreaded>,
@@ -2958,7 +3347,224 @@ fn decode_collection_entries_bfs(
                 .wrap_err("Failed to query entry")?
                 .ok_or_else(|| eyre::eyre!("Entry not found"))?;
 
-            // Decode the entry according to collection type
+            // FIRST: Try to decode as EntityIndex to check if it's a nested collection
+            // This allows us to detect nested CRDTs (Counter, nested Map, Set, etc.)
+            // by reading their crdt_type from metadata instead of relying on schema
+            match borsh::from_slice::<EntityIndex>(&entry_value) {
+                Ok(entry_index) => {
+                    // It's an EntityIndex - check its crdt_type
+                    let child_crdt_type = entry_index.metadata.crdt_type.as_ref();
+                    let child_field_name = entry_index.metadata.field_name.clone();
+                    let child_count = entry_index.children.as_ref().map(|c| c.len()).unwrap_or(0);
+
+                    eprintln!(
+                        "[decode_collection_entries_bfs] Entry {} is EntityIndex with crdt_type={:?}, field_name={:?}, children={}",
+                        entry_state_key, child_crdt_type, child_field_name, child_count
+                    );
+
+                    // If it has a crdt_type, treat it as a nested collection
+                    if let Some(crdt) = child_crdt_type {
+                        let crdt_name = format!("{:?}", crdt);
+                        entries.push(json!({
+                            "state_key": entry_state_key,
+                            "entry": {
+                                "type": "NestedCollection",
+                                "crdt_type": crdt_name,
+                                "field_name": child_field_name,
+                                "children_count": child_count,
+                                "id": hex::encode(entry_index.id.as_bytes()),
+                            }
+                        }));
+                        continue;
+                    }
+
+                    // EntityIndex with no crdt_type might be a Vector entry
+                    // Look for the actual data under Key::Entry for this ID
+                    use sha2::{Digest, Sha256};
+                    let mut entry_key_bytes = Vec::with_capacity(33);
+                    entry_key_bytes.push(1u8); // Key::Entry variant
+                    entry_key_bytes.extend_from_slice(entry_index.id.as_bytes());
+                    let entry_data_state_key = Sha256::digest(&entry_key_bytes);
+
+                    let mut entry_data_full_key = Vec::with_capacity(64);
+                    entry_data_full_key.extend_from_slice(context_id);
+                    entry_data_full_key.extend_from_slice(&entry_data_state_key);
+
+                    if let Ok(Some(entry_data)) = db.get_cf(state_cf, &entry_data_full_key) {
+                        // Found the entry data - check if it's a Counter (64 bytes = two IDs)
+                        if entry_data.len() == 64 {
+                            let positive_id = &entry_data[..32];
+                            let negative_id = &entry_data[32..];
+                            let counter_value = read_counter_value(
+                                db,
+                                state_cf,
+                                context_id,
+                                positive_id,
+                                negative_id,
+                            );
+
+                            // Note: For legacy data without crdt_type metadata, we attempt to read
+                            // the value as a Counter. New data created after PR #1864 will have
+                            // crdt_type set in metadata and won't need this heuristic.
+                            // A successful read (non-zero or non-error sum) indicates Counter data.
+                            eprintln!(
+                                "[decode_collection_entries_bfs] Entry {} (Vector item, no crdt_type metadata): Counter value read = {}",
+                                entry_state_key, counter_value
+                            );
+                            entries.push(json!({
+                                "state_key": entry_state_key,
+                                "entry": {
+                                    "type": "VectorEntry",
+                                    "index": entries.len(),
+                                    "value": {
+                                        "type": "Counter",
+                                        "parsed": counter_value,
+                                    }
+                                }
+                            }));
+                            continue;
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Not an EntityIndex - try to parse as raw (key, value) entry
+                    // First try to extract the key (Borsh string: u32 length + bytes)
+                    if entry_value.len() >= 4 {
+                        let key_len = u32::from_le_bytes([
+                            entry_value[0],
+                            entry_value[1],
+                            entry_value[2],
+                            entry_value[3],
+                        ]) as usize;
+
+                        if key_len > 0 && key_len < 1000 && entry_value.len() >= 4 + key_len {
+                            if let Ok(key_str) = std::str::from_utf8(&entry_value[4..4 + key_len]) {
+                                let value_bytes = &entry_value[4 + key_len..];
+
+                                // Check if value looks like a Counter (64 bytes = two 32-byte IDs)
+                                // This handles raw entry data without EntityIndex metadata.
+                                // For new data created after PR #1864, EntityIndex will have crdt_type
+                                // and be handled in the Ok(entry_index) branch above.
+                                if value_bytes.len() == 64 {
+                                    let positive_id = &value_bytes[..32];
+                                    let negative_id = &value_bytes[32..];
+
+                                    // Try to read the actual counter value from the internal maps
+                                    let counter_value = read_counter_value(
+                                        db,
+                                        state_cf,
+                                        context_id,
+                                        positive_id,
+                                        negative_id,
+                                    );
+
+                                    // Also try to read the first collection as nested children
+                                    let nested_children = read_nested_collection_entries(
+                                        db,
+                                        state_cf,
+                                        context_id,
+                                        positive_id,
+                                    );
+
+                                    // Heuristic: If nested_children is non-empty, it's likely a nested collection.
+                                    // If counter_value is non-zero and children are empty, it's likely a Counter.
+                                    // This is a fallback for legacy data without crdt_type metadata.
+                                    if !nested_children.is_empty() {
+                                        eprintln!(
+                                            "[decode_collection_entries_bfs] Entry {} is NestedCollection (64 bytes, has children): key='{}', children={}",
+                                            entry_state_key, key_str, nested_children.len()
+                                        );
+                                        entries.push(json!({
+                                            "state_key": entry_state_key,
+                                            "entry": {
+                                                "type": "Entry",
+                                                "key": { "parsed": key_str, "type": "scalar::String" },
+                                                "value": {
+                                                    "type": "NestedCollection",
+                                                    "crdt_type": "UnorderedMap",
+                                                    "children": nested_children,
+                                                    "children_count": nested_children.len(),
+                                                }
+                                            }
+                                        }));
+                                        continue;
+                                    } else {
+                                        // No children found - treat as Counter (its internal maps may have entries)
+                                        eprintln!(
+                                            "[decode_collection_entries_bfs] Entry {} is Counter (64 bytes, no nested children): key='{}', value={}",
+                                            entry_state_key, key_str, counter_value
+                                        );
+                                        entries.push(json!({
+                                            "state_key": entry_state_key,
+                                            "entry": {
+                                                "type": "Entry",
+                                                "key": { "parsed": key_str, "type": "scalar::String" },
+                                                "value": {
+                                                    "type": "Counter",
+                                                    "parsed": counter_value,
+                                                    "display": format!("🔢 {}", counter_value),
+                                                }
+                                            }
+                                        }));
+                                        continue;
+                                    }
+                                }
+
+                                // Check if value is another nested ID (32 bytes = single collection reference)
+                                if value_bytes.len() == 32 {
+                                    eprintln!(
+                                        "[decode_collection_entries_bfs] Entry {} looks like Map<String, NestedCollection>: key='{}', value=1 ID (32 bytes)",
+                                        entry_state_key, key_str
+                                    );
+                                    entries.push(json!({
+                                        "state_key": entry_state_key,
+                                        "entry": {
+                                            "type": "Entry",
+                                            "key": { "parsed": key_str, "type": "scalar::String" },
+                                            "value": {
+                                                "type": "NestedCollection",
+                                                "crdt_type": "UnorderedMap",
+                                                "collection_id": hex::encode(value_bytes),
+                                            }
+                                        }
+                                    }));
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    // Try Vector entry format: value directly (no key prefix)
+                    // Vector<Counter> entries are just 64 bytes (two 32-byte IDs)
+                    if entry_value.len() == 64 {
+                        let positive_id = &entry_value[..32];
+                        let negative_id = &entry_value[32..];
+                        let counter_value =
+                            read_counter_value(db, state_cf, context_id, positive_id, negative_id);
+
+                        if counter_value.abs() < 1_000_000 {
+                            eprintln!(
+                                "[decode_collection_entries_bfs] Entry {} is Vector<Counter> item: value={}",
+                                entry_state_key, counter_value
+                            );
+                            entries.push(json!({
+                                "state_key": entry_state_key,
+                                "entry": {
+                                    "type": "VectorEntry",
+                                    "index": entries.len(),
+                                    "value": {
+                                        "type": "Counter",
+                                        "parsed": counter_value,
+                                    }
+                                }
+                            }));
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // FALLBACK: Decode the entry according to collection type from schema
             match decode_collection_entry(
                 &entry_value,
                 field,
@@ -2980,7 +3586,7 @@ fn decode_collection_entries_bfs(
                 }
                 Err(e) => {
                     eprintln!(
-                        "[decode_collection_entries_bfs] Failed to decode entry {}: {}",
+                        "[decode_collection_entries_bfs] Failed to decode entry {} with schema: {}",
                         entry_state_key, e
                     );
                 }

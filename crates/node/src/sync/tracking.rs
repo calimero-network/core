@@ -7,7 +7,10 @@ use eyre::bail;
 use libp2p::PeerId;
 use tokio::time::{self, Instant};
 
-/// Sync protocol type for tracking which protocol was used.
+/// Sync protocol type for tracking which protocol was used (internal metrics).
+///
+/// This is a simplified enum for internal tracking and metrics, mapping from
+/// the full [`calimero_node_primitives::sync::SyncProtocol`] enum.
 ///
 /// Note: With DAG-based sync, we don't have active sync protocols.
 /// State propagates automatically via gossipsub BroadcastMessage::StateDelta.
@@ -19,6 +22,23 @@ pub(crate) enum SyncProtocol {
     DagCatchup,
     /// Full snapshot sync (used when delta sync is not possible)
     SnapshotSync,
+}
+
+impl From<&calimero_node_primitives::sync::SyncProtocol> for SyncProtocol {
+    /// Maps the full 7-variant `SyncProtocol` from primitives to the internal 3-variant
+    /// tracking enum for metrics purposes.
+    fn from(p: &calimero_node_primitives::sync::SyncProtocol) -> Self {
+        use calimero_node_primitives::sync::SyncProtocol as P;
+        match p {
+            P::None => Self::None,
+            P::DeltaSync { .. } => Self::DagCatchup,
+            P::Snapshot { .. }
+            | P::HashComparison { .. }
+            | P::BloomFilter { .. }
+            | P::SubtreePrefetch { .. }
+            | P::LevelWise { .. } => Self::SnapshotSync,
+        }
+    }
 }
 
 /// Tracks sync state and history for a context.
@@ -140,5 +160,116 @@ impl Sequencer {
 
         self.current += 1;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calimero_node_primitives::sync::SyncProtocol as PrimitivesSyncProtocol;
+
+    /// Test that SyncProtocol::None maps to tracking::SyncProtocol::None
+    #[test]
+    fn test_from_primitives_none() {
+        let primitive = PrimitivesSyncProtocol::None;
+        let tracking: SyncProtocol = (&primitive).into();
+        assert!(matches!(tracking, SyncProtocol::None));
+    }
+
+    /// Test that DeltaSync maps to DagCatchup
+    #[test]
+    fn test_from_primitives_delta_sync() {
+        let primitive = PrimitivesSyncProtocol::DeltaSync {
+            missing_delta_ids: vec![[1; 32], [2; 32]],
+        };
+        let tracking: SyncProtocol = (&primitive).into();
+        assert!(matches!(tracking, SyncProtocol::DagCatchup));
+    }
+
+    /// Test that Snapshot maps to SnapshotSync
+    #[test]
+    fn test_from_primitives_snapshot() {
+        let primitive = PrimitivesSyncProtocol::Snapshot {
+            compressed: true,
+            verified: true,
+        };
+        let tracking: SyncProtocol = (&primitive).into();
+        assert!(matches!(tracking, SyncProtocol::SnapshotSync));
+    }
+
+    /// Test that HashComparison maps to SnapshotSync (fallback category)
+    #[test]
+    fn test_from_primitives_hash_comparison() {
+        let primitive = PrimitivesSyncProtocol::HashComparison {
+            root_hash: [3; 32],
+            divergent_subtrees: vec![],
+        };
+        let tracking: SyncProtocol = (&primitive).into();
+        assert!(matches!(tracking, SyncProtocol::SnapshotSync));
+    }
+
+    /// Test that BloomFilter maps to SnapshotSync (fallback category)
+    #[test]
+    fn test_from_primitives_bloom_filter() {
+        let primitive = PrimitivesSyncProtocol::BloomFilter {
+            filter_size: 1000,
+            false_positive_rate: 0.01,
+        };
+        let tracking: SyncProtocol = (&primitive).into();
+        assert!(matches!(tracking, SyncProtocol::SnapshotSync));
+    }
+
+    /// Test that SubtreePrefetch maps to SnapshotSync (fallback category)
+    #[test]
+    fn test_from_primitives_subtree_prefetch() {
+        let primitive = PrimitivesSyncProtocol::SubtreePrefetch {
+            subtree_roots: vec![[4; 32]],
+        };
+        let tracking: SyncProtocol = (&primitive).into();
+        assert!(matches!(tracking, SyncProtocol::SnapshotSync));
+    }
+
+    /// Test that LevelWise maps to SnapshotSync (fallback category)
+    #[test]
+    fn test_from_primitives_levelwise() {
+        let primitive = PrimitivesSyncProtocol::LevelWise { max_depth: 2 };
+        let tracking: SyncProtocol = (&primitive).into();
+        assert!(matches!(tracking, SyncProtocol::SnapshotSync));
+    }
+
+    /// Test that all 7 primitives variants are covered (exhaustiveness check)
+    #[test]
+    fn test_from_primitives_all_variants_covered() {
+        // This test ensures we handle all variants - if a new variant is added
+        // to PrimitivesSyncProtocol, this test will fail to compile
+        let variants: Vec<PrimitivesSyncProtocol> = vec![
+            PrimitivesSyncProtocol::None,
+            PrimitivesSyncProtocol::DeltaSync {
+                missing_delta_ids: vec![],
+            },
+            PrimitivesSyncProtocol::HashComparison {
+                root_hash: [0; 32],
+                divergent_subtrees: vec![],
+            },
+            PrimitivesSyncProtocol::Snapshot {
+                compressed: false,
+                verified: false,
+            },
+            PrimitivesSyncProtocol::BloomFilter {
+                filter_size: 0,
+                false_positive_rate: 0.0,
+            },
+            PrimitivesSyncProtocol::SubtreePrefetch {
+                subtree_roots: vec![],
+            },
+            PrimitivesSyncProtocol::LevelWise { max_depth: 0 },
+        ];
+
+        // All variants should convert without panic
+        for variant in &variants {
+            let _tracking: SyncProtocol = variant.into();
+        }
+
+        assert_eq!(variants.len(), 7, "Expected 7 SyncProtocol variants");
     }
 }

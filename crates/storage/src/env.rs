@@ -5,8 +5,45 @@ use calimero_vm as imp;
 #[cfg(not(target_arch = "wasm32"))]
 use mocked as imp;
 
+use std::cell::Cell;
+
 use crate::logical_clock::HybridTimestamp;
 use crate::store::Key;
+
+// ============================================================================
+// Merge Mode Flag
+// ============================================================================
+//
+// During CRDT merge operations, we must NOT generate new timestamps via time_now().
+// If we generate local timestamps during merge, different nodes get different values,
+// causing hash divergence even when the logical state is identical.
+//
+// This flag is set during merge_root_state() to prevent timestamp generation.
+// When in merge mode:
+// - Element::update() skips setting updated_at = time_now()
+// - CollectionMut::drop() skips timestamp updates
+// - This ensures merge is deterministic across nodes
+
+thread_local! {
+    static MERGE_MODE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Check if we're currently in merge mode (timestamp generation disabled).
+#[must_use]
+pub fn in_merge_mode() -> bool {
+    MERGE_MODE.with(|m| m.get())
+}
+
+/// Execute a closure with merge mode enabled.
+///
+/// During merge mode, timestamp generation is disabled to ensure
+/// deterministic results across nodes.
+pub fn with_merge_mode<R>(f: impl FnOnce() -> R) -> R {
+    MERGE_MODE.with(|m| m.set(true));
+    let result = f();
+    MERGE_MODE.with(|m| m.set(false));
+    result
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]

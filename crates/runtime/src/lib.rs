@@ -275,13 +275,14 @@ impl Module {
         Ok(Vec::into_boxed_slice(bytes.into()))
     }
 
-    pub fn run(
-        &self,
+    pub fn run<'a>(
+        &'a self,
         context: ContextId,
         executor: PublicKey,
         method: &str,
-        input: &[u8],
-        storage: &mut dyn Storage,
+        input: &'a [u8],
+        storage: &'a mut dyn Storage,
+        private_storage: Option<&'a mut dyn Storage>,
         node_client: Option<NodeClient>,
         context_host: Option<Box<dyn ContextHost>>,
     ) -> RuntimeResult<Outcome> {
@@ -291,7 +292,14 @@ impl Module {
 
         let context = VMContext::new(input.into(), *context_id, *executor);
 
-        let mut logic = VMLogic::new(storage, context, &self.limits, node_client, context_host);
+        let mut logic = VMLogic::new(
+            storage,
+            private_storage,
+            context,
+            &self.limits,
+            node_client,
+            context_host,
+        );
 
         let mut store = Store::new(self.engine.clone());
 
@@ -351,6 +359,10 @@ impl Module {
                 events_count = outcome.events.len(),
                 "WASM execution outcome"
             );
+            // Print WASM logs for debugging
+            for (i, log) in outcome.logs.iter().enumerate() {
+                info!(%context_id, method, log_index = i, log_content = %log, "WASM_LOG");
+            }
         }
 
         Ok(outcome)
@@ -569,6 +581,7 @@ mod wasm_integration_tests {
                 "test_func",
                 &[],
                 &mut storage,
+                None, // No private storage for tests
                 None,
                 None,
             )
@@ -603,6 +616,7 @@ mod wasm_integration_tests {
                 "non_existent_func",
                 &[],
                 &mut storage,
+                None, // No private storage for tests
                 None,
                 None,
             )
@@ -640,6 +654,7 @@ mod wasm_integration_tests {
                 "",
                 &[],
                 &mut storage,
+                None, // No private storage for tests
                 None,
                 None,
             )
@@ -680,6 +695,7 @@ mod wasm_integration_tests {
                 &long_method_name,
                 &[],
                 &mut storage,
+                None, // No private storage for tests
                 None,
                 None,
             )
@@ -728,6 +744,7 @@ mod wasm_integration_tests {
                     method_name,
                     &[],
                     &mut storage,
+                    None, // No private storage for tests
                     None,
                     None,
                 )
@@ -797,6 +814,7 @@ mod wasm_integration_tests {
                     method_name,
                     &[],
                     &mut storage,
+                    None, // No private storage for tests
                     None,
                     None,
                 )
@@ -843,6 +861,7 @@ mod wasm_integration_tests {
                 "valid_method_name",
                 &[],
                 &mut storage,
+                None, // No private storage for tests
                 None,
                 None,
             )
@@ -880,6 +899,7 @@ mod wasm_integration_tests {
                 "trap_func",
                 &[],
                 &mut storage,
+                None, // No private storage for tests
                 None,
                 None,
             )
@@ -938,6 +958,7 @@ mod wasm_integration_tests {
                 "panic_func",
                 &[],
                 &mut storage,
+                None, // No private storage for tests
                 None,
                 None,
             )
@@ -992,6 +1013,7 @@ mod wasm_integration_tests {
                 "oob_func",
                 &[],
                 &mut storage,
+                None, // No private storage for tests
                 None,
                 None,
             )
@@ -1034,6 +1056,7 @@ mod wasm_integration_tests {
                 "overflow_func",
                 &[],
                 &mut storage,
+                None, // No private storage for tests
                 None,
                 None,
             )

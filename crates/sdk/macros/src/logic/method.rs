@@ -159,8 +159,15 @@ impl ToTokens for PublicLogicMethod<'_> {
 
         // todo! when generics are present, strip them
         let init_impl = if init_method {
+            // Wrap init call to assign deterministic IDs after creation
             call = quote_spanned! {name.span()=>
-                ::calimero_storage::collections::Root::new(|| #call)
+                ::calimero_storage::collections::Root::new(|| {
+                    let mut state = #call;
+                    // Assign deterministic IDs to all collection fields based on field names
+                    // This ensures CIP Invariant I9: all nodes generate identical entity IDs
+                    state.__assign_deterministic_ids();
+                    state
+                })
             };
 
             quote_spanned! {name.span()=>

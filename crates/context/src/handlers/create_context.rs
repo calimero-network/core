@@ -22,7 +22,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{debug, warn};
 
 use super::execute::execute;
-use super::execute::storage::ContextStorage;
+use super::execute::storage::{ContextPrivateStorage, ContextStorage};
 use crate::{ContextManager, ContextMeta};
 
 impl Handler<CreateContextRequest> for ContextManager {
@@ -255,15 +255,18 @@ async fn create_context(
     init_params: Vec<u8>,
     guard: OwnedMutexGuard<ContextId>,
 ) -> eyre::Result<Hash> {
-    let storage = ContextStorage::from(datastore, context.id);
+    let storage = ContextStorage::from(datastore.clone(), context.id);
+    // Create private storage (node-local, NOT synchronized)
+    let private_storage = ContextPrivateStorage::from(datastore, context.id);
 
-    let (outcome, storage) = execute(
+    let (outcome, storage, private_storage) = execute(
         &guard,
         module,
         identity,
         "init".into(),
         init_params.into(),
         storage,
+        private_storage,
         node_client.clone(),
         // When init runs, the context creation is not yet committed to the database.
         // The creator's identity is only written to the store after init succeeds.
@@ -348,6 +351,8 @@ async fn create_context(
     let proxy_contract = config_client.get_proxy_contract().await?;
 
     let datastore = storage.commit()?;
+    // Commit private storage (node-local, NOT synchronized)
+    let _private_datastore = private_storage.commit()?;
 
     // Height-based delta tracking removed - now using DAG-based approach
 

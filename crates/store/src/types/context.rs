@@ -97,6 +97,30 @@ impl AsRef<[u8]> for ContextState<'_> {
     }
 }
 
+/// Node-local private storage that is NOT synchronized across nodes
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct ContextPrivateState<'a> {
+    pub value: Slice<'a>,
+}
+
+impl PredefinedEntry for key::ContextPrivateState {
+    type Codec = Identity;
+    type DataType<'a> = ContextPrivateState<'a>;
+}
+
+impl<'a> From<Slice<'a>> for ContextPrivateState<'a> {
+    fn from(value: Slice<'a>) -> Self {
+        Self { value }
+    }
+}
+
+impl AsRef<[u8]> for ContextPrivateState<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self.value.as_ref()
+    }
+}
+
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
 #[expect(
     clippy::exhaustive_structs,

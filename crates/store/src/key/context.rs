@@ -240,6 +240,65 @@ impl Debug for ContextState {
     }
 }
 
+/// Key for node-local private storage that is NOT synchronized across nodes
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextPrivateState(Key<(ContextId, StateKey)>);
+
+impl ContextPrivateState {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId, state_key: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from(*context_id).concat(state_key.into())))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut context_id = [0; 32];
+
+        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+
+        context_id.into()
+    }
+
+    #[must_use]
+    pub fn state_key(&self) -> [u8; 32] {
+        let mut state_key = [0; 32];
+
+        state_key.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+
+        state_key
+    }
+}
+
+impl AsKeyParts for ContextPrivateState {
+    type Components = (ContextId, StateKey);
+
+    fn column() -> Column {
+        Column::PrivateState
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for ContextPrivateState {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for ContextPrivateState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextPrivateState")
+            .field("context_id", &self.context_id())
+            .field("state_key", &self.state_key())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DeltaId;
 

@@ -30,12 +30,54 @@ impl<T> UserStorage<T, MainStorage>
 where
     T: BorshSerialize + BorshDeserialize,
 {
-    /// Creates a new, empty UserStorage.
+    /// Creates a new, empty UserStorage with a random ID.
+    ///
+    /// Use this for nested collections stored as values in other maps.
+    /// Merge happens by the parent map's key, so the nested collection's ID
+    /// doesn't affect sync semantics.
+    ///
+    /// For top-level state fields, use `new_with_field_name` instead.
     pub fn new() -> Self {
         Self {
             inner: UnorderedMap::new(),
             storage: Element::new(None),
         }
+    }
+
+    /// Creates a new, empty UserStorage with a deterministic ID.
+    ///
+    /// The `field_name` is used to generate a deterministic collection ID,
+    /// ensuring the same code produces the same ID across all nodes.
+    ///
+    /// Use this for top-level state fields (the `#[app::state]` macro does this
+    /// automatically).
+    pub fn new_with_field_name(field_name: &str) -> Self {
+        let mut storage = Element::new_with_field_name(None, Some(field_name.to_string()));
+        storage.metadata.crdt_type = Some(CrdtType::UserStorage);
+        Self {
+            inner: UnorderedMap::new_with_field_name(&format!("__user_storage_{field_name}")),
+            storage,
+        }
+    }
+
+    /// Reassigns the UserStorage's ID to a deterministic ID based on field name.
+    ///
+    /// This is called by the `#[app::state]` macro after `init()` returns to ensure
+    /// all top-level collections have deterministic IDs regardless of how they were
+    /// created in `init()`.
+    ///
+    /// This method also migrates all existing entries to use the new parent ID,
+    /// ensuring that entries inserted during `init()` remain accessible.
+    ///
+    /// # Arguments
+    /// * `field_name` - The name of the struct field containing this UserStorage
+    pub fn reassign_deterministic_id(&mut self, field_name: &str) {
+        use super::compute_collection_id;
+        let new_id = compute_collection_id(None, field_name);
+        self.storage.reassign_id_and_field_name(new_id, field_name);
+        self.storage.metadata.crdt_type = Some(CrdtType::UserStorage);
+        self.inner
+            .reassign_deterministic_id(&format!("__user_storage_{field_name}"));
     }
 }
 
@@ -170,7 +212,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::Custom("UserStorage".to_owned())
+        CrdtType::UserStorage
     }
     fn storage_strategy() -> StorageStrategy {
         StorageStrategy::Structured

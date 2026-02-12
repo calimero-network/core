@@ -20,6 +20,8 @@ mod index__public_methods {
                 created_at: 1,
                 updated_at: 1.into(),
                 storage_type: StorageType::Public,
+                crdt_type: None,
+                field_name: None,
             },
         };
 
@@ -33,12 +35,16 @@ mod index__public_methods {
                     created_at: 43,
                     updated_at: 22.into(),
                     storage_type: StorageType::Public,
+                    crdt_type: None,
+                    field_name: None,
                 },
             )],
             metadata: Metadata {
                 created_at: 1,
                 updated_at: 1.into(),
                 storage_type: StorageType::Public,
+                crdt_type: None,
+                field_name: None,
             },
         };
 

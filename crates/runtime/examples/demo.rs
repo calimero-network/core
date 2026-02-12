@@ -79,6 +79,7 @@ fn main() -> EyreResult<()> {
             &name,
             &input,
             &mut storage,
+            None, // No private storage for example
             None,
             None,
         )?;

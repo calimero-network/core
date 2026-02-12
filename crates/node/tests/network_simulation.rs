@@ -182,6 +182,7 @@ impl MockNetwork {
                                 payload: actions,
                                 hlc: calimero_storage::env::hlc_timestamp(),
                                 expected_root_hash: msg.root_hash.into(),
+                                kind: calimero_dag::DeltaKind::Regular,
                             };
 
                             // Note: In real implementation, this would use DeltaApplier
@@ -367,6 +368,7 @@ async fn test_p2p_delta_request() {
         }],
         hlc: calimero_storage::env::hlc_timestamp(),
         expected_root_hash: [0xDE; 32],
+        kind: calimero_dag::DeltaKind::Regular,
     };
 
     // Manually add to peer A's DAG (simulating it received this earlier)

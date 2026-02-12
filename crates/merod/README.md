@@ -46,7 +46,7 @@ merod --home data/ --node node1 init
 merod --node node1 init \
   --boot-nodes /ip4/127.0.0.1/tcp/2528
 
-# With protocol configuration (NEAR, Ethereum, ICP, Starknet)
+# With protocol configuration (NEAR)
 merod --node node1 init \
   --protocol near \
   --relayer-url https://relayer.near.org
@@ -68,7 +68,7 @@ merod --node node1 init --force
 - `--server-port <PORT>` - Port for RPC server (default: `2428`)
 - `--boot-nodes <ADDR>...` - Bootstrap nodes for P2P discovery
 - `--boot-network <NETWORK>` - Use nodes from known network (`calimero-dev`, `ipfs`)
-- `--protocol <PROTOCOL>` - Blockchain protocol (`near`, `ethereum`, `icp`, `starknet`)
+- `--protocol <PROTOCOL>` - Blockchain protocol (`near`)
 - `--relayer-url <URL>` - Relayer URL for blockchain transactions
 - `--auth-mode <MODE>` - Authentication mode (`none`, `embedded`, `remote`)
 - `--auth-storage <STORAGE>` - Auth storage type (`persistent`, `memory`)
@@ -141,7 +141,7 @@ Nodes store configuration in `~/.calimero/<node-name>/config.toml`. This include
 
 - Network settings (swarm hosts/ports, bootstrap nodes)
 - Server settings (RPC host/port)
-- Protocol configuration (NEAR, Ethereum, ICP, etc.)
+- Protocol configuration (NEAR)
 - Authentication settings
 - Storage paths
 
@@ -183,14 +183,9 @@ See [Authentication Guide](../../crates/auth/README.md) for details.
 
 ## Protocol Support
 
-merod supports multiple blockchain protocols:
+merod supports NEAR protocol integration for blockchain operations.
 
-- **NEAR** - NEAR Protocol integration
-- **Ethereum** - Ethereum and EVM-compatible chains
-- **ICP** - Internet Computer Protocol
-- **Starknet** - Starknet Layer 2
-
-Each protocol requires appropriate relayer configuration for on-chain operations.
+NEAR operations require relayer configuration that provides NEAR credentials.
 
 ## Troubleshooting
 
