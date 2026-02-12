@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::sync_sim::actions::{SyncActions, SyncMessage, TimerOp};
 use crate::sync_sim::convergence::{
-    ConvergenceInput, ConvergenceResult, NodeConvergenceState, check_convergence, is_deadlocked,
+    check_convergence, is_deadlocked, ConvergenceInput, ConvergenceResult, NodeConvergenceState,
 };
 use crate::sync_sim::metrics::SimMetrics;
 use crate::sync_sim::network::{FaultConfig, NetworkRouter, SimEvent};

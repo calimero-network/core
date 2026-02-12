@@ -13,7 +13,6 @@ mod run;
 mod validation;
 
 use config::ConfigCommand;
-pub use init::ConfigProtocol;
 use init::InitCommand;
 use run::RunCommand;
 

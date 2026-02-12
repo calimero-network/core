@@ -22,9 +22,6 @@ pub struct RelayerMetrics {
 
     // Queue metrics
     pub queue_depth: Gauge,
-
-    // Mock relayer metrics
-    pub mock_relayer_operations_total: Family<MockRelayerLabels, Counter>,
 }
 
 /// Labels for HTTP requests
@@ -60,12 +57,6 @@ pub struct ProtocolStatusLabels {
 pub struct ProtocolErrorLabels {
     pub protocol: String,
     pub error_type: String,
-}
-
-/// Labels for mock relayer operations
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-pub struct MockRelayerLabels {
-    pub method: String,
 }
 
 impl RelayerMetrics {
@@ -155,16 +146,6 @@ impl RelayerMetrics {
             queue_depth.clone(),
         );
 
-        // Mock relayer metrics
-        let mock_registry = relayer_registry.sub_registry_with_prefix("mock");
-
-        let mock_relayer_operations_total = Family::<MockRelayerLabels, Counter>::default();
-        mock_registry.register(
-            "operations",
-            "Total number of mock relayer operations by method",
-            mock_relayer_operations_total.clone(),
-        );
-
         Self {
             http_requests_total,
             http_request_duration_seconds,
@@ -175,7 +156,6 @@ impl RelayerMetrics {
             protocol_request_duration_seconds,
             protocol_errors_total,
             queue_depth,
-            mock_relayer_operations_total,
         }
     }
 
@@ -204,15 +184,6 @@ impl RelayerMetrics {
             .get_or_create(&ProtocolErrorLabels {
                 protocol: protocol.to_string(),
                 error_type: error_type.to_string(),
-            })
-            .inc();
-    }
-
-    /// Increment mock relayer operations counter
-    pub fn inc_mock_operations(&self, method: &str) {
-        self.mock_relayer_operations_total
-            .get_or_create(&MockRelayerLabels {
-                method: method.to_string(),
             })
             .inc();
     }

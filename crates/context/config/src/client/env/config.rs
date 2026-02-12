@@ -3,7 +3,6 @@ use crate::client::{CallClient, Environment};
 pub mod mutate;
 pub mod query;
 pub mod requests;
-pub mod types;
 use mutate::ContextConfigMutate;
 use query::ContextConfigQuery;
 

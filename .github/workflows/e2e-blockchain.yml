@@ -1,7 +1,7 @@
 name: E2E - Blockchain Proposals
 
-# Tests blockchain integration (NEAR, ICP, Ethereum) using locally-built Docker image.
-# Builds merod/meroctl once and shares via artifact to parallel test jobs.
+# Tests blockchain integration (NEAR) using locally-built Docker image.
+# Builds merod/meroctl once and shares via artifact to test jobs.
 
 permissions:
   contents: read
@@ -12,8 +12,6 @@ on:
     paths:
       - "crates/**"
       - "workflows/proposals/**"
-      - "scripts/icp/**"
-      - "scripts/ethereum/**"
       - "scripts/download-contracts.sh"
       - ".github/workflows/e2e-blockchain.yml"
   pull_request:
@@ -21,8 +19,6 @@ on:
     paths:
       - "crates/**"
       - "workflows/proposals/**"
-      - "scripts/icp/**"
-      - "scripts/ethereum/**"
       - "scripts/download-contracts.sh"
       - ".github/workflows/e2e-blockchain.yml"
   workflow_dispatch:
@@ -199,175 +195,9 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-  icp:
-    name: Test ICP Proposals
-    needs: [build-merod, download-contracts, build-blockchain-app]
-    runs-on: ubuntu-24.04-8cpu
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download contracts artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: e2e-blockchain-contracts
-          path: contracts
-
-      - name: Download blockchain app artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: e2e-blockchain-app
-          path: apps/demo-blockchain-integrations/res
-
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: e2e-blockchain-merod-image
-
-      - name: Load Docker image
-        run: |
-          gunzip merod-local.tar.gz
-          docker load -i merod-local.tar
-          docker images merod:local
-
-      - name: Install DFX for ICP
-        uses: dfinity/setup-dfx@main
-        with:
-          dfx-version: 0.24.3
-
-      - name: Deploy ICP Devnet
-        run: |
-          ./scripts/icp/deploy-devnet.sh
-
-      - name: Setup merobox
-        uses: ./.github/actions/setup-merobox
-
-      - name: Run ICP Proposals Workflow
-        run: |
-          cd workflows/proposals
-          merobox bootstrap run \
-              icp-proposals.yml \
-              --image merod:local \
-              --e2e-mode
-
-      - name: Collect Docker Logs
-        if: always()
-        run: |
-          mkdir -p docker-logs
-          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-            if [ -n "$container" ]; then
-              docker logs "$container" > "docker-logs/${container}.log" 2>&1 || true
-            fi
-          done
-
-      - name: Upload Workflow Data Artifacts
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-blockchain-icp-data-${{ github.sha }}
-          path: |
-            workflows/proposals/**/*.wasm
-            workflows/proposals/**/*.mpk
-            workflows/proposals/**/abi.json
-            workflows/proposals/**/state-schema.json
-            workflows/proposals/**/data/
-          retention-days: 7
-          if-no-files-found: warn
-
-      - name: Upload Docker Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-blockchain-icp-docker-logs-${{ github.sha }}
-          path: docker-logs/
-          retention-days: 7
-          if-no-files-found: warn
-
-  ethereum:
-    name: Test Ethereum Proposals
-    needs: [build-merod, download-contracts, build-blockchain-app]
-    runs-on: ubuntu-24.04-8cpu
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download contracts artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: e2e-blockchain-contracts
-          path: contracts
-
-      - name: Download blockchain app artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: e2e-blockchain-app
-          path: apps/demo-blockchain-integrations/res
-
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: e2e-blockchain-merod-image
-
-      - name: Load Docker image
-        run: |
-          gunzip merod-local.tar.gz
-          docker load -i merod-local.tar
-          docker images merod:local
-
-      - name: Install Foundry for Ethereum
-        uses: foundry-rs/foundry-toolchain@v1
-
-      - name: Deploy Ethereum Devnet
-        run: |
-          ./scripts/ethereum/deploy-devnet.sh
-
-      - name: Setup merobox
-        uses: ./.github/actions/setup-merobox
-
-      - name: Run Ethereum Proposals Workflow
-        run: |
-          cd workflows/proposals
-          merobox bootstrap run \
-              ethereum-proposals.yml \
-              --image merod:local \
-              --e2e-mode
-
-      - name: Collect Docker Logs
-        if: always()
-        run: |
-          mkdir -p docker-logs
-          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-            if [ -n "$container" ]; then
-              docker logs "$container" > "docker-logs/${container}.log" 2>&1 || true
-            fi
-          done
-
-      - name: Upload Workflow Data Artifacts
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-blockchain-ethereum-data-${{ github.sha }}
-          path: |
-            workflows/proposals/**/*.wasm
-            workflows/proposals/**/*.mpk
-            workflows/proposals/**/abi.json
-            workflows/proposals/**/state-schema.json
-            workflows/proposals/**/data/
-          retention-days: 7
-          if-no-files-found: warn
-
-      - name: Upload Docker Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-blockchain-ethereum-docker-logs-${{ github.sha }}
-          path: docker-logs/
-          retention-days: 7
-          if-no-files-found: warn
-
   comment:
     name: Report Failed Workflows
-    needs: [near, icp, ethereum]
+    needs: [near]
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
@@ -378,14 +208,6 @@ jobs:
 
           if [ "${{ needs.near.result }}" != "success" ]; then
             failed_workflows+=("near")
-          fi
-
-          if [ "${{ needs.icp.result }}" != "success" ]; then
-            failed_workflows+=("icp")
-          fi
-
-          if [ "${{ needs.ethereum.result }}" != "success" ]; then
-            failed_workflows+=("ethereum")
           fi
 
           if [ ${#failed_workflows[@]} -gt 0 ]; then
