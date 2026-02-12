@@ -92,8 +92,10 @@ impl DeltaBuffer {
     pub fn push(&mut self, delta: BufferedDelta) -> bool {
         if self.deltas.len() >= self.capacity {
             // Evict oldest delta (front of queue)
-            let _evicted = self.deltas.pop_front();
-            self.drops += 1;
+            // Only increment drops if we actually evicted something
+            if self.deltas.pop_front().is_some() {
+                self.drops += 1;
+            }
             self.deltas.push_back(delta);
             false
         } else {

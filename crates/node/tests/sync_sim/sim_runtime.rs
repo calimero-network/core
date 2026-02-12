@@ -622,6 +622,7 @@ impl SimRuntime {
                         for (_delta_id, operations) in buffered_ops {
                             for op in operations {
                                 n.apply_storage_op(op);
+                                self.metrics.work.record_write();
                             }
                         }
 
