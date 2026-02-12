@@ -1068,36 +1068,96 @@ impl SyncManager {
                     warn!(
                         %context_id,
                         reason = %selection.reason,
-                        "BloomFilter not yet implemented, falling back to snapshot"
+                        "BloomFilter not yet implemented, falling back to DAG catchup"
                     );
+                    // Fall back to DAG-based sync (like HashComparison) for initialized nodes
                     let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
                         .await
                         .wrap_err("bloom filter fallback")?;
+
+                    if matches!(result, SyncProtocol::None) {
+                        // If DAG catchup doesn't work, try snapshot as last resort
+                        info!(
+                            %context_id,
+                            "DAG catchup failed, falling back to snapshot sync"
+                        );
+                        let result = self
+                            .fallback_to_snapshot_sync(
+                                context_id,
+                                our_identity,
+                                chosen_peer,
+                                stream,
+                            )
+                            .await
+                            .wrap_err("bloom filter snapshot fallback")?;
+                        return Ok(Some(result));
+                    }
+
                     return Ok(Some(result));
                 }
                 SyncProtocol::SubtreePrefetch { .. } => {
                     warn!(
                         %context_id,
                         reason = %selection.reason,
-                        "SubtreePrefetch not yet implemented, falling back to snapshot"
+                        "SubtreePrefetch not yet implemented, falling back to DAG catchup"
                     );
+                    // Fall back to DAG-based sync (like HashComparison) for initialized nodes
                     let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
                         .await
                         .wrap_err("subtree prefetch fallback")?;
+
+                    if matches!(result, SyncProtocol::None) {
+                        // If DAG catchup doesn't work, try snapshot as last resort
+                        info!(
+                            %context_id,
+                            "DAG catchup failed, falling back to snapshot sync"
+                        );
+                        let result = self
+                            .fallback_to_snapshot_sync(
+                                context_id,
+                                our_identity,
+                                chosen_peer,
+                                stream,
+                            )
+                            .await
+                            .wrap_err("subtree prefetch snapshot fallback")?;
+                        return Ok(Some(result));
+                    }
+
                     return Ok(Some(result));
                 }
                 SyncProtocol::LevelWise { .. } => {
                     warn!(
                         %context_id,
                         reason = %selection.reason,
-                        "LevelWise not yet implemented, falling back to snapshot"
+                        "LevelWise not yet implemented, falling back to DAG catchup"
                     );
+                    // Fall back to DAG-based sync (like HashComparison) for initialized nodes
                     let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
                         .await
                         .wrap_err("level-wise fallback")?;
+
+                    if matches!(result, SyncProtocol::None) {
+                        // If DAG catchup doesn't work, try snapshot as last resort
+                        info!(
+                            %context_id,
+                            "DAG catchup failed, falling back to snapshot sync"
+                        );
+                        let result = self
+                            .fallback_to_snapshot_sync(
+                                context_id,
+                                our_identity,
+                                chosen_peer,
+                                stream,
+                            )
+                            .await
+                            .wrap_err("level-wise snapshot fallback")?;
+                        return Ok(Some(result));
+                    }
+
                     return Ok(Some(result));
                 }
             }
@@ -2050,31 +2110,28 @@ mod tests {
         );
     }
 
-    /// Test max_depth calculation for various entity counts
+    /// Test max_depth calculation for various entity counts using the actual estimate_max_depth function.
     #[test]
     fn test_max_depth_calculation() {
-        // Test the log16 approximation: log16(n) ≈ log2(n) / 4
+        use calimero_node_primitives::sync::estimate_max_depth;
+
+        // Test cases with expected exact values from estimate_max_depth
+        // Formula: log2(n) = 64 - leading_zeros(n), clamped to [1, 32] for non-zero
         let test_cases: Vec<(u64, u32)> = vec![
-            (0, 0),   // No entities
-            (1, 1),   // Single entity -> depth 1
-            (16, 1),  // 16 entities -> log2(16)/4 = 4/4 = 1
-            (256, 2), // 256 entities -> log2(256)/4 = 8/4 = 2
+            (0, 0),   // No entities -> depth 0
+            (1, 1),   // Single entity -> log2(1) = 1 (clamped min)
+            (2, 2),   // 2 entities -> log2(2) = 2
+            (16, 5),  // 16 entities -> log2(16) + 1 = 5
+            (256, 9), // 256 entities -> log2(256) + 1 = 9
         ];
 
-        for (entity_count, expected_min_depth) in test_cases {
-            let max_depth = if entity_count == 0 {
-                0
-            } else {
-                let log2_approx = 64u32.saturating_sub(entity_count.leading_zeros());
-                (log2_approx / 4).max(1).min(32)
-            };
+        for (entity_count, expected_depth) in test_cases {
+            let max_depth = estimate_max_depth(entity_count);
 
-            assert!(
-                max_depth >= expected_min_depth,
-                "entity_count={} should have max_depth >= {}, got {}",
-                entity_count,
-                expected_min_depth,
-                max_depth
+            assert_eq!(
+                max_depth, expected_depth,
+                "entity_count={} should have max_depth={}, got {}",
+                entity_count, expected_depth, max_depth
             );
         }
     }

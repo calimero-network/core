@@ -236,6 +236,17 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
         };
     }
 
+    // Rule 3.5: Low divergence with DAG heads - use DeltaSync for efficient catchup
+    // Best for: Small gaps, real-time updates between nodes sharing DAG ancestry
+    if divergence <= 0.2 && !remote.dag_heads.is_empty() {
+        return ProtocolSelection {
+            protocol: SyncProtocol::DeltaSync {
+                missing_delta_ids: vec![], // Will be populated during sync
+            },
+            reason: "low divergence with DAG heads, using delta sync for efficient catchup",
+        };
+    }
+
     // Rule 4: Deep tree with localized changes
     if remote.max_depth > 3 && divergence < 0.2 {
         return ProtocolSelection {
@@ -510,6 +521,21 @@ mod tests {
             SyncProtocol::HashComparison { .. }
         ));
         assert!(selection.reason.contains("divergence"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule3_5_low_divergence_with_dag_heads_uses_delta_sync() {
+        // Both nodes have state, low divergence, remote has DAG heads
+        let local = SyncHandshake::new([1; 32], 90, 5, vec![[1; 32]]); // ~10% divergence
+        let remote = SyncHandshake::new([2; 32], 100, 5, vec![[2; 32], [3; 32]]); // Has DAG heads
+
+        let selection = select_protocol(&local, &remote);
+        assert!(
+            matches!(selection.protocol, SyncProtocol::DeltaSync { .. }),
+            "Expected DeltaSync for low divergence with DAG heads, got {:?}",
+            selection.protocol
+        );
+        assert!(selection.reason.contains("delta sync"));
     }
 
     #[test]
