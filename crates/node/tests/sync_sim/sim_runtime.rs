@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::sync_sim::actions::{SyncActions, SyncMessage, TimerOp};
 use crate::sync_sim::convergence::{
-    check_convergence, is_deadlocked, ConvergenceInput, ConvergenceResult, NodeConvergenceState,
+    ConvergenceInput, ConvergenceResult, NodeConvergenceState, check_convergence, is_deadlocked,
 };
 use crate::sync_sim::metrics::SimMetrics;
 use crate::sync_sim::network::{FaultConfig, NetworkRouter, SimEvent};
@@ -630,6 +630,9 @@ impl SimRuntime {
                 use crate::sync_sim::node::SyncState;
                 if let Some(n) = self.nodes.get_mut(&node) {
                     if !n.is_crashed {
+                        // Reset buffer state to match production behavior where
+                        // start_sync_session creates a fresh DeltaBuffer
+                        n.reset_buffer_state();
                         // Transition to syncing state (simulates snapshot sync starting)
                         n.sync_state = SyncState::SnapshotTransfer {
                             peer: NodeId::new("peer"),

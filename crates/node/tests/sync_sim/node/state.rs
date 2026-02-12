@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use calimero_node_primitives::sync::handshake::SyncHandshake;
-use calimero_node_primitives::sync::state_machine::{build_handshake, LocalSyncState};
+use calimero_node_primitives::sync::state_machine::{LocalSyncState, build_handshake};
 use calimero_primitives::crdt::CrdtType;
 
 use crate::sync_sim::actions::{EntityMetadata, StorageOp};
@@ -330,6 +330,17 @@ impl SimNode {
         self.delta_buffer.clear();
     }
 
+    /// Reset buffer state for a new sync session.
+    ///
+    /// Clears both delta_buffer and buffered_operations to match production
+    /// behavior where `start_sync_session` creates a fresh `DeltaBuffer`.
+    /// This ensures stale buffered deltas from a previous interrupted sync
+    /// are discarded when a new sync session starts.
+    pub fn reset_buffer_state(&mut self) {
+        self.delta_buffer.clear();
+        self.buffered_operations.clear();
+    }
+
     /// Get buffer drops count.
     pub fn buffer_drops(&self) -> u64 {
         self.buffer_drops
@@ -509,7 +520,7 @@ impl LocalSyncState for SimNode {
     fn root_hash(&self) -> [u8; 32] {
         // Compute digest without using cache (trait requires &self, cache needs &mut self)
         // This is acceptable for protocol negotiation which is infrequent
-        use crate::sync_sim::digest::{compute_state_digest, DigestEntity};
+        use crate::sync_sim::digest::{DigestEntity, compute_state_digest};
         let entities: Vec<DigestEntity> = self.storage.iter().cloned().collect();
         compute_state_digest(&entities).0
     }
