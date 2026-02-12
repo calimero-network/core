@@ -89,7 +89,16 @@ impl DeltaBuffer {
     ///
     /// Returns `true` if the delta was added without eviction, `false` if
     /// an older delta was evicted to make room.
+    ///
+    /// **Note**: If capacity is zero, the delta is dropped immediately and
+    /// `drops` is incremented. This preserves correct semantics for edge cases.
     pub fn push(&mut self, delta: BufferedDelta) -> bool {
+        // Handle zero-capacity edge case: drop immediately without storing
+        if self.capacity == 0 {
+            self.drops += 1;
+            return false;
+        }
+
         if self.deltas.len() >= self.capacity {
             // Evict oldest delta (front of queue)
             let _evicted = self.deltas.pop_front();
@@ -269,5 +278,28 @@ mod tests {
 
         buffer.push(make_test_delta(4));
         assert_eq!(buffer.drops(), 3);
+    }
+
+    #[test]
+    fn test_zero_capacity_edge_case() {
+        // Zero-capacity buffer should drop all deltas immediately
+        let mut buffer = DeltaBuffer::new(0, 0);
+        assert_eq!(buffer.capacity(), 0);
+        assert_eq!(buffer.len(), 0);
+        assert_eq!(buffer.drops(), 0);
+
+        // Push should return false (eviction/drop) and increment drops
+        assert!(!buffer.push(make_test_delta(1)));
+        assert_eq!(buffer.len(), 0); // Buffer should remain empty
+        assert_eq!(buffer.drops(), 1);
+
+        // Second push should also drop
+        assert!(!buffer.push(make_test_delta(2)));
+        assert_eq!(buffer.len(), 0);
+        assert_eq!(buffer.drops(), 2);
+
+        // Drain should return empty
+        let drained = buffer.drain();
+        assert!(drained.is_empty());
     }
 }

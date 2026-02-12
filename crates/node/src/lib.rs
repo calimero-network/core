@@ -273,18 +273,6 @@ impl NodeState {
         }
     }
 
-    /// Get buffer metrics for a context (for observability).
-    #[allow(dead_code)]
-    pub(crate) fn get_buffer_metrics(&self, context_id: &ContextId) -> Option<(usize, u64, usize)> {
-        self.sync_sessions.get(context_id).map(|session| {
-            (
-                session.delta_buffer.len(),
-                session.delta_buffer.drops(),
-                session.delta_buffer.capacity(),
-            )
-        })
-    }
-
     /// Evict blobs from cache based on age, count, and memory limits
     fn evict_old_blobs(&self) {
         let now = Instant::now();
