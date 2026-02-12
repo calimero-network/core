@@ -65,7 +65,13 @@ use super::manager::SyncManager;
 /// Maximum number of pending node requests (DFS stack depth limit).
 ///
 /// Prevents unbounded memory growth during traversal.
+/// If exceeded, the sync session fails rather than silently dropping nodes.
 const MAX_PENDING_NODES: usize = 10_000;
+
+/// Maximum depth allowed in TreeNodeRequest.
+///
+/// Prevents malicious peers from requesting expensive deep traversals.
+pub const MAX_REQUEST_DEPTH: u8 = 16;
 
 /// Statistics from a HashComparison sync session.
 #[derive(Debug, Default)]
@@ -234,14 +240,16 @@ impl SyncManager {
         let mut to_compare: Vec<([u8; 32], bool)> = vec![(remote_root_hash, true)];
 
         while let Some((node_id, is_root_request)) = to_compare.pop() {
-            // Limit stack size to prevent memory exhaustion
+            // Limit stack size to prevent memory exhaustion (DoS protection)
+            // Fail the sync session rather than silently dropping nodes,
+            // which would cause incomplete sync and break convergence guarantees.
             if to_compare.len() > MAX_PENDING_NODES {
-                warn!(
-                    %context_id,
-                    pending = to_compare.len(),
-                    "Too many pending nodes, truncating DFS stack"
+                bail!(
+                    "HashComparison sync aborted: pending nodes ({}) exceeds limit ({}). \
+                     Tree may be too large for HashComparison; consider using Snapshot sync.",
+                    to_compare.len(),
+                    MAX_PENDING_NODES
                 );
-                to_compare.truncate(MAX_PENDING_NODES);
             }
 
             // Get local node from our Merkle tree
@@ -509,6 +517,15 @@ impl SyncManager {
     /// - For Rga/Vector: Ordered merge
     ///
     /// We NEVER use raw overwrite for initialized entities.
+    ///
+    /// # Concurrency Note
+    ///
+    /// The read-merge-write pattern has a theoretical TOCTOU window, but this is
+    /// acceptable because:
+    /// 1. Sync operations are serialized per context (only one sync session active)
+    /// 2. CRDT merge is commutative - even if concurrent updates occur, the final
+    ///    state will converge correctly
+    /// 3. Deltas during sync are buffered (Invariant I6) and replayed after
     async fn apply_leaf_with_crdt_merge(
         &self,
         context_id: ContextId,
@@ -592,57 +609,51 @@ impl SyncManager {
                 }
             }
             CrdtType::GCounter | CrdtType::PnCounter => {
-                // Counter merge: try registered merge, fallback to incoming
-                // The merge_root_state handles this if the type is registered
-                match merge_root_state(&existing, incoming, 0, incoming_timestamp) {
-                    Ok(merged) => Ok(merged),
-                    Err(_) => {
-                        // If merge fails, we can't silently drop - this violates I5
-                        // Log a warning and use incoming (best effort)
-                        warn!(
-                            crdt_type = ?metadata.crdt_type,
-                            "Counter merge failed, using incoming value (potential data loss)"
-                        );
-                        Ok(incoming.to_vec())
-                    }
-                }
+                // Counter merge: MUST succeed to preserve I5 (no silent data loss)
+                // Counters cannot fall back to incoming without losing contributions
+                merge_root_state(&existing, incoming, 0, incoming_timestamp).map_err(|e| {
+                    eyre::eyre!(
+                        "Counter merge failed for {:?}: {}. Cannot fall back without violating I5.",
+                        metadata.crdt_type,
+                        e
+                    )
+                })
             }
             CrdtType::UnorderedMap | CrdtType::UnorderedSet | CrdtType::Rga | CrdtType::Vector => {
-                // Collection merge via registered merge function
-                match merge_root_state(&existing, incoming, 0, incoming_timestamp) {
-                    Ok(merged) => Ok(merged),
-                    Err(e) => {
-                        warn!(
-                            crdt_type = ?metadata.crdt_type,
-                            error = %e,
-                            "Collection merge failed, using incoming value"
-                        );
-                        Ok(incoming.to_vec())
-                    }
-                }
+                // Collection merge: MUST succeed to preserve I5
+                merge_root_state(&existing, incoming, 0, incoming_timestamp).map_err(|e| {
+                    eyre::eyre!(
+                        "Collection merge failed for {:?}: {}. Cannot fall back without violating I5.",
+                        metadata.crdt_type,
+                        e
+                    )
+                })
             }
             CrdtType::UserStorage | CrdtType::FrozenStorage => {
                 // Specialized storage types - use registered merge
+                // These are typically single-writer, so LWW fallback is acceptable
                 match merge_root_state(&existing, incoming, 0, incoming_timestamp) {
                     Ok(merged) => Ok(merged),
-                    Err(_) => Ok(incoming.to_vec()),
+                    Err(_) => {
+                        // Single-writer storage: LWW is safe
+                        if incoming_timestamp > 0 {
+                            Ok(incoming.to_vec())
+                        } else {
+                            Ok(existing)
+                        }
+                    }
                 }
             }
             CrdtType::Custom(_) => {
                 // Custom CRDT - must have registered merge function
-                match merge_root_state(&existing, incoming, 0, incoming_timestamp) {
-                    Ok(merged) => Ok(merged),
-                    Err(e) => {
-                        warn!(
-                            crdt_type = ?metadata.crdt_type,
-                            error = %e,
-                            "Custom CRDT merge failed"
-                        );
-                        // For custom CRDTs, failing to merge is a serious issue
-                        // Return incoming to avoid data loss, but log warning
-                        Ok(incoming.to_vec())
-                    }
-                }
+                // Failing to merge a custom CRDT is a serious issue - return error
+                merge_root_state(&existing, incoming, 0, incoming_timestamp).map_err(|e| {
+                    eyre::eyre!(
+                        "Custom CRDT merge failed for {:?}: {}. Custom CRDTs must have registered merge functions.",
+                        metadata.crdt_type,
+                        e
+                    )
+                })
             }
         }
     }
@@ -665,6 +676,19 @@ impl SyncManager {
             ?max_depth,
             "Handling TreeNodeRequest"
         );
+
+        // Validate max_depth to prevent expensive deep traversals (DoS protection)
+        if let Some(depth) = max_depth {
+            if depth > MAX_REQUEST_DEPTH {
+                warn!(
+                    %context_id,
+                    requested_depth = depth,
+                    max_allowed = MAX_REQUEST_DEPTH,
+                    "TreeNodeRequest depth exceeds limit, clamping"
+                );
+            }
+        }
+        let clamped_depth = max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
 
         // Get our identity for RuntimeEnv - look up from context members
         let identities = self
@@ -695,7 +719,7 @@ impl SyncManager {
 
         // Build response with requested node(s)
         let response = self
-            .build_tree_node_response(context_id, &node_id, max_depth, our_identity)
+            .build_tree_node_response(context_id, &node_id, clamped_depth, our_identity)
             .await?;
 
         // Send response

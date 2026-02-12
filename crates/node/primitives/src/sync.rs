@@ -78,7 +78,7 @@ pub use bloom_filter::{
 };
 
 // Wire protocol types (used by all sync protocols)
-pub use wire::{InitPayload, MessagePayload, StreamMessage};
+pub use wire::{InitPayload, MessagePayload, StreamMessage, MAX_TREE_REQUEST_DEPTH};
 
 // Snapshot types
 pub use snapshot::{

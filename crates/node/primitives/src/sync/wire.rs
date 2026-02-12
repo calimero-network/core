@@ -39,6 +39,12 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use super::hash_comparison::TreeNode;
 use super::snapshot::SnapshotError;
 
+/// Maximum depth allowed in TreeNodeRequest.
+///
+/// Prevents malicious peers from requesting expensive deep traversals.
+/// Handlers should validate against this limit before processing.
+pub const MAX_TREE_REQUEST_DEPTH: u8 = 16;
+
 // =============================================================================
 // Stream Message Wrapper
 // =============================================================================
