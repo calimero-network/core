@@ -24,19 +24,19 @@
 //! - **I5**: No silent data loss (CRDT merge at leaves)
 //! - **I6**: Delta buffering during sync
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use calimero_crypto::NONCE_LEN;
 use calimero_node_primitives::sync::wire::{InitPayload, MessagePayload, StreamMessage};
 use calimero_node_primitives::sync::{
-    compare_tree_nodes, LeafMetadata, SyncTransport, TreeCompareResult, TreeLeafData, TreeNode,
-    MAX_NODES_PER_RESPONSE,
+    LeafMetadata, MAX_NODES_PER_RESPONSE, SyncTransport, TreeCompareResult, TreeLeafData, TreeNode,
+    compare_tree_nodes,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
-use eyre::{bail, Result, WrapErr};
+use eyre::{Result, WrapErr, bail};
 
 use super::node::SimNode;
 use super::storage::SimStorage;
@@ -338,9 +338,9 @@ fn build_tree_node_response(
     let mut visited = HashSet::new();
 
     // BFS to collect nodes up to max_depth
-    let mut queue: Vec<([u8; 32], u8)> = vec![(start_id, 0)];
+    let mut queue: VecDeque<([u8; 32], u8)> = VecDeque::from([(start_id, 0)]);
 
-    while let Some((current_id, current_depth)) = queue.pop() {
+    while let Some((current_id, current_depth)) = queue.pop_front() {
         if current_depth > depth || visited.contains(&current_id) {
             continue;
         }
@@ -351,7 +351,7 @@ fn build_tree_node_response(
             // Add children to queue if we haven't reached max depth
             if current_depth < depth {
                 for child_id in &node.children {
-                    queue.push((*child_id, current_depth + 1));
+                    queue.push_back((*child_id, current_depth + 1));
                 }
             }
             nodes.push(node);
