@@ -87,18 +87,31 @@ impl DeltaBuffer {
     /// and the `drops` counter is incremented. This ensures we never reject
     /// incoming deltas but may lose old ones under extreme load.
     ///
-    /// Returns `true` if the delta was added without eviction, `false` if
-    /// an older delta was evicted to make room.
-    pub fn push(&mut self, delta: BufferedDelta) -> bool {
+    /// Returns `None` if the delta was added without eviction, or `Some(evicted_id)`
+    /// containing the ID of the evicted delta if one was dropped.
+    ///
+    /// # Edge case: zero capacity
+    ///
+    /// If capacity is 0, the incoming delta is immediately dropped (not added)
+    /// and its ID is returned. This is the correct behavior - a zero-capacity
+    /// buffer cannot hold any deltas.
+    pub fn push(&mut self, delta: BufferedDelta) -> Option<[u8; 32]> {
+        // Handle zero capacity: drop incoming delta immediately
+        if self.capacity == 0 {
+            self.drops += 1;
+            return Some(delta.id);
+        }
+
         if self.deltas.len() >= self.capacity {
             // Evict oldest delta (front of queue)
-            let _evicted = self.deltas.pop_front();
+            let evicted = self.deltas.pop_front();
             self.drops += 1;
             self.deltas.push_back(delta);
-            false
+            // Return the evicted delta's ID (not the newly added one)
+            evicted.map(|d| d.id)
         } else {
             self.deltas.push_back(delta);
-            true
+            None
         }
     }
 
@@ -169,8 +182,8 @@ mod tests {
         assert_eq!(buffer.capacity(), 100);
         assert_eq!(buffer.drops(), 0);
 
-        let added_without_eviction = buffer.push(make_test_delta(1));
-        assert!(added_without_eviction);
+        let evicted = buffer.push(make_test_delta(1));
+        assert!(evicted.is_none(), "Should add without eviction");
         assert_eq!(buffer.len(), 1);
 
         let drained = buffer.drain();
@@ -185,8 +198,8 @@ mod tests {
         assert!(buffer.is_empty());
 
         // Push deltas
-        buffer.push(make_test_delta(1));
-        buffer.push(make_test_delta(2));
+        assert!(buffer.push(make_test_delta(1)).is_none());
+        assert!(buffer.push(make_test_delta(2)).is_none());
         assert_eq!(buffer.len(), 2);
 
         // Drain returns all in FIFO order
@@ -201,17 +214,19 @@ mod tests {
         let mut buffer = DeltaBuffer::new(2, 0);
 
         // Fill buffer
-        assert!(buffer.push(make_test_delta(1))); // No eviction
-        assert!(buffer.push(make_test_delta(2))); // No eviction
+        assert!(buffer.push(make_test_delta(1)).is_none()); // No eviction
+        assert!(buffer.push(make_test_delta(2)).is_none()); // No eviction
         assert_eq!(buffer.drops(), 0);
 
-        // Third delta causes eviction of oldest
-        assert!(!buffer.push(make_test_delta(3))); // Evicts delta 1
+        // Third delta causes eviction of oldest (delta 1)
+        let evicted = buffer.push(make_test_delta(3));
+        assert_eq!(evicted, Some([1; 32]), "Should evict delta 1");
         assert_eq!(buffer.drops(), 1);
         assert_eq!(buffer.len(), 2);
 
-        // Fourth delta causes another eviction
-        assert!(!buffer.push(make_test_delta(4))); // Evicts delta 2
+        // Fourth delta causes another eviction (delta 2)
+        let evicted = buffer.push(make_test_delta(4));
+        assert_eq!(evicted, Some([2; 32]), "Should evict delta 2");
         assert_eq!(buffer.drops(), 2);
         assert_eq!(buffer.len(), 2);
 
@@ -220,6 +235,31 @@ mod tests {
         assert_eq!(drained.len(), 2);
         assert_eq!(drained[0].id[0], 3);
         assert_eq!(drained[1].id[0], 4);
+    }
+
+    #[test]
+    fn test_zero_capacity_drops_immediately() {
+        let mut buffer = DeltaBuffer::new(0, 0);
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.capacity(), 0);
+        assert_eq!(buffer.drops(), 0);
+
+        // First push should drop immediately and return the incoming delta's ID
+        let evicted = buffer.push(make_test_delta(1));
+        assert_eq!(
+            evicted,
+            Some([1; 32]),
+            "Zero capacity should drop incoming delta"
+        );
+        assert_eq!(buffer.drops(), 1);
+        assert!(buffer.is_empty(), "Buffer should remain empty");
+        assert_eq!(buffer.len(), 0);
+
+        // Second push should also drop
+        let evicted = buffer.push(make_test_delta(2));
+        assert_eq!(evicted, Some([2; 32]));
+        assert_eq!(buffer.drops(), 2);
+        assert!(buffer.is_empty());
     }
 
     #[test]

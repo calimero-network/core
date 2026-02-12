@@ -156,24 +156,26 @@ impl NodeState {
         delta: calimero_node_primitives::delta_buffer::BufferedDelta,
     ) -> bool {
         if let Some(mut session) = self.sync_sessions.get_mut(context_id) {
-            let delta_id = delta.id;
-            let added_without_eviction = session.delta_buffer.push(delta);
+            let incoming_delta_id = delta.id;
+            let evicted = session.delta_buffer.push(delta);
 
-            if !added_without_eviction {
-                // Delta was added but oldest was evicted - log rate-limited warning
-                let should_warn = session
-                    .last_drop_warning
-                    .map_or(true, |last| last.elapsed() > Duration::from_secs(5));
+            if let Some(evicted_id) = evicted {
+                // A delta was evicted - log rate-limited warning
+                let should_warn = session.last_drop_warning.map_or(true, |last| {
+                    last.elapsed()
+                        > Duration::from_secs(constants::DELTA_BUFFER_DROP_WARNING_RATE_LIMIT_S)
+                });
 
                 if should_warn {
                     session.last_drop_warning = Some(Instant::now());
                     warn!(
                         %context_id,
-                        delta_id = ?delta_id,
+                        evicted_delta_id = ?evicted_id,
+                        incoming_delta_id = ?incoming_delta_id,
                         drops = session.delta_buffer.drops(),
                         buffer_size = session.delta_buffer.len(),
                         capacity = session.delta_buffer.capacity(),
-                        "Delta buffer overflow - evicted oldest delta (I6 violation risk)"
+                        "Delta buffer overflow - evicted delta (I6 violation risk)"
                     );
                 }
             }
@@ -271,18 +273,6 @@ impl NodeState {
                 "Sync session cancelled - discarding buffered deltas"
             );
         }
-    }
-
-    /// Get buffer metrics for a context (for observability).
-    #[allow(dead_code)]
-    pub(crate) fn get_buffer_metrics(&self, context_id: &ContextId) -> Option<(usize, u64, usize)> {
-        self.sync_sessions.get(context_id).map(|session| {
-            (
-                session.delta_buffer.len(),
-                session.delta_buffer.drops(),
-                session.delta_buffer.capacity(),
-            )
-        })
     }
 
     /// Evict blobs from cache based on age, count, and memory limits

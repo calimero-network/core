@@ -433,4 +433,130 @@ mod tests {
             "Nodes should converge after buffered deltas are replayed"
         );
     }
+
+    /// Test: Buffer overflow causes FIFO eviction and metrics recording.
+    ///
+    /// Verifies that when the buffer is full:
+    /// 1. Oldest deltas are evicted (FIFO policy)
+    /// 2. Drop metrics are recorded
+    /// 3. Newest deltas are preserved
+    #[test]
+    fn test_buffer_overflow_fifo_eviction() {
+        let mut rt = SimRuntime::new(42);
+
+        // Create a node with very small buffer capacity (3 deltas)
+        let node_id = rt.add_node_with_buffer_capacity("small_buffer_node", 3);
+
+        // Start sync
+        rt.schedule_sync_start(node_id.clone(), SimDuration::ZERO);
+        rt.step();
+
+        // Send 5 deltas - should overflow buffer, evicting oldest 2
+        for i in 1..=5 {
+            let delta_id = delta_id_from_u64(i);
+            let operations = vec![make_insert_op(i, &format!("delta_{}", i))];
+            rt.schedule_gossip_delta(
+                node_id.clone(),
+                delta_id,
+                operations,
+                SimDuration::from_millis(i * 10),
+            );
+        }
+
+        // Process all deltas
+        for _ in 0..5 {
+            rt.step();
+        }
+
+        // Verify buffer state
+        let node = rt.node(&node_id).unwrap();
+        assert_eq!(node.buffer_size(), 3, "Buffer should be at capacity");
+        assert_eq!(
+            node.buffer_drops(),
+            2,
+            "Should have dropped 2 oldest deltas"
+        );
+
+        // Verify metrics recorded
+        assert_eq!(
+            rt.metrics().effects.buffer_drops,
+            2,
+            "Metrics should record 2 buffer drops"
+        );
+
+        // Complete sync - only the 3 newest deltas should be replayed
+        rt.schedule_sync_complete(node_id.clone(), SimDuration::from_millis(100));
+        rt.step();
+
+        // Verify: only deltas 3, 4, 5 were applied (deltas 1, 2 were evicted)
+        let node = rt.node(&node_id).unwrap();
+        assert_eq!(
+            node.entity_count(),
+            3,
+            "Only 3 deltas should have been replayed"
+        );
+        assert_eq!(node.buffer_size(), 0, "Buffer should be empty after sync");
+
+        // Verify the correct entities exist (ids 3, 4, 5)
+        assert!(
+            node.storage.get(&EntityId::from_u64(3)).is_some(),
+            "Entity 3 should exist"
+        );
+        assert!(
+            node.storage.get(&EntityId::from_u64(4)).is_some(),
+            "Entity 4 should exist"
+        );
+        assert!(
+            node.storage.get(&EntityId::from_u64(5)).is_some(),
+            "Entity 5 should exist"
+        );
+        assert!(
+            node.storage.get(&EntityId::from_u64(1)).is_none(),
+            "Entity 1 should NOT exist (was evicted)"
+        );
+        assert!(
+            node.storage.get(&EntityId::from_u64(2)).is_none(),
+            "Entity 2 should NOT exist (was evicted)"
+        );
+    }
+
+    /// Test: Buffer drops are accumulated across multiple overflows.
+    #[test]
+    fn test_buffer_drops_accumulated() {
+        let mut rt = SimRuntime::new(42);
+
+        // Create node with capacity 2
+        let node_id = rt.add_node_with_buffer_capacity("tiny_buffer", 2);
+
+        // Start sync
+        rt.schedule_sync_start(node_id.clone(), SimDuration::ZERO);
+        rt.step();
+
+        // Send 10 deltas - should cause 8 evictions
+        for i in 1..=10 {
+            let delta_id = delta_id_from_u64(i);
+            let operations = vec![make_insert_op(i, &format!("delta_{}", i))];
+            rt.schedule_gossip_delta(
+                node_id.clone(),
+                delta_id,
+                operations,
+                SimDuration::from_millis(i * 5),
+            );
+        }
+
+        // Process all
+        for _ in 0..10 {
+            rt.step();
+        }
+
+        // Verify accumulated drops
+        let node = rt.node(&node_id).unwrap();
+        assert_eq!(node.buffer_size(), 2, "Buffer at capacity");
+        assert_eq!(node.buffer_drops(), 8, "Should have 8 accumulated drops");
+        assert_eq!(
+            rt.metrics().effects.buffer_drops,
+            8,
+            "Metrics should show 8 drops"
+        );
+    }
 }

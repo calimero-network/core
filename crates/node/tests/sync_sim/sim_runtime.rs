@@ -176,6 +176,25 @@ impl SimRuntime {
         ids.into_iter().map(|id| self.add_node(id)).collect()
     }
 
+    /// Add a node with custom buffer capacity (for overflow testing).
+    ///
+    /// Useful for testing Invariant I6 buffer overflow behavior.
+    pub fn add_node_with_buffer_capacity(
+        &mut self,
+        id: impl Into<NodeId>,
+        buffer_capacity: usize,
+    ) -> NodeId {
+        let id = id.into();
+        let is_new = !self.nodes.contains_key(&id);
+        let node = SimNode::with_buffer_capacity(id.clone(), buffer_capacity);
+        self.nodes.insert(id.clone(), node);
+        if is_new {
+            self.node_order.push(id.clone());
+            self.node_order.sort();
+        }
+        id
+    }
+
     /// Get a node by ID.
     pub fn node(&self, id: &NodeId) -> Option<&SimNode> {
         self.nodes.get(id)
@@ -588,7 +607,11 @@ impl SimRuntime {
 
                 // Invariant I6: If sync is active, buffer the delta instead of applying
                 if node.sync_state.is_active() {
-                    node.buffer_delta(delta_id);
+                    let added_without_eviction = node.buffer_delta(delta_id);
+                    if !added_without_eviction {
+                        // Buffer overflow - oldest delta was evicted (I6 violation risk)
+                        self.metrics.effects.record_buffer_drop();
+                    }
                     // Store operations in a pending map for later replay
                     node.buffer_operations(delta_id, operations);
                 } else {
@@ -614,22 +637,14 @@ impl SimRuntime {
             }
 
             SimEvent::SyncComplete { node } => {
-                use crate::sync_sim::node::SyncState;
                 if let Some(n) = self.nodes.get_mut(&node) {
-                    if !n.is_crashed && n.sync_state.is_active() {
-                        // Replay buffered deltas before transitioning to idle
-                        let buffered_ops = n.drain_buffered_operations();
-                        for (_delta_id, operations) in buffered_ops {
-                            for op in operations {
-                                n.apply_storage_op(op);
-                            }
+                    if !n.is_crashed {
+                        // Atomically: replay buffered ops, clear buffers, reset state
+                        let ops_applied = n.finish_sync();
+                        // Record write metrics for replayed operations
+                        for _ in 0..ops_applied {
+                            self.metrics.work.record_write();
                         }
-
-                        // Clear the delta ID buffer
-                        n.clear_buffer();
-
-                        // Transition to idle
-                        n.sync_state = SyncState::Idle;
                     }
                 }
             }

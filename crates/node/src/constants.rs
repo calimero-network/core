@@ -18,3 +18,7 @@ pub const MAX_BLOB_CACHE_COUNT: usize = 100;
 pub const MAX_BLOB_CACHE_SIZE_BYTES: usize = 500 * 1024 * 1024;
 /// The period of eviction of old blobs (every 300 seconds) for the node (in seconds).
 pub const OLD_BLOBS_EVICTION_FREQUENCY_S: u64 = 300;
+
+/// Rate limit duration for delta buffer overflow warnings (in seconds).
+/// Prevents log spam when buffer is under sustained pressure.
+pub const DELTA_BUFFER_DROP_WARNING_RATE_LIMIT_S: u64 = 5;
