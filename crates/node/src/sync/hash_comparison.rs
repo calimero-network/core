@@ -299,7 +299,10 @@ impl SyncManager {
             }
 
             // Process each node in response
-            for remote_node in nodes {
+            // nodes[0] is the requested node, nodes[1..] are children (when max_depth >= 1)
+            // Only compare nodes[0] with local_node; children will be processed when popped
+            // from the to_compare stack in future iterations.
+            for (idx, remote_node) in nodes.iter().enumerate() {
                 // Validate node structure
                 if !remote_node.is_valid() {
                     warn!(%context_id, "Invalid TreeNode structure, skipping");
@@ -310,6 +313,8 @@ impl SyncManager {
 
                 if remote_node.is_leaf() {
                     // Leaf node: apply CRDT merge (Invariant I5)
+                    // CRDT merge reads existing value directly from storage, so it's
+                    // correct for any leaf regardless of which iteration we're in.
                     if let Some(ref leaf_data) = remote_node.leaf_data {
                         trace!(
                             %context_id,
@@ -318,16 +323,17 @@ impl SyncManager {
                             "Merging leaf entity via CRDT"
                         );
 
-                        self.apply_leaf_with_crdt_merge(context_id, leaf_data)
+                        self.apply_leaf_with_crdt_merge(context_id, leaf_data, &runtime_env)
                             .await
                             .wrap_err("failed to merge leaf entity")?;
 
                         stats.entities_merged += 1;
                     }
-                } else {
-                    // Internal node: compare with local and queue differing children
-                    let compare_result =
-                        compare_tree_nodes(local_node.as_ref(), Some(&remote_node));
+                } else if idx == 0 {
+                    // Internal node at index 0: this is the requested node, compare with local
+                    // For children (idx > 0), skip comparison here - they will be processed
+                    // when they are popped from the to_compare stack with their correct local versions.
+                    let compare_result = compare_tree_nodes(local_node.as_ref(), Some(remote_node));
 
                     match compare_result {
                         TreeCompareResult::Equal => {
@@ -384,6 +390,9 @@ impl SyncManager {
                         }
                     }
                 }
+                // Internal nodes at idx > 0 are children included in the response.
+                // They are NOT compared here because local_node is the parent's local version.
+                // They will be processed correctly when popped from to_compare stack.
             }
         }
 
@@ -513,12 +522,17 @@ impl SyncManager {
         &self,
         context_id: ContextId,
         leaf: &TreeLeafData,
+        runtime_env: &RuntimeEnv,
     ) -> Result<()> {
         // Get the datastore handle
         let handle = self.context_client.datastore_handle();
 
-        // Create the storage key for this entity
-        let key = ContextStateKey::new(context_id, leaf.key);
+        // Create the storage key for this entity using the same hashing as
+        // create_storage_callbacks: Key::Entry(id).to_bytes() applies SHA256 hashing
+        // to (discriminant || entity_id) to produce the 32-byte state key.
+        let entity_id = Id::new(leaf.key);
+        let hashed_key = Key::Entry(entity_id).to_bytes();
+        let key = ContextStateKey::new(context_id, hashed_key);
 
         // Get existing value to perform merge (copy to owned value to release borrow)
         let existing_bytes: Option<Vec<u8>> = handle.get(&key)?.map(|v| v.as_ref().to_vec());
@@ -536,6 +550,7 @@ impl SyncManager {
                 &leaf.value,
                 leaf.metadata.hlc_timestamp,
                 &leaf.metadata,
+                runtime_env,
             )?
         } else {
             // No existing value - just use incoming (this is the only case where
@@ -562,6 +577,7 @@ impl SyncManager {
         incoming: &[u8],
         incoming_timestamp: u64,
         metadata: &LeafMetadata,
+        runtime_env: &RuntimeEnv,
     ) -> Result<Vec<u8>> {
         use calimero_storage::merge::merge_root_state;
 
@@ -573,11 +589,14 @@ impl SyncManager {
 
                 // Extract existing timestamp from stored metadata via Index
                 // The storage layer stores metadata separately from raw values
-                let existing_ts = Index::<MainStorage>::get_index(Id::from(entity_key))
-                    .ok()
-                    .flatten()
-                    .map(|index| *index.metadata.updated_at)
-                    .unwrap_or(0);
+                // Must use with_runtime_env to ensure Index::get_index can access storage
+                let existing_ts = with_runtime_env(runtime_env.clone(), || {
+                    Index::<MainStorage>::get_index(Id::from(entity_key))
+                })
+                .ok()
+                .flatten()
+                .map(|index| *index.metadata.updated_at)
+                .unwrap_or(0);
 
                 match merge_root_state(&existing, incoming, existing_ts, incoming_timestamp) {
                     Ok(merged) => Ok(merged),
