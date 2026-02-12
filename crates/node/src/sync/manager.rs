@@ -1031,38 +1031,75 @@ impl SyncManager {
 
                     return Ok(Some(result));
                 }
-                SyncProtocol::HashComparison { .. } => {
-                    // HashComparison not yet implemented, fall back to DAG heads request
-                    // which is the closest available mechanism
-                    warn!(
+                SyncProtocol::HashComparison { root_hash, .. } => {
+                    // Execute HashComparison sync (CIP §4)
+                    info!(
                         %context_id,
                         reason = %selection.reason,
-                        "HashComparison not yet implemented, falling back to DAG catchup"
+                        "Starting HashComparison sync"
                     );
-                    let result = self
-                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+
+                    match self
+                        .hash_comparison_sync(
+                            context_id,
+                            chosen_peer,
+                            our_identity,
+                            stream,
+                            root_hash,
+                        )
                         .await
-                        .wrap_err("hash comparison fallback")?;
+                    {
+                        Ok(stats) => {
+                            info!(
+                                %context_id,
+                                nodes_compared = stats.nodes_compared,
+                                entities_merged = stats.entities_merged,
+                                nodes_skipped = stats.nodes_skipped,
+                                "HashComparison sync completed successfully"
+                            );
+                            return Ok(Some(SyncProtocol::HashComparison {
+                                root_hash,
+                                divergent_subtrees: vec![],
+                            }));
+                        }
+                        Err(e) => {
+                            warn!(
+                                %context_id,
+                                error = %e,
+                                "HashComparison sync failed, falling back to DAG catchup"
+                            );
+                            // Fall back to DAG heads request
+                            let result = self
+                                .request_dag_heads_and_sync(
+                                    context_id,
+                                    chosen_peer,
+                                    our_identity,
+                                    stream,
+                                )
+                                .await
+                                .wrap_err("hash comparison fallback")?;
 
-                    if matches!(result, SyncProtocol::None) {
-                        // If DAG catchup doesn't work, try snapshot as last resort
-                        info!(
-                            %context_id,
-                            "DAG catchup failed, falling back to snapshot sync"
-                        );
-                        let result = self
-                            .fallback_to_snapshot_sync(
-                                context_id,
-                                our_identity,
-                                chosen_peer,
-                                stream,
-                            )
-                            .await
-                            .wrap_err("snapshot fallback")?;
-                        return Ok(Some(result));
+                            if matches!(result, SyncProtocol::None) {
+                                // If DAG catchup doesn't work, try snapshot as last resort
+                                info!(
+                                    %context_id,
+                                    "DAG catchup failed, falling back to snapshot sync"
+                                );
+                                let result = self
+                                    .fallback_to_snapshot_sync(
+                                        context_id,
+                                        our_identity,
+                                        chosen_peer,
+                                        stream,
+                                    )
+                                    .await
+                                    .wrap_err("snapshot fallback")?;
+                                return Ok(Some(result));
+                            }
+
+                            return Ok(Some(result));
+                        }
                     }
-
-                    return Ok(Some(result));
                 }
                 SyncProtocol::BloomFilter { .. } => {
                     warn!(
@@ -1892,6 +1929,21 @@ impl SyncManager {
                     page_limit,
                     byte_limit,
                     resume_cursor,
+                    stream,
+                    nonce,
+                )
+                .await?
+            }
+            InitPayload::TreeNodeRequest {
+                context_id: requested_context_id,
+                node_id,
+                max_depth,
+            } => {
+                // Handle tree node request from peer (HashComparison sync)
+                self.handle_tree_node_request(
+                    requested_context_id,
+                    node_id,
+                    max_depth,
                     stream,
                     nonce,
                 )

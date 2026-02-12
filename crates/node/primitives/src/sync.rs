@@ -42,6 +42,7 @@ pub mod protocol;
 pub mod snapshot;
 pub mod state_machine;
 pub mod subtree;
+pub mod wire;
 
 // =============================================================================
 // Re-exports
@@ -76,13 +77,16 @@ pub use bloom_filter::{
     BloomFilterRequest, BloomFilterResponse, DeltaIdBloomFilter, DEFAULT_BLOOM_FP_RATE,
 };
 
-// Snapshot and wire protocol types
+// Wire protocol types (used by all sync protocols)
+pub use wire::{InitPayload, MessagePayload, StreamMessage, MAX_TREE_REQUEST_DEPTH};
+
+// Snapshot types
 pub use snapshot::{
-    check_snapshot_safety, BroadcastMessage, InitPayload, MessagePayload, SnapshotBoundaryRequest,
-    SnapshotBoundaryResponse, SnapshotComplete, SnapshotCursor, SnapshotEntity, SnapshotEntityPage,
-    SnapshotError, SnapshotPage, SnapshotRequest, SnapshotStreamRequest, SnapshotVerifyResult,
-    StreamMessage, DEFAULT_SNAPSHOT_PAGE_SIZE, MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS,
-    MAX_ENTITIES_PER_PAGE, MAX_ENTITY_DATA_SIZE, MAX_SNAPSHOT_PAGES, MAX_SNAPSHOT_PAGE_SIZE,
+    check_snapshot_safety, BroadcastMessage, SnapshotBoundaryRequest, SnapshotBoundaryResponse,
+    SnapshotComplete, SnapshotCursor, SnapshotEntity, SnapshotEntityPage, SnapshotError,
+    SnapshotPage, SnapshotRequest, SnapshotStreamRequest, SnapshotVerifyResult,
+    DEFAULT_SNAPSHOT_PAGE_SIZE, MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS, MAX_ENTITIES_PER_PAGE,
+    MAX_ENTITY_DATA_SIZE, MAX_SNAPSHOT_PAGES, MAX_SNAPSHOT_PAGE_SIZE,
 };
 
 // Subtree prefetch types
