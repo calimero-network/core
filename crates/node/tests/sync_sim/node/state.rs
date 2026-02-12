@@ -499,12 +499,21 @@ impl SimNode {
         // Build parent chain based on key prefix
         let mut parent_id = self.storage.root_id();
 
+        // Compute storage_id early to check for self-referencing cycles
+        let storage_id = Self::entity_id_to_storage_id(id);
+
         for d in 1..=depth {
             // Create intermediate node ID from key prefix
             let mut intermediate_key = [0u8; 32];
             intermediate_key[..d].copy_from_slice(&key[..d]);
 
             let intermediate_id = Id::new(intermediate_key);
+
+            // Skip if this intermediate ID equals the entity's storage ID
+            // This prevents self-referencing cycles when key[depth..] are all zeros
+            if intermediate_id == storage_id {
+                continue;
+            }
 
             // Create intermediate node if it doesn't exist
             if !self.storage.has_entity(intermediate_id) {
@@ -520,7 +529,6 @@ impl SimNode {
         }
 
         // Add the actual entity under the deepest intermediate node
-        let storage_id = Self::entity_id_to_storage_id(id);
         let storage_metadata = Self::entity_metadata_to_storage_metadata(&metadata);
         self.storage
             .add_entity_with_parent(storage_id, parent_id, &data, storage_metadata);
