@@ -39,11 +39,10 @@ use calimero_storage::address::Id;
 use calimero_storage::entities::Metadata;
 
 use crate::sync_sim::actions::{EntityMetadata, StorageOp};
-use crate::sync_sim::digest::DigestEntity;
 use crate::sync_sim::runtime::SimTime;
 use crate::sync_sim::storage::SimStorage;
 use crate::sync_sim::types::{
-    DeltaId, EntityId, MessageId, NodeId, StateDigest, TimerId, TimerKind,
+    DeltaId, DigestEntity, EntityId, MessageId, NodeId, StateDigest, TimerId, TimerKind,
 };
 
 /// Sync state machine state.

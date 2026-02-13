@@ -84,7 +84,6 @@ pub mod actions;
 #[macro_use]
 pub mod assertions;
 pub mod convergence;
-pub mod digest;
 pub mod metrics;
 pub mod network;
 pub mod node;
@@ -109,7 +108,6 @@ pub mod prelude {
         check_convergence, is_deadlocked, ConvergenceInput, ConvergencePending,
         ConvergenceProperty, ConvergenceResult,
     };
-    pub use super::digest::{compute_state_digest, DigestCache, DigestEntity};
     pub use super::metrics::{
         ConvergenceMetrics, EffectMetrics, NodeMetrics, ProtocolMetrics, SimMetrics, WorkMetrics,
     };
@@ -123,7 +121,9 @@ pub mod prelude {
     pub use super::sim_runtime::{SimConfig, SimRuntime, StopCondition};
     pub use super::storage::SimStorage;
     pub use super::transport::{SimStream, SimStreamSender};
-    pub use super::types::{DeltaId, EntityId, MessageId, NodeId, StateDigest, TimerId, TimerKind};
+    pub use super::types::{
+        DeltaId, DigestEntity, EntityId, MessageId, NodeId, StateDigest, TimerId, TimerKind,
+    };
 
     // Note: assertion macros (assert_converged!, assert_entity_count!, etc.) are available
     // via `#[macro_use]` on the assertions module and don't need explicit re-export.

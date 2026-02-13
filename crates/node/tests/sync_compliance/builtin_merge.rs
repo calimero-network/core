@@ -26,37 +26,19 @@ use calimero_storage::merge::{is_builtin_crdt, merge_by_crdt_type};
 // GCounter Tests
 // =============================================================================
 
-/// GCounter: merge combines contributions from different executors.
+/// GCounter is classified as builtin (no WASM required).
 ///
-/// When two nodes increment a GCounter with different executor IDs,
-/// the merge takes max per executor, resulting in sum of unique contributions.
+/// Expected merge behavior (tested in merge_dispatch.rs):
+/// - Merge combines contributions from different executors
+/// - When two nodes increment with different executor IDs,
+///   merge takes max per executor, resulting in sum of unique contributions
+/// - Same executor takes max (idempotent)
+///
+/// Actual merge tests in:
+/// - crates/storage/src/tests/merge_dispatch.rs::test_gcounter_merge_sums_contributions
+/// - crates/storage/src/tests/merge_dispatch.rs::test_gcounter_merge_max_per_executor
 #[test]
-fn test_gcounter_merge_different_executors() {
-    // Simulate two GCounters from different executors
-    // GCounter internal format: Map<ExecutorId, u64> serialized with Borsh
-    //
-    // We need to use the actual storage types, but since we can't easily
-    // construct them here without env setup, we verify via merge_dispatch tests
-    // in calimero-storage. This test documents the expected behavior.
-
-    // The actual merge is tested in:
-    // - crates/storage/src/tests/merge_dispatch.rs::test_gcounter_merge_sums_contributions
-    // - crates/storage/src/tests/merge_dispatch.rs::test_gcounter_merge_max_per_executor
-    //
-    // Here we verify the classification is correct
-    assert!(
-        is_builtin_crdt(&CrdtType::GCounter),
-        "GCounter should be builtin"
-    );
-}
-
-/// GCounter: same executor takes max (idempotent).
-#[test]
-fn test_gcounter_same_executor_takes_max() {
-    // Documented behavior: when same executor appears in both counters,
-    // merge takes max(existing_count, incoming_count) for that executor.
-    //
-    // Actual test in: merge_dispatch.rs::test_gcounter_merge_max_per_executor
+fn test_gcounter_is_builtin() {
     assert!(
         is_builtin_crdt(&CrdtType::GCounter),
         "GCounter should be builtin"
@@ -67,29 +49,18 @@ fn test_gcounter_same_executor_takes_max() {
 // PnCounter Tests
 // =============================================================================
 
-/// PnCounter: merge combines positive and negative maps.
+/// PnCounter is classified as builtin (no WASM required).
 ///
-/// PnCounter = positive_map - negative_map
-/// Merge: union of positive maps, union of negative maps
+/// Expected merge behavior (tested in merge_dispatch.rs):
+/// - PnCounter = positive_map - negative_map
+/// - Merge: union of positive maps, union of negative maps
+/// - positive_map: max per executor
+/// - negative_map: max per executor
+/// - Can represent negative values if decrements exceed increments
+///
+/// Actual test in: merge_dispatch.rs::test_pncounter_merge_combines_maps
 #[test]
-fn test_pncounter_merge_combines_maps() {
-    // Documented behavior:
-    // - positive_map: max per executor
-    // - negative_map: max per executor
-    // - final value = sum(positive) - sum(negative)
-    //
-    // Actual test in: merge_dispatch.rs::test_pncounter_merge_combines_maps
-    assert!(
-        is_builtin_crdt(&CrdtType::PnCounter),
-        "PnCounter should be builtin"
-    );
-}
-
-/// PnCounter: can represent negative values.
-#[test]
-fn test_pncounter_can_go_negative() {
-    // PnCounter can have negative final value if decrements exceed increments
-    // This is tested in storage tests for actual behavior
+fn test_pncounter_is_builtin() {
     assert!(
         is_builtin_crdt(&CrdtType::PnCounter),
         "PnCounter should be builtin"
@@ -100,21 +71,20 @@ fn test_pncounter_can_go_negative() {
 // RGA Tests
 // =============================================================================
 
-/// RGA: merge interleaves characters by (timestamp, node_id).
+/// RGA is classified as builtin (no WASM required).
 ///
-/// When two nodes edit the same RGA concurrently, merge preserves
-/// all characters and orders them by their unique timestamps.
+/// Expected merge behavior (tested in crdt_impls.rs):
+/// - Merge interleaves characters by (timestamp, node_id)
+/// - All characters from both RGAs are preserved
+/// - Ordering determined by unique timestamps for determinism
+/// - Deletions are tracked via tombstones
+///
+/// Actual tests in:
+/// - crdt_impls.rs::test_rga_merge_disjoint_characters
+/// - crdt_impls.rs::test_rga_merge_overlapping_edits
+/// - crdt_impls.rs::test_rga_merge_with_deletions
 #[test]
-fn test_rga_merge_interleaves() {
-    // Documented behavior:
-    // - All characters from both RGAs are preserved
-    // - Ordering determined by (timestamp, node_id) for determinism
-    // - Deletions are tracked (tombstones)
-    //
-    // Actual tests in:
-    // - crdt_impls.rs::test_rga_merge_disjoint_characters
-    // - crdt_impls.rs::test_rga_merge_overlapping_edits
-    // - crdt_impls.rs::test_rga_merge_with_deletions
+fn test_rga_is_builtin() {
     assert!(is_builtin_crdt(&CrdtType::Rga), "RGA should be builtin");
 }
 
@@ -216,6 +186,17 @@ fn test_user_storage_returns_incoming() {
 // =============================================================================
 // FrozenStorage Tests
 // =============================================================================
+//
+// FrozenStorage uses first-write-wins semantics. This is intentionally NOT
+// convergent in the CRDT sense: if two nodes independently write different
+// values before syncing, they will each keep their own value.
+//
+// This is by design for immutable data like:
+// - Identity keys (once set, never change)
+// - Genesis state (established at creation)
+// - Application-specific constants
+//
+// For data that must converge, use LwwRegister or UserStorage instead.
 
 /// FrozenStorage: first-write-wins (keeps existing).
 #[test]
@@ -231,7 +212,11 @@ fn test_frozen_storage_keeps_existing() {
     );
 }
 
-/// FrozenStorage: even with empty existing, keeps it.
+/// FrozenStorage: empty existing is still a valid first-write.
+///
+/// An entity that exists with empty bytes is considered "initialized" -
+/// the empty value was intentionally written. This is distinct from
+/// a non-existent entity (which would take the incoming value).
 #[test]
 fn test_frozen_storage_keeps_empty_existing() {
     let existing = vec![];
@@ -270,9 +255,9 @@ fn test_custom_requires_wasm() {
 // Error Handling Tests
 // =============================================================================
 
-/// Corrupted GCounter data returns SerializationError.
+/// Corrupted GCounter existing data returns SerializationError.
 #[test]
-fn test_corrupted_gcounter_returns_error() {
+fn test_corrupted_gcounter_existing_returns_error() {
     let corrupted = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
     let valid = vec![0; 10];
 
@@ -280,20 +265,49 @@ fn test_corrupted_gcounter_returns_error() {
 
     assert!(
         matches!(result, Err(MergeError::SerializationError(_))),
-        "Corrupted data should return SerializationError"
+        "Corrupted existing data should return SerializationError"
     );
 }
 
-/// Corrupted RGA returns SerializationError.
+/// Corrupted GCounter incoming data returns SerializationError.
 #[test]
-fn test_corrupted_rga_returns_error() {
-    let corrupted = vec![0xFF, 0xFF, 0xFF];
+fn test_corrupted_gcounter_incoming_returns_error() {
+    let valid = vec![0; 10];
+    let corrupted = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
 
-    let result = merge_by_crdt_type(&CrdtType::Rga, &corrupted, &corrupted);
+    let result = merge_by_crdt_type(&CrdtType::GCounter, &valid, &corrupted);
 
     assert!(
         matches!(result, Err(MergeError::SerializationError(_))),
-        "Corrupted RGA should return SerializationError"
+        "Corrupted incoming data should return SerializationError"
+    );
+}
+
+/// Corrupted RGA existing returns SerializationError.
+#[test]
+fn test_corrupted_rga_existing_returns_error() {
+    let corrupted = vec![0xFF, 0xFF, 0xFF];
+    let valid = vec![0; 8]; // Empty RGA serialization might be shorter
+
+    let result = merge_by_crdt_type(&CrdtType::Rga, &corrupted, &valid);
+
+    assert!(
+        matches!(result, Err(MergeError::SerializationError(_))),
+        "Corrupted RGA existing should return SerializationError"
+    );
+}
+
+/// Corrupted RGA incoming returns SerializationError.
+#[test]
+fn test_corrupted_rga_incoming_returns_error() {
+    let valid = vec![0; 8];
+    let corrupted = vec![0xFF, 0xFF, 0xFF];
+
+    let result = merge_by_crdt_type(&CrdtType::Rga, &valid, &corrupted);
+
+    assert!(
+        matches!(result, Err(MergeError::SerializationError(_))),
+        "Corrupted RGA incoming should return SerializationError"
     );
 }
 

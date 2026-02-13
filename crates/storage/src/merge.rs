@@ -197,6 +197,10 @@ pub fn merge_by_crdt_type(
         CrdtType::UserStorage => Ok(incoming.to_vec()),
 
         // FrozenStorage - first-write-wins (keep existing)
+        // Note: If two nodes independently write different first values before syncing,
+        // they will each keep their own value (no convergence). This is by design for
+        // immutable data like identity keys or genesis state where the first write is
+        // authoritative. For data that must converge, use LwwRegister or UserStorage.
         CrdtType::FrozenStorage => Ok(existing.to_vec()),
 
         // App-defined types
