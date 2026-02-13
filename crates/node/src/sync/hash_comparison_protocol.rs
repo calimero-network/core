@@ -381,7 +381,12 @@ async fn run_responder_impl<T: SyncTransport>(
 // =============================================================================
 
 /// Get a tree node from the local Merkle tree Index.
-fn get_local_tree_node(
+///
+/// This is the shared implementation used by both the standalone protocol
+/// and the SyncManager responder to ensure consistent behavior.
+///
+/// Must be called within `with_runtime_env` context.
+pub(crate) fn get_local_tree_node(
     context_id: ContextId,
     node_id: &[u8; 32],
     is_root_request: bool,
