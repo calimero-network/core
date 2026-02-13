@@ -71,6 +71,12 @@ pub enum StreamMessage<'a> {
     /// Follow-up message in an ongoing sync operation.
     Message {
         /// Sequence number for ordering.
+        ///
+        /// # Wire Format Change
+        ///
+        /// Changed from `usize` to `u64` for cross-platform portability.
+        /// This is a breaking wire format change - nodes must be upgraded
+        /// together to avoid deserialization failures.
         sequence_id: u64,
         /// The message payload.
         payload: MessagePayload<'a>,

@@ -28,7 +28,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
-use calimero_storage::env::with_runtime_env;
+use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::index::Index;
 use calimero_storage::interface::Interface;
 use calimero_storage::store::MainStorage;
@@ -59,7 +59,8 @@ impl SyncManager {
     /// * `first_node_id` - Node ID from the first request (already parsed)
     /// * `first_max_depth` - Max depth from the first request
     /// * `transport` - Transport for sending/receiving messages
-    /// * `nonce` - Initial nonce (unused; each response generates its own nonce)
+    /// * `_nonce` - Reserved for future encrypted sync (currently unused as each
+    ///   response generates its own nonce via `generate_nonce()`)
     pub async fn handle_tree_node_request<T: SyncTransport>(
         &self,
         context_id: ContextId,
@@ -100,11 +101,15 @@ impl SyncManager {
         let mut sqx = super::tracking::Sequencer::default();
         let mut requests_handled = 0u64;
 
+        // Create RuntimeEnv once for all requests (optimization: avoids per-request allocation)
+        let datastore = self.context_client.datastore_handle().into_inner();
+        let runtime_env = create_runtime_env(&datastore, context_id, our_identity);
+
         // Handle the first request (already parsed by handle_sync_request)
         {
             let clamped_depth = first_max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
             let response = self
-                .build_tree_node_response(context_id, &first_node_id, clamped_depth, our_identity)
+                .build_tree_node_response(context_id, &first_node_id, clamped_depth, &runtime_env)
                 .await?;
 
             let msg = StreamMessage::Message {
@@ -149,7 +154,7 @@ impl SyncManager {
 
             let clamped_depth = max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
             let response = self
-                .build_tree_node_response(context_id, &node_id, clamped_depth, our_identity)
+                .build_tree_node_response(context_id, &node_id, clamped_depth, &runtime_env)
                 .await?;
 
             let msg = StreamMessage::Message {
@@ -171,17 +176,20 @@ impl SyncManager {
     /// Build TreeNodeResponse for a requested node.
     ///
     /// Uses the real Merkle tree Index via RuntimeEnv bridge.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - Context being synchronized
+    /// * `node_id` - ID of the node to retrieve
+    /// * `max_depth` - Maximum depth to traverse (clamped externally)
+    /// * `runtime_env` - Pre-created RuntimeEnv (shared across requests for efficiency)
     async fn build_tree_node_response(
         &self,
         context_id: ContextId,
         node_id: &[u8; 32],
         max_depth: Option<u8>,
-        our_identity: PublicKey,
+        runtime_env: &RuntimeEnv,
     ) -> Result<TreeNodeResponse> {
-        // Set up storage bridge using shared helper
-        let datastore = self.context_client.datastore_handle().into_inner();
-        let runtime_env = create_runtime_env(&datastore, context_id, our_identity);
-
         // Get context to check if this is a root request
         let context = self.context_client.get_context(&context_id)?;
         let Some(context) = context else {
