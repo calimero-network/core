@@ -253,4 +253,316 @@ mod tests {
         // Verify Alice got Bob's entity
         assert!(stats.entities_transferred >= 1);
     }
+
+    // =========================================================================
+    // 3-Node Sync Tests (Issue: reports of 3-node sync failing)
+    // =========================================================================
+
+    /// Test 3 nodes where each has unique data, syncing in a chain: A→B→C→A
+    ///
+    /// This tests the scenario where:
+    /// - A has entities 1-3
+    /// - B has entities 4-6
+    /// - C has entities 7-9
+    ///
+    /// After chain sync, all should have entities 1-9.
+    #[tokio::test]
+    async fn test_three_node_chain_sync() {
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+        let mut charlie = SimNode::new_in_context("charlie", ctx);
+
+        // Alice has entities 1-3
+        for i in 1..=3 {
+            alice.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("alice-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        // Bob has entities 4-6
+        for i in 4..=6 {
+            bob.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("bob-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        // Charlie has entities 7-9
+        for i in 7..=9 {
+            charlie.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("charlie-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        // Initial state: all different
+        assert_ne!(alice.root_hash(), bob.root_hash());
+        assert_ne!(bob.root_hash(), charlie.root_hash());
+        assert_ne!(alice.root_hash(), charlie.root_hash());
+
+        println!("Initial state:");
+        println!(
+            "  Alice: {} entities, hash {:?}",
+            alice.entity_count(),
+            &alice.root_hash()[..4]
+        );
+        println!(
+            "  Bob: {} entities, hash {:?}",
+            bob.entity_count(),
+            &bob.root_hash()[..4]
+        );
+        println!(
+            "  Charlie: {} entities, hash {:?}",
+            charlie.entity_count(),
+            &charlie.root_hash()[..4]
+        );
+
+        // Step 1: Alice syncs FROM Bob (Alice pulls Bob's data)
+        let stats1 = execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("alice <- bob sync should succeed");
+        println!("\nAfter Alice <- Bob:");
+        println!(
+            "  Alice: {} entities (transferred {})",
+            alice.entity_count(),
+            stats1.entities_transferred
+        );
+
+        // Step 2: Alice syncs FROM Charlie (Alice pulls Charlie's data)
+        let stats2 = execute_hash_comparison_sync(&mut alice, &charlie)
+            .await
+            .expect("alice <- charlie sync should succeed");
+        println!("\nAfter Alice <- Charlie:");
+        println!(
+            "  Alice: {} entities (transferred {})",
+            alice.entity_count(),
+            stats2.entities_transferred
+        );
+
+        // Now Alice has all 9 entities
+        assert_eq!(alice.entity_count(), 9, "Alice should have all 9 entities");
+
+        // Step 3: Bob syncs FROM Alice (Bob pulls Alice's data, which now includes Charlie's)
+        let stats3 = execute_hash_comparison_sync(&mut bob, &alice)
+            .await
+            .expect("bob <- alice sync should succeed");
+        println!("\nAfter Bob <- Alice:");
+        println!(
+            "  Bob: {} entities (transferred {})",
+            bob.entity_count(),
+            stats3.entities_transferred
+        );
+
+        // Step 4: Charlie syncs FROM Alice
+        let stats4 = execute_hash_comparison_sync(&mut charlie, &alice)
+            .await
+            .expect("charlie <- alice sync should succeed");
+        println!("\nAfter Charlie <- Alice:");
+        println!(
+            "  Charlie: {} entities (transferred {})",
+            charlie.entity_count(),
+            stats4.entities_transferred
+        );
+
+        // Final state: ALL should be converged
+        println!("\nFinal state:");
+        println!(
+            "  Alice: {} entities, hash {:?}",
+            alice.entity_count(),
+            &alice.root_hash()[..4]
+        );
+        println!(
+            "  Bob: {} entities, hash {:?}",
+            bob.entity_count(),
+            &bob.root_hash()[..4]
+        );
+        println!(
+            "  Charlie: {} entities, hash {:?}",
+            charlie.entity_count(),
+            &charlie.root_hash()[..4]
+        );
+
+        // Verify convergence (Invariant I4)
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "Alice and Bob should converge"
+        );
+        assert_eq!(
+            bob.root_hash(),
+            charlie.root_hash(),
+            "Bob and Charlie should converge"
+        );
+        assert_eq!(alice.entity_count(), 9);
+        assert_eq!(bob.entity_count(), 9);
+        assert_eq!(charlie.entity_count(), 9);
+    }
+
+    /// Test 3 nodes with mesh sync (all pairs sync bidirectionally)
+    ///
+    /// This is a more thorough test: every node syncs with every other node.
+    #[tokio::test]
+    async fn test_three_node_mesh_sync() {
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+        let mut charlie = SimNode::new_in_context("charlie", ctx);
+
+        // Each node has 5 unique entities
+        for i in 0..5 {
+            alice.insert_entity_with_metadata(
+                EntityId::from_u64(100 + i),
+                format!("a-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+            bob.insert_entity_with_metadata(
+                EntityId::from_u64(200 + i),
+                format!("b-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+            charlie.insert_entity_with_metadata(
+                EntityId::from_u64(300 + i),
+                format!("c-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        // Full mesh sync: each node pulls from both others
+        // Round 1: Everyone pulls from everyone else
+        execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("a<-b");
+        execute_hash_comparison_sync(&mut alice, &charlie)
+            .await
+            .expect("a<-c");
+        execute_hash_comparison_sync(&mut bob, &alice)
+            .await
+            .expect("b<-a");
+        execute_hash_comparison_sync(&mut bob, &charlie)
+            .await
+            .expect("b<-c");
+        execute_hash_comparison_sync(&mut charlie, &alice)
+            .await
+            .expect("c<-a");
+        execute_hash_comparison_sync(&mut charlie, &bob)
+            .await
+            .expect("c<-b");
+
+        // All should have 15 entities and same hash
+        assert_eq!(alice.entity_count(), 15, "Alice should have 15 entities");
+        assert_eq!(bob.entity_count(), 15, "Bob should have 15 entities");
+        assert_eq!(
+            charlie.entity_count(),
+            15,
+            "Charlie should have 15 entities"
+        );
+
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "Alice and Bob should match"
+        );
+        assert_eq!(
+            bob.root_hash(),
+            charlie.root_hash(),
+            "Bob and Charlie should match"
+        );
+    }
+
+    /// Test 3 nodes where one starts empty (fresh join scenario)
+    #[tokio::test]
+    async fn test_three_node_fresh_join() {
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+        let mut charlie = SimNode::new_in_context("charlie", ctx); // Fresh, empty
+
+        // Alice and Bob have shared state
+        for i in 1..=5 {
+            alice.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("shared-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+            bob.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("shared-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        // Alice and Bob are synced
+        assert_eq!(alice.root_hash(), bob.root_hash());
+        // Charlie is empty
+        assert_eq!(charlie.entity_count(), 0);
+
+        // Charlie joins by syncing from Alice
+        execute_hash_comparison_sync(&mut charlie, &alice)
+            .await
+            .expect("charlie <- alice sync should succeed");
+
+        // Charlie should now match Alice and Bob
+        assert_eq!(charlie.root_hash(), alice.root_hash());
+        assert_eq!(charlie.entity_count(), 5);
+    }
+
+    /// Test 3 nodes with conflicting updates to same entity (CRDT merge)
+    #[tokio::test]
+    async fn test_three_node_crdt_conflict() {
+        use calimero_primitives::crdt::CrdtType;
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+        let mut charlie = SimNode::new_in_context("charlie", ctx);
+
+        // All three modify the same entity with different timestamps
+        let conflict_id = EntityId::from_u64(999);
+
+        alice.insert_entity_with_metadata(
+            conflict_id,
+            b"alice-version".to_vec(),
+            EntityMetadata::new(CrdtType::LwwRegister, 100), // oldest
+        );
+        bob.insert_entity_with_metadata(
+            conflict_id,
+            b"bob-version".to_vec(),
+            EntityMetadata::new(CrdtType::LwwRegister, 200), // middle
+        );
+        charlie.insert_entity_with_metadata(
+            conflict_id,
+            b"charlie-version".to_vec(),
+            EntityMetadata::new(CrdtType::LwwRegister, 300), // newest - should win
+        );
+
+        // Sync all to Alice (Alice pulls from both)
+        execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("a<-b");
+        execute_hash_comparison_sync(&mut alice, &charlie)
+            .await
+            .expect("a<-c");
+
+        // Sync others from Alice
+        execute_hash_comparison_sync(&mut bob, &alice)
+            .await
+            .expect("b<-a");
+        execute_hash_comparison_sync(&mut charlie, &alice)
+            .await
+            .expect("c<-a");
+
+        // All should converge to same hash (winner is charlie's version with ts=300)
+        assert_eq!(alice.root_hash(), bob.root_hash(), "A and B should match");
+        assert_eq!(bob.root_hash(), charlie.root_hash(), "B and C should match");
+
+        // All should have exactly 1 entity
+        assert_eq!(alice.entity_count(), 1);
+        assert_eq!(bob.entity_count(), 1);
+        assert_eq!(charlie.entity_count(), 1);
+    }
 }
