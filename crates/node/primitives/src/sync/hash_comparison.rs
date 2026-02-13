@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn test_tree_node_leaf() {
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 12345, [5; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 12345, [5; 32]);
         let leaf_data = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata);
         let node = TreeNode::leaf([2; 32], [3; 32], leaf_data);
 
@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn test_crdt_type_variants() {
         let types = vec![
-            CrdtType::LwwRegister,
+            CrdtType::lww_register("test"),
             CrdtType::GCounter,
             CrdtType::PnCounter,
             CrdtType::Rga,
@@ -723,11 +723,11 @@ mod tests {
 
     #[test]
     fn test_compare_tree_nodes_leaf_content_differs() {
-        let local_metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let local_metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let local_leaf = TreeLeafData::new([10; 32], vec![1, 2, 3], local_metadata);
         let local = TreeNode::leaf([1; 32], [100; 32], local_leaf);
 
-        let remote_metadata = LeafMetadata::new(CrdtType::LwwRegister, 200, [1; 32]);
+        let remote_metadata = LeafMetadata::new(CrdtType::lww_register("test"), 200, [1; 32]);
         let remote_leaf = TreeLeafData::new([10; 32], vec![4, 5, 6], remote_metadata);
         let remote = TreeNode::leaf([1; 32], [200; 32], remote_leaf);
 
@@ -855,7 +855,7 @@ mod tests {
             TreeNodeResponse::new(vec![TreeNode::internal([1; 32], [2; 32], vec![[3; 32]])]);
         assert!(valid_response.is_valid());
 
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let leaf_data = TreeLeafData::new([10; 32], vec![1, 2, 3], metadata);
         let leaf_response =
             TreeNodeResponse::new(vec![TreeNode::leaf([1; 32], [2; 32], leaf_data)]);
@@ -884,7 +884,7 @@ mod tests {
         let over_limit = TreeNode::internal([1; 32], [2; 32], over_children);
         assert!(!over_limit.is_valid());
 
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let leaf_data = TreeLeafData::new([10; 32], vec![1, 2, 3], metadata);
         let invalid_node = TreeNode {
             id: [1; 32],
@@ -894,7 +894,7 @@ mod tests {
         };
         assert!(!invalid_node.is_valid());
 
-        let valid_metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let valid_metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let valid_leaf_data = TreeLeafData::new([10; 32], vec![1, 2, 3], valid_metadata);
         let valid_leaf = TreeNode::leaf([1; 32], [2; 32], valid_leaf_data);
         assert!(valid_leaf.is_valid());
@@ -926,7 +926,7 @@ mod tests {
 
     #[test]
     fn test_tree_leaf_data_validation() {
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
 
         let valid = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata.clone());
         assert!(valid.is_valid());

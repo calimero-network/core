@@ -415,7 +415,7 @@ fn get_local_tree_node(
                     .metadata
                     .crdt_type
                     .clone()
-                    .unwrap_or(CrdtType::LwwRegister),
+                    .unwrap_or_else(|| CrdtType::lww_register("unknown")),
                 index.metadata.updated_at(),
                 [0u8; 32],
             );

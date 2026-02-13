@@ -64,7 +64,7 @@ fn test_i4_deterministic_convergence() {
         alice.insert_entity_with_metadata(
             EntityId::from_u64(i),
             format!("alice-{i}").into_bytes(),
-            EntityMetadata::new(CrdtType::LwwRegister, i * 100),
+            EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
 
@@ -72,7 +72,7 @@ fn test_i4_deterministic_convergence() {
         bob.insert_entity_with_metadata(
             EntityId::from_u64(i),
             format!("bob-{i}").into_bytes(),
-            EntityMetadata::new(CrdtType::LwwRegister, i * 100),
+            EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
 
@@ -117,7 +117,7 @@ fn test_i4_bidirectional_convergence() {
         alice.insert_entity_with_metadata(
             EntityId::from_u64(i),
             format!("alice-{i}").into_bytes(),
-            EntityMetadata::new(CrdtType::LwwRegister, i * 100),
+            EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
 
@@ -126,7 +126,7 @@ fn test_i4_bidirectional_convergence() {
         bob.insert_entity_with_metadata(
             EntityId::from_u64(i),
             format!("bob-{i}").into_bytes(),
-            EntityMetadata::new(CrdtType::LwwRegister, i * 100),
+            EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
 
@@ -159,26 +159,26 @@ fn test_i4_overlapping_convergence() {
     alice.insert_entity_with_metadata(
         shared_id,
         b"alice-value".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 100),
+        EntityMetadata::new(CrdtType::lww_register("test"), 100),
     );
 
     bob.insert_entity_with_metadata(
         shared_id,
         b"bob-value".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 200), // Newer
+        EntityMetadata::new(CrdtType::lww_register("test"), 200), // Newer
     );
 
     // Alice-only and Bob-only entities
     alice.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"alice-only".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 50),
+        EntityMetadata::new(CrdtType::lww_register("test"), 50),
     );
 
     bob.insert_entity_with_metadata(
         EntityId::from_u64(2),
         b"bob-only".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 60),
+        EntityMetadata::new(CrdtType::lww_register("test"), 60),
     );
 
     // Force HashComparison
@@ -211,7 +211,7 @@ fn test_i4_multi_node_convergence() {
             node.insert_entity_with_metadata(
                 id,
                 format!("node-{i}-entity-{j}").into_bytes(),
-                EntityMetadata::new(CrdtType::LwwRegister, (i * 1000 + j * 100) as u64),
+                EntityMetadata::new(CrdtType::lww_register("test"), (i * 1000 + j * 100) as u64),
             );
         }
         // Force HashComparison
@@ -245,13 +245,13 @@ fn test_i4_concurrent_modification_convergence() {
     alice.insert_entity_with_metadata(
         shared_id,
         b"initial".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 100),
+        EntityMetadata::new(CrdtType::lww_register("test"), 100),
     );
 
     bob.insert_entity_with_metadata(
         shared_id,
         b"initial".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 100),
+        EntityMetadata::new(CrdtType::lww_register("test"), 100),
     );
 
     // Now they're in sync
@@ -261,13 +261,13 @@ fn test_i4_concurrent_modification_convergence() {
     alice.insert_entity_with_metadata(
         shared_id,
         b"alice-modified".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 200),
+        EntityMetadata::new(CrdtType::lww_register("test"), 200),
     );
 
     bob.insert_entity_with_metadata(
         shared_id,
         b"bob-modified".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 300), // Newer
+        EntityMetadata::new(CrdtType::lww_register("test"), 300), // Newer
     );
 
     // Now diverged
@@ -294,7 +294,7 @@ fn create_diverged_pair(name1: &str, name2: &str, seed: u64) -> (SimNode, SimNod
         node1.insert_entity_with_metadata(
             EntityId::from_u64(seed * 1000 + i),
             format!("{name1}-entity-{i}").into_bytes(),
-            EntityMetadata::new(CrdtType::LwwRegister, i * 100),
+            EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
 
@@ -303,7 +303,7 @@ fn create_diverged_pair(name1: &str, name2: &str, seed: u64) -> (SimNode, SimNod
         node2.insert_entity_with_metadata(
             EntityId::from_u64(seed * 1000 + 100 + i),
             format!("{name2}-entity-{i}").into_bytes(),
-            EntityMetadata::new(CrdtType::LwwRegister, i * 100 + 50),
+            EntityMetadata::new(CrdtType::lww_register("test"), i * 100 + 50),
         );
     }
 

@@ -652,7 +652,7 @@ mod tests {
     // =========================================================================
 
     fn make_metadata() -> LeafMetadata {
-        LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32])
+        LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32])
     }
 
     fn make_entity(id: u8, data: Vec<u8>) -> SnapshotEntity {

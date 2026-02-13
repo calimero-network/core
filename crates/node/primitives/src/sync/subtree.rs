@@ -447,7 +447,7 @@ mod tests {
     // =========================================================================
 
     fn make_leaf(key: u8, value: Vec<u8>) -> TreeLeafData {
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [key; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [key; 32]);
         TreeLeafData::new([key; 32], value, metadata)
     }
 
@@ -644,7 +644,7 @@ mod tests {
         assert!(valid.is_valid());
 
         // Invalid subtree with oversized leaf value
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let invalid_leaf = TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE + 1], metadata);
         let invalid = SubtreeData::new([1; 32], [2; 32], vec![invalid_leaf], 2);
         assert!(!invalid.is_valid());
@@ -782,7 +782,7 @@ mod tests {
         assert!(!over_not_found.is_valid());
 
         // Invalid response with invalid subtree
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let invalid_leaf = TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE + 1], metadata);
         let invalid_subtree = SubtreeData::new([1; 32], [2; 32], vec![invalid_leaf], 2);
         let response_with_invalid = SubtreePrefetchResponse::complete(vec![invalid_subtree]);
@@ -1022,7 +1022,7 @@ mod tests {
     #[test]
     fn test_subtree_cross_validation_consistency() {
         // Verify that individual subtree validation is enforced in response validation
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let oversized_leaf =
             TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE + 1], metadata);
         let invalid_subtree = SubtreeData::new([1; 32], [2; 32], vec![oversized_leaf], 2);

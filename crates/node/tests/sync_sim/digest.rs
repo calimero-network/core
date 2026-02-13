@@ -17,13 +17,13 @@ pub fn hash_metadata(metadata: &EntityMetadata) -> [u8; 32] {
     // IMPORTANT: These discriminant values must remain stable for digest compatibility.
     // Changing them will cause different digests for the same data across versions.
     match &metadata.crdt_type {
-        calimero_primitives::crdt::CrdtType::LwwRegister => hasher.update([0u8]),
+        calimero_primitives::crdt::CrdtType::LwwRegister { .. } => hasher.update([0u8]),
         calimero_primitives::crdt::CrdtType::GCounter => hasher.update([1u8]),
         calimero_primitives::crdt::CrdtType::PnCounter => hasher.update([2u8]),
         calimero_primitives::crdt::CrdtType::Rga => hasher.update([3u8]),
-        calimero_primitives::crdt::CrdtType::UnorderedMap => hasher.update([4u8]),
-        calimero_primitives::crdt::CrdtType::UnorderedSet => hasher.update([5u8]),
-        calimero_primitives::crdt::CrdtType::Vector => hasher.update([6u8]),
+        calimero_primitives::crdt::CrdtType::UnorderedMap { .. } => hasher.update([4u8]),
+        calimero_primitives::crdt::CrdtType::UnorderedSet { .. } => hasher.update([5u8]),
+        calimero_primitives::crdt::CrdtType::Vector { .. } => hasher.update([6u8]),
         calimero_primitives::crdt::CrdtType::UserStorage => hasher.update([7u8]),
         calimero_primitives::crdt::CrdtType::FrozenStorage => hasher.update([8u8]),
         calimero_primitives::crdt::CrdtType::Custom(s) => {
@@ -178,7 +178,7 @@ mod tests {
         DigestEntity {
             id: EntityId::from_u64(id),
             data: data.to_vec(),
-            metadata: EntityMetadata::new(CrdtType::LwwRegister, id * 100),
+            metadata: EntityMetadata::new(CrdtType::lww_register("test"), id * 100),
         }
     }
 
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn test_metadata_hash_different_crdt_types() {
-        let m1 = EntityMetadata::new(CrdtType::LwwRegister, 100);
+        let m1 = EntityMetadata::new(CrdtType::lww_register("test"), 100);
         let m2 = EntityMetadata::new(CrdtType::GCounter, 100);
 
         let h1 = hash_metadata(&m1);

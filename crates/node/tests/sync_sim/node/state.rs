@@ -379,12 +379,14 @@ impl SimNode {
 
     /// Convert simulation EntityMetadata to storage Metadata.
     ///
-    /// Note: Storage Metadata doesn't have all simulation fields, so we store
-    /// the full EntityMetadata separately in `entity_metadata` cache.
-    fn entity_metadata_to_storage_metadata(_metadata: &EntityMetadata) -> Metadata {
-        // Storage Metadata is simpler - use defaults for now
-        // The simulation-specific fields are stored in entity_metadata cache
-        Metadata::default()
+    /// Preserves CRDT type to enable type-based merge dispatch in storage layer.
+    /// Other simulation fields (version, collection_id) are stored in entity_metadata cache.
+    fn entity_metadata_to_storage_metadata(metadata: &EntityMetadata) -> Metadata {
+        Metadata::with_crdt_type(
+            metadata.hlc_timestamp,
+            metadata.hlc_timestamp,
+            metadata.crdt_type.clone(),
+        )
     }
 
     /// Get DAG heads.
@@ -986,7 +988,7 @@ mod tests {
         let mut node = SimNode::new("alice");
 
         let id = EntityId::from_u64(1);
-        node.insert_entity(id, vec![1, 2, 3], CrdtType::LwwRegister);
+        node.insert_entity(id, vec![1, 2, 3], CrdtType::lww_register("test"));
 
         assert!(node.has_any_state());
         assert_eq!(node.entity_count(), 1);
@@ -1001,7 +1003,11 @@ mod tests {
         let mut node = SimNode::new("alice");
 
         // Set up some state
-        node.insert_entity(EntityId::from_u64(1), vec![1], CrdtType::LwwRegister);
+        node.insert_entity(
+            EntityId::from_u64(1),
+            vec![1],
+            CrdtType::lww_register("test"),
+        );
         node.sync_state = SyncState::Initiating {
             peer: NodeId::new("bob"),
         };
@@ -1065,7 +1071,11 @@ mod tests {
         let d1 = node.state_digest();
         assert_eq!(d1, StateDigest::ZERO);
 
-        node.insert_entity(EntityId::from_u64(1), vec![1], CrdtType::LwwRegister);
+        node.insert_entity(
+            EntityId::from_u64(1),
+            vec![1],
+            CrdtType::lww_register("test"),
+        );
 
         let d2 = node.state_digest();
         assert_ne!(d2, StateDigest::ZERO);
@@ -1154,7 +1164,7 @@ mod tests {
             0, 0, 0,
         ]);
 
-        let metadata = EntityMetadata::new(CrdtType::LwwRegister, 0);
+        let metadata = EntityMetadata::new(CrdtType::lww_register("test"), 0);
 
         node.insert_entity_hierarchical(key1, vec![1], metadata.clone(), 3);
         node.insert_entity_hierarchical(key2, vec![2], metadata.clone(), 3);
@@ -1217,7 +1227,7 @@ mod tests {
             0, 0, 0,
         ]);
 
-        let metadata = EntityMetadata::new(CrdtType::LwwRegister, 0);
+        let metadata = EntityMetadata::new(CrdtType::lww_register("test"), 0);
 
         node.insert_entity_hierarchical(key1, vec![1], metadata.clone(), 3);
         let (_, total_after_first, _) = node.tree_stats();

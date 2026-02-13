@@ -62,7 +62,7 @@
 //! rt.node_mut(&alice).unwrap().insert_entity(
 //!     EntityId::from_u64(1),
 //!     vec![1, 2, 3],
-//!     CrdtType::LwwRegister,
+//!     CrdtType::lww_register("test"),
 //! );
 //!
 //! // Run until convergence

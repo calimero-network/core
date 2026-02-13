@@ -306,7 +306,7 @@ impl SyncManager {
                         .metadata
                         .crdt_type
                         .clone()
-                        .unwrap_or(CrdtType::LwwRegister),
+                        .unwrap_or_else(|| CrdtType::lww_register("unknown")),
                     index.metadata.updated_at(),
                     // Collection ID - use parent if available
                     [0u8; 32],

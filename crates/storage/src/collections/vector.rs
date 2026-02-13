@@ -91,7 +91,7 @@ where
             inner: Collection::new_with_field_name_and_crdt_type(
                 parent_id,
                 field_name,
-                CrdtType::Vector,
+                CrdtType::vector(std::any::type_name::<V>()),
             ),
         }
     }
@@ -105,8 +105,10 @@ where
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this vector
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {
-        self.inner
-            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::Vector);
+        self.inner.reassign_deterministic_id_with_crdt_type(
+            field_name,
+            CrdtType::vector(std::any::type_name::<V>()),
+        );
     }
 
     /// Add a value to the end of the vector.

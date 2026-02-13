@@ -30,7 +30,12 @@ pub enum CrdtType {
     ///
     /// Wraps primitive types with timestamp-based conflict resolution.
     /// Merge: Higher HLC timestamp wins, with node ID as tie-breaker.
-    LwwRegister,
+    ///
+    /// The inner type name enables proper deserialization during merge.
+    LwwRegister {
+        /// Inner type name (e.g., "String", "u64", "MyStruct")
+        inner_type: String,
+    },
 
     // =========================================================================
     // COUNTERS
@@ -65,21 +70,32 @@ pub enum CrdtType {
     /// Keys are never lost once added (tombstoned but retained).
     /// Values are merged recursively if they implement Mergeable.
     /// Merge: Union of keys, recursive merge of values.
-    UnorderedMap,
+    UnorderedMap {
+        /// Key type name
+        key_type: String,
+        /// Value type name (may be a nested CRDT)
+        value_type: String,
+    },
 
     /// Unordered Set.
     ///
     /// Collection of unique values with add-wins semantics.
     /// Elements are never lost once added.
     /// Merge: Union of all elements from both sets.
-    UnorderedSet,
+    UnorderedSet {
+        /// Element type name
+        element_type: String,
+    },
 
     /// Vector (ordered collection).
     ///
     /// Ordered list with append operations.
     /// Elements are identified by index + timestamp for ordering.
     /// Merge: Element-wise merge by index with timestamp ordering.
-    Vector,
+    Vector {
+        /// Element type name (may be a nested CRDT)
+        element_type: String,
+    },
 
     // =========================================================================
     // SPECIAL STORAGE
@@ -108,11 +124,46 @@ pub enum CrdtType {
 
 impl Default for CrdtType {
     fn default() -> Self {
-        Self::LwwRegister
+        Self::LwwRegister {
+            inner_type: String::new(),
+        }
     }
 }
 
 impl CrdtType {
+    /// Create an LwwRegister with a known inner type.
+    #[must_use]
+    pub fn lww_register(inner_type: impl Into<String>) -> Self {
+        Self::LwwRegister {
+            inner_type: inner_type.into(),
+        }
+    }
+
+    /// Create an UnorderedMap with known key and value types.
+    #[must_use]
+    pub fn unordered_map(key_type: impl Into<String>, value_type: impl Into<String>) -> Self {
+        Self::UnorderedMap {
+            key_type: key_type.into(),
+            value_type: value_type.into(),
+        }
+    }
+
+    /// Create an UnorderedSet with a known element type.
+    #[must_use]
+    pub fn unordered_set(element_type: impl Into<String>) -> Self {
+        Self::UnorderedSet {
+            element_type: element_type.into(),
+        }
+    }
+
+    /// Create a Vector with a known element type.
+    #[must_use]
+    pub fn vector(element_type: impl Into<String>) -> Self {
+        Self::Vector {
+            element_type: element_type.into(),
+        }
+    }
+
     /// Returns `true` if this is a counter type (GCounter or PnCounter).
     #[must_use]
     pub const fn is_counter(&self) -> bool {
@@ -122,7 +173,7 @@ impl CrdtType {
     /// Returns `true` if this is a set type.
     #[must_use]
     pub const fn is_set(&self) -> bool {
-        matches!(self, Self::UnorderedSet)
+        matches!(self, Self::UnorderedSet { .. })
     }
 
     /// Returns `true` if this is a collection type (map, set, vector, or array).
@@ -130,7 +181,7 @@ impl CrdtType {
     pub const fn is_collection(&self) -> bool {
         matches!(
             self,
-            Self::UnorderedMap | Self::UnorderedSet | Self::Vector | Self::Rga
+            Self::UnorderedMap { .. } | Self::UnorderedSet { .. } | Self::Vector { .. } | Self::Rga
         )
     }
 
@@ -153,31 +204,42 @@ mod tests {
 
     #[test]
     fn test_default_is_lww_register() {
-        assert_eq!(CrdtType::default(), CrdtType::LwwRegister);
+        assert!(matches!(CrdtType::default(), CrdtType::LwwRegister { .. }));
+    }
+
+    #[test]
+    fn test_lww_register_constructor() {
+        let lww = CrdtType::lww_register("String");
+        assert_eq!(
+            lww,
+            CrdtType::LwwRegister {
+                inner_type: "String".to_string()
+            }
+        );
     }
 
     #[test]
     fn test_is_counter() {
         assert!(CrdtType::GCounter.is_counter());
         assert!(CrdtType::PnCounter.is_counter());
-        assert!(!CrdtType::LwwRegister.is_counter());
-        assert!(!CrdtType::UnorderedMap.is_counter());
+        assert!(!CrdtType::lww_register("u64").is_counter());
+        assert!(!CrdtType::unordered_map("String", "u64").is_counter());
     }
 
     #[test]
     fn test_is_set() {
-        assert!(CrdtType::UnorderedSet.is_set());
-        assert!(!CrdtType::UnorderedMap.is_set());
-        assert!(!CrdtType::Vector.is_set());
+        assert!(CrdtType::unordered_set("String").is_set());
+        assert!(!CrdtType::unordered_map("String", "u64").is_set());
+        assert!(!CrdtType::vector("u64").is_set());
     }
 
     #[test]
     fn test_is_collection() {
-        assert!(CrdtType::UnorderedMap.is_collection());
-        assert!(CrdtType::UnorderedSet.is_collection());
-        assert!(CrdtType::Vector.is_collection());
+        assert!(CrdtType::unordered_map("String", "u64").is_collection());
+        assert!(CrdtType::unordered_set("String").is_collection());
+        assert!(CrdtType::vector("u64").is_collection());
         assert!(CrdtType::Rga.is_collection());
-        assert!(!CrdtType::LwwRegister.is_collection());
+        assert!(!CrdtType::lww_register("u64").is_collection());
         assert!(!CrdtType::GCounter.is_collection());
         assert!(!CrdtType::PnCounter.is_collection());
     }
@@ -185,27 +247,28 @@ mod tests {
     #[test]
     fn test_is_custom() {
         assert!(CrdtType::Custom("test".to_string()).is_custom());
-        assert!(!CrdtType::LwwRegister.is_custom());
+        assert!(!CrdtType::lww_register("u64").is_custom());
     }
 
     #[test]
     fn test_is_special_storage() {
         assert!(CrdtType::UserStorage.is_special_storage());
         assert!(CrdtType::FrozenStorage.is_special_storage());
-        assert!(!CrdtType::LwwRegister.is_special_storage());
+        assert!(!CrdtType::lww_register("u64").is_special_storage());
         assert!(!CrdtType::GCounter.is_special_storage());
     }
 
     #[test]
     fn test_serde_roundtrip() {
         let types = [
-            CrdtType::LwwRegister,
+            CrdtType::lww_register("String"),
+            CrdtType::lww_register("u64"),
             CrdtType::GCounter,
             CrdtType::PnCounter,
             CrdtType::Rga,
-            CrdtType::UnorderedMap,
-            CrdtType::UnorderedSet,
-            CrdtType::Vector,
+            CrdtType::unordered_map("String", "u64"),
+            CrdtType::unordered_set("String"),
+            CrdtType::vector("u64"),
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,
             CrdtType::Custom("my_type".to_string()),
@@ -222,13 +285,14 @@ mod tests {
     #[test]
     fn test_borsh_roundtrip() {
         let types = [
-            CrdtType::LwwRegister,
+            CrdtType::lww_register("String"),
+            CrdtType::lww_register("u64"),
             CrdtType::GCounter,
             CrdtType::PnCounter,
             CrdtType::Rga,
-            CrdtType::UnorderedMap,
-            CrdtType::UnorderedSet,
-            CrdtType::Vector,
+            CrdtType::unordered_map("String", "u64"),
+            CrdtType::unordered_set("String"),
+            CrdtType::vector("u64"),
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,
             CrdtType::Custom("my_type".to_string()),

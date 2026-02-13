@@ -296,7 +296,7 @@ mod tests {
             [10u8; 32],
             vec![1, 2, 3],
             LeafMetadata::new(
-                crate::sync::hash_comparison::CrdtType::LwwRegister,
+                crate::sync::hash_comparison::CrdtType::lww_register("test"),
                 100,
                 [0u8; 32],
             ),

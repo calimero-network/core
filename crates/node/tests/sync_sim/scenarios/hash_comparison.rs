@@ -47,7 +47,7 @@ fn test_tree_traversal_basic() {
     for i in 1..=10 {
         let id = EntityId::from_u64(i);
         let data = format!("alice-entity-{}", i).into_bytes();
-        let metadata = EntityMetadata::new(CrdtType::LwwRegister, i * 100);
+        let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 100);
         alice.insert_entity_with_metadata(id, data, metadata);
     }
 
@@ -55,7 +55,7 @@ fn test_tree_traversal_basic() {
     for i in 5..=15 {
         let id = EntityId::from_u64(i);
         let data = format!("bob-entity-{}", i).into_bytes();
-        let metadata = EntityMetadata::new(CrdtType::LwwRegister, i * 100 + 50);
+        let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 100 + 50);
         bob.insert_entity_with_metadata(id, data, metadata);
     }
 
@@ -137,14 +137,14 @@ fn test_crdt_merge_at_leaves() {
     alice.insert_entity_with_metadata(
         shared_id,
         b"alice-value".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 100),
+        EntityMetadata::new(CrdtType::lww_register("test"), 100),
     );
 
     // Bob has version at timestamp 200 (newer)
     bob.insert_entity_with_metadata(
         shared_id,
         b"bob-value".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 200),
+        EntityMetadata::new(CrdtType::lww_register("test"), 200),
     );
 
     // Both have the same entity ID
@@ -171,13 +171,13 @@ fn test_partial_overlap_merge() {
         alice.insert_entity_with_metadata(
             id,
             format!("shared-alice-{}", i).into_bytes(),
-            EntityMetadata::new(CrdtType::LwwRegister, i * 100),
+            EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
 
         bob.insert_entity_with_metadata(
             id,
             format!("shared-bob-{}", i).into_bytes(),
-            EntityMetadata::new(CrdtType::LwwRegister, i * 100 + 50), // Newer
+            EntityMetadata::new(CrdtType::lww_register("test"), i * 100 + 50), // Newer
         );
     }
 
@@ -187,7 +187,7 @@ fn test_partial_overlap_merge() {
         alice.insert_entity_with_metadata(
             id,
             format!("alice-only-{}", i).into_bytes(),
-            EntityMetadata::new(CrdtType::LwwRegister, i * 100),
+            EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
 
@@ -197,7 +197,7 @@ fn test_partial_overlap_merge() {
         bob.insert_entity_with_metadata(
             id,
             format!("bob-only-{}", i).into_bytes(),
-            EntityMetadata::new(CrdtType::LwwRegister, i * 100),
+            EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
 
@@ -229,7 +229,7 @@ fn test_divergent_subtrees_only() {
     for i in 1..=10 {
         let id = EntityId::from_u64(i);
         let data = format!("shared-{}", i).into_bytes();
-        let metadata = EntityMetadata::new(CrdtType::LwwRegister, i * 100);
+        let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 100);
 
         alice.insert_entity_with_metadata(id, data.clone(), metadata.clone());
         bob.insert_entity_with_metadata(id, data, metadata);
@@ -241,7 +241,7 @@ fn test_divergent_subtrees_only() {
         alice.insert_entity_with_metadata(
             id,
             format!("alice-{}", i).into_bytes(),
-            EntityMetadata::new(CrdtType::LwwRegister, i * 100),
+            EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
 
@@ -250,7 +250,7 @@ fn test_divergent_subtrees_only() {
         bob.insert_entity_with_metadata(
             id,
             format!("bob-{}", i).into_bytes(),
-            EntityMetadata::new(CrdtType::LwwRegister, i * 100),
+            EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
         );
     }
 
@@ -308,7 +308,7 @@ fn test_empty_tree_handling() {
     bob.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"data".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 100),
+        EntityMetadata::new(CrdtType::lww_register("test"), 100),
     );
 
     // Alice should be able to receive all of Bob's data
@@ -341,13 +341,13 @@ fn test_single_entity_tree() {
     alice.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"alice".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 100),
+        EntityMetadata::new(CrdtType::lww_register("test"), 100),
     );
 
     bob.insert_entity_with_metadata(
         EntityId::from_u64(2),
         b"bob".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 200),
+        EntityMetadata::new(CrdtType::lww_register("test"), 200),
     );
 
     assert_eq!(alice.entity_count(), 1);
@@ -369,12 +369,12 @@ mod tests {
         alice.insert_entity_with_metadata(
             EntityId::from_u64(1),
             b"data".to_vec(),
-            EntityMetadata::new(CrdtType::LwwRegister, 100),
+            EntityMetadata::new(CrdtType::lww_register("test"), 100),
         );
         bob.insert_entity_with_metadata(
             EntityId::from_u64(2),
             b"data".to_vec(),
-            EntityMetadata::new(CrdtType::LwwRegister, 200),
+            EntityMetadata::new(CrdtType::lww_register("test"), 200),
         );
 
         // Initially, no forced protocol
@@ -415,12 +415,12 @@ mod tests {
         node.insert_entity_with_metadata(
             EntityId::from_u64(1),
             b"data".to_vec(),
-            EntityMetadata::new(CrdtType::LwwRegister, 100),
+            EntityMetadata::new(CrdtType::lww_register("test"), 100),
         );
         other.insert_entity_with_metadata(
             EntityId::from_u64(2),
             b"data".to_vec(),
-            EntityMetadata::new(CrdtType::LwwRegister, 200),
+            EntityMetadata::new(CrdtType::lww_register("test"), 200),
         );
 
         let other_hs = other.build_handshake();

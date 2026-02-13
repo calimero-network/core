@@ -527,17 +527,17 @@ mod tests {
         alice.insert_entity_with_metadata(
             conflict_id,
             b"alice-version".to_vec(),
-            EntityMetadata::new(CrdtType::LwwRegister, 100), // oldest
+            EntityMetadata::new(CrdtType::lww_register("test"), 100), // oldest
         );
         bob.insert_entity_with_metadata(
             conflict_id,
             b"bob-version".to_vec(),
-            EntityMetadata::new(CrdtType::LwwRegister, 200), // middle
+            EntityMetadata::new(CrdtType::lww_register("test"), 200), // middle
         );
         charlie.insert_entity_with_metadata(
             conflict_id,
             b"charlie-version".to_vec(),
-            EntityMetadata::new(CrdtType::LwwRegister, 300), // newest - should win
+            EntityMetadata::new(CrdtType::lww_register("test"), 300), // newest - should win
         );
 
         // Sync all to Alice (Alice pulls from both)

@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_bloom_filter_response() {
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [5; 32]);
         let leaf = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata);
 
         let response = BloomFilterResponse::new(vec![leaf], 100);
