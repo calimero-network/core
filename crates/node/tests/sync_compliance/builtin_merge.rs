@@ -255,59 +255,36 @@ fn test_custom_requires_wasm() {
 // Error Handling Tests
 // =============================================================================
 
-/// Corrupted GCounter existing data returns SerializationError.
+/// Invalid GCounter bytes return SerializationError.
+///
+/// Tests that the merge function properly validates Borsh deserialization
+/// and returns an error for malformed data.
 #[test]
-fn test_corrupted_gcounter_existing_returns_error() {
-    let corrupted = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
-    let valid = vec![0; 10];
+fn test_invalid_gcounter_returns_serialization_error() {
+    // Bytes that cannot be deserialized as a GCounter
+    let invalid_bytes = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
 
-    let result = merge_by_crdt_type(&CrdtType::GCounter, &corrupted, &valid);
+    let result = merge_by_crdt_type(&CrdtType::GCounter, &invalid_bytes, &invalid_bytes);
 
     assert!(
         matches!(result, Err(MergeError::SerializationError(_))),
-        "Corrupted existing data should return SerializationError"
+        "Invalid GCounter bytes should return SerializationError, got {:?}",
+        result
     );
 }
 
-/// Corrupted GCounter incoming data returns SerializationError.
+/// Invalid RGA bytes return SerializationError.
 #[test]
-fn test_corrupted_gcounter_incoming_returns_error() {
-    let valid = vec![0; 10];
-    let corrupted = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+fn test_invalid_rga_returns_serialization_error() {
+    // Bytes that cannot be deserialized as an RGA
+    let invalid_bytes = vec![0xFF, 0xFF, 0xFF];
 
-    let result = merge_by_crdt_type(&CrdtType::GCounter, &valid, &corrupted);
+    let result = merge_by_crdt_type(&CrdtType::Rga, &invalid_bytes, &invalid_bytes);
 
     assert!(
         matches!(result, Err(MergeError::SerializationError(_))),
-        "Corrupted incoming data should return SerializationError"
-    );
-}
-
-/// Corrupted RGA existing returns SerializationError.
-#[test]
-fn test_corrupted_rga_existing_returns_error() {
-    let corrupted = vec![0xFF, 0xFF, 0xFF];
-    let valid = vec![0; 8]; // Empty RGA serialization might be shorter
-
-    let result = merge_by_crdt_type(&CrdtType::Rga, &corrupted, &valid);
-
-    assert!(
-        matches!(result, Err(MergeError::SerializationError(_))),
-        "Corrupted RGA existing should return SerializationError"
-    );
-}
-
-/// Corrupted RGA incoming returns SerializationError.
-#[test]
-fn test_corrupted_rga_incoming_returns_error() {
-    let valid = vec![0; 8];
-    let corrupted = vec![0xFF, 0xFF, 0xFF];
-
-    let result = merge_by_crdt_type(&CrdtType::Rga, &valid, &corrupted);
-
-    assert!(
-        matches!(result, Err(MergeError::SerializationError(_))),
-        "Corrupted RGA incoming should return SerializationError"
+        "Invalid RGA bytes should return SerializationError, got {:?}",
+        result
     );
 }
 

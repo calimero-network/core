@@ -200,22 +200,3 @@ fn test_corrupted_data_returns_serialization_error() {
         result
     );
 }
-
-// =============================================================================
-// Summary
-// =============================================================================
-
-/// Summary: verify we have the expected compliance tests.
-#[test]
-fn test_dispatch_compliance_summary() {
-    // Active compliance tests:
-    // 1. test_crdt_type_preserved_in_storage
-    // 2. test_various_crdt_types_preserved
-    // 3. test_is_builtin_crdt_classification
-    // 4. test_lww_register_returns_incoming
-    // 5. test_custom_type_returns_wasm_required
-    // 6. test_collection_types_return_incoming
-    // 7. test_corrupted_data_returns_serialization_error
-    const COMPLIANCE_TESTS: usize = 7;
-    let _documented = COMPLIANCE_TESTS;
-}
