@@ -15,7 +15,6 @@ crates/node/tests/
 │   ├── node/              # SimNode state machine
 │   ├── scenarios/         # Deterministic and random scenario generators
 │   ├── convergence.rs     # Convergence checking (C1-C5 properties)
-│   ├── digest.rs          # StateDigest computation
 │   ├── metrics.rs         # SimMetrics collection
 │   └── assertions.rs      # Test assertion macros
 ├── sync_sim.rs            # Framework unit tests

@@ -4,6 +4,8 @@ use std::fmt;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
+use super::actions::EntityMetadata;
+
 /// Node identifier in the simulation.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub String);
@@ -203,6 +205,19 @@ impl From<[u8; 32]> for StateDigest {
     fn from(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
+}
+
+/// Entity with data and metadata.
+///
+/// Used to represent a complete entity for iteration and comparison in tests.
+#[derive(Clone, Debug)]
+pub struct DigestEntity {
+    /// Entity ID.
+    pub id: EntityId,
+    /// Entity data.
+    pub data: Vec<u8>,
+    /// Entity metadata.
+    pub metadata: EntityMetadata,
 }
 
 #[cfg(test)]

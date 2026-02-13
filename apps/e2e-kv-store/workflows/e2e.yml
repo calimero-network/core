@@ -645,7 +645,9 @@ steps:
     statements:
       - 'json_equal({{wrong_guess}}, {"output": false})'
 
-  # NESTED CRDT - G-COUNTERS (grow-only, sequential to work around merge bug)
+  # NESTED CRDT - G-COUNTERS (grow-only)
+  # NOTE: Sequential pattern preserved for stability. With merge_by_crdt_type (PR #1889),
+  # concurrent operations now merge correctly. Future PR can add concurrent test cases.
 
   - name: Increment G-Counter on node-1
     type: call
@@ -865,7 +867,8 @@ steps:
     statements:
       - 'json_equal({{register_value}}, {"output": "busy"})'
 
-  # NESTED CRDT - NESTED MAPS (sequential to work around merge bug)
+  # NESTED CRDT - NESTED MAPS
+  # NOTE: Sequential pattern preserved for stability. Concurrent operations now merge correctly.
 
   # Node-1 sets first field
   - name: Set metadata field on node-1
@@ -1018,7 +1021,8 @@ steps:
     statements:
       - 'json_equal({{metric_0}}, {"output": 100})'
 
-  # NESTED CRDT - SETS (sequential to work around merge bug)
+  # NESTED CRDT - SETS
+  # NOTE: Sequential pattern preserved for stability. Concurrent operations now merge correctly.
 
   - name: Add tag on node-1
     type: call

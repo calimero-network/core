@@ -31,7 +31,7 @@ pub fn generate_entities(count: usize, seed: u64) -> Vec<(EntityId, Vec<u8>, Ent
         .map(|i| {
             let id = EntityId::from_u64(seed * 10000 + i as u64);
             let data = format!("entity-{}-{}", seed, i).into_bytes();
-            let metadata = EntityMetadata::new(CrdtType::LwwRegister, i as u64 * 100);
+            let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i as u64 * 100);
             (id, data, metadata)
         })
         .collect()
@@ -66,7 +66,7 @@ pub fn generate_deep_tree_entities(
 
             let id = EntityId::from_bytes(key);
             let data = format!("deep-entity-{}-{}", seed, i).into_bytes();
-            let metadata = EntityMetadata::new(CrdtType::LwwRegister, i as u64 * 100);
+            let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i as u64 * 100);
             (id, data, metadata)
         })
         .collect()
@@ -98,7 +98,7 @@ pub fn generate_shallow_wide_tree(
 
             let id = EntityId::from_bytes(key);
             let data = format!("shallow-entity-{}-{}", seed, i).into_bytes();
-            let metadata = EntityMetadata::new(CrdtType::LwwRegister, i as u64 * 100);
+            let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i as u64 * 100);
             (id, data, metadata)
         })
         .collect()

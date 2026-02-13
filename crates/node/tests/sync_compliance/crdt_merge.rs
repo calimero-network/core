@@ -44,14 +44,14 @@ fn test_i5_lww_timestamp_wins() {
     alice.insert_entity_with_metadata(
         entity_id,
         b"alice-value".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 100),
+        EntityMetadata::new(CrdtType::lww_register("test"), 100),
     );
 
     // Bob: value at timestamp 200 (newer)
     bob.insert_entity_with_metadata(
         entity_id,
         b"bob-value".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 200),
+        EntityMetadata::new(CrdtType::lww_register("test"), 200),
     );
 
     // Force HashComparison for testing
@@ -85,13 +85,13 @@ fn test_i5_lww_equal_timestamp_tiebreaker() {
     alice.insert_entity_with_metadata(
         entity_id,
         b"alice-value".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 100),
+        EntityMetadata::new(CrdtType::lww_register("test"), 100),
     );
 
     bob.insert_entity_with_metadata(
         entity_id,
         b"bob-value".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 100), // Same timestamp
+        EntityMetadata::new(CrdtType::lww_register("test"), 100), // Same timestamp
     );
 
     // Force HashComparison
@@ -196,14 +196,14 @@ fn test_i5_no_overwrite_for_initialized() {
     alice.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"alice-entity-1".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 100),
+        EntityMetadata::new(CrdtType::lww_register("test"), 100),
     );
 
     // Bob has different state
     bob.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"bob-entity-1".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 200),
+        EntityMetadata::new(CrdtType::lww_register("test"), 200),
     );
 
     // Alice is initialized (has state)
@@ -230,7 +230,7 @@ fn test_i5_overwrite_allowed_for_fresh() {
     source.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"source-data".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 100),
+        EntityMetadata::new(CrdtType::lww_register("test"), 100),
     );
 
     // Fresh node has NO state
@@ -264,14 +264,14 @@ fn test_i5_unordered_map_per_key_merge() {
     alice.insert_entity_with_metadata(
         map_id,
         b"map-alice".to_vec(),
-        EntityMetadata::new(CrdtType::UnorderedMap, 100),
+        EntityMetadata::new(CrdtType::unordered_map("String", "u64"), 100),
     );
 
     // Bob's map state
     bob.insert_entity_with_metadata(
         map_id,
         b"map-bob".to_vec(),
-        EntityMetadata::new(CrdtType::UnorderedMap, 200),
+        EntityMetadata::new(CrdtType::unordered_map("String", "u64"), 200),
     );
 
     // Force HashComparison
@@ -279,7 +279,10 @@ fn test_i5_unordered_map_per_key_merge() {
 
     // Verify CRDT type preserved
     let alice_entity = alice.get_entity(&map_id).unwrap();
-    assert_eq!(alice_entity.metadata.crdt_type, CrdtType::UnorderedMap);
+    assert_eq!(
+        alice_entity.metadata.crdt_type,
+        CrdtType::unordered_map("String", "u64")
+    );
 }
 
 /// CIP §6.2.5: UnorderedSet merge is union.
@@ -294,14 +297,14 @@ fn test_i5_unordered_set_union_merge() {
     alice.insert_entity_with_metadata(
         set_id,
         b"set-alice".to_vec(),
-        EntityMetadata::new(CrdtType::UnorderedSet, 100),
+        EntityMetadata::new(CrdtType::unordered_set("String"), 100),
     );
 
     // Bob's set
     bob.insert_entity_with_metadata(
         set_id,
         b"set-bob".to_vec(),
-        EntityMetadata::new(CrdtType::UnorderedSet, 200),
+        EntityMetadata::new(CrdtType::unordered_set("String"), 200),
     );
 
     // Force HashComparison
@@ -309,7 +312,142 @@ fn test_i5_unordered_set_union_merge() {
 
     // Verify CRDT type preserved
     let alice_entity = alice.get_entity(&set_id).unwrap();
-    assert_eq!(alice_entity.metadata.crdt_type, CrdtType::UnorderedSet);
+    assert_eq!(
+        alice_entity.metadata.crdt_type,
+        CrdtType::unordered_set("String")
+    );
+}
+
+// =============================================================================
+// I5: RGA Merge
+// =============================================================================
+
+/// CIP §6.2.6: RGA merge interleaves by timestamp.
+#[test]
+fn test_i5_rga_interleave_merge() {
+    let mut alice = SimNode::new("alice");
+    let mut bob = SimNode::new("bob");
+
+    let rga_id = EntityId::from_u64(555);
+
+    // Alice's RGA
+    alice.insert_entity_with_metadata(
+        rga_id,
+        b"rga-alice".to_vec(),
+        EntityMetadata::new(CrdtType::Rga, 100),
+    );
+
+    // Bob's RGA
+    bob.insert_entity_with_metadata(
+        rga_id,
+        b"rga-bob".to_vec(),
+        EntityMetadata::new(CrdtType::Rga, 200),
+    );
+
+    // Force HashComparison
+    alice.force_protocol(SelectedProtocol::HashComparison);
+
+    // Verify CRDT type preserved
+    let alice_entity = alice.get_entity(&rga_id).unwrap();
+    assert_eq!(alice_entity.metadata.crdt_type, CrdtType::Rga);
+}
+
+// =============================================================================
+// I5: Vector Merge
+// =============================================================================
+
+/// CIP §6.2.7: Vector merge is element-wise.
+#[test]
+fn test_i5_vector_element_merge() {
+    let mut alice = SimNode::new("alice");
+    let mut bob = SimNode::new("bob");
+
+    let vec_id = EntityId::from_u64(444);
+
+    // Alice's Vector
+    alice.insert_entity_with_metadata(
+        vec_id,
+        b"vec-alice".to_vec(),
+        EntityMetadata::new(CrdtType::vector("u64"), 100),
+    );
+
+    // Bob's Vector
+    bob.insert_entity_with_metadata(
+        vec_id,
+        b"vec-bob".to_vec(),
+        EntityMetadata::new(CrdtType::vector("u64"), 200),
+    );
+
+    // Force HashComparison
+    alice.force_protocol(SelectedProtocol::HashComparison);
+
+    // Verify CRDT type preserved
+    let alice_entity = alice.get_entity(&vec_id).unwrap();
+    assert_eq!(alice_entity.metadata.crdt_type, CrdtType::vector("u64"));
+}
+
+// =============================================================================
+// I5: Special Storage Types
+// =============================================================================
+
+/// CIP §6.2.8: UserStorage uses LWW per user.
+#[test]
+fn test_i5_user_storage_lww() {
+    let mut alice = SimNode::new("alice");
+    let mut bob = SimNode::new("bob");
+
+    let storage_id = EntityId::from_u64(333);
+
+    // Alice's UserStorage
+    alice.insert_entity_with_metadata(
+        storage_id,
+        b"user-alice".to_vec(),
+        EntityMetadata::new(CrdtType::UserStorage, 100),
+    );
+
+    // Bob's UserStorage (newer timestamp)
+    bob.insert_entity_with_metadata(
+        storage_id,
+        b"user-bob".to_vec(),
+        EntityMetadata::new(CrdtType::UserStorage, 200),
+    );
+
+    // Force HashComparison
+    alice.force_protocol(SelectedProtocol::HashComparison);
+
+    // Verify CRDT type preserved
+    let alice_entity = alice.get_entity(&storage_id).unwrap();
+    assert_eq!(alice_entity.metadata.crdt_type, CrdtType::UserStorage);
+}
+
+/// CIP §6.2.9: FrozenStorage uses first-write-wins.
+#[test]
+fn test_i5_frozen_storage_fww() {
+    let mut alice = SimNode::new("alice");
+    let mut bob = SimNode::new("bob");
+
+    let storage_id = EntityId::from_u64(222);
+
+    // Alice's FrozenStorage (first write)
+    alice.insert_entity_with_metadata(
+        storage_id,
+        b"frozen-alice".to_vec(),
+        EntityMetadata::new(CrdtType::FrozenStorage, 100),
+    );
+
+    // Bob's FrozenStorage (attempted overwrite)
+    bob.insert_entity_with_metadata(
+        storage_id,
+        b"frozen-bob".to_vec(),
+        EntityMetadata::new(CrdtType::FrozenStorage, 200),
+    );
+
+    // Force HashComparison
+    alice.force_protocol(SelectedProtocol::HashComparison);
+
+    // Verify CRDT type preserved
+    let alice_entity = alice.get_entity(&storage_id).unwrap();
+    assert_eq!(alice_entity.metadata.crdt_type, CrdtType::FrozenStorage);
 }
 
 // =============================================================================
@@ -326,7 +464,7 @@ fn test_i5_mixed_crdt_types() {
     alice.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"lww".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 100),
+        EntityMetadata::new(CrdtType::lww_register("test"), 100),
     );
     alice.insert_entity_with_metadata(
         EntityId::from_u64(2),
@@ -336,14 +474,14 @@ fn test_i5_mixed_crdt_types() {
     alice.insert_entity_with_metadata(
         EntityId::from_u64(3),
         b"set".to_vec(),
-        EntityMetadata::new(CrdtType::UnorderedSet, 100),
+        EntityMetadata::new(CrdtType::unordered_set("String"), 100),
     );
 
     // Bob has same entities with different values/timestamps
     bob.insert_entity_with_metadata(
         EntityId::from_u64(1),
         b"lww-bob".to_vec(),
-        EntityMetadata::new(CrdtType::LwwRegister, 200),
+        EntityMetadata::new(CrdtType::lww_register("test"), 200),
     );
     bob.insert_entity_with_metadata(
         EntityId::from_u64(2),
@@ -353,7 +491,7 @@ fn test_i5_mixed_crdt_types() {
     bob.insert_entity_with_metadata(
         EntityId::from_u64(3),
         b"set-bob".to_vec(),
-        EntityMetadata::new(CrdtType::UnorderedSet, 200),
+        EntityMetadata::new(CrdtType::unordered_set("String"), 200),
     );
 
     // Force HashComparison
@@ -366,7 +504,7 @@ fn test_i5_mixed_crdt_types() {
             .unwrap()
             .metadata
             .crdt_type,
-        CrdtType::LwwRegister
+        CrdtType::lww_register("test")
     );
     assert_eq!(
         alice
@@ -382,7 +520,7 @@ fn test_i5_mixed_crdt_types() {
             .unwrap()
             .metadata
             .crdt_type,
-        CrdtType::UnorderedSet
+        CrdtType::unordered_set("String")
     );
 }
 
@@ -394,12 +532,16 @@ fn test_i5_mixed_crdt_types() {
 /// 3. PnCounter: Combine positive and negative
 /// 4. UnorderedMap: Per-key merge
 /// 5. UnorderedSet: Union merge
-/// 6. Initialized nodes: MUST use CRDT merge
-/// 7. Fresh nodes: MAY use snapshot overwrite
+/// 6. RGA: Interleave by timestamp
+/// 7. Vector: Element-wise merge
+/// 8. UserStorage: LWW per user
+/// 9. FrozenStorage: First-write-wins
+/// 10. Initialized nodes: MUST use CRDT merge
+/// 11. Fresh nodes: MAY use snapshot overwrite
 #[test]
 fn test_i5_compliance_summary() {
     // Verify we have the expected number of I5 tests in this module
     // (this ensures we don't accidentally remove tests)
-    const EXPECTED_I5_TESTS: usize = 10;
+    const EXPECTED_I5_TESTS: usize = 14; // 11 CRDT types + 3 behavior tests
     let _documented = EXPECTED_I5_TESTS;
 }

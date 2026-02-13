@@ -25,7 +25,6 @@ use calimero_node_primitives::sync::{
     TreeLeafData, TreeNode, TreeNodeResponse, MAX_NODES_PER_RESPONSE,
 };
 use calimero_primitives::context::ContextId;
-use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
@@ -300,13 +299,14 @@ impl SyncManager {
         if children_ids.is_empty() {
             // Leaf node - try to get entity data
             if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
+                let crdt_type = index.metadata.crdt_type.clone().ok_or_else(|| {
+                    eyre::eyre!(
+                        "Missing CRDT type metadata for leaf entity {}: data integrity issue",
+                        entity_id
+                    )
+                })?;
                 let metadata = LeafMetadata::new(
-                    // Get CRDT type from index metadata if available
-                    index
-                        .metadata
-                        .crdt_type
-                        .clone()
-                        .unwrap_or(CrdtType::LwwRegister),
+                    crdt_type,
                     index.metadata.updated_at(),
                     // Collection ID - use parent if available
                     [0u8; 32],

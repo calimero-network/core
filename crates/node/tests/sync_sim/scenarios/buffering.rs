@@ -32,7 +32,7 @@ fn make_insert_op(entity_id: u64, value: &str) -> StorageOp {
     StorageOp::Insert {
         id: EntityId::from_u64(entity_id),
         data: value.as_bytes().to_vec(),
-        metadata: EntityMetadata::new(CrdtType::LwwRegister, entity_id * 100),
+        metadata: EntityMetadata::new(CrdtType::lww_register("test"), entity_id * 100),
     }
 }
 
@@ -311,7 +311,7 @@ mod tests {
             let operations = vec![StorageOp::Update {
                 id: EntityId::from_u64(999),
                 data: format!("value_{}", i).into_bytes(),
-                metadata: EntityMetadata::new(CrdtType::LwwRegister, i * 100),
+                metadata: EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
             }];
             rt.schedule_gossip_delta(
                 node_id.clone(),
@@ -352,7 +352,7 @@ mod tests {
 
         // Give idle node some state with specific data
         let shared_data = b"shared_data".to_vec();
-        let metadata = EntityMetadata::new(CrdtType::LwwRegister, 100);
+        let metadata = EntityMetadata::new(CrdtType::lww_register("test"), 100);
         rt.node_mut(&idle).unwrap().insert_entity_with_metadata(
             EntityId::from_u64(1),
             shared_data.clone(),
@@ -418,7 +418,7 @@ mod tests {
             source.insert_entity(
                 EntityId::from_u64(i),
                 format!("initial_{}", i).into_bytes(),
-                CrdtType::LwwRegister,
+                CrdtType::lww_register("test"),
             );
         }
         let source_id = rt.add_existing_node(source);
@@ -450,7 +450,7 @@ mod tests {
             let delta_id = delta_id_from_u64(i);
             let data = format!("concurrent_{}", i).into_bytes();
             // Use consistent metadata for both source and fresh
-            let metadata = EntityMetadata::new(CrdtType::LwwRegister, i * 100);
+            let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 100);
             let operations = vec![StorageOp::Insert {
                 id: EntityId::from_u64(i),
                 data: data.clone(),

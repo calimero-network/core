@@ -42,7 +42,6 @@ use calimero_node_primitives::sync::{
     TreeNodeResponse, MAX_NODES_PER_RESPONSE,
 };
 use calimero_primitives::context::ContextId;
-use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::env::with_runtime_env;
@@ -410,15 +409,13 @@ fn get_local_tree_node(
     if children_ids.is_empty() {
         // Leaf node
         if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-            let metadata = LeafMetadata::new(
-                index
-                    .metadata
-                    .crdt_type
-                    .clone()
-                    .unwrap_or(CrdtType::LwwRegister),
-                index.metadata.updated_at(),
-                [0u8; 32],
-            );
+            let crdt_type = index.metadata.crdt_type.clone().ok_or_else(|| {
+                eyre::eyre!(
+                    "Missing CRDT type metadata for leaf entity {}: data integrity issue",
+                    entity_id
+                )
+            })?;
+            let metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32]);
             let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
             Ok(Some(TreeNode::leaf(
                 *entity_id.as_bytes(),

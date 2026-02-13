@@ -904,10 +904,10 @@ mod tests {
         let id = EntityId::from_u64(1);
         rt.node_mut(&a)
             .unwrap()
-            .insert_entity(id, vec![1, 2, 3], CrdtType::LwwRegister);
+            .insert_entity(id, vec![1, 2, 3], CrdtType::lww_register("test"));
         rt.node_mut(&b)
             .unwrap()
-            .insert_entity(id, vec![1, 2, 3], CrdtType::LwwRegister);
+            .insert_entity(id, vec![1, 2, 3], CrdtType::lww_register("test"));
 
         assert!(rt.check_convergence().is_converged());
     }
@@ -923,12 +923,12 @@ mod tests {
         rt.node_mut(&a).unwrap().insert_entity(
             EntityId::from_u64(1),
             vec![1],
-            CrdtType::LwwRegister,
+            CrdtType::lww_register("test"),
         );
         rt.node_mut(&b).unwrap().insert_entity(
             EntityId::from_u64(2),
             vec![2],
-            CrdtType::LwwRegister,
+            CrdtType::lww_register("test"),
         );
 
         assert!(rt.check_convergence().is_diverged());
@@ -997,7 +997,7 @@ mod tests {
         rt.node_mut(&a).unwrap().insert_entity(
             EntityId::from_u64(1),
             vec![1],
-            CrdtType::LwwRegister,
+            CrdtType::lww_register("test"),
         );
 
         // Schedule crash and restart

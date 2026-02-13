@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_bloom_filter_response() {
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [5; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [5; 32]);
         let leaf = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata);
 
         let response = BloomFilterResponse::new(vec![leaf], 100);
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_bloom_filter_response_roundtrip() {
-        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 200, [6; 32]);
+        let metadata = LeafMetadata::new(CrdtType::unordered_map("String", "u64"), 200, [6; 32]);
         let leaf = TreeLeafData::new([2; 32], vec![4, 5, 6], metadata);
 
         let response = BloomFilterResponse::new(vec![leaf], 75);
