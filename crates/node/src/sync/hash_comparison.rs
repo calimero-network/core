@@ -21,26 +21,19 @@
 
 use calimero_crypto::Nonce;
 use calimero_node_primitives::sync::{
-    create_runtime_env, InitPayload, LeafMetadata, MessagePayload, StreamMessage, SyncTransport,
-    TreeLeafData, TreeNode, TreeNodeResponse, MAX_NODES_PER_RESPONSE,
+    create_runtime_env, InitPayload, MessagePayload, StreamMessage, SyncTransport, TreeNode,
+    TreeNodeResponse, MAX_NODES_PER_RESPONSE, MAX_TREE_REQUEST_DEPTH,
 };
 use calimero_primitives::context::ContextId;
-use calimero_primitives::crdt::CrdtType;
-use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::index::Index;
-use calimero_storage::interface::Interface;
 use calimero_storage::store::MainStorage;
 use eyre::Result;
 use tracing::{debug, info, trace, warn};
 
+use super::hash_comparison_protocol::get_local_tree_node;
 use super::manager::SyncManager;
-
-/// Maximum depth allowed in TreeNodeRequest.
-///
-/// Prevents malicious peers from requesting expensive deep traversals.
-pub const MAX_REQUEST_DEPTH: u8 = 16;
 
 // =============================================================================
 // SyncManager Responder Implementation
@@ -105,11 +98,27 @@ impl SyncManager {
         let datastore = self.context_client.datastore_handle().into_inner();
         let runtime_env = create_runtime_env(&datastore, context_id, our_identity);
 
+        // Get our root hash from Index (consistent with standalone responder)
+        // This ensures both production and simulation use the same root hash source
+        let local_root_hash = with_runtime_env(runtime_env.clone(), || {
+            Index::<MainStorage>::get_hashes_for(Id::new(*context_id.as_ref()))
+                .ok()
+                .flatten()
+                .map(|(full, _)| full)
+                .unwrap_or([0; 32])
+        });
+
         // Handle the first request (already parsed by handle_sync_request)
         {
-            let clamped_depth = first_max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
+            let clamped_depth = first_max_depth.map(|d| d.min(MAX_TREE_REQUEST_DEPTH));
             let response = self
-                .build_tree_node_response(context_id, &first_node_id, clamped_depth, &runtime_env)
+                .build_tree_node_response(
+                    context_id,
+                    &first_node_id,
+                    clamped_depth,
+                    &runtime_env,
+                    &local_root_hash,
+                )
                 .await?;
 
             let msg = StreamMessage::Message {
@@ -152,9 +161,15 @@ impl SyncManager {
                 "Handling subsequent TreeNodeRequest"
             );
 
-            let clamped_depth = max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
+            let clamped_depth = max_depth.map(|d| d.min(MAX_TREE_REQUEST_DEPTH));
             let response = self
-                .build_tree_node_response(context_id, &node_id, clamped_depth, &runtime_env)
+                .build_tree_node_response(
+                    context_id,
+                    &node_id,
+                    clamped_depth,
+                    &runtime_env,
+                    &local_root_hash,
+                )
                 .await?;
 
             let msg = StreamMessage::Message {
@@ -183,25 +198,18 @@ impl SyncManager {
     /// * `node_id` - ID of the node to retrieve
     /// * `max_depth` - Maximum depth to traverse (clamped externally)
     /// * `runtime_env` - Pre-created RuntimeEnv (shared across requests for efficiency)
+    /// * `local_root_hash` - Local root hash from Index (for root request detection)
     async fn build_tree_node_response(
         &self,
         context_id: ContextId,
         node_id: &[u8; 32],
         max_depth: Option<u8>,
         runtime_env: &RuntimeEnv,
+        local_root_hash: &[u8; 32],
     ) -> Result<TreeNodeResponse> {
-        // Get context to check if this is a root request
-        let context = self.context_client.get_context(&context_id)?;
-        let Some(context) = context else {
-            debug!(
-                %context_id,
-                "Context not found for TreeNodeRequest"
-            );
-            return Ok(TreeNodeResponse::not_found());
-        };
-
-        // Determine if this is a root request (node_id matches root_hash)
-        let is_root_request = node_id == context.root_hash.as_ref();
+        // Determine if this is a root request (node_id matches local root hash from Index)
+        // This is consistent with the standalone responder in hash_comparison_protocol.rs
+        let is_root_request = node_id == local_root_hash;
 
         // Get the local node
         let local_node = with_runtime_env(runtime_env.clone(), || {
@@ -252,89 +260,13 @@ impl SyncManager {
     /// Get local tree node from the real Merkle tree Index.
     ///
     /// Must be called within `with_runtime_env` context.
+    /// Delegates to the shared `get_local_tree_node` function.
     fn get_local_tree_node_from_index(
         &self,
         context_id: ContextId,
         node_id: &[u8; 32],
         is_root_request: bool,
     ) -> Result<Option<TreeNode>> {
-        // Determine the entity ID to look up
-        let entity_id = if is_root_request {
-            // For root request, look up Id::root() (which equals context_id)
-            Id::new(*context_id.as_ref())
-        } else {
-            // For child requests, node_id IS the entity ID
-            Id::new(*node_id)
-        };
-
-        // Get the entity's index from the Merkle tree
-        let index = match Index::<MainStorage>::get_index(entity_id) {
-            Ok(Some(idx)) => idx,
-            Ok(None) => return Ok(None),
-            Err(e) => {
-                warn!(
-                    %context_id,
-                    entity_id = %entity_id,
-                    error = %e,
-                    "Failed to get index for entity"
-                );
-                return Ok(None);
-            }
-        };
-
-        // Get hashes from the index
-        let full_hash = index.full_hash();
-
-        // Get children from the index
-        let children_ids: Vec<[u8; 32]> = index
-            .children()
-            .map(|children| {
-                children
-                    .iter()
-                    .map(|child| *child.id().as_bytes())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Determine if this is a leaf or internal node
-        if children_ids.is_empty() {
-            // Leaf node - try to get entity data
-            if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-                let metadata = LeafMetadata::new(
-                    // Get CRDT type from index metadata if available
-                    index
-                        .metadata
-                        .crdt_type
-                        .clone()
-                        .unwrap_or(CrdtType::LwwRegister),
-                    index.metadata.updated_at(),
-                    // Collection ID - use parent if available
-                    [0u8; 32],
-                );
-
-                let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
-
-                Ok(Some(TreeNode::leaf(
-                    *entity_id.as_bytes(),
-                    full_hash,
-                    leaf_data,
-                )))
-            } else {
-                // Index exists but no entry data - treat as internal node with no children
-                // This can happen for collection containers
-                Ok(Some(TreeNode::internal(
-                    *entity_id.as_bytes(),
-                    full_hash,
-                    vec![],
-                )))
-            }
-        } else {
-            // Internal node with children
-            Ok(Some(TreeNode::internal(
-                *entity_id.as_bytes(),
-                full_hash,
-                children_ids,
-            )))
-        }
+        get_local_tree_node(context_id, node_id, is_root_request)
     }
 }
