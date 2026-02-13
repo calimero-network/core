@@ -39,7 +39,7 @@ use async_trait::async_trait;
 use calimero_node_primitives::sync::{
     compare_tree_nodes, create_runtime_env, InitPayload, LeafMetadata, MessagePayload,
     StreamMessage, SyncProtocolExecutor, SyncTransport, TreeCompareResult, TreeLeafData, TreeNode,
-    TreeNodeResponse, MAX_NODES_PER_RESPONSE,
+    TreeNodeResponse, MAX_NODES_PER_RESPONSE, MAX_TREE_REQUEST_DEPTH,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
@@ -55,9 +55,6 @@ use tracing::{debug, info, trace, warn};
 
 /// Maximum number of pending node requests (DFS stack depth limit).
 const MAX_PENDING_NODES: usize = 10_000;
-
-/// Maximum depth allowed in TreeNodeRequest.
-pub const MAX_REQUEST_DEPTH: u8 = 16;
 
 /// Configuration for HashComparison initiator.
 #[derive(Debug, Clone)]
@@ -325,7 +322,7 @@ async fn run_responder_impl<T: SyncTransport>(
         );
 
         // Clamp depth for DoS protection
-        let clamped_depth = max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
+        let clamped_depth = max_depth.map(|d| d.min(MAX_TREE_REQUEST_DEPTH));
 
         let is_root_request = node_id == local_root_hash;
 
@@ -381,7 +378,10 @@ async fn run_responder_impl<T: SyncTransport>(
 // =============================================================================
 
 /// Get a tree node from the local Merkle tree Index.
-fn get_local_tree_node(
+///
+/// This is the canonical implementation used by both the production responder
+/// and the standalone protocol. Must be called within a `with_runtime_env` context.
+pub fn get_local_tree_node(
     context_id: ContextId,
     node_id: &[u8; 32],
     is_root_request: bool,
