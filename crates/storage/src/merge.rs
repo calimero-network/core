@@ -196,8 +196,16 @@ pub fn merge_by_crdt_type(
         // UserStorage - LWW per user (same as LwwRegister)
         CrdtType::UserStorage => Ok(incoming.to_vec()),
 
-        // FrozenStorage - first-write-wins (keep existing)
-        CrdtType::FrozenStorage => Ok(existing.to_vec()),
+        // FrozenStorage - first-write-wins with deterministic convergence
+        // When two nodes have different values, pick lexicographically smaller
+        // bytes to ensure both nodes converge to the same value
+        CrdtType::FrozenStorage => {
+            if existing <= incoming {
+                Ok(existing.to_vec())
+            } else {
+                Ok(incoming.to_vec())
+            }
+        }
 
         // App-defined types
         CrdtType::Custom(type_name) => Err(MergeError::WasmRequired {
