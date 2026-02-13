@@ -1226,9 +1226,9 @@ mod tests {
             CrdtType::GCounter,
             CrdtType::PnCounter,
             CrdtType::Rga,
-            CrdtType::UnorderedMap,
-            CrdtType::UnorderedSet,
-            CrdtType::Vector,
+            CrdtType::unordered_map("String", "u64"),
+            CrdtType::unordered_set("String"),
+            CrdtType::vector("u64"),
         ];
 
         for crdt_type in crdt_types {

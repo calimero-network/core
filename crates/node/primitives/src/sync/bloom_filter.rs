@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_bloom_filter_response_roundtrip() {
-        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 200, [6; 32]);
+        let metadata = LeafMetadata::new(CrdtType::unordered_map("String", "u64"), 200, [6; 32]);
         let leaf = TreeLeafData::new([2; 32], vec![4, 5, 6], metadata);
 
         let response = BloomFilterResponse::new(vec![leaf], 75);

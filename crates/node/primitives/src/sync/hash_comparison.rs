@@ -569,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_tree_node_roundtrip() {
-        let metadata = LeafMetadata::new(CrdtType::UnorderedMap, 999, [6; 32])
+        let metadata = LeafMetadata::new(CrdtType::unordered_map("String", "u64"), 999, [6; 32])
             .with_version(5)
             .with_parent([7; 32]);
         let leaf_data = TreeLeafData::new([1; 32], vec![4, 5, 6], metadata);
@@ -626,9 +626,9 @@ mod tests {
             CrdtType::GCounter,
             CrdtType::PnCounter,
             CrdtType::Rga,
-            CrdtType::UnorderedMap,
-            CrdtType::UnorderedSet,
-            CrdtType::Vector,
+            CrdtType::unordered_map("String", "u64"),
+            CrdtType::unordered_set("String"),
+            CrdtType::vector("u64"),
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,
             CrdtType::Custom("test".to_string()),
