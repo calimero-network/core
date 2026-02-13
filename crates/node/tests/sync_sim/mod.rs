@@ -88,10 +88,12 @@ pub mod digest;
 pub mod metrics;
 pub mod network;
 pub mod node;
+pub mod protocol;
 pub mod runtime;
 pub mod scenarios;
 pub mod sim_runtime;
 pub mod storage;
+pub mod transport;
 pub mod types;
 
 /// Prelude for convenient imports.
@@ -115,10 +117,12 @@ pub mod prelude {
         FaultConfig, NetworkRouter, PartitionManager, PartitionSpec, SimEvent,
     };
     pub use super::node::{SimNode, SyncState};
+    pub use super::protocol::{execute_hash_comparison_sync, SimSyncStats};
     pub use super::runtime::{EventQueue, EventSeq, SimClock, SimDuration, SimRng, SimTime};
     pub use super::scenarios::{RandomScenario, Scenario};
     pub use super::sim_runtime::{SimConfig, SimRuntime, StopCondition};
     pub use super::storage::SimStorage;
+    pub use super::transport::{SimStream, SimStreamSender};
     pub use super::types::{DeltaId, EntityId, MessageId, NodeId, StateDigest, TimerId, TimerKind};
 
     // Note: assertion macros (assert_converged!, assert_entity_count!, etc.) are available
