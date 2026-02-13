@@ -11,6 +11,7 @@
 //! 3. `test_deltas_applied_immediately_when_idle` - Deltas applied immediately when not syncing
 //! 4. `test_buffered_deltas_cleared_on_crash` - Buffer cleared on node crash
 //! 5. `test_multiple_deltas_preserved_fifo` - Multiple deltas replayed in FIFO order
+//! 6. `test_three_node_gossip_propagation` - Simulates merobox 3-node scenario
 
 use crate::sync_sim::actions::{EntityMetadata, StorageOp};
 use crate::sync_sim::node::SimNode;
@@ -680,6 +681,181 @@ mod tests {
             node.entity_count(),
             0,
             "No entities should exist (all deltas were dropped)"
+        );
+    }
+
+    // =========================================================================
+    // Merobox Scenario: 3-Node Gossip Delta Propagation
+    // =========================================================================
+
+    /// Test: Simulates the merobox 3-node scenario with gossip delta propagation.
+    ///
+    /// This test mimics what should happen in production:
+    /// 1. 3 nodes start idle (already synced)
+    /// 2. Node-1 makes a local change (insert entity)
+    /// 3. Node-1 "broadcasts" the delta via gossip (Node-2 and Node-3 receive it)
+    /// 4. All nodes should converge to the same state
+    ///
+    /// This validates that gossip delta application works correctly.
+    /// If this passes but merobox fails, the issue is in gossipsub mesh formation,
+    /// not in the delta application logic.
+    #[test]
+    fn test_three_node_gossip_propagation() {
+        let mut rt = SimRuntime::new(42);
+
+        // Step 1: Create 3 idle nodes with same initial state
+        let node1 = rt.add_node("node-1");
+        let node2 = rt.add_node("node-2");
+        let node3 = rt.add_node("node-3");
+
+        // Give all nodes the same initial entity (simulating already-synced state)
+        let initial_ops = vec![make_insert_op(1, "initial_state")];
+
+        // Apply initial state to all nodes via gossip (with different delta IDs since
+        // in simulation each delivery is tracked separately)
+        rt.schedule_gossip_delta(
+            node1.clone(),
+            delta_id_from_u64(0),
+            initial_ops.clone(),
+            SimDuration::from_millis(1),
+        );
+        rt.schedule_gossip_delta(
+            node2.clone(),
+            delta_id_from_u64(1),
+            initial_ops.clone(),
+            SimDuration::from_millis(2),
+        );
+        rt.schedule_gossip_delta(
+            node3.clone(),
+            delta_id_from_u64(2),
+            initial_ops,
+            SimDuration::from_millis(3),
+        );
+        // Process all 3 scheduled events
+        rt.step(); // node1
+        rt.step(); // node2
+        rt.step(); // node3
+
+        // Verify all nodes have the same initial state
+        assert_eq!(
+            rt.node(&node1).unwrap().entity_count(),
+            1,
+            "node1 should have 1 entity"
+        );
+        assert_eq!(
+            rt.node(&node2).unwrap().entity_count(),
+            1,
+            "node2 should have 1 entity"
+        );
+        assert_eq!(
+            rt.node(&node3).unwrap().entity_count(),
+            1,
+            "node3 should have 1 entity"
+        );
+        println!("Initial state: all 3 nodes have 1 entity");
+
+        // Step 2: Node-1 makes a local change (simulated by receiving its own delta)
+        // In production, node-1 would execute a mutation and then broadcast
+        let new_ops = vec![make_insert_op(999, "demo_value")]; // This is like set(demo_key, demo_value)
+
+        // Node-1 applies locally first
+        rt.schedule_gossip_delta(
+            node1.clone(),
+            delta_id_from_u64(10),
+            new_ops.clone(),
+            SimDuration::from_millis(10),
+        );
+        rt.step();
+
+        // Node-1 now has 2 entities, others still have 1
+        assert_eq!(
+            rt.node(&node1).unwrap().entity_count(),
+            2,
+            "Node-1 should have new entity"
+        );
+        assert_eq!(
+            rt.node(&node2).unwrap().entity_count(),
+            1,
+            "Node-2 not yet updated"
+        );
+        assert_eq!(
+            rt.node(&node3).unwrap().entity_count(),
+            1,
+            "Node-3 not yet updated"
+        );
+        println!("After Node-1 local change: Node-1 has 2 entities, others have 1");
+
+        // Step 3: Gossip propagates to Node-2 and Node-3
+        // This is what should happen via gossipsub BroadcastMessage::StateDelta
+        rt.schedule_gossip_delta(
+            node2.clone(),
+            delta_id_from_u64(11),
+            new_ops.clone(),
+            SimDuration::from_millis(20),
+        );
+        rt.schedule_gossip_delta(
+            node3.clone(),
+            delta_id_from_u64(12),
+            new_ops,
+            SimDuration::from_millis(20),
+        );
+        rt.step(); // node2
+        rt.step(); // node3
+
+        // Step 4: Verify convergence
+        assert_eq!(
+            rt.node(&node1).unwrap().entity_count(),
+            2,
+            "Node-1 should have 2 entities"
+        );
+        assert_eq!(
+            rt.node(&node2).unwrap().entity_count(),
+            2,
+            "Node-2 should have 2 entities after gossip"
+        );
+        assert_eq!(
+            rt.node(&node3).unwrap().entity_count(),
+            2,
+            "Node-3 should have 2 entities after gossip"
+        );
+
+        println!("SUCCESS: All 3 nodes converged via gossip delta propagation");
+    }
+
+    /// Test: Verifies that gossip deltas are idempotent (safe to receive twice).
+    ///
+    /// In gossipsub, a node might receive the same delta multiple times
+    /// (e.g., from different peers, or echo back). This should be handled safely.
+    #[test]
+    fn test_gossip_delta_idempotent() {
+        let mut rt = SimRuntime::new(42);
+
+        let node1 = rt.add_node("node-1");
+
+        let delta = delta_id_from_u64(1);
+        let ops = vec![make_insert_op(100, "value")];
+
+        // Receive the same delta twice (simulating gossip echo or multi-peer delivery)
+        rt.schedule_gossip_delta(
+            node1.clone(),
+            delta,
+            ops.clone(),
+            SimDuration::from_millis(10),
+        );
+        rt.step();
+
+        // First delivery
+        assert_eq!(rt.node(&node1).unwrap().entity_count(), 1);
+
+        // Second delivery of same delta
+        rt.schedule_gossip_delta(node1.clone(), delta, ops, SimDuration::from_millis(20));
+        rt.step();
+
+        // Should still be 1 entity (idempotent)
+        assert_eq!(
+            rt.node(&node1).unwrap().entity_count(),
+            1,
+            "Delta should be idempotent - duplicate delivery should not create duplicate entity"
         );
     }
 }
