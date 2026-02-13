@@ -320,16 +320,13 @@ impl SimNode {
         StateDigest(self.storage.root_hash())
     }
 
-    /// Get entity count (real entities only, excludes root and intermediate nodes).
+    /// Get entity count (leaf nodes only, excludes root and intermediate nodes).
     ///
-    /// Uses `entity_metadata.len()` as the source of truth because:
-    /// - Only "real" entities (inserted via `insert_entity*` methods) have metadata
-    /// - Intermediate nodes created by `insert_entity_hierarchical` don't have metadata
-    /// - This matches what production would count as entities
+    /// Uses `storage.leaf_count()` as the source of truth because:
+    /// - Leaf nodes represent actual data entities
+    /// - Intermediate nodes in the Merkle tree are excluded
+    /// - This ensures sync results are immediately visible after `apply_action`
     pub fn entity_count(&self) -> usize {
-        // Use actual storage leaf count (source of truth).
-        // This counts only leaf nodes (actual entities), excluding intermediate nodes.
-        // This ensures sync results are visible while hierarchical structures are counted correctly.
         self.storage.leaf_count()
     }
 
