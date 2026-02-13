@@ -561,11 +561,15 @@ impl JoinContextResponse {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateContextApplicationRequest {
     pub application_id: ApplicationId,
     pub executor_public_key: PublicKey,
+    /// Optional migration function name to execute during the update.
+    /// The function must be decorated with `#[app::migrate]` in the new application.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub migrate_method: Option<String>,
 }
 
 impl UpdateContextApplicationRequest {
@@ -573,6 +577,19 @@ impl UpdateContextApplicationRequest {
         Self {
             application_id,
             executor_public_key,
+            migrate_method: None,
+        }
+    }
+
+    pub fn with_migration(
+        application_id: ApplicationId,
+        executor_public_key: PublicKey,
+        migrate_method: String,
+    ) -> Self {
+        Self {
+            application_id,
+            executor_public_key,
+            migrate_method: Some(migrate_method),
         }
     }
 }
@@ -784,15 +801,6 @@ pub struct WalletMetadata {
     pub wallet_type: WalletType,
     pub verifying_key: String,
     pub wallet_address: Option<String>,
-    pub network_metadata: Option<NetworkMetadata>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct NetworkMetadata {
-    pub chain_id: String,
-    pub rpc_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -800,9 +808,6 @@ pub struct NetworkMetadata {
 #[non_exhaustive]
 pub enum SignatureMetadataEnum {
     NEAR(NearSignatureMessageMetadata),
-    ETH(EthSignatureMessageMetadata),
-    STARKNET(StarknetSignatureMessageMetadata),
-    ICP(ICPSignatureMessageMetadata),
 }
 
 #[derive(Debug, Deserialize)]
@@ -813,33 +818,6 @@ pub struct NearSignatureMessageMetadata {
     pub callback_url: String,
     pub nonce: String,
 }
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-#[expect(
-    clippy::empty_structs_with_brackets,
-    reason = "Needed for serialisation"
-)]
-pub struct EthSignatureMessageMetadata {}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-#[expect(
-    clippy::empty_structs_with_brackets,
-    reason = "Needed for serialisation"
-)]
-pub struct StarknetSignatureMessageMetadata {}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[expect(clippy::exhaustive_structs, reason = "Considered to be exhaustive")]
-#[expect(
-    clippy::empty_structs_with_brackets,
-    reason = "Needed for serialisation"
-)]
-pub struct ICPSignatureMessageMetadata {}
 
 // Intermediate structs for initial parsing
 #[derive(Debug, Deserialize)]
@@ -857,7 +835,6 @@ pub struct IntermediateAddPublicKeyRequest {
 #[non_exhaustive]
 pub enum WalletSignature {
     String(String),
-    StarknetPayload(StarknetPayload),
 }
 
 #[derive(Debug, Deserialize)]
@@ -883,14 +860,6 @@ impl JwtTokenRequest {
 #[non_exhaustive]
 pub struct JwtRefreshRequest {
     pub refresh_token: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct StarknetPayload {
-    pub signature: Vec<String>,
-    pub message_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1472,8 +1441,8 @@ use crate::validation::{
         validate_url,
     },
     Validate, ValidationError, MAX_CONTEXT_KEY_LENGTH, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE,
-    MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH, MAX_PROTOCOL_LENGTH,
-    MAX_QUOTE_B64_LENGTH, MAX_VALID_FOR_BLOCKS, MAX_VERSION_LENGTH,
+    MAX_METHOD_NAME_LENGTH, MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH,
+    MAX_PROTOCOL_LENGTH, MAX_QUOTE_B64_LENGTH, MAX_VALID_FOR_BLOCKS, MAX_VERSION_LENGTH,
 };
 
 impl Validate for InstallApplicationRequest {
@@ -1608,8 +1577,24 @@ impl Validate for JoinContextByOpenInvitationRequest {
 
 impl Validate for UpdateContextApplicationRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed (ApplicationId, PublicKey) which have their own validation
-        Vec::new()
+        let mut errors = Vec::new();
+
+        // Validate migrate_method if provided
+        if let Some(ref method) = self.migrate_method {
+            if let Some(e) =
+                validate_string_length(method, "migrate_method", MAX_METHOD_NAME_LENGTH)
+            {
+                errors.push(e);
+            }
+
+            if method.is_empty() {
+                errors.push(ValidationError::EmptyField {
+                    field: "migrate_method",
+                });
+            }
+        }
+
+        errors
     }
 }
 

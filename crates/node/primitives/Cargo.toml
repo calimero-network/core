@@ -11,6 +11,7 @@ publish = true
 [dependencies]
 actix.workspace = true
 async-stream.workspace = true
+async-trait.workspace = true
 borsh.workspace = true
 camino.workspace = true
 clap = { workspace = true, features = ["derive"] }
@@ -26,7 +27,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 calimero-crypto.workspace = true
-calimero-primitives.workspace = true
+calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-blobstore.workspace = true
 calimero-network-primitives.workspace = true
 calimero-storage.workspace = true

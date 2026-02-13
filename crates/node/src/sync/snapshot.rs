@@ -232,12 +232,45 @@ impl SyncManager {
     }
 
     /// Request and apply a full snapshot from a peer.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The context to sync
+    /// * `peer_id` - The peer to sync from
+    /// * `force` - If true, skip the safety check (for divergence recovery).
+    ///             If false, enforce that the node is fresh (for bootstrap).
     pub async fn request_snapshot_sync(
         &self,
         context_id: ContextId,
         peer_id: libp2p::PeerId,
+        force: bool,
     ) -> Result<SnapshotSyncResult> {
-        info!(%context_id, %peer_id, "Starting snapshot sync");
+        info!(%context_id, %peer_id, force, "Starting snapshot sync");
+
+        // Check Invariant I5: Snapshot sync should only be used for fresh nodes
+        // OR for crash recovery (detected by sync-in-progress marker).
+        // This prevents accidental state overwrites on initialized nodes.
+        // NOTE: force=true is reserved for exceptional cases like test fixtures;
+        // divergence recovery must NOT bypass this check (see I5).
+        let is_crash_recovery = self.check_sync_in_progress(context_id)?.is_some();
+        if !force && !is_crash_recovery {
+            // Check both state keys and context metadata to determine initialization.
+            // A context is considered initialized if:
+            // 1. It has state keys, OR
+            // 2. It has a non-zero root_hash in metadata (can happen after deletes)
+            let handle = self.context_client.datastore_handle();
+            let has_state_keys = has_context_state_keys(&handle, context_id)?;
+
+            let has_initialized_metadata = self
+                .context_client
+                .get_context(&context_id)?
+                .map(|ctx| *ctx.root_hash != [0u8; 32])
+                .unwrap_or(false);
+
+            let is_initialized = has_state_keys || has_initialized_metadata;
+            calimero_node_primitives::sync::check_snapshot_safety(is_initialized)
+                .map_err(|e| eyre::eyre!("Snapshot safety check failed: {:?}", e))?;
+        }
 
         let mut stream = self.network_client.open_stream(peer_id).await?;
         let boundary = self
@@ -697,6 +730,26 @@ fn decode_snapshot_records(payload: &[u8]) -> Result<Vec<([u8; 32], Vec<u8>)>> {
     }
 
     Ok(records)
+}
+
+/// Check if a context has any state keys (efficient early-exit check).
+///
+/// This function returns as soon as the first key is found, avoiding
+/// the overhead of collecting all keys just to check for emptiness.
+fn has_context_state_keys<L: calimero_store::layer::ReadLayer>(
+    handle: &calimero_store::Handle<L>,
+    context_id: ContextId,
+) -> Result<bool> {
+    let mut iter = handle.iter::<ContextStateKey>()?;
+
+    for (key_result, _) in iter.entries() {
+        let key = key_result?;
+        if key.context_id() == context_id {
+            return Ok(true); // Early exit on first match
+        }
+    }
+
+    Ok(false)
 }
 
 /// Collect all state keys for a context.

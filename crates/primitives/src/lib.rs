@@ -3,6 +3,7 @@ pub mod application;
 pub mod blobs;
 pub mod common;
 pub mod context;
+pub mod crdt;
 pub mod events;
 pub mod hash;
 pub mod identity;

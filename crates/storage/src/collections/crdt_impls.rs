@@ -81,9 +81,10 @@ impl<T: Mergeable + Clone> Mergeable for Option<T> {
 // LwwRegister
 // ============================================================================
 
-impl<T> CrdtMeta for LwwRegister<T> {
+impl<T: 'static> CrdtMeta for LwwRegister<T> {
     fn crdt_type() -> CrdtType {
-        CrdtType::LwwRegister
+        // Include the inner type name for proper merge support
+        CrdtType::lww_register(std::any::type_name::<T>())
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -104,20 +105,34 @@ impl<T: Clone> Mergeable for LwwRegister<T> {
 }
 
 // ============================================================================
-// Counter (both G-Counter and PN-Counter modes)
+// Counter (G-Counter and PN-Counter have distinct CrdtTypes)
 // ============================================================================
 
-impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> CrdtMeta for Counter<ALLOW_DECREMENT, S> {
+impl<S: StorageAdaptor> CrdtMeta for Counter<false, S> {
     fn crdt_type() -> CrdtType {
-        CrdtType::Counter
+        CrdtType::GCounter
     }
 
     fn storage_strategy() -> StorageStrategy {
-        StorageStrategy::Blob // Counter stores as blob
+        StorageStrategy::Blob
     }
 
     fn can_contain_crdts() -> bool {
-        false // Counter is a primitive value
+        false
+    }
+}
+
+impl<S: StorageAdaptor> CrdtMeta for Counter<true, S> {
+    fn crdt_type() -> CrdtType {
+        CrdtType::PnCounter
+    }
+
+    fn storage_strategy() -> StorageStrategy {
+        StorageStrategy::Blob
+    }
+
+    fn can_contain_crdts() -> bool {
+        false
     }
 }
 
@@ -237,12 +252,12 @@ impl Mergeable for ReplicatedGrowableArray {
 // UnorderedMap
 // ============================================================================
 
-impl<K, V, S> CrdtMeta for UnorderedMap<K, V, S>
+impl<K: 'static, V: 'static, S> CrdtMeta for UnorderedMap<K, V, S>
 where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::UnorderedMap
+        CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>())
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -314,12 +329,12 @@ where
 // UnorderedSet
 // ============================================================================
 
-impl<T, S> CrdtMeta for UnorderedSet<T, S>
+impl<T: 'static, S> CrdtMeta for UnorderedSet<T, S>
 where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::UnorderedSet
+        CrdtType::unordered_set(std::any::type_name::<T>())
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -379,12 +394,12 @@ where
 // Vector
 // ============================================================================
 
-impl<T, S> CrdtMeta for Vector<T, S>
+impl<T: 'static, S> CrdtMeta for Vector<T, S>
 where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::Vector
+        CrdtType::vector(std::any::type_name::<T>())
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -475,21 +490,31 @@ mod tests {
     #[test]
     fn test_lww_register_is_crdt() {
         assert!(LwwRegister::<String>::is_crdt());
-        assert_eq!(LwwRegister::<String>::crdt_type(), CrdtType::LwwRegister);
+        // The inner type contains the full type path
+        match LwwRegister::<String>::crdt_type() {
+            CrdtType::LwwRegister { inner_type } => {
+                assert!(
+                    inner_type.contains("String"),
+                    "inner_type should contain 'String', got: {}",
+                    inner_type
+                );
+            }
+            other => panic!("Expected LwwRegister, got: {:?}", other),
+        }
         assert!(!LwwRegister::<String>::can_contain_crdts());
     }
 
     #[test]
     fn test_gcounter_is_crdt() {
         assert!(GCounter::<MainStorage>::is_crdt());
-        assert_eq!(GCounter::<MainStorage>::crdt_type(), CrdtType::Counter);
+        assert_eq!(GCounter::<MainStorage>::crdt_type(), CrdtType::GCounter);
         assert!(!GCounter::<MainStorage>::can_contain_crdts());
     }
 
     #[test]
     fn test_pncounter_is_crdt() {
         assert!(PNCounter::<MainStorage>::is_crdt());
-        assert_eq!(PNCounter::<MainStorage>::crdt_type(), CrdtType::Counter);
+        assert_eq!(PNCounter::<MainStorage>::crdt_type(), CrdtType::PnCounter);
         assert!(!PNCounter::<MainStorage>::can_contain_crdts());
     }
 
@@ -504,7 +529,25 @@ mod tests {
     fn test_map_can_contain_crdts() {
         type TestMap = UnorderedMap<String, Counter>;
         assert!(TestMap::is_crdt());
-        assert_eq!(TestMap::crdt_type(), CrdtType::UnorderedMap);
+        match TestMap::crdt_type() {
+            CrdtType::UnorderedMap {
+                key_type,
+                value_type,
+            } => {
+                assert!(
+                    key_type.contains("String"),
+                    "key_type should contain 'String', got: {}",
+                    key_type
+                );
+                // Value type is Counter (a CRDT), not u64 - type_name returns full path
+                assert!(
+                    value_type.contains("Counter"),
+                    "value_type should contain 'Counter', got: {}",
+                    value_type
+                );
+            }
+            other => panic!("Expected UnorderedMap, got: {:?}", other),
+        }
         assert!(TestMap::can_contain_crdts()); // Maps CAN contain CRDTs!
     }
 
@@ -534,11 +577,11 @@ mod tests {
     fn test_counter_custom_storage_is_crdt() {
         use crate::store::mocked::MockedStorage;
 
-        type CustomCounter = Counter<false, MockedStorage<0>>;
+        type CustomGCounter = Counter<false, MockedStorage<0>>;
 
-        assert!(CustomCounter::is_crdt());
-        assert_eq!(CustomCounter::crdt_type(), CrdtType::Counter);
-        assert!(!CustomCounter::can_contain_crdts());
+        assert!(CustomGCounter::is_crdt());
+        assert_eq!(CustomGCounter::crdt_type(), CrdtType::GCounter);
+        assert!(!CustomGCounter::can_contain_crdts());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! mero-sign: CLI tool for signing Calimero bundle manifests
 //!
-//! This tool implements the signing flow for CIP-0001 compliant bundles:
+//! This tool implements the signing flow:
 //! - Generate Ed25519 keypairs
 //! - Sign manifests using RFC 8785 canonicalization
 //! - Derive did:key signerId from public keys

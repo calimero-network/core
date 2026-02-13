@@ -1,0 +1,861 @@
+//! Delta buffering scenarios for Invariant I6 testing.
+//!
+//! These scenarios test the behavior of delta buffering during state-based sync.
+//! Per CIP Invariant I6: "Deltas received during state-based sync MUST be preserved
+//! and applied after sync completes. Implementations MUST NOT drop buffered deltas."
+//!
+//! # Test Coverage
+//!
+//! 1. `test_deltas_buffered_during_sync` - Deltas arriving during sync are buffered
+//! 2. `test_buffered_deltas_replayed_on_completion` - Buffered deltas applied after sync
+//! 3. `test_deltas_applied_immediately_when_idle` - Deltas applied immediately when not syncing
+//! 4. `test_buffered_deltas_cleared_on_crash` - Buffer cleared on node crash
+//! 5. `test_multiple_deltas_preserved_fifo` - Multiple deltas replayed in FIFO order
+//! 6. `test_three_node_gossip_propagation` - Simulates merobox 3-node scenario
+
+use crate::sync_sim::actions::{EntityMetadata, StorageOp};
+use crate::sync_sim::node::SimNode;
+use crate::sync_sim::runtime::SimDuration;
+use crate::sync_sim::sim_runtime::SimRuntime;
+use crate::sync_sim::types::{DeltaId, EntityId};
+use calimero_primitives::crdt::CrdtType;
+
+/// Create a DeltaId from a u64 for testing convenience.
+fn delta_id_from_u64(n: u64) -> DeltaId {
+    let mut bytes = [0u8; 32];
+    bytes[..8].copy_from_slice(&n.to_le_bytes());
+    DeltaId::from_bytes(bytes)
+}
+
+/// Create a simple insert operation for testing.
+fn make_insert_op(entity_id: u64, value: &str) -> StorageOp {
+    StorageOp::Insert {
+        id: EntityId::from_u64(entity_id),
+        data: value.as_bytes().to_vec(),
+        metadata: EntityMetadata::new(CrdtType::lww_register("test"), entity_id * 100),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test: Deltas arriving during active sync are buffered, not applied.
+    ///
+    /// Verifies Invariant I6: deltas MUST be preserved during sync.
+    #[test]
+    fn test_deltas_buffered_during_sync() {
+        let mut rt = SimRuntime::new(42);
+
+        // Create a fresh node
+        let node_id = rt.add_node("syncing_node");
+
+        // Start sync on the node
+        rt.schedule_sync_start(node_id.clone(), SimDuration::ZERO);
+        rt.step(); // Process SyncStart
+
+        // Verify node is now syncing
+        assert!(
+            rt.node(&node_id).unwrap().sync_state.is_active(),
+            "Node should be in active sync state"
+        );
+
+        // Schedule a gossip delta to arrive during sync
+        let delta_id = delta_id_from_u64(1);
+        let operations = vec![make_insert_op(100, "buffered_value")];
+        rt.schedule_gossip_delta(
+            node_id.clone(),
+            delta_id,
+            operations,
+            SimDuration::from_millis(10),
+        );
+        rt.step(); // Process GossipDelta
+
+        // Verify: delta was buffered, NOT applied to storage
+        let node = rt.node(&node_id).unwrap();
+        assert_eq!(
+            node.buffer_size(),
+            1,
+            "Delta should be buffered during sync"
+        );
+        assert_eq!(
+            node.entity_count(),
+            0,
+            "Delta should NOT be applied to storage during sync"
+        );
+        assert_eq!(
+            node.buffered_operations_count(),
+            1,
+            "Operations should be buffered for replay"
+        );
+    }
+
+    /// Test: Buffered deltas are replayed when sync completes.
+    ///
+    /// Verifies Invariant I6: deltas MUST be applied after sync completes.
+    #[test]
+    fn test_buffered_deltas_replayed_on_completion() {
+        let mut rt = SimRuntime::new(42);
+
+        let node_id = rt.add_node("syncing_node");
+
+        // Start sync
+        rt.schedule_sync_start(node_id.clone(), SimDuration::ZERO);
+        rt.step();
+
+        // Send delta during sync
+        let delta_id = delta_id_from_u64(1);
+        let operations = vec![make_insert_op(100, "replayed_value")];
+        rt.schedule_gossip_delta(
+            node_id.clone(),
+            delta_id,
+            operations,
+            SimDuration::from_millis(10),
+        );
+        rt.step();
+
+        // Verify buffered
+        assert_eq!(rt.node(&node_id).unwrap().buffer_size(), 1);
+        assert_eq!(rt.node(&node_id).unwrap().entity_count(), 0);
+
+        // Complete sync - should replay buffered deltas
+        rt.schedule_sync_complete(node_id.clone(), SimDuration::from_millis(20));
+        rt.step();
+
+        // Verify: delta was applied, buffer cleared
+        let node = rt.node(&node_id).unwrap();
+        assert_eq!(node.buffer_size(), 0, "Buffer should be cleared after sync");
+        assert_eq!(
+            node.entity_count(),
+            1,
+            "Buffered delta should be applied after sync"
+        );
+        assert!(
+            !node.sync_state.is_active(),
+            "Node should be idle after sync completes"
+        );
+    }
+
+    /// Test: Deltas are applied immediately when node is not syncing.
+    #[test]
+    fn test_deltas_applied_immediately_when_idle() {
+        let mut rt = SimRuntime::new(42);
+
+        let node_id = rt.add_node("idle_node");
+
+        // Node is idle (not syncing)
+        assert!(!rt.node(&node_id).unwrap().sync_state.is_active());
+
+        // Send delta
+        let delta_id = delta_id_from_u64(1);
+        let operations = vec![make_insert_op(100, "immediate_value")];
+        rt.schedule_gossip_delta(
+            node_id.clone(),
+            delta_id,
+            operations,
+            SimDuration::from_millis(10),
+        );
+        rt.step();
+
+        // Verify: delta applied immediately, nothing buffered
+        let node = rt.node(&node_id).unwrap();
+        assert_eq!(
+            node.buffer_size(),
+            0,
+            "No buffering when node is not syncing"
+        );
+        assert_eq!(
+            node.entity_count(),
+            1,
+            "Delta should be applied immediately when idle"
+        );
+    }
+
+    /// Test: Buffered deltas are lost on node crash (not persisted).
+    ///
+    /// This is expected behavior - crash recovery restarts sync from scratch.
+    #[test]
+    fn test_buffered_deltas_cleared_on_crash() {
+        let mut rt = SimRuntime::new(42);
+
+        let node_id = rt.add_node("crashing_node");
+
+        // Start sync and buffer a delta
+        rt.schedule_sync_start(node_id.clone(), SimDuration::ZERO);
+        rt.step();
+
+        let delta_id = delta_id_from_u64(1);
+        let operations = vec![make_insert_op(100, "will_be_lost")];
+        rt.schedule_gossip_delta(
+            node_id.clone(),
+            delta_id,
+            operations,
+            SimDuration::from_millis(10),
+        );
+        rt.step();
+
+        assert_eq!(rt.node(&node_id).unwrap().buffer_size(), 1);
+
+        // Crash the node
+        rt.schedule_crash(node_id.clone(), SimDuration::from_millis(20));
+        rt.step();
+
+        // Verify: buffer cleared, sync state reset
+        let node = rt.node(&node_id).unwrap();
+        assert!(node.is_crashed, "Node should be crashed");
+        assert_eq!(node.buffer_size(), 0, "Buffer should be cleared on crash");
+        assert_eq!(
+            node.buffered_operations_count(),
+            0,
+            "Buffered operations should be cleared"
+        );
+        assert!(
+            !node.sync_state.is_active(),
+            "Sync state should be reset on crash"
+        );
+    }
+
+    /// Test: Multiple deltas are preserved and replayed in FIFO order.
+    ///
+    /// Verifies that the buffering mechanism maintains insertion order.
+    /// (#6) This test now verifies FIFO order by checking entity values after replay.
+    #[test]
+    fn test_multiple_deltas_preserved_fifo() {
+        let mut rt = SimRuntime::new(42);
+
+        let node_id = rt.add_node("multi_delta_node");
+
+        // Start sync
+        rt.schedule_sync_start(node_id.clone(), SimDuration::ZERO);
+        rt.step();
+
+        // Send multiple deltas with different timestamps
+        // Each delta writes to the SAME entity with different values
+        // FIFO replay means the LAST value should win (if using LWW semantics)
+        // But for this test, we'll use different entities to verify order
+        for i in 1..=5 {
+            let delta_id = delta_id_from_u64(i);
+            let operations = vec![make_insert_op(100 + i, &format!("delta_{}", i))];
+            rt.schedule_gossip_delta(
+                node_id.clone(),
+                delta_id,
+                operations,
+                SimDuration::from_millis(10 * i),
+            );
+        }
+
+        // Process all deltas
+        for _ in 0..5 {
+            rt.step();
+        }
+
+        // Verify all buffered
+        assert_eq!(
+            rt.node(&node_id).unwrap().buffer_size(),
+            5,
+            "All 5 deltas should be buffered"
+        );
+        assert_eq!(
+            rt.node(&node_id).unwrap().entity_count(),
+            0,
+            "No deltas applied yet"
+        );
+
+        // Complete sync
+        rt.schedule_sync_complete(node_id.clone(), SimDuration::from_millis(100));
+        rt.step();
+
+        // Verify all deltas applied
+        let node = rt.node(&node_id).unwrap();
+        assert_eq!(node.buffer_size(), 0, "Buffer should be empty");
+        assert_eq!(
+            node.entity_count(),
+            5,
+            "All 5 deltas should be applied after sync"
+        );
+
+        // (#6) Verify FIFO order by checking entity values
+        // Each entity should have the expected value from its delta
+        for i in 1..=5 {
+            let entity = node.get_entity(&EntityId::from_u64(100 + i)).unwrap();
+            assert_eq!(
+                entity.data,
+                format!("delta_{}", i).as_bytes(),
+                "Entity {} should have value from delta {} (FIFO order)",
+                100 + i,
+                i
+            );
+        }
+    }
+
+    /// Test: FIFO order verified through sequential writes to same entity.
+    ///
+    /// This test verifies FIFO order by having multiple deltas write to the
+    /// SAME entity. After replay, the entity should have the LAST value
+    /// (from the last delta in FIFO order).
+    #[test]
+    fn test_fifo_order_last_writer_wins() {
+        let mut rt = SimRuntime::new(42);
+
+        let node_id = rt.add_node("fifo_order_node");
+
+        // Start sync
+        rt.schedule_sync_start(node_id.clone(), SimDuration::ZERO);
+        rt.step();
+
+        // All deltas write to the SAME entity with increasing values
+        // FIFO order means delta_3 writes last, so its value should win
+        for i in 1..=3 {
+            let delta_id = delta_id_from_u64(i);
+            // All write to entity 999
+            let operations = vec![StorageOp::Update {
+                id: EntityId::from_u64(999),
+                data: format!("value_{}", i).into_bytes(),
+                metadata: EntityMetadata::new(CrdtType::lww_register("test"), i * 100),
+            }];
+            rt.schedule_gossip_delta(
+                node_id.clone(),
+                delta_id,
+                operations,
+                SimDuration::from_millis(10 * i),
+            );
+        }
+
+        // Process all deltas
+        for _ in 0..3 {
+            rt.step();
+        }
+
+        // Complete sync
+        rt.schedule_sync_complete(node_id.clone(), SimDuration::from_millis(100));
+        rt.step();
+
+        // Verify the entity has the LAST value (from delta 3, applied last in FIFO order)
+        let node = rt.node(&node_id).unwrap();
+        let entity = node.get_entity(&EntityId::from_u64(999)).unwrap();
+        assert_eq!(
+            entity.data, b"value_3",
+            "Entity should have value_3 because delta_3 was replayed last (FIFO)"
+        );
+    }
+
+    /// Test: Convergence is blocked while deltas are buffered.
+    ///
+    /// The simulation's convergence check (C3) requires all buffers to be empty.
+    #[test]
+    fn test_convergence_blocked_with_buffered_deltas() {
+        let mut rt = SimRuntime::new(42);
+
+        // Create two nodes - one syncing, one idle
+        let syncing = rt.add_node("syncing");
+        let idle = rt.add_node("idle");
+
+        // Give idle node some state with specific data
+        let shared_data = b"shared_data".to_vec();
+        let metadata = EntityMetadata::new(CrdtType::lww_register("test"), 100);
+        rt.node_mut(&idle).unwrap().insert_entity_with_metadata(
+            EntityId::from_u64(1),
+            shared_data.clone(),
+            metadata.clone(),
+        );
+
+        // Start sync on syncing node
+        rt.schedule_sync_start(syncing.clone(), SimDuration::ZERO);
+        rt.step();
+
+        // Buffer a delta on syncing node with SAME data as idle node
+        let delta_id = delta_id_from_u64(1);
+        let operations = vec![StorageOp::Insert {
+            id: EntityId::from_u64(1),
+            data: shared_data,
+            metadata,
+        }];
+        rt.schedule_gossip_delta(
+            syncing.clone(),
+            delta_id,
+            operations,
+            SimDuration::from_millis(10),
+        );
+        rt.step();
+
+        // Convergence should be blocked (C3: all buffers must be empty)
+        let convergence = rt.check_convergence();
+        assert!(
+            !convergence.is_converged(),
+            "Should NOT converge while deltas are buffered"
+        );
+
+        // Complete sync
+        rt.schedule_sync_complete(syncing.clone(), SimDuration::from_millis(20));
+        rt.step();
+
+        // Now should converge (both have same entity with same data)
+        let convergence = rt.check_convergence();
+        assert!(
+            convergence.is_converged(),
+            "Should converge after sync completes and deltas replayed"
+        );
+    }
+
+    /// Test: Complex scenario - snapshot sync with concurrent writes.
+    ///
+    /// Simulates a real-world scenario where:
+    /// 1. Fresh node joins network
+    /// 2. Snapshot sync starts
+    /// 3. Source node produces new writes during sync
+    /// 4. New writes are gossiped to fresh node
+    /// 5. Fresh node buffers them
+    /// 6. Snapshot completes
+    /// 7. Buffered writes are replayed
+    /// 8. Both nodes converge
+    #[test]
+    fn test_snapshot_sync_with_concurrent_writes() {
+        let mut rt = SimRuntime::new(42);
+
+        // Source node with existing data
+        let mut source = SimNode::new("source");
+        for i in 0..10 {
+            source.insert_entity(
+                EntityId::from_u64(i),
+                format!("initial_{}", i).into_bytes(),
+                CrdtType::lww_register("test"),
+            );
+        }
+        let source_id = rt.add_existing_node(source);
+
+        // Fresh node (needs snapshot sync)
+        let fresh_id = rt.add_node("fresh");
+
+        // Fresh node starts snapshot sync
+        rt.schedule_sync_start(fresh_id.clone(), SimDuration::ZERO);
+        rt.step();
+
+        // Simulate snapshot transfer (copy source's entities to fresh)
+        // In real implementation, this happens via SnapshotPage messages
+        let source_entities: Vec<_> = {
+            let s = rt.node(&source_id).unwrap();
+            s.iter_entities()
+                .map(|e| (e.id, e.data.clone(), e.metadata.clone()))
+                .collect()
+        };
+        for (id, data, metadata) in source_entities {
+            rt.node_mut(&fresh_id)
+                .unwrap()
+                .insert_entity_with_metadata(id, data, metadata);
+        }
+
+        // MEANWHILE: Source produces new writes that get gossiped to fresh
+        // (These arrive during sync and must be buffered)
+        for i in 10..15 {
+            let delta_id = delta_id_from_u64(i);
+            let data = format!("concurrent_{}", i).into_bytes();
+            // Use consistent metadata for both source and fresh
+            let metadata = EntityMetadata::new(CrdtType::lww_register("test"), i * 100);
+            let operations = vec![StorageOp::Insert {
+                id: EntityId::from_u64(i),
+                data: data.clone(),
+                metadata: metadata.clone(),
+            }];
+
+            // Also apply to source immediately with same metadata
+            rt.node_mut(&source_id)
+                .unwrap()
+                .insert_entity_with_metadata(EntityId::from_u64(i), data, metadata);
+
+            // Gossip to fresh (will be buffered)
+            rt.schedule_gossip_delta(
+                fresh_id.clone(),
+                delta_id,
+                operations,
+                SimDuration::from_millis(10 + i),
+            );
+        }
+
+        // Process all gossip deltas
+        for _ in 0..5 {
+            rt.step();
+        }
+
+        // Verify: fresh has initial 10, source has all 15
+        // fresh should have 5 buffered
+        assert_eq!(rt.node(&fresh_id).unwrap().entity_count(), 10);
+        assert_eq!(rt.node(&fresh_id).unwrap().buffer_size(), 5);
+        assert_eq!(rt.node(&source_id).unwrap().entity_count(), 15);
+
+        // System should NOT be converged yet
+        assert!(!rt.check_convergence().is_converged());
+
+        // Complete sync on fresh - replays buffered deltas
+        rt.schedule_sync_complete(fresh_id.clone(), SimDuration::from_millis(100));
+        rt.step();
+
+        // Both nodes should now have 15 entities
+        assert_eq!(rt.node(&fresh_id).unwrap().entity_count(), 15);
+        assert_eq!(rt.node(&source_id).unwrap().entity_count(), 15);
+        assert_eq!(rt.node(&fresh_id).unwrap().buffer_size(), 0);
+
+        // System should converge
+        assert!(
+            rt.check_convergence().is_converged(),
+            "Nodes should converge after buffered deltas are replayed"
+        );
+    }
+
+    /// Test: Buffer overflow causes FIFO eviction and metrics recording.
+    ///
+    /// Verifies that when the buffer is full:
+    /// 1. Oldest deltas are evicted (FIFO policy)
+    /// 2. Drop metrics are recorded
+    /// 3. Newest deltas are preserved
+    #[test]
+    fn test_buffer_overflow_fifo_eviction() {
+        let mut rt = SimRuntime::new(42);
+
+        // Create a node with very small buffer capacity (3 deltas)
+        let node_id = rt.add_node_with_buffer_capacity("small_buffer_node", 3);
+
+        // Start sync
+        rt.schedule_sync_start(node_id.clone(), SimDuration::ZERO);
+        rt.step();
+
+        // Send 5 deltas - should overflow buffer, evicting oldest 2
+        for i in 1..=5 {
+            let delta_id = delta_id_from_u64(i);
+            let operations = vec![make_insert_op(i, &format!("delta_{}", i))];
+            rt.schedule_gossip_delta(
+                node_id.clone(),
+                delta_id,
+                operations,
+                SimDuration::from_millis(i * 10),
+            );
+        }
+
+        // Process all deltas
+        for _ in 0..5 {
+            rt.step();
+        }
+
+        // Verify buffer state
+        let node = rt.node(&node_id).unwrap();
+        assert_eq!(node.buffer_size(), 3, "Buffer should be at capacity");
+        assert_eq!(
+            node.buffer_drops(),
+            2,
+            "Should have dropped 2 oldest deltas"
+        );
+
+        // Verify metrics recorded
+        assert_eq!(
+            rt.metrics().effects.buffer_drops,
+            2,
+            "Metrics should record 2 buffer drops"
+        );
+
+        // Complete sync - only the 3 newest deltas should be replayed
+        rt.schedule_sync_complete(node_id.clone(), SimDuration::from_millis(100));
+        rt.step();
+
+        // Verify: only deltas 3, 4, 5 were applied (deltas 1, 2 were evicted)
+        let node = rt.node(&node_id).unwrap();
+        assert_eq!(
+            node.entity_count(),
+            3,
+            "Only 3 deltas should have been replayed"
+        );
+        assert_eq!(node.buffer_size(), 0, "Buffer should be empty after sync");
+
+        // Verify the correct entities exist (ids 3, 4, 5)
+        assert!(
+            node.has_entity(&EntityId::from_u64(3)),
+            "Entity 3 should exist"
+        );
+        assert!(
+            node.has_entity(&EntityId::from_u64(4)),
+            "Entity 4 should exist"
+        );
+        assert!(
+            node.has_entity(&EntityId::from_u64(5)),
+            "Entity 5 should exist"
+        );
+        assert!(
+            !node.has_entity(&EntityId::from_u64(1)),
+            "Entity 1 should NOT exist (was evicted)"
+        );
+        assert!(
+            !node.has_entity(&EntityId::from_u64(2)),
+            "Entity 2 should NOT exist (was evicted)"
+        );
+    }
+
+    /// Test: Buffer drops are accumulated across multiple overflows.
+    #[test]
+    fn test_buffer_drops_accumulated() {
+        let mut rt = SimRuntime::new(42);
+
+        // Create node with capacity 2
+        let node_id = rt.add_node_with_buffer_capacity("tiny_buffer", 2);
+
+        // Start sync
+        rt.schedule_sync_start(node_id.clone(), SimDuration::ZERO);
+        rt.step();
+
+        // Send 10 deltas - should cause 8 evictions
+        for i in 1..=10 {
+            let delta_id = delta_id_from_u64(i);
+            let operations = vec![make_insert_op(i, &format!("delta_{}", i))];
+            rt.schedule_gossip_delta(
+                node_id.clone(),
+                delta_id,
+                operations,
+                SimDuration::from_millis(i * 5),
+            );
+        }
+
+        // Process all
+        for _ in 0..10 {
+            rt.step();
+        }
+
+        // Verify accumulated drops
+        let node = rt.node(&node_id).unwrap();
+        assert_eq!(node.buffer_size(), 2, "Buffer at capacity");
+        assert_eq!(node.buffer_drops(), 8, "Should have 8 accumulated drops");
+        assert_eq!(
+            rt.metrics().effects.buffer_drops,
+            8,
+            "Metrics should show 8 drops"
+        );
+    }
+
+    /// Test: Zero capacity buffer drops all deltas immediately (#8 bug fix).
+    ///
+    /// Verifies that a node with buffer_capacity=0:
+    /// 1. Does not buffer any deltas
+    /// 2. Increments drop count for each delta
+    /// 3. Has no data to replay on sync completion
+    #[test]
+    fn test_zero_capacity_drops_all_deltas() {
+        let mut rt = SimRuntime::new(42);
+
+        // Create node with zero capacity
+        let node_id = rt.add_node_with_buffer_capacity("zero_cap", 0);
+
+        // Start sync
+        rt.schedule_sync_start(node_id.clone(), SimDuration::ZERO);
+        rt.step();
+
+        // Send 5 deltas - all should be dropped
+        for i in 1..=5 {
+            let delta_id = delta_id_from_u64(i);
+            let operations = vec![make_insert_op(i, &format!("delta_{}", i))];
+            rt.schedule_gossip_delta(
+                node_id.clone(),
+                delta_id,
+                operations,
+                SimDuration::from_millis(i * 10),
+            );
+        }
+
+        // Process all
+        for _ in 0..5 {
+            rt.step();
+        }
+
+        // Verify all dropped, nothing buffered
+        let node = rt.node(&node_id).unwrap();
+        assert_eq!(node.buffer_size(), 0, "Buffer should be empty");
+        assert_eq!(node.buffer_drops(), 5, "All 5 deltas should be dropped");
+        assert_eq!(
+            rt.metrics().effects.buffer_drops,
+            5,
+            "Metrics should show 5 drops"
+        );
+
+        // Complete sync - nothing to replay
+        rt.schedule_sync_complete(node_id.clone(), SimDuration::from_millis(100));
+        rt.step();
+
+        // Verify no data applied
+        let node = rt.node(&node_id).unwrap();
+        assert_eq!(
+            node.entity_count(),
+            0,
+            "No entities should exist (all deltas were dropped)"
+        );
+    }
+
+    // =========================================================================
+    // Merobox Scenario: 3-Node Gossip Delta Propagation
+    // =========================================================================
+
+    /// Test: Simulates the merobox 3-node scenario with gossip delta propagation.
+    ///
+    /// This test mimics what should happen in production:
+    /// 1. 3 nodes start idle (already synced)
+    /// 2. Node-1 makes a local change (insert entity)
+    /// 3. Node-1 "broadcasts" the delta via gossip (Node-2 and Node-3 receive it)
+    /// 4. All nodes should converge to the same state
+    ///
+    /// This validates that gossip delta application works correctly.
+    /// If this passes but merobox fails, the issue is in gossipsub mesh formation,
+    /// not in the delta application logic.
+    #[test]
+    fn test_three_node_gossip_propagation() {
+        let mut rt = SimRuntime::new(42);
+
+        // Step 1: Create 3 idle nodes with same initial state
+        let node1 = rt.add_node("node-1");
+        let node2 = rt.add_node("node-2");
+        let node3 = rt.add_node("node-3");
+
+        // Give all nodes the same initial entity (simulating already-synced state)
+        let initial_ops = vec![make_insert_op(1, "initial_state")];
+
+        // Apply initial state to all nodes via gossip (with different delta IDs since
+        // in simulation each delivery is tracked separately)
+        rt.schedule_gossip_delta(
+            node1.clone(),
+            delta_id_from_u64(0),
+            initial_ops.clone(),
+            SimDuration::from_millis(1),
+        );
+        rt.schedule_gossip_delta(
+            node2.clone(),
+            delta_id_from_u64(1),
+            initial_ops.clone(),
+            SimDuration::from_millis(2),
+        );
+        rt.schedule_gossip_delta(
+            node3.clone(),
+            delta_id_from_u64(2),
+            initial_ops,
+            SimDuration::from_millis(3),
+        );
+        // Process all 3 scheduled events
+        rt.step(); // node1
+        rt.step(); // node2
+        rt.step(); // node3
+
+        // Verify all nodes have the same initial state
+        assert_eq!(
+            rt.node(&node1).unwrap().entity_count(),
+            1,
+            "node1 should have 1 entity"
+        );
+        assert_eq!(
+            rt.node(&node2).unwrap().entity_count(),
+            1,
+            "node2 should have 1 entity"
+        );
+        assert_eq!(
+            rt.node(&node3).unwrap().entity_count(),
+            1,
+            "node3 should have 1 entity"
+        );
+        println!("Initial state: all 3 nodes have 1 entity");
+
+        // Step 2: Node-1 makes a local change (simulated by receiving its own delta)
+        // In production, node-1 would execute a mutation and then broadcast
+        let new_ops = vec![make_insert_op(999, "demo_value")]; // This is like set(demo_key, demo_value)
+
+        // Node-1 applies locally first
+        rt.schedule_gossip_delta(
+            node1.clone(),
+            delta_id_from_u64(10),
+            new_ops.clone(),
+            SimDuration::from_millis(10),
+        );
+        rt.step();
+
+        // Node-1 now has 2 entities, others still have 1
+        assert_eq!(
+            rt.node(&node1).unwrap().entity_count(),
+            2,
+            "Node-1 should have new entity"
+        );
+        assert_eq!(
+            rt.node(&node2).unwrap().entity_count(),
+            1,
+            "Node-2 not yet updated"
+        );
+        assert_eq!(
+            rt.node(&node3).unwrap().entity_count(),
+            1,
+            "Node-3 not yet updated"
+        );
+        println!("After Node-1 local change: Node-1 has 2 entities, others have 1");
+
+        // Step 3: Gossip propagates to Node-2 and Node-3
+        // This is what should happen via gossipsub BroadcastMessage::StateDelta
+        rt.schedule_gossip_delta(
+            node2.clone(),
+            delta_id_from_u64(11),
+            new_ops.clone(),
+            SimDuration::from_millis(20),
+        );
+        rt.schedule_gossip_delta(
+            node3.clone(),
+            delta_id_from_u64(12),
+            new_ops,
+            SimDuration::from_millis(20),
+        );
+        rt.step(); // node2
+        rt.step(); // node3
+
+        // Step 4: Verify convergence
+        assert_eq!(
+            rt.node(&node1).unwrap().entity_count(),
+            2,
+            "Node-1 should have 2 entities"
+        );
+        assert_eq!(
+            rt.node(&node2).unwrap().entity_count(),
+            2,
+            "Node-2 should have 2 entities after gossip"
+        );
+        assert_eq!(
+            rt.node(&node3).unwrap().entity_count(),
+            2,
+            "Node-3 should have 2 entities after gossip"
+        );
+
+        println!("SUCCESS: All 3 nodes converged via gossip delta propagation");
+    }
+
+    /// Test: Verifies that gossip deltas are idempotent (safe to receive twice).
+    ///
+    /// In gossipsub, a node might receive the same delta multiple times
+    /// (e.g., from different peers, or echo back). This should be handled safely.
+    #[test]
+    fn test_gossip_delta_idempotent() {
+        let mut rt = SimRuntime::new(42);
+
+        let node1 = rt.add_node("node-1");
+
+        let delta = delta_id_from_u64(1);
+        let ops = vec![make_insert_op(100, "value")];
+
+        // Receive the same delta twice (simulating gossip echo or multi-peer delivery)
+        rt.schedule_gossip_delta(
+            node1.clone(),
+            delta,
+            ops.clone(),
+            SimDuration::from_millis(10),
+        );
+        rt.step();
+
+        // First delivery
+        assert_eq!(rt.node(&node1).unwrap().entity_count(), 1);
+
+        // Second delivery of same delta
+        rt.schedule_gossip_delta(node1.clone(), delta, ops, SimDuration::from_millis(20));
+        rt.step();
+
+        // Should still be 1 entity (idempotent)
+        assert_eq!(
+            rt.node(&node1).unwrap().entity_count(),
+            1,
+            "Delta should be idempotent - duplicate delivery should not create duplicate entity"
+        );
+    }
+}

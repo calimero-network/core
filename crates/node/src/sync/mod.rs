@@ -25,6 +25,8 @@
 mod blobs;
 mod config;
 mod delta_request;
+mod hash_comparison;
+pub mod hash_comparison_protocol;
 mod helpers;
 mod key;
 mod manager;
@@ -33,6 +35,9 @@ pub(crate) mod stream;
 mod tracking;
 
 pub use config::SyncConfig;
+pub use hash_comparison_protocol::{
+    HashComparisonConfig, HashComparisonProtocol, HashComparisonStats,
+};
 pub use manager::SyncManager;
 
 pub use key::CHALLENGE_DOMAIN;

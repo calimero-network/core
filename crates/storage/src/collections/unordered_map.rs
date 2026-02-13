@@ -93,7 +93,7 @@ where
             inner: Collection::new_with_field_name_and_crdt_type(
                 parent_id,
                 field_name,
-                CrdtType::UnorderedMap,
+                CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
             ),
         }
     }
@@ -145,8 +145,10 @@ where
         self.inner.clear().expect("failed to clear for migration");
 
         // Now reassign the collection's ID
-        self.inner
-            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::UnorderedMap);
+        self.inner.reassign_deterministic_id_with_crdt_type(
+            field_name,
+            CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
+        );
 
         // Re-insert all entries (they will get new IDs based on new parent ID)
         for (key, value) in entries {

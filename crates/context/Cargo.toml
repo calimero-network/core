@@ -26,9 +26,10 @@ tracing.workspace = true
 
 calimero-context-config = { workspace = true, features = ["client"] }
 calimero-context-primitives.workspace = true
+calimero-node-primitives.workspace = true
+calimero-prelude.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-runtime.workspace = true
-calimero-node-primitives.workspace = true
 calimero-storage.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-utils-actix.workspace = true

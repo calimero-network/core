@@ -20,6 +20,11 @@ exclude = [
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",
+    "./apps/migrations/migration-suite-v1",
+    "./apps/migrations/migration-suite-v2-add-field",
+    "./apps/migrations/migration-suite-v3-remove-field",
+    "./apps/migrations/migration-suite-v4-rename-field",
+    "./apps/migrations/migration-suite-v5-change-type",
     "./apps/nested-crdt-test",
     "./apps/team-metrics-macro",
     "./apps/team-metrics-custom",
@@ -81,6 +86,11 @@ members = [
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",
+    "./apps/migrations/migration-suite-v1",
+    "./apps/migrations/migration-suite-v2-add-field",
+    "./apps/migrations/migration-suite-v3-remove-field",
+    "./apps/migrations/migration-suite-v4-rename-field",
+    "./apps/migrations/migration-suite-v5-change-type",
     "./apps/nested-crdt-test",
     "./apps/team-metrics-macro",
     "./apps/team-metrics-custom",
@@ -235,6 +245,7 @@ calimero-network = { path = "./crates/network" }
 calimero-network-primitives = { path = "./crates/network/primitives" }
 calimero-node = { path = "./crates/node" }
 calimero-node-primitives = { path = "./crates/node/primitives" }
+calimero-prelude = { path = "./crates/prelude" }
 calimero-primitives = { path = "./crates/primitives" }
 calimero-runtime = { path = "./crates/runtime" }
 calimero-sdk = { path = "./crates/sdk" }

@@ -90,11 +90,21 @@ pub async fn handle_state_delta(
             source_peer: source,
         };
 
-        if node_state.buffer_delta(&context_id, buffered) {
-            return Ok(()); // Successfully buffered, will be replayed after sync
+        if let Some(result) = node_state.buffer_delta(&context_id, buffered) {
+            // Delta was handled by the buffer (added, evicted, or duplicate)
+            // Only return early if it was successfully added or was a duplicate
+            if result.was_added()
+                || matches!(
+                    result,
+                    calimero_node_primitives::delta_buffer::PushResult::Duplicate
+                )
+            {
+                return Ok(()); // Successfully buffered, will be replayed after sync
+            }
+            // If dropped due to zero capacity, fall through to normal processing
         }
 
-        // Buffer full or no active session - if context is uninitialized, we must
+        // No active session - if context is uninitialized, we must
         // start a session to buffer this delta
         if is_uninitialized && !node_state.should_buffer_delta(&context_id) {
             // Start a temporary buffer session for uninitialized context
@@ -112,20 +122,27 @@ pub async fn handle_state_delta(
                 source_peer: source,
             };
 
-            if node_state.buffer_delta(&context_id, buffered) {
-                info!(
-                    %context_id,
-                    delta_id = ?delta_id,
-                    "Started buffer session for uninitialized context"
-                );
-                return Ok(());
+            if let Some(result) = node_state.buffer_delta(&context_id, buffered) {
+                if result.was_added()
+                    || matches!(
+                        result,
+                        calimero_node_primitives::delta_buffer::PushResult::Duplicate
+                    )
+                {
+                    info!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        "Started buffer session for uninitialized context"
+                    );
+                    return Ok(());
+                }
             }
         }
 
         warn!(
             %context_id,
             delta_id = ?delta_id,
-            "Delta buffer full, proceeding with normal processing (may fail)"
+            "Delta buffer full or zero capacity, proceeding with normal processing (may fail)"
         );
         // Fall through to normal processing
     }
@@ -1087,8 +1104,8 @@ async fn request_key_share_with_peer(
             .get_identity(context_id, &their_identity)?
             .ok_or_eyre("expected peer identity to exist")?;
 
-        let mut sequence_id_out: usize = 0;
-        let mut sequence_id_in: usize = 0;
+        let mut sequence_id_out: u64 = 0;
+        let mut sequence_id_in: u64 = 0;
 
         // Step 4: Challenge/Response authentication
         // Protocol must match sync/key.rs exactly:
