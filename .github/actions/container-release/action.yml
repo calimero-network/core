@@ -128,6 +128,7 @@ runs:
           type=sha,prefix=,format=short
           type=raw,value=${{ inputs.version }},enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' }}
           type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' && inputs.prerelease == 'false' }}
+          type=raw,value=prerelease,enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' && inputs.prerelease == 'true' }}
         labels: ${{ env.LABELS }}
         annotations: ${{ env.LABELS }}
 
