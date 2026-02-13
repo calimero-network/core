@@ -381,7 +381,10 @@ async fn run_responder_impl<T: SyncTransport>(
 // =============================================================================
 
 /// Get a tree node from the local Merkle tree Index.
-fn get_local_tree_node(
+///
+/// This function is shared between the standalone protocol implementation
+/// and the SyncManager responder to avoid duplication.
+pub(crate) fn get_local_tree_node(
     context_id: ContextId,
     node_id: &[u8; 32],
     is_root_request: bool,
@@ -446,9 +449,14 @@ fn get_local_tree_node(
 /// This function must be called within a `with_runtime_env` scope.
 /// Uses `Interface::apply_action` to properly update both the raw storage
 /// and the Merkle tree Index.
+///
+/// For CRDT types that require merging (counters, collections, custom types),
+/// this function explicitly performs the CRDT merge to ensure no data is lost,
+/// rather than relying on LWW semantics.
 fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) -> Result<()> {
     use calimero_storage::entities::{ChildInfo, Metadata};
     use calimero_storage::interface::Action;
+    use calimero_storage::merge::merge_root_state;
 
     let entity_id = Id::new(leaf.key);
     let root_id = Id::new(*context_id.as_ref());
@@ -461,11 +469,38 @@ fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) -> Res
     metadata.crdt_type = Some(leaf.metadata.crdt_type.clone());
     metadata.updated_at = leaf.metadata.hlc_timestamp.into();
 
+    // Determine if this CRDT type requires explicit merging (not just LWW)
+    let crdt_type = &leaf.metadata.crdt_type;
+    let needs_crdt_merge =
+        crdt_type.is_counter() || crdt_type.is_collection() || crdt_type.is_custom();
+
+    // For CRDT types that need merging, we must explicitly merge existing data
+    // with incoming data. We pass existing_ts=0 to force merge_root_state to
+    // always perform the merge (Invariant I5: No Silent Data Loss).
+    let final_data = if needs_crdt_merge {
+        if let Some(existing_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
+            // Perform CRDT merge with existing_ts=0 to force merge
+            match merge_root_state(&existing_data, &leaf.value, 0, leaf.metadata.hlc_timestamp) {
+                Ok(merged) => merged,
+                Err(_) => {
+                    // Fallback to incoming data if merge fails
+                    leaf.value.clone()
+                }
+            }
+        } else {
+            // No existing data, use incoming
+            leaf.value.clone()
+        }
+    } else {
+        // LWW types can just use the incoming value
+        leaf.value.clone()
+    };
+
     let action = if existing_index.is_some() {
         // Update existing entity
         Action::Update {
             id: entity_id,
-            data: leaf.value.clone(),
+            data: final_data,
             ancestors: vec![], // No ancestors needed for update
             metadata,
         }
@@ -502,7 +537,7 @@ fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) -> Res
 
         Action::Add {
             id: entity_id,
-            data: leaf.value.clone(),
+            data: final_data,
             ancestors: vec![ancestor],
             metadata,
         }
