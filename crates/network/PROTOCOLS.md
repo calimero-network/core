@@ -78,7 +78,7 @@ Protocol ID: /calimero/stream/0.0.2
 - Tree node requests/responses
 - Hash comparison sync
 
-**Message Format**:
+**Message Format** *(source: `primitives/src/stream/codec.rs:MessageCodec`)*:
 
 ```text
 ┌────────────────────────────────────────────────┐

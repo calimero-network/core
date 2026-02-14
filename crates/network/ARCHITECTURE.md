@@ -479,6 +479,7 @@ Initiator                  NetworkManager               Responder's NM          
 ### 1. Actor Model (Actix)
 
 **Decision**: Use Actix actor for `NetworkManager` instead of raw async tasks.
+*(See: `src/lib.rs:NetworkManager`)*
 
 **Rationale**:
 - Simplified concurrency: Single-threaded actor avoids lock contention
@@ -489,6 +490,7 @@ Initiator                  NetworkManager               Responder's NM          
 ### 2. Event Dispatcher Trait
 
 **Decision**: Use `NetworkEventDispatcher` trait instead of Actix `Recipient`.
+*(See: `primitives/src/messages.rs:NetworkEventDispatcher`)*
 
 **Rationale**:
 - Flexibility: Can use channels, direct calls, or Actix recipients
@@ -498,6 +500,7 @@ Initiator                  NetworkManager               Responder's NM          
 ### 3. Composed Behaviour
 
 **Decision**: Single composed `Behaviour` struct with all protocols.
+*(See: `src/behaviour.rs:Behaviour`)*
 
 **Rationale**:
 - libp2p pattern: This is the recommended approach
@@ -507,6 +510,7 @@ Initiator                  NetworkManager               Responder's NM          
 ### 4. Discovery State Separation
 
 **Decision**: Maintain `DiscoveryState` separate from libp2p's internal state.
+*(See: `src/discovery/state.rs:DiscoveryState`)*
 
 **Rationale**:
 - Additional metadata: Track rendezvous registration status, relay reservations
@@ -516,6 +520,7 @@ Initiator                  NetworkManager               Responder's NM          
 ### 5. Primitives Crate
 
 **Decision**: Separate `calimero-network-primitives` crate.
+*(See: `primitives/` directory)*
 
 **Rationale**:
 - Avoid circular dependencies: Other crates can use types without full network dep
@@ -525,6 +530,7 @@ Initiator                  NetworkManager               Responder's NM          
 ### 6. Stream Framing
 
 **Decision**: Length-delimited framing with 8MB max message size.
+*(See: `primitives/src/stream/codec.rs:MessageCodec`)*
 
 **Rationale**:
 - Simplicity: Standard approach, well-tested
@@ -535,6 +541,7 @@ Initiator                  NetworkManager               Responder's NM          
 ### 7. Custom Kademlia Protocol
 
 **Decision**: Use `/calimero/kad/1.0.0` instead of IPFS DHT.
+*(See: `src/behaviour.rs:CALIMERO_KAD_PROTO_NAME`)*
 
 **Rationale**:
 - Network isolation: Calimero nodes form separate DHT
