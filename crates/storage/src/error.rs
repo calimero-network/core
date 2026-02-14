@@ -23,6 +23,14 @@ pub enum StorageError {
     #[error("Cannot create orphan with ID: {0}")]
     CannotCreateOrphan(Id),
 
+    /// A merge operation failed.
+    ///
+    /// This typically indicates that no merge function is registered for the
+    /// root entity type. Use `#[app::state]` macro or call
+    /// `register_crdt_merge::<YourState>()` to register a merge function.
+    #[error("Merge failed: {0}")]
+    MergeError(String),
+
     /// An error occurred during deserialization.
     #[error("Deserialization error: {0}")]
     DeserializationError(IoError),
@@ -71,7 +79,9 @@ pub enum StorageError {
 impl Serialize for StorageError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match *self {
-            Self::ActionNotAllowed(ref err) => serializer.serialize_str(err),
+            Self::ActionNotAllowed(ref err) | Self::MergeError(ref err) => {
+                serializer.serialize_str(err)
+            }
             Self::DeserializationError(ref err) | Self::SerializationError(ref err) => {
                 serializer.serialize_str(&err.to_string())
             }

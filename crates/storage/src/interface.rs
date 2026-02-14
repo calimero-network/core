@@ -1059,7 +1059,7 @@ impl<S: StorageAdaptor> Interface<S> {
             Err(e) => {
                 // I5 Enforcement: Propagate merge errors instead of falling back to LWW.
                 // If no merge function is registered, this prevents silent data loss.
-                Err(StorageError::ActionNotAllowed(e.to_string()))
+                Err(StorageError::MergeError(e.to_string()))
             }
         }
     }

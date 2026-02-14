@@ -124,6 +124,13 @@ pub fn merge_root_state(
             //
             // Fall back to LWW to maintain backwards compatibility.
             // The incoming value wins if timestamps are equal or incoming is newer.
+            //
+            // Per Delivery Contract Rule: any drop MUST be observable.
+            tracing::warn!(
+                target: "calimero_storage::merge",
+                "All registered merge functions failed, falling back to LWW. \
+                 This may indicate type mismatch or corrupt data."
+            );
             if incoming_ts >= existing_ts {
                 Ok(incoming.to_vec())
             } else {

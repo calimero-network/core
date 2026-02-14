@@ -123,9 +123,19 @@ pub fn try_merge_registered(
     // This will be solved in Phase 3 with type hints in storage
 
     // Try each registered merge function (brute force for Phase 2)
-    let Ok(registry) = MERGE_REGISTRY.read() else {
-        return MergeRegistryResult::NoFunctionsRegistered;
-    };
+    let registry = MERGE_REGISTRY.read().unwrap_or_else(|poisoned| {
+        // Lock poisoning indicates a panic occurred while holding the lock.
+        // This is a serious error - abort to prevent undefined behavior.
+        // This is consistent with the write side behavior in register_crdt_merge().
+        tracing::error!(
+            target: "calimero_storage::merge",
+            "MERGE_REGISTRY lock poisoned, aborting. This indicates a panic in merge code."
+        );
+        std::process::abort();
+        // Note: abort() never returns, but we need this for type inference
+        #[allow(unreachable_code)]
+        poisoned.into_inner()
+    });
 
     if registry.is_empty() {
         return MergeRegistryResult::NoFunctionsRegistered;
