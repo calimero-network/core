@@ -272,6 +272,19 @@ pub struct VMLogic<'a> {
                 -> Result<Vec<u8>, calimero_storage::collections::crdt_meta::MergeError>,
         >,
     >,
+
+    /// Optional WASM merge callback for root state merging during sync.
+    /// This is called by the storage layer when merging root state and no
+    /// in-process merge function is registered.
+    root_merge_callback: Option<
+        std::rc::Rc<
+            dyn Fn(
+                &[u8],
+                &[u8],
+            )
+                -> Result<Vec<u8>, calimero_storage::collections::crdt_meta::MergeError>,
+        >,
+    >,
 }
 
 impl<'a> VMLogic<'a> {
@@ -324,8 +337,9 @@ impl<'a> VMLogic<'a> {
             blob_handles: HashMap::new(),
             next_blob_fd: 1,
 
-            // Merge callback (set separately via with_merge_callback)
+            // Merge callbacks (set separately via with_merge_callback / with_root_merge_callback)
             merge_callback: None,
+            root_merge_callback: None,
         }
     }
 
@@ -362,6 +376,38 @@ impl<'a> VMLogic<'a> {
         >,
     > {
         self.merge_callback.clone()
+    }
+
+    /// Sets the WASM merge callback for root state merging.
+    ///
+    /// This callback is used by the storage layer when merging root state
+    /// and no in-process merge function is registered.
+    pub fn with_root_merge_callback(
+        &mut self,
+        callback: std::rc::Rc<
+            dyn Fn(
+                &[u8],
+                &[u8],
+            )
+                -> Result<Vec<u8>, calimero_storage::collections::crdt_meta::MergeError>,
+        >,
+    ) {
+        self.root_merge_callback = Some(callback);
+    }
+
+    /// Returns the root merge callback if set.
+    pub fn root_merge_callback(
+        &self,
+    ) -> Option<
+        std::rc::Rc<
+            dyn Fn(
+                &[u8],
+                &[u8],
+            )
+                -> Result<Vec<u8>, calimero_storage::collections::crdt_meta::MergeError>,
+        >,
+    > {
+        self.root_merge_callback.clone()
     }
 
     /// Associates a Wasmer memory instance with this `VMLogic`.

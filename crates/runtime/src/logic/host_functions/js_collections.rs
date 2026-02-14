@@ -29,13 +29,15 @@ const COLLECTION_ID_LEN: usize = 32;
 impl VMHostFunctions<'_> {
     fn make_runtime_env(&mut self) -> VMLogicResult<RuntimeEnv> {
         self.with_logic_mut(|logic| {
-            // Get callback before borrowing storage to avoid borrow conflicts
+            // Get callbacks before borrowing storage to avoid borrow conflicts
             let merge_callback = logic.merge_callback();
+            let root_merge_callback = logic.root_merge_callback();
             Ok(build_runtime_env_with_merge(
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
                 merge_callback,
+                root_merge_callback,
             ))
         })
     }

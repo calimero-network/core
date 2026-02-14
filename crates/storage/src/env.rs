@@ -72,6 +72,13 @@ pub struct RuntimeEnv {
             ) -> Result<Vec<u8>, crate::collections::crdt_meta::MergeError>,
         >,
     >,
+    /// Optional WASM merge callback for root state merging.
+    /// This is used during sync when no in-process merge function is registered.
+    wasm_root_merge_callback: Option<
+        std::rc::Rc<
+            dyn Fn(&[u8], &[u8]) -> Result<Vec<u8>, crate::collections::crdt_meta::MergeError>,
+        >,
+    >,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -96,6 +103,7 @@ impl RuntimeEnv {
             context_id,
             executor_id,
             wasm_merge_callback: None,
+            wasm_root_merge_callback: None,
         }
     }
 
@@ -118,6 +126,22 @@ impl RuntimeEnv {
         self
     }
 
+    /// Sets the WASM merge callback for root state merging.
+    ///
+    /// The callback receives (local_bytes, remote_bytes) and returns
+    /// the merged bytes or an error. This is used when no in-process
+    /// merge function is registered for the root entity type.
+    #[must_use]
+    pub fn with_root_merge_callback(
+        mut self,
+        callback: std::rc::Rc<
+            dyn Fn(&[u8], &[u8]) -> Result<Vec<u8>, crate::collections::crdt_meta::MergeError>,
+        >,
+    ) -> Self {
+        self.wasm_root_merge_callback = Some(callback);
+        self
+    }
+
     /// Returns the WASM merge callback if set.
     #[must_use]
     pub fn wasm_merge_callback(
@@ -132,6 +156,18 @@ impl RuntimeEnv {
         >,
     > {
         self.wasm_merge_callback.clone()
+    }
+
+    /// Returns the WASM root merge callback if set.
+    #[must_use]
+    pub fn wasm_root_merge_callback(
+        &self,
+    ) -> Option<
+        std::rc::Rc<
+            dyn Fn(&[u8], &[u8]) -> Result<Vec<u8>, crate::collections::crdt_meta::MergeError>,
+        >,
+    > {
+        self.wasm_root_merge_callback.clone()
     }
 
     #[must_use]
@@ -182,6 +218,18 @@ pub fn get_wasm_merge_callback() -> Option<
     >,
 > {
     mocked::get_wasm_merge_callback()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Returns the current WASM root merge callback from the runtime environment, if any.
+///
+/// This is called by storage merge functions to merge root state via WASM
+/// when no in-process merge function is registered.
+#[must_use]
+pub fn get_wasm_root_merge_callback() -> Option<
+    std::rc::Rc<dyn Fn(&[u8], &[u8]) -> Result<Vec<u8>, crate::collections::crdt_meta::MergeError>>,
+> {
+    mocked::get_wasm_root_merge_callback()
 }
 
 /// Commits the root hash to the runtime.
@@ -593,6 +641,19 @@ mod mocked {
         >,
     > {
         RUNTIME_ENV.with(|env| env.borrow().as_ref().and_then(|e| e.wasm_merge_callback()))
+    }
+
+    /// Returns the WASM root merge callback from the current runtime environment.
+    pub(super) fn get_wasm_root_merge_callback() -> Option<
+        std::rc::Rc<
+            dyn Fn(&[u8], &[u8]) -> Result<Vec<u8>, crate::collections::crdt_meta::MergeError>,
+        >,
+    > {
+        RUNTIME_ENV.with(|env| {
+            env.borrow()
+                .as_ref()
+                .and_then(|e| e.wasm_root_merge_callback())
+        })
     }
 
     /// Resets the environment state for testing.
