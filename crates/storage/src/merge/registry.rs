@@ -222,4 +222,36 @@ mod tests {
         // Verify: counters summed (2 + 1 = 3)
         assert_eq!(merged.counter.value().unwrap(), 3);
     }
+
+    #[test]
+    #[serial]
+    fn test_no_merge_function_registered_returns_error() {
+        use crate::merge::merge_root_state;
+
+        env::reset_for_testing();
+        clear_merge_registry(); // Ensure registry is empty
+
+        // Create some arbitrary data
+        let data1 = vec![1, 2, 3, 4];
+        let data2 = vec![5, 6, 7, 8];
+
+        // Attempt merge with no registered functions
+        let result = merge_root_state(&data1, &data2, 100, 200);
+
+        // Should return NoMergeFunctionRegistered error (I5 enforcement)
+        assert!(
+            result.is_err(),
+            "Expected error when no merge function is registered"
+        );
+
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::collections::crdt_meta::MergeError::NoMergeFunctionRegistered
+            ),
+            "Expected NoMergeFunctionRegistered error, got: {:?}",
+            err
+        );
+    }
 }
