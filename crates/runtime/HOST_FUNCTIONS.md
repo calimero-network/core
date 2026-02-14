@@ -73,7 +73,7 @@ All data exchange between guest WASM code and host functions uses a **pointer-ba
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `panic` | `(location_ptr: u64) -> !` | Handles simple panic without message. Captures file/line/column from `sys::Location`. |
-| `panic_utf8` | *(implicit via imports)* | Handles panic with UTF-8 message. |
+| `panic_utf8` | `(msg_ptr: u64, file_ptr: u64) -> !` | Handles panic with UTF-8 message and file location. |
 
 ### Register Operations
 
@@ -102,6 +102,7 @@ Registers are host-side temporary storage slots that allow passing data larger t
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
+| `log_utf8` | `(log_ptr: u64)` | Logs a UTF-8 message (buffer descriptor). |
 | `js_std_d_print` | `(ctx_ptr: u64, message_ptr: u64, message_len: u64) -> u32` | QuickJS debug print handler. |
 | `emit` | `(event_ptr: u64)` | Emits structured event with `kind` and `data`. |
 | `emit_with_handler` | `(event_ptr: u64, handler_ptr: u64)` | Emits event with optional callback handler name. |
@@ -190,7 +191,7 @@ These functions support JavaScript SDK CRDT collections. All return `i32` status
 | `js_crdt_counter_new` | `(register_id: u64) -> i32` | Creates new CRDT counter. |
 | `js_crdt_counter_increment` | `(counter_id_ptr: u64) -> i32` | Increments counter. |
 | `js_crdt_counter_value` | `(counter_id_ptr: u64, register_id: u64) -> i32` | Gets current counter value. |
-| `js_crdt_counter_get_executor_count` | `(counter_id_ptr: u64, executor_ptr: u64, register_id: u64) -> i32` | Gets per-executor count. |
+| `js_crdt_counter_get_executor_count` | `(counter_id_ptr: u64, executor_ptr: u64, has_executor: u32, register_id: u64) -> i32` | Gets per-executor count. `has_executor` indicates if executor provided. |
 
 ### User & Frozen Storage (JS)
 
@@ -300,14 +301,14 @@ All operations are bounded by `VMLimits`:
 
 | Limit | Default | Description |
 |-------|---------|-------------|
-| `max_memory_pages` | 512 | Maximum WASM memory pages (32KB each) |
-| `max_stack_size` | 1MB | Maximum stack size |
+| `max_memory_pages` | 1024 | Maximum WASM memory pages (64KB each = 64MB total) |
+| `max_stack_size` | 200KB | Maximum stack size |
 | `max_registers` | 100 | Maximum number of registers |
 | `max_register_size` | 100MB | Maximum size per register |
-| `max_storage_key_size` | 2KB | Maximum storage key length |
-| `max_storage_value_size` | 4MB | Maximum storage value length |
+| `max_storage_key_size` | 1MB | Maximum storage key length |
+| `max_storage_value_size` | 10MB | Maximum storage value length |
 | `max_logs` | 100 | Maximum log messages |
 | `max_log_size` | 16KB | Maximum log message length |
 | `max_events` | 100 | Maximum events |
-| `max_event_kind_size` | 256 | Maximum event kind length |
+| `max_event_kind_size` | 100 | Maximum event kind length (bytes) |
 | `max_event_data_size` | 16KB | Maximum event data size |
