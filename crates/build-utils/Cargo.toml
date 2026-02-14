@@ -1,8 +1,11 @@
 [package]
 name = "calimero-build-utils"
-version = "0.1.0"
-edition = "2021"
-description = "Shared build script utilities for version and git metadata"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description.workspace = true
 publish = false
 
 [lib]
