@@ -14,3 +14,6 @@ path = "src/lib.rs"
 [dependencies]
 rustc_version.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -4,14 +4,13 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage: run-merobox-workflows.sh --root <dir> --workflow-list <file> --image <image> \
-  --contracts-dir <dir> --docker-logs <dir> --workflow-logs <dir> --failed-output <file> \
+  --docker-logs <dir> --workflow-logs <dir> --failed-output <file> \
   [--max-attempts <n>] [--workdir-mode root|parent]
 
 Options:
   --root           Root directory for workflow execution.
   --workflow-list  File containing workflow paths (one per line, relative to root).
   --image          Merod image tag to use.
-  --contracts-dir  Contracts directory (reserved for future use).
   --docker-logs    Directory to write docker logs.
   --workflow-logs  Directory to write per-workflow stdout logs.
   --failed-output  Output file for failed workflow list.
@@ -23,7 +22,6 @@ EOF
 root=""
 workflow_list=""
 image=""
-contracts_dir=""
 docker_logs=""
 workflow_logs=""
 failed_output=""
@@ -42,10 +40,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --image)
       image="$2"
-      shift 2
-      ;;
-    --contracts-dir)
-      contracts_dir="$2"
       shift 2
       ;;
     --docker-logs)
@@ -80,7 +74,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$root" || -z "$workflow_list" || -z "$image" || -z "$contracts_dir" || -z "$docker_logs" || -z "$workflow_logs" || -z "$failed_output" ]]; then
+if [[ -z "$root" || -z "$workflow_list" || -z "$image" || -z "$docker_logs" || -z "$workflow_logs" || -z "$failed_output" ]]; then
   echo "Missing required arguments."
   usage
   exit 2

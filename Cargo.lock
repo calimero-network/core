@@ -2002,6 +2002,7 @@ name = "calimero-build-utils"
 version = "0.0.0"
 dependencies = [
  "rustc_version 0.4.1",
+ "tempfile",
  "toml 0.8.23",
 ]
 

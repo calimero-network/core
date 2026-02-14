@@ -35,6 +35,7 @@ exclude = [
     "./crates/merod",
     "./crates/meroctl",
     "./crates/auth",
+    "./crates/build-utils",
     "./tools/calimero-abi",
 ]
 

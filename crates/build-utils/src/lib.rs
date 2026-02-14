@@ -15,18 +15,23 @@ use toml::Value;
 /// placeholder `0.0.0`. Returns `None` if not found (e.g. not in a workspace).
 pub fn read_workspace_version() -> Option<String> {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let mut dir = PathBuf::from(manifest_dir);
+    let (version, version_file) = read_workspace_version_for_dir(Path::new(&manifest_dir))?;
+
+    // Re-run build scripts when the resolved workspace version changes.
+    println!("cargo:rerun-if-changed={}", version_file.display());
+    Some(version)
+}
+
+fn read_workspace_version_for_dir(manifest_dir: &Path) -> Option<(String, PathBuf)> {
+    let mut dir = manifest_dir.to_path_buf();
 
     loop {
         let cargo_toml = dir.join("Cargo.toml");
 
         if cargo_toml.exists() {
-            // Re-run build scripts when the resolved workspace version changes.
-            println!("cargo:rerun-if-changed={}", cargo_toml.display());
-
             if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
                 if let Some(v) = parse_workspace_metadata_version(&content) {
-                    return Some(v);
+                    return Some((v, cargo_toml));
                 }
             }
         }
@@ -54,8 +59,6 @@ fn parse_workspace_metadata_version(content: &str) -> Option<String> {
 
 /// Run a command and return stdout. Fails if the command exits non-zero.
 pub fn run_command(cmd: &str, args: &[&str], cwd: Option<&Path>) -> Result<String, Box<dyn Error>> {
-    println!("cargo:rerun-if-env-changed=PATH");
-
     let output = Command::new(cmd)
         .args(args)
         .current_dir(cwd.unwrap_or(Path::new(".")))
@@ -140,22 +143,29 @@ pub fn git_details(pkg_dir: &str) -> Result<GitInfo, Box<dyn Error>> {
     })
 }
 
-/// Set `<PREFIX>_VERSION`, `<PREFIX>_BUILD`, `<PREFIX>_COMMIT`, `<PREFIX>_RUSTC_VERSION`.
-pub fn set_version_env_vars(prefix: &str) -> Result<(), Box<dyn Error>> {
-    let pkg_dir = std::env::var("CARGO_MANIFEST_DIR")?;
-    let version = read_workspace_version().ok_or_else(|| {
-        "failed to read [workspace.metadata.workspaces].version from workspace Cargo.toml"
-            .to_owned()
-    })?;
-
-    let git_info = match git_details(&pkg_dir) {
+/// Return git metadata, falling back to `unknown` when git info is unavailable.
+pub fn git_details_or_unknown(pkg_dir: &str) -> GitInfo {
+    match git_details(pkg_dir) {
         Ok(info) => info,
         Err(err) => {
             println!("cargo:warning=unable to determine git version (not in git repository?)");
             println!("cargo:warning={err}");
             GitInfo::unknown()
         }
-    };
+    }
+}
+
+/// Set `<PREFIX>_VERSION`, `<PREFIX>_BUILD`, `<PREFIX>_COMMIT`, `<PREFIX>_RUSTC_VERSION`.
+pub fn set_version_env_vars(prefix: &str) -> Result<(), Box<dyn Error>> {
+    println!("cargo:rerun-if-env-changed=PATH");
+
+    let pkg_dir = std::env::var("CARGO_MANIFEST_DIR")?;
+    let version = read_workspace_version().ok_or_else(|| {
+        "failed to read [workspace.metadata.workspaces].version from workspace Cargo.toml"
+            .to_owned()
+    })?;
+
+    let git_info = git_details_or_unknown(&pkg_dir);
 
     let rustc_version = rustc_version::version()?.to_string();
 
@@ -172,7 +182,10 @@ pub fn set_version_env_vars(prefix: &str) -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_workspace_metadata_version;
+    use super::{
+        git_details_or_unknown, parse_workspace_metadata_version, read_workspace_version_for_dir,
+        run_command,
+    };
 
     #[test]
     fn parse_workspace_metadata_version_handles_inline_comments() {
@@ -209,5 +222,49 @@ exclude = ["./apps/example"]
 "#;
 
         assert_eq!(parse_workspace_metadata_version(content), None);
+    }
+
+    #[test]
+    fn read_workspace_version_for_dir_finds_workspace_root_file() {
+        let tmp = tempfile::tempdir().expect("temp dir must be creatable");
+        let root = tmp.path();
+        let nested = root.join("crates/example");
+        std::fs::create_dir_all(&nested).expect("nested dir must be creatable");
+
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[workspace.metadata.workspaces]
+version = "3.4.5"
+"#,
+        )
+        .expect("workspace Cargo.toml must be writable");
+
+        let (version, version_file) =
+            read_workspace_version_for_dir(&nested).expect("workspace version should resolve");
+
+        assert_eq!(version, "3.4.5");
+        assert_eq!(version_file, root.join("Cargo.toml"));
+    }
+
+    #[test]
+    fn run_command_includes_stderr_context_on_failure() {
+        let err = run_command("git", &["this-command-does-not-exist"], None).unwrap_err();
+        let message = err.to_string();
+
+        assert!(message.contains("stderr"));
+    }
+
+    #[test]
+    fn git_details_or_unknown_returns_unknown_outside_git_repo() {
+        let dir = tempfile::tempdir().expect("temp dir must be creatable");
+        let git_info = git_details_or_unknown(
+            dir.path()
+                .to_str()
+                .expect("temp dir path should be valid utf-8"),
+        );
+
+        assert_eq!(git_info.describe, "unknown");
+        assert_eq!(git_info.commit, "unknown");
     }
 }

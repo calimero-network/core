@@ -246,7 +246,6 @@ jobs:
       - name: Publish calimero-workspaces on crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -x
 
