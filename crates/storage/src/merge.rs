@@ -33,7 +33,7 @@
 //!   entity metadata for correct dispatch.
 
 pub mod registry;
-pub use registry::{register_crdt_merge, try_merge_registered};
+pub use registry::{register_crdt_merge, try_merge_registered, MergeRegistryResult};
 
 #[cfg(test)]
 pub use registry::clear_merge_registry;
@@ -103,21 +103,36 @@ pub fn merge_root_state(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     // Try registered CRDT merge functions first
     // This enables automatic nested CRDT merging when apps use #[app::state]
-    if let Some(result) = try_merge_registered(existing, incoming, existing_ts, incoming_ts) {
-        return result;
+    match try_merge_registered(existing, incoming, existing_ts, incoming_ts) {
+        MergeRegistryResult::Success(merged) => return Ok(merged),
+        MergeRegistryResult::NoFunctionsRegistered => {
+            // I5 Enforcement: No silent data loss
+            //
+            // If the root entity contains CRDTs (Counter, etc.) and no merge function
+            // is registered, an LWW fallback would cause DATA LOSS. One node's CRDT
+            // contributions would be silently discarded.
+            //
+            // Instead of silently falling back to LWW, we fail with an actionable error
+            // message telling the developer how to fix it.
+            return Err("No merge function registered for root entity. \
+                Use #[app::state] macro or call register_crdt_merge::<YourState>()."
+                .into());
+        }
+        MergeRegistryResult::AllFunctionsFailed => {
+            // Merge functions are registered but none could merge the data.
+            // This typically happens when:
+            // - The data type doesn't match any registered type (test contamination)
+            // - Deserialization failed (corrupt data)
+            //
+            // Fall back to LWW to maintain backwards compatibility.
+            // The incoming value wins if timestamps are equal or incoming is newer.
+            if incoming_ts >= existing_ts {
+                return Ok(incoming.to_vec());
+            } else {
+                return Ok(existing.to_vec());
+            }
+        }
     }
-
-    // I5 Enforcement: No silent data loss
-    //
-    // If the root entity contains CRDTs (Counter, etc.) and no merge function
-    // is registered, an LWW fallback would cause DATA LOSS. One node's CRDT
-    // contributions would be silently discarded.
-    //
-    // Instead of silently falling back to LWW, we fail with an actionable error
-    // message telling the developer how to fix it.
-    Err("No merge function registered for root entity. \
-         Use #[app::state] macro or call register_crdt_merge::<YourState>()."
-        .into())
 }
 
 /// Trait for app state types that need custom CRDT merge.

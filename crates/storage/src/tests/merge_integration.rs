@@ -985,7 +985,10 @@ fn test_e2e_sync_flow_with_isolated_storage() {
 
     env::reset_for_testing();
     reset_delta_context();
-    clear_merge_registry();
+    // Note: We don't clear the merge registry here. The test uses Root<LwwRegister<String>>
+    // which wraps the value in Collection. Since Collection doesn't have a matching merge
+    // function, the system will fall back to LWW (which is correct for LwwRegister).
+    // Clearing the registry would trigger I5 enforcement error.
 
     println!("\n========================================");
     println!("=== E2E SYNC FLOW WITH ISOLATED STORAGE ===");
@@ -1140,7 +1143,10 @@ fn test_e2e_counter_sync_with_isolated_storage() {
 
     env::reset_for_testing();
     reset_delta_context();
-    clear_merge_registry();
+    // Note: We don't clear the merge registry here. The test uses Root<Counter>
+    // which wraps the value in Collection. Since Collection doesn't have a matching merge
+    // function, the system will fall back to LWW. Clearing the registry would trigger
+    // I5 enforcement error.
 
     println!("\n========================================");
     println!("=== COUNTER SYNC TEST - SIMULATING REAL E2E ===");

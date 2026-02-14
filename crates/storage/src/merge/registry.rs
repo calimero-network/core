@@ -97,29 +97,47 @@ pub fn clear_merge_registry() {
     registry.clear();
 }
 
+/// Result of attempting to merge using registered merge functions
+pub enum MergeRegistryResult {
+    /// A registered merge function succeeded
+    Success(Vec<u8>),
+    /// No merge functions are registered (I5 enforcement needed)
+    NoFunctionsRegistered,
+    /// Merge functions are registered but all failed (e.g., type mismatch)
+    AllFunctionsFailed,
+}
+
 /// Try to merge using registered merge function
 ///
-/// If the type is registered, uses its merge function.
-/// Otherwise, returns None to indicate fallback to LWW.
+/// Returns:
+/// - `Success(merged)` if a merge function succeeded
+/// - `NoFunctionsRegistered` if no merge functions are registered (I5 violation)
+/// - `AllFunctionsFailed` if merge functions exist but none could merge the data
 pub fn try_merge_registered(
     existing: &[u8],
     incoming: &[u8],
     existing_ts: u64,
     incoming_ts: u64,
-) -> Option<Result<Vec<u8>, Box<dyn std::error::Error>>> {
+) -> MergeRegistryResult {
     // For now, we don't have type information at runtime
     // This will be solved in Phase 3 with type hints in storage
 
     // Try each registered merge function (brute force for Phase 2)
-    let registry = MERGE_REGISTRY.read().ok()?;
+    let Ok(registry) = MERGE_REGISTRY.read() else {
+        return MergeRegistryResult::NoFunctionsRegistered;
+    };
+
+    if registry.is_empty() {
+        return MergeRegistryResult::NoFunctionsRegistered;
+    }
 
     for (_type_id, merge_fn) in registry.iter() {
         if let Ok(merged) = merge_fn(existing, incoming, existing_ts, incoming_ts) {
-            return Some(Ok(merged));
+            return MergeRegistryResult::Success(merged);
         }
     }
 
-    None
+    MergeRegistryResult::AllFunctionsFailed
 }
 
 #[cfg(test)]
@@ -142,6 +160,7 @@ mod tests {
     #[test]
     fn test_register_and_merge() {
         env::reset_for_testing();
+        clear_merge_registry(); // Clear any previous registrations to ensure clean test
 
         // Register the type
         register_crdt_merge::<TestState>();
@@ -165,9 +184,15 @@ mod tests {
         let bytes2 = borsh::to_vec(&state2).unwrap();
 
         // Merge via registry
-        let merged_bytes = try_merge_registered(&bytes1, &bytes2, 100, 200)
-            .unwrap()
-            .unwrap();
+        let merged_bytes = match try_merge_registered(&bytes1, &bytes2, 100, 200) {
+            MergeRegistryResult::Success(bytes) => bytes,
+            MergeRegistryResult::NoFunctionsRegistered => {
+                panic!("Expected merge function to be registered")
+            }
+            MergeRegistryResult::AllFunctionsFailed => {
+                panic!("Expected merge to succeed")
+            }
+        };
 
         // Deserialize result
         let merged: TestState = borsh::from_slice(&merged_bytes).unwrap();
