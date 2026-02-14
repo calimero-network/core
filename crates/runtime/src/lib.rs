@@ -242,7 +242,17 @@ impl Module {
     fn create_merge_callback(&self) -> Option<merge_callback::RuntimeMergeCallback> {
         let mut store = Store::new(self.engine.clone());
         let imports = self.create_stub_imports(&mut store);
-        let instance = Instance::new(&mut store, &self.module, &imports).ok()?;
+        let instance = match Instance::new(&mut store, &self.module, &imports) {
+            Ok(instance) => instance,
+            Err(e) => {
+                debug!(
+                    target: "calimero_runtime::merge",
+                    error = %e,
+                    "Failed to create merge callback WASM instance"
+                );
+                return None;
+            }
+        };
         merge_callback::RuntimeMergeCallback::from_instance(store, instance)
     }
 

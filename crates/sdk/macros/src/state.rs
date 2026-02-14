@@ -471,9 +471,13 @@ fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>
         #[cfg(target_arch = "wasm32")]
         #[no_mangle]
         pub extern "C" fn __calimero_alloc(size: u64) -> u64 {
+            // Guard against zero-size allocation (UB per GlobalAlloc contract)
+            if size == 0 {
+                return ::std::ptr::NonNull::dangling().as_ptr() as u64;
+            }
             let layout = ::std::alloc::Layout::from_size_align(size as usize, 8)
                 .expect("Invalid allocation size");
-            // SAFETY: Layout is valid, and we're in WASM where the allocator is available
+            // SAFETY: Layout is valid (size > 0), and we're in WASM where the allocator is available
             let ptr = unsafe { ::std::alloc::alloc(layout) };
             ptr as u64
         }

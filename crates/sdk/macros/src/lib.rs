@@ -426,6 +426,10 @@ pub fn mergeable(args: TokenStream, input: TokenStream) -> TokenStream {
             use super::*;
 
             fn alloc(size: u64) -> u64 {
+                // Guard against zero-size allocation (UB per GlobalAlloc contract)
+                if size == 0 {
+                    return ::std::ptr::NonNull::dangling().as_ptr() as u64;
+                }
                 let layout = ::std::alloc::Layout::from_size_align(size as usize, 8)
                     .expect("Invalid allocation size");
                 unsafe { ::std::alloc::alloc(layout) as u64 }

@@ -67,6 +67,12 @@ use wasmer::{Instance, Memory, Store, TypedFunction};
 /// Default timeout for WASM merge operations (5 seconds).
 pub const DEFAULT_MERGE_TIMEOUT_MS: u64 = 5000;
 
+/// Maximum allowed size for WASM merge results (64 MB).
+///
+/// This prevents malicious WASM modules from causing memory exhaustion
+/// by returning huge length values in merge results.
+pub const MAX_MERGE_RESULT_SIZE: u64 = 64 * 1024 * 1024;
+
 /// Export name for the root state merge function.
 pub const MERGE_ROOT_STATE_EXPORT: &str = "__calimero_merge_root_state";
 
@@ -239,7 +245,21 @@ impl RuntimeMergeCallback {
     }
 
     /// Read data from WASM memory at the given pointer and length.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if length exceeds `MAX_MERGE_RESULT_SIZE` (DoS protection)
+    /// or if reading from WASM memory fails.
     fn read_from_wasm(&self, store: &Store, ptr: u64, len: u64) -> Result<Vec<u8>, MergeError> {
+        // Guard against malicious WASM returning huge length values
+        if len > MAX_MERGE_RESULT_SIZE {
+            return Err(MergeError::WasmCallbackFailed {
+                message: format!(
+                    "WASM merge result size {} exceeds maximum allowed {} bytes",
+                    len, MAX_MERGE_RESULT_SIZE
+                ),
+            });
+        }
         let memory = self.get_memory()?;
         let view = memory.view(store);
         let mut buf = vec![0u8; len as usize];
