@@ -7,6 +7,7 @@ use velcro::btree_map;
 
 use crate::action::Action;
 use crate::address::Id;
+use crate::collections::crdt_meta::{MergeError, Mergeable};
 use crate::entities::{
     AtomicUnit, ChildInfo, Collection, Data, Element, Metadata, SignatureData, StorageType,
 };
@@ -34,6 +35,14 @@ impl Data for EmptyData {
     }
 }
 
+// LWW-based merge for test type (no CRDT fields)
+impl Mergeable for EmptyData {
+    fn merge(&mut self, _other: &Self) -> Result<(), MergeError> {
+        // EmptyData has no data fields to merge
+        Ok(())
+    }
+}
+
 /// A simple page with a title, and paragraphs as children.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
 pub struct Page {
@@ -57,6 +66,18 @@ impl Page {
 }
 
 impl AtomicUnit for Page {}
+
+// LWW-based merge for test type (no CRDT fields)
+impl Mergeable for Page {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        // For simple test types without CRDT fields, use LWW semantics
+        // (incoming value wins, which is what `other` represents)
+        self.title = other.title.clone();
+        self.paragraphs = other.paragraphs;
+        // Note: storage/element is handled separately by the storage layer
+        Ok(())
+    }
+}
 
 impl Data for Page {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
@@ -94,6 +115,14 @@ impl Paragraph {
 }
 
 impl AtomicUnit for Paragraph {}
+
+// LWW-based merge for test type (no CRDT fields)
+impl Mergeable for Paragraph {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.text = other.text.clone();
+        Ok(())
+    }
+}
 
 impl Data for Paragraph {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
@@ -147,6 +176,27 @@ impl Data for Person {
     fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
     }
+}
+
+// LWW-based merge for test type (no CRDT fields)
+impl Mergeable for Person {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        self.name = other.name.clone();
+        self.age = other.age;
+        Ok(())
+    }
+}
+
+/// Register merge functions for all test types.
+///
+/// This must be called before any test that triggers root entity merging.
+/// Required for I5 enforcement - without registration, merge operations will fail.
+pub fn register_test_merge_functions() {
+    use crate::merge::register_crdt_merge;
+    register_crdt_merge::<Page>();
+    register_crdt_merge::<Paragraph>();
+    register_crdt_merge::<Person>();
+    register_crdt_merge::<EmptyData>();
 }
 
 /// Helper to create a test keypair and public key.

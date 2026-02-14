@@ -1031,8 +1031,14 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Attempt to merge two versions of data using CRDT semantics.
     ///
-    /// Returns the merged data, falling back to LWW (newer data) on failure.
+    /// Returns the merged data, or an error if merge fails.
     /// Merge mode is enabled to prevent timestamp generation during merge operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::ActionNotAllowed` if no merge function is registered
+    /// for the root entity type. This enforces I5 (No Silent Data Loss) by failing
+    /// loudly rather than silently falling back to LWW.
     fn try_merge_data(
         _id: Id,
         existing: &[u8],
@@ -1050,13 +1056,10 @@ impl<S: StorageAdaptor> Interface<S> {
 
         match result {
             Ok(merged) => Ok(merged),
-            Err(_) => {
-                // Merge failed - fall back to LWW
-                if incoming_timestamp >= existing_timestamp {
-                    Ok(incoming.to_vec())
-                } else {
-                    Ok(existing.to_vec())
-                }
+            Err(e) => {
+                // I5 Enforcement: Propagate merge errors instead of falling back to LWW.
+                // If no merge function is registered, this prevents silent data loss.
+                Err(StorageError::ActionNotAllowed(e.to_string()))
             }
         }
     }
