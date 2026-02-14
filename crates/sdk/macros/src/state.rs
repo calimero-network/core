@@ -460,6 +460,151 @@ fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>
         pub extern "C" fn __calimero_register_merge() {
             ::calimero_storage::register_crdt_merge::<#ident #ty_generics>();
         }
+
+        // ============================================================================
+        // AUTO-GENERATED WASM Export for Memory Allocation
+        // ============================================================================
+        //
+        // This function is called by the runtime to allocate memory in the WASM module
+        // for passing data to merge functions.
+        //
+        #[cfg(target_arch = "wasm32")]
+        #[no_mangle]
+        pub extern "C" fn __calimero_alloc(size: u64) -> u64 {
+            let layout = ::std::alloc::Layout::from_size_align(size as usize, 8)
+                .expect("Invalid allocation size");
+            // SAFETY: Layout is valid, and we're in WASM where the allocator is available
+            let ptr = unsafe { ::std::alloc::alloc(layout) };
+            ptr as u64
+        }
+
+        // ============================================================================
+        // AUTO-GENERATED WASM Export for Root State Merge
+        // ============================================================================
+        //
+        // This function is called by the runtime during sync when two nodes have
+        // concurrent updates to the root state and need to merge them.
+        //
+        // Protocol:
+        // 1. Runtime writes local and remote state to WASM memory
+        // 2. Runtime calls __calimero_merge_root_state()
+        // 3. This function deserializes, merges, serializes
+        // 4. Returns pointer to MergeResult struct
+        //
+        // MergeResult struct layout (33 bytes):
+        //   - success: u8 (0 = failure, 1 = success)
+        //   - data_ptr: u64 (pointer to merged data if success)
+        //   - data_len: u64 (length of merged data if success)
+        //   - error_ptr: u64 (pointer to error message if failure)
+        //   - error_len: u64 (length of error message if failure)
+        //
+        #[cfg(target_arch = "wasm32")]
+        #[no_mangle]
+        pub extern "C" fn __calimero_merge_root_state(
+            local_ptr: u64,
+            local_len: u64,
+            remote_ptr: u64,
+            remote_len: u64,
+        ) -> u64 {
+            // SAFETY: The runtime guarantees these pointers are valid
+            let local_slice = unsafe {
+                ::std::slice::from_raw_parts(local_ptr as *const u8, local_len as usize)
+            };
+            let remote_slice = unsafe {
+                ::std::slice::from_raw_parts(remote_ptr as *const u8, remote_len as usize)
+            };
+
+            // Deserialize local state
+            let mut local_state: #ident #ty_generics = match ::calimero_sdk::borsh::from_slice(local_slice) {
+                Ok(state) => state,
+                Err(e) => {
+                    return __calimero_make_merge_error(format!("Failed to deserialize local state: {}", e));
+                }
+            };
+
+            // Deserialize remote state
+            let remote_state: #ident #ty_generics = match ::calimero_sdk::borsh::from_slice(remote_slice) {
+                Ok(state) => state,
+                Err(e) => {
+                    return __calimero_make_merge_error(format!("Failed to deserialize remote state: {}", e));
+                }
+            };
+
+            // Merge using the auto-generated Mergeable implementation
+            if let Err(e) = ::calimero_storage::collections::Mergeable::merge(&mut local_state, &remote_state) {
+                return __calimero_make_merge_error(format!("Merge failed: {}", e));
+            }
+
+            // Serialize the merged state
+            let merged_bytes = match ::calimero_sdk::borsh::to_vec(&local_state) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    return __calimero_make_merge_error(format!("Failed to serialize merged state: {}", e));
+                }
+            };
+
+            // Allocate and copy the result
+            __calimero_make_merge_success(merged_bytes)
+        }
+
+        /// Helper to create a success MergeResult
+        #[cfg(target_arch = "wasm32")]
+        fn __calimero_make_merge_success(data: Vec<u8>) -> u64 {
+            let data_len = data.len() as u64;
+            let data_ptr = __calimero_alloc(data_len);
+            // SAFETY: We just allocated this memory
+            unsafe {
+                ::std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr as *mut u8, data.len());
+            }
+
+            // Allocate result struct (33 bytes)
+            let result_ptr = __calimero_alloc(33);
+            // SAFETY: We just allocated this memory
+            unsafe {
+                let ptr = result_ptr as *mut u8;
+                // success = 1
+                *ptr = 1;
+                // data_ptr
+                ::std::ptr::copy_nonoverlapping(data_ptr.to_le_bytes().as_ptr(), ptr.add(1), 8);
+                // data_len
+                ::std::ptr::copy_nonoverlapping(data_len.to_le_bytes().as_ptr(), ptr.add(9), 8);
+                // error_ptr = 0
+                ::std::ptr::copy_nonoverlapping(0u64.to_le_bytes().as_ptr(), ptr.add(17), 8);
+                // error_len = 0
+                ::std::ptr::copy_nonoverlapping(0u64.to_le_bytes().as_ptr(), ptr.add(25), 8);
+            }
+            result_ptr
+        }
+
+        /// Helper to create a failure MergeResult
+        #[cfg(target_arch = "wasm32")]
+        fn __calimero_make_merge_error(error: String) -> u64 {
+            let error_bytes = error.into_bytes();
+            let error_len = error_bytes.len() as u64;
+            let error_ptr = __calimero_alloc(error_len);
+            // SAFETY: We just allocated this memory
+            unsafe {
+                ::std::ptr::copy_nonoverlapping(error_bytes.as_ptr(), error_ptr as *mut u8, error_bytes.len());
+            }
+
+            // Allocate result struct (33 bytes)
+            let result_ptr = __calimero_alloc(33);
+            // SAFETY: We just allocated this memory
+            unsafe {
+                let ptr = result_ptr as *mut u8;
+                // success = 0
+                *ptr = 0;
+                // data_ptr = 0
+                ::std::ptr::copy_nonoverlapping(0u64.to_le_bytes().as_ptr(), ptr.add(1), 8);
+                // data_len = 0
+                ::std::ptr::copy_nonoverlapping(0u64.to_le_bytes().as_ptr(), ptr.add(9), 8);
+                // error_ptr
+                ::std::ptr::copy_nonoverlapping(error_ptr.to_le_bytes().as_ptr(), ptr.add(17), 8);
+                // error_len
+                ::std::ptr::copy_nonoverlapping(error_len.to_le_bytes().as_ptr(), ptr.add(25), 8);
+            }
+            result_ptr
+        }
     }
 }
 

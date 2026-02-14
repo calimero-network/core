@@ -15,6 +15,7 @@ mod constraint;
 pub mod errors;
 pub mod logic;
 mod memory;
+pub mod merge_callback;
 mod panic_payload;
 pub mod store;
 
@@ -22,6 +23,7 @@ pub use constraint::Constraint;
 use errors::{FunctionCallError, HostError, Location, PanicContext, VMRuntimeError};
 use logic::{ContextHost, Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
 use memory::WasmerTunables;
+pub use merge_callback::{RuntimeMergeCallback, DEFAULT_MERGE_TIMEOUT_MS, MERGE_ROOT_STATE_EXPORT};
 use store::Storage;
 
 pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
@@ -139,7 +141,9 @@ impl Engine {
                 .map(|v| v == "true")
                 .unwrap_or(false)
             {
-                debug!("Using profiling-enabled engine for precompiled module (required for perf.map generation)");
+                debug!(
+                    "Using profiling-enabled engine for precompiled module (required for perf.map generation)"
+                );
                 let engine = Self::create_engine();
                 return Self::new(engine, limits);
             }

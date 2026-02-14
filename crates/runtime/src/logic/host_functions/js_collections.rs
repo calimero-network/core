@@ -617,7 +617,7 @@ impl VMHostFunctions<'_> {
                 return self.write_error_message(
                     dest_register_id,
                     format!("index {index} does not fit into usize"),
-                )
+                );
             }
         };
 
@@ -1041,7 +1041,7 @@ impl VMHostFunctions<'_> {
                     return self.write_error_message(
                         dest_register_id,
                         "executor id must be exactly 32 bytes",
-                    )
+                    );
                 }
             }
         } else {
@@ -1162,7 +1162,7 @@ impl VMHostFunctions<'_> {
             Ok(array) => array,
             Err(_) => {
                 return self
-                    .write_error_message(dest_register_id, "user key must be exactly 32 bytes")
+                    .write_error_message(dest_register_id, "user key must be exactly 32 bytes");
             }
         };
 
@@ -1325,7 +1325,7 @@ impl VMHostFunctions<'_> {
         let hash: [u8; 32] = match <[u8; 32]>::try_from(hash_bytes.as_slice()) {
             Ok(array) => array,
             Err(_) => {
-                return self.write_error_message(dest_register_id, "hash must be exactly 32 bytes")
+                return self.write_error_message(dest_register_id, "hash must be exactly 32 bytes");
             }
         };
 

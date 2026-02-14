@@ -228,9 +228,9 @@ fn test_is_builtin_crdt_classification() {
 // Tests for MergeError variants
 // =============================================================================
 
-/// Test: WasmRequired error for Custom types.
+/// Test: NoWasmCallback error for Custom types without callback.
 #[test]
-fn test_merge_custom_type_returns_wasm_required() {
+fn test_merge_custom_type_without_callback_returns_no_callback() {
     let bytes = vec![1, 2, 3, 4];
 
     let result = merge_by_crdt_type(
@@ -240,8 +240,165 @@ fn test_merge_custom_type_returns_wasm_required() {
     );
 
     assert!(
-        matches!(result, Err(MergeError::WasmRequired { type_name }) if type_name == "MyCustomType"),
-        "Custom types should return WasmRequired with the type name"
+        matches!(result, Err(MergeError::NoWasmCallback { type_name }) if type_name == "MyCustomType"),
+        "Custom types without callback should return NoWasmCallback with the type name"
+    );
+}
+
+// =============================================================================
+// Tests for merge_by_crdt_type_with_callback
+// =============================================================================
+
+use crate::collections::WasmMergeCallback;
+use crate::merge::merge_by_crdt_type_with_callback;
+
+/// Mock WASM callback for testing
+struct MockWasmCallback {
+    /// The data to return on merge
+    return_data: Vec<u8>,
+    /// Whether to fail
+    should_fail: bool,
+    /// Error message on failure
+    error_message: String,
+}
+
+impl WasmMergeCallback for MockWasmCallback {
+    fn merge_custom(
+        &self,
+        _local: &[u8],
+        _remote: &[u8],
+        _type_name: &str,
+    ) -> Result<Vec<u8>, MergeError> {
+        if self.should_fail {
+            Err(MergeError::WasmCallbackFailed {
+                message: self.error_message.clone(),
+            })
+        } else {
+            Ok(self.return_data.clone())
+        }
+    }
+
+    fn merge_root_state(&self, _local: &[u8], _remote: &[u8]) -> Result<Vec<u8>, MergeError> {
+        if self.should_fail {
+            Err(MergeError::WasmCallbackFailed {
+                message: self.error_message.clone(),
+            })
+        } else {
+            Ok(self.return_data.clone())
+        }
+    }
+}
+
+/// Test: Custom type with callback calls merge_custom
+#[test]
+fn test_custom_type_with_callback_success() {
+    let existing = vec![1, 2, 3, 4];
+    let incoming = vec![5, 6, 7, 8];
+    let expected = vec![9, 10, 11, 12];
+
+    let callback = MockWasmCallback {
+        return_data: expected.clone(),
+        should_fail: false,
+        error_message: String::new(),
+    };
+
+    let result = merge_by_crdt_type_with_callback(
+        &CrdtType::Custom("TestType".to_string()),
+        &existing,
+        &incoming,
+        Some(&callback),
+    );
+
+    assert!(
+        result.is_ok(),
+        "Custom type merge with callback should succeed"
+    );
+    assert_eq!(
+        result.unwrap(),
+        expected,
+        "Should return callback's merged data"
+    );
+}
+
+/// Test: Custom type with failing callback returns error
+#[test]
+fn test_custom_type_with_failing_callback() {
+    let bytes = vec![1, 2, 3, 4];
+
+    let callback = MockWasmCallback {
+        return_data: Vec::new(),
+        should_fail: true,
+        error_message: "Mock merge failure".to_string(),
+    };
+
+    let result = merge_by_crdt_type_with_callback(
+        &CrdtType::Custom("TestType".to_string()),
+        &bytes,
+        &bytes,
+        Some(&callback),
+    );
+
+    assert!(
+        matches!(result, Err(MergeError::WasmCallbackFailed { message }) if message == "Mock merge failure"),
+        "Should return WasmCallbackFailed with the error message"
+    );
+}
+
+/// Test: Built-in types ignore callback (don't need it)
+#[test]
+#[serial]
+fn test_builtin_types_ignore_callback() {
+    env::reset_for_testing();
+
+    // Create counters
+    let alice_counter = create_gcounter_with_contribution([0xAA; 32], 5);
+    let alice_bytes = borsh::to_vec(&alice_counter).unwrap();
+
+    let bob_counter = create_gcounter_with_contribution([0xBB; 32], 3);
+    let bob_bytes = borsh::to_vec(&bob_counter).unwrap();
+
+    // Create a callback that would fail if called
+    let callback = MockWasmCallback {
+        return_data: Vec::new(),
+        should_fail: true,
+        error_message: "Should not be called for built-in types".to_string(),
+    };
+
+    // GCounter should use native merge, not callback
+    let result = merge_by_crdt_type_with_callback(
+        &CrdtType::GCounter,
+        &alice_bytes,
+        &bob_bytes,
+        Some(&callback),
+    );
+
+    assert!(
+        result.is_ok(),
+        "GCounter merge should succeed without using callback"
+    );
+    let merged: Counter<false> = borsh::from_slice(&result.unwrap()).unwrap();
+    assert_eq!(
+        merged.value().unwrap(),
+        8,
+        "Should use native merge: 5 + 3 = 8"
+    );
+}
+
+/// Test: None callback for Custom type returns NoWasmCallback
+#[test]
+fn test_custom_type_with_none_callback() {
+    let bytes = vec![1, 2, 3, 4];
+
+    let result = merge_by_crdt_type_with_callback(
+        &CrdtType::Custom("TestType".to_string()),
+        &bytes,
+        &bytes,
+        None,
+    );
+
+    assert!(
+        matches!(result, Err(MergeError::NoWasmCallback { type_name }) if type_name == "TestType"),
+        "Custom type with None callback should return NoWasmCallback"
     );
 }
 

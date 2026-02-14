@@ -376,7 +376,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 debug!(%id, "Queued compare action after apply");
             }
             Action::Compare { .. } => {
-                return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
+                return Err(StorageError::ActionNotAllowed("Compare".to_owned()));
             }
             Action::DeleteRef { id, deleted_at, .. } => {
                 Self::apply_delete_ref_action(id, deleted_at)?;
@@ -1095,8 +1095,43 @@ impl<S: StorageAdaptor> Interface<S> {
         existing_timestamp: u64,
         incoming_timestamp: u64,
     ) -> Result<Vec<u8>, StorageError> {
+        Self::try_merge_non_root_with_callback(
+            id,
+            existing,
+            incoming,
+            metadata,
+            existing_timestamp,
+            incoming_timestamp,
+            None,
+        )
+    }
+
+    /// Attempt to merge two versions of non-root entity data with WASM callback support.
+    ///
+    /// This is the same as [`try_merge_non_root`] but accepts an optional WASM callback
+    /// for merging `Custom` types.
+    ///
+    /// # Arguments
+    ///
+    /// * `wasm_callback` - Optional callback for merging custom types via WASM
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::MergeFailure` if CRDT merge fails and falls back to LWW.
+    /// Note: This function prefers to fall back to LWW rather than fail, so errors are rare.
+    ///
+    /// [`try_merge_non_root`]: Self::try_merge_non_root
+    pub fn try_merge_non_root_with_callback(
+        id: Id,
+        existing: &[u8],
+        incoming: &[u8],
+        metadata: &Metadata,
+        existing_timestamp: u64,
+        incoming_timestamp: u64,
+        wasm_callback: Option<&dyn crate::collections::WasmMergeCallback>,
+    ) -> Result<Vec<u8>, StorageError> {
         use crate::collections::crdt_meta::MergeError;
-        use crate::merge::{is_builtin_crdt, merge_by_crdt_type};
+        use crate::merge::{is_builtin_crdt, merge_by_crdt_type_with_callback};
 
         // Check if we have CRDT type metadata
         let Some(crdt_type) = &metadata.crdt_type else {
@@ -1115,8 +1150,9 @@ impl<S: StorageAdaptor> Interface<S> {
 
         // For built-in types, merge in storage layer
         if is_builtin_crdt(crdt_type) {
-            let result =
-                crate::env::with_merge_mode(|| merge_by_crdt_type(crdt_type, existing, incoming));
+            let result = crate::env::with_merge_mode(|| {
+                merge_by_crdt_type_with_callback(crdt_type, existing, incoming, wasm_callback)
+            });
 
             match result {
                 Ok(merged) => {
@@ -1148,14 +1184,41 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             }
         } else {
-            // Types that need WASM callback (LwwRegister, collections, Custom)
-            // For now, fall back to LWW. PR #1940 will add WASM callback support.
-            debug!(
-                target: "storage::merge",
-                %id,
-                crdt_type = ?crdt_type,
-                "CRDT type requires WASM callback, falling back to LWW"
-            );
+            // Custom types - try WASM callback if available
+            if wasm_callback.is_some() {
+                let result = crate::env::with_merge_mode(|| {
+                    merge_by_crdt_type_with_callback(crdt_type, existing, incoming, wasm_callback)
+                });
+
+                match result {
+                    Ok(merged) => {
+                        debug!(
+                            target: "storage::merge",
+                            %id,
+                            crdt_type = ?crdt_type,
+                            "Successfully merged custom type via WASM callback"
+                        );
+                        return Ok(merged);
+                    }
+                    Err(e) => {
+                        warn!(
+                            target: "storage::merge",
+                            %id,
+                            crdt_type = ?crdt_type,
+                            error = %e,
+                            "WASM callback merge failed, falling back to LWW"
+                        );
+                    }
+                }
+            } else {
+                // No WASM callback available for custom type
+                debug!(
+                    target: "storage::merge",
+                    %id,
+                    crdt_type = ?crdt_type,
+                    "Custom type requires WASM callback but none provided, falling back to LWW"
+                );
+            }
         }
 
         // Fall back to LWW

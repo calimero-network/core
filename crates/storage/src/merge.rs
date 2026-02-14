@@ -178,6 +178,9 @@ pub trait CrdtMerge: BorshSerialize + BorshDeserialize {
 /// `CrdtType` stored in entity metadata, enabling proper CRDT merge semantics
 /// during synchronization.
 ///
+/// For `Custom` types, this returns `MergeError::WasmRequired`. Use
+/// [`merge_by_crdt_type_with_callback`] to provide a WASM callback for custom types.
+///
 /// # CIP Invariants
 ///
 /// - **I5 (No Silent Data Loss)**: Built-in CRDT types are merged using their
@@ -219,6 +222,60 @@ pub fn merge_by_crdt_type(
     existing: &[u8],
     incoming: &[u8],
 ) -> Result<Vec<u8>, MergeError> {
+    merge_by_crdt_type_with_callback(crdt_type, existing, incoming, None)
+}
+
+/// Merge two Borsh-serialized values based on their CRDT type, with WASM callback support.
+///
+/// This function dispatches to the correct merge implementation based on the
+/// `CrdtType` stored in entity metadata. For `Custom` types, it uses the provided
+/// WASM callback to perform the merge.
+///
+/// # CIP Invariants
+///
+/// - **I5 (No Silent Data Loss)**: Built-in CRDT types are merged using their
+///   semantic rules (e.g., GCounter takes max per executor), not overwritten.
+/// - **I10 (Metadata Persistence)**: Relies on `crdt_type` being persisted in
+///   entity metadata for correct dispatch.
+///
+/// # Arguments
+///
+/// * `crdt_type` - The CRDT type from entity metadata
+/// * `existing` - Currently stored value (Borsh-serialized)
+/// * `incoming` - Incoming value to merge (Borsh-serialized)
+/// * `wasm_callback` - Optional callback for merging custom types via WASM
+///
+/// # Returns
+///
+/// Merged value as Borsh-serialized bytes.
+///
+/// # Errors
+///
+/// - `MergeError::NoWasmCallback` - Custom type but no callback provided
+/// - `MergeError::WasmCallbackFailed` - WASM callback execution failed
+/// - `MergeError::SerializationError` - If deserialization/serialization fails
+/// - `MergeError::StorageError` - If the underlying merge operation fails
+///
+/// # Example
+///
+/// ```ignore
+/// use calimero_primitives::crdt::CrdtType;
+/// use calimero_storage::merge::merge_by_crdt_type_with_callback;
+///
+/// // During sync with WASM callback available:
+/// let merged = merge_by_crdt_type_with_callback(
+///     &CrdtType::Custom("MyType".into()),
+///     &existing_bytes,
+///     &incoming_bytes,
+///     Some(&wasm_callback),
+/// )?;
+/// ```
+pub fn merge_by_crdt_type_with_callback(
+    crdt_type: &CrdtType,
+    existing: &[u8],
+    incoming: &[u8],
+    wasm_callback: Option<&dyn crate::collections::crdt_meta::WasmMergeCallback>,
+) -> Result<Vec<u8>, MergeError> {
     match crdt_type {
         // Counters - can merge at byte level
         CrdtType::GCounter => merge_g_counter(existing, incoming),
@@ -247,10 +304,22 @@ pub fn merge_by_crdt_type(
         // authoritative. For data that must converge, use LwwRegister or UserStorage.
         CrdtType::FrozenStorage => Ok(existing.to_vec()),
 
-        // App-defined types
-        CrdtType::Custom(type_name) => Err(MergeError::WasmRequired {
-            type_name: type_name.clone(),
-        }),
+        // App-defined types - dispatch to WASM callback
+        CrdtType::Custom(type_name) => {
+            if let Some(callback) = wasm_callback {
+                tracing::debug!(
+                    target: "calimero_storage::merge",
+                    type_name = %type_name,
+                    "Dispatching custom type merge to WASM callback"
+                );
+                callback.merge_custom(existing, incoming, type_name)
+            } else {
+                // No callback available - return specific error
+                Err(MergeError::NoWasmCallback {
+                    type_name: type_name.clone(),
+                })
+            }
+        }
     }
 }
 
