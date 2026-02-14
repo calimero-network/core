@@ -351,3 +351,68 @@ struct MyType {
 - readme/DOCUMENTATION_INDEX.md - Full documentation index
 - src/merge.rs - Module-level docs on merge dispatch
 - src/collections/crdt_impls.rs - Module-level docs on Mergeable implementations
+
+## ⚠️ KNOWN ISSUE: Root Entity LWW Fallback (I5 Violation Risk)
+
+**Status**: Needs fix (tracked for future work)
+
+### The Problem
+
+When a root entity conflict occurs and NO merge function is registered, the system
+silently falls back to LWW. This can cause **data loss** if the root contains CRDTs:
+
+```
+Root Conflict (e.g., two nodes increment Counter concurrently)
+        │
+        ▼
+try_merge_registered() ──── None (no registration) ───► LWW FALLBACK
+        │                                                    │
+       Some                                           DATA LOSS! ❌
+        │                                         (violates I5)
+        ▼
+   Mergeable::merge() ✅
+```
+
+### Affected Scenarios
+
+| Scenario | Protected? | Reason |
+| -------- | ---------- | ------ |
+| WASM app with `#[app::state]` | ✅ Yes | Runtime calls `__calimero_register_merge` |
+| WASM app WITHOUT `#[app::state]` | ❌ No | No registration hook generated |
+| JS apps | ❌ Likely No | Registration failures are non-fatal |
+| Tests without explicit `register_crdt_merge()` | ❌ No | Must manually register |
+| `__calimero_register_merge` call fails | ❌ No | Silent failure, app continues |
+
+### Example Data Loss
+
+```rust
+// App state with Counter at root level
+#[app::state]
+struct MyApp {
+    votes: Counter,  // GCounter
+}
+
+// Node A: votes.increment() → votes = 5
+// Node B: votes.increment() → votes = 3 (concurrent, before sync)
+
+// If merge function NOT registered:
+// Sync → LWW → votes = 5 OR 3 (one node's increments LOST!)
+
+// If merge function IS registered:
+// Sync → Counter::merge() → votes = 8 (all increments preserved ✅)
+```
+
+### Mitigation (Until Fixed)
+
+1. **Always use `#[app::state]` macro** for WASM apps
+2. **In tests**, explicitly call `register_crdt_merge::<YourAppState>()` before merge tests
+3. **Monitor logs** for missing merge registration warnings
+
+### Fix Needed
+
+The LWW fallback in `merge_root_state()` should either:
+1. Log a WARNING when falling back (make it observable per Delivery Contract)
+2. Fail loudly if root has CRDT fields but no merge registration
+3. At minimum, update the misleading comment that says "This is safe"
+
+See: `src/merge.rs` lines 82-96

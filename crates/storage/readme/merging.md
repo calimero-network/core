@@ -668,3 +668,95 @@ merge_by_crdt_type() dispatch:
 | `src/interface.rs` | try_merge_non_root(), save_internal() |
 | `src/collections/crdt_meta.rs` | CrdtType enum, Mergeable trait, CrdtMeta trait |
 | `src/collections/crdt_impls.rs` | Mergeable implementations for all CRDTs |
+
+---
+
+## ⚠️ KNOWN ISSUE: Root Entity LWW Fallback (I5 Violation Risk)
+
+**Status**: Needs fix (tracked for future work)
+
+### The Problem
+
+The `merge_root_state()` function has a fallback to LWW when no merge function is registered:
+
+```rust
+// src/merge.rs
+pub fn merge_root_state(...) {
+    // 1. Try registered merge function
+    if let Some(result) = try_merge_registered(...) {
+        return result;
+    }
+
+    // 2. PROBLEMATIC: Silent LWW fallback
+    // This can cause data loss if root contains CRDTs!
+    if incoming_ts >= existing_ts {
+        Ok(incoming.to_vec())  // ← Counter increments from existing LOST
+    } else {
+        Ok(existing.to_vec())  // ← Counter increments from incoming LOST
+    }
+}
+```
+
+### Why This Violates I5
+
+**Invariant I5 (No Silent Data Loss)**: Built-in CRDT types MUST use their semantic merge
+rules, never be overwritten by LWW.
+
+If two nodes concurrently increment a `Counter` at root level and no merge function is
+registered, LWW will pick one version and **discard the other node's increments**.
+
+### When Registration Happens (and When It Doesn't)
+
+| Context | Registration | Mechanism |
+| ------- | ------------ | --------- |
+| WASM app with `#[app::state]` | ✅ Auto | `__calimero_register_merge` export called by runtime |
+| WASM app without `#[app::state]` | ❌ None | No hook generated |
+| JS apps | ⚠️ Maybe | Registration failures are "non-fatal" |
+| Rust tests | ❌ Manual | Must call `register_crdt_merge::<T>()` explicitly |
+| SimStorage tests | ❌ Manual | Must call `register_crdt_merge::<T>()` explicitly |
+
+### Example: Data Loss Scenario
+
+```rust
+// Two nodes with Counter at root
+struct VotingApp { votes: Counter }
+
+// Node A: increment() twice → Counter has {A: 2}
+// Node B: increment() three times → Counter has {B: 3}
+
+// WITHOUT merge registration:
+// merge_root_state() → LWW → picks one version
+// Result: votes = 2 OR 3 (one node's work LOST!)
+
+// WITH merge registration:
+// merge_root_state() → Counter::merge()
+// Result: votes = 5 (both {A: 2} and {B: 3} combined ✅)
+```
+
+### Current Mitigation
+
+1. **Always use `#[app::state]` macro** - it generates the registration hook
+2. **In tests**, call `register_crdt_merge::<YourState>()` before any merge operations
+3. **Check runtime logs** for "Successfully registered CRDT merge function"
+
+### Proposed Fix
+
+The LWW fallback should be made observable (not silent):
+
+```rust
+// Option 1: Log warning
+warn!(
+    target: "storage::merge",
+    "No merge function registered for root entity, falling back to LWW. \
+     This may cause data loss if root contains CRDTs!"
+);
+
+// Option 2: Fail if root likely has CRDTs
+// (requires introspection or heuristics)
+
+// Option 3: Remove fallback entirely (breaking change)
+return Err("No merge function registered for root entity".into());
+```
+
+Per **Delivery Contract Rule**: Any drop MUST be observable (counter + rate-limited warning).
+The current silent LWW fallback violates this principle.
