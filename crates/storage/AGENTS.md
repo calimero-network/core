@@ -67,13 +67,16 @@ with its own CrdtType.
 When the entire app state (root entity) conflicts:
 
 ```
-Root Conflict -> Try merge registry (Mergeable trait) -> Fallback LWW
+Root Conflict -> Try merge registry (Mergeable trait) -> Error if not registered
 ```
 
 The Mergeable trait implementations in crdt_impls.rs provide **recursive merge**:
 - UnorderedMap::merge() iterates entries and calls value.merge(&other_value)
 - Vector::merge() merges elements at same indices recursively
 - This is where nested CRDT merging happens!
+
+**I5 Enforcement**: `merge_root_state()` requires explicit registration. If no merge
+function is registered, it returns an error rather than silently falling back to LWW.
 
 ### Merge Decision Tree (Corrected)
 
@@ -94,9 +97,9 @@ The Mergeable trait implementations in crdt_impls.rs provide **recursive merge**
 |  merge_root_state()   |       |       |  Has CrdtType metadata? |
 |  1. Try merge registry|       |       +-----------+-------------+
 |     (Mergeable trait) |       |                   |
-|  2. Fallback to LWW   |       |           +---No--+---Yes---+
-+-----------------------+       |           |                 |
-                                |           v                 v
+|  2. Error if not      |       |           +---No--+---Yes---+
+|     registered (I5)   |       |           |                 |
++-----------------------+       |           v                 v
                                 |      LWW fallback    is_builtin_crdt()?
                                 |      (legacy data)          |
                                 |                     +---Yes-+---No---+
@@ -353,25 +356,23 @@ struct MyType {
 - src/collections/crdt_impls.rs - Module-level docs on Mergeable implementations
 
 
-## ⚠️ KNOWN ISSUE: Root Entity LWW Fallback (I5 Violation Risk)
+## Root Entity Merge Requirement
 
-**Status**: Needs fix (tracked for future work)
+The `merge_root_state()` function **requires** a merge function to be registered.
+If no merge function is registered, it returns an error rather than silently falling
+back to LWW (which would violate Invariant I5 - No Silent Data Loss).
 
-The `merge_root_state()` function falls back to LWW when no merge function is registered.
-This can cause **silent data loss** if the root entity contains CRDTs (Counter, etc.)
-and violates **Invariant I5 (No Silent Data Loss)**.
+**How to Register:**
 
-**Quick Reference:**
+| Method | When to Use |
+| ------ | ----------- |
+| `#[app::state]` macro | WASM apps (recommended, auto-registers) |
+| `register_crdt_merge::<T>()` | Tests, manual registration |
 
-| Scenario | Protected? |
-| -------- | ---------- |
-| WASM app with `#[app::state]` | ✅ Yes (auto-registers) |
-| WASM app without `#[app::state]` | ❌ No |
-| Tests without `register_crdt_merge()` | ❌ No |
+**Error Message:**
+```
+No merge function registered for root entity.
+Use #[app::state] macro or call register_crdt_merge::<YourState>().
+```
 
-**Mitigation**: Always use `#[app::state]` macro for WASM apps.
-
-👉 **See `readme/merging.md` section "KNOWN ISSUE: Root Entity LWW Fallback"** for:
-- Detailed explanation and data loss example
-- Complete affected scenarios table
-- Proposed fix options
+👉 **See `readme/merging.md`** for detailed merge behavior documentation.

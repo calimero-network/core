@@ -587,8 +587,9 @@ pub fn merge_root_state(existing, incoming, existing_ts, incoming_ts) {
         return result;
     }
 
-    // 2. Fallback to LWW
-    Ok(if incoming_ts >= existing_ts { incoming } else { existing }.to_vec())
+    // 2. Error if no merge function registered (I5 enforcement)
+    Err("No merge function registered for root entity. \
+         Use #[app::state] macro or call register_crdt_merge::<YourState>().")
 }
 ```
 
@@ -624,7 +625,7 @@ Is ROOT entity? ----Yes----> merge_root_state()
         |                         |
         No                   Try registered Mergeable
         |                         |
-        v                    Fallback to LWW
+        v                    Error if not registered (I5)
 Has CrdtType? ----No----> LWW (legacy data)
         |
        Yes
@@ -671,51 +672,59 @@ merge_by_crdt_type() dispatch:
 
 ---
 
-## ⚠️ KNOWN ISSUE: Root Entity LWW Fallback (I5 Violation Risk)
+## Root Entity Merge Requirement
 
-**Status**: Needs fix (tracked for future work)
+The `merge_root_state()` function **requires** a merge function to be registered.
+If no merge function is registered, it returns an error with an actionable message.
 
-### The Problem
+### I5 Enforcement
 
-The `merge_root_state()` function has a fallback to LWW when no merge function is registered:
+**Invariant I5 (No Silent Data Loss)**: Built-in CRDT types MUST use their semantic merge
+rules, never be overwritten by LWW. The `merge_root_state()` function enforces this by
+requiring explicit registration rather than silently falling back to LWW.
+
+### How to Register a Merge Function
+
+| Method | When to Use |
+| ------ | ----------- |
+| `#[app::state]` macro | WASM apps (recommended, auto-registers) |
+| `register_crdt_merge::<T>()` | Rust tests, manual registration |
+
+### Error on Unregistered Root Entity
+
+If you see this error:
+```
+No merge function registered for root entity.
+Use #[app::state] macro or call register_crdt_merge::<YourState>().
+```
+
+**Fix:**
+1. **WASM apps**: Add `#[app::state]` attribute to your root state struct
+2. **Rust tests**: Call `register_crdt_merge::<YourState>()` before merge operations
+
+### Example: Proper Registration
 
 ```rust
-// src/merge.rs
-pub fn merge_root_state(...) {
-    // 1. Try registered merge function
-    if let Some(result) = try_merge_registered(...) {
-        return result;
-    }
+// WASM app - automatic registration via macro
+#[app::state]
+#[derive(BorshSerialize, BorshDeserialize)]
+struct VotingApp {
+    votes: Counter,
+}
 
-    // 2. PROBLEMATIC: Silent LWW fallback
-    // This can cause data loss if root contains CRDTs!
-    if incoming_ts >= existing_ts {
-        Ok(incoming.to_vec())  // ← Counter increments from existing LOST
-    } else {
-        Ok(existing.to_vec())  // ← Counter increments from incoming LOST
-    }
+// Rust test - manual registration
+#[test]
+fn test_voting_merge() {
+    register_crdt_merge::<VotingApp>();
+    
+    // Now merge_root_state() will use VotingApp::merge()
+    let merged = merge_root_state(&bytes1, &bytes2, ts1, ts2).unwrap();
 }
 ```
 
-### Why This Violates I5
+### Why This Matters
 
-**Invariant I5 (No Silent Data Loss)**: Built-in CRDT types MUST use their semantic merge
-rules, never be overwritten by LWW.
-
-If two nodes concurrently increment a `Counter` at root level and no merge function is
-registered, LWW will pick one version and **discard the other node's increments**.
-
-### When Registration Happens (and When It Doesn't)
-
-| Context | Registration | Mechanism |
-| ------- | ------------ | --------- |
-| WASM app with `#[app::state]` | ✅ Auto | `__calimero_register_merge` export called by runtime |
-| WASM app without `#[app::state]` | ❌ None | No hook generated |
-| JS apps | ⚠️ Maybe | Registration failures are "non-fatal" |
-| Rust tests | ❌ Manual | Must call `register_crdt_merge::<T>()` explicitly |
-| SimStorage tests | ❌ Manual | Must call `register_crdt_merge::<T>()` explicitly |
-
-### Example: Data Loss Scenario
+Without proper merge registration, concurrent CRDT updates would be lost:
 
 ```rust
 // Two nodes with Counter at root
@@ -724,39 +733,11 @@ struct VotingApp { votes: Counter }
 // Node A: increment() twice → Counter has {A: 2}
 // Node B: increment() three times → Counter has {B: 3}
 
-// WITHOUT merge registration:
-// merge_root_state() → LWW → picks one version
-// Result: votes = 2 OR 3 (one node's work LOST!)
-
 // WITH merge registration:
 // merge_root_state() → Counter::merge()
 // Result: votes = 5 (both {A: 2} and {B: 3} combined ✅)
+
+// WITHOUT registration:
+// merge_root_state() → ERROR (tells you how to fix it)
+// No silent data loss! ✅
 ```
-
-### Current Mitigation
-
-1. **Always use `#[app::state]` macro** - it generates the registration hook
-2. **In tests**, call `register_crdt_merge::<YourState>()` before any merge operations
-3. **Check runtime logs** for "Successfully registered CRDT merge function"
-
-### Proposed Fix
-
-The LWW fallback should be made observable (not silent):
-
-```rust
-// Option 1: Log warning
-warn!(
-    target: "storage::merge",
-    "No merge function registered for root entity, falling back to LWW. \
-     This may cause data loss if root contains CRDTs!"
-);
-
-// Option 2: Fail if root likely has CRDTs
-// (requires introspection or heuristics)
-
-// Option 3: Remove fallback entirely (breaking change)
-return Err("No merge function registered for root entity".into());
-```
-
-Per **Delivery Contract Rule**: Any drop MUST be observable (counter + rate-limited warning).
-The current silent LWW fallback violates this principle.

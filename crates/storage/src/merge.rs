@@ -13,15 +13,27 @@
 //! - **Custom types** - returns `WasmRequired` error for WASM callback
 //! - **LwwRegister** - returns `WasmRequired` (needs type info for deserialization)
 //!
+//! # Root Entity Merge
+//!
+//! The [`merge_root_state`] function handles root entity conflicts. It **requires**
+//! a merge function to be registered via [`register_crdt_merge`]. If no merge
+//! function is registered, it returns an error rather than silently falling back
+//! to LWW (which would violate I5).
+//!
+//! To register a merge function:
+//! - Use `#[app::state]` macro (recommended, auto-registers)
+//! - Call `register_crdt_merge::<YourState>()` manually
+//!
 //! # CIP Invariants
 //!
 //! - **I5 (No Silent Data Loss)**: Built-in CRDT types are merged using their
 //!   semantic rules (e.g., Counter sums, Set unions), not overwritten via LWW.
+//!   Root entity merge requires explicit registration to prevent silent data loss.
 //! - **I10 (Metadata Persistence)**: Relies on `crdt_type` being persisted in
 //!   entity metadata for correct dispatch.
 
 pub mod registry;
-pub use registry::{register_crdt_merge, try_merge_registered};
+pub use registry::{register_crdt_merge, try_merge_registered, MergeRegistryResult};
 
 #[cfg(test)]
 pub use registry::clear_merge_registry;
@@ -53,18 +65,22 @@ use crate::store::MainStorage;
 ///
 /// # Strategy
 ///
-/// 1. **Try registered merge:** If app called `register_crdt_merge()`, use type-specific merge
-/// 2. **Fallback to LWW:** If no registered merge, use Last-Write-Wins
+/// Uses registered merge function (Mergeable trait) to perform type-aware CRDT merge.
+/// If no merge function is registered, returns an error.
 ///
-/// # ⚠️ Warning: I5 Violation Risk
+/// # CIP Invariants
 ///
-/// The LWW fallback can cause **data loss** if the root entity contains CRDTs
-/// (Counter, nested Maps with CRDT values, etc.) and no merge function is registered.
+/// - **I5 (No Silent Data Loss)**: This function enforces I5 by requiring explicit
+///   merge function registration. Without registration, it fails loudly rather than
+///   falling back to LWW (which would silently discard CRDT contributions).
 ///
-/// **Safe**: Apps using `#[app::state]` macro (auto-registers merge function)
-/// **Unsafe**: Apps without registration that have CRDTs at root level
+/// # How to Fix "No merge function registered" Error
 ///
-/// See AGENTS.md "KNOWN ISSUE: Root Entity LWW Fallback" for details.
+/// 1. **Recommended**: Use the `#[app::state]` macro on your root state type.
+///    This auto-generates and registers the merge function.
+///
+/// 2. **Manual**: Call `register_crdt_merge::<YourState>()` where `YourState`
+///    implements the `Mergeable` trait.
 ///
 /// # Arguments
 /// * `existing` - The currently stored state (Borsh-serialized)
@@ -76,47 +92,51 @@ use crate::store::MainStorage;
 /// Merged state as Borsh-serialized bytes
 ///
 /// # Errors
-/// Returns error if merge fails (falls back to LWW in that case)
+/// Returns error if:
+/// - No merge function is registered for the root entity type (`MergeError::NoMergeFunctionRegistered`)
+/// - The registered merge function fails
 pub fn merge_root_state(
     existing: &[u8],
     incoming: &[u8],
     existing_ts: u64,
     incoming_ts: u64,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+) -> Result<Vec<u8>, MergeError> {
     // Try registered CRDT merge functions first
     // This enables automatic nested CRDT merging when apps use #[app::state]
-    if let Some(result) = try_merge_registered(existing, incoming, existing_ts, incoming_ts) {
-        return result;
-    }
-
-    // WARNING: LWW fallback - potential I5 violation!
-    //
-    // If the root entity contains CRDTs (Counter, etc.) and no merge function
-    // is registered, this LWW fallback will cause DATA LOSS. One node's
-    // CRDT contributions will be silently discarded.
-    //
-    // This fallback exists for:
-    // - Legacy apps without #[app::state] macro
-    // - Simple apps with only LwwRegister fields (where LWW is correct)
-    // - Backward compatibility
-    //
-    // FIXME: This should log a warning to make the fallback observable.
-    // Per Delivery Contract Rule: any drop MUST be observable.
-    //
-    // Safe scenarios:
-    // - Root has only LwwRegister fields (LWW is the correct behavior)
-    // - Root has only primitive fields wrapped in LwwRegister
-    //
-    // UNSAFE scenarios (I5 violation):
-    // - Root has Counter fields → increments lost
-    // - Root has nested Maps with Counter values → increments lost
-    // - Root has any CRDT that requires semantic merge
-    //
-    // TODO: Add warning log here, or fail if root likely contains CRDTs.
-    if incoming_ts >= existing_ts {
-        Ok(incoming.to_vec())
-    } else {
-        Ok(existing.to_vec())
+    match try_merge_registered(existing, incoming, existing_ts, incoming_ts) {
+        MergeRegistryResult::Success(merged) => Ok(merged),
+        MergeRegistryResult::NoFunctionsRegistered => {
+            // I5 Enforcement: No silent data loss
+            //
+            // If the root entity contains CRDTs (Counter, etc.) and no merge function
+            // is registered, an LWW fallback would cause DATA LOSS. One node's CRDT
+            // contributions would be silently discarded.
+            //
+            // Instead of silently falling back to LWW, we fail with an actionable error
+            // message telling the developer how to fix it.
+            Err(MergeError::NoMergeFunctionRegistered)
+        }
+        MergeRegistryResult::AllFunctionsFailed => {
+            // Merge functions are registered but none could merge the data.
+            // This typically happens when:
+            // - The data type doesn't match any registered type (test contamination)
+            // - Deserialization failed (corrupt data)
+            //
+            // Fall back to LWW to maintain backwards compatibility.
+            // The incoming value wins if timestamps are equal or incoming is newer.
+            //
+            // Per Delivery Contract Rule: any drop MUST be observable.
+            tracing::warn!(
+                target: "calimero_storage::merge",
+                "All registered merge functions failed, falling back to LWW. \
+                 This may indicate type mismatch or corrupt data."
+            );
+            if incoming_ts >= existing_ts {
+                Ok(incoming.to_vec())
+            } else {
+                Ok(existing.to_vec())
+            }
+        }
     }
 }
 
