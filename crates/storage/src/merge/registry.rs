@@ -107,6 +107,7 @@ pub fn clear_merge_registry() {
 
 /// Result of attempting to merge using registered merge functions
 #[derive(Debug)]
+#[must_use]
 pub enum MergeRegistryResult {
     /// A registered merge function succeeded
     Success(Vec<u8>),
