@@ -10,3 +10,7 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
+
+[dependencies]
+rustc_version.workspace = true
+toml.workspace = true

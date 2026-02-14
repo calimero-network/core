@@ -53,3 +53,28 @@ impl std::fmt::Display for Version {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Version;
+
+    #[test]
+    fn from_build_env_sets_all_fields() {
+        let version = Version::from_build_env("1.2.3", "v1.2.3-5-gabc123", "abc123", "1.88.0");
+
+        assert_eq!(version.version, "1.2.3");
+        assert_eq!(version.build, "v1.2.3-5-gabc123");
+        assert_eq!(version.commit, "abc123");
+        assert_eq!(version.rustc_version, "1.88.0");
+    }
+
+    #[test]
+    fn display_uses_expected_format() {
+        let version = Version::from_build_env("1.2.3", "v1.2.3-5-gabc123", "abc123", "1.88.0");
+
+        assert_eq!(
+            version.to_string(),
+            "(release 1.2.3) (build v1.2.3-5-gabc123) (commit abc123) (rustc 1.88.0)"
+        );
+    }
+}

@@ -24,9 +24,9 @@ This document describes how versions are managed and how to cut a release. The a
 
 ## Binaries vs libraries
 
-- **Binaries (merod, meroctl)** get their displayed version from **build-time env vars** set in each binary’s `build.rs` (e.g. `MEROD_VERSION`, `MEROCTL_VERSION` from `CARGO_PKG_VERSION` plus git describe/commit). See [NEAR’s neard](https://github.com/near/nearcore/blob/master/neard/src/main.rs).
+- **Binaries (merod, meroctl)** get their displayed version from **build-time env vars** set in each binary’s `build.rs` (e.g. `MEROD_VERSION`, `MEROCTL_VERSION` from `[workspace.metadata.workspaces].version` plus git describe/commit).
 
-- **Libraries** that need a “current” version (e.g. `calimero-node-primitives` for bundle `minRuntimeVersion` checks) use **`CARGO_PKG_VERSION`** in their own `build.rs` and `env!("...")` in code, so they stay in sync with the workspace version.
+- **Libraries** that need a “current” release version (e.g. `calimero-node-primitives` for bundle `minRuntimeVersion` checks) expose it from their `build.rs` via `CALIMERO_RELEASE_VERSION`, sourced from `[workspace.metadata.workspaces].version`.
 
 - The **`Version`** type and protocol-related version types live in **`calimero_primitives::version`** (similar to `near_primitives::version`).
 

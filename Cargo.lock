@@ -1999,7 +1999,11 @@ dependencies = [
 
 [[package]]
 name = "calimero-build-utils"
-version = "0.1.0"
+version = "0.0.0"
+dependencies = [
+ "rustc_version 0.4.1",
+ "toml 0.8.23",
+]
 
 [[package]]
 name = "calimero-client"
@@ -6726,7 +6730,6 @@ dependencies = [
  "notify",
  "rand 0.8.5",
  "reqwest 0.12.24",
- "rustc_version 0.4.1",
  "semver 1.0.27",
  "serde",
  "serde_json",
@@ -6774,7 +6777,6 @@ dependencies = [
  "near-crypto",
  "rand 0.8.5",
  "reqwest 0.12.24",
- "rustc_version 0.4.1",
  "semver 1.0.27",
  "serde",
  "serde_json",

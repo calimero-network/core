@@ -5,8 +5,18 @@ use reqwest::Client;
 use semver::Version;
 use serde::Deserialize;
 
-pub static CURRENT_VERSION: LazyLock<Version> =
-    LazyLock::new(|| Version::parse(env!("MEROD_VERSION")).expect("Invalid cargo version"));
+pub static CURRENT_VERSION: LazyLock<Option<Version>> =
+    LazyLock::new(|| match Version::parse(env!("MEROD_VERSION")) {
+        Ok(version) => Some(version),
+        Err(err) => {
+            eprintln!(
+                "Skipping update checks: invalid current version `{}` ({})",
+                env!("MEROD_VERSION"),
+                err
+            );
+            None
+        }
+    });
 
 #[derive(Deserialize)]
 struct Release {
@@ -26,6 +36,10 @@ pub fn check_for_update() {
 }
 
 async fn _check_for_update() -> EyreResult<()> {
+    let Some(current_version) = CURRENT_VERSION.as_ref() else {
+        return Ok(());
+    };
+
     let url = "https://api.github.com/repos/calimero-network/core/releases/latest";
     let client = Client::new();
 
@@ -37,10 +51,10 @@ async fn _check_for_update() -> EyreResult<()> {
 
     let release: Release = response.json().await?;
 
-    if release.tag_name > *CURRENT_VERSION {
+    if release.tag_name > *current_version {
         eprintln!(
             "\n🔔 New version of merod available: v{} (current: v{})",
-            release.tag_name, *CURRENT_VERSION
+            release.tag_name, *current_version
         );
     }
 

@@ -3,6 +3,6 @@
 
 fn main() {
     let version = calimero_build_utils::read_workspace_version()
-        .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into()));
+        .expect("failed to read [workspace.metadata.workspaces].version from workspace Cargo.toml");
     println!("cargo:rustc-env=CALIMERO_RELEASE_VERSION={}", version);
 }

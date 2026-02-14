@@ -43,7 +43,6 @@ async-trait.workspace = true
 
 [build-dependencies]
 calimero-build-utils.workspace = true
-rustc_version.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
