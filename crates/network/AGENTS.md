@@ -349,6 +349,7 @@ pub enum NetworkMessage {
 }
 
 // 3. Create handler in src/handlers/commands/my_command.rs
+//    This implements the actual command logic
 impl Handler<MyCommand> for NetworkManager {
     type Result = <MyCommand as Message>::Result;
 
@@ -359,8 +360,9 @@ impl Handler<MyCommand> for NetworkManager {
 }
 
 // 4. Add dispatch in src/handlers/commands.rs
+//    This routes the NetworkMessage variant to the Handler impl above
 NetworkMessage::MyCommand { request, outcome } => {
-    // forward_handler: routes request to Handler impl, sends result via oneshot
+    // forward_handler: invokes Handler::handle() and sends result via oneshot
     self.forward_handler(ctx, request, outcome);
 }
 

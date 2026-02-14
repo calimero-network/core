@@ -68,6 +68,7 @@ Yamux (Yet another Multiplexer) enables multiple logical streams over a single c
 ```
 Protocol ID: /calimero/stream/0.0.2
 ```
+*(defined in `primitives/src/stream.rs` as `CALIMERO_STREAM_PROTOCOL`)*
 
 **Purpose**: General-purpose bidirectional streams for sync operations.
 
@@ -89,7 +90,7 @@ Protocol ID: /calimero/stream/0.0.2
 │  u32 BE   │  Message { data: Vec<u8> }         │
 └───────────┴────────────────────────────────────┘
 
-Maximum frame size: 8 MB (8 * 1024 * 1024 bytes)
+Maximum frame size: 8 MB (defined as MAX_MESSAGE_SIZE in primitives/src/stream.rs)
 ```
 
 **Codec Implementation**: `MessageCodec` in `primitives/src/stream/codec.rs`
