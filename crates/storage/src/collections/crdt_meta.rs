@@ -96,6 +96,13 @@ pub enum MergeError {
     },
     /// Serialization/deserialization error during merge.
     SerializationError(String),
+    /// No merge function registered for root entity.
+    ///
+    /// This error enforces I5 (No Silent Data Loss) by failing loudly
+    /// when a root entity merge is attempted without a registered merge function.
+    ///
+    /// **Fix:** Use `#[app::state]` macro or call `register_crdt_merge::<YourState>()`.
+    NoMergeFunctionRegistered,
 }
 
 impl std::fmt::Display for MergeError {
@@ -108,6 +115,13 @@ impl std::fmt::Display for MergeError {
                 write!(f, "WASM callback required for type: {}", type_name)
             }
             MergeError::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
+            MergeError::NoMergeFunctionRegistered => {
+                write!(
+                    f,
+                    "No merge function registered for root entity. \
+                     Use #[app::state] macro or call register_crdt_merge::<YourState>()."
+                )
+            }
         }
     }
 }

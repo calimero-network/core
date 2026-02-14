@@ -93,18 +93,18 @@ use crate::store::MainStorage;
 ///
 /// # Errors
 /// Returns error if:
-/// - No merge function is registered for the root entity type
+/// - No merge function is registered for the root entity type (`MergeError::NoMergeFunctionRegistered`)
 /// - The registered merge function fails
 pub fn merge_root_state(
     existing: &[u8],
     incoming: &[u8],
     existing_ts: u64,
     incoming_ts: u64,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+) -> Result<Vec<u8>, MergeError> {
     // Try registered CRDT merge functions first
     // This enables automatic nested CRDT merging when apps use #[app::state]
     match try_merge_registered(existing, incoming, existing_ts, incoming_ts) {
-        MergeRegistryResult::Success(merged) => return Ok(merged),
+        MergeRegistryResult::Success(merged) => Ok(merged),
         MergeRegistryResult::NoFunctionsRegistered => {
             // I5 Enforcement: No silent data loss
             //
@@ -114,9 +114,7 @@ pub fn merge_root_state(
             //
             // Instead of silently falling back to LWW, we fail with an actionable error
             // message telling the developer how to fix it.
-            return Err("No merge function registered for root entity. \
-                Use #[app::state] macro or call register_crdt_merge::<YourState>()."
-                .into());
+            Err(MergeError::NoMergeFunctionRegistered)
         }
         MergeRegistryResult::AllFunctionsFailed => {
             // Merge functions are registered but none could merge the data.
@@ -127,9 +125,9 @@ pub fn merge_root_state(
             // Fall back to LWW to maintain backwards compatibility.
             // The incoming value wins if timestamps are equal or incoming is newer.
             if incoming_ts >= existing_ts {
-                return Ok(incoming.to_vec());
+                Ok(incoming.to_vec())
             } else {
-                return Ok(existing.to_vec());
+                Ok(existing.to_vec())
             }
         }
     }
