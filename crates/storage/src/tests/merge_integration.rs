@@ -27,6 +27,35 @@ impl Mergeable for TestApp {
     }
 }
 
+/// Placeholder type for tests that need a non-empty merge registry.
+///
+/// Some tests use types that don't have a matching merge function (e.g., Root<Counter>).
+/// In these cases, we want the system to try merge functions, fail to match, and fall
+/// back to LWW. Without any registered merge function, the system returns
+/// NoFunctionsRegistered which is an I5 enforcement error.
+///
+/// By registering this placeholder type, we ensure the registry is not empty.
+/// The actual test types won't match this, so AllFunctionsFailed will be returned,
+/// triggering the correct LWW fallback path.
+#[derive(BorshSerialize, BorshDeserialize)]
+struct TestPlaceholderForRegistry;
+
+impl Mergeable for TestPlaceholderForRegistry {
+    fn merge(&mut self, _other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+        Ok(())
+    }
+}
+
+/// Register a placeholder merge function to ensure the registry is not empty.
+///
+/// Call this in tests that:
+/// 1. Don't clear the registry
+/// 2. Use types that don't have a registered merge function
+/// 3. Rely on the AllFunctionsFailed → LWW fallback behavior
+fn register_test_placeholder_merge() {
+    register_crdt_merge::<TestPlaceholderForRegistry>();
+}
+
 #[test]
 #[serial]
 fn test_merge_via_registry() {
@@ -985,10 +1014,13 @@ fn test_e2e_sync_flow_with_isolated_storage() {
 
     env::reset_for_testing();
     reset_delta_context();
-    // Note: We don't clear the merge registry here. The test uses Root<LwwRegister<String>>
-    // which wraps the value in Collection. Since Collection doesn't have a matching merge
-    // function, the system will fall back to LWW (which is correct for LwwRegister).
-    // Clearing the registry would trigger I5 enforcement error.
+    // Register a dummy merge function to ensure the registry isn't empty.
+    // The test uses Root<LwwRegister<String>> which won't match this type,
+    // so AllFunctionsFailed will be returned, triggering the LWW fallback
+    // (which is correct behavior for LwwRegister).
+    // Without this registration, an empty registry returns NoFunctionsRegistered
+    // which is an I5 enforcement error.
+    register_test_placeholder_merge();
 
     println!("\n========================================");
     println!("=== E2E SYNC FLOW WITH ISOLATED STORAGE ===");
@@ -1143,10 +1175,12 @@ fn test_e2e_counter_sync_with_isolated_storage() {
 
     env::reset_for_testing();
     reset_delta_context();
-    // Note: We don't clear the merge registry here. The test uses Root<Counter>
-    // which wraps the value in Collection. Since Collection doesn't have a matching merge
-    // function, the system will fall back to LWW. Clearing the registry would trigger
-    // I5 enforcement error.
+    // Register a dummy merge function to ensure the registry isn't empty.
+    // The test uses Root<Counter> which won't match this type,
+    // so AllFunctionsFailed will be returned, triggering the LWW fallback.
+    // Without this registration, an empty registry returns NoFunctionsRegistered
+    // which is an I5 enforcement error.
+    register_test_placeholder_merge();
 
     println!("\n========================================");
     println!("=== COUNTER SYNC TEST - SIMULATING REAL E2E ===");

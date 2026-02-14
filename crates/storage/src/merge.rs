@@ -29,6 +29,8 @@
 //! - **I5 (No Silent Data Loss)**: Built-in CRDT types are merged using their
 //!   semantic rules (e.g., Counter sums, Set unions), not overwritten via LWW.
 //!   Root entity merge requires explicit registration to prevent silent data loss.
+//!   Note: If registered merge functions fail (e.g., type mismatch, corrupt data),
+//!   the system logs a warning and falls back to LWW as a last resort.
 //! - **I10 (Metadata Persistence)**: Relies on `crdt_type` being persisted in
 //!   entity metadata for correct dispatch.
 
@@ -39,6 +41,7 @@ pub use registry::{register_crdt_merge, try_merge_registered, MergeRegistryResul
 pub use registry::clear_merge_registry;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use tracing::warn;
 
 use crate::collections::crdt_meta::{CrdtType, MergeError, Mergeable};
 use crate::collections::{Counter, ReplicatedGrowableArray};
@@ -66,13 +69,21 @@ use crate::store::MainStorage;
 /// # Strategy
 ///
 /// Uses registered merge function (Mergeable trait) to perform type-aware CRDT merge.
-/// If no merge function is registered, returns an error.
+/// There are three possible outcomes:
+///
+/// 1. **Success**: A registered merge function matched and merged the data.
+/// 2. **Error (NoMergeFunctionRegistered)**: No merge functions are registered.
+///    This enforces I5 by failing loudly rather than silently using LWW.
+/// 3. **LWW Fallback (logged warning)**: Merge functions are registered but all failed
+///    (e.g., type mismatch, corrupt data). Falls back to LWW with a warning log.
 ///
 /// # CIP Invariants
 ///
 /// - **I5 (No Silent Data Loss)**: This function enforces I5 by requiring explicit
 ///   merge function registration. Without registration, it fails loudly rather than
 ///   falling back to LWW (which would silently discard CRDT contributions).
+///   Note: If registered functions fail, we log a warning and fall back to LWW as
+///   a last resort to avoid halting sync entirely.
 ///
 /// # How to Fix "No merge function registered" Error
 ///
@@ -122,6 +133,18 @@ pub fn merge_root_state(
             // - The data type doesn't match any registered type (test contamination)
             // - Deserialization failed (corrupt data)
             //
+            // WARNING: This is a last-resort fallback. If merge functions failed due to
+            // data corruption or schema migration issues, using LWW may cause data loss.
+            // However, returning an error would halt sync entirely, which is worse.
+            //
+            // We log a warning so operators can investigate if this happens frequently.
+            warn!(
+                existing_ts = existing_ts,
+                incoming_ts = incoming_ts,
+                "All registered merge functions failed - falling back to LWW. \
+                 This may indicate type mismatch, data corruption, or schema changes."
+            );
+
             // Fall back to LWW to maintain backwards compatibility.
             // The incoming value wins if timestamps are equal or incoming is newer.
             if incoming_ts >= existing_ts {
