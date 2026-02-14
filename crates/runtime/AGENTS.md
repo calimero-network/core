@@ -7,6 +7,56 @@ WebAssembly runtime using wasmer to compile and execute Calimero applications.
 - **Crate**: `calimero-runtime`
 - **Entry**: `src/lib.rs`
 - **Framework**: wasmer (WASM), tokio (async)
+- **Related Docs**: [README.md](README.md) (architecture), [HOST_FUNCTIONS.md](HOST_FUNCTIONS.md) (API reference)
+
+## Quick Understanding
+
+### What This Crate Does
+
+1. **Compiles** WASM modules using Wasmer's Cranelift backend
+2. **Executes** WASM functions with configurable resource limits
+3. **Provides host functions** that bridge guest code to storage, events, context management
+4. **Manages memory** between WASM guest and host via pointer-based buffer descriptors
+
+### Key Architectural Insight
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        RUNTIME EXECUTION                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   Module::run()                                                 │
+│       │                                                         │
+│       ▼                                                         │
+│   VMLogic (execution context)                                   │
+│       │                                                         │
+│       ├── registers: Registers (temporary data slots)           │
+│       ├── storage: &mut dyn Storage (key-value persistence)     │
+│       ├── limits: &VMLimits (resource constraints)              │
+│       ├── logs: Vec<String>                                     │
+│       ├── events: Vec<Event>                                    │
+│       └── context_mutations: Vec<ContextMutation>               │
+│                                                                 │
+│   VMHostFunctions (self-referencing wrapper)                    │
+│       │                                                         │
+│       └── Provides all host functions to WASM imports           │
+│           via read_guest_memory_* / write patterns              │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Memory Exchange Pattern
+
+All data passes between guest ↔ host via **buffer descriptors**:
+
+```rust
+// Guest side: create descriptor in memory
+struct Buffer { ptr: u64, len: u64 }  // 16 bytes total
+
+// Host side: read descriptor, then read actual data
+let buf = self.read_guest_memory_typed::<sys::Buffer<'_>>(ptr)?;
+let data = self.read_guest_memory_slice(&buf)?;
+```
 
 ## Commands
 
@@ -17,6 +67,9 @@ cargo build -p calimero-runtime
 # Test
 cargo test -p calimero-runtime
 
+# Test with traces
+RUST_LOG=runtime=trace cargo test -p calimero-runtime -- --nocapture
+
 # Run examples
 cargo run -p calimero-runtime --example demo
 cargo run -p calimero-runtime --example rps
@@ -26,123 +79,218 @@ cargo run -p calimero-runtime --example rps
 
 ```
 src/
-├── lib.rs                    # Public API, Calimero struct
-├── store.rs                  # WASM module store
+├── lib.rs                    # Public API: Engine, Module, run()
+├── store.rs                  # Storage trait and InMemoryStorage
 ├── constraint.rs             # Execution constraints
-├── constants.rs              # Runtime constants
-├── memory.rs                 # Memory management
-├── errors.rs                 # Error types
-├── panic_payload.rs          # Panic handling
-├── logic.rs                  # Logic module parent
+├── constants.rs              # Runtime constants (DIGEST_SIZE = 32)
+├── memory.rs                 # WasmerTunables for memory limits
+├── errors.rs                 # Error types (HostError, VMRuntimeError, etc.)
+├── panic_payload.rs          # Panic handling utilities
+├── logic.rs                  # VMLogic, VMContext, VMLimits, VMHostFunctions
 ├── logic/
-│   ├── imports.rs            # WASM imports
+│   ├── imports.rs            # imports! macro registering all host functions
 │   ├── registers.rs          # Register management
-│   ├── traits.rs             # Runtime traits
-│   ├── errors.rs             # Logic errors
-│   ├── host_functions.rs     # Host functions parent
-│   └── host_functions/
-│       ├── storage.rs        # Storage host functions
-│       ├── context.rs        # Context host functions
-│       ├── blobs.rs          # Blob host functions
-│       ├── utility.rs        # Utility functions
-│       ├── system.rs         # System functions
-│       ├── governance.rs     # Governance functions
-│       └── js_collections.rs # JS collections support
+│   ├── traits.rs             # ContextHost trait
+│   ├── errors.rs             # VMLogicError
+│   └── host_functions/       # Host function implementations
+│       ├── storage.rs        # storage_read/write/remove, private_storage_*
+│       ├── context.rs        # context_create/delete/add_member/etc
+│       ├── blobs.rs          # blob_create/write/close/open/read
+│       ├── utility.rs        # fetch, random_bytes, time_now, ed25519_verify
+│       ├── system.rs         # panic, registers, input/output, emit, commit
+│       ├── governance.rs     # send_proposal, approve_proposal
+│       └── js_collections.rs # js_crdt_* functions for JS SDK
 └── tests/
-    └── errors.rs             # Error tests
+    └── errors.rs             # Error handling tests
 examples/
-├── demo.rs                   # Basic demo
-├── fetch.rs                  # Fetch example
+├── demo.rs                   # Basic key-value storage demo
+├── fetch.rs                  # HTTP fetch example
 └── rps.rs                    # Requests per second benchmark
 ```
 
-## Host Functions
+## Key Concepts for AI Agents
 
-Host functions are WASM imports callable from applications:
+### 1. Host Function Registration
 
-### Storage Functions (`logic/host_functions/storage.rs`)
-
-```rust
-// Registered in imports.rs, callable from WASM apps
-fn storage_read(key_ptr: u64, register_id: u64) -> u32;
-fn storage_write(key_ptr: u64, value_ptr: u64, register_id: u64) -> u32;
-fn storage_remove(key_ptr: u64, register_id: u64) -> u32;
-```
-
-### Context Functions (`logic/host_functions/context.rs`)
+Host functions are declared in `imports.rs` using the `imports!` macro:
 
 ```rust
-fn context_id(register_id: u64);
-fn executor_id(register_id: u64);
-fn context_create(protocol_ptr: u64, app_id_ptr: u64, args_ptr: u64, alias_ptr: u64);
-fn context_delete(context_id_ptr: u64);
+// src/logic/imports.rs
+imports! {
+    fn panic(location_ptr: u64);
+    fn storage_read(key_ptr: u64, register_id: u64) -> u32;
+    // ... more functions
+}
 ```
 
-## Patterns
-
-### Adding a Host Function
-
-- ✅ DO: Add to appropriate file in `src/logic/host_functions/`
-- ✅ DO: Register in `src/logic/imports.rs` using the `imports!` macro
-- ✅ DO: Follow existing naming: `<category>_<action>` (e.g. `storage_read`, `context_id`, `blob_create`)
+Implementation lives in `host_functions/*.rs`:
 
 ```rust
 // src/logic/host_functions/storage.rs
-pub fn storage_read(
-    &mut self,
-    src_key_ptr: u64,
-    dest_register_id: u64,
-) -> VMLogicResult<u32> {
-    // Implementation using self.read_guest_memory_typed, etc.
+impl VMHostFunctions<'_> {
+    pub fn storage_read(&mut self, src_key_ptr: u64, dest_register_id: u64) -> VMLogicResult<u32> {
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
+        // ... implementation
+    }
 }
-
-// Then register in src/logic/imports.rs:
-// fn storage_read(key_ptr: u64, register_id: u64) -> u32;
 ```
 
-### VMLogic Pattern
+### 2. Adding a New Host Function
+
+1. Add declaration to `src/logic/imports.rs`
+2. Implement in appropriate `src/logic/host_functions/*.rs` file
+3. Follow naming convention: `<category>_<action>` (e.g., `storage_read`)
+4. Use `read_guest_memory_typed`, `read_guest_memory_slice` for input
+5. Use `registers.set()` to return data to guest
+6. Return status codes: `0` = not found, `1` = success
+
+### 3. VMLogic Lifecycle
 
 ```rust
-// Logic context for host functions
-pub struct VMLogic {
-    registers: Registers,
-    context: RuntimeContext,
-    storage: Box<dyn Storage>,
+// 1. Create context
+let context = VMContext::new(input, context_id, executor_id);
+
+// 2. Create logic with storage and limits
+let mut logic = VMLogic::new(storage, private_storage, context, limits, node_client, context_host);
+
+// 3. Set up memory (from Wasmer instance)
+logic.with_memory(memory);
+
+// 4. Get host functions wrapper
+let host = logic.host_functions(store_mut);
+
+// 5. Execute WASM, host functions called via wrapper
+
+// 6. Finish and get outcome
+let outcome = logic.finish();
+```
+
+### 4. Self-Referencing Pattern
+
+`VMHostFunctions` uses `ouroboros` crate's `#[self_referencing]` for safe self-referential borrows:
+
+```rust
+#[self_referencing]
+pub struct VMHostFunctions<'a> {
+    logic: &'a mut VMLogic<'a>,
+    #[borrows(logic)]
+    #[covariant]
+    memory: &'this Memory,
 }
 ```
 
-## Key Files
+This allows the struct to hold both a mutable reference to logic and a reference derived from it.
 
-| File                                  | Purpose                      |
-| ------------------------------------- | ---------------------------- |
-| `src/lib.rs`                          | Calimero struct, public API  |
-| `src/logic/imports.rs`                | WASM import registration     |
-| `src/logic/host_functions/storage.rs` | Storage operations           |
-| `src/logic/host_functions/context.rs` | Context operations           |
-| `src/store.rs`                        | Module compilation & caching |
-| `src/constraint.rs`                   | Execution limits             |
+## JIT Index by Category
 
-## JIT Index
+### Finding Function Declarations
 
 ```bash
-# Find host functions (implementations)
-rg -n "pub fn " src/logic/host_functions/
+# All host function declarations (WASM imports)
+rg "^            fn [a-z_]+\(" src/logic/imports.rs
 
-# Find host functions (WASM import declarations)
-rg -n "fn " src/logic/imports.rs
+# Storage functions
+rg "fn (storage|private_storage)_" src/logic/imports.rs
 
-# Find VMLogic methods
-rg -n "impl VMLogic" src/logic/
+# Context functions
+rg "fn context_" src/logic/imports.rs
 
-# Find error types
-rg -n "pub enum" src/errors.rs
+# JS CRDT functions
+rg "fn js_crdt_" src/logic/imports.rs
+```
+
+### Finding Implementations
+
+```bash
+# All host function implementations
+rg "pub fn " src/logic/host_functions/
+
+# Specific category implementations
+rg "pub fn storage_" src/logic/host_functions/storage.rs
+rg "pub fn context_" src/logic/host_functions/context.rs
+rg "pub fn blob_" src/logic/host_functions/blobs.rs
+
+# Memory access patterns
+rg "read_guest_memory_typed" src/logic/host_functions/
+rg "read_guest_memory_slice" src/logic/host_functions/
+```
+
+### Finding Types and Traits
+
+```bash
+# VMLogic definition
+rg "pub struct VMLogic" src/logic.rs
+
+# VMLimits configuration
+rg "pub struct VMLimits" src/logic.rs
+
+# Storage trait
+rg "pub trait Storage" src/store.rs
+
+# Error types
+rg "pub enum (HostError|VMRuntimeError|VMLogicError)" src/
+```
+
+### Finding Tests
+
+```bash
+# Host function tests
+rg "#\[test\]" src/logic/host_functions/
+
+# Storage tests
+rg "fn test_storage" src/logic/host_functions/storage.rs
+
+# System tests
+rg "fn test_" src/logic/host_functions/system.rs
+```
+
+## Common Patterns
+
+### Reading Data from Guest
+
+```rust
+// 1. Read buffer descriptor
+let buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(ptr)? };
+
+// 2. Validate limits
+if buf.len() > self.borrow_logic().limits.max_storage_key_size.get() {
+    return Err(HostError::KeyLengthOverflow.into());
+}
+
+// 3. Read actual bytes
+let data = self.read_guest_memory_slice(&buf)?.to_vec();
+```
+
+### Returning Data to Guest
+
+```rust
+// Write to register, guest can read via read_register
+self.with_logic_mut(|logic| {
+    logic.registers.set(logic.limits, register_id, data)
+})?;
+```
+
+### Mutating State
+
+```rust
+// Use with_logic_mut for mutable access
+self.with_logic_mut(|logic| {
+    logic.logs.push(message);
+    logic.events.push(event);
+});
 ```
 
 ## Debugging
 
 ```bash
-# Enable WASM tracing
+# Enable runtime tracing
 RUST_LOG=calimero_runtime=debug cargo run -p merod -- --node node1 run
+
+# Enable host function traces
+RUST_LOG=runtime::host=trace cargo test -p calimero-runtime
+
+# Enable guest log traces
+RUST_LOG=runtime::guest=trace cargo test -p calimero-runtime
 
 # Test specific function
 cargo test -p calimero-runtime test_storage -- --nocapture
@@ -150,7 +298,20 @@ cargo test -p calimero-runtime test_storage -- --nocapture
 
 ## Common Gotchas
 
-- Host functions use raw pointers (u64) - careful with memory safety
-- Registers are used for return values (not direct returns)
-- WASM memory is isolated per instance
-- Constraints limit execution time and memory
+1. **Host functions use raw pointers (u64)** - All memory access is through typed reads
+2. **Registers are host-side** - Guest writes pointer, host stores data, guest reads back via `read_register`
+3. **WASM memory is isolated** - Each instance has its own linear memory
+4. **Constraints limit everything** - VMLimits enforced on keys, values, logs, events, registers
+5. **Self-referencing pattern** - `VMHostFunctions` requires careful lifetime management
+6. **JS CRDT functions are different** - They work with collection IDs, not raw storage keys
+7. **Private storage is optional** - May be `None` in tests or minimal setups
+8. **Context mutations are queued** - They don't happen immediately, applied after execution
+
+## Related Crates
+
+| Crate | Relationship |
+|-------|--------------|
+| `calimero-sys` | Defines `sys::Buffer`, `sys::Event`, etc. used by host functions |
+| `calimero-storage` | CRDT collections, Merkle tree, used by `persist_root_state` |
+| `calimero-primitives` | Common types like `ContextId`, `PublicKey` |
+| `calimero-node` | Uses runtime to execute WASM in context execution |

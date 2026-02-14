@@ -2,6 +2,91 @@
 
 This guide is for AI agents working on the Calimero sync protocol implementation.
 
+## Relationship to Production Runtime
+
+The simulation framework replicates key aspects of the production runtime while enabling deterministic, reproducible testing without actual WASM execution or network I/O.
+
+### What IS Replicated (Real Implementation)
+
+| Component | Production | Simulation |
+|-----------|------------|------------|
+| **Merkle Tree** | `calimero-storage::Index<MainStorage>` | Same! Uses real implementation |
+| **Storage Actions** | `Interface::apply_action` | Same! Real CRDT action application |
+| **Hash Computation** | SHA-256 tree hashes | Same! Real hash propagation |
+| **Protocol Selection** | `select_protocol()` from `calimero-node-primitives` | Same! Shared function |
+| **Entity Metadata** | `Metadata { created_at, updated_at }` | Same! Real types |
+| **RuntimeEnv** | Callbacks routing to RocksDB | Callbacks routing to `InMemoryDB` |
+
+### What is NOT Replicated
+
+| Component | Production | Simulation |
+|-----------|------------|------------|
+| **WASM Execution** | Full `calimero-runtime` with Wasmer | Skipped—direct state manipulation |
+| **Network I/O** | libp2p gossipsub/streams | `NetworkRouter` with fault injection |
+| **Time** | `SystemTime::now()` | Discrete `SimClock` |
+| **Concurrency** | tokio async tasks | Sequential event processing |
+| **Host Functions** | 80+ functions in `VMHostFunctions` | None—storage accessed directly |
+
+### Why This Design?
+
+1. **Real Merkle Tree**: HashComparison protocol depends on accurate subtree traversal.
+   Using the real `calimero-storage` implementation ensures hash propagation works identically.
+
+2. **Shared Protocol Selection**: `SimNode` implements `LocalSyncState` trait and uses
+   `calimero_node_primitives::sync::protocol::select_protocol()` for consistency.
+
+3. **Deterministic Testing**: Discrete clock and seeded RNG enable reproducible failures.
+
+4. **Fault Injection**: `NetworkRouter` can simulate packet loss, latency, reordering,
+   and partitions without actual network configuration.
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         PRODUCTION RUNTIME                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Client Request                                                         │
+│       ↓                                                                 │
+│  JSON-RPC Server                                                        │
+│       ↓                                                                 │
+│  WASM Runtime (calimero-runtime)  ←── VMHostFunctions, VMLimits         │
+│       ↓                                                                 │
+│  calimero-storage (Index, Interface::apply_action)                      │
+│       ↓                                                                 │
+│  calimero-store (RocksDB)                                               │
+│       ↓                                                                 │
+│  Network (libp2p gossipsub)                                             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         SIMULATION RUNTIME                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Test Setup (Scenario)                                                  │
+│       ↓                                                                 │
+│  SimRuntime (orchestrator)                                              │
+│       ↓                                                                 │
+│  SimNode (state machine)                                                │
+│       ↓                                                                 │
+│  SimStorage ─────────────────┬──────────────────────────────────────────┤
+│       │                      │                                          │
+│       │  calimero-storage    │  ← REAL: Index, Interface, Merkle tree   │
+│       │  (same crate!)       │                                          │
+│       ↓                      │                                          │
+│  InMemoryDB (calimero-store) │  ← Same Store interface, memory backend  │
+│       ↓                      │                                          │
+│  NetworkRouter (simulated)   │  ← Fault injection, partitions           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Code Paths
+
+**Production**: `VMHostFunctions::persist_root_state()` → `Interface::<MainStorage>::save_raw()`
+
+**Simulation**: `SimStorage::add_entity()` → `Interface::<MainStorage>::apply_action()`
+
+Both use the same `calimero_storage::interface::Interface` implementation!
+
 ## Framework Location
 
 ```
