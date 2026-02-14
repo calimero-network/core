@@ -316,12 +316,9 @@ fn merge_root_state(ours: &[u8], theirs: &[u8]) -> Result<Vec<u8>> {
         return Ok(merged);  // ✅ CRDT merge
     }
     
-    // Fallback to LWW
-    if their_timestamp >= our_timestamp {
-        Ok(theirs.to_vec())  // LWW
-    } else {
-        Ok(ours.to_vec())
-    }
+    // Error if not registered (I5 enforcement - no silent data loss)
+    Err("No merge function registered for root entity. \
+         Use #[app::state] macro or call register_crdt_merge::<YourState>().")
 }
 ```
 

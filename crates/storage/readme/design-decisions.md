@@ -356,7 +356,7 @@ Registry is the only approach that works with:
 
 ---
 
-## Decision 8: Fallback to LWW
+## Decision 8: Require Merge Registration (I5 Enforcement)
 
 ### What We Chose
 
@@ -367,22 +367,18 @@ fn merge_root_state(ours: &[u8], theirs: &[u8]) -> Result<Vec<u8>> {
         return Ok(merged);
     }
     
-    // Fallback to LWW
-    if their_timestamp >= our_timestamp {
-        Ok(theirs.to_vec())
-    } else {
-        Ok(ours.to_vec())
-    }
+    // Error if not registered (I5 enforcement - no silent data loss)
+    Err("No merge function registered for root entity. \
+         Use #[app::state] macro or call register_crdt_merge::<YourState>().")
 }
 ```
 
 ### Alternatives Considered
 
-**Require registration:**
-- Panic if merge not registered
-- Force all apps to have Mergeable
-
-**Why we didn't:** Backward compatibility!
+**Fallback to LWW:**
+- If no merge registered, use Last-Write-Wins
+- **Why we didn't:** Violates I5 (No Silent Data Loss) - CRDT contributions would be
+  silently discarded. Per Delivery Contract Rule, any drop MUST be observable.
 
 **Manual conflict resolution:**
 - Stop sync, ask developer to resolve
@@ -390,10 +386,10 @@ fn merge_root_state(ours: &[u8], theirs: &[u8]) -> Result<Vec<u8>> {
 
 ### Verdict
 
-Graceful fallback enables:
-- ✅ Backward compatibility
-- ✅ Gradual migration
-- ✅ Old apps keep working
+Requiring registration enforces I5:
+- ✅ No silent data loss
+- ✅ Actionable error message tells developer how to fix
+- ✅ `#[app::state]` macro auto-registers for WASM apps
 
 ---
 
@@ -480,9 +476,9 @@ Element IDs are simpler than full OT and solve 95% of conflicts.
 
 Zero-burden DX is worth the macro complexity.
 
-### 3. Graceful Degradation
+### 3. Fail Loudly, Not Silently
 
-Fallback to LWW enables backward compatibility.
+Requiring merge registration enforces I5 (No Silent Data Loss) and gives actionable errors.
 
 ### 4. Test Everything
 
