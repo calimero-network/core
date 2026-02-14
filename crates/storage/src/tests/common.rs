@@ -192,18 +192,16 @@ impl Mergeable for Person {
 /// This must be called before any test that triggers root entity merging.
 /// Required for I5 enforcement - without registration, merge operations will fail.
 ///
-/// This function is idempotent - safe to call multiple times.
+/// Safe to call multiple times - the registry uses a HashMap so repeated
+/// registrations just overwrite with the same function. We intentionally
+/// don't use `Once` here because some `#[serial]` tests call `clear_merge_registry()`
+/// and need to re-register afterward.
 pub fn register_test_merge_functions() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-
-    INIT.call_once(|| {
-        use crate::merge::register_crdt_merge;
-        register_crdt_merge::<Page>();
-        register_crdt_merge::<Paragraph>();
-        register_crdt_merge::<Person>();
-        register_crdt_merge::<EmptyData>();
-    });
+    use crate::merge::register_crdt_merge;
+    register_crdt_merge::<Page>();
+    register_crdt_merge::<Paragraph>();
+    register_crdt_merge::<Person>();
+    register_crdt_merge::<EmptyData>();
 }
 
 /// Helper to create a test keypair and public key.
