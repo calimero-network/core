@@ -7,7 +7,7 @@ Peer-to-peer networking layer using libp2p for peer discovery, gossipsub messagi
 - **Crate**: `calimero-network`
 - **Entry**: `src/lib.rs`
 - **Framework**: libp2p (P2P), tokio (async), actix (actors)
-- **Related Docs**: [PROTOCOLS.md](PROTOCOLS.md), [README.md](README.md)
+- **Related Docs**: [ARCHITECTURE.md](ARCHITECTURE.md), [PROTOCOLS.md](PROTOCOLS.md), [README.md](README.md)
 
 ## Commands
 
@@ -56,17 +56,9 @@ cargo test -p calimero-network --test kad_modes
 │  │  └───────┬───────┘  └───────────────┘  └─────────────────┘  │   │
 │  └──────────┼──────────────────────────────────────────────────┘   │
 │             │                                                       │
-│  ┌──────────┴──────────────────────────────────────────────────┐   │
-│  │                      Behaviour (composed)                    │   │
-│  │  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌──────────────────┐ │   │
-│  │  │Gossipsub │ │   Kad   │ │  mDNS    │ │    Rendezvous    │ │   │
-│  │  │(pub/sub) │ │  (DHT)  │ │ (local)  │ │   (bootstrap)    │ │   │
-│  │  └──────────┘ └─────────┘ └──────────┘ └──────────────────┘ │   │
-│  │  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌──────────────────┐ │   │
-│  │  │  Relay   │ │  DCUtR  │ │ AutoNAT  │ │      Stream      │ │   │
-│  │  │  (NAT)   │ │(holepun)│ │ (detect) │ │    (direct)      │ │   │
-│  │  └──────────┘ └─────────┘ └──────────┘ └──────────────────┘ │   │
-│  └─────────────────────────────────────────────────────────────┘   │
+│             ▼                                                       │
+│       Behaviour (11 sub-behaviours: gossipsub, kad, mdns, etc.)     │
+│       See ARCHITECTURE.md#behaviour-composition for details         │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -517,6 +509,7 @@ The `calimero-node` crate includes a simulation framework (`tests/sync_sim/`) th
 
 ## Related Documentation
 
+- [ARCHITECTURE.md](ARCHITECTURE.md) - Internal architecture and design decisions
 - [PROTOCOLS.md](PROTOCOLS.md) - Wire protocol specifications
 - [README.md](README.md) - Comprehensive networking guide with diagrams
 - [crates/node/tests/sync_sim/AGENT_GUIDE.md](../node/tests/sync_sim/AGENT_GUIDE.md) - Simulation framework
