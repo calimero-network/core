@@ -222,7 +222,15 @@ pub fn merge_by_crdt_type(
     existing: &[u8],
     incoming: &[u8],
 ) -> Result<Vec<u8>, MergeError> {
-    merge_by_crdt_type_with_callback(crdt_type, existing, incoming, None)
+    merge_by_crdt_type_with_callback(crdt_type, existing, incoming, None).map_err(|e| {
+        // Convert NoWasmCallback to WasmRequired for the no-callback API
+        // This signals "this type requires WASM" rather than "callback wasn't passed"
+        if let MergeError::NoWasmCallback { type_name } = e {
+            MergeError::WasmRequired { type_name }
+        } else {
+            e
+        }
+    })
 }
 
 /// Merge two Borsh-serialized values based on their CRDT type, with WASM callback support.
