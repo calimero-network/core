@@ -258,8 +258,7 @@ To run tests locally, use merobox directly:
 merobox bootstrap run workflows/collaborative-editor.yml \
   --no-docker \
   --binary-path ../../target/debug/merod \
-  --e2e-mode \
-  --near-devnet
+  --e2e-mode
 ```
 
 - Title management

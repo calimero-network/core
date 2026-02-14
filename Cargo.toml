@@ -1,16 +1,15 @@
 [workspace.package]
-version = "0.0.0"
+version = "0.0.0" # managed by cargo-workspaces; see docs/RELEASE.md
 authors = ["Calimero Limited <info@calimero.network>"]
 edition = "2021"
 repository = "https://github.com/calimero-network/core"
 license = "MIT OR Apache-2.0"
 description = "Core Calimero infrastructure and tools"
 
-# Update workspace metadata
+# Update workspace metadata (see docs/RELEASE.md for versioning and release)
 [workspace.metadata.workspaces]
-# Shared version of all public crates in the workspace.
-# [IMPORTANT: do not remove comments from next line, used as search anchor]
-version = "0.0.0" # crates_version
+# Shared version of all public crates; bump this when cutting a release.
+version = "0.10.0-rc.42"
 exclude = [
     "./apps/abi_conformance",
     "./apps/access-control",
@@ -34,9 +33,9 @@ exclude = [
     "./apps/demo-blockchain-integrations",
     "./apps/e2e-kv-store",
     "./crates/merod",
-    "./crates/version",
     "./crates/meroctl",
     "./crates/auth",
+    "./crates/build-utils",
     "./tools/calimero-abi",
 ]
 
@@ -44,6 +43,7 @@ exclude = [
 resolver = "2"
 members = [
     "./crates/auth",
+    "./crates/build-utils",
     "./crates/config",
     "./crates/context",
     "./crates/context/config",
@@ -77,7 +77,6 @@ members = [
     "./crates/store/impl/rocksdb",
     "./crates/sys",
     "./crates/utils/actix",
-    "./crates/version",
     "./crates/wasm-abi",
 
     "./apps/access-control",
@@ -233,6 +232,7 @@ zeroize = "1.8"
 
 pyo3 = "0.20"
 
+calimero-build-utils = { path = "./crates/build-utils" }
 calimero-blobstore = { path = "./crates/store/blobs" }
 calimero-client = { path = "./crates/client" }
 calimero-config = { path = "./crates/config" }
@@ -261,7 +261,6 @@ calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-sys = { path = "./crates/sys" }
 calimero-tee-attestation = { path = "./crates/tee-attestation" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
-calimero-version = { path = "./crates/version" }
 calimero-wasm-abi = { path = "./crates/wasm-abi" }
 mero-auth = { path = "./crates/auth" }
 kv-store = { path = "./apps/kv-store" }
