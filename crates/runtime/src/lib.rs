@@ -241,8 +241,35 @@ impl Module {
     /// Returns `None` if the WASM module doesn't export the required merge functions.
     fn create_merge_callback(&self) -> Option<merge_callback::RuntimeMergeCallback> {
         let mut store = Store::new(self.engine.clone());
-        let instance = Instance::new(&mut store, &self.module, &wasmer::Imports::default()).ok()?;
+        let imports = self.create_stub_imports(&mut store);
+        let instance = Instance::new(&mut store, &self.module, &imports).ok()?;
         merge_callback::RuntimeMergeCallback::from_instance(store, instance)
+    }
+
+    /// Create stub imports for the merge callback instance.
+    ///
+    /// Real applications import host functions, but the merge callback
+    /// only needs to call allocation and merge exports (not imports).
+    /// We create stub imports that satisfy the module's requirements
+    /// but trap if actually called.
+    fn create_stub_imports(&self, store: &mut Store) -> wasmer::Imports {
+        let mut imports = wasmer::Imports::new();
+
+        for import in self.module.imports() {
+            if let wasmer::ExternType::Function(func_type) = import.ty() {
+                let func = wasmer::Function::new(store, func_type.clone(), |_args| {
+                    Err(wasmer::RuntimeError::new(
+                        "Stub host function called during merge callback - this should not happen",
+                    ))
+                });
+                imports.define(import.module(), import.name(), func);
+            }
+            // Non-function imports (memory, globals, tables) are not expected
+            // for Calimero modules, but if present, instantiation will fail
+            // gracefully via the .ok()? in create_merge_callback
+        }
+
+        imports
     }
 
     pub fn run<'a>(
