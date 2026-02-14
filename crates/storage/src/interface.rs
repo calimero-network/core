@@ -1036,7 +1036,7 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     /// # Errors
     ///
-    /// Returns `StorageError::MergeError` if no merge function is registered
+    /// Returns `StorageError::MergeFailure` if no merge function is registered
     /// for the root entity type. This enforces I5 (No Silent Data Loss) by failing
     /// loudly rather than silently falling back to LWW.
     fn try_merge_data(
@@ -1054,14 +1054,10 @@ impl<S: StorageAdaptor> Interface<S> {
             merge_root_state(existing, incoming, existing_timestamp, incoming_timestamp)
         });
 
-        match result {
-            Ok(merged) => Ok(merged),
-            Err(e) => {
-                // I5 Enforcement: Propagate merge errors instead of falling back to LWW.
-                // If no merge function is registered, this prevents silent data loss.
-                Err(StorageError::MergeError(e.to_string()))
-            }
-        }
+        // I5 Enforcement: Propagate merge errors instead of falling back to LWW.
+        // If no merge function is registered, this prevents silent data loss.
+        // The MergeError is preserved for programmatic error handling.
+        result.map_err(StorageError::from)
     }
 
     /// Attempt to merge two versions of non-root entity data using CRDT semantics.

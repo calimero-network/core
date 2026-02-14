@@ -81,8 +81,12 @@ where
     };
 
     let mut registry = MERGE_REGISTRY.write().unwrap_or_else(|_| {
-        // Lock poisoning is a programming error that should never happen
-        // In production, this indicates a bug in the merge system
+        // Lock poisoning indicates a panic occurred while holding the lock.
+        // This is a serious error - abort to prevent undefined behavior.
+        tracing::error!(
+            target: "calimero_storage::merge",
+            "MERGE_REGISTRY lock poisoned during write, aborting. This indicates a panic in merge code."
+        );
         std::process::abort()
     });
     let _ = registry.insert(type_id, merge_fn);
@@ -91,9 +95,13 @@ where
 /// Clear the merge registry (for testing only)
 #[cfg(test)]
 pub fn clear_merge_registry() {
-    let mut registry = MERGE_REGISTRY
-        .write()
-        .unwrap_or_else(|_| std::process::abort());
+    let mut registry = MERGE_REGISTRY.write().unwrap_or_else(|_| {
+        tracing::error!(
+            target: "calimero_storage::merge",
+            "MERGE_REGISTRY lock poisoned during clear, aborting. This indicates a panic in merge code."
+        );
+        std::process::abort()
+    });
     registry.clear();
 }
 
