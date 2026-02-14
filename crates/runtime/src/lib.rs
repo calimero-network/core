@@ -312,11 +312,23 @@ impl Module {
         // This allows the storage layer to call merge functions even while
         // the main WASM execution is in progress.
         if let Some(merge_callback) = self.create_merge_callback() {
-            let callback_rc =
+            // Wrap the callback in Arc so we can share it between the two closures
+            let merge_callback = std::sync::Arc::new(merge_callback);
+
+            // Custom type merge callback
+            let custom_callback = std::sync::Arc::clone(&merge_callback);
+            let custom_rc =
                 std::rc::Rc::new(move |local: &[u8], remote: &[u8], type_name: &str| {
-                    merge_callback.merge_custom(local, remote, type_name)
+                    custom_callback.merge_custom(local, remote, type_name)
                 });
-            logic.with_merge_callback(callback_rc);
+            logic.with_merge_callback(custom_rc);
+
+            // Root state merge callback
+            let root_callback = merge_callback;
+            let root_rc = std::rc::Rc::new(move |local: &[u8], remote: &[u8]| {
+                root_callback.merge_root_state(local, remote)
+            });
+            logic.with_root_merge_callback(root_rc);
         }
 
         let mut store = Store::new(self.engine.clone());

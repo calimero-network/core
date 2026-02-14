@@ -106,6 +106,17 @@ pub fn merge_root_state(
     match try_merge_registered(existing, incoming, existing_ts, incoming_ts) {
         MergeRegistryResult::Success(merged) => Ok(merged),
         MergeRegistryResult::NoFunctionsRegistered => {
+            // No in-process merge function registered.
+            // Try WASM callback if available (RuntimeEnv provides this).
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(wasm_callback) = crate::env::get_wasm_root_merge_callback() {
+                tracing::debug!(
+                    target: "calimero_storage::merge",
+                    "No in-process merge function registered, trying WASM callback"
+                );
+                return wasm_callback(existing, incoming);
+            }
+
             // I5 Enforcement: No silent data loss
             //
             // If the root entity contains CRDTs (Counter, etc.) and no merge function
@@ -122,6 +133,25 @@ pub fn merge_root_state(
             // - The data type doesn't match any registered type (test contamination)
             // - Deserialization failed (corrupt data)
             //
+            // Try WASM callback as a fallback before LWW.
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(wasm_callback) = crate::env::get_wasm_root_merge_callback() {
+                tracing::debug!(
+                    target: "calimero_storage::merge",
+                    "All registered merge functions failed, trying WASM callback"
+                );
+                match wasm_callback(existing, incoming) {
+                    Ok(merged) => return Ok(merged),
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "calimero_storage::merge",
+                            error = ?e,
+                            "WASM callback also failed, falling back to LWW"
+                        );
+                    }
+                }
+            }
+
             // Fall back to LWW to maintain backwards compatibility.
             // The incoming value wins if timestamps are equal or incoming is newer.
             //
