@@ -42,6 +42,7 @@ exclude = [
 resolver = "2"
 members = [
     "./crates/auth",
+    "./crates/build-utils",
     "./crates/config",
     "./crates/context",
     "./crates/context/config",
@@ -230,6 +231,7 @@ zeroize = "1.8"
 
 pyo3 = "0.20"
 
+calimero-build-utils = { path = "./crates/build-utils" }
 calimero-blobstore = { path = "./crates/store/blobs" }
 calimero-client = { path = "./crates/client" }
 calimero-config = { path = "./crates/config" }

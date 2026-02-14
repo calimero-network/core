@@ -1998,6 +1998,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-build-utils"
+version = "0.1.0"
+
+[[package]]
 name = "calimero-client"
 version = "0.0.0"
 dependencies = [
@@ -2252,6 +2256,7 @@ dependencies = [
  "borsh",
  "bs58 0.5.1",
  "calimero-blobstore",
+ "calimero-build-utils",
  "calimero-crypto",
  "calimero-network-primitives",
  "calimero-primitives",
@@ -6702,6 +6707,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
+ "calimero-build-utils",
  "calimero-client",
  "calimero-config",
  "calimero-context-config",
@@ -6740,6 +6746,7 @@ dependencies = [
  "alloy",
  "base64 0.22.1",
  "calimero-blobstore",
+ "calimero-build-utils",
  "calimero-config",
  "calimero-context",
  "calimero-context-config",

@@ -45,6 +45,9 @@ tar.workspace = true
 base64.workspace = true
 semver.workspace = true
 
+[build-dependencies]
+calimero-build-utils.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["full"] }

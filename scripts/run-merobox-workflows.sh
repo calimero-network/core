@@ -11,7 +11,7 @@ Options:
   --root           Root directory for workflow execution.
   --workflow-list  File containing workflow paths (one per line, relative to root).
   --image          Merod image tag to use.
-  --contracts-dir  Contracts directory for --near-devnet.
+  --contracts-dir  Contracts directory (reserved for future use).
   --docker-logs    Directory to write docker logs.
   --workflow-logs  Directory to write per-workflow stdout logs.
   --failed-output  Output file for failed workflow list.
@@ -147,8 +147,6 @@ while IFS= read -r workflow || [[ -n "$workflow" ]]; do
       merobox bootstrap run "$workflow_arg" \
         --image "$image" \
         --e2e-mode \
-        --near-devnet \
-        --contracts-dir "$contracts_dir" \
         --verbose
     ) 2>&1 | tee "$workflow_log"; then
       success=true

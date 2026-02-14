@@ -875,7 +875,7 @@ impl NodeClient {
 
                 // Validate runtime version compatibility
                 let current_runtime_version = Version::parse(env!("CALIMERO_RELEASE_VERSION"))
-                .map_err(|e| eyre::eyre!("failed to parse current runtime version: {}", e))?;
+                    .map_err(|e| eyre::eyre!("failed to parse current runtime version: {}", e))?;
                 let min_runtime_version =
                     Version::parse(&manifest.min_runtime_version).map_err(|e| {
                         eyre::eyre!(
