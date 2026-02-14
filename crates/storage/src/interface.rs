@@ -1036,7 +1036,7 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     /// # Errors
     ///
-    /// Returns `StorageError::ActionNotAllowed` if no merge function is registered
+    /// Returns `StorageError::MergeError` if no merge function is registered
     /// for the root entity type. This enforces I5 (No Silent Data Loss) by failing
     /// loudly rather than silently falling back to LWW.
     fn try_merge_data(
