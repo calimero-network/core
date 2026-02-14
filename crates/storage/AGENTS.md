@@ -29,7 +29,7 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | Type                       | Purpose                  | Merge Strategy                    | Storage    |
 | -------------------------- | ------------------------ | --------------------------------- | ---------- |
 | `GCounter`                 | Grow-only counter        | Max per executor                  | Blob       |
-| `PNCounter`                | Positive-negative counter| Max per executor (pos & neg maps) | Blob       |
+| `PnCounter`                | Positive-negative counter| Max per executor (pos & neg maps) | Blob       |
 | `LwwRegister<T>`           | Last-write-wins register | Timestamp-based (later wins)      | Blob       |
 | `ReplicatedGrowableArray`  | Collaborative text (RGA) | Union of characters               | Blob       |
 | `UnorderedMap<K,V>`        | Key-value map            | Entry-wise merge*                 | Structured |
@@ -157,7 +157,7 @@ src/
 ├── collections/
 │   ├── crdt_meta.rs          # CrdtType, Mergeable, CrdtMeta traits
 │   ├── crdt_impls.rs         # Mergeable implementations
-│   ├── counter.rs            # GCounter/PNCounter CRDT
+│   ├── counter.rs            # GCounter/PnCounter CRDT
 │   ├── lww_register.rs       # Last-write-wins register
 │   ├── unordered_map.rs      # Unordered map
 │   ├── unordered_set.rs      # Unordered set
@@ -340,7 +340,7 @@ struct MyType {
 - Use ? operator for error propagation from CRDT operations
 - UnorderedMap keys must be unique per context
 - Vector operations are position-based
-- Counter only supports increment by default (use PNCounter for decrement)
+- Counter only supports increment by default (use PnCounter for decrement)
 - All CRDTs must be serializable with borsh
 - **Structured vs Blob storage**: Collections use structured storage (entries are separate
   entities), while counters and registers use blob storage (single serialized value)
@@ -352,67 +352,26 @@ struct MyType {
 - src/merge.rs - Module-level docs on merge dispatch
 - src/collections/crdt_impls.rs - Module-level docs on Mergeable implementations
 
+
 ## ⚠️ KNOWN ISSUE: Root Entity LWW Fallback (I5 Violation Risk)
 
 **Status**: Needs fix (tracked for future work)
 
-### The Problem
+The `merge_root_state()` function falls back to LWW when no merge function is registered.
+This can cause **silent data loss** if the root entity contains CRDTs (Counter, etc.)
+and violates **Invariant I5 (No Silent Data Loss)**.
 
-When a root entity conflict occurs and NO merge function is registered, the system
-silently falls back to LWW. This can cause **data loss** if the root contains CRDTs:
+**Quick Reference:**
 
-```
-Root Conflict (e.g., two nodes increment Counter concurrently)
-        │
-        ▼
-try_merge_registered() ──── None (no registration) ───► LWW FALLBACK
-        │                                                    │
-       Some                                           DATA LOSS! ❌
-        │                                         (violates I5)
-        ▼
-   Mergeable::merge() ✅
-```
+| Scenario | Protected? |
+| -------- | ---------- |
+| WASM app with `#[app::state]` | ✅ Yes (auto-registers) |
+| WASM app without `#[app::state]` | ❌ No |
+| Tests without `register_crdt_merge()` | ❌ No |
 
-### Affected Scenarios
+**Mitigation**: Always use `#[app::state]` macro for WASM apps.
 
-| Scenario | Protected? | Reason |
-| -------- | ---------- | ------ |
-| WASM app with `#[app::state]` | ✅ Yes | Runtime calls `__calimero_register_merge` |
-| WASM app WITHOUT `#[app::state]` | ❌ No | No registration hook generated |
-| JS apps | ❌ Likely No | Registration failures are non-fatal |
-| Tests without explicit `register_crdt_merge()` | ❌ No | Must manually register |
-| `__calimero_register_merge` call fails | ❌ No | Silent failure, app continues |
-
-### Example Data Loss
-
-```rust
-// App state with Counter at root level
-#[app::state]
-struct MyApp {
-    votes: Counter,  // GCounter
-}
-
-// Node A: votes.increment() → votes = 5
-// Node B: votes.increment() → votes = 3 (concurrent, before sync)
-
-// If merge function NOT registered:
-// Sync → LWW → votes = 5 OR 3 (one node's increments LOST!)
-
-// If merge function IS registered:
-// Sync → Counter::merge() → votes = 8 (all increments preserved ✅)
-```
-
-### Mitigation (Until Fixed)
-
-1. **Always use `#[app::state]` macro** for WASM apps
-2. **In tests**, explicitly call `register_crdt_merge::<YourAppState>()` before merge tests
-3. **Monitor logs** for missing merge registration warnings
-
-### Fix Needed
-
-The LWW fallback in `merge_root_state()` should either:
-1. Log a WARNING when falling back (make it observable per Delivery Contract)
-2. Fail loudly if root has CRDT fields but no merge registration
-3. At minimum, update the misleading comment that says "This is safe"
-
-See: `src/merge.rs` lines 82-96
+👉 **See `readme/merging.md` section "KNOWN ISSUE: Root Entity LWW Fallback"** for:
+- Detailed explanation and data loss example
+- Complete affected scenarios table
+- Proposed fix options
