@@ -303,3 +303,172 @@ fn test_random_scenarios_converge() {
 - **Not checking StopCondition**: `run()` returns why it stopped
 - **Ignoring metrics**: Metrics reveal silent failures
 - **Hardcoding time**: Use `SimTime` and `SimDuration`, not raw numbers
+
+## Simulation vs Production Network
+
+This section details the differences between `NetworkRouter` (simulation) and `calimero-network` (production).
+
+### Architecture Comparison
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│                    PRODUCTION (calimero-network)                     │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  NetworkClient                                                       │
+│       │                                                              │
+│       ▼ NetworkMessage                                               │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                    NetworkManager (actor)                    │    │
+│  │  ┌──────────────────────────────────────────────────────┐   │    │
+│  │  │               Swarm<Behaviour>                        │   │    │
+│  │  │  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌──────────┐  │   │    │
+│  │  │  │Gossipsub │ │   Kad   │ │  Stream  │ │Rendezvous│  │   │    │
+│  │  │  │ (topics) │ │  (DHT)  │ │ (direct) │ │(discover)│  │   │    │
+│  │  │  └──────────┘ └─────────┘ └──────────┘ └──────────┘  │   │    │
+│  │  │  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌──────────┐  │   │    │
+│  │  │  │  mDNS    │ │  Relay  │ │  DCUtR   │ │ AutoNAT  │  │   │    │
+│  │  │  │ (local)  │ │  (NAT)  │ │(holepun) │ │(detect)  │  │   │    │
+│  │  │  └──────────┘ └─────────┘ └──────────┘ └──────────┘  │   │    │
+│  │  └──────────────────────────────────────────────────────┘   │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│       │                                                              │
+│       ▼ TCP/QUIC                                                     │
+│  Real Network I/O (libp2p)                                          │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                     SIMULATION (sync_sim)                            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Test code                                                           │
+│       │                                                              │
+│       ▼ SyncActions                                                  │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                      SimRuntime                              │    │
+│  │  ┌──────────────────────────────────────────────────────┐   │    │
+│  │  │               NetworkRouter                           │   │    │
+│  │  │  ┌────────────────────────────────────────────────┐  │   │    │
+│  │  │  │           FaultConfig                          │  │   │    │
+│  │  │  │  • message_loss_rate    • duplicate_rate       │  │   │    │
+│  │  │  │  • base_latency_ms      • reorder_window_ms    │  │   │    │
+│  │  │  │  • partition_probability • crash_probability   │  │   │    │
+│  │  │  └────────────────────────────────────────────────┘  │   │    │
+│  │  │  ┌────────────────────────────────────────────────┐  │   │    │
+│  │  │  │         PartitionManager                       │  │   │    │
+│  │  │  │  • Bidirectional partitions                    │  │   │    │
+│  │  │  │  • Timed healing                               │  │   │    │
+│  │  │  └────────────────────────────────────────────────┘  │   │    │
+│  │  └──────────────────────────────────────────────────────┘   │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│       │                                                              │
+│       ▼ SimEvent (in EventQueue)                                     │
+│  Deterministic event processing (no real I/O)                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Feature Comparison
+
+| Feature | Production (`calimero-network`) | Simulation (`NetworkRouter`) |
+|---------|--------------------------------|------------------------------|
+| **Message Delivery** | Real TCP/QUIC | `SimEvent::DeliverMessage` in queue |
+| **Latency** | Real network latency | Configurable `base_latency_ms + jitter` |
+| **Message Loss** | Real packet loss | Configurable `message_loss_rate` (0.0-1.0) |
+| **Message Reorder** | Possible in real network | Configurable `reorder_window_ms` |
+| **Message Duplicate** | Rare in real network | Configurable `duplicate_rate` |
+| **Network Partition** | Real disconnection | `PartitionManager` with timed healing |
+| **Gossipsub Topics** | Per-context topics | ❌ Not simulated (single context) |
+| **Peer Discovery** | mDNS, Kad, Rendezvous | ❌ Not simulated (nodes pre-connected) |
+| **NAT Traversal** | AutoNAT, Relay, DCUtR | ❌ Not simulated |
+| **Connection Setup** | TCP/QUIC handshake, TLS | ❌ Instant (no handshake) |
+| **Bandwidth Limits** | Real throughput | ❌ Not simulated |
+| **Encryption** | TLS/Noise per connection | Optional via `EncryptionState` |
+| **Streams** | `libp2p_stream` protocol | `SimStream` (tokio channels) |
+
+### When to Use Each
+
+| Testing Goal | Use Simulation | Use Integration Tests |
+|--------------|---------------|----------------------|
+| Protocol correctness | ✅ Yes | Overkill |
+| Convergence properties | ✅ Yes | Also useful |
+| Fault tolerance | ✅ Yes (configurable faults) | Harder to control |
+| Message ordering | ✅ Yes (reorder_window_ms) | Non-deterministic |
+| Partition healing | ✅ Yes (PartitionManager) | Complex setup |
+| Peer discovery | ❌ No | ✅ Yes |
+| NAT traversal | ❌ No | ✅ Yes |
+| Real latency behavior | ❌ No | ✅ Yes |
+| Connection management | ❌ No | ✅ Yes |
+| Multi-context | ❌ No | ✅ Yes |
+
+### SimStream vs Production Stream
+
+The `SimStream` type implements the same `SyncTransport` trait as production, allowing the **real sync protocol code** to run in simulation:
+
+```rust
+// Production (calimero-network)
+pub struct Stream {
+    inner: Framed<BufStream<Compat<P2pStream>>, MessageCodec>,
+}
+
+// Simulation (sync_sim)
+pub struct SimStream {
+    tx: Option<mpsc::Sender<Vec<u8>>>,
+    rx: mpsc::Receiver<Vec<u8>>,
+    buffer: VecDeque<Vec<u8>>,
+    encryption: EncryptionState,
+}
+
+// Both implement:
+#[async_trait]
+impl SyncTransport for SimStream {  // or Stream
+    async fn send(&mut self, message: &StreamMessage<'_>) -> Result<()>;
+    async fn recv(&mut self) -> Result<Option<StreamMessage<'static>>>;
+    async fn recv_timeout(&mut self, budget: Duration) -> Result<Option<StreamMessage<'static>>>;
+    fn set_encryption(&mut self, encryption: Option<(SharedKey, Nonce)>);
+    async fn close(&mut self) -> Result<()>;
+}
+```
+
+This design allows `hash_comparison_sync()` and other protocol functions to run unchanged in simulation.
+
+### Fault Injection Examples
+
+```rust
+// Light chaos (realistic network)
+FaultConfig::light_chaos()
+// base_latency_ms: 10, jitter: 5
+// message_loss_rate: 0.01 (1%)
+// reorder_window_ms: 20
+// duplicate_rate: 0.01 (1%)
+
+// Heavy chaos (stress test)
+FaultConfig::heavy_chaos()
+// base_latency_ms: 50, jitter: 25
+// message_loss_rate: 0.1 (10%)
+// reorder_window_ms: 100
+// duplicate_rate: 0.05 (5%)
+// partition_probability: 0.01
+// crash_probability: 0.001
+
+// Custom configuration
+FaultConfig::none()
+    .with_latency(100, 50)    // 100ms ± 50ms
+    .with_loss(0.05)          // 5% loss
+    .with_reorder(200)        // 200ms reorder window
+    .with_duplicates(0.02)    // 2% duplication
+    .with_partitions(0.01, 500..2000)  // 1% chance, 500-2000ms duration
+```
+
+### Key Differences Summary
+
+1. **Determinism**: Simulation is fully deterministic (same seed = same results). Production is not.
+
+2. **Time Model**: Simulation uses discrete `SimTime`. Production uses real `SystemTime`.
+
+3. **Concurrency**: Simulation is sequential event processing. Production uses tokio async tasks.
+
+4. **Discovery**: Simulation assumes all nodes can reach each other. Production must discover peers.
+
+5. **Scope**: Simulation tests single-context sync. Production handles multiple contexts.
+
+For protocol correctness and fault tolerance testing, use simulation. For discovery, NAT, and real network behavior, use integration tests with actual `calimero-network`.
