@@ -3,6 +3,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
+use calimero_storage::collections::WasmMergeCallback;
 use tracing::{debug, error, info};
 use wasmer::{DeserializeError, Instance, SerializeError, Store};
 
@@ -232,6 +233,18 @@ impl Module {
         Ok(Vec::into_boxed_slice(bytes.into()))
     }
 
+    /// Create a merge callback for custom type merging.
+    ///
+    /// This creates a separate WASM instance for the merge callback,
+    /// allowing merge operations even while the main WASM execution is in progress.
+    ///
+    /// Returns `None` if the WASM module doesn't export the required merge functions.
+    fn create_merge_callback(&self) -> Option<merge_callback::RuntimeMergeCallback> {
+        let mut store = Store::new(self.engine.clone());
+        let instance = Instance::new(&mut store, &self.module, &wasmer::Imports::default()).ok()?;
+        merge_callback::RuntimeMergeCallback::from_instance(store, instance)
+    }
+
     pub fn run<'a>(
         &'a self,
         context: ContextId,
@@ -257,6 +270,17 @@ impl Module {
             node_client,
             context_host,
         );
+
+        // Create a separate WASM instance for merge callbacks.
+        // This allows the storage layer to call merge functions even while
+        // the main WASM execution is in progress.
+        if let Some(merge_callback) = self.create_merge_callback() {
+            let callback_rc =
+                std::rc::Rc::new(move |local: &[u8], remote: &[u8], type_name: &str| {
+                    merge_callback.merge_custom(local, remote, type_name)
+                });
+            logic.with_merge_callback(callback_rc);
+        }
 
         let mut store = Store::new(self.engine.clone());
 

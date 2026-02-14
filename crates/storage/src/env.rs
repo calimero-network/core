@@ -61,6 +61,17 @@ pub struct RuntimeEnv {
     storage_remove: std::rc::Rc<dyn Fn(&Key) -> bool>,
     context_id: [u8; 32],
     executor_id: [u8; 32],
+    /// Optional WASM merge callback for custom type merging.
+    /// This is used during sync to merge entities with `CrdtType::Custom`.
+    wasm_merge_callback: Option<
+        std::rc::Rc<
+            dyn Fn(
+                &[u8],
+                &[u8],
+                &str,
+            ) -> Result<Vec<u8>, crate::collections::crdt_meta::MergeError>,
+        >,
+    >,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -84,7 +95,43 @@ impl RuntimeEnv {
             storage_remove,
             context_id,
             executor_id,
+            wasm_merge_callback: None,
         }
+    }
+
+    /// Sets the WASM merge callback for custom type merging.
+    ///
+    /// The callback receives (local_bytes, remote_bytes, type_name) and returns
+    /// the merged bytes or an error.
+    #[must_use]
+    pub fn with_merge_callback(
+        mut self,
+        callback: std::rc::Rc<
+            dyn Fn(
+                &[u8],
+                &[u8],
+                &str,
+            ) -> Result<Vec<u8>, crate::collections::crdt_meta::MergeError>,
+        >,
+    ) -> Self {
+        self.wasm_merge_callback = Some(callback);
+        self
+    }
+
+    /// Returns the WASM merge callback if set.
+    #[must_use]
+    pub fn wasm_merge_callback(
+        &self,
+    ) -> Option<
+        std::rc::Rc<
+            dyn Fn(
+                &[u8],
+                &[u8],
+                &str,
+            ) -> Result<Vec<u8>, crate::collections::crdt_meta::MergeError>,
+        >,
+    > {
+        self.wasm_merge_callback.clone()
     }
 
     #[must_use]
@@ -122,6 +169,19 @@ impl RuntimeEnv {
 /// Executes `f` with the provided runtime environment installed.
 pub fn with_runtime_env<R>(env: RuntimeEnv, f: impl FnOnce() -> R) -> R {
     mocked::with_runtime_env(env, f)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Returns the current WASM merge callback from the runtime environment, if any.
+///
+/// This is called by storage merge functions to get the callback for custom types.
+#[must_use]
+pub fn get_wasm_merge_callback() -> Option<
+    std::rc::Rc<
+        dyn Fn(&[u8], &[u8], &str) -> Result<Vec<u8>, crate::collections::crdt_meta::MergeError>,
+    >,
+> {
+    mocked::get_wasm_merge_callback()
 }
 
 /// Commits the root hash to the runtime.
@@ -520,6 +580,19 @@ mod mocked {
             slot.replace(prev);
             result
         })
+    }
+
+    /// Returns the WASM merge callback from the current runtime environment.
+    pub(super) fn get_wasm_merge_callback() -> Option<
+        std::rc::Rc<
+            dyn Fn(
+                &[u8],
+                &[u8],
+                &str,
+            ) -> Result<Vec<u8>, crate::collections::crdt_meta::MergeError>,
+        >,
+    > {
+        RUNTIME_ENV.with(|env| env.borrow().as_ref().and_then(|e| e.wasm_merge_callback()))
     }
 
     /// Resets the environment state for testing.

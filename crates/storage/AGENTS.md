@@ -170,7 +170,8 @@ pub fn is_builtin_crdt(crdt_type: &CrdtType) -> bool {
 | `src/merge.rs`                    | `merge_by_crdt_type()`, `merge_root_state()` |
 | `src/merge/registry.rs`           | Merge registry for `Mergeable` types       |
 | `src/interface.rs`                | `try_merge_non_root()`, `save_internal()`  |
-| `src/collections/crdt_meta.rs`    | `CrdtType`, `Mergeable`, `CrdtMeta` traits |
+| `src/env.rs`                      | `RuntimeEnv`, `get_wasm_merge_callback()`  |
+| `src/collections/crdt_meta.rs`    | `CrdtType`, `Mergeable`, `WasmMergeCallback` traits |
 | `src/collections/crdt_impls.rs`   | `Mergeable` implementations for all CRDTs  |
 
 ## File Organization

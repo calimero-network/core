@@ -3,11 +3,37 @@
 //! This module implements the [`WasmMergeCallback`] trait from `calimero-storage`,
 //! enabling applications to define custom merge logic via WASM exports.
 //!
+//! # Architecture
+//!
+//! During sync, when the storage layer encounters a `CrdtType::Custom("TypeName")`,
+//! it needs to call back into WASM to perform the merge. Since Wasmer doesn't support
+//! reentrancy (calling WASM from within WASM), the runtime creates a **separate WASM
+//! instance** just for merge callbacks.
+//!
+//! ```text
+//! Module::run() creates merge callback instance
+//!     ↓
+//! VMLogic stores callback
+//!     ↓
+//! Host function builds RuntimeEnv with callback
+//!     ↓
+//! Storage detects Custom type conflict
+//!     ↓
+//! Calls callback.merge_custom(local, remote, type_name)
+//!     ↓
+//! RuntimeMergeCallback calls __calimero_merge_{TypeName}
+//! ```
+//!
 //! # WASM Exports
 //!
 //! Applications must export these functions to use custom merges:
 //!
+//! - `__calimero_alloc(size: u64) -> ptr: u64` - Memory allocation
 //! - `__calimero_merge_root_state(local_ptr, local_len, remote_ptr, remote_len) -> result_ptr`
+//! - `__calimero_merge_{TypeName}(local_ptr, local_len, remote_ptr, remote_len) -> result_ptr`
+//!
+//! The `#[app::state]` macro generates `__calimero_merge_root_state` and `__calimero_alloc`.
+//! The `#[app::mergeable]` macro generates `__calimero_merge_{TypeName}` for custom types.
 //!
 //! The result is a pointer to a `MergeResult` struct in WASM memory:
 //!
@@ -22,10 +48,17 @@
 //! }
 //! ```
 //!
+//! # Performance Note
+//!
+//! Currently, a new WASM instance is created per `Module::run()` call. This is tracked
+//! in issue #1997 for optimization (caching or pooling instances).
+//!
 //! # Timeout
 //!
 //! WASM merge calls have a configurable timeout (default: 5 seconds) to prevent
 //! infinite loops or malicious code from blocking sync.
+
+use std::sync::Mutex;
 
 use calimero_storage::collections::crdt_meta::{MergeError, WasmMergeCallback};
 use tracing::{debug, warn};
@@ -101,12 +134,18 @@ impl WasmMergeResult {
 ///
 /// This struct holds a reference to the WASM instance and provides
 /// the merge callback interface for custom CRDT types.
+///
+/// Uses interior mutability (`Mutex`) for the store because the
+/// `WasmMergeCallback` trait requires `&self` but Wasmer's `Store`
+/// needs mutable access for function calls. `Mutex` is used instead
+/// of `RefCell` to satisfy the `Send + Sync` bounds on the trait.
 pub struct RuntimeMergeCallback {
-    /// The WASM store.
-    store: Store,
+    /// The WASM store (interior mutability for trait compatibility).
+    store: Mutex<Store>,
     /// The WASM instance with the application module.
     instance: Instance,
     /// Timeout for WASM merge operations.
+    #[allow(dead_code, reason = "Will be used for timeout handling in Issue #1780")]
     timeout_ms: u64,
 }
 
@@ -133,7 +172,7 @@ impl RuntimeMergeCallback {
                 "WASM module exports merge functions, creating callback"
             );
             Some(Self {
-                store,
+                store: Mutex::new(store),
                 instance,
                 timeout_ms: DEFAULT_MERGE_TIMEOUT_MS,
             })
@@ -167,12 +206,12 @@ impl RuntimeMergeCallback {
     ///
     /// This allocates memory in the WASM instance using the `__calimero_alloc` export
     /// and writes the data there.
-    fn write_to_wasm(&mut self, data: &[u8]) -> Result<(u64, u64), MergeError> {
+    fn write_to_wasm(&self, store: &mut Store, data: &[u8]) -> Result<(u64, u64), MergeError> {
         // Get the allocator function
         let alloc_fn: TypedFunction<u64, u64> = self
             .instance
             .exports
-            .get_typed_function(&self.store, "__calimero_alloc")
+            .get_typed_function(store, "__calimero_alloc")
             .map_err(|e| MergeError::WasmCallbackFailed {
                 message: format!(
                     "WASM module does not export __calimero_alloc function: {e}. \
@@ -182,16 +221,15 @@ impl RuntimeMergeCallback {
 
         // Allocate memory for the data
         let len = data.len() as u64;
-        let ptr =
-            alloc_fn
-                .call(&mut self.store, len)
-                .map_err(|e| MergeError::WasmCallbackFailed {
-                    message: format!("Failed to allocate WASM memory: {e}"),
-                })?;
+        let ptr = alloc_fn
+            .call(store, len)
+            .map_err(|e| MergeError::WasmCallbackFailed {
+                message: format!("Failed to allocate WASM memory: {e}"),
+            })?;
 
         // Write data to the allocated memory
         let memory = self.get_memory()?;
-        let view = memory.view(&self.store);
+        let view = memory.view(store);
         view.write(ptr, data)
             .map_err(|e| MergeError::WasmCallbackFailed {
                 message: format!("Failed to write data to WASM memory: {e}"),
@@ -201,9 +239,9 @@ impl RuntimeMergeCallback {
     }
 
     /// Read data from WASM memory at the given pointer and length.
-    fn read_from_wasm(&self, ptr: u64, len: u64) -> Result<Vec<u8>, MergeError> {
+    fn read_from_wasm(&self, store: &Store, ptr: u64, len: u64) -> Result<Vec<u8>, MergeError> {
         let memory = self.get_memory()?;
-        let view = memory.view(&self.store);
+        let view = memory.view(store);
         let mut buf = vec![0u8; len as usize];
         view.read(ptr, &mut buf)
             .map_err(|e| MergeError::WasmCallbackFailed {
@@ -212,67 +250,73 @@ impl RuntimeMergeCallback {
         Ok(buf)
     }
 
-    /// Call the root state merge function.
-    fn call_merge_root_state(
-        &mut self,
+    /// Call a merge function by export name.
+    fn call_merge_function(
+        &self,
+        export_name: &str,
         local: &[u8],
         remote: &[u8],
     ) -> Result<Vec<u8>, MergeError> {
+        // Lock the store for the entire operation
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|e| MergeError::WasmCallbackFailed {
+                message: format!("Failed to lock WASM store: {e}"),
+            })?;
+
         // Get the merge function
         let merge_fn: TypedFunction<(u64, u64, u64, u64), u64> = self
             .instance
             .exports
-            .get_typed_function(&self.store, MERGE_ROOT_STATE_EXPORT)
+            .get_typed_function(&*store, export_name)
             .map_err(|e| MergeError::WasmMergeNotExported {
-                export_name: format!("{MERGE_ROOT_STATE_EXPORT}: {e}"),
+                export_name: format!("{export_name}: {e}"),
             })?;
 
         // Write inputs to WASM memory
-        let (local_ptr, local_len) = self.write_to_wasm(local)?;
-        let (remote_ptr, remote_len) = self.write_to_wasm(remote)?;
+        let (local_ptr, local_len) = self.write_to_wasm(&mut store, local)?;
+        let (remote_ptr, remote_len) = self.write_to_wasm(&mut store, remote)?;
 
         debug!(
             target: "calimero_runtime::merge",
+            export_name,
             local_len,
             remote_len,
-            "Calling WASM merge_root_state"
+            "Calling WASM merge function"
         );
 
         // Call the merge function
         // TODO: Add timeout handling (Issue #1780 acceptance criteria)
         let result_ptr = merge_fn
-            .call(
-                &mut self.store,
-                local_ptr,
-                local_len,
-                remote_ptr,
-                remote_len,
-            )
+            .call(&mut *store, local_ptr, local_len, remote_ptr, remote_len)
             .map_err(|e| MergeError::WasmCallbackFailed {
-                message: format!("WASM merge_root_state call failed: {e}"),
+                message: format!("WASM {export_name} call failed: {e}"),
             })?;
 
         // Read the result
         let memory = self.get_memory()?;
-        let result = WasmMergeResult::from_memory(memory, &self.store, result_ptr)?;
+        let result = WasmMergeResult::from_memory(memory, &*store, result_ptr)?;
 
         if result.success != 0 {
             // Success - read the merged data
-            let merged = self.read_from_wasm(result.data_ptr, result.data_len)?;
+            let merged = self.read_from_wasm(&store, result.data_ptr, result.data_len)?;
             debug!(
                 target: "calimero_runtime::merge",
+                export_name,
                 merged_len = merged.len(),
-                "WASM merge_root_state succeeded"
+                "WASM merge function succeeded"
             );
             Ok(merged)
         } else {
             // Failure - read the error message
-            let error_msg = self.read_from_wasm(result.error_ptr, result.error_len)?;
+            let error_msg = self.read_from_wasm(&store, result.error_ptr, result.error_len)?;
             let error_str = String::from_utf8_lossy(&error_msg).to_string();
             warn!(
                 target: "calimero_runtime::merge",
+                export_name,
                 error = %error_str,
-                "WASM merge_root_state failed"
+                "WASM merge function failed"
             );
             Err(MergeError::WasmCallbackFailed { message: error_str })
         }
@@ -282,151 +326,26 @@ impl RuntimeMergeCallback {
 impl WasmMergeCallback for RuntimeMergeCallback {
     fn merge_custom(
         &self,
-        _local: &[u8],
-        _remote: &[u8],
+        local: &[u8],
+        remote: &[u8],
         type_name: &str,
     ) -> Result<Vec<u8>, MergeError> {
-        // WasmMergeCallback trait takes &self but we need &mut self for the store.
-        // This is a trait design limitation - use merge_custom_mut for actual merges.
-        //
-        // The caller should use RuntimeMergeCallback directly with merge_custom_mut()
-        // instead of going through the trait when mutable access is available.
-        warn!(
-            target: "calimero_runtime::merge",
-            type_name = %type_name,
-            "merge_custom called via trait - requires mutable access"
-        );
-        Err(MergeError::WasmCallbackFailed {
-            message: format!(
-                "RuntimeMergeCallback::merge_custom requires mutable access for '{}'. \
-                 Use merge_custom_mut() directly.",
-                type_name
-            ),
-        })
+        let export_name = format!("__calimero_merge_{type_name}");
+        self.call_merge_function(&export_name, local, remote)
     }
 
-    fn merge_root_state(&self, _local: &[u8], _remote: &[u8]) -> Result<Vec<u8>, MergeError> {
-        // Need mutable access for the store, but the trait takes &self
-        // This is a limitation of the current design - we'd need interior mutability
-        // or a different approach. For now, we'll note this needs refactoring.
-        //
-        // TODO: Refactor to use interior mutability (Mutex<Store>) or pass store separately
-        Err(MergeError::WasmCallbackFailed {
-            message:
-                "RuntimeMergeCallback requires mutable access. Use merge_root_state_mut instead."
-                    .to_string(),
-        })
+    fn merge_root_state(&self, local: &[u8], remote: &[u8]) -> Result<Vec<u8>, MergeError> {
+        self.call_merge_function(MERGE_ROOT_STATE_EXPORT, local, remote)
     }
 }
 
 impl RuntimeMergeCallback {
-    /// Merge root state with mutable access to the store.
-    ///
-    /// This is the actual implementation that requires `&mut self`.
-    pub fn merge_root_state_mut(
-        &mut self,
-        local: &[u8],
-        remote: &[u8],
-    ) -> Result<Vec<u8>, MergeError> {
-        self.call_merge_root_state(local, remote)
-    }
-
-    /// Merge a custom type with mutable access to the store.
-    ///
-    /// This calls the WASM export `__calimero_merge_{type_name}` to merge
-    /// entities with `CrdtType::Custom(type_name)` metadata.
-    ///
-    /// # Arguments
-    ///
-    /// * `local` - The locally stored value (Borsh-serialized)
-    /// * `remote` - The incoming remote value (Borsh-serialized)
-    /// * `type_name` - The custom type name (used to find the merge export)
-    ///
-    /// # Errors
-    ///
-    /// Returns error if:
-    /// - The WASM module doesn't export `__calimero_merge_{type_name}`
-    /// - Memory allocation or copying fails
-    /// - The merge function returns an error
-    pub fn merge_custom_mut(
-        &mut self,
-        local: &[u8],
-        remote: &[u8],
-        type_name: &str,
-    ) -> Result<Vec<u8>, MergeError> {
-        let export_name = format!("__calimero_merge_{}", type_name);
-
-        // Get the type-specific merge function
-        let merge_fn: TypedFunction<(u64, u64, u64, u64), u64> = self
-            .instance
-            .exports
-            .get_typed_function(&self.store, &export_name)
-            .map_err(|e| MergeError::WasmMergeNotExported {
-                export_name: format!(
-                    "{}: {}. Add #[app::mergeable] to the Mergeable impl for {}.",
-                    export_name, e, type_name
-                ),
-            })?;
-
-        // Write inputs to WASM memory
-        let (local_ptr, local_len) = self.write_to_wasm(local)?;
-        let (remote_ptr, remote_len) = self.write_to_wasm(remote)?;
-
-        debug!(
-            target: "calimero_runtime::merge",
-            type_name = %type_name,
-            local_len,
-            remote_len,
-            "Calling WASM merge for custom type"
-        );
-
-        // Call the merge function
-        let result_ptr = merge_fn
-            .call(
-                &mut self.store,
-                local_ptr,
-                local_len,
-                remote_ptr,
-                remote_len,
-            )
-            .map_err(|e| MergeError::WasmCallbackFailed {
-                message: format!("WASM {} call failed: {}", export_name, e),
-            })?;
-
-        // Read the result
-        let memory = self.get_memory()?;
-        let result = WasmMergeResult::from_memory(memory, &self.store, result_ptr)?;
-
-        if result.success != 0 {
-            // Success - read the merged data
-            let merged = self.read_from_wasm(result.data_ptr, result.data_len)?;
-            debug!(
-                target: "calimero_runtime::merge",
-                type_name = %type_name,
-                merged_len = merged.len(),
-                "WASM merge for custom type succeeded"
-            );
-            Ok(merged)
-        } else {
-            // Failure - read the error message
-            let error_msg = self.read_from_wasm(result.error_ptr, result.error_len)?;
-            let error_str = String::from_utf8_lossy(&error_msg).to_string();
-            warn!(
-                target: "calimero_runtime::merge",
-                type_name = %type_name,
-                error = %error_str,
-                "WASM merge for custom type failed"
-            );
-            Err(MergeError::WasmCallbackFailed { message: error_str })
-        }
-    }
-
     /// Check if a custom type merge export exists.
     ///
     /// Returns `true` if `__calimero_merge_{type_name}` is exported by the WASM module.
     #[must_use]
     pub fn has_custom_merge_export(&self, type_name: &str) -> bool {
-        let export_name = format!("__calimero_merge_{}", type_name);
+        let export_name = format!("__calimero_merge_{type_name}");
         self.instance.exports.get_function(&export_name).is_ok()
     }
 }

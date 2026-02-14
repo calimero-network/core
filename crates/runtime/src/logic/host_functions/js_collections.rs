@@ -22,17 +22,20 @@ use std::{
 };
 use tracing::{debug, warn};
 
-use super::system::build_runtime_env;
+use super::system::build_runtime_env_with_merge;
 
 const COLLECTION_ID_LEN: usize = 32;
 
 impl VMHostFunctions<'_> {
     fn make_runtime_env(&mut self) -> VMLogicResult<RuntimeEnv> {
         self.with_logic_mut(|logic| {
-            Ok(build_runtime_env(
+            // Get callback before borrowing storage to avoid borrow conflicts
+            let merge_callback = logic.merge_callback();
+            Ok(build_runtime_env_with_merge(
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
+                merge_callback,
             ))
         })
     }

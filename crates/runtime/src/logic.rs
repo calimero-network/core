@@ -259,6 +259,19 @@ pub struct VMLogic<'a> {
     blob_handles: HashMap<u64, BlobHandle>,
     /// The next available file descriptor for a new blob handle.
     next_blob_fd: u64,
+
+    /// Optional WASM merge callback for custom type merging during sync.
+    /// This is called by the storage layer when merging entities with `CrdtType::Custom`.
+    merge_callback: Option<
+        std::rc::Rc<
+            dyn Fn(
+                &[u8],
+                &[u8],
+                &str,
+            )
+                -> Result<Vec<u8>, calimero_storage::collections::crdt_meta::MergeError>,
+        >,
+    >,
 }
 
 impl<'a> VMLogic<'a> {
@@ -310,7 +323,45 @@ impl<'a> VMLogic<'a> {
             node_client,
             blob_handles: HashMap::new(),
             next_blob_fd: 1,
+
+            // Merge callback (set separately via with_merge_callback)
+            merge_callback: None,
         }
+    }
+
+    /// Sets the WASM merge callback for custom type merging.
+    ///
+    /// This callback is used by the storage layer when merging entities
+    /// with `CrdtType::Custom`. It allows the runtime to call back into
+    /// a separate WASM instance to execute the app's merge function.
+    pub fn with_merge_callback(
+        &mut self,
+        callback: std::rc::Rc<
+            dyn Fn(
+                &[u8],
+                &[u8],
+                &str,
+            )
+                -> Result<Vec<u8>, calimero_storage::collections::crdt_meta::MergeError>,
+        >,
+    ) {
+        self.merge_callback = Some(callback);
+    }
+
+    /// Returns the merge callback if set.
+    pub fn merge_callback(
+        &self,
+    ) -> Option<
+        std::rc::Rc<
+            dyn Fn(
+                &[u8],
+                &[u8],
+                &str,
+            )
+                -> Result<Vec<u8>, calimero_storage::collections::crdt_meta::MergeError>,
+        >,
+    > {
+        self.merge_callback.clone()
     }
 
     /// Associates a Wasmer memory instance with this `VMLogic`.
