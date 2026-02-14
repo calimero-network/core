@@ -39,8 +39,10 @@ calimero-config.workspace = true
 calimero-context-config.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
-calimero-version.workspace = true
 async-trait.workspace = true
+
+[build-dependencies]
+calimero-build-utils.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

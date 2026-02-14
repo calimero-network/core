@@ -45,6 +45,8 @@ general guidelines:
 
 - Update the [README][] file if your changes affect it.
 
+For **versioning and how to cut a release**, see [docs/RELEASE.md](docs/RELEASE.md).
+
 ## Issues
 
 Use [Issues][] to report problems, request features, or discuss changes before

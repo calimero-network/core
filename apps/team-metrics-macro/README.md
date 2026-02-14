@@ -60,6 +60,5 @@ To run workflow tests locally using merobox:
 merobox bootstrap run workflows/team-metrics-test.yml \
   --no-docker \
   --binary-path ../../target/debug/merod \
-  --e2e-mode \
-  --near-devnet
+  --e2e-mode
 ```
