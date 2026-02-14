@@ -1,14 +1,12 @@
 use std::sync::LazyLock;
 
-use calimero_version::CalimeroVersion;
 use eyre::Result as EyreResult;
 use reqwest::Client;
 use semver::Version;
 use serde::Deserialize;
 
-pub static CURRENT_VERSION: LazyLock<Version> = LazyLock::new(|| {
-    Version::parse(&CalimeroVersion::current().release).expect("Invalid cargo version")
-});
+pub static CURRENT_VERSION: LazyLock<Version> =
+    LazyLock::new(|| Version::parse(env!("MEROD_VERSION")).expect("Invalid cargo version"));
 
 #[derive(Deserialize)]
 struct Release {

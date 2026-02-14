@@ -76,7 +76,6 @@ members = [
     "./crates/store/impl/rocksdb",
     "./crates/sys",
     "./crates/utils/actix",
-    "./crates/version",
     "./crates/wasm-abi",
 
     "./apps/access-control",
@@ -260,8 +259,6 @@ calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-sys = { path = "./crates/sys" }
 calimero-tee-attestation = { path = "./crates/tee-attestation" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
-# version is set at release time by .github/workflows/release.yml (search for crates_version_dep)
-calimero-version = { path = "./crates/version", version = "0.0.0" } # crates_version_dep
 calimero-wasm-abi = { path = "./crates/wasm-abi" }
 mero-auth = { path = "./crates/auth" }
 kv-store = { path = "./apps/kv-store" }

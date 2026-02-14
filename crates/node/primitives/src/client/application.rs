@@ -8,7 +8,6 @@ use calimero_primitives::application::{
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
-use calimero_version;
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::bail;
 use flate2::read::GzDecoder;
@@ -875,9 +874,7 @@ impl NodeClient {
                 }
 
                 // Validate runtime version compatibility
-                let current_runtime_version = Version::parse(
-                    &calimero_version::CalimeroVersion::current().release,
-                )
+                let current_runtime_version = Version::parse(env!("CALIMERO_RELEASE_VERSION"))
                 .map_err(|e| eyre::eyre!("failed to parse current runtime version: {}", e))?;
                 let min_runtime_version =
                     Version::parse(&manifest.min_runtime_version).map_err(|e| {

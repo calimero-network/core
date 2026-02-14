@@ -2258,7 +2258,6 @@ dependencies = [
  "calimero-storage",
  "calimero-store",
  "calimero-utils-actix",
- "calimero-version",
  "camino",
  "clap",
  "dashmap 6.1.0",
@@ -2551,14 +2550,6 @@ dependencies = [
  "paste",
  "tokio",
  "tokio-stream",
-]
-
-[[package]]
-name = "calimero-version"
-version = "0.10.0-rc.42"
-dependencies = [
- "eyre",
- "rustc_version 0.2.3",
 ]
 
 [[package]]
@@ -6716,7 +6707,6 @@ dependencies = [
  "calimero-context-config",
  "calimero-primitives",
  "calimero-server-primitives",
- "calimero-version",
  "camino",
  "clap",
  "color-eyre",
@@ -6730,6 +6720,7 @@ dependencies = [
  "notify",
  "rand 0.8.5",
  "reqwest 0.12.24",
+ "rustc_version 0.4.1",
  "semver 1.0.27",
  "serde",
  "serde_json",
@@ -6755,12 +6746,12 @@ dependencies = [
  "calimero-network-primitives",
  "calimero-node",
  "calimero-node-primitives",
+ "calimero-primitives",
  "calimero-server",
  "calimero-store",
  "calimero-store-rocksdb",
  "calimero-tee-attestation",
  "calimero-utils-actix",
- "calimero-version",
  "camino",
  "clap",
  "color-eyre",
@@ -6776,6 +6767,7 @@ dependencies = [
  "near-crypto",
  "rand 0.8.5",
  "reqwest 0.12.24",
+ "rustc_version 0.4.1",
  "semver 1.0.27",
  "serde",
  "serde_json",
@@ -9115,15 +9107,6 @@ checksum = "3e75f6a532d0fd9f7f13144f392b6ad56a32696bfcd9c78f797f16bbb6f072d6"
 
 [[package]]
 name = "rustc_version"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "138e3e0acb6c9fb258b19b67cb8abd63c00679d2851805ea151465464fe9030a"
-dependencies = [
- "semver 0.9.0",
-]
-
-[[package]]
-name = "rustc_version"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0dfe2087c51c460008730de8b57e6a320782fbfb312e1f4d520e6c6fae155ee"
@@ -9510,20 +9493,11 @@ checksum = "16c2f82143577edb4921b71ede051dac62ca3c16084e918bf7b40c96ae10eb33"
 
 [[package]]
 name = "semver"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d7eb9ef2c18661902cc47e535f9bc51b78acd254da71d375c2f6720d9a40403"
-dependencies = [
- "semver-parser 0.7.0",
-]
-
-[[package]]
-name = "semver"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f301af10236f6df4160f7c3f04eec6dbc70ace82d23326abad5edee88801c6b6"
 dependencies = [
- "semver-parser 0.10.3",
+ "semver-parser",
 ]
 
 [[package]]
@@ -9535,12 +9509,6 @@ dependencies = [
  "serde",
  "serde_core",
 ]
-
-[[package]]
-name = "semver-parser"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
 name = "semver-parser"

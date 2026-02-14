@@ -66,7 +66,7 @@ jobs:
         run: |
           echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
 
-          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "calimero-version") | .version')
+          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "calimero-primitives") | .version')
 
           prerelease=false
           binary_release=false
@@ -251,7 +251,6 @@ jobs:
           set -x
 
           sed -i 's/.*# crates_version/version = "'${VERSION}'" # crates_version/' Cargo.toml
-          sed -i 's/version = "0.0.0" # crates_version_dep/version = "'${VERSION}'" # crates_version_dep/' Cargo.toml
 
           # Install the specific version of cargo-workspaces that we know works
           cargo install --git https://github.com/calimero-network/cargo-workspaces --tag v0.3.0 cargo-workspaces
