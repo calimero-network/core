@@ -86,6 +86,7 @@ src/
 ├── memory.rs                 # WasmerTunables for memory limits
 ├── errors.rs                 # Error types (HostError, VMRuntimeError, etc.)
 ├── panic_payload.rs          # Panic handling utilities
+├── merge_callback.rs         # WASM merge callback for custom CRDT types
 ├── logic.rs                  # VMLogic, VMContext, VMLimits, VMHostFunctions
 ├── logic/
 │   ├── imports.rs            # imports! macro registering all host functions
@@ -180,6 +181,31 @@ pub struct VMHostFunctions<'a> {
 ```
 
 This allows the struct to hold both a mutable reference to logic and a reference derived from it.
+
+### 5. WASM Merge Callback for Custom Types
+
+During sync, storage may need to merge custom CRDT types. Since Wasmer doesn't support reentrancy (calling WASM from within WASM), the runtime creates a **separate WASM instance** for merge callbacks:
+
+```
+Module::run()
+  └── create_merge_callback() → RuntimeMergeCallback (separate instance)
+  └── logic.with_merge_callback(callback)
+      ...
+      └── Host function triggers storage write
+          └── Storage detects conflict with CrdtType::Custom
+              └── Calls merge callback → __calimero_merge_{TypeName}
+```
+
+**Key files:**
+- `src/merge_callback.rs` - `RuntimeMergeCallback` implementation
+- `src/lib.rs` - `Module::create_merge_callback()` 
+- `src/logic.rs` - `VMLogic.merge_callback` field
+
+**WASM exports required for custom merge:**
+- `__calimero_alloc(size) -> ptr` - Memory allocation
+- `__calimero_merge_{TypeName}(local_ptr, local_len, remote_ptr, remote_len) -> result_ptr`
+
+The `#[app::mergeable]` macro in calimero-sdk auto-generates these exports.
 
 ## JIT Index by Category
 

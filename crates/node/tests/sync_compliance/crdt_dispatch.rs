@@ -157,10 +157,10 @@ fn test_custom_type_returns_wasm_required() {
     );
 
     match result {
-        Err(MergeError::WasmRequired { type_name }) => {
+        Err(MergeError::NoWasmCallback { type_name }) => {
             assert_eq!(type_name, "MyApp::Counter", "Type name should be preserved");
         }
-        other => panic!("Expected WasmRequired, got {:?}", other),
+        other => panic!("Expected NoWasmCallback, got {:?}", other),
     }
 }
 

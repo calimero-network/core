@@ -103,6 +103,102 @@ pub enum MergeError {
     ///
     /// **Fix:** Use `#[app::state]` macro or call `register_crdt_merge::<YourState>()`.
     NoMergeFunctionRegistered,
+    /// No WASM merge callback available.
+    ///
+    /// A Custom type requires WASM merge but no callback was provided.
+    /// This typically means the runtime didn't pass a callback to the merge function.
+    NoWasmCallback {
+        /// The type name that required WASM callback
+        type_name: String,
+    },
+    /// WASM callback execution failed.
+    WasmCallbackFailed {
+        /// Description of the failure
+        message: String,
+    },
+    /// WASM merge function not exported by the application.
+    WasmMergeNotExported {
+        /// The export name that was expected
+        export_name: String,
+    },
+    /// WASM merge operation timed out.
+    WasmTimeout {
+        /// Timeout duration in milliseconds
+        timeout_ms: u64,
+    },
+}
+
+/// Callback trait for merging custom types via WASM.
+///
+/// This trait is implemented by the runtime to enable apps to define
+/// custom merge logic for their types via WASM exports.
+///
+/// # WASM Exports
+///
+/// Applications must export these functions to use custom merges:
+///
+/// ```ignore
+/// #[no_mangle]
+/// pub extern "C" fn __calimero_merge_root_state(
+///     local_ptr: u64,
+///     local_len: u64,
+///     remote_ptr: u64,
+///     remote_len: u64,
+/// ) -> u64;  // Returns pointer to MergeResult
+/// ```
+///
+/// # Usage
+///
+/// The storage layer calls these methods when merging `Custom` types
+/// that cannot be merged in the storage layer alone.
+pub trait WasmMergeCallback: Send + Sync {
+    /// Merge a custom type via WASM.
+    ///
+    /// # Arguments
+    ///
+    /// * `local` - The locally stored value (Borsh-serialized)
+    /// * `remote` - The incoming remote value (Borsh-serialized)
+    /// * `type_name` - The custom type name for dispatch
+    ///
+    /// # Returns
+    ///
+    /// Merged value as Borsh-serialized bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - WASM merge function is not exported
+    /// - WASM execution fails or times out
+    /// - Serialization/deserialization fails
+    fn merge_custom(
+        &self,
+        local: &[u8],
+        remote: &[u8],
+        type_name: &str,
+    ) -> Result<Vec<u8>, MergeError>;
+
+    /// Merge root state via WASM.
+    ///
+    /// This is called when root entity conflicts occur and no in-process
+    /// merge function is registered. The WASM module's `__calimero_merge_root_state`
+    /// export handles the merge.
+    ///
+    /// # Arguments
+    ///
+    /// * `local` - The locally stored root state (Borsh-serialized)
+    /// * `remote` - The incoming remote root state (Borsh-serialized)
+    ///
+    /// # Returns
+    ///
+    /// Merged state as Borsh-serialized bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - WASM merge function is not exported
+    /// - WASM execution fails or times out
+    /// - Serialization/deserialization fails
+    fn merge_root_state(&self, local: &[u8], remote: &[u8]) -> Result<Vec<u8>, MergeError>;
 }
 
 impl std::fmt::Display for MergeError {
@@ -121,6 +217,28 @@ impl std::fmt::Display for MergeError {
                     "No merge function registered for root entity. \
                      Use #[app::state] macro or call register_crdt_merge::<YourState>()."
                 )
+            }
+            MergeError::NoWasmCallback { type_name } => {
+                write!(
+                    f,
+                    "No WASM callback available for custom type: {}. \
+                     Ensure the runtime provides a WasmMergeCallback.",
+                    type_name
+                )
+            }
+            MergeError::WasmCallbackFailed { message } => {
+                write!(f, "WASM merge callback failed: {}", message)
+            }
+            MergeError::WasmMergeNotExported { export_name } => {
+                write!(
+                    f,
+                    "WASM module does not export required merge function: {}. \
+                     Ensure your app uses #[app::state] macro.",
+                    export_name
+                )
+            }
+            MergeError::WasmTimeout { timeout_ms } => {
+                write!(f, "WASM merge operation timed out after {}ms", timeout_ms)
             }
         }
     }

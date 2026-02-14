@@ -22,17 +22,20 @@ use std::{
 };
 use tracing::{debug, warn};
 
-use super::system::build_runtime_env;
+use super::system::build_runtime_env_with_merge;
 
 const COLLECTION_ID_LEN: usize = 32;
 
 impl VMHostFunctions<'_> {
     fn make_runtime_env(&mut self) -> VMLogicResult<RuntimeEnv> {
         self.with_logic_mut(|logic| {
-            Ok(build_runtime_env(
+            // Get callback before borrowing storage to avoid borrow conflicts
+            let merge_callback = logic.merge_callback();
+            Ok(build_runtime_env_with_merge(
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
+                merge_callback,
             ))
         })
     }
@@ -617,7 +620,7 @@ impl VMHostFunctions<'_> {
                 return self.write_error_message(
                     dest_register_id,
                     format!("index {index} does not fit into usize"),
-                )
+                );
             }
         };
 
@@ -1041,7 +1044,7 @@ impl VMHostFunctions<'_> {
                     return self.write_error_message(
                         dest_register_id,
                         "executor id must be exactly 32 bytes",
-                    )
+                    );
                 }
             }
         } else {
@@ -1162,7 +1165,7 @@ impl VMHostFunctions<'_> {
             Ok(array) => array,
             Err(_) => {
                 return self
-                    .write_error_message(dest_register_id, "user key must be exactly 32 bytes")
+                    .write_error_message(dest_register_id, "user key must be exactly 32 bytes");
             }
         };
 
@@ -1325,7 +1328,7 @@ impl VMHostFunctions<'_> {
         let hash: [u8; 32] = match <[u8; 32]>::try_from(hash_bytes.as_slice()) {
             Ok(array) => array,
             Err(_) => {
-                return self.write_error_message(dest_register_id, "hash must be exactly 32 bytes")
+                return self.write_error_message(dest_register_id, "hash must be exactly 32 bytes");
             }
         };
 

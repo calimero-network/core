@@ -43,7 +43,7 @@ use std::collections::BTreeMap;
 use borsh::{from_slice, to_vec};
 use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::address::Id;
 use crate::constants;
@@ -376,7 +376,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 debug!(%id, "Queued compare action after apply");
             }
             Action::Compare { .. } => {
-                return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
+                return Err(StorageError::ActionNotAllowed("Compare".to_owned()));
             }
             Action::DeleteRef { id, deleted_at, .. } => {
                 Self::apply_delete_ref_action(id, deleted_at)?;
@@ -1095,8 +1095,27 @@ impl<S: StorageAdaptor> Interface<S> {
         existing_timestamp: u64,
         incoming_timestamp: u64,
     ) -> Result<Vec<u8>, StorageError> {
+        Self::try_merge_non_root_internal(
+            id,
+            existing,
+            incoming,
+            metadata,
+            existing_timestamp,
+            incoming_timestamp,
+        )
+    }
+
+    /// Internal merge implementation that checks for env callback first.
+    fn try_merge_non_root_internal(
+        id: Id,
+        existing: &[u8],
+        incoming: &[u8],
+        metadata: &Metadata,
+        existing_timestamp: u64,
+        incoming_timestamp: u64,
+    ) -> Result<Vec<u8>, StorageError> {
         use crate::collections::crdt_meta::MergeError;
-        use crate::merge::{is_builtin_crdt, merge_by_crdt_type};
+        use crate::merge::{is_builtin_crdt, merge_by_crdt_type_with_callback};
 
         // Check if we have CRDT type metadata
         let Some(crdt_type) = &metadata.crdt_type else {
@@ -1113,12 +1132,13 @@ impl<S: StorageAdaptor> Interface<S> {
             });
         };
 
-        // For built-in types, merge in storage layer
+        // For built-in types, merge in storage layer (no callback needed)
         if is_builtin_crdt(crdt_type) {
-            let result =
-                crate::env::with_merge_mode(|| merge_by_crdt_type(crdt_type, existing, incoming));
+            let result = crate::env::with_merge_mode(|| {
+                merge_by_crdt_type_with_callback(crdt_type, existing, incoming, None)
+            });
 
-            match result {
+            return match result {
                 Ok(merged) => {
                     debug!(
                         target: "storage::merge",
@@ -1126,7 +1146,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         crdt_type = ?crdt_type,
                         "Successfully merged non-root entity using CRDT semantics"
                     );
-                    return Ok(merged);
+                    Ok(merged)
                 }
                 Err(MergeError::SerializationError(msg)) => {
                     warn!(
@@ -1134,36 +1154,253 @@ impl<S: StorageAdaptor> Interface<S> {
                         %id,
                         crdt_type = ?crdt_type,
                         error = %msg,
-                        "CRDT merge failed due to serialization error, falling back to LWW"
+                        "Built-in CRDT merge failed due to serialization error, falling back to LWW"
                     );
+                    Ok(if incoming_timestamp >= existing_timestamp {
+                        incoming.to_vec()
+                    } else {
+                        existing.to_vec()
+                    })
                 }
                 Err(e) => {
                     warn!(
                         target: "storage::merge",
                         %id,
                         crdt_type = ?crdt_type,
-                        error = %e,
-                        "CRDT merge failed, falling back to LWW"
+                        error = ?e,
+                        "Built-in CRDT merge failed, falling back to LWW"
                     );
+                    Ok(if incoming_timestamp >= existing_timestamp {
+                        incoming.to_vec()
+                    } else {
+                        existing.to_vec()
+                    })
                 }
+            };
+        }
+
+        // For Custom types, try to use the env callback (thread-local from RuntimeEnv)
+        #[cfg(not(target_arch = "wasm32"))]
+        if let calimero_primitives::crdt::CrdtType::Custom(type_name) = crdt_type {
+            if let Some(env_callback) = crate::env::get_wasm_merge_callback() {
+                debug!(
+                    target: "storage::merge",
+                    %id,
+                    crdt_type = ?crdt_type,
+                    "Calling env WASM callback for custom type merge"
+                );
+
+                let result =
+                    crate::env::with_merge_mode(|| env_callback(existing, incoming, type_name));
+
+                return match result {
+                    Ok(merged) => {
+                        debug!(
+                            target: "storage::merge",
+                            %id,
+                            crdt_type = ?crdt_type,
+                            "Successfully merged custom type via env WASM callback"
+                        );
+                        Ok(merged)
+                    }
+                    Err(e) => {
+                        error!(
+                            target: "storage::merge",
+                            %id,
+                            crdt_type = ?crdt_type,
+                            error = ?e,
+                            "INVARIANT I5 VIOLATION: WASM merge callback failed"
+                        );
+                        Err(StorageError::MergeFailure(e))
+                    }
+                };
             }
-        } else {
-            // Types that need WASM callback (LwwRegister, collections, Custom)
-            // For now, fall back to LWW. PR #1940 will add WASM callback support.
-            debug!(
+        }
+
+        // No callback available for Custom type - this is an I5 violation
+        if let calimero_primitives::crdt::CrdtType::Custom(type_name) = crdt_type {
+            error!(
                 target: "storage::merge",
                 %id,
                 crdt_type = ?crdt_type,
-                "CRDT type requires WASM callback, falling back to LWW"
+                type_name = %type_name,
+                "INVARIANT I5 VIOLATION: Custom type requires WASM callback but none provided. \
+                 Add #[app::mergeable] to the Mergeable impl for this type."
             );
+            return Err(StorageError::MergeFailure(MergeError::NoWasmCallback {
+                type_name: type_name.clone(),
+            }));
         }
 
-        // Fall back to LWW
+        // Shouldn't reach here - all CrdtType variants should be handled above
+        warn!(
+            target: "storage::merge",
+            %id,
+            crdt_type = ?crdt_type,
+            "Unhandled CRDT type, falling back to LWW"
+        );
         Ok(if incoming_timestamp >= existing_timestamp {
             incoming.to_vec()
         } else {
             existing.to_vec()
         })
+    }
+
+    /// Attempt to merge two versions of non-root entity data with WASM callback support.
+    ///
+    /// This is the same as [`try_merge_non_root`] but accepts an optional WASM callback
+    /// for merging `Custom` types.
+    ///
+    /// # Arguments
+    ///
+    /// * `wasm_callback` - Optional callback for merging custom types via WASM
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::MergeFailure` if CRDT merge fails and falls back to LWW.
+    /// Note: This function prefers to fall back to LWW rather than fail, so errors are rare.
+    ///
+    /// [`try_merge_non_root`]: Self::try_merge_non_root
+    pub fn try_merge_non_root_with_callback(
+        id: Id,
+        existing: &[u8],
+        incoming: &[u8],
+        metadata: &Metadata,
+        existing_timestamp: u64,
+        incoming_timestamp: u64,
+        wasm_callback: Option<&dyn crate::collections::WasmMergeCallback>,
+    ) -> Result<Vec<u8>, StorageError> {
+        use crate::collections::crdt_meta::MergeError;
+        use crate::merge::{is_builtin_crdt, merge_by_crdt_type_with_callback};
+
+        // Check if we have CRDT type metadata
+        let Some(crdt_type) = &metadata.crdt_type else {
+            // Legacy data - no CRDT type, use LWW
+            debug!(
+                target: "storage::merge",
+                %id,
+                "No CRDT type metadata, falling back to LWW"
+            );
+            return Ok(if incoming_timestamp >= existing_timestamp {
+                incoming.to_vec()
+            } else {
+                existing.to_vec()
+            });
+        };
+
+        // Attempt CRDT merge with merge mode enabled
+        let result = crate::env::with_merge_mode(|| {
+            merge_by_crdt_type_with_callback(crdt_type, existing, incoming, wasm_callback)
+        });
+
+        match result {
+            Ok(merged) => {
+                debug!(
+                    target: "storage::merge",
+                    %id,
+                    crdt_type = ?crdt_type,
+                    "Successfully merged non-root entity using CRDT semantics"
+                );
+                Ok(merged)
+            }
+            Err(MergeError::NoWasmCallback { type_name }) => {
+                // INVARIANT I5: Custom types MUST have a callback, no silent fallback to LWW
+                error!(
+                    target: "storage::merge",
+                    %id,
+                    crdt_type = ?crdt_type,
+                    type_name = %type_name,
+                    "INVARIANT I5 VIOLATION: Custom type requires WASM callback but none provided. \
+                     Add #[app::mergeable] to the Mergeable impl for this type."
+                );
+                Err(StorageError::MergeFailure(MergeError::NoWasmCallback {
+                    type_name,
+                }))
+            }
+            Err(MergeError::WasmCallbackFailed { message }) => {
+                // INVARIANT I5: WASM callback failure is a hard error, not LWW fallback
+                error!(
+                    target: "storage::merge",
+                    %id,
+                    crdt_type = ?crdt_type,
+                    error = %message,
+                    "INVARIANT I5 VIOLATION: WASM merge callback failed"
+                );
+                Err(StorageError::MergeFailure(MergeError::WasmCallbackFailed {
+                    message,
+                }))
+            }
+            Err(MergeError::WasmMergeNotExported { export_name }) => {
+                // INVARIANT I5: Missing WASM export is a hard error
+                error!(
+                    target: "storage::merge",
+                    %id,
+                    crdt_type = ?crdt_type,
+                    export_name = %export_name,
+                    "INVARIANT I5 VIOLATION: WASM merge function not exported"
+                );
+                Err(StorageError::MergeFailure(
+                    MergeError::WasmMergeNotExported { export_name },
+                ))
+            }
+            Err(MergeError::SerializationError(msg)) => {
+                // Serialization errors on BUILT-IN types can fall back to LWW
+                // (legacy data or corrupted data scenario)
+                if is_builtin_crdt(crdt_type) {
+                    warn!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        error = %msg,
+                        "Built-in CRDT merge failed due to serialization error, falling back to LWW"
+                    );
+                    Ok(if incoming_timestamp >= existing_timestamp {
+                        incoming.to_vec()
+                    } else {
+                        existing.to_vec()
+                    })
+                } else {
+                    // Custom type serialization errors are hard failures
+                    error!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        error = %msg,
+                        "INVARIANT I5 VIOLATION: Custom type serialization failed"
+                    );
+                    Err(StorageError::MergeFailure(MergeError::SerializationError(
+                        msg,
+                    )))
+                }
+            }
+            Err(e) => {
+                // Any other error on built-in types can fall back to LWW
+                if is_builtin_crdt(crdt_type) {
+                    warn!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        error = ?e,
+                        "Built-in CRDT merge failed, falling back to LWW"
+                    );
+                    Ok(if incoming_timestamp >= existing_timestamp {
+                        incoming.to_vec()
+                    } else {
+                        existing.to_vec()
+                    })
+                } else {
+                    // Custom type errors are hard failures (I5)
+                    error!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        error = ?e,
+                        "INVARIANT I5 VIOLATION: Custom type merge failed"
+                    );
+                    Err(StorageError::MergeFailure(e))
+                }
+            }
+        }
     }
 
     /// Saves raw serialized data with orphan checking.

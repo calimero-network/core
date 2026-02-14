@@ -234,7 +234,7 @@ fn test_frozen_storage_keeps_empty_existing() {
 // Custom Type Tests
 // =============================================================================
 
-/// Custom: returns WasmRequired error.
+/// Custom: returns NoWasmCallback error (requires WASM callback to merge).
 #[test]
 fn test_custom_requires_wasm() {
     let bytes = vec![1, 2, 3];
@@ -246,8 +246,8 @@ fn test_custom_requires_wasm() {
     );
 
     assert!(
-        matches!(result, Err(MergeError::WasmRequired { type_name }) if type_name == "MyApp::CustomType"),
-        "Custom types should return WasmRequired with type name"
+        matches!(result, Err(MergeError::NoWasmCallback { type_name }) if type_name == "MyApp::CustomType"),
+        "Custom types should return NoWasmCallback with type name"
     );
 }
 
@@ -339,7 +339,7 @@ fn test_all_builtin_types_classification() {
 /// | Vector | Return incoming (structured storage) |
 /// | UserStorage | Return incoming (LWW) |
 /// | FrozenStorage | Return existing (first-write-wins) |
-/// | Custom | WasmRequired error |
+/// | Custom | NoWasmCallback error |
 #[test]
 fn test_builtin_merge_behavior_summary() {
     let existing = b"existing".to_vec();
@@ -363,7 +363,7 @@ fn test_builtin_merge_behavior_summary() {
     let result = merge_by_crdt_type(&CrdtType::FrozenStorage, &existing, &incoming).unwrap();
     assert_eq!(result, existing, "FrozenStorage should return existing");
 
-    // Custom returns error
+    // Custom returns error (no WASM callback provided)
     let result = merge_by_crdt_type(&CrdtType::Custom("X".into()), &existing, &incoming);
-    assert!(matches!(result, Err(MergeError::WasmRequired { .. })));
+    assert!(matches!(result, Err(MergeError::NoWasmCallback { .. })));
 }

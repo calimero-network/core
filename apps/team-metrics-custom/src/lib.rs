@@ -1,7 +1,38 @@
-//! Team Metrics App - Using Custom Mergeable Implementation
+//! Team Metrics App - Custom Type Merge via WASM Callback
 //!
-//! Demonstrates nested CRDTs with CUSTOM merge logic.
-//! This shows the flexibility when you need special merge behavior.
+//! This app demonstrates **custom CRDT types** that are merged via WASM callback
+//! during sync (PR #1940, Issue #1780).
+//!
+//! ## WASM Exports Generated
+//!
+//! | Export | Source | Purpose |
+//! |--------|--------|---------|
+//! | `__calimero_merge_TeamStats` | `#[app::mergeable]` | Merge `TeamStats` entities |
+//! | `__calimero_merge_root_state` | `#[app::state]` | Merge root state conflicts |
+//! | `__calimero_alloc` | `#[app::state]` | Memory allocation for merge |
+//!
+//! ## How Custom Type Merge Works
+//!
+//! When `TeamStats` entities conflict during sync:
+//!
+//! ```text
+//! Entity with CrdtType::Custom("TeamStats") conflicts
+//!   → storage calls merge_by_crdt_type_with_callback()
+//!   → dispatches to CrdtType::Custom("TeamStats")
+//!   → calls RuntimeMergeCallback::merge_custom_mut("TeamStats", ...)
+//!   → runtime calls __calimero_merge_TeamStats WASM export
+//!   → TeamStats::merge() is invoked
+//!   → merged bytes returned to storage
+//! ```
+//!
+//! ## Test Scenario
+//!
+//! 1. Node A: `record_win("Team1")` → Team1 {wins:1, losses:0}
+//! 2. Node B: `record_loss("Team1")` → Team1 {wins:0, losses:1} (concurrent)
+//! 3. Sync detects conflict on same entity
+//! 4. Storage sees `CrdtType::Custom("TeamStats")` in metadata
+//! 5. Calls WASM `__calimero_merge_TeamStats`
+//! 6. Result: Team1 {wins:1, losses:1} (CRDT merge via custom impl)
 
 #![allow(
     unused_crate_dependencies,
@@ -15,8 +46,11 @@ use calimero_storage::collections::{Counter, Mergeable, UnorderedMap};
 
 /// Team statistics with multiple counters
 ///
-/// This struct demonstrates CUSTOM Mergeable implementation.
-/// You have full control and can add custom logic!
+/// This struct has a **custom `Mergeable` implementation** (see below).
+/// The merge is invoked when:
+/// 1. Two nodes concurrently modify the same team's stats
+/// 2. Sync triggers root state merge via `__calimero_merge_root_state`
+/// 3. `UnorderedMap::merge()` calls `TeamStats::merge()` for each entry
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct TeamStats {
@@ -25,26 +59,39 @@ pub struct TeamStats {
     pub draws: Counter,
 }
 
-/// Custom Mergeable implementation
+/// Custom Mergeable implementation for TeamStats
 ///
-/// This shows how you can:
-/// - Add custom validation
-/// - Log merge events  
-/// - Apply business rules
-/// - Skip certain fields
+/// This demonstrates custom merge logic that:
+/// - Merges each counter using standard CRDT merge
+/// - Could add custom validation, logging, or business rules
+///
+/// ## The #[app::mergeable] Macro
+///
+/// This macro generates `__calimero_merge_TeamStats` WASM export.
+/// When entities with `CrdtType::Custom("TeamStats")` conflict during sync,
+/// the runtime calls this export to merge them.
+///
+/// ## When is this called?
+///
+/// For entity-level conflicts (e.g., two nodes update same map entry):
+/// ```text
+/// Entity with CrdtType::Custom("TeamStats") conflicts
+///   → storage layer calls merge_custom("TeamStats", local, remote)
+///   → runtime calls __calimero_merge_TeamStats WASM export
+///   → this Mergeable::merge() impl is invoked
+/// ```
+#[app::mergeable]
 impl Mergeable for TeamStats {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-        // Example: You could add logging here
-        // eprintln!("Merging team stats...");
-
-        // Standard CRDT merge
+        // Standard CRDT merge for each counter
+        // PnCounter merge: positive = max(p1, p2), negative = max(n1, n2)
         self.wins.merge(&other.wins)?;
         self.losses.merge(&other.losses)?;
         self.draws.merge(&other.draws)?;
 
-        // Example: You could add validation
-        // if self.wins.value()? > 1000 {
-        //     return Err(MergeError::InvalidValue("Too many wins!".into()));
+        // Example: Could add custom validation after merge
+        // if self.total_games() > MAX_GAMES {
+        //     return Err(MergeError::Custom("Too many games".into()));
         // }
 
         Ok(())
