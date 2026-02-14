@@ -153,6 +153,8 @@ pub fn try_merge_registered(
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
+
     use super::*;
     use crate::collections::{Counter, Mergeable};
     use crate::env;
@@ -169,6 +171,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_register_and_merge() {
         env::reset_for_testing();
         clear_merge_registry(); // Clear any previous registrations to ensure clean test
