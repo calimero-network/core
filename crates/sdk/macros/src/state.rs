@@ -473,7 +473,7 @@ fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>
         pub extern "C" fn __calimero_alloc(size: u64) -> u64 {
             // Guard against zero-size allocation (UB per GlobalAlloc contract)
             if size == 0 {
-                return ::std::ptr::NonNull::dangling().as_ptr() as u64;
+                return 1; // Non-null sentinel for zero-size allocations
             }
             let layout = ::std::alloc::Layout::from_size_align(size as usize, 8)
                 .expect("Invalid allocation size");
