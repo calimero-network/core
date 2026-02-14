@@ -281,6 +281,8 @@ pub trait NetworkEventDispatcher: Send + Sync {
 - **Message authentication**: All messages signed with node identity
 
 ```rust
+// NOTE: Error handling simplified - see NetworkClient for full API
+
 // Subscribe to context
 network_client.subscribe(IdentTopic::new(context_id.to_string())).await?;
 
@@ -295,6 +297,8 @@ network_client.publish(topic.hash(), delta_bytes).await?;
 - **Protocol**: `/calimero/stream/0.0.2`
 
 ```rust
+// NOTE: Error handling simplified - see NetworkClient::open_stream for full pattern
+
 // Open stream to peer
 let stream = network_client.open_stream(peer_id).await?;
 
@@ -325,6 +329,8 @@ let response = stream.next().await?;
 ### Adding a New Command Handler
 
 ```rust
+// NOTE: Simplified for illustration - see existing handlers for full pattern
+
 // 1. Add message type to primitives/src/messages.rs
 #[derive(Clone, Debug)]
 pub struct MyCommand { pub data: String }
@@ -354,6 +360,7 @@ impl Handler<MyCommand> for NetworkManager {
 
 // 4. Add dispatch in src/handlers/commands.rs
 NetworkMessage::MyCommand { request, outcome } => {
+    // forward_handler: routes request to Handler impl, sends result via oneshot
     self.forward_handler(ctx, request, outcome);
 }
 
@@ -374,6 +381,8 @@ pub async fn my_command(&self, data: String) -> eyre::Result<String> {
 ### Adding a New Swarm Event Handler
 
 ```rust
+// NOTE: Simplified for illustration - see existing handlers for full pattern
+
 // 1. Create handler file: src/handlers/stream/swarm/my_protocol.rs
 use super::{EventHandler, NetworkManager};
 use calimero_network_primitives::messages::NetworkEvent;

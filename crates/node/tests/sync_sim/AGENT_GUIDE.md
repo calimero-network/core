@@ -110,6 +110,8 @@ crates/node/tests/
 ## Quick Start
 
 ```rust
+// NOTE: Minimal example - see sync_scenarios/ for real test patterns
+
 use crate::sync_sim::prelude::*;
 
 #[test]
