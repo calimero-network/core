@@ -128,10 +128,10 @@ pub fn try_merge_registered(
     existing_ts: u64,
     incoming_ts: u64,
 ) -> MergeRegistryResult {
-    // For now, we don't have type information at runtime
-    // This will be solved in Phase 3 with type hints in storage
+    // For now, we don't have type information at runtime.
+    // TODO: Store type hints with root entity for O(1) dispatch (see issue #1993)
 
-    // Try each registered merge function (brute force for Phase 2)
+    // Try each registered merge function until one succeeds (O(n) where n = registered types)
     let registry = MERGE_REGISTRY.read().unwrap_or_else(|poisoned| {
         // Lock poisoning indicates a panic occurred while holding the lock.
         // This is a serious error - abort to prevent undefined behavior.
