@@ -34,7 +34,6 @@ exclude = [
     "./apps/demo-blockchain-integrations",
     "./apps/e2e-kv-store",
     "./crates/merod",
-    "./crates/version",
     "./crates/meroctl",
     "./crates/auth",
     "./tools/calimero-abi",
@@ -261,7 +260,8 @@ calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-sys = { path = "./crates/sys" }
 calimero-tee-attestation = { path = "./crates/tee-attestation" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
-calimero-version = { path = "./crates/version" }
+# version is set at release time by .github/workflows/release.yml (search for crates_version_dep)
+calimero-version = { path = "./crates/version", version = "0.0.0" } # crates_version_dep
 calimero-wasm-abi = { path = "./crates/wasm-abi" }
 mero-auth = { path = "./crates/auth" }
 kv-store = { path = "./apps/kv-store" }

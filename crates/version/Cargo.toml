@@ -6,7 +6,7 @@ edition.workspace = true
 repository.workspace = true
 license.workspace = true
 description = "Calimero version information and build metadata"
-publish = false
+publish = true
 
 [build-dependencies]
 eyre.workspace = true
