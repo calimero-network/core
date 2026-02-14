@@ -56,6 +56,16 @@ use crate::store::MainStorage;
 /// 1. **Try registered merge:** If app called `register_crdt_merge()`, use type-specific merge
 /// 2. **Fallback to LWW:** If no registered merge, use Last-Write-Wins
 ///
+/// # ⚠️ Warning: I5 Violation Risk
+///
+/// The LWW fallback can cause **data loss** if the root entity contains CRDTs
+/// (Counter, nested Maps with CRDT values, etc.) and no merge function is registered.
+///
+/// **Safe**: Apps using `#[app::state]` macro (auto-registers merge function)
+/// **Unsafe**: Apps without registration that have CRDTs at root level
+///
+/// See AGENTS.md "KNOWN ISSUE: Root Entity LWW Fallback" for details.
+///
 /// # Arguments
 /// * `existing` - The currently stored state (Borsh-serialized)
 /// * `incoming` - The new state being synced (Borsh-serialized)
@@ -79,16 +89,30 @@ pub fn merge_root_state(
         return result;
     }
 
-    // NOTE: We can't blindly deserialize without knowing the type.
-    // The collections (UnorderedMap, Vector, Counter, etc.) already handle
-    // CRDT merging through their own element IDs and storage mechanisms.
+    // WARNING: LWW fallback - potential I5 violation!
     //
-    // For root entities, concurrent updates should be rare since most operations
-    // target nested entities (RGA characters, Map entries, etc.) which have their
-    // own IDs and merge independently.
+    // If the root entity contains CRDTs (Counter, etc.) and no merge function
+    // is registered, this LWW fallback will cause DATA LOSS. One node's
+    // CRDT contributions will be silently discarded.
     //
-    // Fallback: use LWW if no registered merge function
-    // This is safe for simple apps or backward compatibility
+    // This fallback exists for:
+    // - Legacy apps without #[app::state] macro
+    // - Simple apps with only LwwRegister fields (where LWW is correct)
+    // - Backward compatibility
+    //
+    // FIXME: This should log a warning to make the fallback observable.
+    // Per Delivery Contract Rule: any drop MUST be observable.
+    //
+    // Safe scenarios:
+    // - Root has only LwwRegister fields (LWW is the correct behavior)
+    // - Root has only primitive fields wrapped in LwwRegister
+    //
+    // UNSAFE scenarios (I5 violation):
+    // - Root has Counter fields → increments lost
+    // - Root has nested Maps with Counter values → increments lost
+    // - Root has any CRDT that requires semantic merge
+    //
+    // TODO: Add warning log here, or fail if root likely contains CRDTs.
     if incoming_ts >= existing_ts {
         Ok(incoming.to_vec())
     } else {

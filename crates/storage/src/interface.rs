@@ -1063,13 +1063,31 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Attempt to merge two versions of non-root entity data using CRDT semantics.
     ///
-    /// For non-root entities, we dispatch based on `CrdtType` in metadata:
-    /// - Built-in types (GCounter, PnCounter, Rga): merge in storage layer
-    /// - Types requiring WASM (LwwRegister, collections, Custom): fall back to LWW
-    ///   (WASM merge callback handled in PR #1940)
-    /// - Legacy data (no CrdtType): fall back to LWW
+    /// # Merge Dispatch by CrdtType
     ///
-    /// **Invariant I5**: Initialized nodes MUST CRDT-merge for built-in types.
+    /// For non-root entities, we dispatch based on `CrdtType` in metadata:
+    ///
+    /// **Built-in types** (all except `Custom`) - merged via [`merge_by_crdt_type`]:
+    /// - `GCounter`, `PnCounter`: Semantic merge (max per executor)
+    /// - `Rga`: Semantic merge (union of characters)
+    /// - `LwwRegister`: Returns incoming (timestamp comparison done by caller)
+    /// - `UnorderedMap`, `UnorderedSet`, `Vector`: Returns incoming (entries are
+    ///   separate entities with their own `CrdtType`, merged individually)
+    /// - `UserStorage`: Returns incoming (LWW per user)
+    /// - `FrozenStorage`: Returns existing (first-write-wins, immutable)
+    ///
+    /// **Custom types** - require WASM callback (PR #1940), currently fall back to LWW
+    ///
+    /// **Legacy data** (no CrdtType metadata) - fall back to LWW
+    ///
+    /// # Invariants
+    ///
+    /// - **I5 (No Silent Data Loss)**: Built-in CRDT types MUST use their semantic
+    ///   merge rules, not be overwritten by LWW.
+    /// - **I10 (Metadata Persistence)**: Relies on `crdt_type` being persisted in
+    ///   entity metadata for correct dispatch.
+    ///
+    /// [`merge_by_crdt_type`]: crate::merge::merge_by_crdt_type
     fn try_merge_non_root(
         id: Id,
         existing: &[u8],
