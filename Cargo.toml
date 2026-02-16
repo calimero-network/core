@@ -34,7 +34,6 @@ exclude = [
     "./apps/e2e-kv-store",
     "./crates/merod",
     "./crates/meroctl",
-    "./crates/auth",
     "./crates/build-utils",
     "./tools/calimero-abi",
 ]
