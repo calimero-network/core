@@ -251,12 +251,26 @@ async fn run_initiator_impl<T: SyncTransport>(
             );
         }
 
-        // Validate all nodes
-        for node in &nodes {
-            if !node.is_valid() {
-                warn!(%context_id, "Invalid LevelNode in response, skipping");
-                continue;
-            }
+        // Filter out invalid nodes
+        let original_count = nodes.len();
+        let nodes: Vec<_> = nodes
+            .into_iter()
+            .filter(|node| {
+                if node.is_valid() {
+                    true
+                } else {
+                    warn!(%context_id, "Invalid LevelNode in response, skipping");
+                    false
+                }
+            })
+            .collect();
+        if nodes.len() < original_count {
+            debug!(
+                %context_id,
+                original = original_count,
+                valid = nodes.len(),
+                "Filtered out invalid nodes"
+            );
         }
 
         stats.levels_synced = level + 1;
@@ -304,6 +318,7 @@ async fn run_initiator_impl<T: SyncTransport>(
         let mut next_level_parents: Vec<[u8; 32]> = Vec::new();
 
         // Process differing and locally missing nodes
+        // (nodes_to_process() includes both differing and local_missing)
         for node_id in compare_result.nodes_to_process() {
             // Find the node in the response
             let Some(node) = nodes.iter().find(|n| n.id == node_id) else {
@@ -327,15 +342,6 @@ async fn run_initiator_impl<T: SyncTransport>(
             } else {
                 // Internal node: add to next level query
                 next_level_parents.push(node.id);
-            }
-        }
-
-        // Also add locally missing internal nodes to next level
-        for node_id in &compare_result.local_missing {
-            if let Some(node) = nodes.iter().find(|n| n.id == *node_id) {
-                if node.is_internal() && !next_level_parents.contains(&node.id) {
-                    next_level_parents.push(node.id);
-                }
             }
         }
 
@@ -413,13 +419,118 @@ async fn run_responder_impl<T: SyncTransport>(
     context_id: ContextId,
     identity: PublicKey,
 ) -> Result<()> {
+    // This should not be called directly from the manager since the first request
+    // is already consumed. Use run_responder_with_first_request instead.
+    info!(%context_id, "Starting LevelWise sync (responder) - no first request");
+
+    // Set up storage bridge
+    let runtime_env = create_runtime_env(store, context_id, identity);
+
+    run_responder_loop(transport, context_id, &runtime_env, 0, 0).await
+}
+
+/// Run the responder with the first request already consumed by the manager.
+///
+/// This is called by the manager which has already extracted the first request's
+/// `level` and `parent_ids` for routing purposes.
+pub async fn run_responder_with_first_request<T: SyncTransport>(
+    transport: &mut T,
+    store: &Store,
+    context_id: ContextId,
+    identity: PublicKey,
+    first_level: u32,
+    first_parent_ids: Option<Vec<[u8; 32]>>,
+) -> Result<()> {
     info!(%context_id, "Starting LevelWise sync (responder)");
 
     // Set up storage bridge
     let runtime_env = create_runtime_env(store, context_id, identity);
 
     let mut sequence_id = 0u64;
-    let mut requests_handled = 0u64;
+
+    // Handle the first request (already parsed by the manager)
+    let (nodes, has_more_levels) =
+        handle_levelwise_request(context_id, first_level, first_parent_ids, &runtime_env)?;
+
+    debug!(
+        %context_id,
+        level = first_level,
+        nodes_found = nodes.len(),
+        has_more_levels,
+        "Responding with first level nodes"
+    );
+
+    let response = StreamMessage::Message {
+        sequence_id,
+        payload: MessagePayload::LevelWiseResponse {
+            level: first_level,
+            nodes,
+            has_more_levels,
+        },
+        next_nonce: generate_nonce(),
+    };
+    transport.send(&response).await?;
+    sequence_id += 1;
+
+    // Handle subsequent requests in a loop
+    run_responder_loop(transport, context_id, &runtime_env, sequence_id, 1).await
+}
+
+/// Handle a single LevelWise request and return the response data.
+fn handle_levelwise_request(
+    context_id: ContextId,
+    level: u32,
+    parent_ids: Option<Vec<[u8; 32]>>,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+) -> Result<(Vec<LevelNode>, bool)> {
+    trace!(
+        %context_id,
+        level,
+        parent_count = parent_ids.as_ref().map(|p| p.len()),
+        "Handling LevelWiseRequest"
+    );
+
+    // DoS protection: validate request
+    if level > MAX_LEVELWISE_DEPTH as u32 {
+        warn!(
+            %context_id,
+            level,
+            max = MAX_LEVELWISE_DEPTH,
+            "Level exceeds maximum"
+        );
+        // Return empty response rather than error to avoid leaking state
+        return Ok((vec![], false));
+    }
+
+    // DoS protection: truncate parent_ids if too large
+    let truncated_parent_ids = parent_ids.map(|mut parents| {
+        if parents.len() > MAX_PARENTS_PER_REQUEST {
+            warn!(
+                %context_id,
+                count = parents.len(),
+                max = MAX_PARENTS_PER_REQUEST,
+                "Too many parent IDs in request, truncating"
+            );
+            parents.truncate(MAX_PARENTS_PER_REQUEST);
+        }
+        parents
+    });
+
+    // Get nodes at requested level
+    with_runtime_env(runtime_env.clone(), || {
+        get_nodes_at_level(context_id, level as usize, truncated_parent_ids.as_deref())
+    })
+}
+
+/// Internal loop to handle subsequent LevelWise requests.
+async fn run_responder_loop<T: SyncTransport>(
+    transport: &mut T,
+    context_id: ContextId,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    mut sequence_id: u64,
+    initial_requests_handled: u64,
+) -> Result<()> {
+    let mut requests_handled = initial_requests_handled;
 
     // Handle requests until stream closes
     loop {
@@ -441,52 +552,8 @@ async fn run_responder_impl<T: SyncTransport>(
             break;
         };
 
-        trace!(
-            %context_id,
-            level,
-            parent_count = parent_ids.as_ref().map(|p| p.len()),
-            "Handling LevelWiseRequest"
-        );
-
-        // DoS protection: validate request
-        if level > MAX_LEVELWISE_DEPTH as u32 {
-            warn!(
-                %context_id,
-                level,
-                max = MAX_LEVELWISE_DEPTH,
-                "Level exceeds maximum"
-            );
-            // Send empty response rather than error to avoid leaking state
-            let empty_response = StreamMessage::Message {
-                sequence_id,
-                payload: MessagePayload::LevelWiseResponse {
-                    level,
-                    nodes: vec![],
-                    has_more_levels: false,
-                },
-                next_nonce: generate_nonce(),
-            };
-            transport.send(&empty_response).await?;
-            sequence_id += 1;
-            continue;
-        }
-
-        if let Some(ref parents) = parent_ids {
-            if parents.len() > MAX_PARENTS_PER_REQUEST {
-                warn!(
-                    %context_id,
-                    count = parents.len(),
-                    max = MAX_PARENTS_PER_REQUEST,
-                    "Too many parent IDs in request"
-                );
-                // Truncate rather than reject
-            }
-        }
-
-        // Get nodes at requested level
-        let (nodes, has_more_levels) = with_runtime_env(runtime_env.clone(), || {
-            get_nodes_at_level(context_id, level as usize, parent_ids.as_deref())
-        })?;
+        let (nodes, has_more_levels) =
+            handle_levelwise_request(context_id, level, parent_ids, runtime_env)?;
 
         debug!(
             %context_id,

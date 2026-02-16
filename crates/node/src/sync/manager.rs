@@ -2028,7 +2028,8 @@ impl SyncManager {
             }
             InitPayload::LevelWiseRequest {
                 context_id: requested_context_id,
-                ..
+                level: first_level,
+                parent_ids: first_parent_ids,
             } => {
                 // Handle LevelWise request from peer (LevelWise sync responder)
                 // Wrap stream in transport abstraction
@@ -2056,7 +2057,7 @@ impl SyncManager {
                         let msg = StreamMessage::Message {
                             sequence_id: 0,
                             payload: MessagePayload::LevelWiseResponse {
-                                level: 0,
+                                level: first_level,
                                 nodes: vec![],
                                 has_more_levels: false,
                             },
@@ -2067,12 +2068,15 @@ impl SyncManager {
                     }
                 };
 
-                // Run the LevelWise responder
-                LevelWiseProtocol::run_responder(
+                // Run the LevelWise responder with the first request's data
+                // (already parsed above for routing purposes)
+                super::level_sync::run_responder_with_first_request(
                     &mut transport,
                     &store,
                     requested_context_id,
                     our_identity,
+                    first_level,
+                    first_parent_ids,
                 )
                 .await?
             }
