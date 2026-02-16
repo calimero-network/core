@@ -37,7 +37,7 @@ use super::sim_runtime::SimRuntime;
 #[derive(Debug, Clone)]
 pub struct BenchmarkResult {
     /// Scenario name.
-    pub scenario: &'static str,
+    pub scenario: String,
     /// Protocol used (from handshake selection).
     pub protocol: String,
     /// Number of request-response round trips.
@@ -75,13 +75,13 @@ impl fmt::Display for BenchmarkResult {
 impl BenchmarkResult {
     /// Create a benchmark result from simulation metrics.
     pub fn from_metrics(
-        scenario: &'static str,
+        scenario: impl Into<String>,
         protocol: String,
         metrics: &SimMetrics,
         converged: bool,
     ) -> Self {
         Self {
-            scenario,
+            scenario: scenario.into(),
             protocol,
             round_trips: metrics.protocol.round_trips,
             entities_transferred: metrics.protocol.entities_transferred,
@@ -105,7 +105,7 @@ impl BenchmarkResult {
 /// trait interface to validate that the metrics implementation works correctly
 /// with real simulation data.
 pub fn run_two_node_benchmark(
-    scenario_name: &'static str,
+    scenario_name: impl Into<String>,
     mut node_a: SimNode,
     mut node_b: SimNode,
 ) -> BenchmarkResult {
@@ -148,14 +148,22 @@ fn record_simulation_metrics(
     protocol: &str,
 ) {
     // Record protocol cost metrics through the trait
-    for _ in 0..sim_metrics.protocol.messages_sent {
-        // We don't have per-message byte counts, so use average
-        let avg_bytes = if sim_metrics.protocol.messages_sent > 0 {
-            (sim_metrics.protocol.payload_bytes / sim_metrics.protocol.messages_sent) as usize
-        } else {
-            0
-        };
-        collector.record_message_sent(protocol, avg_bytes);
+    // Distribute bytes across messages, adding remainder to last message to avoid truncation
+    let messages_sent = sim_metrics.protocol.messages_sent;
+    if messages_sent > 0 {
+        let total_bytes = sim_metrics.protocol.payload_bytes;
+        let base_bytes = (total_bytes / messages_sent) as usize;
+        let remainder = (total_bytes % messages_sent) as usize;
+
+        for i in 0..messages_sent {
+            // Add remainder to the last message to preserve total bytes
+            let bytes = if i == messages_sent - 1 {
+                base_bytes + remainder
+            } else {
+                base_bytes
+            };
+            collector.record_message_sent(protocol, bytes);
+        }
     }
 
     for _ in 0..sim_metrics.protocol.round_trips {
@@ -327,7 +335,7 @@ pub fn run_scaling_benchmarks(entity_counts: &[usize]) -> (Vec<BenchmarkResult>,
             node_b.insert_entity_with_metadata(id, data, metadata);
         }
 
-        let scenario_name: &'static str = Box::leak(format!("diverged_{count}").into_boxed_str());
+        let scenario_name = format!("diverged_{count}");
         let result = run_two_node_benchmark(scenario_name, node_a, node_b);
         summary.add(result.clone());
         results.push(result);
@@ -428,7 +436,7 @@ mod tests {
     #[test]
     fn test_benchmark_result_display() {
         let result = BenchmarkResult {
-            scenario: "test_scenario",
+            scenario: "test_scenario".to_string(),
             protocol: "HashComparison".to_string(),
             round_trips: 5,
             entities_transferred: 100,

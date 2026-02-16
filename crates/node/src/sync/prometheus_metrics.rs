@@ -286,6 +286,14 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
         self.sync_duration_seconds
             .get_or_create(&labels)
             .observe(duration.as_secs_f64());
+
+        // Increment success counter
+        let success_labels = ProtocolLabels {
+            protocol: "all".to_string(),
+        };
+        self.sync_successes_total
+            .get_or_create(&success_labels)
+            .inc();
     }
 
     fn record_sync_failure(&self, _context_id: &str, _reason: &str) {
