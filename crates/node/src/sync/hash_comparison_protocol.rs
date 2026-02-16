@@ -34,7 +34,7 @@
 //! ).await?;
 //! ```
 
-use crate::sync::helpers::generate_nonce;
+use crate::sync::helpers::{apply_leaf_with_crdt_merge, generate_nonce};
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
     compare_tree_nodes, create_runtime_env, InitPayload, LeafMetadata, MessagePayload,
@@ -436,77 +436,6 @@ fn get_local_tree_node(
             children_ids,
         )))
     }
-}
-
-/// Apply leaf data using CRDT merge (Invariant I5).
-///
-/// This function must be called within a `with_runtime_env` scope.
-/// Uses `Interface::apply_action` to properly update both the raw storage
-/// and the Merkle tree Index.
-fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) -> Result<()> {
-    use calimero_storage::entities::{ChildInfo, Metadata};
-    use calimero_storage::interface::Action;
-
-    let entity_id = Id::new(leaf.key);
-    let root_id = Id::new(*context_id.as_ref());
-
-    // Check if entity already exists
-    let existing_index = Index::<MainStorage>::get_index(entity_id).ok().flatten();
-
-    // Build metadata from leaf info
-    let mut metadata = Metadata::default();
-    metadata.crdt_type = Some(leaf.metadata.crdt_type.clone());
-    metadata.updated_at = leaf.metadata.hlc_timestamp.into();
-
-    let action = if existing_index.is_some() {
-        // Update existing entity
-        Action::Update {
-            id: entity_id,
-            data: leaf.value.clone(),
-            ancestors: vec![], // No ancestors needed for update
-            metadata,
-        }
-    } else {
-        // Add new entity as child of root
-        // First ensure root exists
-        if Index::<MainStorage>::get_index(root_id)
-            .ok()
-            .flatten()
-            .is_none()
-        {
-            let root_action = Action::Update {
-                id: root_id,
-                data: vec![],
-                ancestors: vec![],
-                metadata: Metadata::default(),
-            };
-            Interface::<MainStorage>::apply_action(root_action)?;
-        }
-
-        // Get root info for ancestor chain
-        let root_hash = Index::<MainStorage>::get_hashes_for(root_id)
-            .ok()
-            .flatten()
-            .map(|(full, _)| full)
-            .unwrap_or([0; 32]);
-        let root_metadata = Index::<MainStorage>::get_index(root_id)
-            .ok()
-            .flatten()
-            .map(|idx| idx.metadata.clone())
-            .unwrap_or_default();
-
-        let ancestor = ChildInfo::new(root_id, root_hash, root_metadata);
-
-        Action::Add {
-            id: entity_id,
-            data: leaf.value.clone(),
-            ancestors: vec![ancestor],
-            metadata,
-        }
-    };
-
-    Interface::<MainStorage>::apply_action(action)?;
-    Ok(())
 }
 
 #[cfg(test)]

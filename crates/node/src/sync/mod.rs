@@ -15,12 +15,12 @@
 //! ├── Orchestrates: periodic sync, peer selection
 //! ├── Decides: Use delta or full resync
 //! ├── Delegates to:
-//! │   ├── full.rs    - Snapshot transfer protocol
-//! │   ├── delta.rs   - Merkle comparison protocol  
-//! │   ├── state.rs   - Legacy state sync
-//! │   ├── key.rs     - Key sharing
-//! │   └── blobs.rs   - Blob sharing
-//! ├── Tracks: peer_state.rs (per-peer sync history)
+//! │   ├── hash_comparison_protocol.rs - Merkle tree traversal (DFS)
+//! │   ├── level_sync.rs               - Level-wise sync (BFS for wide trees)
+//! │   ├── snapshot.rs                 - Snapshot transfer protocol
+//! │   ├── key.rs                      - Key sharing
+//! │   └── blobs.rs                    - Blob sharing
+//! ├── Tracks: tracking.rs (per-peer sync history)
 //! └── Observes: metrics.rs (protocol cost, safety invariants)
 //! ```
 //!
@@ -40,6 +40,7 @@ mod hash_comparison;
 pub mod hash_comparison_protocol;
 mod helpers;
 mod key;
+pub mod level_sync;
 mod manager;
 pub mod metrics;
 pub mod prometheus_metrics;
@@ -51,6 +52,7 @@ pub use config::SyncConfig;
 pub use hash_comparison_protocol::{
     HashComparisonConfig, HashComparisonProtocol, HashComparisonStats,
 };
+pub use level_sync::{LevelWiseConfig, LevelWiseProtocol, LevelWiseStats};
 pub use manager::SyncManager;
 pub use metrics::{no_op_metrics, NoOpMetrics, PhaseTimer, SharedMetrics, SyncMetricsCollector};
 pub use prometheus_metrics::PrometheusSyncMetrics;

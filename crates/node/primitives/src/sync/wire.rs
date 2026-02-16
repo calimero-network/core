@@ -37,6 +37,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 
 use super::hash_comparison::TreeNode;
+use super::levelwise::LevelNode;
 use super::snapshot::SnapshotError;
 
 /// Maximum depth allowed in TreeNodeRequest.
@@ -158,6 +159,21 @@ pub enum InitPayload {
         /// None means only the requested node, Some(1) includes immediate children.
         max_depth: Option<u8>,
     },
+
+    /// Request nodes at a specific level for LevelWise sync (CIP Appendix B).
+    ///
+    /// Used by the LevelWise protocol for breadth-first tree synchronization,
+    /// optimized for wide, shallow trees (depth ≤ 2).
+    LevelWiseRequest {
+        /// Context being synchronized.
+        context_id: ContextId,
+        /// Level to request (0 = root's children, 1 = grandchildren, etc.).
+        level: u32,
+        /// Parent IDs to fetch children for.
+        /// - `None` = fetch all nodes at this level
+        /// - `Some(ids)` = fetch only children of specified parents
+        parent_ids: Option<Vec<[u8; 32]>>,
+    },
 }
 
 // =============================================================================
@@ -253,6 +269,23 @@ pub enum MessagePayload<'a> {
         /// True if the requested node was not found.
         not_found: bool,
     },
+
+    /// Response to LevelWiseRequest for LevelWise sync (CIP Appendix B).
+    ///
+    /// Contains all nodes at the requested level for breadth-first comparison.
+    LevelWiseResponse {
+        /// Level these nodes are at.
+        level: u32,
+        /// Nodes at this level.
+        ///
+        /// Each node includes:
+        /// - `id` and `hash` for comparison
+        /// - `parent_id` for tree structure
+        /// - `leaf_data` if this is a leaf (includes full entity data for CRDT merge)
+        nodes: Vec<LevelNode>,
+        /// Whether there are more levels below this one.
+        has_more_levels: bool,
+    },
 }
 
 // =============================================================================
@@ -334,6 +367,159 @@ mod tests {
             MessagePayload::TreeNodeResponse { nodes, not_found } => {
                 assert!(nodes.is_empty());
                 assert!(not_found);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    // =========================================================================
+    // LevelWise Wire Protocol Tests
+    // =========================================================================
+
+    #[test]
+    fn test_init_payload_levelwise_request_full_level() {
+        let request = InitPayload::LevelWiseRequest {
+            context_id: ContextId::from([1u8; 32]),
+            level: 0,
+            parent_ids: None,
+        };
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: InitPayload = borsh::from_slice(&encoded).expect("deserialize");
+
+        match decoded {
+            InitPayload::LevelWiseRequest {
+                context_id,
+                level,
+                parent_ids,
+            } => {
+                assert_eq!(*context_id.as_ref(), [1u8; 32]);
+                assert_eq!(level, 0);
+                assert!(parent_ids.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_init_payload_levelwise_request_with_parents() {
+        let parents = vec![[10u8; 32], [20u8; 32], [30u8; 32]];
+        let request = InitPayload::LevelWiseRequest {
+            context_id: ContextId::from([2u8; 32]),
+            level: 1,
+            parent_ids: Some(parents.clone()),
+        };
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: InitPayload = borsh::from_slice(&encoded).expect("deserialize");
+
+        match decoded {
+            InitPayload::LevelWiseRequest {
+                context_id,
+                level,
+                parent_ids,
+            } => {
+                assert_eq!(*context_id.as_ref(), [2u8; 32]);
+                assert_eq!(level, 1);
+                assert_eq!(parent_ids, Some(parents));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_message_payload_levelwise_response_internal_nodes() {
+        use crate::sync::levelwise::LevelNode;
+
+        let nodes = vec![
+            LevelNode::internal([1u8; 32], [10u8; 32], None),
+            LevelNode::internal([2u8; 32], [20u8; 32], None),
+        ];
+
+        let response = MessagePayload::LevelWiseResponse {
+            level: 0,
+            nodes: nodes.clone(),
+            has_more_levels: true,
+        };
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: MessagePayload = borsh::from_slice(&encoded).expect("deserialize");
+
+        match decoded {
+            MessagePayload::LevelWiseResponse {
+                level,
+                nodes: decoded_nodes,
+                has_more_levels,
+            } => {
+                assert_eq!(level, 0);
+                assert_eq!(decoded_nodes.len(), 2);
+                assert!(has_more_levels);
+                assert!(decoded_nodes[0].is_internal());
+                assert!(decoded_nodes[1].is_internal());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_message_payload_levelwise_response_with_leaves() {
+        use crate::sync::hash_comparison::{CrdtType, LeafMetadata, TreeLeafData};
+        use crate::sync::levelwise::LevelNode;
+
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
+        let leaf_data = TreeLeafData::new([5u8; 32], vec![1, 2, 3, 4], metadata);
+
+        let nodes = vec![
+            LevelNode::internal([1u8; 32], [10u8; 32], None),
+            LevelNode::leaf([2u8; 32], [20u8; 32], Some([1u8; 32]), leaf_data),
+        ];
+
+        let response = MessagePayload::LevelWiseResponse {
+            level: 1,
+            nodes,
+            has_more_levels: false,
+        };
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: MessagePayload = borsh::from_slice(&encoded).expect("deserialize");
+
+        match decoded {
+            MessagePayload::LevelWiseResponse {
+                level,
+                nodes: decoded_nodes,
+                has_more_levels,
+            } => {
+                assert_eq!(level, 1);
+                assert_eq!(decoded_nodes.len(), 2);
+                assert!(!has_more_levels);
+                assert!(decoded_nodes[0].is_internal());
+                assert!(decoded_nodes[1].is_leaf());
+                assert_eq!(decoded_nodes[1].parent_id, Some([1u8; 32]));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_message_payload_levelwise_response_empty() {
+        let response = MessagePayload::LevelWiseResponse {
+            level: 2,
+            nodes: vec![],
+            has_more_levels: false,
+        };
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: MessagePayload = borsh::from_slice(&encoded).expect("deserialize");
+
+        match decoded {
+            MessagePayload::LevelWiseResponse {
+                level,
+                nodes,
+                has_more_levels,
+            } => {
+                assert_eq!(level, 2);
+                assert!(nodes.is_empty());
+                assert!(!has_more_levels);
             }
             _ => panic!("wrong variant"),
         }
