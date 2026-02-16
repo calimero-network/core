@@ -294,9 +294,9 @@ async fn run_initiator_impl<T: SyncTransport>(
             get_local_hashes_at_level(context_id, current_parent_ids.as_deref())
         })?;
 
-        // Build response for comparison
-        let remote_response =
-            LevelWiseResponse::new(level as usize, nodes.clone(), has_more_levels);
+        // Build response for comparison - move nodes in, then move them back out
+        // to avoid expensive clone of potentially large leaf data
+        let remote_response = LevelWiseResponse::new(level as usize, nodes, has_more_levels);
 
         // Compare local vs remote
         let compare_result = compare_level_nodes(&local_hashes, &remote_response);
@@ -313,6 +313,9 @@ async fn run_initiator_impl<T: SyncTransport>(
             remote_missing = compare_result.remote_missing.len(),
             "Level comparison result"
         );
+
+        // Move nodes back out of the response for subsequent processing
+        let nodes = remote_response.nodes;
 
         // Process nodes that need sync
         let mut next_level_parents: Vec<[u8; 32]> = Vec::new();

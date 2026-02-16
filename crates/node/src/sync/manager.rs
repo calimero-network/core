@@ -1180,13 +1180,20 @@ impl SyncManager {
                                 error = %e,
                                 "LevelWise sync failed, falling back to DAG catchup"
                             );
-                            // Fall back to DAG heads request
+                            // Fall back to DAG heads request - open a new stream since the
+                            // LevelWise protocol may have left the peer's responder in a state
+                            // where it expects LevelWiseRequest messages, not DagHeadsRequest.
+                            let mut fallback_stream = self
+                                .network_client
+                                .open_stream(chosen_peer)
+                                .await
+                                .wrap_err("open stream for level-wise fallback")?;
                             let result = self
                                 .request_dag_heads_and_sync(
                                     context_id,
                                     chosen_peer,
                                     our_identity,
-                                    stream,
+                                    &mut fallback_stream,
                                 )
                                 .await
                                 .wrap_err("level-wise fallback")?;
@@ -1202,7 +1209,7 @@ impl SyncManager {
                                         context_id,
                                         our_identity,
                                         chosen_peer,
-                                        stream,
+                                        &mut fallback_stream,
                                     )
                                     .await
                                     .wrap_err("level-wise snapshot fallback")?;
