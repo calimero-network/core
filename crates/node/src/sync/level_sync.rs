@@ -187,7 +187,7 @@ async fn run_initiator_impl<T: SyncTransport>(
     let mut current_parent_ids: Option<Vec<[u8; 32]>> = None;
     let clamped_max_depth = max_depth.min(MAX_LEVELWISE_DEPTH as u32);
 
-    for level in 0..=clamped_max_depth {
+    for level in 0..clamped_max_depth {
         // Build request for this level
         let request_msg = StreamMessage::Init {
             context_id,
