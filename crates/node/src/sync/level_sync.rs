@@ -53,7 +53,7 @@
 //! ).await?;
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
@@ -316,12 +316,17 @@ async fn run_initiator_impl<T: SyncTransport>(
 
         // Process nodes that need sync
         let mut next_level_parents: Vec<[u8; 32]> = Vec::new();
+        // Track already-added parent IDs to avoid duplicates - O(1) membership checks
+        let mut added_parents: HashSet<[u8; 32]> = HashSet::new();
+
+        // Build HashMap for O(1) node lookups instead of O(n) linear search
+        let nodes_by_id: HashMap<[u8; 32], &LevelNode> = nodes.iter().map(|n| (n.id, n)).collect();
 
         // Process differing and locally missing nodes
         // (nodes_to_process() includes both differing and local_missing)
         for node_id in compare_result.nodes_to_process() {
-            // Find the node in the response
-            let Some(node) = nodes.iter().find(|n| n.id == node_id) else {
+            // Find the node in the response - O(1) lookup
+            let Some(node) = nodes_by_id.get(&node_id) else {
                 continue;
             };
 
@@ -340,8 +345,10 @@ async fn run_initiator_impl<T: SyncTransport>(
                     stats.entities_merged += 1;
                 }
             } else {
-                // Internal node: add to next level query
-                next_level_parents.push(node.id);
+                // Internal node: add to next level query (avoid duplicates with O(1) check)
+                if added_parents.insert(node.id) {
+                    next_level_parents.push(node.id);
+                }
             }
         }
 
