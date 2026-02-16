@@ -96,9 +96,8 @@ impl SyncMetricsCollector for SimMetricsCollector {
 
     fn record_entities_transferred(&self, count: usize) {
         let mut guard = self.metrics.lock().expect("metrics lock poisoned");
-        for _ in 0..count {
-            guard.protocol.record_transfer();
-        }
+        // Use direct increment instead of O(n) loop
+        guard.protocol.entities_transferred += count as u64;
     }
 
     fn record_merge(&self, _crdt_type: &str) {
@@ -141,11 +140,17 @@ impl SyncMetricsCollector for SimMetricsCollector {
         // Simulation tracks sync sessions differently through the runtime
     }
 
-    fn record_sync_complete(&self, _context_id: &str, _duration: Duration, _entities: usize) {
+    fn record_sync_complete(
+        &self,
+        _context_id: &str,
+        _protocol: &str,
+        _duration: Duration,
+        _entities: usize,
+    ) {
         // Simulation uses convergence metrics instead
     }
 
-    fn record_sync_failure(&self, _context_id: &str, _reason: &str) {
+    fn record_sync_failure(&self, _context_id: &str, _protocol: &str, _reason: &str) {
         // Simulation tracks failures through convergence metrics
     }
 

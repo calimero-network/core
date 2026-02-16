@@ -38,6 +38,52 @@ use std::time::Duration;
 
 use super::metrics::{PhaseTimer, SyncMetricsCollector};
 
+/// Known sync protocol names for label sanitization.
+///
+/// This prevents unbounded label cardinality from untrusted input.
+const KNOWN_PROTOCOLS: &[&str] = &[
+    "None",
+    "Snapshot",
+    "HashComparison",
+    "DeltaSync",
+    "SubtreePrefetch",
+    "LevelWise",
+    "BloomFilter",
+];
+
+/// Known CRDT type names for label sanitization.
+const KNOWN_CRDT_TYPES: &[&str] = &[
+    "GCounter",
+    "PnCounter",
+    "LwwRegister",
+    "GSet",
+    "ORSet",
+    "LwwMap",
+    "unknown",
+];
+
+/// Sanitize a protocol name to prevent unbounded label cardinality.
+///
+/// Returns the protocol name if known, otherwise "unknown".
+fn sanitize_protocol(protocol: &str) -> &'static str {
+    KNOWN_PROTOCOLS
+        .iter()
+        .find(|&&p| p == protocol)
+        .copied()
+        .unwrap_or("unknown")
+}
+
+/// Sanitize a CRDT type name to prevent unbounded label cardinality.
+///
+/// Returns the CRDT type if known, otherwise "unknown".
+fn sanitize_crdt_type(crdt_type: &str) -> &'static str {
+    KNOWN_CRDT_TYPES
+        .iter()
+        .find(|&&t| t == crdt_type)
+        .copied()
+        .unwrap_or("unknown")
+}
+
 /// Labels for protocol-specific metrics.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct ProtocolLabels {
@@ -91,6 +137,9 @@ pub struct PrometheusSyncMetrics {
     sync_attempts_total: Family<ProtocolLabels, Counter>,
     sync_successes_total: Family<ProtocolLabels, Counter>,
     sync_failures_total: Family<ProtocolLabels, Counter>,
+
+    // Protocol selection metrics
+    protocol_selections_total: Family<ProtocolLabels, Counter>,
 }
 
 impl PrometheusSyncMetrics {
@@ -132,6 +181,7 @@ impl PrometheusSyncMetrics {
             sync_attempts_total: Family::default(),
             sync_successes_total: Family::default(),
             sync_failures_total: Family::default(),
+            protocol_selections_total: Family::default(),
         };
 
         // Register all metrics with descriptions
@@ -210,6 +260,11 @@ impl PrometheusSyncMetrics {
             "Total failed syncs by protocol",
             metrics.sync_failures_total.clone(),
         );
+        registry.register(
+            "sync_protocol_selections",
+            "Total protocol selection decisions by protocol",
+            metrics.protocol_selections_total.clone(),
+        );
 
         metrics
     }
@@ -218,7 +273,7 @@ impl PrometheusSyncMetrics {
 impl SyncMetricsCollector for PrometheusSyncMetrics {
     fn record_message_sent(&self, protocol: &str, bytes: usize) {
         let labels = ProtocolLabels {
-            protocol: protocol.to_string(),
+            protocol: sanitize_protocol(protocol).to_string(),
         };
         self.messages_sent.get_or_create(&labels).inc();
         self.bytes_sent.get_or_create(&labels).inc_by(bytes as u64);
@@ -226,7 +281,7 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
 
     fn record_round_trip(&self, protocol: &str) {
         let labels = ProtocolLabels {
-            protocol: protocol.to_string(),
+            protocol: sanitize_protocol(protocol).to_string(),
         };
         self.round_trips.get_or_create(&labels).inc();
     }
@@ -237,7 +292,7 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
 
     fn record_merge(&self, crdt_type: &str) {
         let labels = CrdtLabels {
-            crdt_type: crdt_type.to_string(),
+            crdt_type: sanitize_crdt_type(crdt_type).to_string(),
         };
         self.merges_total.get_or_create(&labels).inc();
     }
@@ -247,6 +302,7 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
     }
 
     fn record_phase_complete(&self, timer: PhaseTimer) {
+        // Phase names are &'static str from our code, so no sanitization needed
         let labels = PhaseLabels {
             phase: timer.phase().to_string(),
         };
@@ -273,31 +329,48 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
 
     fn record_sync_start(&self, _context_id: &str, protocol: &str, _trigger: &str) {
         let labels = ProtocolLabels {
-            protocol: protocol.to_string(),
+            protocol: sanitize_protocol(protocol).to_string(),
         };
         self.sync_attempts_total.get_or_create(&labels).inc();
     }
 
-    fn record_sync_complete(&self, _context_id: &str, duration: Duration, _entities: usize) {
+    fn record_sync_complete(
+        &self,
+        _context_id: &str,
+        protocol: &str,
+        duration: Duration,
+        _entities: usize,
+    ) {
+        let sanitized = sanitize_protocol(protocol);
         let labels = OutcomeLabels {
-            protocol: "all".to_string(),
+            protocol: sanitized.to_string(),
             outcome: "success".to_string(),
         };
         self.sync_duration_seconds
             .get_or_create(&labels)
             .observe(duration.as_secs_f64());
+
+        // Increment success counter
+        let success_labels = ProtocolLabels {
+            protocol: sanitized.to_string(),
+        };
+        self.sync_successes_total
+            .get_or_create(&success_labels)
+            .inc();
     }
 
-    fn record_sync_failure(&self, _context_id: &str, _reason: &str) {
+    fn record_sync_failure(&self, _context_id: &str, protocol: &str, _reason: &str) {
         let labels = ProtocolLabels {
-            protocol: "all".to_string(),
+            protocol: sanitize_protocol(protocol).to_string(),
         };
         self.sync_failures_total.get_or_create(&labels).inc();
     }
 
-    fn record_protocol_selected(&self, _protocol: &str, _reason: &str, _divergence: f64) {
-        // Protocol selection is logged, not metered
-        // Could add a counter per protocol if needed for analysis
+    fn record_protocol_selected(&self, protocol: &str, _reason: &str, _divergence: f64) {
+        let labels = ProtocolLabels {
+            protocol: sanitize_protocol(protocol).to_string(),
+        };
+        self.protocol_selections_total.get_or_create(&labels).inc();
     }
 }
 
@@ -347,8 +420,8 @@ mod tests {
         metrics.record_phase_complete(timer);
 
         metrics.record_sync_start("ctx-123", "HashComparison", "timer");
-        metrics.record_sync_complete("ctx-123", Duration::from_millis(100), 50);
-        metrics.record_sync_failure("ctx-456", "timeout");
+        metrics.record_sync_complete("ctx-123", "HashComparison", Duration::from_millis(100), 50);
+        metrics.record_sync_failure("ctx-456", "Snapshot", "timeout");
         metrics.record_protocol_selected("HashComparison", "test", 0.05);
 
         // Encode and verify non-empty
