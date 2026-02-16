@@ -83,8 +83,10 @@
 pub mod actions;
 #[macro_use]
 pub mod assertions;
+pub mod benchmarks;
 pub mod convergence;
 pub mod metrics;
+pub mod metrics_adapter;
 pub mod network;
 pub mod node;
 pub mod protocol;
@@ -104,6 +106,7 @@ pub mod prelude {
     pub use super::assertions::{
         all_converged, divergence_percentage, majority_digest, nodes_converged,
     };
+    pub use super::benchmarks::BenchmarkResult;
     pub use super::convergence::{
         check_convergence, is_deadlocked, ConvergenceInput, ConvergencePending,
         ConvergenceProperty, ConvergenceResult,
@@ -111,6 +114,7 @@ pub mod prelude {
     pub use super::metrics::{
         ConvergenceMetrics, EffectMetrics, NodeMetrics, ProtocolMetrics, SimMetrics, WorkMetrics,
     };
+    pub use super::metrics_adapter::SimMetricsCollector;
     pub use super::network::{
         FaultConfig, NetworkRouter, PartitionManager, PartitionSpec, SimEvent,
     };
