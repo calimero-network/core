@@ -341,7 +341,11 @@ async fn run_initiator_impl<T: SyncTransport>(
         let mut added_parents: HashSet<[u8; 32]> = HashSet::new();
 
         // Build HashMap for O(1) node lookups instead of O(n) linear search
-        let nodes_by_id: HashMap<[u8; 32], &LevelNode> = nodes.iter().map(|n| (n.id, n)).collect();
+        // Use entry().or_insert() to keep first occurrence, consistent with compare_level_nodes
+        let mut nodes_by_id: HashMap<[u8; 32], &LevelNode> = HashMap::new();
+        for node in &nodes {
+            nodes_by_id.entry(node.id).or_insert(node);
+        }
 
         // Process differing and locally missing nodes
         // (nodes_to_process() includes both differing and local_missing)
