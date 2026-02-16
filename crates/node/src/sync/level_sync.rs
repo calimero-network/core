@@ -253,20 +253,16 @@ async fn run_initiator_impl<T: SyncTransport>(
 
         // Filter out invalid nodes in-place to avoid reallocation
         let original_count = nodes.len();
-        nodes.retain(|node| {
-            if node.is_valid() {
-                true
-            } else {
-                warn!(%context_id, "Invalid LevelNode in response, skipping");
-                false
-            }
-        });
-        if nodes.len() < original_count {
-            debug!(
+        nodes.retain(|node| node.is_valid());
+        let invalid_count = original_count - nodes.len();
+        if invalid_count > 0 {
+            // Log once with count to avoid flooding logs with per-node warnings
+            warn!(
                 %context_id,
+                invalid_count,
                 original = original_count,
                 valid = nodes.len(),
-                "Filtered out invalid nodes"
+                "Filtered out invalid LevelNodes from response"
             );
         }
 
@@ -693,15 +689,15 @@ fn get_nodes_at_level(
 
     let root_id = Id::new(*context_id.as_ref());
 
-    // Verify root exists (we only use this for existence check, not to query children)
-    let _root_exists = match Index::<MainStorage>::get_index(root_id) {
-        Ok(Some(_)) => true,
+    // Verify root exists before proceeding
+    match Index::<MainStorage>::get_index(root_id) {
+        Ok(Some(_)) => {}                      // Root exists, continue
         Ok(None) => return Ok((nodes, false)), // Empty tree
         Err(e) => {
             warn!(%context_id, error = %e, "Failed to get root index");
             return Ok((nodes, false));
         }
-    };
+    }
 
     // Collect parent nodes to query
     let parents_to_query: Vec<Id> = match parent_ids {
@@ -776,8 +772,13 @@ fn get_nodes_at_level(
                         leaf_data,
                     ));
                 } else {
-                    // No data, treat as internal
-                    nodes.push(LevelNode::internal(child_id, child_hash, parent_id_bytes));
+                    // Leaf node with no raw data is corrupted/incomplete - skip it
+                    debug!(
+                        %context_id,
+                        child_id = %hex::encode(&child_id[..8]),
+                        "Skipping leaf node with no raw data"
+                    );
+                    continue;
                 }
             } else {
                 // Internal node: has children, so more levels exist
