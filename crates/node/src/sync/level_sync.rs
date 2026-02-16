@@ -422,14 +422,69 @@ async fn run_responder_impl<T: SyncTransport>(
     context_id: ContextId,
     identity: PublicKey,
 ) -> Result<()> {
-    // This should not be called directly from the manager since the first request
-    // is already consumed. Use run_responder_with_first_request instead.
-    info!(%context_id, "Starting LevelWise sync (responder) - no first request");
+    // NOTE: This implementation receives the first request from the transport.
+    // It works correctly when called on a fresh transport (e.g., in simulation/tests).
+    //
+    // The production manager uses `run_responder_with_first_request` instead because
+    // the manager consumes the first message for routing before dispatching to protocols.
+    // If you're calling this via the `SyncProtocolExecutor` trait, ensure the first
+    // LevelWiseRequest message is still available in the transport.
+    info!(%context_id, "Starting LevelWise sync (responder)");
 
     // Set up storage bridge
     let runtime_env = create_runtime_env(store, context_id, identity);
 
-    run_responder_loop(transport, context_id, &runtime_env, 0, 0).await
+    // Receive and handle the first request from the transport, then continue
+    // with subsequent requests in the loop.
+    let Some(first_request) = transport.recv().await? else {
+        debug!(%context_id, "Stream closed before first request");
+        return Ok(());
+    };
+
+    let StreamMessage::Init { payload, .. } = first_request else {
+        bail!(
+            "Expected Init message for LevelWiseRequest, got {:?}",
+            first_request
+        );
+    };
+
+    let InitPayload::LevelWiseRequest {
+        level: first_level,
+        parent_ids: first_parent_ids,
+        ..
+    } = payload
+    else {
+        bail!("Expected LevelWiseRequest payload, got {:?}", payload);
+    };
+
+    let mut sequence_id = 0u64;
+
+    // Handle the first request
+    let (nodes, has_more_levels) =
+        handle_levelwise_request(context_id, first_level, first_parent_ids, &runtime_env)?;
+
+    debug!(
+        %context_id,
+        level = first_level,
+        nodes_found = nodes.len(),
+        has_more_levels,
+        "Responding with first level nodes"
+    );
+
+    let response = StreamMessage::Message {
+        sequence_id,
+        payload: MessagePayload::LevelWiseResponse {
+            level: first_level,
+            nodes,
+            has_more_levels,
+        },
+        next_nonce: generate_nonce(),
+    };
+    transport.send(&response).await?;
+    sequence_id += 1;
+
+    // Handle subsequent requests in the loop
+    run_responder_loop(transport, context_id, &runtime_env, sequence_id, 1).await
 }
 
 /// Run the responder with the first request already consumed by the manager.
