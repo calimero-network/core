@@ -2261,7 +2261,6 @@ dependencies = [
  "borsh",
  "bs58 0.5.1",
  "calimero-blobstore",
- "calimero-build-utils",
  "calimero-crypto",
  "calimero-network-primitives",
  "calimero-primitives",
@@ -2289,6 +2288,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "toml 0.8.23",
  "tracing",
 ]
 

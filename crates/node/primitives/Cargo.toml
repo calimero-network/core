@@ -46,7 +46,7 @@ base64.workspace = true
 semver.workspace = true
 
 [build-dependencies]
-calimero-build-utils.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
