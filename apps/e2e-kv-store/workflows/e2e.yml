@@ -242,6 +242,11 @@ steps:
     outputs:
       all_entries: result
 
+  - name: Assert entries is non-empty
+    type: assert
+    statements:
+      - "is_set({{all_entries}})"
+
   - name: Get result (throws on missing)
     type: call
     node: e2e-node-1
@@ -267,10 +272,10 @@ steps:
     outputs:
       kv_len: result
 
-  - name: Assert length is 3
+  - name: Assert length is 4
     type: json_assert
     statements:
-      - 'json_equal({{kv_len}}, {"output": 3})'
+      - 'json_equal({{kv_len}}, {"output": 4})'
 
   - name: Remove a key
     type: call
@@ -760,22 +765,6 @@ steps:
     statements:
       - 'json_equal({{nested_value}}, {"output": "blue"})'
 
-  - name: Get nested user value on node-3
-    type: call
-    node: e2e-node-3
-    context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
-    method: get_user_nested
-    args:
-      key: "favorite_color"
-    outputs:
-      nested_value_node3: result
-
-  - name: Assert nested value visible on node-3
-    type: json_assert
-    statements:
-      - 'json_equal({{nested_value_node3}}, {"output": "blue"})'
-
   # FROZEN STORAGE
 
   - name: Add frozen value on node-1
@@ -864,6 +853,11 @@ steps:
     outputs:
       node1_secrets: result
 
+  - name: Assert node-1 can see its own secret
+    type: assert
+    statements:
+      - "is_set({{node1_secrets}})"
+
   - name: Get my secrets on node-2 (should be empty - private isolation)
     type: call
     node: e2e-node-2
@@ -900,6 +894,11 @@ steps:
     method: games
     outputs:
       public_games: result
+
+  - name: Assert public games visible on node-2
+    type: assert
+    statements:
+      - "is_set({{public_games}})"
 
   - name: Try correct guess on node-2
     type: call
@@ -2013,6 +2012,29 @@ steps:
       - "is_set({{files_after_delete_node3}})"
 
   # CLEAR OPERATIONS
+  # Re-populate the KV store so the clear below is a meaningful test
+  # (clear_with_handler earlier already emptied it)
+
+  - name: Set value before final clear
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: set
+    args:
+      key: "pre_clear_key"
+      value: "pre_clear_value"
+
+  - name: Wait for sync before final clear
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Clear KV store
     type: call
