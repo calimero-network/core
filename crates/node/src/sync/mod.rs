@@ -50,9 +50,9 @@ mod tracking;
 
 pub use config::SyncConfig;
 pub use hash_comparison_protocol::{
-    HashComparisonConfig, HashComparisonProtocol, HashComparisonStats,
+    HashComparisonConfig, HashComparisonFirstRequest, HashComparisonProtocol, HashComparisonStats,
 };
-pub use level_sync::{LevelWiseConfig, LevelWiseProtocol, LevelWiseStats};
+pub use level_sync::{LevelWiseConfig, LevelWiseFirstRequest, LevelWiseProtocol, LevelWiseStats};
 pub use manager::SyncManager;
 pub use metrics::{no_op_metrics, NoOpMetrics, PhaseTimer, SharedMetrics, SyncMetricsCollector};
 pub use prometheus_metrics::PrometheusSyncMetrics;

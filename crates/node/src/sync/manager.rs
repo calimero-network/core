@@ -2075,15 +2075,20 @@ impl SyncManager {
                     }
                 };
 
-                // Run the LevelWise responder with the first request's data
-                // (already parsed above for routing purposes)
-                super::level_sync::run_responder_with_first_request(
+                // Build the first request data (already parsed above for routing)
+                let first_request = super::level_sync::LevelWiseFirstRequest {
+                    level: first_level,
+                    parent_ids: first_parent_ids,
+                };
+
+                // Run the LevelWise responder via the trait method
+                use calimero_node_primitives::sync::SyncProtocolExecutor;
+                super::level_sync::LevelWiseProtocol::run_responder(
                     &mut transport,
                     &store,
                     requested_context_id,
                     our_identity,
-                    first_level,
-                    first_parent_ids,
+                    first_request,
                 )
                 .await?
             }

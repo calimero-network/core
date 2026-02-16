@@ -32,7 +32,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! use calimero_node::sync::level_sync::LevelWiseProtocol;
+//! use calimero_node::sync::level_sync::{LevelWiseProtocol, LevelWiseFirstRequest};
 //! use calimero_node_primitives::sync::SyncProtocolExecutor;
 //!
 //! // Initiator side
@@ -44,12 +44,14 @@
 //!     LevelWiseConfig { remote_root_hash, max_depth: 2 },
 //! ).await?;
 //!
-//! // Responder side
+//! // Responder side (manager extracts first request data)
+//! let first_request = LevelWiseFirstRequest { level: 0, parent_ids: None };
 //! LevelWiseProtocol::run_responder(
 //!     &mut transport,
 //!     &store,
 //!     context_id,
 //!     identity,
+//!     first_request,
 //! ).await?;
 //! ```
 
@@ -85,6 +87,19 @@ pub struct LevelWiseConfig {
     pub remote_root_hash: [u8; 32],
     /// Maximum depth to traverse (from protocol negotiation).
     pub max_depth: u32,
+}
+
+/// Data from the first `LevelWiseRequest` for responder dispatch.
+///
+/// The manager extracts this from the first `InitPayload::LevelWiseRequest`
+/// and passes it to `run_responder`. This is necessary because the manager
+/// consumes the first message for routing.
+#[derive(Debug, Clone)]
+pub struct LevelWiseFirstRequest {
+    /// The level being requested (0 = root's children).
+    pub level: u32,
+    /// Parent node IDs to query children for (None = query from root).
+    pub parent_ids: Option<Vec<[u8; 32]>>,
 }
 
 // =============================================================================
@@ -128,6 +143,7 @@ pub struct LevelWiseProtocol;
 #[async_trait(?Send)]
 impl SyncProtocolExecutor for LevelWiseProtocol {
     type Config = LevelWiseConfig;
+    type ResponderInit = LevelWiseFirstRequest;
     type Stats = LevelWiseStats;
 
     async fn run_initiator<T: SyncTransport>(
@@ -153,8 +169,17 @@ impl SyncProtocolExecutor for LevelWiseProtocol {
         store: &Store,
         context_id: ContextId,
         identity: PublicKey,
+        first_request: Self::ResponderInit,
     ) -> Result<()> {
-        run_responder_impl(transport, store, context_id, identity).await
+        run_responder_impl(
+            transport,
+            store,
+            context_id,
+            identity,
+            first_request.level,
+            first_request.parent_ids,
+        )
+        .await
     }
 }
 
@@ -416,27 +441,11 @@ async fn run_initiator_impl<T: SyncTransport>(
 // Responder Implementation
 // =============================================================================
 
-async fn run_responder_impl<T: SyncTransport>(
-    transport: &mut T,
-    store: &Store,
-    context_id: ContextId,
-    identity: PublicKey,
-) -> Result<()> {
-    // This should not be called directly from the manager since the first request
-    // is already consumed. Use run_responder_with_first_request instead.
-    info!(%context_id, "Starting LevelWise sync (responder) - no first request");
-
-    // Set up storage bridge
-    let runtime_env = create_runtime_env(store, context_id, identity);
-
-    run_responder_loop(transport, context_id, &runtime_env, 0, 0).await
-}
-
-/// Run the responder with the first request already consumed by the manager.
+/// Run the LevelWise responder with the first request data.
 ///
-/// This is called by the manager which has already extracted the first request's
-/// `level` and `parent_ids` for routing purposes.
-pub async fn run_responder_with_first_request<T: SyncTransport>(
+/// The manager has already consumed the first `InitPayload::LevelWiseRequest`
+/// for routing, so it passes the extracted `level` and `parent_ids` here.
+async fn run_responder_impl<T: SyncTransport>(
     transport: &mut T,
     store: &Store,
     context_id: ContextId,
