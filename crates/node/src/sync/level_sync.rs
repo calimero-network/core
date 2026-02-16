@@ -59,7 +59,7 @@ use async_trait::async_trait;
 use calimero_node_primitives::sync::{
     compare_level_nodes, create_runtime_env, InitPayload, LevelNode, LevelWiseResponse,
     MessagePayload, StreamMessage, SyncProtocolExecutor, SyncTransport, TreeLeafData,
-    MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST,
+    MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST, MAX_REQUESTS_PER_SESSION,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -210,10 +210,10 @@ async fn run_initiator_impl<T: SyncTransport>(
             .ok_or_else(|| eyre::eyre!("stream closed unexpectedly"))?;
 
         let StreamMessage::Message { payload, .. } = response else {
-            bail!("Unexpected response type during LevelWise sync");
+            bail!("Expected Message, got {:?}", response);
         };
 
-        let (resp_level, nodes, has_more_levels) = match payload {
+        let (resp_level, mut nodes, has_more_levels) = match payload {
             MessagePayload::LevelWiseResponse {
                 level: resp_level,
                 nodes,
@@ -251,19 +251,16 @@ async fn run_initiator_impl<T: SyncTransport>(
             );
         }
 
-        // Filter out invalid nodes
+        // Filter out invalid nodes in-place to avoid reallocation
         let original_count = nodes.len();
-        let nodes: Vec<_> = nodes
-            .into_iter()
-            .filter(|node| {
-                if node.is_valid() {
-                    true
-                } else {
-                    warn!(%context_id, "Invalid LevelNode in response, skipping");
-                    false
-                }
-            })
-            .collect();
+        nodes.retain(|node| {
+            if node.is_valid() {
+                true
+            } else {
+                warn!(%context_id, "Invalid LevelNode in response, skipping");
+                false
+            }
+        });
         if nodes.len() < original_count {
             debug!(
                 %context_id,
@@ -381,8 +378,8 @@ async fn run_initiator_impl<T: SyncTransport>(
     // Close the transport to signal completion
     transport.close().await?;
 
-    // Verify root hash after sync (Invariant I7: Verify snapshot before ANY writes)
-    // Note: We check after sync to confirm convergence, not to prevent writes
+    // Verify root hash after sync to confirm convergence
+    // This is a post-sync verification, not the Invariant I7 pre-write check
     let local_root_hash =
         with_runtime_env(runtime_env.clone(), || get_local_root_hash(context_id))?;
 
@@ -542,8 +539,19 @@ async fn run_responder_loop<T: SyncTransport>(
 ) -> Result<()> {
     let mut requests_handled = initial_requests_handled;
 
-    // Handle requests until stream closes
+    // Handle requests until stream closes or limit reached
     loop {
+        // DoS protection: limit total requests per session
+        if requests_handled >= MAX_REQUESTS_PER_SESSION {
+            warn!(
+                %context_id,
+                requests_handled,
+                max = MAX_REQUESTS_PER_SESSION,
+                "Request limit reached, closing responder"
+            );
+            break;
+        }
+
         let Some(request) = transport.recv().await? else {
             debug!(%context_id, requests_handled, "Stream closed, responder done");
             break;

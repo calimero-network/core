@@ -82,6 +82,13 @@ pub const MAX_PARENTS_PER_REQUEST: usize = 1000;
 /// from malicious peers sending oversized responses.
 pub const MAX_NODES_PER_LEVEL: usize = 10_000;
 
+/// Maximum number of requests allowed per sync session.
+///
+/// Prevents a peer from holding resources open indefinitely by sending
+/// unlimited requests. For LevelWise (depth <= 2), expected request count
+/// is minimal, but we allow headroom for edge cases.
+pub const MAX_REQUESTS_PER_SESSION: u64 = 128;
+
 // =============================================================================
 // LevelWise Request/Response
 // =============================================================================
