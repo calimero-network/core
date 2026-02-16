@@ -144,10 +144,16 @@ impl SyncMetricsCollector for SimMetricsCollector {
         &self,
         _context_id: &str,
         _protocol: &str,
-        _duration: Duration,
+        duration: Duration,
         _entities: usize,
     ) {
-        // Simulation uses convergence metrics instead
+        use super::runtime::SimTime;
+
+        let mut guard = self.metrics.lock().expect("metrics lock poisoned");
+        // Convert std::time::Duration to SimTime (both use microseconds internally)
+        let sim_time = SimTime::from_micros(duration.as_micros() as u64);
+        guard.convergence.converged = true;
+        guard.convergence.time_to_converge = Some(sim_time);
     }
 
     fn record_sync_failure(&self, _context_id: &str, _protocol: &str, _reason: &str) {
