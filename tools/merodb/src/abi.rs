@@ -146,7 +146,7 @@ pub fn infer_schema_from_database(
                         // Infer type from crdt_type
                         let type_ref = if let Some(crdt_type) = index.metadata.crdt_type {
                             match crdt_type {
-                                CrdtType::LwwRegister => TypeRef::Collection {
+                                CrdtType::LwwRegister { .. } => TypeRef::Collection {
                                     collection: CollectionType::Record { fields: Vec::new() },
                                     crdt_type: Some(CrdtCollectionType::LwwRegister),
                                     inner_type: Some(Box::new(TypeRef::string())),
@@ -166,7 +166,7 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::ReplicatedGrowableArray),
                                     inner_type: None,
                                 },
-                                CrdtType::UnorderedMap => {
+                                CrdtType::UnorderedMap { .. } => {
                                     // Default to Map<String, String> - can be refined later
                                     TypeRef::Collection {
                                         collection: CollectionType::Map {
@@ -177,14 +177,14 @@ pub fn infer_schema_from_database(
                                         inner_type: None,
                                     }
                                 }
-                                CrdtType::UnorderedSet => TypeRef::Collection {
+                                CrdtType::UnorderedSet { .. } => TypeRef::Collection {
                                     collection: CollectionType::List {
                                         items: Box::new(TypeRef::string()),
                                     },
                                     crdt_type: Some(CrdtCollectionType::UnorderedSet),
                                     inner_type: None,
                                 },
-                                CrdtType::Vector => TypeRef::Collection {
+                                CrdtType::Vector { .. } => TypeRef::Collection {
                                     collection: CollectionType::List {
                                         items: Box::new(TypeRef::string()),
                                     },

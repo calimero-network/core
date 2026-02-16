@@ -4,7 +4,6 @@
 //! context proxy data across different blockchain protocols. These request types
 //! are shared between the query and mutate clients to ensure consistency.
 
-use candid::CandidType;
 use serde::{Deserialize, Serialize};
 
 use crate::repr::Repr;
@@ -18,7 +17,7 @@ use crate::{Proposal, ProposalAction, ProposalApprovalWithSigner};
 /// Request to get the number of active proposals in the context.
 ///
 /// This is a simple request that doesn't require any parameters.
-#[derive(Copy, Clone, Debug, Serialize, CandidType)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub struct ActiveProposalRequest;
 
 /// Request to retrieve paginated context storage entries.
@@ -27,7 +26,7 @@ pub struct ActiveProposalRequest;
 ///
 /// * `offset` - The number of entries to skip from the beginning
 /// * `limit` - The maximum number of entries to return
-#[derive(Clone, Debug, Serialize, CandidType)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ContextStorageEntriesRequest {
     /// The number of entries to skip from the beginning
     pub offset: usize,
@@ -40,7 +39,7 @@ pub struct ContextStorageEntriesRequest {
 /// # Fields
 ///
 /// * `key` - The byte array key identifying the context variable
-#[derive(Clone, Debug, Serialize, CandidType)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ContextVariableRequest {
     /// The byte array key identifying the context variable
     pub key: Vec<u8>,
@@ -85,7 +84,7 @@ pub struct ProposalRequest {
 ///
 /// * `offset` - The number of proposals to skip from the beginning
 /// * `length` - The maximum number of proposals to return
-#[derive(Copy, Clone, Debug, Serialize, CandidType)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub struct ProposalsRequest {
     /// The number of proposals to skip from the beginning
     pub offset: usize,

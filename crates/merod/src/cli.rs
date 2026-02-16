@@ -1,4 +1,3 @@
-use calimero_version::CalimeroVersion;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use const_format::concatcp;
@@ -13,7 +12,6 @@ mod run;
 mod validation;
 
 use config::ConfigCommand;
-pub use init::ConfigProtocol;
 use init::InitCommand;
 use run::RunCommand;
 
@@ -40,7 +38,18 @@ pub const EXAMPLES: &str = concat!(
 );
 
 #[derive(Debug, Parser)]
-#[command(author, version = CalimeroVersion::current_str(), about, long_about = None)]
+#[command(
+    author,
+    version = const_format::formatcp!(
+        "{} (build {}) (commit {}) (rustc {})",
+        env!("MEROD_VERSION"),
+        env!("MEROD_BUILD"),
+        env!("MEROD_COMMIT"),
+        env!("MEROD_RUSTC_VERSION")
+    ),
+    about,
+    long_about = None
+)]
 #[command(after_help = concatcp!(
     "Environment variables:\n",
     "  CALIMERO_HOME    Directory for config and data\n\n",

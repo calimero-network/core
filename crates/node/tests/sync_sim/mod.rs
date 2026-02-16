@@ -3,6 +3,17 @@
 //! A deterministic, event-driven simulation framework for testing the Calimero
 //! sync protocol under realistic distributed system conditions.
 //!
+//! See [Simulation Framework Spec](https://github.com/calimero-network/specs/blob/main/sync/simulation-framework.md)
+//! for the complete specification, including:
+//! - §2: Architecture Overview
+//! - §3: Side-Effect Model (`SyncActions`)
+//! - §4: Message Identity and Delivery Semantics
+//! - §5: Deterministic Scheduling
+//! - §6: Crash/Restart Semantics
+//! - §7: State Digest and Hashing
+//! - §8: Convergence Definition (C1-C5)
+//! - §15: Protocol Negotiation Tests
+//!
 //! # Architecture
 //!
 //! ```text
@@ -51,7 +62,7 @@
 //! rt.node_mut(&alice).unwrap().insert_entity(
 //!     EntityId::from_u64(1),
 //!     vec![1, 2, 3],
-//!     CrdtType::LwwRegister,
+//!     CrdtType::lww_register("test"),
 //! );
 //!
 //! // Run until convergence
@@ -73,13 +84,15 @@ pub mod actions;
 #[macro_use]
 pub mod assertions;
 pub mod convergence;
-pub mod digest;
 pub mod metrics;
 pub mod network;
 pub mod node;
+pub mod protocol;
 pub mod runtime;
 pub mod scenarios;
 pub mod sim_runtime;
+pub mod storage;
+pub mod transport;
 pub mod types;
 
 /// Prelude for convenient imports.
@@ -95,7 +108,6 @@ pub mod prelude {
         check_convergence, is_deadlocked, ConvergenceInput, ConvergencePending,
         ConvergenceProperty, ConvergenceResult,
     };
-    pub use super::digest::{compute_state_digest, DigestCache, DigestEntity};
     pub use super::metrics::{
         ConvergenceMetrics, EffectMetrics, NodeMetrics, ProtocolMetrics, SimMetrics, WorkMetrics,
     };
@@ -103,10 +115,15 @@ pub mod prelude {
         FaultConfig, NetworkRouter, PartitionManager, PartitionSpec, SimEvent,
     };
     pub use super::node::{SimNode, SyncState};
+    pub use super::protocol::{execute_hash_comparison_sync, SimSyncStats};
     pub use super::runtime::{EventQueue, EventSeq, SimClock, SimDuration, SimRng, SimTime};
     pub use super::scenarios::{RandomScenario, Scenario};
     pub use super::sim_runtime::{SimConfig, SimRuntime, StopCondition};
-    pub use super::types::{DeltaId, EntityId, MessageId, NodeId, StateDigest, TimerId, TimerKind};
+    pub use super::storage::SimStorage;
+    pub use super::transport::{SimStream, SimStreamSender};
+    pub use super::types::{
+        DeltaId, DigestEntity, EntityId, MessageId, NodeId, StateDigest, TimerId, TimerKind,
+    };
 
     // Note: assertion macros (assert_converged!, assert_entity_count!, etc.) are available
     // via `#[macro_use]` on the assertions module and don't need explicit re-export.

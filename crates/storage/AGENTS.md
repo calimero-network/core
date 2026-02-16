@@ -19,17 +19,132 @@ cargo test -p calimero-storage
 
 # Test specific CRDT
 cargo test -p calimero-storage test_counter -- --nocapture
+
+# Test merge dispatch
+cargo test -p calimero-storage merge_dispatch -- --nocapture
 ```
 
-## CRDT Types
+## CRDT Types and Merge Strategies
 
-| Type                | Purpose                  | Merge Strategy     |
-| ------------------- | ------------------------ | ------------------ |
-| `Counter`           | Distributed counter      | Increments sum     |
-| `LwwRegister<T>`    | Last-write-wins register | Timestamp-based    |
-| `UnorderedMap<K,V>` | Key-value map            | Entry-wise merge   |
-| `Vector<T>`         | Ordered list             | Element-wise merge |
-| `UnorderedSet<T>`   | Unique values            | Union              |
+| Type                       | Purpose                  | Merge Strategy                    | Storage    |
+| -------------------------- | ------------------------ | --------------------------------- | ---------- |
+| `GCounter`                 | Grow-only counter        | Max per executor                  | Blob       |
+| `PnCounter`                | Positive-negative counter| Max per executor (pos & neg maps) | Blob       |
+| `LwwRegister<T>`           | Last-write-wins register | Timestamp-based (later wins)      | Blob       |
+| `ReplicatedGrowableArray`  | Collaborative text (RGA) | Union of characters               | Blob       |
+| `UnorderedMap<K,V>`        | Key-value map            | Entry-wise merge*                 | Structured |
+| `UnorderedSet<T>`          | Unique values            | Union (add-wins)                  | Structured |
+| `Vector<T>`                | Ordered list             | Element-wise merge*               | Structured |
+| `UserStorage`              | Per-user data            | LWW per user                      | Blob       |
+| `FrozenStorage`            | Immutable data           | First-write-wins                  | Blob       |
+
+*Structured storage: Entries are separate entities with their own CrdtType, merged individually.
+
+## AI Agent Mental Model: CRDT Merge Architecture
+
+### Two Merge Contexts (Critical for Understanding)
+
+The storage system has **two different merge contexts**:
+
+#### Context A: Non-Root Entity Sync (try_merge_non_root)
+
+When individual entities (map entries, vector elements, etc.) are synced:
+
+```
+Entity Conflict -> Has CrdtType? -> is_builtin_crdt()? -> merge_by_crdt_type()
+                       |                  |
+                       No                 No (Custom only)
+                       v                  v
+                    LWW fallback      WASM callback (PR #1940)
+```
+
+**Key insight**: Collections (UnorderedMap, Vector, UnorderedSet) return incoming at
+container-level because entries are stored as **separate entities** - each entry merges
+with its own CrdtType.
+
+#### Context B: Root Entity Sync (merge_root_state)
+
+When the entire app state (root entity) conflicts:
+
+```
+Root Conflict -> Try merge registry (Mergeable trait) -> Error if not registered
+```
+
+The Mergeable trait implementations in crdt_impls.rs provide **recursive merge**:
+- UnorderedMap::merge() iterates entries and calls value.merge(&other_value)
+- Vector::merge() merges elements at same indices recursively
+- This is where nested CRDT merging happens!
+
+**I5 Enforcement**: `merge_root_state()` requires explicit registration. If no merge
+function is registered, it returns an error rather than silently falling back to LWW.
+
+### Merge Decision Tree (Corrected)
+
+```
++---------------------------------------------------------------------+
+|                    ENTITY CONFLICT DETECTED                         |
+|               (existing.updated_at <= incoming.updated_at)          |
++-------------------------------+-------------------------------------+
+                                |
+                    +-----------+-----------+
+                    |   Is ROOT entity?     |
+                    +-----------+-----------+
+                                |
+            +-------Yes---------+----------No-----------+
+            |                   |                       |
+            v                   |                       v
++-----------------------+       |       +-------------------------+
+|  merge_root_state()   |       |       |  Has CrdtType metadata? |
+|  1. Try merge registry|       |       +-----------+-------------+
+|     (Mergeable trait) |       |                   |
+|  2. Error if not      |       |           +---No--+---Yes---+
+|     registered (I5)   |       |           |                 |
++-----------------------+       |           v                 v
+                                |      LWW fallback    is_builtin_crdt()?
+                                |      (legacy data)          |
+                                |                     +---Yes-+---No---+
+                                |                     |                |
+                                |                     v                v
+                                |          merge_by_crdt_type()   WASM callback
+                                |                                 (or LWW fallback)
+```
+
+### merge_by_crdt_type() Dispatch Table
+
+| CrdtType       | Function              | Behavior                              |
+| -------------- | --------------------- | ------------------------------------- |
+| `GCounter`     | `merge_g_counter()`   | Counter::merge() - max per executor   |
+| `PnCounter`    | `merge_pn_counter()`  | Counter::merge() - max per executor   |
+| `Rga`          | `merge_rga()`         | RGA::merge() - union characters       |
+| `LwwRegister`  | Returns incoming      | Timestamp comparison done by caller   |
+| `UnorderedMap` | Returns incoming      | Entries are separate entities*        |
+| `UnorderedSet` | Returns incoming      | Entries are separate entities*        |
+| `Vector`       | Returns incoming      | Entries are separate entities*        |
+| `UserStorage`  | Returns incoming      | LWW per user                          |
+| `FrozenStorage`| Returns existing      | First-write-wins (immutable)          |
+| `Custom`       | WasmRequired error    | Needs app-defined merge via WASM      |
+
+*These types use "Structured" storage - container metadata only; entries sync separately.
+
+### is_builtin_crdt() Definition
+
+```rust
+pub fn is_builtin_crdt(crdt_type: &CrdtType) -> bool {
+    !matches!(crdt_type, CrdtType::Custom(_))
+}
+```
+
+**ALL variants except Custom are built-in!**
+
+## Key Files for Merge Understanding
+
+| File                              | Purpose                                    |
+| --------------------------------- | ------------------------------------------ |
+| `src/merge.rs`                    | merge_by_crdt_type(), merge_root_state()   |
+| `src/merge/registry.rs`           | Merge registry for Mergeable types         |
+| `src/interface.rs`                | try_merge_non_root(), save_internal()      |
+| `src/collections/crdt_meta.rs`    | CrdtType, Mergeable, CrdtMeta traits       |
+| `src/collections/crdt_impls.rs`   | Mergeable implementations for all CRDTs    |
 
 ## File Organization
 
@@ -37,10 +152,15 @@ cargo test -p calimero-storage test_counter -- --nocapture
 src/
 ├── lib.rs                    # Public exports
 ├── entities.rs               # Entity traits
-├── interface.rs              # Storage interface
+├── interface.rs              # Storage interface (merge dispatch here!)
+├── merge.rs                  # merge_by_crdt_type(), merge_root_state()
+├── merge/
+│   └── registry.rs           # Merge registry for Mergeable types
 ├── collections.rs            # Collections re-exports
 ├── collections/
-│   ├── counter.rs            # Counter CRDT
+│   ├── crdt_meta.rs          # CrdtType, Mergeable, CrdtMeta traits
+│   ├── crdt_impls.rs         # Mergeable implementations
+│   ├── counter.rs            # GCounter/PnCounter CRDT
 │   ├── lww_register.rs       # Last-write-wins register
 │   ├── unordered_map.rs      # Unordered map
 │   ├── unordered_set.rs      # Unordered set
@@ -51,8 +171,6 @@ src/
 │   ├── nested_map.rs         # Nested map
 │   ├── frozen.rs             # Frozen collections
 │   ├── frozen_value.rs       # Frozen value
-│   ├── crdt_impls.rs         # CRDT implementations
-│   ├── crdt_meta.rs          # CRDT metadata
 │   ├── decompose_impls.rs    # Decompose implementations
 │   ├── composite_key.rs      # Composite key
 │   ├── user.rs               # User collection
@@ -62,29 +180,28 @@ src/
 ├── integration.rs            # Integration utilities
 ├── action.rs                 # Actions
 ├── delta.rs                  # Delta handling
-├── merge.rs                  # Merge logic
-├── merge/
-│   └── registry.rs           # Merge registry
 ├── snapshot.rs               # Snapshots
-├── store.rs                  # Store
-├── index.rs                  # Indexing
-├── env.rs                    # Environment
+├── store.rs                  # Store adaptor
+├── index.rs                  # Entity indexing (Merkle tree)
+├── env.rs                    # RuntimeEnv (storage backend injection)
 ├── js.rs                     # JS bindings
-├── logical_clock.rs          # Logical clock
+├── logical_clock.rs          # HLC (Hybrid Logical Clock)
 ├── constants.rs              # Constants
 ├── error.rs                  # Errors
 └── tests/
-    ├── address.rs
-    ├── collections.rs
-    ├── crdt.rs
-    ├── delta.rs
-    ├── entities.rs
-    ├── interface.rs
-    ├── lww_register.rs
-    ├── merge_integration.rs
-    ├── rga.rs
+    ├── merge_dispatch.rs     # Tests for merge_by_crdt_type
+    ├── merge_integration.rs  # Integration tests
     └── ...
 ```
+
+## CIP Invariants (Sync Protocol)
+
+When working with merge logic, these invariants MUST be preserved:
+
+- **I5 (No Silent Data Loss)**: Built-in CRDT types MUST use their semantic merge rules,
+  never be overwritten by LWW. GCounter contributions from different nodes must sum.
+- **I10 (Metadata Persistence)**: crdt_type MUST be persisted in entity metadata for
+  correct merge dispatch.
 
 ## Patterns
 
@@ -131,7 +248,7 @@ use calimero_storage::collections::Counter;
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct CounterApp {
-    count: Counter,
+    count: Counter,  // GCounter by default (ALLOW_DECREMENT=false)
 }
 
 #[app::logic]
@@ -174,36 +291,37 @@ impl ConfigApp {
 }
 ```
 
-## Key Files
-
-| File                               | Purpose                |
-| ---------------------------------- | ---------------------- |
-| `src/lib.rs`                       | Public API             |
-| `src/collections/counter.rs`       | Counter implementation |
-| `src/collections/unordered_map.rs` | Map implementation     |
-| `src/collections/lww_register.rs`  | LWW register           |
-| `src/entities.rs`                  | Entity traits          |
-| `src/interface.rs`                 | Storage interface      |
-
 ## JIT Index
 
 ```bash
-# Find CRDT implementations
-rg -n "impl.*Crdt" src/collections/
+# Find merge dispatch logic
+rg -n "merge_by_crdt_type" src/
 
-# Find merge logic
-rg -n "fn merge" src/collections/
+# Find Mergeable trait implementations
+rg -n "impl.*Mergeable" src/collections/crdt_impls.rs
+
+# Find CrdtType definitions
+rg -n "pub enum CrdtType" src/collections/crdt_meta.rs
+
+# Find non-root merge logic
+rg -n "try_merge_non_root" src/interface.rs
+
+# Find root merge logic
+rg -n "merge_root_state" src/merge.rs
+
+# Find CRDT implementations
+rg -n "impl.*CrdtMeta" src/collections/
 
 # Find collection traits
 rg -n "pub trait" src/
 
-# Find serialization
-rg -n "BorshSerialize" src/collections/
+# Find is_builtin_crdt
+rg -n "is_builtin_crdt" src/merge.rs
 ```
 
 ## Storage Macros
 
-Use `calimero-storage-macros` for derive macros:
+Use calimero-storage-macros for derive macros:
 
 ```rust
 use calimero_storage_macros::AtomicUnit;
@@ -216,14 +334,45 @@ struct MyType {
 
 ## Common Gotchas
 
-- Use `#[app::state]` macro attribute
-- CRDTs auto-merge on sync - no manual conflict resolution
-- Use nested CRDTs (`UnorderedMap<String, LwwRegister<String>>`) for last-write-wins semantics
-- Convert values with `.into()` when inserting: `self.data.insert(key, value.into())?`
-- Extract values from `LwwRegister` with `.get().clone()`
-- Return `app::Result<T>` from methods, not plain `T` or `Option<T>`
-- Use `?` operator for error propagation from CRDT operations
-- `UnorderedMap` keys must be unique per context
-- `Vector` operations are position-based
-- `Counter` only supports increment (no decrement by design)
+- Use #[app::state] macro attribute - it auto-generates Mergeable impl
+- CRDTs auto-merge on sync - no manual conflict resolution needed
+- Use nested CRDTs (UnorderedMap<String, LwwRegister<String>>) for last-write-wins semantics
+- Convert values with .into() when inserting: self.data.insert(key, value.into())?
+- Extract values from LwwRegister with .get().clone()
+- Return app::Result<T> from methods, not plain T or Option<T>
+- Use ? operator for error propagation from CRDT operations
+- UnorderedMap keys must be unique per context
+- Vector operations are position-based
+- Counter only supports increment by default (use PnCounter for decrement)
 - All CRDTs must be serializable with borsh
+- **Structured vs Blob storage**: Collections use structured storage (entries are separate
+  entities), while counters and registers use blob storage (single serialized value)
+
+## Further Documentation
+
+- readme/architecture.md - Deep dive into three-layer conflict resolution
+- readme/DOCUMENTATION_INDEX.md - Full documentation index
+- src/merge.rs - Module-level docs on merge dispatch
+- src/collections/crdt_impls.rs - Module-level docs on Mergeable implementations
+
+
+## Root Entity Merge Requirement
+
+The `merge_root_state()` function **requires** a merge function to be registered.
+If no merge function is registered, it returns an error rather than silently falling
+back to LWW (which would violate Invariant I5 - No Silent Data Loss).
+
+**How to Register:**
+
+| Method | When to Use |
+| ------ | ----------- |
+| `#[app::state]` macro | WASM apps (recommended, auto-registers) |
+| `register_crdt_merge::<T>()` | Tests, manual registration |
+
+**Error Message:**
+```
+No merge function registered for root entity.
+Use #[app::state] macro or call register_crdt_merge::<YourState>().
+```
+
+👉 **See `readme/merging.md`** for detailed merge behavior documentation.

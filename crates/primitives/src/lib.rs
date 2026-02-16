@@ -9,3 +9,4 @@ pub mod hash;
 pub mod identity;
 pub mod reflect;
 pub mod utils;
+pub mod version;

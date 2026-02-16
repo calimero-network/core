@@ -177,6 +177,7 @@ fn merkle_hash_propagates_through_deep_hierarchy() {
 
 #[test]
 fn merkle_hash_detects_divergence() {
+    super::common::register_test_merge_functions();
     type Storage1 = MockedStorage<8001>;
     type Storage2 = MockedStorage<8002>;
 
@@ -212,6 +213,7 @@ fn merkle_hash_detects_divergence() {
 
 #[test]
 fn merkle_hash_convergence_after_sync() {
+    super::common::register_test_merge_functions();
     type Storage1 = MockedStorage<8003>;
     type Storage2 = MockedStorage<8004>;
 

@@ -1,7 +1,6 @@
 use std::process::ExitCode;
 
 use calimero_client::ClientError;
-use calimero_version::CalimeroVersion;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
@@ -47,7 +46,18 @@ pub const EXAMPLES: &str = r"
 ";
 
 #[derive(Debug, Parser)]
-#[command(author, version = CalimeroVersion::current_str(), about, long_about = None)]
+#[command(
+    author,
+    version = const_format::formatcp!(
+        "{} (build {}) (commit {}) (rustc {})",
+        env!("MEROCTL_VERSION"),
+        env!("MEROCTL_BUILD"),
+        env!("MEROCTL_COMMIT"),
+        env!("MEROCTL_RUSTC_VERSION")
+    ),
+    about,
+    long_about = None
+)]
 #[command(after_help = concatcp!(
     "Environment variables:\n",
     "  CALIMERO_HOME    Directory for config and data\n\n",

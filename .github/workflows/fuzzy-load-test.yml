@@ -215,8 +215,6 @@ jobs:
               fuzzy-test.yml \
               --image "$IMAGE" \
               --e2e-mode \
-              --near-devnet \
-              --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
               --verbose 2>&1 | tee ../../../fuzzy-test-logs/kv-store/merobox-output.log
 
           exit_code=$?
@@ -419,8 +417,6 @@ jobs:
               fuzzy-test.yml \
               --image "$IMAGE" \
               --e2e-mode \
-              --near-devnet \
-              --contracts-dir "$GITHUB_WORKSPACE/contracts/near" \
               --verbose 2>&1 | tee ../../../fuzzy-test-logs/kv-store-with-handlers/merobox-output.log
 
           exit_code=$?

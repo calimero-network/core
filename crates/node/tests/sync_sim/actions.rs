@@ -104,7 +104,7 @@ pub struct EntityMetadata {
 impl Default for EntityMetadata {
     fn default() -> Self {
         Self {
-            crdt_type: CrdtType::LwwRegister,
+            crdt_type: CrdtType::lww_register("test"),
             hlc_timestamp: 0,
             version: 1,
             collection_id: [0; 32],

@@ -81,8 +81,12 @@ where
     };
 
     let mut registry = MERGE_REGISTRY.write().unwrap_or_else(|_| {
-        // Lock poisoning is a programming error that should never happen
-        // In production, this indicates a bug in the merge system
+        // Lock poisoning indicates a panic occurred while holding the lock.
+        // This is a serious error - abort to prevent undefined behavior.
+        tracing::error!(
+            target: "calimero_storage::merge",
+            "MERGE_REGISTRY lock poisoned during write, aborting. This indicates a panic in merge code."
+        );
         std::process::abort()
     });
     let _ = registry.insert(type_id, merge_fn);
@@ -91,39 +95,75 @@ where
 /// Clear the merge registry (for testing only)
 #[cfg(test)]
 pub fn clear_merge_registry() {
-    let mut registry = MERGE_REGISTRY
-        .write()
-        .unwrap_or_else(|_| std::process::abort());
+    let mut registry = MERGE_REGISTRY.write().unwrap_or_else(|_| {
+        tracing::error!(
+            target: "calimero_storage::merge",
+            "MERGE_REGISTRY lock poisoned during clear, aborting. This indicates a panic in merge code."
+        );
+        std::process::abort()
+    });
     registry.clear();
+}
+
+/// Result of attempting to merge using registered merge functions
+#[derive(Debug)]
+#[must_use]
+pub enum MergeRegistryResult {
+    /// A registered merge function succeeded
+    Success(Vec<u8>),
+    /// No merge functions are registered (I5 enforcement needed)
+    NoFunctionsRegistered,
+    /// Merge functions are registered but all failed (e.g., type mismatch)
+    AllFunctionsFailed,
 }
 
 /// Try to merge using registered merge function
 ///
-/// If the type is registered, uses its merge function.
-/// Otherwise, returns None to indicate fallback to LWW.
+/// Returns:
+/// - `Success(merged)` if a merge function succeeded
+/// - `NoFunctionsRegistered` if no merge functions are registered (I5 violation)
+/// - `AllFunctionsFailed` if merge functions exist but none could merge the data
 pub fn try_merge_registered(
     existing: &[u8],
     incoming: &[u8],
     existing_ts: u64,
     incoming_ts: u64,
-) -> Option<Result<Vec<u8>, Box<dyn std::error::Error>>> {
-    // For now, we don't have type information at runtime
-    // This will be solved in Phase 3 with type hints in storage
+) -> MergeRegistryResult {
+    // For now, we don't have type information at runtime.
+    // TODO: Store type hints with root entity for O(1) dispatch (see issue #1993)
 
-    // Try each registered merge function (brute force for Phase 2)
-    let registry = MERGE_REGISTRY.read().ok()?;
+    // Try each registered merge function until one succeeds (O(n) where n = registered types)
+    let registry = MERGE_REGISTRY.read().unwrap_or_else(|poisoned| {
+        // Lock poisoning indicates a panic occurred while holding the lock.
+        // This is a serious error - abort to prevent undefined behavior.
+        // This is consistent with the write side behavior in register_crdt_merge().
+        tracing::error!(
+            target: "calimero_storage::merge",
+            "MERGE_REGISTRY lock poisoned, aborting. This indicates a panic in merge code."
+        );
+        std::process::abort();
+        // Note: abort() never returns, but we need this for type inference
+        #[allow(unreachable_code)]
+        poisoned.into_inner()
+    });
+
+    if registry.is_empty() {
+        return MergeRegistryResult::NoFunctionsRegistered;
+    }
 
     for (_type_id, merge_fn) in registry.iter() {
         if let Ok(merged) = merge_fn(existing, incoming, existing_ts, incoming_ts) {
-            return Some(Ok(merged));
+            return MergeRegistryResult::Success(merged);
         }
     }
 
-    None
+    MergeRegistryResult::AllFunctionsFailed
 }
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
+
     use super::*;
     use crate::collections::{Counter, Mergeable};
     use crate::env;
@@ -140,8 +180,10 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_register_and_merge() {
         env::reset_for_testing();
+        clear_merge_registry(); // Clear any previous registrations to ensure clean test
 
         // Register the type
         register_crdt_merge::<TestState>();
@@ -165,14 +207,52 @@ mod tests {
         let bytes2 = borsh::to_vec(&state2).unwrap();
 
         // Merge via registry
-        let merged_bytes = try_merge_registered(&bytes1, &bytes2, 100, 200)
-            .unwrap()
-            .unwrap();
+        let merged_bytes = match try_merge_registered(&bytes1, &bytes2, 100, 200) {
+            MergeRegistryResult::Success(bytes) => bytes,
+            MergeRegistryResult::NoFunctionsRegistered => {
+                panic!("Expected merge function to be registered")
+            }
+            MergeRegistryResult::AllFunctionsFailed => {
+                panic!("Expected merge to succeed")
+            }
+        };
 
         // Deserialize result
         let merged: TestState = borsh::from_slice(&merged_bytes).unwrap();
 
         // Verify: counters summed (2 + 1 = 3)
         assert_eq!(merged.counter.value().unwrap(), 3);
+    }
+
+    #[test]
+    #[serial]
+    fn test_no_merge_function_registered_returns_error() {
+        use crate::merge::merge_root_state;
+
+        env::reset_for_testing();
+        clear_merge_registry(); // Ensure registry is empty
+
+        // Create some arbitrary data
+        let data1 = vec![1, 2, 3, 4];
+        let data2 = vec![5, 6, 7, 8];
+
+        // Attempt merge with no registered functions
+        let result = merge_root_state(&data1, &data2, 100, 200);
+
+        // Should return NoMergeFunctionRegistered error (I5 enforcement)
+        assert!(
+            result.is_err(),
+            "Expected error when no merge function is registered"
+        );
+
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::collections::crdt_meta::MergeError::NoMergeFunctionRegistered
+            ),
+            "Expected NoMergeFunctionRegistered error, got: {:?}",
+            err
+        );
     }
 }

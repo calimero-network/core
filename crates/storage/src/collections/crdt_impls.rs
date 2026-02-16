@@ -81,9 +81,10 @@ impl<T: Mergeable + Clone> Mergeable for Option<T> {
 // LwwRegister
 // ============================================================================
 
-impl<T> CrdtMeta for LwwRegister<T> {
+impl<T: 'static> CrdtMeta for LwwRegister<T> {
     fn crdt_type() -> CrdtType {
-        CrdtType::LwwRegister
+        // Include the inner type name for proper merge support
+        CrdtType::lww_register(std::any::type_name::<T>())
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -251,12 +252,12 @@ impl Mergeable for ReplicatedGrowableArray {
 // UnorderedMap
 // ============================================================================
 
-impl<K, V, S> CrdtMeta for UnorderedMap<K, V, S>
+impl<K: 'static, V: 'static, S> CrdtMeta for UnorderedMap<K, V, S>
 where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::UnorderedMap
+        CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>())
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -328,12 +329,12 @@ where
 // UnorderedSet
 // ============================================================================
 
-impl<T, S> CrdtMeta for UnorderedSet<T, S>
+impl<T: 'static, S> CrdtMeta for UnorderedSet<T, S>
 where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::UnorderedSet
+        CrdtType::unordered_set(std::any::type_name::<T>())
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -393,12 +394,12 @@ where
 // Vector
 // ============================================================================
 
-impl<T, S> CrdtMeta for Vector<T, S>
+impl<T: 'static, S> CrdtMeta for Vector<T, S>
 where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::Vector
+        CrdtType::vector(std::any::type_name::<T>())
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -489,7 +490,17 @@ mod tests {
     #[test]
     fn test_lww_register_is_crdt() {
         assert!(LwwRegister::<String>::is_crdt());
-        assert_eq!(LwwRegister::<String>::crdt_type(), CrdtType::LwwRegister);
+        // The inner type contains the full type path
+        match LwwRegister::<String>::crdt_type() {
+            CrdtType::LwwRegister { inner_type } => {
+                assert!(
+                    inner_type.contains("String"),
+                    "inner_type should contain 'String', got: {}",
+                    inner_type
+                );
+            }
+            other => panic!("Expected LwwRegister, got: {:?}", other),
+        }
         assert!(!LwwRegister::<String>::can_contain_crdts());
     }
 
@@ -518,7 +529,25 @@ mod tests {
     fn test_map_can_contain_crdts() {
         type TestMap = UnorderedMap<String, Counter>;
         assert!(TestMap::is_crdt());
-        assert_eq!(TestMap::crdt_type(), CrdtType::UnorderedMap);
+        match TestMap::crdt_type() {
+            CrdtType::UnorderedMap {
+                key_type,
+                value_type,
+            } => {
+                assert!(
+                    key_type.contains("String"),
+                    "key_type should contain 'String', got: {}",
+                    key_type
+                );
+                // Value type is Counter (a CRDT), not u64 - type_name returns full path
+                assert!(
+                    value_type.contains("Counter"),
+                    "value_type should contain 'Counter', got: {}",
+                    value_type
+                );
+            }
+            other => panic!("Expected UnorderedMap, got: {:?}", other),
+        }
         assert!(TestMap::can_contain_crdts()); // Maps CAN contain CRDTs!
     }
 

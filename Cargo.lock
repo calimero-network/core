@@ -1998,6 +1998,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-build-utils"
+version = "0.0.0"
+dependencies = [
+ "rustc_version 0.4.1",
+ "tempfile",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "calimero-client"
 version = "0.0.0"
 dependencies = [
@@ -2072,18 +2081,11 @@ dependencies = [
 name = "calimero-context-config"
 version = "0.0.0"
 dependencies = [
- "alloy",
- "alloy-sol-types",
  "borsh",
  "bs58 0.5.1",
- "candid",
- "ed25519-consensus",
  "ed25519-dalek",
  "either",
- "ethabi",
  "eyre",
- "hex",
- "ic-agent",
  "near-crypto",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
@@ -2091,11 +2093,7 @@ dependencies = [
  "reqwest 0.12.24",
  "serde",
  "serde_json",
- "starknet",
- "starknet-crypto",
- "starknet-types-core",
  "thiserror 1.0.69",
- "tokio",
  "url",
 ]
 
@@ -2258,6 +2256,7 @@ version = "0.0.0"
 dependencies = [
  "actix",
  "async-stream",
+ "async-trait",
  "base64 0.22.1",
  "borsh",
  "bs58 0.5.1",
@@ -2268,7 +2267,6 @@ dependencies = [
  "calimero-storage",
  "calimero-store",
  "calimero-utils-actix",
- "calimero-version",
  "camino",
  "clap",
  "dashmap 6.1.0",
@@ -2290,6 +2288,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "toml 0.8.23",
  "tracing",
 ]
 
@@ -2561,14 +2560,6 @@ dependencies = [
  "paste",
  "tokio",
  "tokio-stream",
-]
-
-[[package]]
-name = "calimero-version"
-version = "0.10.0-rc.40"
-dependencies = [
- "eyre",
- "rustc_version 0.2.3",
 ]
 
 [[package]]
@@ -4048,23 +4039,6 @@ dependencies = [
  "sha3",
  "thiserror 1.0.69",
  "uuid 0.8.2",
-]
-
-[[package]]
-name = "ethabi"
-version = "18.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7413c5f74cc903ea37386a8965a936cbeb334bd270862fdece542c1b2dcbc898"
-dependencies = [
- "ethereum-types",
- "hex",
- "once_cell",
- "regex",
- "serde",
- "serde_json",
- "sha3",
- "thiserror 1.0.69",
- "uint 0.9.5",
 ]
 
 [[package]]
@@ -6738,12 +6712,12 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
+ "calimero-build-utils",
  "calimero-client",
  "calimero-config",
  "calimero-context-config",
  "calimero-primitives",
  "calimero-server-primitives",
- "calimero-version",
  "camino",
  "clap",
  "color-eyre",
@@ -6776,18 +6750,19 @@ dependencies = [
  "alloy",
  "base64 0.22.1",
  "calimero-blobstore",
+ "calimero-build-utils",
  "calimero-config",
  "calimero-context",
  "calimero-context-config",
  "calimero-network-primitives",
  "calimero-node",
  "calimero-node-primitives",
+ "calimero-primitives",
  "calimero-server",
  "calimero-store",
  "calimero-store-rocksdb",
  "calimero-tee-attestation",
  "calimero-utils-actix",
- "calimero-version",
  "camino",
  "clap",
  "color-eyre",
@@ -9142,15 +9117,6 @@ checksum = "3e75f6a532d0fd9f7f13144f392b6ad56a32696bfcd9c78f797f16bbb6f072d6"
 
 [[package]]
 name = "rustc_version"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "138e3e0acb6c9fb258b19b67cb8abd63c00679d2851805ea151465464fe9030a"
-dependencies = [
- "semver 0.9.0",
-]
-
-[[package]]
-name = "rustc_version"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0dfe2087c51c460008730de8b57e6a320782fbfb312e1f4d520e6c6fae155ee"
@@ -9537,20 +9503,11 @@ checksum = "16c2f82143577edb4921b71ede051dac62ca3c16084e918bf7b40c96ae10eb33"
 
 [[package]]
 name = "semver"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d7eb9ef2c18661902cc47e535f9bc51b78acd254da71d375c2f6720d9a40403"
-dependencies = [
- "semver-parser 0.7.0",
-]
-
-[[package]]
-name = "semver"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f301af10236f6df4160f7c3f04eec6dbc70ace82d23326abad5edee88801c6b6"
 dependencies = [
- "semver-parser 0.10.3",
+ "semver-parser",
 ]
 
 [[package]]
@@ -9562,12 +9519,6 @@ dependencies = [
  "serde",
  "serde_core",
 ]
-
-[[package]]
-name = "semver-parser"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
 name = "semver-parser"

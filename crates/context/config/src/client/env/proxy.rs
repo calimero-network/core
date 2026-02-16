@@ -3,10 +3,8 @@ use crate::client::{CallClient, Environment};
 mod mutate;
 mod query;
 mod requests;
-mod types;
 use mutate::ContextProxyMutate;
 use query::ContextProxyQuery;
-pub use types::*;
 
 #[derive(Copy, Clone, Debug)]
 pub enum ContextProxy {}

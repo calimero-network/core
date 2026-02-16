@@ -49,8 +49,11 @@ calimero-store.workspace = true
 calimero-store-rocksdb.workspace = true
 calimero-tee-attestation.workspace = true
 calimero-utils-actix.workspace = true
-calimero-version.workspace = true
+calimero-primitives = { workspace = true, features = ["borsh"] }
 mero-auth = { path = "../auth" }
+
+[build-dependencies]
+calimero-build-utils.workspace = true
 
 [package.metadata.workspaces]
 independent = true
