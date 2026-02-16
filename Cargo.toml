@@ -182,7 +182,7 @@ quote = "1.0.37"
 rand = "0.8.5"
 reqwest = { version = "0.12.2", default-features = false, features = ["rustls-tls"] }
 ring = "0.17.8"
-rocksdb = "0.22.0"
+rocksdb = { version = "0.22.0", default-features = false }
 rust-embed = "8.5.0"
 rustc_version = "0.4"
 semver = "1.0.22"

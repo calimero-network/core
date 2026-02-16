@@ -35,7 +35,7 @@ near-primitives.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
 regex = "1.10.2"
-rocksdb = { version = "0.22.0", default-features = false, features = ["snappy", "lz4", "zlib", "bzip2"] }
+rocksdb.workspace = true
 rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-path"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
