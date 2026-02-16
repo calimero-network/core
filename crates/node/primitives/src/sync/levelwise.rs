@@ -39,6 +39,20 @@
 //!
 //! All types have `is_valid()` methods that should be called after deserializing
 //! from untrusted sources to prevent resource exhaustion attacks.
+//!
+//! # Security Note: DoS Protection Limitations
+//!
+//! The current validation model has a known limitation: `is_valid()` checks occur
+//! **after** borsh deserialization, meaning a malicious peer could send an oversized
+//! array that gets fully allocated before validation rejects it.
+//!
+//! Mitigations:
+//! - **Transport layer**: Message size limits should be enforced at the network layer
+//! - **Defense in depth**: `is_valid()` still catches logical violations
+//!
+//! Future work: Consider transport-level message size limits or streaming deserialization
+//! with early termination. Borsh field-level `max_length` attributes don't prevent the
+//! underlying allocation during deserialization.
 
 use std::collections::HashMap;
 
