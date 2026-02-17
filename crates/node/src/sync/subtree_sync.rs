@@ -14,11 +14,15 @@ use std::collections::{HashMap, HashSet};
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::hash_comparison::{CrdtType, LeafMetadata, TreeLeafData};
 use calimero_node_primitives::sync::subtree::{SubtreeData, SubtreePrefetchResponse};
-use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage, SyncProtocol};
+use calimero_node_primitives::sync::{
+    create_runtime_env, InitPayload, MessagePayload, StreamMessage, SyncProtocol,
+};
 use calimero_primitives::context::ContextId;
+use calimero_storage::address::Id;
+use calimero_storage::env::with_runtime_env;
+use calimero_storage::index::Index;
+use calimero_storage::store::MainStorage;
 use calimero_store::key::ContextState as ContextStateKey;
-use calimero_store::slice::Slice;
-use calimero_store::types::ContextState as ContextStateValue;
 use eyre::WrapErr;
 use tracing::{debug, info, warn};
 
@@ -54,6 +58,24 @@ impl SyncManager {
         stream: &mut Stream,
         _nonce: calimero_crypto::Nonce,
     ) -> eyre::Result<()> {
+        // Resolve identity for RuntimeEnv (needed to read CRDT metadata from Index)
+        let identities = self
+            .context_client
+            .get_context_members(&context_id, Some(true));
+        let our_identity = match crate::utils::choose_stream(identities, &mut rand::thread_rng())
+            .await
+            .transpose()?
+        {
+            Some((identity, _)) => identity,
+            None => {
+                warn!(%context_id, "No owned identity, cannot respond to SubtreePrefetchRequest");
+                return Ok(());
+            }
+        };
+
+        let datastore = self.context_client.datastore_handle().into_inner();
+        let runtime_env = create_runtime_env(&datastore, context_id, our_identity);
+
         if subtree_roots.is_empty() {
             // Discovery mode: enumerate local prefixes so the initiator can
             // compare them against its own state and send a targeted Phase 2.
@@ -89,11 +111,11 @@ impl SyncManager {
                 }
             };
 
-            self.send_subtree_fetch(context_id, &roots, depth, stream)
+            self.send_subtree_fetch(context_id, &roots, depth, stream, &runtime_env)
                 .await
         } else {
             // Direct fetch (Phase 2 only)
-            self.send_subtree_fetch(context_id, &subtree_roots, max_depth, stream)
+            self.send_subtree_fetch(context_id, &subtree_roots, max_depth, stream, &runtime_env)
                 .await
         }
     }
@@ -172,6 +194,7 @@ impl SyncManager {
         subtree_roots: &[[u8; 32]],
         max_depth: Option<usize>,
         stream: &mut Stream,
+        runtime_env: &calimero_storage::env::RuntimeEnv,
     ) -> eyre::Result<()> {
         let depth =
             max_depth.unwrap_or(calimero_node_primitives::sync::subtree::DEFAULT_SUBTREE_MAX_DEPTH);
@@ -187,7 +210,7 @@ impl SyncManager {
         let mut not_found = Vec::new();
 
         for root in subtree_roots {
-            match self.collect_subtree_entities(context_id, root, depth) {
+            match self.collect_subtree_entities(context_id, root, depth, runtime_env) {
                 Ok(subtree_data) => {
                     if subtree_data.is_empty() {
                         not_found.push(*root);
@@ -228,7 +251,8 @@ impl SyncManager {
     /// Collect all entities within a subtree identified by a root prefix.
     ///
     /// Iterates storage, filters by context_id and first-byte prefix match,
-    /// and builds `TreeLeafData` for each matching entity.
+    /// and builds `TreeLeafData` for each matching entity with real CRDT
+    /// metadata from the Index (Invariant I10: persist crdt_type).
     ///
     /// Note: roots are single-byte prefixes (`[prefix, 0, …, 0]`), so we
     /// always compare only the first byte. The `depth` parameter is stored
@@ -238,6 +262,7 @@ impl SyncManager {
         context_id: ContextId,
         subtree_root: &[u8; 32],
         depth: usize,
+        runtime_env: &calimero_storage::env::RuntimeEnv,
     ) -> eyre::Result<SubtreeData> {
         let handle = self.context_client.datastore_handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
@@ -257,7 +282,25 @@ impl SyncManager {
                 continue;
             }
 
-            let metadata = LeafMetadata::new(CrdtType::lww_register("unknown"), 0, [0u8; 32]);
+            // Read real CRDT metadata from Index (matching HashComparison responder pattern)
+            let metadata = with_runtime_env(runtime_env.clone(), || {
+                let entity_id = Id::new(state_key);
+                match Index::<MainStorage>::get_index(entity_id) {
+                    Ok(Some(idx)) => {
+                        let crdt_type = idx
+                            .metadata
+                            .crdt_type
+                            .clone()
+                            .unwrap_or_else(|| CrdtType::lww_register("unknown"));
+                        LeafMetadata::new(crdt_type, idx.metadata.updated_at(), [0u8; 32])
+                    }
+                    _ => {
+                        // Entity in KV but not in Index — legacy or orphaned data
+                        LeafMetadata::new(CrdtType::lww_register("unknown"), 0, [0u8; 32])
+                    }
+                }
+            });
+
             let leaf = TreeLeafData::new(state_key, value.value.to_vec(), metadata);
             entities.push(leaf);
         }
@@ -502,21 +545,28 @@ impl SyncManager {
             stale
         };
 
-        // Apply: delete stale keys, then put received entities
+        // Delete stale keys (raw KV — matching snapshot sync cleanup pattern)
         let mut total_deleted = 0usize;
         let mut total_applied = 0usize;
-        let mut handle = self.context_client.datastore_handle();
-
-        for state_key in &keys_to_delete {
-            handle.delete(&ContextStateKey::new(context_id, *state_key))?;
-            total_deleted += 1;
+        {
+            let mut handle = self.context_client.datastore_handle();
+            for state_key in &keys_to_delete {
+                handle.delete(&ContextStateKey::new(context_id, *state_key))?;
+                total_deleted += 1;
+            }
         }
+
+        // Apply received entities with CRDT merge (Invariant I5: No Silent Data Loss).
+        // Uses apply_leaf_with_crdt_merge like HashComparison and LevelWise protocols,
+        // ensuring proper merge semantics based on crdt_type and HLC timestamps.
+        let store = self.context_client.datastore_handle().into_inner();
+        let runtime_env = create_runtime_env(&store, context_id, our_identity);
 
         for subtree in &prefetch_response.subtrees {
             for entity in &subtree.entities {
-                let key = ContextStateKey::new(context_id, entity.key);
-                let slice: Slice<'_> = Slice::from(entity.value.clone());
-                handle.put(&key, &ContextStateValue::from(slice))?;
+                with_runtime_env(runtime_env.clone(), || {
+                    super::helpers::apply_leaf_with_crdt_merge(context_id, entity)
+                })?;
                 total_applied += 1;
             }
         }
@@ -937,4 +987,74 @@ mod tests {
             5,
         ));
     }
+
+    // =========================================================================
+    // xor_into_hash Tests — divergence hash used by discovery & identification
+    // =========================================================================
+
+    #[test]
+    fn test_xor_into_hash_basic() {
+        let mut hash = [0u8; 32];
+        xor_into_hash(&mut hash, &[0xFF]);
+        assert_eq!(hash[0], 0xFF);
+        assert_eq!(hash[1], 0x00); // untouched bytes stay zero
+    }
+
+    #[test]
+    fn test_xor_into_hash_self_inverse() {
+        // XOR-ing the same data twice cancels out (returns to zero)
+        let mut hash = [0u8; 32];
+        let data = [0xAB, 0xCD, 0xEF];
+        xor_into_hash(&mut hash, &data);
+        xor_into_hash(&mut hash, &data);
+        assert_eq!(hash, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_xor_into_hash_wraps_at_32() {
+        // Data longer than 32 bytes wraps via `i % 32`
+        let mut hash = [0u8; 32];
+        let mut data = [0u8; 33];
+        data[0] = 0x01;
+        data[32] = 0x02; // wraps to index 0
+        xor_into_hash(&mut hash, &data);
+        assert_eq!(hash[0], 0x01 ^ 0x02); // both folded into byte 0
+    }
+
+    #[test]
+    fn test_xor_into_hash_order_independent() {
+        // XOR is commutative: hash(A, B) == hash(B, A)
+        let a = [0x11, 0x22];
+        let b = [0x33, 0x44];
+
+        let mut hash_ab = [0u8; 32];
+        xor_into_hash(&mut hash_ab, &a);
+        xor_into_hash(&mut hash_ab, &b);
+
+        let mut hash_ba = [0u8; 32];
+        xor_into_hash(&mut hash_ba, &b);
+        xor_into_hash(&mut hash_ba, &a);
+
+        assert_eq!(hash_ab, hash_ba);
+    }
+
+    #[test]
+    fn test_xor_into_hash_empty_data_is_noop() {
+        let mut hash = [0x42; 32];
+        let before = hash;
+        xor_into_hash(&mut hash, &[]);
+        assert_eq!(hash, before);
+    }
+
+    // =========================================================================
+    // Note on CRDT merge testing
+    // =========================================================================
+    //
+    // The CRDT-aware entity application path (`apply_leaf_with_crdt_merge`
+    // within `with_runtime_env`) requires a full storage runtime environment
+    // (RuntimeEnv, Index, MainStorage). It cannot be unit tested here.
+    //
+    // It is tested indirectly through the sync_sim integration tests which
+    // set up SimStorage with proper storage backends.
+    // See: crates/node/tests/sync_sim/
 }
