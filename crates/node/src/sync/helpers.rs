@@ -116,3 +116,52 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     Interface::<MainStorage>::apply_action(action)?;
     Ok(())
 }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calimero_primitives::application::ApplicationId;
+
+    #[test]
+    fn test_validate_application_id_matching() {
+        let app_id = ApplicationId::from([1u8; 32]);
+        assert!(validate_application_id(&app_id, &app_id).is_ok());
+    }
+
+    #[test]
+    fn test_validate_application_id_mismatch() {
+        let app1 = ApplicationId::from([1u8; 32]);
+        let app2 = ApplicationId::from([2u8; 32]);
+        let result = validate_application_id(&app1, &app2);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("application mismatch"));
+    }
+
+    #[test]
+    fn test_generate_nonce_returns_value() {
+        let nonce = generate_nonce();
+        // Nonce should be non-zero (extremely unlikely to be all zeros)
+        // Nonce is NONCE_LEN = 12 bytes
+        assert_ne!(nonce, [0u8; 12]);
+    }
+
+    #[test]
+    fn test_generate_nonce_is_random() {
+        // Generate two nonces - they should be different
+        let nonce1 = generate_nonce();
+        let nonce2 = generate_nonce();
+        assert_ne!(nonce1, nonce2, "Nonces should be randomly generated");
+    }
+
+    // Note: `apply_leaf_with_crdt_merge` requires a full storage runtime environment
+    // (via `with_runtime_env`). It is tested indirectly through the sync_sim
+    // integration tests which set up `SimStorage` with proper storage backends.
+    // See: crates/node/tests/sync_sim/
+}

@@ -59,9 +59,9 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
-    compare_level_nodes, create_runtime_env, InitPayload, LevelNode, LevelWiseResponse,
-    MessagePayload, StreamMessage, SyncProtocolExecutor, SyncTransport, TreeLeafData,
-    MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST, MAX_REQUESTS_PER_SESSION,
+    compare_level_nodes, create_runtime_env, InitPayload, LevelNode, MessagePayload, StreamMessage,
+    SyncProtocolExecutor, SyncTransport, TreeLeafData, MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL,
+    MAX_PARENTS_PER_REQUEST, MAX_REQUESTS_PER_SESSION,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -129,6 +129,10 @@ pub struct LevelWiseStats {
     pub requests_sent: u64,
     /// Whether final root hash was verified against expected.
     pub root_hash_verified: bool,
+    /// Whether parent_ids were truncated due to `MAX_PARENTS_PER_REQUEST`.
+    ///
+    /// If true, the sync may be incomplete and a follow-up sync might be needed.
+    pub truncation_occurred: bool,
 }
 
 // =============================================================================
@@ -312,12 +316,8 @@ async fn run_initiator_impl<T: SyncTransport>(
             get_local_hashes_at_level(context_id, current_parent_ids.as_deref())
         })?;
 
-        // Build response for comparison - move nodes in, then move them back out
-        // to avoid expensive clone of potentially large leaf data
-        let remote_response = LevelWiseResponse::new(level as usize, nodes, has_more_levels);
-
-        // Compare local vs remote
-        let compare_result = compare_level_nodes(&local_hashes, &remote_response);
+        // Compare local vs remote - pass nodes directly to avoid wrap-unwrap
+        let compare_result = compare_level_nodes(&local_hashes, &nodes);
 
         stats.nodes_compared += compare_result.total_compared() as u64;
         stats.nodes_skipped += compare_result.matching.len() as u64;
@@ -332,16 +332,17 @@ async fn run_initiator_impl<T: SyncTransport>(
             "Level comparison result"
         );
 
-        // Move nodes back out of the response for subsequent processing
-        let nodes = remote_response.nodes;
-
         // Process nodes that need sync
         let mut next_level_parents: Vec<[u8; 32]> = Vec::new();
         // Track already-added parent IDs to avoid duplicates - O(1) membership checks
         let mut added_parents: HashSet<[u8; 32]> = HashSet::new();
 
         // Build HashMap for O(1) node lookups instead of O(n) linear search
-        let nodes_by_id: HashMap<[u8; 32], &LevelNode> = nodes.iter().map(|n| (n.id, n)).collect();
+        // Use entry().or_insert() to keep first occurrence, consistent with compare_level_nodes
+        let mut nodes_by_id: HashMap<[u8; 32], &LevelNode> = HashMap::new();
+        for node in &nodes {
+            nodes_by_id.entry(node.id).or_insert(node);
+        }
 
         // Process differing and locally missing nodes
         // (nodes_to_process() includes both differing and local_missing)
@@ -391,6 +392,8 @@ async fn run_initiator_impl<T: SyncTransport>(
                 "Truncating parent IDs for next level request"
             );
             next_level_parents.truncate(MAX_PARENTS_PER_REQUEST);
+            // Track that truncation occurred - sync may be incomplete
+            stats.truncation_occurred = true;
         }
 
         current_parent_ids = Some(next_level_parents);
@@ -454,6 +457,25 @@ async fn run_responder_impl<T: SyncTransport>(
     first_parent_ids: Option<Vec<[u8; 32]>>,
 ) -> Result<()> {
     info!(%context_id, "Starting LevelWise sync (responder)");
+
+    // Defense in depth: validate first request parameters
+    // (The manager should have validated these, but we check again)
+    if (first_level as usize) > MAX_LEVELWISE_DEPTH {
+        bail!(
+            "First request level {} exceeds maximum {}",
+            first_level,
+            MAX_LEVELWISE_DEPTH
+        );
+    }
+    if let Some(ref parents) = first_parent_ids {
+        if parents.len() > MAX_PARENTS_PER_REQUEST {
+            bail!(
+                "First request parent_ids count {} exceeds maximum {}",
+                parents.len(),
+                MAX_PARENTS_PER_REQUEST
+            );
+        }
+    }
 
     // Set up storage bridge
     let runtime_env = create_runtime_env(store, context_id, identity);

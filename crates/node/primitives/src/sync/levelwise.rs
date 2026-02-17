@@ -397,19 +397,19 @@ impl LevelCompareResult {
 
 /// Compare local and remote nodes at a level.
 ///
-/// Takes a map of local node hashes and the remote response,
+/// Takes a map of local node hashes and the remote nodes slice,
 /// and categorizes each node. Deduplicates remote nodes by ID to ensure
 /// each node appears in exactly one category.
 #[must_use]
 pub fn compare_level_nodes(
     local_hashes: &HashMap<[u8; 32], [u8; 32]>,
-    remote: &LevelWiseResponse,
+    remote_nodes: &[LevelNode],
 ) -> LevelCompareResult {
     let mut result = LevelCompareResult::default();
 
     // Deduplicate remote nodes by ID, keeping the first occurrence
     let mut remote_by_id: HashMap<[u8; 32], &LevelNode> = HashMap::new();
-    for node in &remote.nodes {
+    for node in remote_nodes {
         remote_by_id.entry(node.id).or_insert(node);
     }
 
@@ -716,7 +716,7 @@ mod tests {
         ];
         let response = LevelWiseResponse::new(0, remote_nodes, true);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert_eq!(result.matching, vec![[1; 32]]);
         assert_eq!(result.differing, vec![[2; 32]]);
@@ -736,7 +736,7 @@ mod tests {
         ];
         let response = LevelWiseResponse::new(0, remote_nodes, false);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert_eq!(result.matching.len(), 2);
         assert!(result.differing.is_empty());
@@ -755,7 +755,7 @@ mod tests {
         ];
         let response = LevelWiseResponse::new(0, remote_nodes, false);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert!(result.matching.is_empty());
         assert!(result.differing.is_empty());
@@ -772,7 +772,7 @@ mod tests {
 
         let response = LevelWiseResponse::empty(0);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert!(result.matching.is_empty());
         assert!(result.differing.is_empty());
@@ -1006,7 +1006,7 @@ mod tests {
         let local_hashes: HashMap<[u8; 32], [u8; 32]> = HashMap::new();
         let response = LevelWiseResponse::empty(0);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert!(result.matching.is_empty());
         assert!(result.differing.is_empty());
@@ -1031,7 +1031,7 @@ mod tests {
         ];
         let response = LevelWiseResponse::new(0, remote_nodes, false);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert!(result.matching.is_empty());
         assert_eq!(result.differing.len(), 3);
@@ -1050,7 +1050,7 @@ mod tests {
         // Empty response - all local nodes are "remote missing"
         let response = LevelWiseResponse::empty(0);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert!(result.matching.is_empty());
         assert!(result.differing.is_empty());
@@ -1217,7 +1217,7 @@ mod tests {
         ];
         let response = LevelWiseResponse::new(0, remote_nodes, false);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         // Duplicates are deduplicated - only first occurrence is considered
         // ID [1; 32] appears only once in exactly one category (matching)

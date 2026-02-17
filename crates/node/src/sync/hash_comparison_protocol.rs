@@ -62,6 +62,12 @@ const MAX_PENDING_NODES: usize = 10_000;
 /// Maximum depth allowed in TreeNodeRequest.
 pub const MAX_REQUEST_DEPTH: u8 = 16;
 
+/// Maximum requests allowed per HashComparison session.
+///
+/// Prevents DoS by limiting how many requests a peer can send.
+/// HashComparison may need more requests than LevelWise due to DFS traversal.
+const MAX_REQUESTS_PER_SESSION: u64 = 10_000;
+
 /// Configuration for HashComparison initiator.
 #[derive(Debug, Clone)]
 pub struct HashComparisonConfig {
@@ -311,6 +317,18 @@ async fn run_responder_impl<T: SyncTransport>(
 ) -> Result<()> {
     info!(%context_id, "Starting HashComparison sync (responder)");
 
+    // Defense in depth: validate first request parameters
+    // (The manager should have validated these, but we check again)
+    if let Some(depth) = first_max_depth {
+        if depth > MAX_REQUEST_DEPTH {
+            bail!(
+                "First request max_depth {} exceeds maximum {}",
+                depth,
+                MAX_REQUEST_DEPTH
+            );
+        }
+    }
+
     // Set up storage bridge (reused across all requests)
     let runtime_env = create_runtime_env(store, context_id, identity);
 
@@ -352,8 +370,19 @@ async fn run_responder_impl<T: SyncTransport>(
         requests_handled += 1;
     }
 
-    // Handle subsequent requests until stream closes
+    // Handle subsequent requests until stream closes or limit reached
     loop {
+        // DoS protection: limit total requests per session
+        if requests_handled >= MAX_REQUESTS_PER_SESSION {
+            warn!(
+                %context_id,
+                requests_handled,
+                max = MAX_REQUESTS_PER_SESSION,
+                "Request limit reached, closing responder"
+            );
+            break;
+        }
+
         // Receive request (None means stream closed = sync complete)
         let Some(request) = transport.recv().await? else {
             debug!(%context_id, requests_handled, "Stream closed, responder done");
