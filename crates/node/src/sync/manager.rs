@@ -1076,16 +1076,17 @@ impl SyncManager {
                         .wrap_err("bloom filter fallback")?;
                     return Ok(Some(result));
                 }
-                SyncProtocol::SubtreePrefetch { .. } => {
-                    warn!(
+                SyncProtocol::SubtreePrefetch { subtree_roots } => {
+                    info!(
                         %context_id,
                         reason = %selection.reason,
-                        "SubtreePrefetch not yet implemented, falling back to snapshot"
+                        subtree_count = subtree_roots.len(),
+                        "Using SubtreePrefetch sync strategy"
                     );
                     let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .request_subtree_prefetch(context_id, our_identity, chosen_peer, stream)
                         .await
-                        .wrap_err("subtree prefetch fallback")?;
+                        .wrap_err("subtree prefetch sync")?;
                     return Ok(Some(result));
                 }
                 SyncProtocol::LevelWise { .. } => {
@@ -1482,7 +1483,7 @@ impl SyncManager {
     /// Implements Invariant I6: Deltas received during sync are buffered and
     /// replayed after sync completes. On error, buffered deltas are discarded
     /// via `cancel_sync_session()`.
-    async fn fallback_to_snapshot_sync(
+    pub(super) async fn fallback_to_snapshot_sync(
         &self,
         context_id: ContextId,
         our_identity: PublicKey,
@@ -1892,6 +1893,27 @@ impl SyncManager {
                     page_limit,
                     byte_limit,
                     resume_cursor,
+                    stream,
+                    nonce,
+                )
+                .await?
+            }
+            InitPayload::TreeNodeRequest {
+                context_id: requested_context_id,
+                node_id,
+            } => {
+                self.handle_tree_node_request(requested_context_id, node_id, stream, nonce)
+                    .await?
+            }
+            InitPayload::SubtreePrefetchRequest {
+                context_id: requested_context_id,
+                subtree_roots,
+                max_depth,
+            } => {
+                self.handle_subtree_prefetch_request(
+                    requested_context_id,
+                    subtree_roots,
+                    max_depth,
                     stream,
                     nonce,
                 )

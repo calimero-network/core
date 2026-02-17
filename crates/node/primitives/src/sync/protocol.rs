@@ -592,13 +592,15 @@ mod tests {
             &caps
         ));
 
-        // Not supported (not in default list)
-        assert!(!is_protocol_supported(
+        // Supported (SubtreePrefetch now in default list)
+        assert!(is_protocol_supported(
             &SyncProtocol::SubtreePrefetch {
                 subtree_roots: vec![]
             },
             &caps
         ));
+
+        // Not supported (not in default list)
         assert!(!is_protocol_supported(
             &SyncProtocol::LevelWise { max_depth: 2 },
             &caps
@@ -609,11 +611,21 @@ mod tests {
     fn test_select_protocol_with_fallback() {
         let local = SyncHandshake::new([1; 32], 90, 5, vec![]); // Would prefer SubtreePrefetch
         let remote = SyncHandshake::new([2; 32], 100, 5, vec![]);
-        let caps = SyncCapabilities::default(); // Doesn't support SubtreePrefetch
+        // Use restricted caps that do NOT include SubtreePrefetch
+        let caps = SyncCapabilities {
+            supports_compression: true,
+            max_batch_size: 1000,
+            supported_protocols: vec![
+                SyncProtocolKind::None,
+                SyncProtocolKind::DeltaSync,
+                SyncProtocolKind::HashComparison,
+                SyncProtocolKind::Snapshot,
+            ],
+        };
 
         let selection = select_protocol_with_fallback(&local, &remote, &caps);
 
-        // Should fall back to HashComparison since SubtreePrefetch not supported
+        // Should fall back to HashComparison since SubtreePrefetch not in caps
         assert!(matches!(
             selection.protocol,
             SyncProtocol::HashComparison { .. }

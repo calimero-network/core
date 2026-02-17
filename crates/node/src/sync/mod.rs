@@ -29,6 +29,7 @@ mod helpers;
 mod key;
 mod manager;
 mod snapshot;
+mod subtree_sync;
 pub(crate) mod stream;
 mod tracking;
 
