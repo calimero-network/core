@@ -195,6 +195,20 @@ pub enum SyncMessage {
     DeltaResponse { deltas: Vec<DeltaTransfer> },
 
     // =========================================================================
+    // SubtreePrefetch Protocol
+    // =========================================================================
+    /// Request subtree prefetch.
+    SubtreePrefetchRequest {
+        subtree_roots: Vec<[u8; 32]>,
+        max_depth: usize,
+    },
+    /// Subtree prefetch response.
+    SubtreePrefetchResponse {
+        subtrees: Vec<SubtreeTransfer>,
+        not_found: Vec<[u8; 32]>,
+    },
+
+    // =========================================================================
     // Common
     // =========================================================================
     /// Sync complete (from either side).
@@ -252,6 +266,25 @@ impl SyncMessage {
                         + size_of::<DeltaTransfer>()
                 })
                 .sum(),
+            SyncMessage::SubtreePrefetchRequest { subtree_roots, .. } => {
+                subtree_roots.len() * 32
+            }
+            SyncMessage::SubtreePrefetchResponse {
+                subtrees,
+                not_found,
+            } => {
+                subtrees
+                    .iter()
+                    .map(|s| {
+                        s.entities
+                            .iter()
+                            .map(|e| e.data.len() + size_of::<EntityTransfer>())
+                            .sum::<usize>()
+                            + size_of::<SubtreeTransfer>()
+                    })
+                    .sum::<usize>()
+                    + not_found.len() * 32
+            }
             SyncMessage::SyncComplete { .. } => 0,
             SyncMessage::SyncError { message, .. } => message.len(),
         };
@@ -318,6 +351,19 @@ pub struct EntityTransfer {
     pub data: Vec<u8>,
     /// Entity metadata.
     pub metadata: EntityMetadata,
+}
+
+/// Subtree data for transfer in simulation.
+#[derive(Debug, Clone)]
+pub struct SubtreeTransfer {
+    /// Subtree root ID.
+    pub root_id: [u8; 32],
+    /// Entities in the subtree.
+    pub entities: Vec<EntityTransfer>,
+    /// Depth traversed.
+    pub depth: usize,
+    /// Whether the subtree was truncated.
+    pub truncated: bool,
 }
 
 /// Delta data for transfer.
