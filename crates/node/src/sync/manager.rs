@@ -2041,8 +2041,37 @@ impl SyncManager {
                 )
                 .await?
             }
-            InitPayload::LevelWiseRequest { .. } => {
-                warn!("LevelWise responder not yet wired; ignoring request");
+            InitPayload::LevelWiseRequest {
+                context_id: requested_context_id,
+                level: first_level,
+                parent_ids: first_parent_ids,
+            } => {
+                // Handle LevelWise request from peer (LevelWise sync responder)
+                // Wrap stream in transport abstraction
+                let mut transport = super::stream::StreamTransport::new(stream);
+
+                // Get store for protocol execution
+                let store = self.context_client.datastore_handle().into_inner();
+
+                // Use the already-resolved our_identity from the top of handle_sync_request
+                // (avoids redundant lookup and ensures consistency with other handlers)
+
+                // Build the first request data (already parsed above for routing)
+                let first_request = super::level_sync::LevelWiseFirstRequest {
+                    level: first_level,
+                    parent_ids: first_parent_ids,
+                };
+
+                // Run the LevelWise responder via the trait method
+                use calimero_node_primitives::sync::SyncProtocolExecutor;
+                super::level_sync::LevelWiseProtocol::run_responder(
+                    &mut transport,
+                    &store,
+                    requested_context_id,
+                    our_identity,
+                    first_request,
+                )
+                .await?
             }
         };
 
