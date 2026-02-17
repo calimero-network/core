@@ -680,6 +680,20 @@ pub enum InitPayload {
         byte_limit: u32,
         resume_cursor: Option<Vec<u8>>,
     },
+    /// Request top-level tree node children for hash comparison (Phase 1 of SubtreePrefetch).
+    TreeNodeRequest {
+        context_id: ContextId,
+        /// Root hash to compare children of.
+        node_id: [u8; 32],
+    },
+    /// Request subtree prefetch (Phase 2 of SubtreePrefetch).
+    SubtreePrefetchRequest {
+        context_id: ContextId,
+        /// Roots of divergent subtrees to fetch.
+        subtree_roots: Vec<[u8; 32]>,
+        /// Maximum depth to traverse within each subtree.
+        max_depth: Option<usize>,
+    },
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -729,6 +743,18 @@ pub enum MessagePayload<'a> {
     /// Snapshot sync error.
     SnapshotError {
         error: SnapshotError,
+    },
+    /// Response with top-level tree node children hashes (Phase 1 of SubtreePrefetch).
+    TreeNodeResponse {
+        /// Children of the requested node: (child_hash, is_leaf).
+        children: Vec<([u8; 32], bool)>,
+    },
+    /// Response with prefetched subtree data (Phase 2 of SubtreePrefetch).
+    SubtreePrefetchResponse {
+        /// Borsh-serialized SubtreePrefetchResponse from sync::subtree.
+        subtrees: Cow<'a, [u8]>,
+        /// Number of subtrees not found.
+        not_found_count: u32,
     },
 }
 
