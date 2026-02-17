@@ -599,7 +599,9 @@ mod tests {
             },
             &caps
         ));
-        assert!(!is_protocol_supported(
+
+        // LevelWise IS supported in default list
+        assert!(is_protocol_supported(
             &SyncProtocol::LevelWise { max_depth: 2 },
             &caps
         ));

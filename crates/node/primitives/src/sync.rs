@@ -103,6 +103,7 @@ pub use subtree::{
 pub use levelwise::{
     compare_level_nodes, should_use_levelwise, LevelCompareResult, LevelNode, LevelWiseRequest,
     LevelWiseResponse, MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST,
+    MAX_REQUESTS_PER_SESSION,
 };
 
 // State machine types (shared between SyncManager and SimNode)
