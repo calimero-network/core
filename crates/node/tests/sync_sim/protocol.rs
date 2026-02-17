@@ -31,10 +31,14 @@
 //! - **I5**: No silent data loss (CRDT merge at leaves)
 //! - **I6**: Delta buffering during sync
 
-use calimero_node::sync::{HashComparisonConfig, HashComparisonProtocol, HashComparisonStats};
-use calimero_node_primitives::sync::SyncProtocolExecutor;
+use calimero_node::sync::{
+    HashComparisonConfig, HashComparisonFirstRequest, HashComparisonProtocol, HashComparisonStats,
+};
+use calimero_node_primitives::sync::{
+    InitPayload, StreamMessage, SyncProtocolExecutor, SyncTransport,
+};
 use calimero_primitives::identity::PublicKey;
-use eyre::{Result, WrapErr};
+use eyre::{bail, Result, WrapErr};
 
 use super::node::SimNode;
 use super::transport::SimStream;
@@ -135,11 +139,31 @@ pub async fn execute_hash_comparison_sync(
     };
 
     let responder_fut = async {
+        // Simulate manager behavior: receive first message for routing
+        let first_msg = resp_stream
+            .recv()
+            .await?
+            .ok_or_else(|| eyre::eyre!("Stream closed before first message"))?;
+
+        // Extract first request data (like the manager does)
+        let first_request = match first_msg {
+            StreamMessage::Init {
+                payload:
+                    InitPayload::TreeNodeRequest {
+                        node_id, max_depth, ..
+                    },
+                ..
+            } => HashComparisonFirstRequest { node_id, max_depth },
+            _ => bail!("Expected TreeNodeRequest Init message"),
+        };
+
+        // Now call the protocol with the extracted first request
         HashComparisonProtocol::run_responder(
             &mut resp_stream,
             responder_store,
             responder_context,
             identity,
+            first_request,
         )
         .await
     };

@@ -5,6 +5,7 @@
 pub mod buffering;
 pub mod deterministic;
 pub mod hash_comparison;
+pub mod levelwise;
 pub mod random;
 
 pub use deterministic::Scenario;

@@ -13,7 +13,9 @@
 //! # Usage
 //!
 //! ```ignore
-//! use calimero_node::sync::hash_comparison_protocol::HashComparisonProtocol;
+//! use calimero_node::sync::hash_comparison_protocol::{
+//!     HashComparisonProtocol, HashComparisonFirstRequest
+//! };
 //! use calimero_node_primitives::sync::SyncProtocolExecutor;
 //!
 //! // Initiator side
@@ -25,16 +27,18 @@
 //!     HashComparisonConfig { remote_root_hash },
 //! ).await?;
 //!
-//! // Responder side (handles one request)
+//! // Responder side (manager extracts first request data)
+//! let first_request = HashComparisonFirstRequest { node_id, max_depth: Some(1) };
 //! HashComparisonProtocol::run_responder(
 //!     &mut transport,
 //!     &store,
 //!     context_id,
 //!     identity,
+//!     first_request,
 //! ).await?;
 //! ```
 
-use crate::sync::helpers::generate_nonce;
+use crate::sync::helpers::{apply_leaf_with_crdt_merge, generate_nonce};
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
     compare_tree_nodes, create_runtime_env, InitPayload, LeafMetadata, MessagePayload,
@@ -58,11 +62,36 @@ const MAX_PENDING_NODES: usize = 10_000;
 /// Maximum depth allowed in TreeNodeRequest.
 pub const MAX_REQUEST_DEPTH: u8 = 16;
 
+/// Maximum requests allowed per HashComparison session.
+///
+/// Prevents DoS by limiting how many requests a peer can send.
+///
+/// This limit is higher than LevelWise's `MAX_REQUESTS_PER_SESSION` (128) because:
+/// - HashComparison uses DFS traversal, one request per tree node
+/// - LevelWise uses BFS traversal, one request per tree level
+/// - For a tree with N nodes, HashComparison needs O(N) requests vs O(depth) for LevelWise
+///
+/// With 10,000 requests and typical node sizes, this allows syncing trees up to ~10k entities.
+const MAX_HASH_COMPARISON_REQUESTS: u64 = 10_000;
+
 /// Configuration for HashComparison initiator.
 #[derive(Debug, Clone)]
 pub struct HashComparisonConfig {
     /// Remote peer's root hash (from handshake).
     pub remote_root_hash: [u8; 32],
+}
+
+/// Data from the first `TreeNodeRequest` for responder dispatch.
+///
+/// The manager extracts this from the first `InitPayload::TreeNodeRequest`
+/// and passes it to `run_responder`. This is necessary because the manager
+/// consumes the first message for routing.
+#[derive(Debug, Clone)]
+pub struct HashComparisonFirstRequest {
+    /// The node ID being requested.
+    pub node_id: [u8; 32],
+    /// Maximum depth to return children.
+    pub max_depth: Option<u8>,
 }
 
 /// Statistics from a HashComparison sync session.
@@ -86,6 +115,7 @@ pub struct HashComparisonProtocol;
 #[async_trait(?Send)]
 impl SyncProtocolExecutor for HashComparisonProtocol {
     type Config = HashComparisonConfig;
+    type ResponderInit = HashComparisonFirstRequest;
     type Stats = HashComparisonStats;
 
     async fn run_initiator<T: SyncTransport>(
@@ -110,8 +140,17 @@ impl SyncProtocolExecutor for HashComparisonProtocol {
         store: &Store,
         context_id: ContextId,
         identity: PublicKey,
+        first_request: Self::ResponderInit,
     ) -> Result<()> {
-        run_responder_impl(transport, store, context_id, identity).await
+        run_responder_impl(
+            transport,
+            store,
+            context_id,
+            identity,
+            first_request.node_id,
+            first_request.max_depth,
+        )
+        .await
     }
 }
 
@@ -270,13 +309,31 @@ async fn run_initiator_impl<T: SyncTransport>(
 // Responder Implementation
 // =============================================================================
 
+/// Run the HashComparison responder with the first request data.
+///
+/// The manager has already consumed the first `InitPayload::TreeNodeRequest`
+/// for routing, so it passes the extracted `node_id` and `max_depth` here.
 async fn run_responder_impl<T: SyncTransport>(
     transport: &mut T,
     store: &Store,
     context_id: ContextId,
     identity: PublicKey,
+    first_node_id: [u8; 32],
+    first_max_depth: Option<u8>,
 ) -> Result<()> {
     info!(%context_id, "Starting HashComparison sync (responder)");
+
+    // Defense in depth: validate first request parameters
+    // (The manager should have validated these, but we check again)
+    if let Some(depth) = first_max_depth {
+        if depth > MAX_REQUEST_DEPTH {
+            bail!(
+                "First request max_depth {} exceeds maximum {}",
+                depth,
+                MAX_REQUEST_DEPTH
+            );
+        }
+    }
 
     // Set up storage bridge (reused across all requests)
     let runtime_env = create_runtime_env(store, context_id, identity);
@@ -293,8 +350,45 @@ async fn run_responder_impl<T: SyncTransport>(
     let mut sequence_id = 0u64;
     let mut requests_handled = 0u64;
 
-    // Handle requests until stream closes
+    // Handle the first request (already parsed by the manager)
+    {
+        let clamped_depth = first_max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
+        let is_root_request = first_node_id == local_root_hash;
+
+        let local_node = with_runtime_env(runtime_env.clone(), || {
+            get_local_tree_node(context_id, &first_node_id, is_root_request)
+        })?;
+
+        let response =
+            build_tree_node_response_internal(context_id, local_node, clamped_depth, &runtime_env)?;
+
+        let msg = StreamMessage::Message {
+            sequence_id,
+            payload: MessagePayload::TreeNodeResponse {
+                nodes: response.nodes,
+                not_found: response.not_found,
+            },
+            next_nonce: generate_nonce(),
+        };
+
+        transport.send(&msg).await?;
+        sequence_id += 1;
+        requests_handled += 1;
+    }
+
+    // Handle subsequent requests until stream closes or limit reached
     loop {
+        // DoS protection: limit total requests per session
+        if requests_handled >= MAX_HASH_COMPARISON_REQUESTS {
+            warn!(
+                %context_id,
+                requests_handled,
+                max = MAX_HASH_COMPARISON_REQUESTS,
+                "Request limit reached, closing responder"
+            );
+            break;
+        }
+
         // Receive request (None means stream closed = sync complete)
         let Some(request) = transport.recv().await? else {
             debug!(%context_id, requests_handled, "Stream closed, responder done");
@@ -325,7 +419,6 @@ async fn run_responder_impl<T: SyncTransport>(
 
         // Clamp depth for DoS protection
         let clamped_depth = max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
-
         let is_root_request = node_id == local_root_hash;
 
         // Get the requested node
@@ -333,28 +426,8 @@ async fn run_responder_impl<T: SyncTransport>(
             get_local_tree_node(context_id, &node_id, is_root_request)
         })?;
 
-        let response = if let Some(node) = local_node {
-            let mut nodes = vec![node.clone()];
-
-            // Include children if depth > 0
-            let depth = clamped_depth.unwrap_or(0);
-            if depth > 0 && node.is_internal() {
-                for child_id in &node.children {
-                    if let Some(child) = with_runtime_env(runtime_env.clone(), || {
-                        get_local_tree_node(context_id, child_id, false)
-                    })? {
-                        nodes.push(child);
-                        if nodes.len() >= MAX_NODES_PER_RESPONSE {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            TreeNodeResponse::new(nodes)
-        } else {
-            TreeNodeResponse::not_found()
-        };
+        let response =
+            build_tree_node_response_internal(context_id, local_node, clamped_depth, &runtime_env)?;
 
         // Send response
         let msg = StreamMessage::Message {
@@ -373,6 +446,39 @@ async fn run_responder_impl<T: SyncTransport>(
 
     info!(%context_id, requests_handled, "HashComparison responder complete");
     Ok(())
+}
+
+/// Build a TreeNodeResponse from a local node.
+fn build_tree_node_response_internal(
+    context_id: ContextId,
+    local_node: Option<TreeNode>,
+    clamped_depth: Option<u8>,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+) -> Result<TreeNodeResponse> {
+    let response = if let Some(node) = local_node {
+        let mut nodes = vec![node.clone()];
+
+        // Include children if depth > 0
+        let depth = clamped_depth.unwrap_or(0);
+        if depth > 0 && node.is_internal() {
+            for child_id in &node.children {
+                if let Some(child) = with_runtime_env(runtime_env.clone(), || {
+                    get_local_tree_node(context_id, child_id, false)
+                })? {
+                    nodes.push(child);
+                    if nodes.len() >= MAX_NODES_PER_RESPONSE {
+                        break;
+                    }
+                }
+            }
+        }
+
+        TreeNodeResponse::new(nodes)
+    } else {
+        TreeNodeResponse::not_found()
+    };
+
+    Ok(response)
 }
 
 // =============================================================================
@@ -436,77 +542,6 @@ fn get_local_tree_node(
             children_ids,
         )))
     }
-}
-
-/// Apply leaf data using CRDT merge (Invariant I5).
-///
-/// This function must be called within a `with_runtime_env` scope.
-/// Uses `Interface::apply_action` to properly update both the raw storage
-/// and the Merkle tree Index.
-fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) -> Result<()> {
-    use calimero_storage::entities::{ChildInfo, Metadata};
-    use calimero_storage::interface::Action;
-
-    let entity_id = Id::new(leaf.key);
-    let root_id = Id::new(*context_id.as_ref());
-
-    // Check if entity already exists
-    let existing_index = Index::<MainStorage>::get_index(entity_id).ok().flatten();
-
-    // Build metadata from leaf info
-    let mut metadata = Metadata::default();
-    metadata.crdt_type = Some(leaf.metadata.crdt_type.clone());
-    metadata.updated_at = leaf.metadata.hlc_timestamp.into();
-
-    let action = if existing_index.is_some() {
-        // Update existing entity
-        Action::Update {
-            id: entity_id,
-            data: leaf.value.clone(),
-            ancestors: vec![], // No ancestors needed for update
-            metadata,
-        }
-    } else {
-        // Add new entity as child of root
-        // First ensure root exists
-        if Index::<MainStorage>::get_index(root_id)
-            .ok()
-            .flatten()
-            .is_none()
-        {
-            let root_action = Action::Update {
-                id: root_id,
-                data: vec![],
-                ancestors: vec![],
-                metadata: Metadata::default(),
-            };
-            Interface::<MainStorage>::apply_action(root_action)?;
-        }
-
-        // Get root info for ancestor chain
-        let root_hash = Index::<MainStorage>::get_hashes_for(root_id)
-            .ok()
-            .flatten()
-            .map(|(full, _)| full)
-            .unwrap_or([0; 32]);
-        let root_metadata = Index::<MainStorage>::get_index(root_id)
-            .ok()
-            .flatten()
-            .map(|idx| idx.metadata.clone())
-            .unwrap_or_default();
-
-        let ancestor = ChildInfo::new(root_id, root_hash, root_metadata);
-
-        Action::Add {
-            id: entity_id,
-            data: leaf.value.clone(),
-            ancestors: vec![ancestor],
-            metadata,
-        }
-    };
-
-    Interface::<MainStorage>::apply_action(action)?;
-    Ok(())
 }
 
 #[cfg(test)]

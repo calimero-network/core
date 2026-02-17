@@ -13,7 +13,7 @@
 //! ┌─────────────────────────────────────────────────────────────────┐
 //! │                     SyncProtocolExecutor trait                   │
 //! │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐ │
-//! │  │ HashComparison  │  │    Snapshot     │  │   BloomFilter   │ │
+//! │  │ HashComparison  │  │    Snapshot     │  │   LevelWise     │ │
 //! │  │    Protocol     │  │    Protocol     │  │    Protocol     │ │
 //! │  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘ │
 //! │           │                    │                    │          │
@@ -26,12 +26,26 @@
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 //!
+//! # Responder Dispatch Model
+//!
+//! The `SyncManager` dispatches incoming sync requests using this flow:
+//!
+//! 1. Manager receives stream and calls `recv()` to get the first message
+//! 2. Manager matches on `InitPayload` to determine which protocol to use
+//! 3. Manager extracts protocol-specific data from the first message
+//! 4. Manager calls `run_responder()` passing the extracted data via `ResponderInit`
+//!
+//! This design is necessary because the manager must peek at the first message
+//! for routing, but once consumed it cannot be "un-read". The `ResponderInit`
+//! associated type allows each protocol to declare what data it needs from
+//! the first request.
+//!
 //! # Example
 //!
 //! ```ignore
 //! use calimero_node_primitives::sync::{SyncProtocolExecutor, HashComparisonProtocol};
 //!
-//! // Production
+//! // Production initiator
 //! let mut transport = StreamTransport::new(&mut stream);
 //! let stats = HashComparisonProtocol::run_initiator(
 //!     &mut transport,
@@ -41,14 +55,14 @@
 //!     HashComparisonConfig { remote_root_hash },
 //! ).await?;
 //!
-//! // Simulation (exact same call, different transport/store)
-//! let mut transport = SimStream::new();
-//! let stats = HashComparisonProtocol::run_initiator(
+//! // Production responder (manager extracts first request data)
+//! let first_request = HashComparisonFirstRequest { node_id, max_depth };
+//! HashComparisonProtocol::run_responder(
 //!     &mut transport,
-//!     &store,  // Store<InMemoryDB>
+//!     &store,
 //!     context_id,
 //!     identity,
-//!     HashComparisonConfig { remote_root_hash },
+//!     first_request,
 //! ).await?;
 //! ```
 
@@ -62,7 +76,7 @@ use super::SyncTransport;
 
 /// Trait for sync protocol implementations.
 ///
-/// Each sync protocol (HashComparison, Snapshot, BloomFilter, etc.) implements
+/// Each sync protocol (HashComparison, Snapshot, LevelWise, etc.) implements
 /// this trait. The protocol logic is generic over:
 ///
 /// - `T: SyncTransport` - the transport layer (production streams or simulation channels)
@@ -78,6 +92,18 @@ pub trait SyncProtocolExecutor {
     ///
     /// For example, HashComparison needs the remote root hash.
     type Config: Send;
+
+    /// Data extracted from the first request for responder dispatch.
+    ///
+    /// The manager parses the first `InitPayload` and constructs this type
+    /// to pass to `run_responder`. This is necessary because the manager
+    /// consumes the first message for routing, so the protocol cannot
+    /// `recv()` it again.
+    ///
+    /// For example:
+    /// - HashComparison needs `{ node_id, max_depth }` from `TreeNodeRequest`
+    /// - LevelWise needs `{ level, parent_ids }` from `LevelWiseRequest`
+    type ResponderInit: Send;
 
     /// Protocol-specific statistics/results.
     type Stats: Send + Default;
@@ -107,7 +133,9 @@ pub trait SyncProtocolExecutor {
 
     /// Run the responder side of the protocol.
     ///
-    /// The responder answers requests from the initiator.
+    /// The responder answers requests from the initiator. The first request's
+    /// data is passed via `first_request` because the manager has already
+    /// consumed the first message for routing.
     ///
     /// # Arguments
     ///
@@ -115,10 +143,12 @@ pub trait SyncProtocolExecutor {
     /// * `store` - The local storage
     /// * `context_id` - The context being synced
     /// * `identity` - Our identity for this context
+    /// * `first_request` - Data from the first `InitPayload`, extracted by the manager
     async fn run_responder<T: SyncTransport>(
         transport: &mut T,
         store: &Store,
         context_id: ContextId,
         identity: PublicKey,
+        first_request: Self::ResponderInit,
     ) -> Result<()>;
 }
