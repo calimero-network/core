@@ -25,9 +25,10 @@ use std::borrow::Cow;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_crypto::Nonce;
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 
 use super::hash_comparison::LeafMetadata;
 
