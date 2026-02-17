@@ -25,6 +25,13 @@ use tracing::{debug, info, warn};
 use super::manager::SyncManager;
 use super::tracking::Sequencer;
 
+/// Number of leading key bytes used to define a subtree prefix.
+///
+/// Roots are constructed as `[prefix_byte, 0, …, 0]`, so all prefix-based
+/// filtering (entity collection and stale-key detection) must compare exactly
+/// this many bytes to avoid false negatives on keys with non-zero trailing bytes.
+const SUBTREE_PREFIX_LEN: usize = 1;
+
 // =============================================================================
 // Responder Handlers
 // =============================================================================
@@ -211,8 +218,12 @@ impl SyncManager {
 
     /// Collect all entities within a subtree identified by a root prefix.
     ///
-    /// Iterates storage, filters by context_id and prefix match, and builds
-    /// `TreeLeafData` for each matching entity.
+    /// Iterates storage, filters by context_id and first-byte prefix match,
+    /// and builds `TreeLeafData` for each matching entity.
+    ///
+    /// Note: roots are single-byte prefixes (`[prefix, 0, …, 0]`), so we
+    /// always compare only the first byte. The `depth` parameter is stored
+    /// in `SubtreeData` as truncation metadata but does not affect filtering.
     fn collect_subtree_entities(
         &self,
         context_id: ContextId,
@@ -233,7 +244,7 @@ impl SyncManager {
             }
 
             let state_key = key.state_key();
-            if !key_shares_subtree_prefix(&state_key, subtree_root, depth) {
+            if !key_shares_subtree_prefix(&state_key, subtree_root, SUBTREE_PREFIX_LEN) {
                 continue;
             }
 
@@ -440,7 +451,6 @@ impl SyncManager {
         // response represent remote deletions and must be removed to ensure
         // convergence. Truncated subtrees are excluded from cleanup since we
         // don't have the complete remote picture for those prefixes.
-        let depth_used = calimero_node_primitives::sync::subtree::DEFAULT_SUBTREE_MAX_DEPTH;
 
         // Build lookup: remote entity keys per non-truncated subtree root
         let mut remote_keys_by_root: HashMap<u8, HashSet<[u8; 32]>> = HashMap::new();
@@ -475,7 +485,7 @@ impl SyncManager {
                     &divergent_roots,
                     &remote_keys_by_root,
                     &not_found_prefixes,
-                    depth_used,
+                    SUBTREE_PREFIX_LEN,
                 ) {
                     stale.push(state_key);
                 }
