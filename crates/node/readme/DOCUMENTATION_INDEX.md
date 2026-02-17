@@ -23,6 +23,8 @@ Complete guide to Calimero Node runtime documentation.
 - **Add delta handling:** See [Sync Protocol - Delta Flow](sync-protocol.md#delta-flow)
 - **Handle events:** See [Event Handling Guide](event-handling.md)
 - **Configure sync:** See [Sync Configuration](sync-configuration.md)
+- **Understand locking:** See [Concurrency - Per-Context Locking](concurrency.md#per-context-locking)
+- **Understand WASM transactions:** See [Temporal Storage Layer](concurrency.md#temporal-storage-layer-wasm-transactions)
 - **Debug sync issues:** See [Troubleshooting](troubleshooting.md)
 
 ### Troubleshooting
@@ -43,6 +45,9 @@ Complete guide to Calimero Node runtime documentation.
 ### Performance
 - **[Performance Guide](performance.md)** - Latency, throughput, optimization
 - **[Sync Configuration](sync-configuration.md)** - Tuning parameters
+
+### Concurrency
+- **[Concurrency & Availability](concurrency.md)** - How nodes remain available during sync
 
 ---
 
@@ -69,6 +74,12 @@ Complete guide to Calimero Node runtime documentation.
 - [Architecture - Memory](architecture.md#memory-layout)
 - [Sync Configuration](sync-configuration.md) - Optimization
 
+### Concurrency
+- [Concurrency & Availability](concurrency.md) - How nodes stay available
+- [Architecture - Thread Model](architecture.md#thread-model)
+- [Concurrency - Lock Contention](concurrency.md#lock-contention-timeline)
+- [Temporal Storage Layer](concurrency.md#temporal-storage-layer-wasm-transactions) - WASM transactional semantics
+
 ---
 
 ## File Map
@@ -82,6 +93,7 @@ crates/node/
 │   ├── sync-protocol.md           # How sync works
 │   ├── event-handling.md          # Event execution
 │   ├── sync-configuration.md      # Tuning guide
+│   ├── concurrency.md             # Availability during sync
 │   ├── integration-guide.md       # How to integrate
 │   ├── performance.md             # Benchmarks
 │   ├── design-decisions.md        # Rationale
@@ -110,6 +122,8 @@ crates/node/
 | Learn how sync works       | [Sync Protocol](sync-protocol.md)              |
 | Handle events              | [Event Handling Guide](event-handling.md)      |
 | Configure sync parameters  | [Sync Configuration](sync-configuration.md)    |
+| Understand availability    | [Concurrency & Availability](concurrency.md)   |
+| Understand WASM transactions | [Temporal Storage Layer](concurrency.md#temporal-storage-layer-wasm-transactions) |
 | Debug sync issues          | [Troubleshooting](troubleshooting.md)          |
 | Optimize performance       | [Performance Guide](performance.md)            |
 | Integrate with my app      | [Integration Guide](integration-guide.md)      |
