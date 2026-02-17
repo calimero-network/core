@@ -100,8 +100,11 @@ impl SyncManager {
 
     /// Send prefix discovery response (Phase 1 responder).
     ///
-    /// Enumerates unique first-byte prefixes in storage for the given context
-    /// and returns one empty `SubtreeData` per prefix.
+    /// Enumerates unique first-byte prefixes in storage for the given context,
+    /// computes a per-prefix XOR hash of entity keys, and returns one
+    /// `SubtreeData` per prefix carrying that hash. The initiator uses the
+    /// hashes to filter out shared prefixes whose data already matches,
+    /// avoiding unnecessary Phase 2 fetches.
     async fn send_prefix_discovery(
         &self,
         context_id: ContextId,
@@ -114,27 +117,32 @@ impl SyncManager {
         let handle = self.context_client.datastore_handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
 
-        let mut seen_prefixes: HashSet<u8> = HashSet::new();
+        // Single scan: bucket entity keys by first-byte prefix and XOR-hash them
+        let mut prefix_hashes: HashMap<u8, [u8; 32]> = HashMap::new();
         for (key_result, _) in iter.entries() {
             let key = key_result?;
             if key.context_id() == context_id {
-                seen_prefixes.insert(key.state_key()[0]);
+                let state_key = key.state_key();
+                let hash = prefix_hashes.entry(state_key[0]).or_insert([0u8; 32]);
+                for (i, byte) in state_key.iter().enumerate() {
+                    hash[i] ^= byte;
+                }
             }
         }
 
-        let subtrees: Vec<SubtreeData> = seen_prefixes
+        let subtrees: Vec<SubtreeData> = prefix_hashes
             .into_iter()
-            .map(|prefix_byte| {
+            .map(|(prefix_byte, hash)| {
                 let mut root_id = [0u8; 32];
                 root_id[0] = prefix_byte;
-                SubtreeData::new(root_id, [0u8; 32], vec![], depth)
+                SubtreeData::new(root_id, hash, vec![], depth)
             })
             .collect();
 
         debug!(
             %context_id,
             prefix_count = subtrees.len(),
-            "SubtreePrefetch discovery: sending prefix list"
+            "SubtreePrefetch discovery: sending prefix list with hashes"
         );
 
         let response = SubtreePrefetchResponse::new(subtrees, vec![]);
@@ -323,8 +331,8 @@ impl SyncManager {
             }
         };
 
-        // Parse discovery response: extract remote prefix root_ids
-        let remote_prefix_roots = match response {
+        // Parse discovery response: extract remote prefix → hash mapping
+        let remote_prefix_hashes: HashMap<u8, [u8; 32]> = match response {
             StreamMessage::Message {
                 payload: MessagePayload::SubtreePrefetchResponse { subtrees, .. },
                 ..
@@ -341,8 +349,8 @@ impl SyncManager {
                 discovery
                     .subtrees
                     .iter()
-                    .map(|s| s.root_id)
-                    .collect::<Vec<_>>()
+                    .map(|s| (s.root_id[0], s.root_hash))
+                    .collect()
             }
             _ => {
                 warn!(%context_id, "SubtreePrefetch Phase 1: unexpected response, falling back to snapshot");
@@ -352,9 +360,9 @@ impl SyncManager {
             }
         };
 
-        // Identify divergent subtrees by comparing remote prefixes with local storage
+        // Identify divergent subtrees by comparing remote prefix hashes with local
         let divergent_roots = match self
-            .identify_divergent_subtrees(context_id, &remote_prefix_roots)
+            .identify_divergent_subtrees(context_id, &remote_prefix_hashes)
         {
             Ok(roots) => roots,
             Err(e) => {
@@ -526,68 +534,77 @@ impl SyncManager {
         })
     }
 
-    /// Compare remote prefix roots with local storage to identify divergent subtrees.
+    /// Compare remote prefix hashes with local storage to identify divergent subtrees.
     ///
-    /// For each remote prefix root (keyed by first-byte), check if we have the
-    /// same prefix locally. Any prefix present remotely but not locally (or vice
-    /// versa) is considered divergent. Shared prefixes are also included since
-    /// we cannot compare hashes without a true Merkle tree.
+    /// Three categories produce divergent roots:
+    /// - Remote-only prefixes: remote has data we don't — must fetch.
+    /// - Local-only prefixes: we have data remote doesn't — divergent (may
+    ///   indicate remote deletion; Phase 2 will resolve).
+    /// - Shared prefixes with **differing** XOR hashes — data differs.
+    ///
+    /// Shared prefixes with **matching** hashes are skipped (already in sync).
     fn identify_divergent_subtrees(
         &self,
         context_id: ContextId,
-        remote_prefix_roots: &[[u8; 32]],
+        remote_prefix_hashes: &HashMap<u8, [u8; 32]>,
     ) -> eyre::Result<Vec<[u8; 32]>> {
         let handle = self.context_client.datastore_handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
 
-        // Collect local first-byte prefixes
-        let mut local_prefixes: HashSet<u8> = HashSet::new();
+        // Single scan: compute local per-prefix XOR hashes (same algorithm as responder)
+        let mut local_prefix_hashes: HashMap<u8, [u8; 32]> = HashMap::new();
         for (key_result, _) in iter.entries() {
             let key = key_result?;
             if key.context_id() == context_id {
                 let state_key = key.state_key();
-                local_prefixes.insert(state_key[0]);
+                let hash = local_prefix_hashes.entry(state_key[0]).or_insert([0u8; 32]);
+                for (i, byte) in state_key.iter().enumerate() {
+                    hash[i] ^= byte;
+                }
             }
         }
 
-        let remote_prefixes: HashSet<u8> = remote_prefix_roots.iter().map(|root| root[0]).collect();
-
-        // Divergent = present in remote but not local, or in local but not remote
         let mut divergent = Vec::new();
+        let mut skipped = 0u32;
 
-        // Prefixes in remote but not in local
-        for prefix in &remote_prefixes {
-            if !local_prefixes.contains(prefix) {
+        // Remote-only prefixes (remote has data we lack)
+        for &prefix in remote_prefix_hashes.keys() {
+            if !local_prefix_hashes.contains_key(&prefix) {
                 let mut root = [0u8; 32];
-                root[0] = *prefix;
+                root[0] = prefix;
                 divergent.push(root);
             }
         }
 
-        // Prefixes in local but not in remote (also divergent)
-        for prefix in &local_prefixes {
-            if !remote_prefixes.contains(prefix) {
+        // Local-only prefixes (we have data remote lacks)
+        for &prefix in local_prefix_hashes.keys() {
+            if !remote_prefix_hashes.contains_key(&prefix) {
                 let mut root = [0u8; 32];
-                root[0] = *prefix;
+                root[0] = prefix;
                 divergent.push(root);
             }
         }
 
-        // For prefixes present in both, they may still differ but we treat them as
-        // potentially divergent since we cannot compare hashes at this level without
-        // a true Merkle tree. Include all remote prefixes that we also have.
-        for prefix in remote_prefixes.intersection(&local_prefixes) {
-            let mut root = [0u8; 32];
-            root[0] = *prefix;
-            divergent.push(root);
+        // Shared prefixes: compare hashes, only include if they differ
+        for (&prefix, remote_hash) in remote_prefix_hashes {
+            if let Some(local_hash) = local_prefix_hashes.get(&prefix) {
+                if local_hash != remote_hash {
+                    let mut root = [0u8; 32];
+                    root[0] = prefix;
+                    divergent.push(root);
+                } else {
+                    skipped += 1;
+                }
+            }
         }
 
         debug!(
             %context_id,
-            local_prefix_count = local_prefixes.len(),
-            remote_prefix_count = remote_prefixes.len(),
+            local_prefix_count = local_prefix_hashes.len(),
+            remote_prefix_count = remote_prefix_hashes.len(),
             divergent_count = divergent.len(),
-            "Identified divergent subtrees"
+            skipped_matching = skipped,
+            "Identified divergent subtrees (hash comparison)"
         );
 
         Ok(divergent)
