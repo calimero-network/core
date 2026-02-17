@@ -1009,7 +1009,7 @@ impl SyncManager {
                         "Initiating snapshot sync"
                     );
                     let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
                         .await
                         .wrap_err("snapshot sync")?;
                     return Ok(Some(result));
@@ -1100,7 +1100,6 @@ impl SyncManager {
                                         context_id,
                                         our_identity,
                                         chosen_peer,
-                                        stream,
                                     )
                                     .await
                                     .wrap_err("snapshot fallback")?;
@@ -1118,7 +1117,7 @@ impl SyncManager {
                         "BloomFilter not yet implemented, falling back to snapshot"
                     );
                     let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
                         .await
                         .wrap_err("bloom filter fallback")?;
                     return Ok(Some(result));
@@ -1130,7 +1129,7 @@ impl SyncManager {
                         "SubtreePrefetch not yet implemented, falling back to snapshot"
                     );
                     let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
                         .await
                         .wrap_err("subtree prefetch fallback")?;
                     return Ok(Some(result));
@@ -1204,12 +1203,15 @@ impl SyncManager {
                                     %context_id,
                                     "DAG catchup insufficient, attempting snapshot"
                                 );
+                                // Drop the consumed fallback_stream before opening fresh streams
+                                // in snapshot sync (fallback_stream is in indeterminate state
+                                // after DAG sync exchanges)
+                                drop(fallback_stream);
                                 let snapshot_result = self
                                     .fallback_to_snapshot_sync(
                                         context_id,
                                         our_identity,
                                         chosen_peer,
-                                        &mut fallback_stream,
                                     )
                                     .await
                                     .wrap_err("level-wise snapshot fallback")?;
@@ -1521,12 +1523,7 @@ impl SyncManager {
                             );
                             // Fall back to snapshot sync
                             return self
-                                .fallback_to_snapshot_sync(
-                                    context_id,
-                                    our_identity,
-                                    peer_id,
-                                    stream,
-                                )
+                                .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                                 .await;
                         }
                         Some(StreamMessage::Message {
@@ -1606,7 +1603,6 @@ impl SyncManager {
         context_id: ContextId,
         our_identity: PublicKey,
         peer_id: PeerId,
-        _stream: &mut Stream,
     ) -> eyre::Result<SyncProtocol> {
         info!(%context_id, %peer_id, "Initiating snapshot sync");
 
@@ -2045,35 +2041,8 @@ impl SyncManager {
                 // Get store for protocol execution
                 let store = self.context_client.datastore_handle().into_inner();
 
-                // Get our identity for RuntimeEnv - look up from context members
-                let identities = self
-                    .context_client
-                    .get_context_members(&requested_context_id, Some(true));
-
-                let our_identity = match crate::utils::choose_stream(
-                    identities,
-                    &mut rand::thread_rng(),
-                )
-                .await
-                .transpose()?
-                {
-                    Some((identity, _)) => identity,
-                    None => {
-                        warn!(%requested_context_id, "No owned identity for context, cannot respond to LevelWiseRequest");
-                        // Send empty response
-                        let msg = StreamMessage::Message {
-                            sequence_id: 0,
-                            payload: MessagePayload::LevelWiseResponse {
-                                level: first_level,
-                                nodes: vec![],
-                                has_more_levels: false,
-                            },
-                            next_nonce: super::helpers::generate_nonce(),
-                        };
-                        transport.send(&msg).await?;
-                        return Ok(Some(()));
-                    }
-                };
+                // Use the already-resolved our_identity from the top of handle_sync_request
+                // (avoids redundant lookup and ensures consistency with other handlers)
 
                 // Build the first request data (already parsed above for routing)
                 let first_request = super::level_sync::LevelWiseFirstRequest {
