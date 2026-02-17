@@ -117,16 +117,17 @@ impl SyncManager {
         let handle = self.context_client.datastore_handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
 
-        // Single scan: bucket entity keys by first-byte prefix and XOR-hash them
+        // Single scan: bucket entity keys+values by first-byte prefix and XOR-hash them.
+        // Including values ensures that same-key-different-value divergence is detected.
         let mut prefix_hashes: HashMap<u8, [u8; 32]> = HashMap::new();
-        for (key_result, _) in iter.entries() {
+        for (key_result, value_result) in iter.entries() {
             let key = key_result?;
+            let value = value_result?;
             if key.context_id() == context_id {
                 let state_key = key.state_key();
                 let hash = prefix_hashes.entry(state_key[0]).or_insert([0u8; 32]);
-                for (i, byte) in state_key.iter().enumerate() {
-                    hash[i] ^= byte;
-                }
+                xor_into_hash(hash, &state_key);
+                xor_into_hash(hash, &value.value);
             }
         }
 
@@ -551,16 +552,17 @@ impl SyncManager {
         let handle = self.context_client.datastore_handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
 
-        // Single scan: compute local per-prefix XOR hashes (same algorithm as responder)
+        // Single scan: compute local per-prefix XOR hashes (same algorithm as responder).
+        // Must include both key and value bytes to detect value-only divergence.
         let mut local_prefix_hashes: HashMap<u8, [u8; 32]> = HashMap::new();
-        for (key_result, _) in iter.entries() {
+        for (key_result, value_result) in iter.entries() {
             let key = key_result?;
+            let value = value_result?;
             if key.context_id() == context_id {
                 let state_key = key.state_key();
                 let hash = local_prefix_hashes.entry(state_key[0]).or_insert([0u8; 32]);
-                for (i, byte) in state_key.iter().enumerate() {
-                    hash[i] ^= byte;
-                }
+                xor_into_hash(hash, &state_key);
+                xor_into_hash(hash, &value.value);
             }
         }
 
@@ -614,6 +616,17 @@ impl SyncManager {
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/// XOR arbitrary-length data into a 32-byte hash, wrapping with `i % 32`.
+///
+/// Used by both responder (`send_prefix_discovery`) and initiator
+/// (`identify_divergent_subtrees`) to fold key+value bytes into per-prefix
+/// divergence hashes. Both sides must use the same algorithm.
+fn xor_into_hash(hash: &mut [u8; 32], data: &[u8]) {
+    for (i, byte) in data.iter().enumerate() {
+        hash[i % 32] ^= byte;
+    }
+}
 
 /// Check if a key shares the subtree prefix with a given root.
 ///
