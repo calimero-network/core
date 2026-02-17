@@ -1,17 +1,18 @@
 //! SubtreePrefetch sync protocol implementation.
 //!
 //! Two-phase protocol for efficient synchronization of deep trees with clustered changes:
-//! - Phase 1: Compare top-level tree node hashes to find divergent subtrees
+//! - Phase 1: Discover remote prefixes via `SubtreePrefetchRequest` with empty roots
 //! - Phase 2: Fetch entire divergent subtrees in one request
+//!
+//! Uses its own `SubtreePrefetchRequest` wire message for both phases, avoiding
+//! any conflict with `TreeNodeRequest` used by HashComparison.
 //!
 //! Falls back to snapshot sync on any failure.
 
 use std::collections::{HashMap, HashSet};
 
 use calimero_network_primitives::stream::Stream;
-use calimero_node_primitives::sync::hash_comparison::{
-    CrdtType, LeafMetadata, TreeLeafData, TreeNode,
-};
+use calimero_node_primitives::sync::hash_comparison::{CrdtType, LeafMetadata, TreeLeafData};
 use calimero_node_primitives::sync::subtree::{SubtreeData, SubtreePrefetchResponse};
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage, SyncProtocol};
 use calimero_primitives::context::ContextId;
@@ -29,68 +30,15 @@ use super::tracking::Sequencer;
 // =============================================================================
 
 impl SyncManager {
-    /// Handle a TreeNodeRequest for SubtreePrefetch Phase 1.
+    /// Handle a SubtreePrefetchRequest.
     ///
-    /// Enumerates unique first-byte prefixes of state keys as "top-level children"
-    /// and returns them as `Vec<TreeNode>` where each node's ID is derived from
-    /// the prefix byte (internal nodes representing subtree roots).
-    pub(crate) async fn handle_subtree_tree_node_request(
-        &self,
-        context_id: ContextId,
-        _node_id: [u8; 32],
-        _max_depth: Option<u8>,
-        stream: &mut Stream,
-        _nonce: calimero_crypto::Nonce,
-    ) -> eyre::Result<()> {
-        let handle = self.context_client.datastore_handle();
-        let mut iter = handle.iter::<ContextStateKey>()?;
-
-        let mut seen_prefixes: HashSet<u8> = HashSet::new();
-
-        for (key_result, _) in iter.entries() {
-            let key = key_result?;
-            if key.context_id() == context_id {
-                let state_key = key.state_key();
-                seen_prefixes.insert(state_key[0]);
-            }
-        }
-
-        // Build nodes: one internal TreeNode per unique first-byte prefix
-        let nodes: Vec<TreeNode> = seen_prefixes
-            .into_iter()
-            .map(|prefix_byte| {
-                let mut id = [0u8; 32];
-                id[0] = prefix_byte;
-                // Internal node: ID is prefix-based, hash is zeroed (no Merkle tree),
-                // children list is empty (we only report the top-level grouping)
-                TreeNode::internal(id, [0u8; 32], vec![])
-            })
-            .collect();
-
-        debug!(
-            %context_id,
-            node_count = nodes.len(),
-            "Responding to TreeNodeRequest with top-level subtree nodes"
-        );
-
-        let mut sqx = Sequencer::default();
-        let msg = StreamMessage::Message {
-            sequence_id: sqx.next(),
-            payload: MessagePayload::TreeNodeResponse {
-                nodes,
-                not_found: false,
-            },
-            next_nonce: super::helpers::generate_nonce(),
-        };
-
-        super::stream::send(stream, &msg, None).await?;
-        Ok(())
-    }
-
-    /// Handle a SubtreePrefetchRequest (Phase 2 of SubtreePrefetch).
-    ///
-    /// Walks storage for entities matching the requested subtree roots by key prefix,
-    /// and sends back a SubtreePrefetchResponse.
+    /// Two modes depending on `subtree_roots`:
+    /// - **Empty** (discovery / Phase 1): enumerate unique first-byte prefixes of
+    ///   state keys and return one empty `SubtreeData` per prefix so the initiator
+    ///   can identify divergent subtrees. Then read the follow-up Phase 2 request
+    ///   from the same stream and handle it.
+    /// - **Non-empty** (fetch / Phase 2): walk storage for entities matching the
+    ///   requested subtree roots and send back a `SubtreePrefetchResponse`.
     pub(crate) async fn handle_subtree_prefetch_request(
         &self,
         context_id: ContextId,
@@ -99,6 +47,116 @@ impl SyncManager {
         stream: &mut Stream,
         _nonce: calimero_crypto::Nonce,
     ) -> eyre::Result<()> {
+        if subtree_roots.is_empty() {
+            // Discovery mode: enumerate local prefixes so the initiator can
+            // compare them against its own state and send a targeted Phase 2.
+            self.send_prefix_discovery(context_id, max_depth, stream)
+                .await?;
+
+            // Read the Phase 2 follow-up on the same stream
+            let phase2 = match self.recv(stream, None).await {
+                Ok(Some(msg)) => msg,
+                Ok(None) => {
+                    debug!(%context_id, "SubtreePrefetch discovery: stream closed after Phase 1");
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(%context_id, error = %e, "SubtreePrefetch discovery: recv Phase 2 failed");
+                    return Ok(());
+                }
+            };
+
+            let (roots, depth) = match phase2 {
+                StreamMessage::Init {
+                    payload:
+                        InitPayload::SubtreePrefetchRequest {
+                            subtree_roots,
+                            max_depth,
+                            ..
+                        },
+                    ..
+                } => (subtree_roots, max_depth),
+                _ => {
+                    debug!(%context_id, "SubtreePrefetch discovery: unexpected Phase 2 message type");
+                    return Ok(());
+                }
+            };
+
+            self.send_subtree_fetch(context_id, &roots, depth, stream)
+                .await
+        } else {
+            // Direct fetch (Phase 2 only)
+            self.send_subtree_fetch(context_id, &subtree_roots, max_depth, stream)
+                .await
+        }
+    }
+
+    /// Send prefix discovery response (Phase 1 responder).
+    ///
+    /// Enumerates unique first-byte prefixes in storage for the given context
+    /// and returns one empty `SubtreeData` per prefix.
+    async fn send_prefix_discovery(
+        &self,
+        context_id: ContextId,
+        max_depth: Option<usize>,
+        stream: &mut Stream,
+    ) -> eyre::Result<()> {
+        let depth =
+            max_depth.unwrap_or(calimero_node_primitives::sync::subtree::DEFAULT_SUBTREE_MAX_DEPTH);
+
+        let handle = self.context_client.datastore_handle();
+        let mut iter = handle.iter::<ContextStateKey>()?;
+
+        let mut seen_prefixes: HashSet<u8> = HashSet::new();
+        for (key_result, _) in iter.entries() {
+            let key = key_result?;
+            if key.context_id() == context_id {
+                seen_prefixes.insert(key.state_key()[0]);
+            }
+        }
+
+        let subtrees: Vec<SubtreeData> = seen_prefixes
+            .into_iter()
+            .map(|prefix_byte| {
+                let mut root_id = [0u8; 32];
+                root_id[0] = prefix_byte;
+                SubtreeData::new(root_id, [0u8; 32], vec![], depth)
+            })
+            .collect();
+
+        debug!(
+            %context_id,
+            prefix_count = subtrees.len(),
+            "SubtreePrefetch discovery: sending prefix list"
+        );
+
+        let response = SubtreePrefetchResponse::new(subtrees, vec![]);
+        let serialized =
+            borsh::to_vec(&response).wrap_err("failed to serialize discovery response")?;
+
+        let mut sqx = Sequencer::default();
+        let msg = StreamMessage::Message {
+            sequence_id: sqx.next(),
+            payload: MessagePayload::SubtreePrefetchResponse {
+                subtrees: serialized.into(),
+                not_found_count: 0,
+            },
+            next_nonce: super::helpers::generate_nonce(),
+        };
+        super::stream::send(stream, &msg, None).await
+    }
+
+    /// Send subtree fetch response (Phase 2 responder).
+    ///
+    /// Collects entities for each requested subtree root and sends back a
+    /// `SubtreePrefetchResponse`.
+    async fn send_subtree_fetch(
+        &self,
+        context_id: ContextId,
+        subtree_roots: &[[u8; 32]],
+        max_depth: Option<usize>,
+        stream: &mut Stream,
+    ) -> eyre::Result<()> {
         let depth =
             max_depth.unwrap_or(calimero_node_primitives::sync::subtree::DEFAULT_SUBTREE_MAX_DEPTH);
 
@@ -106,13 +164,13 @@ impl SyncManager {
             %context_id,
             subtree_count = subtree_roots.len(),
             depth,
-            "Handling SubtreePrefetchRequest"
+            "SubtreePrefetch fetch: collecting subtree data"
         );
 
         let mut subtrees = Vec::new();
         let mut not_found = Vec::new();
 
-        for root in &subtree_roots {
+        for root in subtree_roots {
             match self.collect_subtree_entities(context_id, root, depth) {
                 Ok(subtree_data) => {
                     if subtree_data.is_empty() {
@@ -204,10 +262,12 @@ impl SyncManager {
 
     /// Initiator function for SubtreePrefetch sync.
     ///
-    /// 1. Phase 1: Send TreeNodeRequest, receive TreeNodeResponse, find divergent roots
-    /// 2. Phase 2: Send SubtreePrefetchRequest, receive SubtreePrefetchResponse
-    /// 3. Deserialize response, validate, apply entities via handle.put()
-    /// 4. On any failure: fall back to snapshot sync
+    /// 1. Phase 1: Send `SubtreePrefetchRequest` with empty roots (discovery),
+    ///    receive prefix list, identify divergent subtrees.
+    /// 2. Phase 2: Send `SubtreePrefetchRequest` with divergent roots, receive
+    ///    full subtree data.
+    /// 3. Cleanup stale local keys + apply received entities.
+    /// 4. On any failure: fall back to snapshot sync.
     pub(crate) async fn request_subtree_prefetch(
         &self,
         context_id: ContextId,
@@ -215,22 +275,15 @@ impl SyncManager {
         peer_id: libp2p::PeerId,
         stream: &mut Stream,
     ) -> eyre::Result<SyncProtocol> {
-        // Get local root hash
-        let context = self
-            .context_client
-            .get_context(&context_id)?
-            .ok_or_else(|| eyre::eyre!("Context not found: {}", context_id))?;
-        let local_root_hash = *context.root_hash;
-
-        // Phase 1: Request top-level tree node children
-        info!(%context_id, "SubtreePrefetch Phase 1: requesting tree node children");
+        // Phase 1: Discover remote prefixes via SubtreePrefetchRequest with empty roots
+        info!(%context_id, "SubtreePrefetch Phase 1: discovering remote prefixes");
 
         let phase1_msg = StreamMessage::Init {
             context_id,
             party_id: our_identity,
-            payload: InitPayload::TreeNodeRequest {
+            payload: InitPayload::SubtreePrefetchRequest {
                 context_id,
-                node_id: local_root_hash,
+                subtree_roots: vec![],
                 max_depth: None,
             },
             next_nonce: super::helpers::generate_nonce(),
@@ -259,18 +312,26 @@ impl SyncManager {
             }
         };
 
-        let remote_nodes = match response {
+        // Parse discovery response: extract remote prefix root_ids
+        let remote_prefix_roots = match response {
             StreamMessage::Message {
-                payload: MessagePayload::TreeNodeResponse { nodes, not_found },
+                payload: MessagePayload::SubtreePrefetchResponse { subtrees, .. },
                 ..
             } => {
-                if not_found {
-                    warn!(%context_id, "SubtreePrefetch Phase 1: peer reported not_found, falling back to snapshot");
-                    return self
-                        .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
-                        .await;
-                }
-                nodes
+                let discovery: SubtreePrefetchResponse = match borsh::from_slice(&subtrees) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        warn!(%context_id, error = %e, "SubtreePrefetch Phase 1: failed to deserialize discovery, falling back to snapshot");
+                        return self
+                            .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
+                            .await;
+                    }
+                };
+                discovery
+                    .subtrees
+                    .iter()
+                    .map(|s| s.root_id)
+                    .collect::<Vec<_>>()
             }
             _ => {
                 warn!(%context_id, "SubtreePrefetch Phase 1: unexpected response, falling back to snapshot");
@@ -280,8 +341,10 @@ impl SyncManager {
             }
         };
 
-        // Identify divergent subtrees by comparing remote children with local storage
-        let divergent_roots = match self.identify_divergent_subtrees(context_id, &remote_nodes) {
+        // Identify divergent subtrees by comparing remote prefixes with local storage
+        let divergent_roots = match self
+            .identify_divergent_subtrees(context_id, &remote_prefix_roots)
+        {
             Ok(roots) => roots,
             Err(e) => {
                 warn!(%context_id, error = %e, "Failed to identify divergent subtrees, falling back to snapshot");
@@ -453,16 +516,16 @@ impl SyncManager {
         })
     }
 
-    /// Compare remote top-level nodes with local storage to identify divergent subtrees.
+    /// Compare remote prefix roots with local storage to identify divergent subtrees.
     ///
-    /// For each remote node (keyed by first-byte prefix), check if we have the
+    /// For each remote prefix root (keyed by first-byte), check if we have the
     /// same prefix locally. Any prefix present remotely but not locally (or vice
     /// versa) is considered divergent. Shared prefixes are also included since
     /// we cannot compare hashes without a true Merkle tree.
     fn identify_divergent_subtrees(
         &self,
         context_id: ContextId,
-        remote_nodes: &[TreeNode],
+        remote_prefix_roots: &[[u8; 32]],
     ) -> eyre::Result<Vec<[u8; 32]>> {
         let handle = self.context_client.datastore_handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
@@ -477,7 +540,7 @@ impl SyncManager {
             }
         }
 
-        let remote_prefixes: HashSet<u8> = remote_nodes.iter().map(|node| node.id[0]).collect();
+        let remote_prefixes: HashSet<u8> = remote_prefix_roots.iter().map(|root| root[0]).collect();
 
         // Divergent = present in remote but not local, or in local but not remote
         let mut divergent = Vec::new();

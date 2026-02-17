@@ -39,7 +39,7 @@ use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtoc
 use super::level_sync::{LevelWiseConfig, LevelWiseProtocol};
 use calimero_node_primitives::sync::{
     build_handshake_from_raw, estimate_entity_count, estimate_max_depth, select_protocol,
-    SyncHandshake, SyncProtocol, SyncProtocolExecutor, SyncTransport,
+    SyncHandshake, SyncProtocol, SyncProtocolExecutor,
 };
 
 /// Network synchronization manager.
@@ -2018,11 +2018,15 @@ impl SyncManager {
                 node_id,
                 max_depth,
             } => {
-                self.handle_subtree_tree_node_request(
+                // Route to HashComparison's real Merkle tree handler.
+                // SubtreePrefetch uses SubtreePrefetchRequest (not TreeNodeRequest)
+                // for its own discovery phase, so there is no conflict.
+                let mut transport = super::stream::StreamTransport::new(stream);
+                self.handle_tree_node_request(
                     requested_context_id,
                     node_id,
                     max_depth,
-                    stream,
+                    &mut transport,
                     nonce,
                 )
                 .await?
