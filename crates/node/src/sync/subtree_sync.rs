@@ -6,10 +6,12 @@
 //!
 //! Falls back to snapshot sync on any failure.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use calimero_network_primitives::stream::Stream;
-use calimero_node_primitives::sync::hash_comparison::{CrdtType, LeafMetadata, TreeLeafData};
+use calimero_node_primitives::sync::hash_comparison::{
+    CrdtType, LeafMetadata, TreeLeafData, TreeNode,
+};
 use calimero_node_primitives::sync::subtree::{SubtreeData, SubtreePrefetchResponse};
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage, SyncProtocol};
 use calimero_primitives::context::ContextId;
@@ -27,15 +29,16 @@ use super::tracking::Sequencer;
 // =============================================================================
 
 impl SyncManager {
-    /// Handle a TreeNodeRequest (Phase 1 of SubtreePrefetch).
+    /// Handle a TreeNodeRequest for SubtreePrefetch Phase 1.
     ///
     /// Enumerates unique first-byte prefixes of state keys as "top-level children"
-    /// and returns them as `Vec<([u8; 32], bool)>` where the hash is derived from
-    /// the prefix byte and `is_leaf` is always false (they are subtree roots).
-    pub(crate) async fn handle_tree_node_request(
+    /// and returns them as `Vec<TreeNode>` where each node's ID is derived from
+    /// the prefix byte (internal nodes representing subtree roots).
+    pub(crate) async fn handle_subtree_tree_node_request(
         &self,
         context_id: ContextId,
         _node_id: [u8; 32],
+        _max_depth: Option<u8>,
         stream: &mut Stream,
         _nonce: calimero_crypto::Nonce,
     ) -> eyre::Result<()> {
@@ -52,26 +55,31 @@ impl SyncManager {
             }
         }
 
-        // Build children: one entry per unique first-byte prefix
-        let children: Vec<([u8; 32], bool)> = seen_prefixes
+        // Build nodes: one internal TreeNode per unique first-byte prefix
+        let nodes: Vec<TreeNode> = seen_prefixes
             .into_iter()
             .map(|prefix_byte| {
-                let mut hash = [0u8; 32];
-                hash[0] = prefix_byte;
-                (hash, false) // is_leaf = false, these are subtree roots
+                let mut id = [0u8; 32];
+                id[0] = prefix_byte;
+                // Internal node: ID is prefix-based, hash is zeroed (no Merkle tree),
+                // children list is empty (we only report the top-level grouping)
+                TreeNode::internal(id, [0u8; 32], vec![])
             })
             .collect();
 
         debug!(
             %context_id,
-            children_count = children.len(),
-            "Responding to TreeNodeRequest with top-level children"
+            node_count = nodes.len(),
+            "Responding to TreeNodeRequest with top-level subtree nodes"
         );
 
         let mut sqx = Sequencer::default();
         let msg = StreamMessage::Message {
             sequence_id: sqx.next(),
-            payload: MessagePayload::TreeNodeResponse { children },
+            payload: MessagePayload::TreeNodeResponse {
+                nodes,
+                not_found: false,
+            },
             next_nonce: super::helpers::generate_nonce(),
         };
 
@@ -171,7 +179,7 @@ impl SyncManager {
                 continue;
             }
 
-            let metadata = LeafMetadata::new(CrdtType::LwwRegister, 0, [0u8; 32]);
+            let metadata = LeafMetadata::new(CrdtType::lww_register("unknown"), 0, [0u8; 32]);
             let leaf = TreeLeafData::new(state_key, value.value.to_vec(), metadata);
             entities.push(leaf);
         }
@@ -223,6 +231,7 @@ impl SyncManager {
             payload: InitPayload::TreeNodeRequest {
                 context_id,
                 node_id: local_root_hash,
+                max_depth: None,
             },
             next_nonce: super::helpers::generate_nonce(),
         };
@@ -230,7 +239,7 @@ impl SyncManager {
         if let Err(e) = super::stream::send(stream, &phase1_msg, None).await {
             warn!(%context_id, error = %e, "SubtreePrefetch Phase 1 send failed, falling back to snapshot");
             return self
-                .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
+                .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                 .await;
         }
 
@@ -239,37 +248,45 @@ impl SyncManager {
             Ok(None) => {
                 warn!(%context_id, "SubtreePrefetch Phase 1: no response, falling back to snapshot");
                 return self
-                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
+                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                     .await;
             }
             Err(e) => {
                 warn!(%context_id, error = %e, "SubtreePrefetch Phase 1 recv failed, falling back to snapshot");
                 return self
-                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
+                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                     .await;
             }
         };
 
-        let remote_children = match response {
+        let remote_nodes = match response {
             StreamMessage::Message {
-                payload: MessagePayload::TreeNodeResponse { children },
+                payload: MessagePayload::TreeNodeResponse { nodes, not_found },
                 ..
-            } => children,
+            } => {
+                if not_found {
+                    warn!(%context_id, "SubtreePrefetch Phase 1: peer reported not_found, falling back to snapshot");
+                    return self
+                        .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
+                        .await;
+                }
+                nodes
+            }
             _ => {
                 warn!(%context_id, "SubtreePrefetch Phase 1: unexpected response, falling back to snapshot");
                 return self
-                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
+                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                     .await;
             }
         };
 
         // Identify divergent subtrees by comparing remote children with local storage
-        let divergent_roots = match self.identify_divergent_subtrees(context_id, &remote_children) {
+        let divergent_roots = match self.identify_divergent_subtrees(context_id, &remote_nodes) {
             Ok(roots) => roots,
             Err(e) => {
                 warn!(%context_id, error = %e, "Failed to identify divergent subtrees, falling back to snapshot");
                 return self
-                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
+                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                     .await;
             }
         };
@@ -302,7 +319,7 @@ impl SyncManager {
         if let Err(e) = super::stream::send(stream, &phase2_msg, None).await {
             warn!(%context_id, error = %e, "SubtreePrefetch Phase 2 send failed, falling back to snapshot");
             return self
-                .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
+                .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                 .await;
         }
 
@@ -311,13 +328,13 @@ impl SyncManager {
             Ok(None) => {
                 warn!(%context_id, "SubtreePrefetch Phase 2: no response, falling back to snapshot");
                 return self
-                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
+                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                     .await;
             }
             Err(e) => {
                 warn!(%context_id, error = %e, "SubtreePrefetch Phase 2 recv failed, falling back to snapshot");
                 return self
-                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
+                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                     .await;
             }
         };
@@ -330,7 +347,7 @@ impl SyncManager {
             _ => {
                 warn!(%context_id, "SubtreePrefetch Phase 2: unexpected response, falling back to snapshot");
                 return self
-                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
+                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                     .await;
             }
         };
@@ -341,7 +358,7 @@ impl SyncManager {
             Err(e) => {
                 warn!(%context_id, error = %e, "Failed to deserialize SubtreePrefetchResponse, falling back to snapshot");
                 return self
-                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
+                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                     .await;
             }
         };
@@ -349,13 +366,69 @@ impl SyncManager {
         if !prefetch_response.is_valid() {
             warn!(%context_id, "SubtreePrefetchResponse failed validation, falling back to snapshot");
             return self
-                .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
+                .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                 .await;
         }
 
-        // Apply entities to local storage
-        let mut total_applied = 0;
+        // Phase 3: Cleanup stale keys + Apply received entities
+        //
+        // For each divergent subtree, the remote peer's view is authoritative.
+        // Local keys under divergent prefixes that are absent from the remote
+        // response represent remote deletions and must be removed to ensure
+        // convergence. Truncated subtrees are excluded from cleanup since we
+        // don't have the complete remote picture for those prefixes.
+        let depth_used = calimero_node_primitives::sync::subtree::DEFAULT_SUBTREE_MAX_DEPTH;
+
+        // Build lookup: remote entity keys per non-truncated subtree root
+        let mut remote_keys_by_root: HashMap<u8, HashSet<[u8; 32]>> = HashMap::new();
+        for subtree in &prefetch_response.subtrees {
+            if !subtree.is_truncated() {
+                remote_keys_by_root.insert(
+                    subtree.root_id[0],
+                    subtree.entities.iter().map(|e| e.key).collect(),
+                );
+            }
+        }
+
+        // Prefixes in not_found → remote has zero entities under this prefix
+        let not_found_prefixes: HashSet<u8> =
+            prefetch_response.not_found.iter().map(|r| r[0]).collect();
+
+        // Collect stale local keys (read-only scan, then delete separately)
+        let keys_to_delete: Vec<[u8; 32]> = {
+            let handle = self.context_client.datastore_handle();
+            let mut iter = handle.iter::<ContextStateKey>()?;
+            let mut stale = Vec::new();
+
+            for (key_result, _) in iter.entries() {
+                let key = key_result?;
+                if key.context_id() != context_id {
+                    continue;
+                }
+                let state_key = key.state_key();
+
+                if is_key_stale(
+                    &state_key,
+                    &divergent_roots,
+                    &remote_keys_by_root,
+                    &not_found_prefixes,
+                    depth_used,
+                ) {
+                    stale.push(state_key);
+                }
+            }
+            stale
+        };
+
+        // Apply: delete stale keys, then put received entities
+        let mut total_deleted = 0usize;
+        let mut total_applied = 0usize;
         let mut handle = self.context_client.datastore_handle();
+
+        for state_key in &keys_to_delete {
+            handle.delete(&ContextStateKey::new(context_id, *state_key))?;
+            total_deleted += 1;
+        }
 
         for subtree in &prefetch_response.subtrees {
             for entity in &subtree.entities {
@@ -369,6 +442,7 @@ impl SyncManager {
         info!(
             %context_id,
             total_applied,
+            total_deleted,
             subtrees_received = prefetch_response.subtree_count(),
             not_found = prefetch_response.not_found.len(),
             "SubtreePrefetch sync completed"
@@ -379,14 +453,16 @@ impl SyncManager {
         })
     }
 
-    /// Compare remote children with local storage to identify divergent subtrees.
+    /// Compare remote top-level nodes with local storage to identify divergent subtrees.
     ///
-    /// For each remote child (prefix hash), check if we have the same prefix locally.
-    /// Any prefix present remotely but not locally (or vice versa) is considered divergent.
+    /// For each remote node (keyed by first-byte prefix), check if we have the
+    /// same prefix locally. Any prefix present remotely but not locally (or vice
+    /// versa) is considered divergent. Shared prefixes are also included since
+    /// we cannot compare hashes without a true Merkle tree.
     fn identify_divergent_subtrees(
         &self,
         context_id: ContextId,
-        remote_children: &[([u8; 32], bool)],
+        remote_nodes: &[TreeNode],
     ) -> eyre::Result<Vec<[u8; 32]>> {
         let handle = self.context_client.datastore_handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
@@ -401,8 +477,7 @@ impl SyncManager {
             }
         }
 
-        let remote_prefixes: HashSet<u8> =
-            remote_children.iter().map(|(hash, _)| hash[0]).collect();
+        let remote_prefixes: HashSet<u8> = remote_nodes.iter().map(|node| node.id[0]).collect();
 
         // Divergent = present in remote but not local, or in local but not remote
         let mut divergent = Vec::new();
@@ -460,6 +535,40 @@ fn key_shares_subtree_prefix(key: &[u8; 32], root: &[u8; 32], depth: usize) -> b
         return true; // Zero depth matches everything
     }
     key[..compare_len] == root[..compare_len]
+}
+
+/// Determine whether a local key is stale and should be deleted.
+///
+/// A key is stale when it falls under a divergent subtree prefix AND either:
+/// - The prefix is in `not_found_prefixes` (remote has no entities there), OR
+/// - The key is absent from the remote entity set for that prefix.
+///
+/// Keys under truncated subtrees should NOT be in `remote_keys_by_root`
+/// (caller is responsible for excluding them), so they won't be deleted.
+fn is_key_stale(
+    state_key: &[u8; 32],
+    divergent_roots: &[[u8; 32]],
+    remote_keys_by_root: &HashMap<u8, HashSet<[u8; 32]>>,
+    not_found_prefixes: &HashSet<u8>,
+    depth: usize,
+) -> bool {
+    for root in divergent_roots {
+        if !key_shares_subtree_prefix(state_key, root, depth) {
+            continue;
+        }
+        let prefix = root[0];
+
+        if not_found_prefixes.contains(&prefix) {
+            return true;
+        }
+        if let Some(remote_keys) = remote_keys_by_root.get(&prefix) {
+            return !remote_keys.contains(state_key);
+        }
+        // Matched a divergent root but prefix is neither not_found nor in
+        // remote_keys_by_root (e.g. truncated subtree) → not stale
+        return false;
+    }
+    false
 }
 
 // =============================================================================
@@ -530,5 +639,199 @@ mod tests {
 
         assert!(key_shares_subtree_prefix(&key, &root, 2)); // Only checks bytes 0-1
         assert!(!key_shares_subtree_prefix(&key, &root, 3)); // Checks bytes 0-2
+    }
+
+    // =========================================================================
+    // is_key_stale Tests — stale key identification for subtree cleanup
+    // =========================================================================
+
+    /// Helper: build a divergent root from a prefix byte.
+    fn root_from_prefix(prefix: u8) -> [u8; 32] {
+        let mut r = [0u8; 32];
+        r[0] = prefix;
+        r
+    }
+
+    /// Helper: build a state key with given prefix byte and second byte.
+    fn key_with_prefix(prefix: u8, second: u8) -> [u8; 32] {
+        let mut k = [0u8; 32];
+        k[0] = prefix;
+        k[1] = second;
+        k
+    }
+
+    #[test]
+    fn test_is_key_stale_key_absent_from_remote_set() {
+        // Remote has keys {A, B} under prefix 0x01; local has key C → C is stale
+        let divergent_roots = vec![root_from_prefix(0x01)];
+        let mut remote_keys: HashMap<u8, HashSet<[u8; 32]>> = HashMap::new();
+        remote_keys.insert(
+            0x01,
+            HashSet::from([key_with_prefix(0x01, 0xAA), key_with_prefix(0x01, 0xBB)]),
+        );
+        let not_found: HashSet<u8> = HashSet::new();
+
+        let local_key = key_with_prefix(0x01, 0xCC); // not in remote set
+        assert!(is_key_stale(
+            &local_key,
+            &divergent_roots,
+            &remote_keys,
+            &not_found,
+            1, // depth 1: match on first byte
+        ));
+    }
+
+    #[test]
+    fn test_is_key_stale_key_present_in_remote_set() {
+        // Remote has key A; local also has A → not stale
+        let divergent_roots = vec![root_from_prefix(0x01)];
+        let mut remote_keys: HashMap<u8, HashSet<[u8; 32]>> = HashMap::new();
+        remote_keys.insert(0x01, HashSet::from([key_with_prefix(0x01, 0xAA)]));
+        let not_found: HashSet<u8> = HashSet::new();
+
+        let local_key = key_with_prefix(0x01, 0xAA); // in remote set
+        assert!(!is_key_stale(
+            &local_key,
+            &divergent_roots,
+            &remote_keys,
+            &not_found,
+            1,
+        ));
+    }
+
+    #[test]
+    fn test_is_key_stale_prefix_in_not_found() {
+        // Prefix 0x02 is in not_found → all local keys under 0x02 are stale
+        let divergent_roots = vec![root_from_prefix(0x02)];
+        let remote_keys: HashMap<u8, HashSet<[u8; 32]>> = HashMap::new();
+        let not_found: HashSet<u8> = HashSet::from([0x02]);
+
+        let local_key = key_with_prefix(0x02, 0x05);
+        assert!(is_key_stale(
+            &local_key,
+            &divergent_roots,
+            &remote_keys,
+            &not_found,
+            1,
+        ));
+    }
+
+    #[test]
+    fn test_is_key_stale_key_under_non_divergent_prefix() {
+        // Key under prefix 0x03, but only 0x01 is divergent → not stale
+        let divergent_roots = vec![root_from_prefix(0x01)];
+        let remote_keys: HashMap<u8, HashSet<[u8; 32]>> = HashMap::new();
+        let not_found: HashSet<u8> = HashSet::new();
+
+        let local_key = key_with_prefix(0x03, 0x01);
+        assert!(!is_key_stale(
+            &local_key,
+            &divergent_roots,
+            &remote_keys,
+            &not_found,
+            1,
+        ));
+    }
+
+    #[test]
+    fn test_is_key_stale_truncated_subtree_excluded() {
+        // Prefix 0x01 is divergent but NOT in remote_keys_by_root (truncated)
+        // and NOT in not_found → key is not stale (we lack the full picture)
+        let divergent_roots = vec![root_from_prefix(0x01)];
+        let remote_keys: HashMap<u8, HashSet<[u8; 32]>> = HashMap::new();
+        let not_found: HashSet<u8> = HashSet::new();
+
+        let local_key = key_with_prefix(0x01, 0x42);
+        assert!(!is_key_stale(
+            &local_key,
+            &divergent_roots,
+            &remote_keys,
+            &not_found,
+            1,
+        ));
+    }
+
+    #[test]
+    fn test_is_key_stale_multiple_divergent_roots() {
+        // Two divergent roots: 0x01 (has remote keys), 0x02 (not found)
+        let divergent_roots = vec![root_from_prefix(0x01), root_from_prefix(0x02)];
+        let mut remote_keys: HashMap<u8, HashSet<[u8; 32]>> = HashMap::new();
+        remote_keys.insert(0x01, HashSet::from([key_with_prefix(0x01, 0xAA)]));
+        let not_found: HashSet<u8> = HashSet::from([0x02]);
+
+        // Key under 0x01 present in remote → not stale
+        assert!(!is_key_stale(
+            &key_with_prefix(0x01, 0xAA),
+            &divergent_roots,
+            &remote_keys,
+            &not_found,
+            1,
+        ));
+        // Key under 0x01 absent from remote → stale
+        assert!(is_key_stale(
+            &key_with_prefix(0x01, 0xBB),
+            &divergent_roots,
+            &remote_keys,
+            &not_found,
+            1,
+        ));
+        // Key under 0x02 (not found prefix) → stale
+        assert!(is_key_stale(
+            &key_with_prefix(0x02, 0x01),
+            &divergent_roots,
+            &remote_keys,
+            &not_found,
+            1,
+        ));
+    }
+
+    #[test]
+    fn test_is_key_stale_empty_remote_set() {
+        // Remote returns a subtree with zero entities (but it's non-truncated,
+        // so it shows up in remote_keys_by_root with an empty set)
+        let divergent_roots = vec![root_from_prefix(0x01)];
+        let mut remote_keys: HashMap<u8, HashSet<[u8; 32]>> = HashMap::new();
+        remote_keys.insert(0x01, HashSet::new()); // empty set
+        let not_found: HashSet<u8> = HashSet::new();
+
+        // Any local key under 0x01 is stale (remote has nothing)
+        let local_key = key_with_prefix(0x01, 0x01);
+        assert!(is_key_stale(
+            &local_key,
+            &divergent_roots,
+            &remote_keys,
+            &not_found,
+            1,
+        ));
+    }
+
+    #[test]
+    fn test_is_key_stale_depth_limits_scope() {
+        // With depth=5, root [0x01, 0, 0, 0, 0, ...] only matches keys
+        // whose first 5 bytes are [0x01, 0, 0, 0, 0].
+        let divergent_roots = vec![root_from_prefix(0x01)];
+        let mut remote_keys: HashMap<u8, HashSet<[u8; 32]>> = HashMap::new();
+        remote_keys.insert(0x01, HashSet::new());
+        let not_found: HashSet<u8> = HashSet::new();
+
+        // Key [0x01, 0, 0, 0, 0, ...] matches → stale (not in remote set)
+        let matching_key = key_with_prefix(0x01, 0x00);
+        assert!(is_key_stale(
+            &matching_key,
+            &divergent_roots,
+            &remote_keys,
+            &not_found,
+            5,
+        ));
+
+        // Key [0x01, 1, 0, 0, 0, ...] does NOT match at depth=5 → not stale
+        let non_matching_key = key_with_prefix(0x01, 0x01);
+        assert!(!is_key_stale(
+            &non_matching_key,
+            &divergent_roots,
+            &remote_keys,
+            &not_found,
+            5,
+        ));
     }
 }

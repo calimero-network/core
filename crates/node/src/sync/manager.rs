@@ -2016,9 +2016,16 @@ impl SyncManager {
             InitPayload::TreeNodeRequest {
                 context_id: requested_context_id,
                 node_id,
+                max_depth,
             } => {
-                self.handle_tree_node_request(requested_context_id, node_id, stream, nonce)
-                    .await?
+                self.handle_subtree_tree_node_request(
+                    requested_context_id,
+                    node_id,
+                    max_depth,
+                    stream,
+                    nonce,
+                )
+                .await?
             }
             InitPayload::SubtreePrefetchRequest {
                 context_id: requested_context_id,
@@ -2033,6 +2040,9 @@ impl SyncManager {
                     nonce,
                 )
                 .await?
+            }
+            InitPayload::LevelWiseRequest { .. } => {
+                warn!("LevelWise responder not yet wired; ignoring request");
             }
         };
 

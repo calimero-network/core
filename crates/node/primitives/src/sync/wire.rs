@@ -174,6 +174,19 @@ pub enum InitPayload {
         /// - `Some(ids)` = fetch only children of specified parents
         parent_ids: Option<Vec<[u8; 32]>>,
     },
+
+    /// Request subtree prefetch (Phase 2 of SubtreePrefetch, CIP Appendix B).
+    ///
+    /// Fetches entire divergent subtrees in a single request, avoiding
+    /// the O(depth) round-trips of HashComparison for clustered changes.
+    SubtreePrefetchRequest {
+        /// Context being synchronized.
+        context_id: ContextId,
+        /// Roots of divergent subtrees to fetch.
+        subtree_roots: Vec<[u8; 32]>,
+        /// Maximum depth to traverse within each subtree.
+        max_depth: Option<usize>,
+    },
 }
 
 // =============================================================================
@@ -285,6 +298,16 @@ pub enum MessagePayload<'a> {
         nodes: Vec<LevelNode>,
         /// Whether there are more levels below this one.
         has_more_levels: bool,
+    },
+
+    /// Response with prefetched subtree data (Phase 2 of SubtreePrefetch).
+    ///
+    /// Contains borsh-serialized `SubtreePrefetchResponse` from `sync::subtree`.
+    SubtreePrefetchResponse {
+        /// Borsh-serialized subtree data.
+        subtrees: Cow<'a, [u8]>,
+        /// Number of subtrees not found.
+        not_found_count: u32,
     },
 }
 
