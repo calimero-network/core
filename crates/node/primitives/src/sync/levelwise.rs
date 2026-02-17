@@ -39,6 +39,20 @@
 //!
 //! All types have `is_valid()` methods that should be called after deserializing
 //! from untrusted sources to prevent resource exhaustion attacks.
+//!
+//! # Security Note: DoS Protection Limitations
+//!
+//! The current validation model has a known limitation: `is_valid()` checks occur
+//! **after** borsh deserialization, meaning a malicious peer could send an oversized
+//! array that gets fully allocated before validation rejects it.
+//!
+//! Mitigations:
+//! - **Transport layer**: Message size limits should be enforced at the network layer
+//! - **Defense in depth**: `is_valid()` still catches logical violations
+//!
+//! Future work: Consider transport-level message size limits or streaming deserialization
+//! with early termination. Borsh field-level `max_length` attributes don't prevent the
+//! underlying allocation during deserialization.
 
 use std::collections::HashMap;
 
@@ -67,6 +81,13 @@ pub const MAX_PARENTS_PER_REQUEST: usize = 1000;
 /// Limits the size of `LevelWiseResponse::nodes` to prevent memory exhaustion
 /// from malicious peers sending oversized responses.
 pub const MAX_NODES_PER_LEVEL: usize = 10_000;
+
+/// Maximum number of requests allowed per sync session.
+///
+/// Prevents a peer from holding resources open indefinitely by sending
+/// unlimited requests. For LevelWise (depth <= 2), expected request count
+/// is minimal, but we allow headroom for edge cases.
+pub const MAX_REQUESTS_PER_SESSION: u64 = 128;
 
 // =============================================================================
 // LevelWise Request/Response
@@ -376,19 +397,19 @@ impl LevelCompareResult {
 
 /// Compare local and remote nodes at a level.
 ///
-/// Takes a map of local node hashes and the remote response,
+/// Takes a map of local node hashes and the remote nodes slice,
 /// and categorizes each node. Deduplicates remote nodes by ID to ensure
 /// each node appears in exactly one category.
 #[must_use]
 pub fn compare_level_nodes(
     local_hashes: &HashMap<[u8; 32], [u8; 32]>,
-    remote: &LevelWiseResponse,
+    remote_nodes: &[LevelNode],
 ) -> LevelCompareResult {
     let mut result = LevelCompareResult::default();
 
     // Deduplicate remote nodes by ID, keeping the first occurrence
     let mut remote_by_id: HashMap<[u8; 32], &LevelNode> = HashMap::new();
-    for node in &remote.nodes {
+    for node in remote_nodes {
         remote_by_id.entry(node.id).or_insert(node);
     }
 
@@ -446,7 +467,7 @@ mod tests {
     // =========================================================================
 
     fn make_leaf_data(key: u8, value: Vec<u8>) -> TreeLeafData {
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [key; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [key; 32]);
         TreeLeafData::new([key; 32], value, metadata)
     }
 
@@ -562,7 +583,7 @@ mod tests {
         assert!(valid_leaf.is_valid());
 
         // Invalid leaf node with oversized value
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let invalid_leaf_data =
             TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE + 1], metadata);
         let invalid_leaf = LevelNode::leaf([1; 32], [2; 32], None, invalid_leaf_data);
@@ -642,7 +663,7 @@ mod tests {
         assert!(!over_level.is_valid());
 
         // Invalid response with invalid node
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let invalid_leaf_data =
             TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE + 1], metadata);
         let invalid_node = LevelNode::leaf([1; 32], [2; 32], None, invalid_leaf_data);
@@ -695,7 +716,7 @@ mod tests {
         ];
         let response = LevelWiseResponse::new(0, remote_nodes, true);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert_eq!(result.matching, vec![[1; 32]]);
         assert_eq!(result.differing, vec![[2; 32]]);
@@ -715,7 +736,7 @@ mod tests {
         ];
         let response = LevelWiseResponse::new(0, remote_nodes, false);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert_eq!(result.matching.len(), 2);
         assert!(result.differing.is_empty());
@@ -734,7 +755,7 @@ mod tests {
         ];
         let response = LevelWiseResponse::new(0, remote_nodes, false);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert!(result.matching.is_empty());
         assert!(result.differing.is_empty());
@@ -751,7 +772,7 @@ mod tests {
 
         let response = LevelWiseResponse::empty(0);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert!(result.matching.is_empty());
         assert!(result.differing.is_empty());
@@ -862,7 +883,7 @@ mod tests {
     #[test]
     fn test_levelwise_cross_validation_consistency() {
         // Verify that individual node validation is enforced in response validation
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let oversized_leaf_data =
             TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE + 1], metadata);
         let invalid_node = LevelNode::leaf([1; 32], [2; 32], None, oversized_leaf_data);
@@ -963,7 +984,7 @@ mod tests {
 
     #[test]
     fn test_level_node_leaf_with_empty_value() {
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let leaf_data = TreeLeafData::new([1; 32], vec![], metadata);
         let node = LevelNode::leaf([1; 32], [2; 32], None, leaf_data);
 
@@ -973,7 +994,7 @@ mod tests {
 
     #[test]
     fn test_level_node_leaf_at_max_value_size() {
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let leaf_data = TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE], metadata);
         let node = LevelNode::leaf([1; 32], [2; 32], None, leaf_data);
 
@@ -985,7 +1006,7 @@ mod tests {
         let local_hashes: HashMap<[u8; 32], [u8; 32]> = HashMap::new();
         let response = LevelWiseResponse::empty(0);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert!(result.matching.is_empty());
         assert!(result.differing.is_empty());
@@ -1010,7 +1031,7 @@ mod tests {
         ];
         let response = LevelWiseResponse::new(0, remote_nodes, false);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert!(result.matching.is_empty());
         assert_eq!(result.differing.len(), 3);
@@ -1029,7 +1050,7 @@ mod tests {
         // Empty response - all local nodes are "remote missing"
         let response = LevelWiseResponse::empty(0);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         assert!(result.matching.is_empty());
         assert!(result.differing.is_empty());
@@ -1126,7 +1147,7 @@ mod tests {
             .map(|i| LevelNode::internal([i as u8; 32], [i as u8; 32], None))
             .collect();
 
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let oversized_leaf_data =
             TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE + 1], metadata);
         let invalid_node = LevelNode::leaf([99; 32], [99; 32], None, oversized_leaf_data);
@@ -1196,7 +1217,7 @@ mod tests {
         ];
         let response = LevelWiseResponse::new(0, remote_nodes, false);
 
-        let result = compare_level_nodes(&local_hashes, &response);
+        let result = compare_level_nodes(&local_hashes, &response.nodes);
 
         // Duplicates are deduplicated - only first occurrence is considered
         // ID [1; 32] appears only once in exactly one category (matching)
@@ -1222,13 +1243,13 @@ mod tests {
     fn test_levelwise_leaf_with_all_metadata_variants() {
         // Test with various CRDT types
         let crdt_types = [
-            CrdtType::LwwRegister,
+            CrdtType::lww_register("test"),
             CrdtType::GCounter,
             CrdtType::PnCounter,
             CrdtType::Rga,
-            CrdtType::UnorderedMap,
-            CrdtType::UnorderedSet,
-            CrdtType::Vector,
+            CrdtType::unordered_map("String", "u64"),
+            CrdtType::unordered_set("String"),
+            CrdtType::vector("u64"),
         ];
 
         for crdt_type in crdt_types {
@@ -1266,7 +1287,7 @@ mod tests {
     #[test]
     fn test_levelwise_response_validation_with_deeply_nested_invalid_data() {
         // Create a response where validity depends on nested leaf validation
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
 
         // Valid leaf with exactly MAX size
         let valid_leaf_data =
@@ -1311,7 +1332,7 @@ mod tests {
     #[test]
     fn test_levelwise_response_multiple_invalid_nodes() {
         // Response with multiple invalid nodes at different positions
-        let metadata = LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32]);
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32]);
         let oversized_data = vec![0u8; MAX_LEAF_VALUE_SIZE + 1];
 
         let nodes = vec![

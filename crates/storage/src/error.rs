@@ -7,6 +7,7 @@ use serde::Serialize;
 use thiserror::Error as ThisError;
 
 use crate::address::Id;
+use crate::collections::crdt_meta::MergeError;
 use calimero_primitives::identity::PublicKey;
 
 /// Errors that can occur when working with the storage system.
@@ -22,6 +23,17 @@ pub enum StorageError {
     /// cause by calling `save()` without calling `add_child_to()` first.
     #[error("Cannot create orphan with ID: {0}")]
     CannotCreateOrphan(Id),
+
+    /// A merge operation failed.
+    ///
+    /// This typically indicates that no merge function is registered for the
+    /// root entity type. Use `#[app::state]` macro or call
+    /// `register_crdt_merge::<YourState>()` to register a merge function.
+    ///
+    /// The inner `MergeError` preserves the specific failure reason for
+    /// programmatic error handling.
+    #[error("Merge failed: {0}")]
+    MergeFailure(#[from] MergeError),
 
     /// An error occurred during deserialization.
     #[error("Deserialization error: {0}")]
@@ -72,6 +84,7 @@ impl Serialize for StorageError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match *self {
             Self::ActionNotAllowed(ref err) => serializer.serialize_str(err),
+            Self::MergeFailure(ref err) => serializer.serialize_str(&err.to_string()),
             Self::DeserializationError(ref err) | Self::SerializationError(ref err) => {
                 serializer.serialize_str(&err.to_string())
             }

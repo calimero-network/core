@@ -801,15 +801,6 @@ pub struct WalletMetadata {
     pub wallet_type: WalletType,
     pub verifying_key: String,
     pub wallet_address: Option<String>,
-    pub network_metadata: Option<NetworkMetadata>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct NetworkMetadata {
-    pub chain_id: String,
-    pub rpc_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -817,9 +808,6 @@ pub struct NetworkMetadata {
 #[non_exhaustive]
 pub enum SignatureMetadataEnum {
     NEAR(NearSignatureMessageMetadata),
-    ETH(EthSignatureMessageMetadata),
-    STARKNET(StarknetSignatureMessageMetadata),
-    ICP(ICPSignatureMessageMetadata),
 }
 
 #[derive(Debug, Deserialize)]
@@ -830,33 +818,6 @@ pub struct NearSignatureMessageMetadata {
     pub callback_url: String,
     pub nonce: String,
 }
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-#[expect(
-    clippy::empty_structs_with_brackets,
-    reason = "Needed for serialisation"
-)]
-pub struct EthSignatureMessageMetadata {}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-#[expect(
-    clippy::empty_structs_with_brackets,
-    reason = "Needed for serialisation"
-)]
-pub struct StarknetSignatureMessageMetadata {}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[expect(clippy::exhaustive_structs, reason = "Considered to be exhaustive")]
-#[expect(
-    clippy::empty_structs_with_brackets,
-    reason = "Needed for serialisation"
-)]
-pub struct ICPSignatureMessageMetadata {}
 
 // Intermediate structs for initial parsing
 #[derive(Debug, Deserialize)]
@@ -874,7 +835,6 @@ pub struct IntermediateAddPublicKeyRequest {
 #[non_exhaustive]
 pub enum WalletSignature {
     String(String),
-    StarknetPayload(StarknetPayload),
 }
 
 #[derive(Debug, Deserialize)]
@@ -900,14 +860,6 @@ impl JwtTokenRequest {
 #[non_exhaustive]
 pub struct JwtRefreshRequest {
     pub refresh_token: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct StarknetPayload {
-    pub signature: Vec<String>,
-    pub message_hash: String,
 }
 
 #[derive(Debug, Deserialize)]

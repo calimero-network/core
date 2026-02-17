@@ -985,7 +985,9 @@ fn test_e2e_sync_flow_with_isolated_storage() {
 
     env::reset_for_testing();
     reset_delta_context();
-    clear_merge_registry();
+    // Register the correct merge function for the actual root type being tested.
+    // This ensures proper CRDT merging instead of falling back to LWW.
+    register_crdt_merge::<LwwRegister<String>>();
 
     println!("\n========================================");
     println!("=== E2E SYNC FLOW WITH ISOLATED STORAGE ===");
@@ -1140,7 +1142,9 @@ fn test_e2e_counter_sync_with_isolated_storage() {
 
     env::reset_for_testing();
     reset_delta_context();
-    clear_merge_registry();
+    // Register the correct merge function for the actual root type being tested.
+    // Counter implements Mergeable with proper CRDT semantics (max per executor).
+    register_crdt_merge::<Counter>();
 
     println!("\n========================================");
     println!("=== COUNTER SYNC TEST - SIMULATING REAL E2E ===");

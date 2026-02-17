@@ -39,9 +39,13 @@ pub mod handshake;
 pub mod hash_comparison;
 pub mod levelwise;
 pub mod protocol;
+pub mod protocol_trait;
 pub mod snapshot;
 pub mod state_machine;
+pub mod storage_bridge;
 pub mod subtree;
+pub mod transport;
+pub mod wire;
 
 // =============================================================================
 // Re-exports
@@ -76,13 +80,16 @@ pub use bloom_filter::{
     BloomFilterRequest, BloomFilterResponse, DeltaIdBloomFilter, DEFAULT_BLOOM_FP_RATE,
 };
 
-// Snapshot and wire protocol types
+// Wire protocol types (used by all sync protocols)
+pub use wire::{InitPayload, MessagePayload, StreamMessage, MAX_TREE_REQUEST_DEPTH};
+
+// Snapshot types
 pub use snapshot::{
-    check_snapshot_safety, BroadcastMessage, InitPayload, MessagePayload, SnapshotBoundaryRequest,
-    SnapshotBoundaryResponse, SnapshotComplete, SnapshotCursor, SnapshotEntity, SnapshotEntityPage,
-    SnapshotError, SnapshotPage, SnapshotRequest, SnapshotStreamRequest, SnapshotVerifyResult,
-    StreamMessage, DEFAULT_SNAPSHOT_PAGE_SIZE, MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS,
-    MAX_ENTITIES_PER_PAGE, MAX_ENTITY_DATA_SIZE, MAX_SNAPSHOT_PAGES, MAX_SNAPSHOT_PAGE_SIZE,
+    check_snapshot_safety, BroadcastMessage, SnapshotBoundaryRequest, SnapshotBoundaryResponse,
+    SnapshotComplete, SnapshotCursor, SnapshotEntity, SnapshotEntityPage, SnapshotError,
+    SnapshotPage, SnapshotRequest, SnapshotStreamRequest, SnapshotVerifyResult,
+    DEFAULT_SNAPSHOT_PAGE_SIZE, MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS, MAX_ENTITIES_PER_PAGE,
+    MAX_ENTITY_DATA_SIZE, MAX_SNAPSHOT_PAGES, MAX_SNAPSHOT_PAGE_SIZE,
 };
 
 // Subtree prefetch types
@@ -96,6 +103,7 @@ pub use subtree::{
 pub use levelwise::{
     compare_level_nodes, should_use_levelwise, LevelCompareResult, LevelNode, LevelWiseRequest,
     LevelWiseResponse, MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST,
+    MAX_REQUESTS_PER_SESSION,
 };
 
 // State machine types (shared between SyncManager and SimNode)
@@ -103,3 +111,12 @@ pub use state_machine::{
     build_handshake, build_handshake_from_raw, estimate_entity_count, estimate_max_depth,
     LocalSyncState,
 };
+
+// Transport abstraction (for production streams and simulation)
+pub use transport::{EncryptionState, SyncTransport};
+
+// Protocol trait (common interface for all sync protocols)
+pub use protocol_trait::SyncProtocolExecutor;
+
+// Storage bridge (RuntimeEnv creation for sync protocols)
+pub use storage_bridge::create_runtime_env;

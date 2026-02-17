@@ -1,6 +1,8 @@
-//! Snapshot sync types and wire protocol messages (CIP §6 - Snapshot Sync Constraints).
+//! Snapshot sync types (CIP §6 - Snapshot Sync Constraints).
 //!
-//! Types for snapshot-based synchronization and general sync wire messages.
+//! Types for snapshot-based synchronization.
+//!
+//! Wire protocol types (StreamMessage, InitPayload, MessagePayload) are in [`super::wire`].
 //!
 //! # When to Use
 //!
@@ -23,10 +25,9 @@ use std::borrow::Cow;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_crypto::Nonce;
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
-use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 
 use super::hash_comparison::LeafMetadata;
 
@@ -772,7 +773,7 @@ mod tests {
     // =========================================================================
 
     fn make_metadata() -> LeafMetadata {
-        LeafMetadata::new(CrdtType::LwwRegister, 100, [1; 32])
+        LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32])
     }
 
     fn make_entity(id: u8, data: Vec<u8>) -> SnapshotEntity {

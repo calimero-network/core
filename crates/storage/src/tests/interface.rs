@@ -80,6 +80,7 @@ mod interface__public_methods {
 
     #[test]
     fn save__not_dirty() {
+        crate::tests::common::register_test_merge_functions();
         let element = Element::root();
         let mut page = Page::new_from_element("Node", element);
 
@@ -90,6 +91,7 @@ mod interface__public_methods {
 
     #[test]
     fn save__too_old() {
+        crate::tests::common::register_test_merge_functions();
         let element1 = Element::root();
         let mut page1 = Page::new_from_element("Node", element1);
         let mut page2 = page1.clone();
@@ -104,6 +106,7 @@ mod interface__public_methods {
 
     #[test]
     fn save__update_existing() {
+        crate::tests::common::register_test_merge_functions();
         let element = Element::root();
         let mut page = Page::new_from_element("Node", element);
         let id = page.id();
@@ -170,6 +173,7 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__update() {
+        crate::tests::common::register_test_merge_functions();
         let mut page = Page::new_from_element("Old Title", Element::root());
         assert!(MainInterface::save(&mut page).unwrap());
 
@@ -235,6 +239,7 @@ mod interface__apply_actions {
 
     #[test]
     fn delete_ref_conflict_resolution() {
+        crate::tests::common::register_test_merge_functions();
         let mut page = Page::new_from_element("Test Page", Element::root());
         assert!(MainInterface::save(&mut page).unwrap());
 
@@ -842,6 +847,7 @@ mod user_storage_signature_verification {
 
     #[test]
     fn user_update_with_valid_signature_succeeds() {
+        crate::tests::common::register_test_merge_functions();
         env::reset_for_testing();
 
         let (signing_key, owner) = create_test_keypair();
@@ -984,6 +990,7 @@ mod user_storage_replay_protection {
 
     #[test]
     fn sequential_updates_with_increasing_nonces_succeed() {
+        crate::tests::common::register_test_merge_functions();
         env::reset_for_testing();
 
         let (signing_key, owner) = create_test_keypair();
@@ -1789,6 +1796,7 @@ mod storage_type_edge_cases {
 
     #[test]
     fn user_delete_replay_protection() {
+        crate::tests::common::register_test_merge_functions();
         env::reset_for_testing();
 
         let (signing_key, owner) = create_test_keypair();

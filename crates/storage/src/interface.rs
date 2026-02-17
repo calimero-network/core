@@ -43,7 +43,7 @@ use std::collections::BTreeMap;
 use borsh::{from_slice, to_vec};
 use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::address::Id;
 use crate::constants;
@@ -967,10 +967,11 @@ impl<S: StorageAdaptor> Interface<S> {
             } else if last_metadata.updated_at == metadata.updated_at {
                 // Concurrent update (same timestamp) - try to merge
                 if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
-                    Self::try_merge_data(
+                    Self::try_merge_non_root(
                         id,
                         &existing_data,
                         data,
+                        &metadata,
                         *last_metadata.updated_at,
                         *metadata.updated_at,
                     )?
@@ -978,8 +979,20 @@ impl<S: StorageAdaptor> Interface<S> {
                     data.to_vec()
                 }
             } else {
-                // Incoming is newer - use it (LWW for non-root entities)
-                data.to_vec()
+                // Incoming is newer - try CRDT merge for non-root entities if possible
+                // (Invariant I5: no silent data loss)
+                if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
+                    Self::try_merge_non_root(
+                        id,
+                        &existing_data,
+                        data,
+                        &metadata,
+                        *last_metadata.updated_at,
+                        *metadata.updated_at,
+                    )?
+                } else {
+                    data.to_vec()
+                }
             }
         } else {
             if id.is_root() {
@@ -1018,8 +1031,14 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Attempt to merge two versions of data using CRDT semantics.
     ///
-    /// Returns the merged data, falling back to LWW (newer data) on failure.
+    /// Returns the merged data, or an error if merge fails.
     /// Merge mode is enabled to prevent timestamp generation during merge operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::MergeFailure` if no merge function is registered
+    /// for the root entity type. This enforces I5 (No Silent Data Loss) by failing
+    /// loudly rather than silently falling back to LWW.
     fn try_merge_data(
         _id: Id,
         existing: &[u8],
@@ -1035,17 +1054,116 @@ impl<S: StorageAdaptor> Interface<S> {
             merge_root_state(existing, incoming, existing_timestamp, incoming_timestamp)
         });
 
-        match result {
-            Ok(merged) => Ok(merged),
-            Err(_) => {
-                // Merge failed - fall back to LWW
-                if incoming_timestamp >= existing_timestamp {
-                    Ok(incoming.to_vec())
-                } else {
-                    Ok(existing.to_vec())
+        // I5 Enforcement: Propagate merge errors instead of falling back to LWW.
+        // If no merge function is registered, this prevents silent data loss.
+        // The MergeError is preserved for programmatic error handling.
+        result.map_err(StorageError::from)
+    }
+
+    /// Attempt to merge two versions of non-root entity data using CRDT semantics.
+    ///
+    /// # Merge Dispatch by CrdtType
+    ///
+    /// For non-root entities, we dispatch based on `CrdtType` in metadata:
+    ///
+    /// **Built-in types** (all except `Custom`) - merged via [`merge_by_crdt_type`]:
+    /// - `GCounter`, `PnCounter`: Semantic merge (max per executor)
+    /// - `Rga`: Semantic merge (union of characters)
+    /// - `LwwRegister`: Returns incoming (timestamp comparison done by caller)
+    /// - `UnorderedMap`, `UnorderedSet`, `Vector`: Returns incoming (entries are
+    ///   separate entities with their own `CrdtType`, merged individually)
+    /// - `UserStorage`: Returns incoming (LWW per user)
+    /// - `FrozenStorage`: Returns existing (first-write-wins, immutable)
+    ///
+    /// **Custom types** - require WASM callback (PR #1940), currently fall back to LWW
+    ///
+    /// **Legacy data** (no CrdtType metadata) - fall back to LWW
+    ///
+    /// # Invariants
+    ///
+    /// - **I5 (No Silent Data Loss)**: Built-in CRDT types MUST use their semantic
+    ///   merge rules, not be overwritten by LWW.
+    /// - **I10 (Metadata Persistence)**: Relies on `crdt_type` being persisted in
+    ///   entity metadata for correct dispatch.
+    ///
+    /// [`merge_by_crdt_type`]: crate::merge::merge_by_crdt_type
+    fn try_merge_non_root(
+        id: Id,
+        existing: &[u8],
+        incoming: &[u8],
+        metadata: &Metadata,
+        existing_timestamp: u64,
+        incoming_timestamp: u64,
+    ) -> Result<Vec<u8>, StorageError> {
+        use crate::collections::crdt_meta::MergeError;
+        use crate::merge::{is_builtin_crdt, merge_by_crdt_type};
+
+        // Check if we have CRDT type metadata
+        let Some(crdt_type) = &metadata.crdt_type else {
+            // Legacy data - no CRDT type, use LWW
+            debug!(
+                target: "storage::merge",
+                %id,
+                "No CRDT type metadata, falling back to LWW"
+            );
+            return Ok(if incoming_timestamp >= existing_timestamp {
+                incoming.to_vec()
+            } else {
+                existing.to_vec()
+            });
+        };
+
+        // For built-in types, merge in storage layer
+        if is_builtin_crdt(crdt_type) {
+            let result =
+                crate::env::with_merge_mode(|| merge_by_crdt_type(crdt_type, existing, incoming));
+
+            match result {
+                Ok(merged) => {
+                    debug!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        "Successfully merged non-root entity using CRDT semantics"
+                    );
+                    return Ok(merged);
+                }
+                Err(MergeError::SerializationError(msg)) => {
+                    warn!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        error = %msg,
+                        "CRDT merge failed due to serialization error, falling back to LWW"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        target: "storage::merge",
+                        %id,
+                        crdt_type = ?crdt_type,
+                        error = %e,
+                        "CRDT merge failed, falling back to LWW"
+                    );
                 }
             }
+        } else {
+            // Types that need WASM callback (LwwRegister, collections, Custom)
+            // For now, fall back to LWW. PR #1940 will add WASM callback support.
+            debug!(
+                target: "storage::merge",
+                %id,
+                crdt_type = ?crdt_type,
+                "CRDT type requires WASM callback, falling back to LWW"
+            );
         }
+
+        // Fall back to LWW
+        Ok(if incoming_timestamp >= existing_timestamp {
+            incoming.to_vec()
+        } else {
+            existing.to_vec()
+        })
     }
 
     /// Saves raw serialized data with orphan checking.

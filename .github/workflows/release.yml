@@ -66,7 +66,7 @@ jobs:
         run: |
           echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
 
-          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "calimero-version") | .version')
+          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.metadata.workspaces.version')
 
           prerelease=false
           binary_release=false
@@ -243,14 +243,21 @@ jobs:
         with:
           shared-key: release
 
+      - name: Install native toolchain for publish verification
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            clang \
+            libclang-dev \
+            libc6-dev \
+            pkg-config
+
       - name: Publish calimero-workspaces on crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -x
-
-          sed -i 's/.*# crates_version/version = "'${VERSION}'" # crates_version/' Cargo.toml
 
           # Install the specific version of cargo-workspaces that we know works
           cargo install --git https://github.com/calimero-network/cargo-workspaces --tag v0.3.0 cargo-workspaces

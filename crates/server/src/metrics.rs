@@ -1,3 +1,33 @@
+//! Prometheus metrics service.
+//!
+//! Exposes the Prometheus registry at `/metrics` endpoint for scraping.
+//!
+//! # Sync Metrics Integration
+//!
+//! To add sync metrics to the registry, use `calimero_node::sync::PrometheusSyncMetrics`:
+//!
+//! ```rust,ignore
+//! use calimero_node::sync::PrometheusSyncMetrics;
+//! use prometheus_client::registry::Registry;
+//!
+//! let mut registry = Registry::default();
+//! let sync_metrics = PrometheusSyncMetrics::new(&mut registry);
+//!
+//! // Pass `sync_metrics` to SyncManager during initialization
+//! // Pass `registry` to the server for metrics exposition
+//! ```
+//!
+//! Available sync metrics:
+//! - `sync_messages_sent_total{protocol}`: Messages sent by protocol type
+//! - `sync_bytes_sent_total{protocol}`: Bytes sent
+//! - `sync_round_trips_total{protocol}`: Round trips
+//! - `sync_entities_transferred_total`: Entities transferred
+//! - `sync_merges_total{crdt_type}`: CRDT merges by type
+//! - `sync_phase_duration_seconds{phase}`: Phase timing histogram
+//! - `sync_snapshot_blocked_total`: I5 protection triggers
+//! - `sync_verification_failures_total`: I7 violations
+//! - `sync_buffer_drops_total`: I6 violation risk events
+
 use std::sync::Arc;
 
 use axum::response::IntoResponse;

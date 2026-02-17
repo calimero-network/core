@@ -35,9 +35,11 @@ use super::tracking::SyncState;
 use super::tracking::SyncProtocol as TrackingSyncProtocol;
 // Full SyncProtocol from primitives for protocol selection (7 variants, CIP §2.3)
 // Uses shared state machine types for consistent behavior with simulation
+use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtocol};
+use super::level_sync::{LevelWiseConfig, LevelWiseProtocol};
 use calimero_node_primitives::sync::{
     build_handshake_from_raw, estimate_entity_count, estimate_max_depth, select_protocol,
-    SyncHandshake, SyncProtocol,
+    SyncHandshake, SyncProtocol, SyncProtocolExecutor, SyncTransport,
 };
 
 /// Network synchronization manager.
@@ -1007,7 +1009,7 @@ impl SyncManager {
                         "Initiating snapshot sync"
                     );
                     let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
                         .await
                         .wrap_err("snapshot sync")?;
                     return Ok(Some(result));
@@ -1031,38 +1033,82 @@ impl SyncManager {
 
                     return Ok(Some(result));
                 }
-                SyncProtocol::HashComparison { .. } => {
-                    // HashComparison not yet implemented, fall back to DAG heads request
-                    // which is the closest available mechanism
-                    warn!(
+                SyncProtocol::HashComparison { root_hash, .. } => {
+                    // Execute HashComparison sync (CIP §4)
+                    info!(
                         %context_id,
                         reason = %selection.reason,
-                        "HashComparison not yet implemented, falling back to DAG catchup"
+                        "Starting HashComparison sync"
                     );
-                    let result = self
-                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
-                        .await
-                        .wrap_err("hash comparison fallback")?;
 
-                    if matches!(result, SyncProtocol::None) {
-                        // If DAG catchup doesn't work, try snapshot as last resort
-                        info!(
-                            %context_id,
-                            "DAG catchup failed, falling back to snapshot sync"
-                        );
-                        let result = self
-                            .fallback_to_snapshot_sync(
-                                context_id,
-                                our_identity,
-                                chosen_peer,
-                                stream,
-                            )
-                            .await
-                            .wrap_err("snapshot fallback")?;
-                        return Ok(Some(result));
+                    // Wrap stream in transport abstraction
+                    let mut transport = super::stream::StreamTransport::new(stream);
+
+                    // Get store for protocol execution
+                    let store = self.context_client.datastore_handle().into_inner();
+                    let config = HashComparisonConfig {
+                        remote_root_hash: root_hash,
+                    };
+
+                    match HashComparisonProtocol::run_initiator(
+                        &mut transport,
+                        &store,
+                        context_id,
+                        our_identity,
+                        config,
+                    )
+                    .await
+                    {
+                        Ok(stats) => {
+                            info!(
+                                %context_id,
+                                nodes_compared = stats.nodes_compared,
+                                entities_merged = stats.entities_merged,
+                                nodes_skipped = stats.nodes_skipped,
+                                "HashComparison sync completed successfully"
+                            );
+                            return Ok(Some(SyncProtocol::HashComparison {
+                                root_hash,
+                                divergent_subtrees: vec![],
+                            }));
+                        }
+                        Err(e) => {
+                            warn!(
+                                %context_id,
+                                error = %e,
+                                "HashComparison sync failed, falling back to DAG catchup"
+                            );
+                            // Fall back to DAG heads request
+                            let result = self
+                                .request_dag_heads_and_sync(
+                                    context_id,
+                                    chosen_peer,
+                                    our_identity,
+                                    stream,
+                                )
+                                .await
+                                .wrap_err("hash comparison fallback")?;
+
+                            if matches!(result, SyncProtocol::None) {
+                                // If DAG catchup doesn't work, try snapshot as last resort
+                                info!(
+                                    %context_id,
+                                    "DAG catchup failed, falling back to snapshot sync"
+                                );
+                                let result = self
+                                    .fallback_to_snapshot_sync(
+                                        context_id,
+                                        our_identity,
+                                        chosen_peer,
+                                    )
+                                    .await
+                                    .wrap_err("snapshot fallback")?;
+                                return Ok(Some(result));
+                            }
+
+                            return Ok(Some(result));
+                        }
                     }
-
-                    return Ok(Some(result));
                 }
                 SyncProtocol::BloomFilter { .. } => {
                     warn!(
@@ -1071,7 +1117,7 @@ impl SyncManager {
                         "BloomFilter not yet implemented, falling back to snapshot"
                     );
                     let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
                         .await
                         .wrap_err("bloom filter fallback")?;
                     return Ok(Some(result));
@@ -1089,17 +1135,92 @@ impl SyncManager {
                         .wrap_err("subtree prefetch sync")?;
                     return Ok(Some(result));
                 }
-                SyncProtocol::LevelWise { .. } => {
-                    warn!(
+                SyncProtocol::LevelWise { max_depth } => {
+                    // Execute LevelWise sync (CIP Appendix B)
+                    info!(
                         %context_id,
+                        max_depth,
                         reason = %selection.reason,
-                        "LevelWise not yet implemented, falling back to snapshot"
+                        "Starting LevelWise sync"
                     );
-                    let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer, stream)
-                        .await
-                        .wrap_err("level-wise fallback")?;
-                    return Ok(Some(result));
+
+                    // Wrap stream in transport abstraction
+                    let mut transport = super::stream::StreamTransport::new(stream);
+
+                    // Get store for protocol execution
+                    let store = self.context_client.datastore_handle().into_inner();
+                    let config = LevelWiseConfig {
+                        remote_root_hash: *peer_root_hash,
+                        max_depth,
+                    };
+
+                    match LevelWiseProtocol::run_initiator(
+                        &mut transport,
+                        &store,
+                        context_id,
+                        our_identity,
+                        config,
+                    )
+                    .await
+                    {
+                        Ok(stats) => {
+                            info!(
+                                %context_id,
+                                levels_synced = stats.levels_synced,
+                                nodes_compared = stats.nodes_compared,
+                                entities_merged = stats.entities_merged,
+                                nodes_skipped = stats.nodes_skipped,
+                                "LevelWise sync completed successfully"
+                            );
+                            return Ok(Some(SyncProtocol::LevelWise { max_depth }));
+                        }
+                        Err(e) => {
+                            warn!(
+                                %context_id,
+                                error = %e,
+                                "LevelWise sync failed, falling back to DAG catchup"
+                            );
+                            // Fall back to DAG heads request - open a new stream since the
+                            // LevelWise protocol may have left the peer's responder in a state
+                            // where it expects LevelWiseRequest messages, not DagHeadsRequest.
+                            let mut fallback_stream = self
+                                .network_client
+                                .open_stream(chosen_peer)
+                                .await
+                                .wrap_err("open stream for level-wise fallback")?;
+                            let result = self
+                                .request_dag_heads_and_sync(
+                                    context_id,
+                                    chosen_peer,
+                                    our_identity,
+                                    &mut fallback_stream,
+                                )
+                                .await
+                                .wrap_err("level-wise fallback")?;
+
+                            if matches!(result, SyncProtocol::None) {
+                                // If DAG catchup doesn't work, try snapshot as last resort
+                                info!(
+                                    %context_id,
+                                    "DAG catchup insufficient, attempting snapshot"
+                                );
+                                // Drop the consumed fallback_stream before opening fresh streams
+                                // in snapshot sync (fallback_stream is in indeterminate state
+                                // after DAG sync exchanges)
+                                drop(fallback_stream);
+                                let snapshot_result = self
+                                    .fallback_to_snapshot_sync(
+                                        context_id,
+                                        our_identity,
+                                        chosen_peer,
+                                    )
+                                    .await
+                                    .wrap_err("level-wise snapshot fallback")?;
+                                return Ok(Some(snapshot_result));
+                            }
+                            return Ok(Some(result));
+                        }
+                    }
                 }
             }
         }
@@ -1403,12 +1524,7 @@ impl SyncManager {
                             );
                             // Fall back to snapshot sync
                             return self
-                                .fallback_to_snapshot_sync(
-                                    context_id,
-                                    our_identity,
-                                    peer_id,
-                                    stream,
-                                )
+                                .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                                 .await;
                         }
                         Some(StreamMessage::Message {
@@ -1488,7 +1604,6 @@ impl SyncManager {
         context_id: ContextId,
         our_identity: PublicKey,
         peer_id: PeerId,
-        _stream: &mut Stream,
     ) -> eyre::Result<SyncProtocol> {
         info!(%context_id, %peer_id, "Initiating snapshot sync");
 

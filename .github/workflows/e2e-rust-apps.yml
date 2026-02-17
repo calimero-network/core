@@ -97,9 +97,7 @@ jobs:
               if merobox bootstrap run \
                   "workflows/e2e.yml" \
                   --image merod:local \
-                  --e2e-mode \
-                  --near-devnet \
-                  --contracts-dir "$GITHUB_WORKSPACE/contracts/near"; then
+                  --e2e-mode; then
                   success=true
                   break
               else
@@ -143,9 +141,7 @@ jobs:
               if merobox bootstrap run \
                   "workflows/xcall.yml" \
                   --image merod:local \
-                  --e2e-mode \
-                  --near-devnet \
-                  --contracts-dir "$GITHUB_WORKSPACE/contracts/near"; then
+                  --e2e-mode; then
                   success=true
                   break
               else

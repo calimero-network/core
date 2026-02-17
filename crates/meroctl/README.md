@@ -219,7 +219,7 @@ meroctl --node node1 context ls --output yaml
 `meroctl` supports authentication for private nodes:
 
 - Automatically prompts for login when needed
-- Supports NEAR, Ethereum, ICP, and other wallet-based authentication
+- Supports NEAR wallet-based authentication
 - Session caching for convenience
 - Manual token management via `--access-token` and `--refresh-token` flags
 

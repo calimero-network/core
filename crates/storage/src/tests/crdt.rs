@@ -29,6 +29,7 @@ const ONE_SEC_NANOS: u64 = 1_000_000_000;
 
 #[test]
 fn lww_newer_update_wins() {
+    super::common::register_test_merge_functions();
     let mut page = Page::new_from_element("Version 1", Element::root());
 
     // Save initial version
@@ -49,6 +50,7 @@ fn lww_newer_update_wins() {
 
 #[test]
 fn lww_newer_overwrites_older() {
+    super::common::register_test_merge_functions();
     let mut page = Page::new_from_element("Version 1", Element::root());
     assert!(TestInterface::save(&mut page).unwrap());
 
@@ -68,6 +70,7 @@ fn lww_newer_overwrites_older() {
 
 #[test]
 fn lww_concurrent_updates_deterministic() {
+    super::common::register_test_merge_functions();
     let mut page = Page::new_from_element("Initial", Element::root());
     let id = page.id();
 
@@ -222,6 +225,7 @@ fn delete_vs_update_conflict() {
 
 #[test]
 fn update_vs_delete_conflict() {
+    super::common::register_test_merge_functions();
     let mut page = Page::new_from_element("Test Page", Element::root());
     let id = page.id();
 
@@ -262,6 +266,7 @@ fn update_vs_delete_conflict() {
 
 #[test]
 fn concurrent_updates_different_entities() {
+    super::common::register_test_merge_functions();
     // Test that concurrent updates to different entities both succeed
     // Both use root element so they can be saved
     let mut page1 = Page::new_from_element("Page 1", Element::root());
@@ -294,6 +299,7 @@ fn concurrent_adds_to_collection() {
 
 #[test]
 fn concurrent_update_same_entity_different_fields() {
+    super::common::register_test_merge_functions();
     // Create entity with multiple fields
     let mut page = Page::new_from_element("Original Title", Element::root());
     assert!(TestInterface::save(&mut page).unwrap());
@@ -339,6 +345,7 @@ fn concurrent_update_same_entity_different_fields() {
 
 #[test]
 fn actions_idempotent() {
+    super::common::register_test_merge_functions();
     let page = Page::new_from_element("Test", Element::root());
     let action = Action::Add {
         id: page.id(),
@@ -414,6 +421,7 @@ fn delete_prevents_old_add() {
 
 #[test]
 fn same_timestamp_lww_behavior() {
+    super::common::register_test_merge_functions();
     // With actual API, timestamps are always increasing
     // This test verifies that updates are applied correctly regardless of order
     let mut page = Page::new_from_element("Initial", Element::root());
@@ -513,6 +521,7 @@ fn multiple_deletes_idempotent() {
 
 #[test]
 fn many_sequential_updates() {
+    super::common::register_test_merge_functions();
     let mut page = Page::new_from_element("Version 0", Element::root());
     let id = page.id();
 
@@ -541,6 +550,7 @@ fn many_sequential_updates() {
 
 #[test]
 fn rapid_add_delete_cycles() {
+    super::common::register_test_merge_functions();
     // Test rapid add/delete cycles work correctly
     let mut page = Page::new_from_element("Test", Element::root());
     let id = page.id();

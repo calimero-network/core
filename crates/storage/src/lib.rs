@@ -102,6 +102,8 @@ pub mod tests {
     pub mod delta;
     /// LWW (Last-Write-Wins) Register CRDT tests.
     pub mod lww_register;
+    /// CRDT type-based merge dispatch tests (TDD for PR #1889).
+    pub mod merge_dispatch;
     /// Merge integration tests (using serialization instead of Clone).
     pub mod merge_integration;
     /// Merkle hash propagation tests.
