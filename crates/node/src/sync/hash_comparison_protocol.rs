@@ -65,8 +65,14 @@ pub const MAX_REQUEST_DEPTH: u8 = 16;
 /// Maximum requests allowed per HashComparison session.
 ///
 /// Prevents DoS by limiting how many requests a peer can send.
-/// HashComparison may need more requests than LevelWise due to DFS traversal.
-const MAX_REQUESTS_PER_SESSION: u64 = 10_000;
+///
+/// This limit is higher than LevelWise's `MAX_REQUESTS_PER_SESSION` (128) because:
+/// - HashComparison uses DFS traversal, one request per tree node
+/// - LevelWise uses BFS traversal, one request per tree level
+/// - For a tree with N nodes, HashComparison needs O(N) requests vs O(depth) for LevelWise
+///
+/// With 10,000 requests and typical node sizes, this allows syncing trees up to ~10k entities.
+const MAX_HASH_COMPARISON_REQUESTS: u64 = 10_000;
 
 /// Configuration for HashComparison initiator.
 #[derive(Debug, Clone)]
@@ -373,11 +379,11 @@ async fn run_responder_impl<T: SyncTransport>(
     // Handle subsequent requests until stream closes or limit reached
     loop {
         // DoS protection: limit total requests per session
-        if requests_handled >= MAX_REQUESTS_PER_SESSION {
+        if requests_handled >= MAX_HASH_COMPARISON_REQUESTS {
             warn!(
                 %context_id,
                 requests_handled,
-                max = MAX_REQUESTS_PER_SESSION,
+                max = MAX_HASH_COMPARISON_REQUESTS,
                 "Request limit reached, closing responder"
             );
             break;
