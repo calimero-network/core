@@ -348,8 +348,8 @@ mod tests {
     #[test]
     fn test_subtree_prefetch_protocol_selection() {
         use calimero_node_primitives::sync::protocol::select_protocol;
-        use calimero_node_primitives::sync::state_machine::build_handshake;
         use calimero_node_primitives::sync::protocol::SyncProtocol;
+        use calimero_node_primitives::sync::state_machine::build_handshake;
 
         let (a, b) = Scenario::force_subtree_prefetch();
 

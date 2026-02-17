@@ -266,9 +266,7 @@ impl SyncMessage {
                         + size_of::<DeltaTransfer>()
                 })
                 .sum(),
-            SyncMessage::SubtreePrefetchRequest { subtree_roots, .. } => {
-                subtree_roots.len() * 32
-            }
+            SyncMessage::SubtreePrefetchRequest { subtree_roots, .. } => subtree_roots.len() * 32,
             SyncMessage::SubtreePrefetchResponse {
                 subtrees,
                 not_found,

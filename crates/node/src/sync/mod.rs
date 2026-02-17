@@ -45,8 +45,8 @@ mod manager;
 pub mod metrics;
 pub mod prometheus_metrics;
 mod snapshot;
-mod subtree_sync;
 pub(crate) mod stream;
+mod subtree_sync;
 mod tracking;
 
 pub use config::SyncConfig;

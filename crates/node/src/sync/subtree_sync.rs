@@ -11,9 +11,7 @@ use std::collections::HashSet;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::hash_comparison::{CrdtType, LeafMetadata, TreeLeafData};
 use calimero_node_primitives::sync::subtree::{SubtreeData, SubtreePrefetchResponse};
-use calimero_node_primitives::sync::{
-    InitPayload, MessagePayload, StreamMessage, SyncProtocol,
-};
+use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage, SyncProtocol};
 use calimero_primitives::context::ContextId;
 use calimero_store::key::ContextState as ContextStateKey;
 use calimero_store::slice::Slice;
@@ -93,8 +91,8 @@ impl SyncManager {
         stream: &mut Stream,
         _nonce: calimero_crypto::Nonce,
     ) -> eyre::Result<()> {
-        let depth = max_depth
-            .unwrap_or(calimero_node_primitives::sync::subtree::DEFAULT_SUBTREE_MAX_DEPTH);
+        let depth =
+            max_depth.unwrap_or(calimero_node_primitives::sync::subtree::DEFAULT_SUBTREE_MAX_DEPTH);
 
         info!(
             %context_id,
@@ -128,8 +126,8 @@ impl SyncManager {
         }
 
         let response = SubtreePrefetchResponse::new(subtrees, not_found.clone());
-        let serialized = borsh::to_vec(&response)
-            .wrap_err("failed to serialize SubtreePrefetchResponse")?;
+        let serialized =
+            borsh::to_vec(&response).wrap_err("failed to serialize SubtreePrefetchResponse")?;
 
         let mut sqx = Sequencer::default();
         let msg = StreamMessage::Message {
@@ -189,12 +187,7 @@ impl SyncManager {
             h
         };
 
-        Ok(SubtreeData::new(
-            *subtree_root,
-            root_hash,
-            entities,
-            depth,
-        ))
+        Ok(SubtreeData::new(*subtree_root, root_hash, entities, depth))
     }
 
     // =========================================================================
@@ -343,16 +336,15 @@ impl SyncManager {
         };
 
         // Deserialize and validate the response
-        let prefetch_response: SubtreePrefetchResponse =
-            match borsh::from_slice(&subtrees_data) {
-                Ok(r) => r,
-                Err(e) => {
-                    warn!(%context_id, error = %e, "Failed to deserialize SubtreePrefetchResponse, falling back to snapshot");
-                    return self
-                        .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
-                        .await;
-                }
-            };
+        let prefetch_response: SubtreePrefetchResponse = match borsh::from_slice(&subtrees_data) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(%context_id, error = %e, "Failed to deserialize SubtreePrefetchResponse, falling back to snapshot");
+                return self
+                    .fallback_to_snapshot_sync(context_id, our_identity, peer_id, stream)
+                    .await;
+            }
+        };
 
         if !prefetch_response.is_valid() {
             warn!(%context_id, "SubtreePrefetchResponse failed validation, falling back to snapshot");
@@ -409,10 +401,8 @@ impl SyncManager {
             }
         }
 
-        let remote_prefixes: HashSet<u8> = remote_children
-            .iter()
-            .map(|(hash, _)| hash[0])
-            .collect();
+        let remote_prefixes: HashSet<u8> =
+            remote_children.iter().map(|(hash, _)| hash[0]).collect();
 
         // Divergent = present in remote but not local, or in local but not remote
         let mut divergent = Vec::new();
