@@ -226,6 +226,98 @@ impl From<[u8; 32]> for ContextIdentity {
     }
 }
 
+#[derive(
+    Eq,
+    Ord,
+    Copy,
+    Debug,
+    Deserialize,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    BorshSerialize,
+    BorshDeserialize,
+    Serialize,
+    Hash,
+)]
+pub struct ContextGroupId(Identity);
+
+impl ContextGroupId {
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
+}
+
+impl ReprBytes for ContextGroupId {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+
+    type Error = LengthMismatch;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0.as_bytes()
+    }
+
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        ReprBytes::from_bytes(f).map(Self)
+    }
+}
+
+impl From<[u8; 32]> for ContextGroupId {
+    fn from(value: [u8; 32]) -> Self {
+        Self(Identity(value))
+    }
+}
+
+#[derive(
+    Eq,
+    Ord,
+    Copy,
+    Debug,
+    Deserialize,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    BorshSerialize,
+    BorshDeserialize,
+    Serialize,
+    Hash,
+)]
+pub struct AppKey(Identity);
+
+impl AppKey {
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
+}
+
+impl ReprBytes for AppKey {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+
+    type Error = LengthMismatch;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0.as_bytes()
+    }
+
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        ReprBytes::from_bytes(f).map(Self)
+    }
+}
+
+impl From<[u8; 32]> for AppKey {
+    fn from(value: [u8; 32]) -> Self {
+        Self(Identity(value))
+    }
+}
+
 #[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 pub struct BlobId(Identity);
 
