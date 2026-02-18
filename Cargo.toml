@@ -9,7 +9,7 @@ description = "Core Calimero infrastructure and tools"
 # Update workspace metadata (see docs/RELEASE.md for versioning and release)
 [workspace.metadata.workspaces]
 # Shared version of all public crates; bump this when cutting a release.
-version = "0.10.0-rc.51"
+version = "0.10.0-rc.52"
 exclude = [
     "./apps/abi_conformance",
     "./apps/access-control",
