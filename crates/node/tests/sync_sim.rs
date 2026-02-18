@@ -43,6 +43,7 @@ pub use sync_sim::prelude::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calimero_node_primitives::sync::state_machine::LocalSyncState;
     use calimero_primitives::crdt::CrdtType;
 
     // =========================================================================
@@ -336,5 +337,107 @@ mod tests {
         assert_no_entity!(a, EntityId::from_u64(2));
         assert_idle!(a);
         assert_buffer_empty!(a);
+    }
+
+    // =========================================================================
+    // SubtreePrefetch Protocol Selection Tests
+    // =========================================================================
+
+    /// Verify that `select_protocol()` selects SubtreePrefetch for deep trees
+    /// with low divergence (CIP Appendix B).
+    #[test]
+    fn test_subtree_prefetch_protocol_selection() {
+        use calimero_node_primitives::sync::protocol::select_protocol;
+        use calimero_node_primitives::sync::protocol::SyncProtocol;
+        use calimero_node_primitives::sync::state_machine::build_handshake;
+
+        let (a, b) = Scenario::force_subtree_prefetch();
+
+        let hs_a = build_handshake(&a);
+        let hs_b = build_handshake(&b);
+
+        let selection = select_protocol(&hs_a, &hs_b);
+        assert!(
+            matches!(selection.protocol, SyncProtocol::SubtreePrefetch { .. }),
+            "Expected SubtreePrefetch for deep tree with low divergence, got {:?} (reason: {})",
+            selection.protocol,
+            selection.reason
+        );
+    }
+
+    /// Verify SubtreePrefetch scenario sets up deep tree structure correctly.
+    #[test]
+    fn test_subtree_prefetch_scenario_preconditions() {
+        let (a, b) = Scenario::force_subtree_prefetch();
+
+        // Both should have state
+        assert!(a.has_any_state(), "Node A should have state");
+        assert!(b.has_any_state(), "Node B should have state");
+
+        // Root hashes should differ (divergent state)
+        assert_ne!(
+            a.root_hash(),
+            b.root_hash(),
+            "Nodes should have different root hashes"
+        );
+
+        // Both should have deep trees (depth > 3)
+        assert!(
+            a.max_depth() > 3,
+            "Node A tree depth {} should be > 3",
+            a.max_depth()
+        );
+        assert!(
+            b.max_depth() > 3,
+            "Node B tree depth {} should be > 3",
+            b.max_depth()
+        );
+    }
+
+    /// Verify SubtreePrefetch heuristic function matches expected conditions.
+    #[test]
+    fn test_subtree_prefetch_heuristic() {
+        use calimero_node_primitives::sync::subtree::should_use_subtree_prefetch;
+
+        // Deep tree, low divergence, clustered changes → yes
+        assert!(should_use_subtree_prefetch(5, 0.10, 3));
+
+        // Shallow tree → no
+        assert!(!should_use_subtree_prefetch(2, 0.10, 3));
+
+        // High divergence → no
+        assert!(!should_use_subtree_prefetch(5, 0.30, 3));
+
+        // Too many differing subtrees → no
+        assert!(!should_use_subtree_prefetch(5, 0.10, 10));
+    }
+
+    /// Verify SubtreePrefetch SyncState variant works correctly.
+    #[test]
+    fn test_subtree_prefetch_sync_state() {
+        let state = SyncState::SubtreePrefetch {
+            peer: NodeId::from("alice"),
+            pending_roots: vec![[1u8; 32], [2u8; 32]],
+        };
+
+        assert!(!state.is_idle());
+        assert!(state.is_active());
+        assert_eq!(state.peer(), Some(&NodeId::from("alice")));
+    }
+
+    /// Verify SubtreePrefetch messages can be constructed and sized.
+    #[test]
+    fn test_subtree_prefetch_message_construction() {
+        let request = SyncMessage::SubtreePrefetchRequest {
+            subtree_roots: vec![[1u8; 32], [2u8; 32]],
+            max_depth: 5,
+        };
+        assert!(request.estimated_size() > 0);
+
+        let response = SyncMessage::SubtreePrefetchResponse {
+            subtrees: vec![],
+            not_found: vec![[3u8; 32]],
+        };
+        assert!(response.estimated_size() > 0);
     }
 }

@@ -60,6 +60,12 @@ pub enum SyncState {
     HashComparison { peer: NodeId, level: u32 },
     /// Delta sync in progress.
     DeltaSync { peer: NodeId },
+    /// Subtree prefetch in progress.
+    SubtreePrefetch {
+        peer: NodeId,
+        /// Divergent subtree roots being fetched.
+        pending_roots: Vec<[u8; 32]>,
+    },
 }
 
 impl SyncState {
@@ -81,7 +87,8 @@ impl SyncState {
             | Self::Responding { peer }
             | Self::SnapshotTransfer { peer, .. }
             | Self::HashComparison { peer, .. }
-            | Self::DeltaSync { peer } => Some(peer),
+            | Self::DeltaSync { peer }
+            | Self::SubtreePrefetch { peer, .. } => Some(peer),
         }
     }
 }

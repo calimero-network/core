@@ -39,7 +39,7 @@ use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtoc
 use super::level_sync::{LevelWiseConfig, LevelWiseProtocol};
 use calimero_node_primitives::sync::{
     build_handshake_from_raw, estimate_entity_count, estimate_max_depth, select_protocol,
-    SyncHandshake, SyncProtocol, SyncProtocolExecutor, SyncTransport,
+    SyncHandshake, SyncProtocol, SyncProtocolExecutor,
 };
 
 /// Network synchronization manager.
@@ -1122,16 +1122,17 @@ impl SyncManager {
                         .wrap_err("bloom filter fallback")?;
                     return Ok(Some(result));
                 }
-                SyncProtocol::SubtreePrefetch { .. } => {
-                    warn!(
+                SyncProtocol::SubtreePrefetch { subtree_roots } => {
+                    info!(
                         %context_id,
                         reason = %selection.reason,
-                        "SubtreePrefetch not yet implemented, falling back to snapshot"
+                        subtree_count = subtree_roots.len(),
+                        "Using SubtreePrefetch sync strategy"
                     );
                     let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
+                        .request_subtree_prefetch(context_id, our_identity, chosen_peer, stream)
                         .await
-                        .wrap_err("subtree prefetch fallback")?;
+                        .wrap_err("subtree prefetch sync")?;
                     return Ok(Some(result));
                 }
                 SyncProtocol::LevelWise { max_depth } => {
@@ -1598,7 +1599,7 @@ impl SyncManager {
     /// Implements Invariant I6: Deltas received during sync are buffered and
     /// replayed after sync completes. On error, buffered deltas are discarded
     /// via `cancel_sync_session()`.
-    async fn fallback_to_snapshot_sync(
+    pub(super) async fn fallback_to_snapshot_sync(
         &self,
         context_id: ContextId,
         our_identity: PublicKey,
@@ -2017,14 +2018,29 @@ impl SyncManager {
                 node_id,
                 max_depth,
             } => {
-                // Handle tree node request from peer (HashComparison sync)
-                // Wrap stream in transport abstraction
+                // Route to HashComparison's real Merkle tree handler.
+                // SubtreePrefetch uses SubtreePrefetchRequest (not TreeNodeRequest)
+                // for its own discovery phase, so there is no conflict.
                 let mut transport = super::stream::StreamTransport::new(stream);
                 self.handle_tree_node_request(
                     requested_context_id,
                     node_id,
                     max_depth,
                     &mut transport,
+                    nonce,
+                )
+                .await?
+            }
+            InitPayload::SubtreePrefetchRequest {
+                context_id: requested_context_id,
+                subtree_roots,
+                max_depth,
+            } => {
+                self.handle_subtree_prefetch_request(
+                    requested_context_id,
+                    subtree_roots,
+                    max_depth,
+                    stream,
                     nonce,
                 )
                 .await?
