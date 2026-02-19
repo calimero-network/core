@@ -243,16 +243,6 @@ jobs:
         with:
           shared-key: release
 
-      - name: Install native toolchain for publish verification
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            clang \
-            libclang-dev \
-            libc6-dev \
-            pkg-config
-
       - name: Publish calimero-workspaces on crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -262,9 +252,13 @@ jobs:
           # Install the specific version of cargo-workspaces that we know works
           cargo install --git https://github.com/calimero-network/cargo-workspaces --tag v0.3.0 cargo-workspaces
           # Publish all publishable crates from the workspace, skipping excluded packages
-          # Using --no-git flags to avoid git operations during publishing
+          # Using --no-verify avoids crates.io index propagation races for freshly published
+          # prerelease dependencies (cargo package verification may resolve the next crate
+          # before the previous crate appears in the index).
+          # Using --no-git flags to avoid git operations during publishing.
           cargo ws publish --yes --allow-dirty --force '*' \
-              --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-'
+              --no-verify \
+              --no-git-tag --no-git-commit --no-git-push
 
   release-merod-container:
     name: Release Merod container

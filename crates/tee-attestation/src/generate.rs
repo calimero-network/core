@@ -10,6 +10,7 @@ use configfs_tsm::create_tdx_quote;
 use tdx_quote::Quote as TdxQuote;
 #[cfg(target_os = "linux")]
 use tracing::error;
+#[cfg(not(target_os = "linux"))]
 use tracing::warn;
 
 use crate::error::AttestationError;
