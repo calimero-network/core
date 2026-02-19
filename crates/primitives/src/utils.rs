@@ -64,6 +64,13 @@ mod tests {
 
     use super::compact_path;
 
+    /// Strips anonymous lifetime annotations (`'_`) from type names.
+    /// `type_name` output is not stable across Rust versions — lifetimes
+    /// may or may not be included (e.g. Rust 1.91+ adds `'_`).
+    fn strip_lifetimes(s: &str) -> String {
+        s.replace("'_, ", "").replace("'_", "")
+    }
+
     #[test]
     fn test_compact_path() {
         let path = "path::to::Struct<path::to::OtherStruct<Option<Vec<module::Thing<T>>>, U>>";
@@ -181,9 +188,10 @@ mod tests {
     fn test_type_scoped_t3() {
         let name = Thing::<Vec<u8>>::t3();
 
-        assert_eq!(name, "calimero_primitives::utils::tests::__PRIVATE::<impl calimero_primitives::utils::tests::Thing<_>>::t3::Contained<*const ()>");
+        // type_name output is not stable — lifetimes may or may not appear
+        assert_eq!(strip_lifetimes(name), "calimero_primitives::utils::tests::__PRIVATE::<impl calimero_primitives::utils::tests::Thing<_>>::t3::Contained<*const ()>");
 
-        let captures = compact_path(name).collect::<Vec<_>>();
+        let captures: Vec<_> = compact_path(name).map(|s| strip_lifetimes(s)).collect();
 
         assert_eq!(captures, ["<", "Thing<_>>::", "Contained<*const ()>"]);
     }
@@ -192,9 +200,10 @@ mod tests {
     fn test_type_scoped_t4() {
         let name = Thing::<Vec<u8>>::t4();
 
-        assert_eq!(name, "calimero_primitives::utils::tests::__PRIVATE::<impl calimero_primitives::utils::tests::Thing<_>>::t4::Contained<u8>::t5::{{closure}}");
+        // type_name output is not stable — lifetimes may or may not appear
+        assert_eq!(strip_lifetimes(name), "calimero_primitives::utils::tests::__PRIVATE::<impl calimero_primitives::utils::tests::Thing<_>>::t4::Contained<u8>::t5::{{closure}}");
 
-        let captures = compact_path(name).collect::<Vec<_>>();
+        let captures: Vec<_> = compact_path(name).map(|s| strip_lifetimes(s)).collect();
 
         assert_eq!(
             captures,
