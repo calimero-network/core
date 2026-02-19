@@ -150,6 +150,11 @@ pub enum GroupRequestKind<'a> {
         #[serde(borrow)]
         target_application: Application<'a>,
     },
+    /// Pre-approve a specific context to register via its proxy contract.
+    /// Must be called by a group admin before the proxy path is exercised.
+    ApproveContextRegistration {
+        context_id: Repr<ContextId>,
+    },
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
@@ -208,7 +213,9 @@ pub enum ProposalAction {
     RegisterInGroup {
         group_id: Repr<ContextGroupId>,
     },
-    UnregisterFromGroup,
+    UnregisterFromGroup {
+        group_id: Repr<ContextGroupId>,
+    },
 }
 
 // The proposal the user makes specifying the receiving account and actions they want to execute (1 tx)
