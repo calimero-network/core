@@ -4,6 +4,7 @@
 use core::fmt;
 use core::ops::Deref;
 use core::str::FromStr;
+use core::time::Duration;
 use std::borrow::Cow;
 use std::io;
 
@@ -308,6 +309,25 @@ pub struct ContextConfigParams<'a> {
     pub application_revision: u64,
     /// A revision number for the members list, used for tracking membership changes.
     pub members_revision: u64,
+}
+
+/// Controls how application upgrades propagate across contexts in a group.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum UpgradePolicy {
+    /// Upgrade all contexts immediately when the group target changes.
+    Automatic,
+    /// Upgrade each context transparently on its next execution.
+    LazyOnAccess,
+    /// Upgrade all contexts with an optional deadline for completion.
+    Coordinated { deadline: Option<Duration> },
+}
+
+/// Distinguishes admin vs regular member within a context group.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum GroupMemberRole {
+    Admin,
+    Member,
 }
 
 #[cfg(test)]
