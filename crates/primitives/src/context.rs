@@ -4,6 +4,7 @@
 use core::fmt;
 use core::ops::Deref;
 use core::str::FromStr;
+use core::time::Duration;
 use std::borrow::Cow;
 use std::io;
 
@@ -308,6 +309,69 @@ pub struct ContextConfigParams<'a> {
     pub application_revision: u64,
     /// A revision number for the members list, used for tracking membership changes.
     pub members_revision: u64,
+}
+
+/// Controls how application upgrades propagate across contexts in a group.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum UpgradePolicy {
+    /// Upgrade all contexts immediately when the group target changes.
+    Automatic,
+    /// Upgrade each context transparently on its next execution.
+    LazyOnAccess,
+    /// Upgrade all contexts with an optional deadline for completion.
+    Coordinated { deadline: Option<Duration> },
+}
+
+#[cfg(feature = "borsh")]
+const _: () = {
+    use borsh::{BorshDeserialize, BorshSerialize};
+    use std::io::{Read, Write};
+
+    impl BorshSerialize for UpgradePolicy {
+        fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+            match self {
+                Self::Automatic => BorshSerialize::serialize(&0u8, writer),
+                Self::LazyOnAccess => BorshSerialize::serialize(&1u8, writer),
+                Self::Coordinated { deadline } => {
+                    BorshSerialize::serialize(&2u8, writer)?;
+                    let dur = deadline.map(|d| (d.as_secs(), d.subsec_nanos()));
+                    BorshSerialize::serialize(&dur, writer)
+                }
+            }
+        }
+    }
+
+    impl BorshDeserialize for UpgradePolicy {
+        fn deserialize_reader<R: Read>(reader: &mut R) -> io::Result<Self> {
+            let tag = u8::deserialize_reader(reader)?;
+            match tag {
+                0 => Ok(Self::Automatic),
+                1 => Ok(Self::LazyOnAccess),
+                2 => {
+                    let dur: Option<(u64, u32)> = BorshDeserialize::deserialize_reader(reader)?;
+                    Ok(Self::Coordinated {
+                        deadline: dur.map(|(s, n)| Duration::new(s, n)),
+                    })
+                }
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid UpgradePolicy tag",
+                )),
+            }
+        }
+    }
+};
+
+/// Distinguishes admin vs regular member within a context group.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
+)]
+pub enum GroupMemberRole {
+    Admin,
+    Member,
 }
 
 #[cfg(test)]
