@@ -323,8 +323,52 @@ pub enum UpgradePolicy {
     Coordinated { deadline: Option<Duration> },
 }
 
+#[cfg(feature = "borsh")]
+const _: () = {
+    use borsh::{BorshDeserialize, BorshSerialize};
+    use std::io::{Read, Write};
+
+    impl BorshSerialize for UpgradePolicy {
+        fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+            match self {
+                Self::Automatic => BorshSerialize::serialize(&0u8, writer),
+                Self::LazyOnAccess => BorshSerialize::serialize(&1u8, writer),
+                Self::Coordinated { deadline } => {
+                    BorshSerialize::serialize(&2u8, writer)?;
+                    let dur = deadline.map(|d| (d.as_secs(), d.subsec_nanos()));
+                    BorshSerialize::serialize(&dur, writer)
+                }
+            }
+        }
+    }
+
+    impl BorshDeserialize for UpgradePolicy {
+        fn deserialize_reader<R: Read>(reader: &mut R) -> io::Result<Self> {
+            let tag = u8::deserialize_reader(reader)?;
+            match tag {
+                0 => Ok(Self::Automatic),
+                1 => Ok(Self::LazyOnAccess),
+                2 => {
+                    let dur: Option<(u64, u32)> = BorshDeserialize::deserialize_reader(reader)?;
+                    Ok(Self::Coordinated {
+                        deadline: dur.map(|(s, n)| Duration::new(s, n)),
+                    })
+                }
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid UpgradePolicy tag",
+                )),
+            }
+        }
+    }
+};
+
 /// Distinguishes admin vs regular member within a context group.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
+)]
 pub enum GroupMemberRole {
     Admin,
     Member,
