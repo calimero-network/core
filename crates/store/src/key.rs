@@ -28,7 +28,7 @@ pub use context::{
     ContextConfig, ContextDagDelta, ContextIdentity, ContextMeta, ContextPrivateState, ContextState,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
-pub use group::{GroupContextIndex, GroupMember, GroupMeta};
+pub use group::{ContextGroupRef, GroupContextIndex, GroupMember, GroupMeta, GroupUpgradeKey};
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 

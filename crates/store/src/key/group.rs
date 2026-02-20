@@ -16,6 +16,8 @@ use crate::key::{AsKeyParts, FromKeyParts, Key};
 const GROUP_META_PREFIX: u8 = 0x20;
 const GROUP_MEMBER_PREFIX: u8 = 0x21;
 const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
+const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
+const GROUP_UPGRADE_PREFIX: u8 = 0x24;
 
 #[derive(Clone, Copy, Debug)]
 pub struct GroupPrefix;
@@ -195,6 +197,102 @@ impl Debug for GroupContextIndex {
     }
 }
 
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextGroupRef(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl ContextGroupRef {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId) -> Self {
+        Self(Key(
+            GenericArray::from([CONTEXT_GROUP_REF_PREFIX]).concat(GenericArray::from(*context_id)),
+        ))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id.into()
+    }
+}
+
+impl AsKeyParts for ContextGroupRef {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Config
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for ContextGroupRef {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for ContextGroupRef {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextGroupRef")
+            .field("context_id", &self.context_id())
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupUpgradeKey(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl GroupUpgradeKey {
+    #[must_use]
+    pub fn new(group_id: [u8; 32]) -> Self {
+        Self(Key(
+            GenericArray::from([GROUP_UPGRADE_PREFIX]).concat(GenericArray::from(group_id)),
+        ))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupUpgradeKey {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Config
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupUpgradeKey {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupUpgradeKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupUpgradeKey")
+            .field("group_id", &self.group_id())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,9 +329,36 @@ mod tests {
     }
 
     #[test]
+    fn context_group_ref_roundtrip() {
+        let cid = PrimitiveContextId::from([0x33; 32]);
+        let key = ContextGroupRef::new(cid);
+        assert_eq!(key.context_id(), cid);
+        assert_eq!(key.as_key().as_bytes()[0], CONTEXT_GROUP_REF_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 33);
+    }
+
+    #[test]
+    fn group_upgrade_key_roundtrip() {
+        let gid = [0x44; 32];
+        let key = GroupUpgradeKey::new(gid);
+        assert_eq!(key.group_id(), gid);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_UPGRADE_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 33);
+    }
+
+    #[test]
     fn distinct_prefixes() {
-        assert_ne!(GROUP_META_PREFIX, GROUP_MEMBER_PREFIX);
-        assert_ne!(GROUP_MEMBER_PREFIX, GROUP_CONTEXT_INDEX_PREFIX);
-        assert_ne!(GROUP_META_PREFIX, GROUP_CONTEXT_INDEX_PREFIX);
+        let prefixes = [
+            GROUP_META_PREFIX,
+            GROUP_MEMBER_PREFIX,
+            GROUP_CONTEXT_INDEX_PREFIX,
+            CONTEXT_GROUP_REF_PREFIX,
+            GROUP_UPGRADE_PREFIX,
+        ];
+        for i in 0..prefixes.len() {
+            for j in (i + 1)..prefixes.len() {
+                assert_ne!(prefixes[i], prefixes[j], "prefix collision at indices {i} and {j}");
+            }
+        }
     }
 }
