@@ -18,6 +18,7 @@ mod blobs;
 mod component;
 mod context;
 mod generic;
+mod group;
 
 pub use alias::{Alias, Aliasable, StoreScopeCompat};
 pub use application::ApplicationMeta;
@@ -27,6 +28,7 @@ pub use context::{
     ContextConfig, ContextDagDelta, ContextIdentity, ContextMeta, ContextPrivateState, ContextState,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
+pub use group::{GroupContextIndex, GroupMember, GroupMeta};
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 
