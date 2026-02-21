@@ -37,7 +37,7 @@ cd apps/kv-store && ./build.sh
 | `blobs`                  | Blob storage demo      | Blob operations        |
 | `collaborative-editor`   | Collaborative text     | Complex CRDTs          |
 | `team-metrics-macro`     | Metrics with macros    | Macro usage            |
-| `team-metrics-custom`    | Metrics custom impl    | Custom CRDT usage      |
+| `team-metrics-custom`    | Custom Mergeable impl  | **`#[app::mergeable]` + WASM merge** |
 | `xcall-example`          | Cross-context calls    | XCall pattern          |
 
 ## App Structure
@@ -197,6 +197,49 @@ pub fn get_result(&self, key: &str) -> app::Result<String> {
 }
 ```
 
+### Custom Mergeable Pattern
+
+For types with app-specific merge logic, use `#[app::mergeable]`:
+
+```rust
+use calimero_sdk::app;
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_storage::collections::{Counter, Mergeable, crdt_meta::MergeError};
+
+/// Custom type with nested CRDTs
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct TeamStats {
+    pub wins: Counter,
+    pub losses: Counter,
+}
+
+/// #[app::mergeable] generates __calimero_merge_TeamStats WASM export
+/// Called by runtime when entities with CrdtType::Custom("TeamStats") conflict
+#[app::mergeable]
+impl Mergeable for TeamStats {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        // Merge each counter using CRDT semantics
+        self.wins.merge(&other.wins)?;
+        self.losses.merge(&other.losses)?;
+        
+        // Optional: Add custom validation
+        // if self.wins.value()? > MAX_WINS {
+        //     return Err(MergeError::StorageError("Too many wins".into()));
+        // }
+        
+        Ok(())
+    }
+}
+```
+
+**Key points:**
+
+- Use `#[app::mergeable]` on `impl Mergeable for YourType` blocks
+- Generates `__calimero_merge_{TypeName}` WASM export
+- Runtime calls this when syncing entities with `CrdtType::Custom`
+- See `team-metrics-custom/src/lib.rs` for full working example
+- Test with `merobox bootstrap run` to verify concurrent merges work
+
 ### Cargo.toml Pattern
 
 ```toml
@@ -240,12 +283,13 @@ cargo build --target wasm32-unknown-unknown --release
 
 ## Key Reference Files
 
-| File                                | Purpose         |
-| ----------------------------------- | --------------- |
-| `kv-store/src/lib.rs`               | Basic CRDT app  |
-| `access-control/src/lib.rs`         | Auth patterns   |
-| `kv-store-with-handlers/src/lib.rs` | Event handlers  |
-| `blobs/src/lib.rs`                  | Blob operations |
+| File                                | Purpose                    |
+| ----------------------------------- | -------------------------- |
+| `kv-store/src/lib.rs`               | Basic CRDT app             |
+| `access-control/src/lib.rs`         | Auth patterns              |
+| `kv-store-with-handlers/src/lib.rs` | Event handlers             |
+| `blobs/src/lib.rs`                  | Blob operations            |
+| `team-metrics-custom/src/lib.rs`    | **Custom Mergeable + WASM** |
 
 ## JIT Index
 
@@ -270,6 +314,12 @@ rg -n "#\[derive.*Error" */src/
 
 # Find error handling
 rg -n "app::bail!" */src/
+
+# Find custom mergeable implementations
+rg -n "#\[app::mergeable\]" */src/
+
+# Find Mergeable trait implementations
+rg -n "impl Mergeable for" */src/
 ```
 
 ## Workflows

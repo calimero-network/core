@@ -187,7 +187,7 @@ impl VMHostFunctions<'_> {
                         .map_err(|_| VMLogicError::HostError(HostError::InvalidBlobHandle))?;
                 }
                 BlobHandle::Read(_) => {
-                    return Err(VMLogicError::HostError(HostError::InvalidBlobHandle))
+                    return Err(VMLogicError::HostError(HostError::InvalidBlobHandle));
                 }
             }
             Ok::<(), VMLogicError>(())
@@ -450,7 +450,7 @@ impl VMHostFunctions<'_> {
             let read_handle = match handle {
                 BlobHandle::Read(r) => r,
                 BlobHandle::Write(_) => {
-                    return Err(VMLogicError::HostError(HostError::InvalidBlobHandle))
+                    return Err(VMLogicError::HostError(HostError::InvalidBlobHandle));
                 }
             };
 
@@ -558,7 +558,7 @@ impl VMHostFunctions<'_> {
                 let read_handle = match handle {
                     BlobHandle::Read(r) => r,
                     BlobHandle::Write(_) => {
-                        return Err(VMLogicError::HostError(HostError::InvalidBlobHandle))
+                        return Err(VMLogicError::HostError(HostError::InvalidBlobHandle));
                     }
                 };
 

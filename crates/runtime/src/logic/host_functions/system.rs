@@ -29,10 +29,22 @@ use std::rc::Rc;
 /// pointers of the current storage instance.  While the runtime call is in
 /// flight we install this `RuntimeEnv` via `with_runtime_env`, allowing the
 /// storage crate to resolve reads/writes against the live context storage.
-pub(super) fn build_runtime_env(
+///
+/// The optional `merge_callback` is used for custom type merging via WASM.
+pub(super) fn build_runtime_env_with_merge(
     storage: &mut dyn RuntimeStorage,
     context_id: [u8; DIGEST_SIZE],
     executor_id: [u8; DIGEST_SIZE],
+    merge_callback: Option<
+        std::rc::Rc<
+            dyn Fn(
+                &[u8],
+                &[u8],
+                &str,
+            )
+                -> Result<Vec<u8>, calimero_storage::collections::crdt_meta::MergeError>,
+        >,
+    >,
 ) -> RuntimeEnv {
     let raw_ptr: *mut dyn RuntimeStorage = storage;
     let (data_ptr, vtable_ptr): (*mut (), *mut ()) = unsafe { mem::transmute(raw_ptr) };
@@ -84,12 +96,17 @@ pub(super) fn build_runtime_env(
     //   executing the VM guarantees exclusivity over `logic.storage`, so it is
     //   safe to dereference those pointers inside the closures.
     // * The pointers are stored in a `Cell` to keep the closures `Fn` (instead
-    //   of `FnMut`) which matches the storage crate’s expectations.
+    //   of `FnMut`) which matches the storage crate's expectations.
     // * When the host function returns the `RuntimeEnv` drops out of scope and
     //   the storage crate falls back to its default environment, so subsequent
     //   calls that do not install an override will continue to use the mock /
     //   WASM backends.
-    RuntimeEnv::new(reader, writer, remover, context_id, executor_id)
+    let env = RuntimeEnv::new(reader, writer, remover, context_id, executor_id);
+    if let Some(callback) = merge_callback {
+        env.with_merge_callback(callback)
+    } else {
+        env
+    }
 }
 
 thread_local! {
@@ -819,10 +836,13 @@ impl VMHostFunctions<'_> {
                 target: "runtime::host::system",
                 "apply_storage_delta using context id"
             );
-            let env = build_runtime_env(
+            // Get callback before borrowing storage to avoid borrow conflicts
+            let merge_callback = logic.merge_callback();
+            let env = build_runtime_env_with_merge(
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
+                merge_callback,
             );
 
             let payload = payload_opt
@@ -861,10 +881,13 @@ impl VMHostFunctions<'_> {
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect();
-            let env = build_runtime_env(
+            // Get callback before borrowing storage to avoid borrow conflicts
+            let merge_callback = logic.merge_callback();
+            let env = build_runtime_env_with_merge(
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
+                merge_callback,
             );
 
             let maybe_bytes =
@@ -921,10 +944,13 @@ impl VMHostFunctions<'_> {
                 "apply_storage_delta start"
             );
 
-            let env = build_runtime_env(
+            // Get callback before borrowing storage to avoid borrow conflicts
+            let merge_callback = logic.merge_callback();
+            let env = build_runtime_env_with_merge(
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
+                merge_callback,
             );
 
             with_runtime_env(env.clone(), || {
@@ -976,10 +1002,13 @@ impl VMHostFunctions<'_> {
     /// Returns `1` if a delta was emitted, `0` if there was nothing to commit.
     pub fn flush_delta(&mut self) -> VMLogicResult<i32> {
         self.with_logic_mut(|logic| -> VMLogicResult<i32> {
-            let env = build_runtime_env(
+            // Get callback before borrowing storage to avoid borrow conflicts
+            let merge_callback = logic.merge_callback();
+            let env = build_runtime_env_with_merge(
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
+                merge_callback,
             );
 
             let root_hash = with_runtime_env(env.clone(), || {

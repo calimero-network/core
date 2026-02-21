@@ -328,3 +328,198 @@ pub fn log(input: TokenStream) -> TokenStream {
 
     quote!(::calimero_sdk::__log__!(#input)).into()
 }
+
+/// Generates a WASM merge export for a custom type with `Mergeable` implementation.
+///
+/// This macro is applied to types that implement `Mergeable` and need to be merged
+/// via WASM callback during sync. It generates a `__calimero_merge_{TypeName}` export
+/// that the runtime calls when entities with `CrdtType::Custom("TypeName")` conflict.
+///
+/// # Usage
+///
+/// Apply to types that implement `Mergeable`:
+///
+/// ```ignore
+/// use calimero_sdk::app;
+/// use calimero_storage::collections::{Mergeable, crdt_meta::MergeError};
+///
+/// #[derive(BorshSerialize, BorshDeserialize)]
+/// pub struct TeamStats {
+///     wins: Counter,
+///     losses: Counter,
+/// }
+///
+/// #[app::mergeable]
+/// impl Mergeable for TeamStats {
+///     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+///         self.wins.merge(&other.wins)?;
+///         self.losses.merge(&other.losses)?;
+///         Ok(())
+///     }
+/// }
+/// ```
+///
+/// # Generated Code
+///
+/// This generates a WASM export `__calimero_merge_TeamStats` that:
+/// 1. Deserializes both local and remote values as `TeamStats`
+/// 2. Calls `Mergeable::merge()` on local with remote
+/// 3. Serializes the merged result
+/// 4. Returns a pointer to `MergeResult` struct
+///
+/// # When Is This Called?
+///
+/// During sync, when an entity has `CrdtType::Custom("TeamStats")` in its metadata
+/// and conflicts with another version, the storage layer calls `merge_custom()` which
+/// invokes this WASM export.
+#[proc_macro_attribute]
+pub fn mergeable(args: TokenStream, input: TokenStream) -> TokenStream {
+    reserved::init();
+    let _args = parse_macro_input!({ input } => args as Empty);
+    let impl_block = parse_macro_input!(input as ItemImpl);
+
+    // Extract the type name from `impl Mergeable for TypeName`
+    let type_path = match &*impl_block.self_ty {
+        syn::Type::Path(type_path) => type_path,
+        _ => {
+            return syn::Error::new_spanned(&impl_block.self_ty, "Expected a type path")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    // Get just the type name (last segment)
+    let type_name = match type_path.path.segments.last() {
+        Some(seg) => &seg.ident,
+        None => {
+            return syn::Error::new_spanned(&impl_block.self_ty, "Expected a type name")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let type_name_str = type_name.to_string();
+    let export_name = syn::Ident::new(
+        &format!("__calimero_merge_{type_name_str}"),
+        type_name.span(),
+    );
+
+    // Generate a unique module name to avoid conflicts
+    let mod_name = syn::Ident::new(
+        &format!("__calimero_merge_{}_impl", type_name_str.to_lowercase()),
+        type_name.span(),
+    );
+
+    let output = quote! {
+        #impl_block
+
+        // ============================================================================
+        // AUTO-GENERATED WASM Export for Custom Type Merge
+        // ============================================================================
+        //
+        // This function is called by the runtime during sync when entities with
+        // CrdtType::Custom("#type_name_str") need to be merged.
+        //
+        #[cfg(target_arch = "wasm32")]
+        #[doc(hidden)]
+        mod #mod_name {
+            use super::*;
+
+            fn alloc(size: u64) -> u64 {
+                // Guard against zero-size allocation (UB per GlobalAlloc contract)
+                if size == 0 {
+                    return 1; // Non-null sentinel for zero-size allocations
+                }
+                let layout = ::std::alloc::Layout::from_size_align(size as usize, 8)
+                    .expect("Invalid allocation size");
+                unsafe { ::std::alloc::alloc(layout) as u64 }
+            }
+
+            fn make_success(data: ::std::vec::Vec<u8>) -> u64 {
+                let data_len = data.len() as u64;
+                let data_ptr = alloc(data_len);
+                unsafe {
+                    ::std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr as *mut u8, data.len());
+                }
+                let result_ptr = alloc(33);
+                unsafe {
+                    let ptr = result_ptr as *mut u8;
+                    *ptr = 1; // success
+                    ::std::ptr::copy_nonoverlapping(data_ptr.to_le_bytes().as_ptr(), ptr.add(1), 8);
+                    ::std::ptr::copy_nonoverlapping(data_len.to_le_bytes().as_ptr(), ptr.add(9), 8);
+                    ::std::ptr::copy_nonoverlapping(0u64.to_le_bytes().as_ptr(), ptr.add(17), 8);
+                    ::std::ptr::copy_nonoverlapping(0u64.to_le_bytes().as_ptr(), ptr.add(25), 8);
+                }
+                result_ptr
+            }
+
+            fn make_error(error: ::std::string::String) -> u64 {
+                let error_bytes = error.into_bytes();
+                let error_len = error_bytes.len() as u64;
+                let error_ptr = alloc(error_len);
+                unsafe {
+                    ::std::ptr::copy_nonoverlapping(error_bytes.as_ptr(), error_ptr as *mut u8, error_bytes.len());
+                }
+                let result_ptr = alloc(33);
+                unsafe {
+                    let ptr = result_ptr as *mut u8;
+                    *ptr = 0; // failure
+                    ::std::ptr::copy_nonoverlapping(0u64.to_le_bytes().as_ptr(), ptr.add(1), 8);
+                    ::std::ptr::copy_nonoverlapping(0u64.to_le_bytes().as_ptr(), ptr.add(9), 8);
+                    ::std::ptr::copy_nonoverlapping(error_ptr.to_le_bytes().as_ptr(), ptr.add(17), 8);
+                    ::std::ptr::copy_nonoverlapping(error_len.to_le_bytes().as_ptr(), ptr.add(25), 8);
+                }
+                result_ptr
+            }
+
+            #[no_mangle]
+            pub extern "C" fn #export_name(
+                local_ptr: u64,
+                local_len: u64,
+                remote_ptr: u64,
+                remote_len: u64,
+            ) -> u64 {
+                // SAFETY: The runtime guarantees these pointers are valid
+                let local_slice = unsafe {
+                    ::std::slice::from_raw_parts(local_ptr as *const u8, local_len as usize)
+                };
+                let remote_slice = unsafe {
+                    ::std::slice::from_raw_parts(remote_ptr as *const u8, remote_len as usize)
+                };
+
+                // Deserialize local value
+                let mut local_value: #type_name = match ::calimero_sdk::borsh::from_slice(local_slice) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return make_error(::std::format!("Failed to deserialize local {}: {}", #type_name_str, e));
+                    }
+                };
+
+                // Deserialize remote value
+                let remote_value: #type_name = match ::calimero_sdk::borsh::from_slice(remote_slice) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return make_error(::std::format!("Failed to deserialize remote {}: {}", #type_name_str, e));
+                    }
+                };
+
+                // Merge using the Mergeable implementation
+                if let Err(e) = ::calimero_storage::collections::Mergeable::merge(&mut local_value, &remote_value) {
+                    return make_error(::std::format!("Merge failed for {}: {}", #type_name_str, e));
+                }
+
+                // Serialize the merged value
+                let merged_bytes = match ::calimero_sdk::borsh::to_vec(&local_value) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        return make_error(::std::format!("Failed to serialize merged {}: {}", #type_name_str, e));
+                    }
+                };
+
+                make_success(merged_bytes)
+            }
+        }
+    };
+
+    output.into()
+}
