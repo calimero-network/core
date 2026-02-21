@@ -1,14 +1,14 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Arc;
 
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use tracing::{debug, error, info};
-use wasmer::{DeserializeError, Instance, SerializeError, Store};
-
-// Profiling feature: Only compile these imports when profiling feature is enabled
-#[cfg(feature = "profiling")]
 use wasmer::sys::{CompilerConfig, Cranelift};
+use wasmer::{DeserializeError, Instance, SerializeError, Store};
+use wasmer_middlewares::metering::{self, MeteringPoints};
+use wasmer_middlewares::Metering;
 
 mod constants;
 mod constraint;
@@ -88,9 +88,7 @@ pub struct Engine {
 impl Default for Engine {
     fn default() -> Self {
         let limits = VMLimits::default();
-
-        let engine = Self::create_engine();
-
+        let engine = Self::create_engine_with_metering(&limits);
         Self::new(engine, limits)
     }
 }
@@ -107,8 +105,24 @@ impl Engine {
         Self { limits, engine }
     }
 
-    /// Create an engine, using Cranelift compiler for profiling builds with PerfMap support
-    fn create_engine() -> wasmer::Engine {
+    /// Create an engine with custom VMLimits.
+    /// This is the preferred way to create an Engine when you need custom limits.
+    ///
+    /// **Note:** The operation limit is embedded at compile time via metering middleware.
+    /// Modules compiled with this engine will use the specified `max_operations` limit.
+    /// To use different limits for the same WASM code, create a new Engine with the
+    /// desired limits and recompile the module.
+    #[must_use]
+    pub fn with_limits(limits: VMLimits) -> Self {
+        let engine = Self::create_engine_with_metering(&limits);
+        Self::new(engine, limits)
+    }
+
+    /// Create an engine with metering middleware for execution limits.
+    fn create_engine_with_metering(limits: &VMLimits) -> wasmer::Engine {
+        let mut compiler = Cranelift::default();
+
+        // Enable profiling if requested
         #[cfg(feature = "profiling")]
         {
             if std::env::var("ENABLE_WASMER_PROFILING")
@@ -116,20 +130,53 @@ impl Engine {
                 .unwrap_or(false)
             {
                 info!("Enabling Wasmer PerfMap profiling for WASM stack traces");
-                // Create Cranelift config and enable PerfMap file generation
-                let mut config = Cranelift::default();
-                config.enable_perfmap();
-                return wasmer::Engine::from(config);
+                compiler.enable_perfmap();
             }
         }
 
-        // Default engine (no profiling)
-        wasmer::Engine::default()
+        // Add metering middleware if operation limit is set
+        if limits.max_operations > 0 {
+            // Cost function: each WASM operation costs 1 unit
+            let metering = Arc::new(Metering::new(limits.max_operations, |_op| 1));
+            compiler.push_middleware(metering);
+            debug!(
+                max_operations = limits.max_operations,
+                "Execution limit metering enabled"
+            );
+        }
+
+        wasmer::Engine::from(compiler)
     }
 
+    /// Create a headless engine for running precompiled modules.
+    ///
+    /// # Security Warning
+    ///
+    /// **Headless engines cannot enforce operation limits** because the metering
+    /// middleware must be applied at compile time. Modules loaded with a headless engine
+    /// will run without operation limits regardless of `VMLimits.max_operations`.
+    ///
+    /// This means:
+    /// - Infinite loops or long-running computations will **not** be terminated
+    /// - Only use headless engines for trusted, pre-validated WASM modules
+    /// - For untrusted code, use a full engine with [`Engine::with_limits`] to compile modules
+    ///
+    /// **Note on precompiled modules with metering:** If a module was originally compiled
+    /// with metering enabled (max_operations > 0) and later loaded via a headless engine,
+    /// the metering middleware embedded in the compiled code will still trap when exhausted.
+    /// However, these traps will surface as generic runtime errors rather than
+    /// `ExecutionTimeout`, since headless engines cannot detect metering state.
     #[must_use]
     pub fn headless() -> Self {
-        let limits = VMLimits::default();
+        let mut limits = VMLimits::default();
+        // Disable operation limit for headless engines since metering requires compilation
+        limits.max_operations = 0;
+
+        // Log at debug level - security implications are documented above
+        debug!(
+            "Creating headless engine without operation limit enforcement. \
+             Only use for trusted, pre-validated WASM modules."
+        );
 
         // Headless engines lack a compiler, so Wasmer skips perf.map generation.
         // For profiling, use a full engine to enable WASM symbol resolution.
@@ -140,7 +187,7 @@ impl Engine {
                 .unwrap_or(false)
             {
                 debug!("Using profiling-enabled engine for precompiled module (required for perf.map generation)");
-                let engine = Self::create_engine();
+                let engine = Self::create_engine_with_metering(&limits);
                 return Self::new(engine, limits);
             }
         }
@@ -258,6 +305,9 @@ impl Module {
 
         let imports = logic.imports(&mut store);
 
+        // Get the operation limit for execution
+        let max_ops = self.limits.max_operations;
+
         // Wrap WASM execution in catch_unwind to prevent panics from crashing the node.
         // This catches any unhandled panics during instance creation, memory access,
         // or function execution and converts them to proper error responses.
@@ -270,6 +320,7 @@ impl Module {
                 method,
                 &context_id,
                 self.limits.max_method_name_length,
+                max_ops,
             )
         }));
 
@@ -329,6 +380,7 @@ impl Module {
         method: &str,
         context_id: &ContextId,
         max_method_name_length: u64,
+        max_ops: u64,
     ) -> RuntimeResult<Option<FunctionCallError>> {
         // Validate method name before attempting to look it up
         if let Err(err) = validate_method_name(method, max_method_name_length) {
@@ -357,6 +409,18 @@ impl Module {
 
         // Attach memory to VMLogic, which will clean it up in finish()
         let _ = logic.with_memory(memory);
+
+        // Set execution limit before any WASM function calls (including hooks)
+        // to ensure all execution is protected by the operation limit.
+        //
+        // **Important:** The operation budget (`max_ops`) is shared between all WASM
+        // function calls in this execution, including registration hooks like
+        // `__calimero_register_merge`. If hooks consume significant operations,
+        // the remaining budget for the user method will be reduced accordingly.
+        if max_ops > 0 {
+            metering::set_remaining_points(store, &instance, max_ops);
+            debug!(%context_id, method, max_ops, "Execution limit set for WASM method");
+        }
 
         // Call the auto-generated registration hook if it exists.
         // This enables automatic CRDT merge during sync.
@@ -438,10 +502,45 @@ impl Module {
                 "WASM method execution failed"
             );
 
+            // Check if execution exceeded operation limit (only when metering was enabled)
+            if max_ops > 0 {
+                if let MeteringPoints::Exhausted = metering::get_remaining_points(store, &instance)
+                {
+                    // Log the original error at info level for production debugging
+                    // The error type from metering exhaustion is typically an unreachable trap
+                    info!(
+                        %context_id,
+                        method,
+                        original_error = ?err,
+                        "Metering exhausted, returning ExecutionTimeout (original trap preserved in logs)"
+                    );
+                    error!(%context_id, method, "WASM execution exceeded operation limit");
+                    return Ok(Some(FunctionCallError::WasmTrap(
+                        errors::WasmTrap::ExecutionTimeout,
+                    )));
+                }
+            }
+
             return match err.downcast::<VMLogicError>() {
                 Ok(err) => Ok(Some(err.try_into()?)),
                 Err(err) => Ok(Some(err.into())),
             };
+        }
+
+        // Log execution stats if metering was enabled for this engine
+        if max_ops > 0 {
+            if let MeteringPoints::Remaining(remaining) =
+                metering::get_remaining_points(store, &instance)
+            {
+                let consumed = max_ops.saturating_sub(remaining);
+                debug!(
+                    %context_id,
+                    method,
+                    consumed,
+                    remaining,
+                    "WASM execution completed within operation limit"
+                );
+            }
         }
 
         Ok(None)
@@ -990,7 +1089,7 @@ mod wasm_integration_tests {
         let mut limits = VMLimits::default();
         limits.max_module_size = 10; // 10 bytes - way too small for any valid module
 
-        let engine = Engine::new(wasmer::Engine::default(), limits);
+        let engine = Engine::with_limits(limits);
 
         // Attempt to compile should fail due to size limit
         let result = engine.compile(&wasm);
@@ -1023,7 +1122,7 @@ mod wasm_integration_tests {
         let mut limits = VMLimits::default();
         limits.max_module_size = 1024 * 1024; // 1 MiB - plenty of room
 
-        let engine = Engine::new(wasmer::Engine::default(), limits);
+        let engine = Engine::with_limits(limits);
 
         // Compilation should succeed
         let result = engine.compile(&wasm);
@@ -1051,7 +1150,7 @@ mod wasm_integration_tests {
         let mut limits = VMLimits::default();
         limits.max_module_size = wasm.len() as u64; // Exact size limit
 
-        let engine = Engine::new(wasmer::Engine::default(), limits);
+        let engine = Engine::with_limits(limits);
 
         // Compilation should succeed because check is `size > limit`, not `size >= limit`
         let result = engine.compile(&wasm);
@@ -1103,7 +1202,7 @@ mod wasm_integration_tests {
         let mut limits = VMLimits::default();
         limits.max_module_size = 0;
 
-        let engine = Engine::new(wasmer::Engine::default(), limits);
+        let engine = Engine::with_limits(limits);
 
         // Any non-empty module should be rejected
         let result = engine.compile(&wasm);
@@ -1131,5 +1230,132 @@ mod wasm_integration_tests {
             Ok(_) => panic!("Empty bytes should not compile successfully"),
             Err(other) => panic!("Expected CompilationError for empty bytes, got: {other:?}"),
         }
+    }
+
+    /// Test that execution with custom operation limit works
+    #[test]
+    fn test_wasm_with_custom_operation_limit() {
+        // A minimal WASM module that should complete quickly
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "simple_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Create engine with custom operation limit
+        let mut limits = VMLimits::default();
+        limits.max_operations = 1_000_000; // 1 million operations
+        let engine = Engine::with_limits(limits);
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "simple_func",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        // Should complete successfully within operation limit
+        assert!(
+            outcome.returns.is_ok(),
+            "Expected successful execution within operation limit, got: {:?}",
+            outcome.returns
+        );
+    }
+
+    /// Test that an infinite loop triggers ExecutionTimeout error
+    /// This verifies the operation limit actually prevents infinite loops.
+    #[test]
+    fn test_wasm_infinite_loop_operation_limit() {
+        // A WASM module with an infinite loop
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "infinite_loop")
+                    (local $i i32)
+                    (loop $loop
+                        ;; Increment counter
+                        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                        ;; Loop forever
+                        (br $loop)
+                    )
+                )
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Create engine with a low operation limit to trigger quickly
+        let mut limits = VMLimits::default();
+        limits.max_operations = 10_000; // 10,000 operations - will be exceeded quickly
+        let engine = Engine::with_limits(limits);
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "infinite_loop",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        // Infinite loop should trigger ExecutionTimeout when operation limit exceeded
+        match &outcome.returns {
+            Err(FunctionCallError::WasmTrap(errors::WasmTrap::ExecutionTimeout)) => {
+                // Expected - operation limit stopped the infinite loop
+            }
+            other => panic!("Expected WasmTrap::ExecutionTimeout error, got: {other:?}"),
+        }
+    }
+
+    /// Test that execution with operation limit disabled (zero) works
+    #[test]
+    fn test_wasm_operation_limit_disabled() {
+        // A minimal WASM module that should complete quickly
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "simple_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Create engine with operation limit disabled
+        let mut limits = VMLimits::default();
+        limits.max_operations = 0; // Disable operation limit
+        let engine = Engine::with_limits(limits);
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "simple_func",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        // Should complete successfully without operation limit
+        assert!(
+            outcome.returns.is_ok(),
+            "Expected successful execution with operation limit disabled, got: {:?}",
+            outcome.returns
+        );
     }
 }
