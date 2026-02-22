@@ -1,5 +1,5 @@
 use actix::Message;
-use calimero_context_config::types::SignedRevealPayload;
+use calimero_context_config::types::{ContextGroupId, SignedRevealPayload};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 
+use crate::group::{
+    AddGroupMembersRequest, CreateGroupRequest, DeleteGroupRequest, GetGroupInfoRequest,
+    ListGroupMembersRequest, RemoveGroupMembersRequest,
+};
 use crate::{ContextAtomic, ContextAtomicKey};
 
 #[derive(Debug)]
@@ -18,6 +22,7 @@ pub struct CreateContextRequest {
     pub application_id: ApplicationId,
     pub identity_secret: Option<PrivateKey>,
     pub init_params: Vec<u8>,
+    pub group_id: Option<ContextGroupId>,
 }
 
 impl Message for CreateContextRequest {
@@ -185,5 +190,29 @@ pub enum ContextMessage {
     Sync {
         request: SyncRequest,
         outcome: oneshot::Sender<<SyncRequest as Message>::Result>,
+    },
+    CreateGroup {
+        request: CreateGroupRequest,
+        outcome: oneshot::Sender<<CreateGroupRequest as Message>::Result>,
+    },
+    DeleteGroup {
+        request: DeleteGroupRequest,
+        outcome: oneshot::Sender<<DeleteGroupRequest as Message>::Result>,
+    },
+    AddGroupMembers {
+        request: AddGroupMembersRequest,
+        outcome: oneshot::Sender<<AddGroupMembersRequest as Message>::Result>,
+    },
+    RemoveGroupMembers {
+        request: RemoveGroupMembersRequest,
+        outcome: oneshot::Sender<<RemoveGroupMembersRequest as Message>::Result>,
+    },
+    GetGroupInfo {
+        request: GetGroupInfoRequest,
+        outcome: oneshot::Sender<<GetGroupInfoRequest as Message>::Result>,
+    },
+    ListGroupMembers {
+        request: ListGroupMembersRequest,
+        outcome: oneshot::Sender<<ListGroupMembersRequest as Message>::Result>,
     },
 }

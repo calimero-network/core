@@ -4,7 +4,8 @@ use async_stream::try_stream;
 use borsh::BorshDeserialize;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::types::{
-    BlockHeight, InvitationFromMember, RevealPayloadData, SignedOpenInvitation, SignedRevealPayload,
+    BlockHeight, ContextGroupId, InvitationFromMember, RevealPayloadData, SignedOpenInvitation,
+    SignedRevealPayload,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
@@ -97,6 +98,7 @@ impl ContextClient {
         identity_secret: Option<PrivateKey>,
         init_params: Vec<u8>,
         seed: Option<[u8; DIGEST_SIZE]>,
+        group_id: Option<ContextGroupId>,
     ) -> eyre::Result<CreateContextResponse> {
         let (sender, receiver) = oneshot::channel();
 
@@ -108,6 +110,7 @@ impl ContextClient {
                     application_id: *application_id,
                     identity_secret,
                     init_params,
+                    group_id,
                 },
                 outcome: sender,
             })

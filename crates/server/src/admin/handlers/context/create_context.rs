@@ -25,6 +25,7 @@ pub async fn handler(
             None,
             req.initialization_params,
             req.context_seed.map(Into::into),
+            None,
         )
         .await
         .map_err(parse_api_error);

@@ -36,6 +36,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             application_id,
             identity_secret,
             init_params,
+            group_id: _group_id,
         }: CreateContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {

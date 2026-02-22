@@ -42,6 +42,12 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::Sync { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
+            ContextMessage::CreateGroup { outcome, .. } => drop(outcome),
+            ContextMessage::DeleteGroup { outcome, .. } => drop(outcome),
+            ContextMessage::AddGroupMembers { outcome, .. } => drop(outcome),
+            ContextMessage::RemoveGroupMembers { outcome, .. } => drop(outcome),
+            ContextMessage::GetGroupInfo { outcome, .. } => drop(outcome),
+            ContextMessage::ListGroupMembers { outcome, .. } => drop(outcome),
         }
     }
 }
