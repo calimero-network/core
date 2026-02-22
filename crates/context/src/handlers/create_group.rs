@@ -3,6 +3,7 @@ use calimero_context_primitives::group::{CreateGroupRequest, CreateGroupResponse
 use calimero_primitives::context::GroupMemberRole;
 use calimero_store::key::GroupMetaValue;
 use eyre::bail;
+use rand::Rng;
 use tracing::info;
 
 use crate::group_store;
@@ -24,8 +25,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
     ) -> Self::Result {
         let result = (|| {
             let group_id = group_id.unwrap_or_else(|| {
-                let mut bytes = [0u8; 32];
-                rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
+                let bytes: [u8; 32] = rand::thread_rng().gen();
                 bytes.into()
             });
 

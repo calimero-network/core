@@ -3,6 +3,7 @@ pub mod applications;
 pub mod blob;
 pub mod context;
 pub mod get_latest_version;
+pub mod groups;
 pub mod identity;
 pub mod list_packages;
 pub mod list_versions;

@@ -7,7 +7,9 @@ use calimero_context_config::types::{
 use calimero_context_config::{Proposal, ProposalWithApprovals};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
+use calimero_primitives::context::{
+    Context, ContextId, ContextInvitationPayload, GroupMemberRole, UpgradePolicy,
+};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey, WalletType};
 use camino::Utf8PathBuf;
@@ -1780,4 +1782,126 @@ impl Validate for JwtRefreshRequest {
 
         errors
     }
+}
+
+// -------------------------------------------- Group API --------------------------------------------
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupApiRequest {
+    pub app_key: String,
+    pub application_id: ApplicationId,
+    pub upgrade_policy: UpgradePolicy,
+    pub admin_identity: PublicKey,
+}
+
+impl Validate for CreateGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.app_key.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "app_key" });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupApiResponse {
+    pub data: CreateGroupApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupApiResponseData {
+    pub group_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteGroupApiResponse {
+    pub data: DeleteGroupApiResponseData,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteGroupApiResponseData {
+    pub is_deleted: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupInfoApiResponse {
+    pub data: GroupInfoApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupInfoApiResponseData {
+    pub group_id: String,
+    pub app_key: String,
+    pub target_application_id: ApplicationId,
+    pub upgrade_policy: UpgradePolicy,
+    pub member_count: u64,
+    pub context_count: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddGroupMembersApiRequest {
+    pub members: Vec<GroupMemberApiInput>,
+    pub requester: PublicKey,
+}
+
+impl Validate for AddGroupMembersApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.members.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "members" });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMemberApiInput {
+    pub identity: PublicKey,
+    pub role: GroupMemberRole,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveGroupMembersApiRequest {
+    pub members: Vec<PublicKey>,
+    pub requester: PublicKey,
+}
+
+impl Validate for RemoveGroupMembersApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.members.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "members" });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListGroupMembersApiResponse {
+    pub data: Vec<GroupMemberApiEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMemberApiEntry {
+    pub identity: PublicKey,
+    pub role: GroupMemberRole,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ListGroupMembersQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
 }

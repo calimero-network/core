@@ -24,7 +24,7 @@ use super::handlers::proposals::{
     get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler,
     get_proxy_contract_handler,
 };
-use super::handlers::{alias, blob, tee};
+use super::handlers::{alias, blob, groups, tee};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
     get_application, install_application, install_dev_application, list_applications,
@@ -216,6 +216,23 @@ pub(crate) fn setup(
             get(blob::download_handler)
                 .head(blob::info_handler)
                 .delete(blob::delete_handler),
+        )
+        // Group management
+        .route(
+            "/groups",
+            post(groups::create_group::handler),
+        )
+        .route(
+            "/groups/:group_id",
+            get(groups::get_group_info::handler).delete(groups::delete_group::handler),
+        )
+        .route(
+            "/groups/:group_id/members",
+            get(groups::list_group_members::handler).post(groups::add_group_members::handler),
+        )
+        .route(
+            "/groups/:group_id/members/remove",
+            post(groups::remove_group_members::handler),
         )
         // Alias management
         .nest("/alias", alias::service())

@@ -24,6 +24,11 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
+use crate::group::{
+    AddGroupMembersRequest, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
+    DeleteGroupResponse, GetGroupInfoRequest, GroupInfoResponse, GroupMemberEntry,
+    ListGroupMembersRequest, RemoveGroupMembersRequest,
+};
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
     DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, JoinContextRequest,
@@ -962,6 +967,107 @@ impl ContextClient {
                 request: DeleteContextRequest {
                     context_id: *context_id,
                 },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    // ----- Group operations -----
+
+    pub async fn create_group(
+        &self,
+        request: CreateGroupRequest,
+    ) -> eyre::Result<CreateGroupResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::CreateGroup {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn delete_group(
+        &self,
+        request: DeleteGroupRequest,
+    ) -> eyre::Result<DeleteGroupResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::DeleteGroup {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn add_group_members(&self, request: AddGroupMembersRequest) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::AddGroupMembers {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn remove_group_members(
+        &self,
+        request: RemoveGroupMembersRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::RemoveGroupMembers {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn get_group_info(
+        &self,
+        request: GetGroupInfoRequest,
+    ) -> eyre::Result<GroupInfoResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::GetGroupInfo {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn list_group_members(
+        &self,
+        request: ListGroupMembersRequest,
+    ) -> eyre::Result<Vec<GroupMemberEntry>> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::ListGroupMembers {
+                request,
                 outcome: sender,
             })
             .await
