@@ -42,7 +42,7 @@ impl GroupMeta {
     #[must_use]
     pub fn new(group_id: [u8; 32]) -> Self {
         Self(Key(
-            GenericArray::from([GROUP_META_PREFIX]).concat(GenericArray::from(group_id)),
+            GenericArray::from([GROUP_META_PREFIX]).concat(GenericArray::from(group_id))
         ))
     }
 
@@ -89,11 +89,9 @@ pub struct GroupMember(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
 impl GroupMember {
     #[must_use]
     pub fn new(group_id: [u8; 32], identity: PrimitivePublicKey) -> Self {
-        Self(Key(
-            GenericArray::from([GROUP_MEMBER_PREFIX])
-                .concat(GenericArray::from(group_id))
-                .concat(GenericArray::from(*identity)),
-        ))
+        Self(Key(GenericArray::from([GROUP_MEMBER_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(*identity))))
     }
 
     #[must_use]
@@ -147,11 +145,9 @@ pub struct GroupContextIndex(Key<(GroupPrefix, GroupIdComponent, GroupIdComponen
 impl GroupContextIndex {
     #[must_use]
     pub fn new(group_id: [u8; 32], context_id: PrimitiveContextId) -> Self {
-        Self(Key(
-            GenericArray::from([GROUP_CONTEXT_INDEX_PREFIX])
-                .concat(GenericArray::from(group_id))
-                .concat(GenericArray::from(*context_id)),
-        ))
+        Self(Key(GenericArray::from([GROUP_CONTEXT_INDEX_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(*context_id))))
     }
 
     #[must_use]
@@ -206,7 +202,7 @@ impl ContextGroupRef {
     #[must_use]
     pub fn new(context_id: PrimitiveContextId) -> Self {
         Self(Key(
-            GenericArray::from([CONTEXT_GROUP_REF_PREFIX]).concat(GenericArray::from(*context_id)),
+            GenericArray::from([CONTEXT_GROUP_REF_PREFIX]).concat(GenericArray::from(*context_id))
         ))
     }
 
@@ -254,7 +250,7 @@ impl GroupUpgradeKey {
     #[must_use]
     pub fn new(group_id: [u8; 32]) -> Self {
         Self(Key(
-            GenericArray::from([GROUP_UPGRADE_PREFIX]).concat(GenericArray::from(group_id)),
+            GenericArray::from([GROUP_UPGRADE_PREFIX]).concat(GenericArray::from(group_id))
         ))
     }
 
@@ -403,7 +399,10 @@ mod tests {
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {
-                assert_ne!(prefixes[i], prefixes[j], "prefix collision at indices {i} and {j}");
+                assert_ne!(
+                    prefixes[i], prefixes[j],
+                    "prefix collision at indices {i} and {j}"
+                );
             }
         }
     }
@@ -416,7 +415,6 @@ mod tests {
         use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 
         use super::super::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
-
 
         #[test]
         fn group_meta_value_roundtrip() {

@@ -4,10 +4,16 @@ use calimero_utils_actix::adapters::ActorExt;
 
 use crate::ContextManager;
 
+pub mod add_group_members;
 pub mod create_context;
+pub mod create_group;
 pub mod delete_context;
+pub mod delete_group;
 pub mod execute;
+pub mod get_group_info;
 pub mod join_context;
+pub mod list_group_members;
+pub mod remove_group_members;
 pub mod sync;
 pub mod update_application;
 mod utils;
@@ -42,12 +48,24 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::Sync { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::CreateGroup { outcome, .. } => drop(outcome),
-            ContextMessage::DeleteGroup { outcome, .. } => drop(outcome),
-            ContextMessage::AddGroupMembers { outcome, .. } => drop(outcome),
-            ContextMessage::RemoveGroupMembers { outcome, .. } => drop(outcome),
-            ContextMessage::GetGroupInfo { outcome, .. } => drop(outcome),
-            ContextMessage::ListGroupMembers { outcome, .. } => drop(outcome),
+            ContextMessage::CreateGroup { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::DeleteGroup { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::AddGroupMembers { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::RemoveGroupMembers { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetGroupInfo { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ListGroupMembers { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
         }
     }
 }

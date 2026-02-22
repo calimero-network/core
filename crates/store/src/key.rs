@@ -23,6 +23,7 @@ mod group;
 pub use alias::{Alias, Aliasable, StoreScopeCompat};
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
+pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
     ContextConfig, ContextDagDelta, ContextIdentity, ContextMeta, ContextPrivateState, ContextState,
@@ -32,7 +33,6 @@ pub use group::{
     ContextGroupRef, GroupContextIndex, GroupMember, GroupMeta, GroupMetaValue, GroupUpgradeKey,
     GroupUpgradeStatus, GroupUpgradeValue,
 };
-pub use calimero_primitives::context::GroupMemberRole;
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 
