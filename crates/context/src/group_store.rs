@@ -2,8 +2,8 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
-    ContextGroupRef, GroupContextIndex, GroupMember, GroupMeta, GroupMetaValue, GroupUpgradeKey,
-    GroupUpgradeValue,
+    AsKeyParts, ContextGroupRef, GroupContextIndex, GroupMember, GroupMeta, GroupMetaValue,
+    GroupUpgradeKey, GroupUpgradeValue, GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -111,6 +111,14 @@ pub fn require_group_admin(
     Ok(())
 }
 
+pub fn count_group_admins(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
+    let all_members = list_group_members(store, group_id, 0, usize::MAX)?;
+    Ok(all_members
+        .iter()
+        .filter(|(_, role)| *role == GroupMemberRole::Admin)
+        .count())
+}
+
 pub fn list_group_members(
     store: &Store,
     group_id: &ContextGroupId,
@@ -129,6 +137,10 @@ pub fn list_group_members(
 
         for key_result in first_key.into_iter().chain(iter.keys()) {
             let key = key_result?;
+
+            if key.as_key().as_bytes()[0] != GROUP_MEMBER_PREFIX {
+                break;
+            }
 
             if key.group_id() != group_id_bytes {
                 break;
@@ -221,6 +233,10 @@ pub fn enumerate_group_contexts(
 
     for entry in first.into_iter().chain(iter.keys()) {
         let key = entry?;
+
+        if key.as_key().as_bytes()[0] != GROUP_CONTEXT_INDEX_PREFIX {
+            break;
+        }
 
         if key.group_id() != group_id_bytes {
             break;

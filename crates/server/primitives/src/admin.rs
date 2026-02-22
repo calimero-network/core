@@ -1819,6 +1819,18 @@ pub struct CreateGroupApiResponseData {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteGroupApiRequest {
+    pub requester: PublicKey,
+}
+
+impl Validate for DeleteGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteGroupApiResponse {
     pub data: DeleteGroupApiResponseData,
 }

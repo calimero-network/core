@@ -15,8 +15,8 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 
 const GROUP_META_PREFIX: u8 = 0x20;
-const GROUP_MEMBER_PREFIX: u8 = 0x21;
-const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
+pub const GROUP_MEMBER_PREFIX: u8 = 0x21;
+pub const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
 const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
 const GROUP_UPGRADE_PREFIX: u8 = 0x24;
 

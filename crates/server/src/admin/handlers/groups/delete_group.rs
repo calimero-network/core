@@ -4,26 +4,25 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_primitives::group::DeleteGroupRequest;
-use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::{DeleteGroupApiResponse, DeleteGroupApiResponseData};
+use calimero_server_primitives::admin::{
+    DeleteGroupApiRequest, DeleteGroupApiResponse, DeleteGroupApiResponseData,
+};
 use tracing::{error, info};
 
 use super::parse_group_id;
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    ValidatedJson(req): ValidatedJson<DeleteGroupApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
-
-    // TODO: Extract requester from auth context once available.
-    // For now, use a placeholder that will be validated by the handler.
-    let requester = PublicKey::from([0u8; 32]);
 
     info!(group_id=%group_id_str, "Deleting group");
 
@@ -31,7 +30,7 @@ pub async fn handler(
         .ctx_client
         .delete_group(DeleteGroupRequest {
             group_id,
-            requester,
+            requester: req.requester,
         })
         .await
         .map_err(parse_api_error);
