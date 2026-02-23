@@ -1,6 +1,8 @@
 //! TEE host information retrieval.
 
-use tracing::{error, warn};
+use tracing::error;
+#[cfg(not(target_os = "linux"))]
+use tracing::warn;
 
 use crate::error::AttestationError;
 

@@ -1,12 +1,12 @@
 [package]
 name = "calimero-store-encryption"
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
 description = "Application-level encryption for Calimero store"
-publish = false
+publish = true
 
 [dependencies]
 # Third-party

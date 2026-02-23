@@ -258,7 +258,7 @@ jobs:
           # Using --no-git flags to avoid git operations during publishing.
           cargo ws publish --yes --allow-dirty --force '*' \
               --no-verify \
-              --no-git-commit --no-git-push --no-individual-tags --tag-prefix 'crates-'
+              --no-git-tag --no-git-commit --no-git-push
 
   release-merod-container:
     name: Release Merod container
