@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AddGroupMembersRequest, CreateGroupRequest, DeleteGroupRequest, GetGroupInfoRequest,
-    ListGroupMembersRequest, RemoveGroupMembersRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, RemoveGroupMembersRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -214,5 +214,9 @@ pub enum ContextMessage {
     ListGroupMembers {
         request: ListGroupMembersRequest,
         outcome: oneshot::Sender<<ListGroupMembersRequest as Message>::Result>,
+    },
+    ListGroupContexts {
+        request: ListGroupContextsRequest,
+        outcome: oneshot::Sender<<ListGroupContextsRequest as Message>::Result>,
     },
 }

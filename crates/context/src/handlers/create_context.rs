@@ -6,6 +6,7 @@ use std::sync::Arc;
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_config::client::utils::humanize_iter;
+use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::{CreateContextRequest, CreateContextResponse};
 use calimero_node_primitives::client::NodeClient;
@@ -23,7 +24,7 @@ use tracing::{debug, warn};
 
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
-use crate::{ContextManager, ContextMeta};
+use crate::{group_store, ContextManager, ContextMeta};
 
 impl Handler<CreateContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <CreateContextRequest as Message>::Result>;
@@ -36,7 +37,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             application_id,
             identity_secret,
             init_params,
-            group_id: _group_id,
+            group_id,
         }: CreateContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -50,6 +51,8 @@ impl Handler<CreateContextRequest> for ContextManager {
             seed,
             &application_id,
             identity_secret,
+            group_id,
+            &self.datastore,
         ) {
             Ok(res) => res,
             Err(err) => return ActorResponse::reply(Err(err)),
@@ -63,6 +66,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             identity,
             identity_secret,
             sender_key,
+            group_id,
         } = prepared;
 
         let guard = context
@@ -73,7 +77,7 @@ impl Handler<CreateContextRequest> for ContextManager {
 
         let context_meta = context.meta.clone();
 
-        let module_task = self.get_module(application_id);
+        let module_task = self.get_module(application.id);
 
         let context_meta_for_map_ok = context_meta.clone();
         let context_meta_for_map_err = context_meta.clone();
@@ -95,6 +99,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         sender_key,
                         init_params,
                         guard,
+                        group_id,
                     )
                     .into_actor(act)
                 })
@@ -129,6 +134,7 @@ struct Prepared<'a> {
     identity: PublicKey,
     identity_secret: PrivateKey,
     sender_key: PrivateKey,
+    group_id: Option<ContextGroupId>,
 }
 
 impl Prepared<'_> {
@@ -142,6 +148,8 @@ impl Prepared<'_> {
         seed: Option<[u8; 32]>,
         application_id: &ApplicationId,
         identity_secret: Option<PrivateKey>,
+        group_id: Option<ContextGroupId>,
+        datastore: &Store,
     ) -> eyre::Result<Self> {
         let Some(external_config) = external_config.params.get(&protocol) else {
             bail!(
@@ -161,6 +169,30 @@ impl Prepared<'_> {
             members_revision: 0,
             // ^^ not used for context creation --
         };
+
+        let mut effective_app_id = *application_id;
+        if let Some(ref gid) = group_id {
+            let meta =
+                group_store::load_group_meta(datastore, gid)?.ok_or_eyre("group not found")?;
+
+            let identity_pk = identity_secret
+                .as_ref()
+                .ok_or_eyre("identity_secret required for group context creation")?
+                .public_key();
+
+            if !group_store::check_group_membership(datastore, gid, &identity_pk)? {
+                bail!("identity is not a member of group '{gid:?}'");
+            }
+
+            if effective_app_id != meta.target_application_id {
+                warn!(
+                    requested=?effective_app_id,
+                    group_target=?meta.target_application_id,
+                    "overriding application_id with group target"
+                );
+                effective_app_id = meta.target_application_id;
+            }
+        }
 
         let mut rng = rand::thread_rng();
 
@@ -207,10 +239,10 @@ impl Prepared<'_> {
             .flatten()
             .ok_or_eyre("failed to derive a context id after 5 tries")?;
 
-        let application = match applications.entry(*application_id) {
+        let application = match applications.entry(effective_app_id) {
             btree_map::Entry::Vacant(vacant) => {
                 let application = node_client
-                    .get_application(application_id)?
+                    .get_application(&effective_app_id)?
                     .ok_or_eyre("application not found")?;
 
                 vacant.insert(application)
@@ -220,7 +252,7 @@ impl Prepared<'_> {
 
         let identity = identity_secret.public_key();
 
-        let meta = Context::new(context_id, *application_id, Hash::default());
+        let meta = Context::new(context_id, effective_app_id, Hash::default());
 
         let context = entry.insert(ContextMeta {
             meta,
@@ -237,6 +269,7 @@ impl Prepared<'_> {
             identity,
             identity_secret,
             sender_key,
+            group_id,
         })
     }
 }
@@ -255,6 +288,7 @@ async fn create_context(
     sender_key: PrivateKey,
     init_params: Vec<u8>,
     guard: OwnedMutexGuard<ContextId>,
+    group_id: Option<ContextGroupId>,
 ) -> eyre::Result<Hash> {
     let storage = ContextStorage::from(datastore.clone(), context.id);
     // Create private storage (node-local, NOT synchronized)
@@ -402,7 +436,13 @@ async fn create_context(
         },
     )?;
 
+    drop(handle);
+
     node_client.subscribe(&context.id).await?;
+
+    if let Some(ref gid) = group_id {
+        group_store::register_context_in_group(&datastore, gid, &context.id)?;
+    }
 
     Ok(context.root_hash)
 }

@@ -1,7 +1,7 @@
 use actix::Message;
 use calimero_context_config::types::{AppKey, ContextGroupId};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupUpgradeValue;
 
@@ -95,4 +95,15 @@ impl Message for ListGroupMembersRequest {
 pub struct GroupMemberEntry {
     pub identity: PublicKey,
     pub role: GroupMemberRole,
+}
+
+#[derive(Debug)]
+pub struct ListGroupContextsRequest {
+    pub group_id: ContextGroupId,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+impl Message for ListGroupContextsRequest {
+    type Result = eyre::Result<Vec<ContextId>>;
 }

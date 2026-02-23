@@ -27,7 +27,7 @@ use tokio::sync::oneshot;
 use crate::group::{
     AddGroupMembersRequest, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
     DeleteGroupResponse, GetGroupInfoRequest, GroupInfoResponse, GroupMemberEntry,
-    ListGroupMembersRequest, RemoveGroupMembersRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, RemoveGroupMembersRequest,
 };
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -1067,6 +1067,23 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::ListGroupMembers {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn list_group_contexts(
+        &self,
+        request: ListGroupContextsRequest,
+    ) -> eyre::Result<Vec<ContextId>> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::ListGroupContexts {
                 request,
                 outcome: sender,
             })

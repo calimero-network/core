@@ -12,6 +12,7 @@ pub mod delete_group;
 pub mod execute;
 pub mod get_group_info;
 pub mod join_context;
+pub mod list_group_contexts;
 pub mod list_group_members;
 pub mod remove_group_members;
 pub mod sync;
@@ -64,6 +65,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::ListGroupMembers { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ListGroupContexts { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }

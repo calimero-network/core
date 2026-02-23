@@ -1917,3 +1917,15 @@ pub struct ListGroupMembersQuery {
     pub offset: Option<usize>,
     pub limit: Option<usize>,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListGroupContextsApiResponse {
+    pub data: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ListGroupContextsQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}

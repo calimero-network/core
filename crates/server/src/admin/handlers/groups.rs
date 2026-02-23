@@ -2,6 +2,7 @@ pub mod add_group_members;
 pub mod create_group;
 pub mod delete_group;
 pub mod get_group_info;
+pub mod list_group_contexts;
 pub mod list_group_members;
 pub mod remove_group_members;
 

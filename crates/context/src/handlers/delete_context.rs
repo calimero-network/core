@@ -10,7 +10,7 @@ use calimero_store::{key, Store};
 use either::Either;
 use eyre::bail;
 
-use crate::ContextManager;
+use crate::{group_store, ContextManager};
 
 impl Handler<DeleteContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <DeleteContextRequest as Message>::Result>;
@@ -88,6 +88,10 @@ async fn delete_context(
     //
     // Context "deletion" should be a soft delete (marking as inactive/left)
     // rather than actually removing DAG history. See issue for details.
+
+    if let Some(group_id) = group_store::get_group_for_context(&datastore, &context_id)? {
+        group_store::unregister_context_from_group(&datastore, &group_id, &context_id)?;
+    }
 
     Ok(())
 }
