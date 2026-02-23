@@ -1,5 +1,6 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_primitives::group::AddGroupMembersRequest;
+use eyre::bail;
 use tracing::info;
 
 use crate::group_store;
@@ -18,6 +19,10 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
+            if group_store::load_group_meta(&self.datastore, &group_id)?.is_none() {
+                bail!("group not found");
+            }
+
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
 
             for (identity, role) in &members {

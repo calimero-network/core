@@ -111,6 +111,7 @@ pub fn require_group_admin(
     Ok(())
 }
 
+// TODO: optimize for large groups — consider maintaining admin_count in GroupMetaValue
 pub fn count_group_admins(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
     let all_members = list_group_members(store, group_id, 0, usize::MAX)?;
     Ok(all_members
@@ -163,7 +164,9 @@ pub fn list_group_members(
 
     let mut results = Vec::with_capacity(member_keys.len());
     for key in member_keys {
-        let role = handle.get(&key)?.unwrap_or(GroupMemberRole::Member);
+        let role = handle
+            .get(&key)?
+            .ok_or_else(|| eyre::eyre!("member key exists but value is missing"))?;
         results.push((key.identity(), role));
     }
 
