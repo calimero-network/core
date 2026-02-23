@@ -28,9 +28,8 @@ use tokio::sync::oneshot;
 use crate::group::{
     AddGroupMembersRequest, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
     DeleteGroupResponse, GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GroupInfoResponse,
-    GroupMemberEntry, ListGroupContextsRequest, ListGroupMembersRequest,
-    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, UpgradeGroupRequest,
-    UpgradeGroupResponse,
+    GroupMemberEntry, ListGroupContextsRequest, ListGroupMembersRequest, RemoveGroupMembersRequest,
+    RetryGroupUpgradeRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,

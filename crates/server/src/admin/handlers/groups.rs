@@ -2,9 +2,12 @@ pub mod add_group_members;
 pub mod create_group;
 pub mod delete_group;
 pub mod get_group_info;
+pub mod get_group_upgrade_status;
 pub mod list_group_contexts;
 pub mod list_group_members;
 pub mod remove_group_members;
+pub mod retry_group_upgrade;
+pub mod upgrade_group;
 
 use calimero_context_config::types::ContextGroupId;
 use reqwest::StatusCode;

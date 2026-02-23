@@ -238,6 +238,18 @@ pub(crate) fn setup(
             "/groups/:group_id/members/remove",
             post(groups::remove_group_members::handler),
         )
+        .route(
+            "/groups/:group_id/upgrade",
+            post(groups::upgrade_group::handler),
+        )
+        .route(
+            "/groups/:group_id/upgrade/status",
+            get(groups::get_group_upgrade_status::handler),
+        )
+        .route(
+            "/groups/:group_id/upgrade/retry",
+            post(groups::retry_group_upgrade::handler),
+        )
         // Alias management
         .nest("/alias", alias::service())
         .layer(Extension(Arc::clone(&shared_state)))

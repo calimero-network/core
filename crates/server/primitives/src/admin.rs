@@ -1929,3 +1929,80 @@ pub struct ListGroupContextsQuery {
     pub offset: Option<usize>,
     pub limit: Option<usize>,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeGroupApiRequest {
+    pub target_application_id: ApplicationId,
+    pub requester: PublicKey,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub migrate_method: Option<String>,
+}
+
+impl Validate for UpgradeGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if let Some(ref method) = self.migrate_method {
+            if let Some(e) =
+                validate_string_length(method, "migrate_method", MAX_METHOD_NAME_LENGTH)
+            {
+                errors.push(e);
+            }
+            if method.is_empty() {
+                errors.push(ValidationError::EmptyField {
+                    field: "migrate_method",
+                });
+            }
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeGroupApiResponse {
+    pub data: UpgradeGroupApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeGroupApiResponseData {
+    pub group_id: String,
+    pub status: String,
+    pub total: Option<u32>,
+    pub completed: Option<u32>,
+    pub failed: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetGroupUpgradeStatusApiResponse {
+    pub data: Option<GroupUpgradeStatusApiData>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupUpgradeStatusApiData {
+    pub from_revision: u64,
+    pub to_revision: u64,
+    pub initiated_at: u64,
+    pub initiated_by: PublicKey,
+    pub status: String,
+    pub total: Option<u32>,
+    pub completed: Option<u32>,
+    pub failed: Option<u32>,
+    pub completed_at: Option<u64>,
+    pub rollback_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryGroupUpgradeApiRequest {
+    pub requester: PublicKey,
+}
+
+impl Validate for RetryGroupUpgradeApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}

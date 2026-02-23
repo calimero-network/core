@@ -84,9 +84,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     );
 
                     // Update group's target_application_id
-                    let mut meta =
-                        group_store::load_group_meta(&datastore, &group_id_clone)?
-                            .ok_or_else(|| eyre::eyre!("group not found after canary"))?;
+                    let mut meta = group_store::load_group_meta(&datastore, &group_id_clone)?
+                        .ok_or_else(|| eyre::eyre!("group not found after canary"))?;
 
                     meta.target_application_id = target_application_id;
                     group_store::save_group_meta(&datastore, &group_id_clone, &meta)?;
@@ -106,19 +105,13 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     let upgrade_value = GroupUpgradeValue {
                         from_revision: 0,
                         to_revision: 0,
-                        migration: migration
-                            .as_ref()
-                            .map(|m| m.method.as_bytes().to_vec()),
+                        migration: migration.as_ref().map(|m| m.method.as_bytes().to_vec()),
                         initiated_at: now,
                         initiated_by: requester,
                         status: status.clone(),
                     };
 
-                    group_store::save_group_upgrade(
-                        &datastore,
-                        &group_id_clone,
-                        &upgrade_value,
-                    )?;
+                    group_store::save_group_upgrade(&datastore, &group_id_clone, &upgrade_value)?;
 
                     // Spawn propagator for remaining contexts
                     if total_contexts > 1 {
@@ -135,9 +128,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         ctx.spawn(propagator.into_actor(act));
                     } else {
                         // Only one context (the canary) — mark completed
-                        let completed_status = GroupUpgradeStatus::Completed {
-                            completed_at: now,
-                        };
+                        let completed_status = GroupUpgradeStatus::Completed { completed_at: now };
                         let mut completed_value = upgrade_value;
                         completed_value.status = completed_status.clone();
                         group_store::save_group_upgrade(
@@ -220,7 +211,11 @@ pub(crate) async fn propagate_upgrade(
     let contexts = match group_store::enumerate_group_contexts(&datastore, &group_id) {
         Ok(c) => c,
         Err(err) => {
-            error!(?group_id, ?err, "failed to enumerate contexts for propagation");
+            error!(
+                ?group_id,
+                ?err,
+                "failed to enumerate contexts for propagation"
+            );
             return;
         }
     };
@@ -236,7 +231,12 @@ pub(crate) async fn propagate_upgrade(
         let migrate_method = migration.as_ref().map(|m| m.method.clone());
 
         match context_client
-            .update_application(&context_id, &target_application_id, &requester, migrate_method)
+            .update_application(
+                &context_id,
+                &target_application_id,
+                &requester,
+                migrate_method,
+            )
             .await
         {
             Ok(()) => {
@@ -280,9 +280,7 @@ pub(crate) async fn propagate_upgrade(
         .as_secs();
 
     let final_status = if failed == 0 {
-        GroupUpgradeStatus::Completed {
-            completed_at: now,
-        }
+        GroupUpgradeStatus::Completed { completed_at: now }
     } else {
         // Keep as InProgress with the final counts so retry can pick it up
         GroupUpgradeStatus::InProgress {
