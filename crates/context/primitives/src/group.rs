@@ -3,7 +3,9 @@ use calimero_context_config::types::{AppKey, ContextGroupId};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::GroupUpgradeValue;
+use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
+
+use crate::messages::MigrationParams;
 
 #[derive(Debug)]
 pub struct CreateGroupRequest {
@@ -106,4 +108,41 @@ pub struct ListGroupContextsRequest {
 
 impl Message for ListGroupContextsRequest {
     type Result = eyre::Result<Vec<ContextId>>;
+}
+
+#[derive(Debug, Clone)]
+pub struct UpgradeGroupRequest {
+    pub group_id: ContextGroupId,
+    pub target_application_id: ApplicationId,
+    pub requester: PublicKey,
+    pub migration: Option<MigrationParams>,
+}
+
+impl Message for UpgradeGroupRequest {
+    type Result = eyre::Result<UpgradeGroupResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct UpgradeGroupResponse {
+    pub group_id: ContextGroupId,
+    pub status: GroupUpgradeStatus,
+}
+
+#[derive(Debug)]
+pub struct GetGroupUpgradeStatusRequest {
+    pub group_id: ContextGroupId,
+}
+
+impl Message for GetGroupUpgradeStatusRequest {
+    type Result = eyre::Result<Option<GroupUpgradeValue>>;
+}
+
+#[derive(Debug)]
+pub struct RetryGroupUpgradeRequest {
+    pub group_id: ContextGroupId,
+    pub requester: PublicKey,
+}
+
+impl Message for RetryGroupUpgradeRequest {
+    type Result = eyre::Result<UpgradeGroupResponse>;
 }

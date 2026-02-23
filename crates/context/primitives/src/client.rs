@@ -16,6 +16,7 @@ use calimero_primitives::context::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_store::key::GroupUpgradeValue;
 use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
 use eyre::{bail, ContextCompat, WrapErr};
@@ -26,8 +27,10 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AddGroupMembersRequest, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
-    DeleteGroupResponse, GetGroupInfoRequest, GroupInfoResponse, GroupMemberEntry,
-    ListGroupContextsRequest, ListGroupMembersRequest, RemoveGroupMembersRequest,
+    DeleteGroupResponse, GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GroupInfoResponse,
+    GroupMemberEntry, ListGroupContextsRequest, ListGroupMembersRequest,
+    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, UpgradeGroupRequest,
+    UpgradeGroupResponse,
 };
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -1084,6 +1087,57 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::ListGroupContexts {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn upgrade_group(
+        &self,
+        request: UpgradeGroupRequest,
+    ) -> eyre::Result<UpgradeGroupResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::UpgradeGroup {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn get_group_upgrade_status(
+        &self,
+        request: GetGroupUpgradeStatusRequest,
+    ) -> eyre::Result<Option<GroupUpgradeValue>> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::GetGroupUpgradeStatus {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn retry_group_upgrade(
+        &self,
+        request: RetryGroupUpgradeRequest,
+    ) -> eyre::Result<UpgradeGroupResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::RetryGroupUpgrade {
                 request,
                 outcome: sender,
             })
