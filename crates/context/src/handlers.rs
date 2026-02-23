@@ -11,12 +11,15 @@ pub mod delete_context;
 pub mod delete_group;
 pub mod execute;
 pub mod get_group_info;
+pub mod get_group_upgrade_status;
 pub mod join_context;
 pub mod list_group_contexts;
 pub mod list_group_members;
 pub mod remove_group_members;
+pub mod retry_group_upgrade;
 pub mod sync;
 pub mod update_application;
+pub mod upgrade_group;
 mod utils;
 
 impl Handler<ContextMessage> for ContextManager {
@@ -68,6 +71,15 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::ListGroupContexts { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::UpgradeGroup { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetGroupUpgradeStatus { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::RetryGroupUpgrade { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }
