@@ -18,7 +18,7 @@ const GROUP_META_PREFIX: u8 = 0x20;
 pub const GROUP_MEMBER_PREFIX: u8 = 0x21;
 pub const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
 const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
-const GROUP_UPGRADE_PREFIX: u8 = 0x24;
+pub const GROUP_UPGRADE_PREFIX: u8 = 0x24;
 
 #[derive(Clone, Copy, Debug)]
 pub struct GroupPrefix;
@@ -330,9 +330,6 @@ pub enum GroupUpgradeStatus {
     Completed {
         completed_at: u64,
     },
-    RolledBack {
-        reason: String,
-    },
 }
 
 #[cfg(test)]
@@ -531,23 +528,6 @@ mod tests {
                     assert_eq!(completed_at, 1_700_001_000);
                 }
                 other => panic!("expected Completed, got {other:?}"),
-            }
-        }
-
-        #[test]
-        fn group_upgrade_status_rolled_back_roundtrip() {
-            let status = GroupUpgradeStatus::RolledBack {
-                reason: "canary failed".to_owned(),
-            };
-
-            let bytes = to_vec(&status).expect("serialize");
-            let decoded: GroupUpgradeStatus = from_slice(&bytes).expect("deserialize");
-
-            match decoded {
-                GroupUpgradeStatus::RolledBack { reason } => {
-                    assert_eq!(reason, "canary failed");
-                }
-                other => panic!("expected RolledBack, got {other:?}"),
             }
         }
     }

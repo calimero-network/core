@@ -26,22 +26,14 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             let upgrade = group_store::load_group_upgrade(&self.datastore, &group_id)?
                 .ok_or_else(|| eyre::eyre!("no upgrade found for this group"))?;
 
-            let (total, _completed, _failed) = match upgrade.status {
-                GroupUpgradeStatus::InProgress {
-                    total,
-                    completed,
-                    failed,
-                } if failed > 0 => (total, completed, failed),
-                GroupUpgradeStatus::InProgress { failed: 0, .. } => {
+            let total = match upgrade.status {
+                GroupUpgradeStatus::InProgress { total, failed, .. } if failed > 0 => total,
+                GroupUpgradeStatus::InProgress { .. } => {
                     bail!("upgrade is in progress with no failures — nothing to retry");
                 }
                 GroupUpgradeStatus::Completed { .. } => {
                     bail!("upgrade is already completed");
                 }
-                GroupUpgradeStatus::RolledBack { .. } => {
-                    bail!("upgrade has been rolled back — start a new upgrade instead");
-                }
-                _ => bail!("unexpected upgrade status"),
             };
 
             let meta = group_store::load_group_meta(&self.datastore, &group_id)?

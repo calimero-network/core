@@ -32,6 +32,7 @@ pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{
     ContextGroupRef, GroupContextIndex, GroupMember, GroupMeta, GroupMetaValue, GroupUpgradeKey,
     GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX,
+    GROUP_UPGRADE_PREFIX,
 };
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);

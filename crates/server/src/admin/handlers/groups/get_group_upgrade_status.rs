@@ -34,27 +34,22 @@ pub async fn handler(
     match result {
         Ok(upgrade) => {
             let data = upgrade.map(|u| {
-                let (status, total, completed, failed, completed_at, rollback_reason) =
-                    match &u.status {
-                        GroupUpgradeStatus::InProgress {
-                            total,
-                            completed,
-                            failed,
-                        } => (
-                            "in_progress",
-                            Some(*total),
-                            Some(*completed),
-                            Some(*failed),
-                            None,
-                            None,
-                        ),
-                        GroupUpgradeStatus::Completed { completed_at } => {
-                            ("completed", None, None, None, Some(*completed_at), None)
-                        }
-                        GroupUpgradeStatus::RolledBack { reason } => {
-                            ("rolled_back", None, None, None, None, Some(reason.clone()))
-                        }
-                    };
+                let (status, total, completed, failed, completed_at) = match &u.status {
+                    GroupUpgradeStatus::InProgress {
+                        total,
+                        completed,
+                        failed,
+                    } => (
+                        "in_progress",
+                        Some(*total),
+                        Some(*completed),
+                        Some(*failed),
+                        None,
+                    ),
+                    GroupUpgradeStatus::Completed { completed_at } => {
+                        ("completed", None, None, None, Some(*completed_at))
+                    }
+                };
 
                 GroupUpgradeStatusApiData {
                     from_revision: u.from_revision,
@@ -66,7 +61,6 @@ pub async fn handler(
                     completed,
                     failed,
                     completed_at,
-                    rollback_reason,
                 }
             });
 

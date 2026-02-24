@@ -1992,7 +1992,6 @@ pub struct GroupUpgradeStatusApiData {
     pub completed: Option<u32>,
     pub failed: Option<u32>,
     pub completed_at: Option<u64>,
-    pub rollback_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

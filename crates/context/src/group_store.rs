@@ -3,7 +3,8 @@ use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     AsKeyParts, ContextGroupRef, GroupContextIndex, GroupMember, GroupMeta, GroupMetaValue,
-    GroupUpgradeKey, GroupUpgradeValue, GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX,
+    GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_INDEX_PREFIX,
+    GROUP_MEMBER_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -285,4 +286,36 @@ pub fn delete_group_upgrade(store: &Store, group_id: &ContextGroupId) -> EyreRes
     let key = GroupUpgradeKey::new(group_id.to_bytes());
     handle.delete(&key)?;
     Ok(())
+}
+
+/// Scans all GroupUpgradeKey entries and returns (group_id, upgrade_value)
+/// pairs where status is InProgress. Used for crash recovery on startup.
+pub fn enumerate_in_progress_upgrades(
+    store: &Store,
+) -> EyreResult<Vec<(ContextGroupId, GroupUpgradeValue)>> {
+    let handle = store.handle();
+    let start_key = GroupUpgradeKey::new([0u8; 32]);
+
+    let mut iter = handle.iter::<GroupUpgradeKey>()?;
+    let first = iter.seek(start_key).transpose();
+
+    let mut results = Vec::new();
+
+    for entry in first.into_iter().chain(iter.keys()) {
+        let key = entry?;
+
+        if key.as_key().as_bytes()[0] != GROUP_UPGRADE_PREFIX {
+            break;
+        }
+
+        let group_id = ContextGroupId::from(key.group_id());
+
+        if let Some(upgrade) = load_group_upgrade(store, &group_id)? {
+            if matches!(upgrade.status, GroupUpgradeStatus::InProgress { .. }) {
+                results.push((group_id, upgrade));
+            }
+        }
+    }
+
+    Ok(results)
 }

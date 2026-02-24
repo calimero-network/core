@@ -198,6 +198,12 @@ fn validate_upgrade(
     })
 }
 
+/// Maximum number of automatic retry rounds for failed context upgrades.
+const MAX_AUTO_RETRIES: u32 = 3;
+
+/// Base delay between retry rounds (doubles each round: 5s, 10s, 20s).
+const RETRY_BASE_DELAY_SECS: u64 = 5;
+
 pub(crate) async fn propagate_upgrade(
     context_client: calimero_context_primitives::client::ContextClient,
     datastore: calimero_store::Store,
@@ -220,57 +226,100 @@ pub(crate) async fn propagate_upgrade(
         }
     };
 
+    // Build the list of contexts to upgrade (excluding the canary)
+    let mut pending: Vec<ContextId> = contexts
+        .into_iter()
+        .filter(|cid| *cid != skip_context)
+        .collect();
+
     let mut completed: u32 = 1; // canary already done
-    let mut failed: u32 = 0;
+    let mut failed: u32;
+    let mut attempt: u32 = 0;
 
-    for context_id in contexts {
-        if context_id == skip_context {
-            continue;
-        }
+    loop {
+        let mut next_pending = Vec::new();
+        failed = 0;
 
-        let migrate_method = migration.as_ref().map(|m| m.method.clone());
+        for context_id in &pending {
+            let migrate_method = migration.as_ref().map(|m| m.method.clone());
 
-        match context_client
-            .update_application(
-                &context_id,
-                &target_application_id,
-                &requester,
-                migrate_method,
-            )
-            .await
-        {
-            Ok(()) => {
-                completed += 1;
-                debug!(
-                    ?group_id,
-                    %context_id,
-                    completed,
-                    total = total_contexts,
-                    "context upgraded successfully"
-                );
+            match context_client
+                .update_application(
+                    context_id,
+                    &target_application_id,
+                    &requester,
+                    migrate_method,
+                )
+                .await
+            {
+                Ok(()) => {
+                    completed += 1;
+                    debug!(
+                        ?group_id,
+                        %context_id,
+                        completed,
+                        total = total_contexts,
+                        attempt,
+                        "context upgraded successfully"
+                    );
+                }
+                Err(err) => {
+                    failed += 1;
+                    next_pending.push(*context_id);
+                    warn!(
+                        ?group_id,
+                        %context_id,
+                        ?err,
+                        failed,
+                        attempt,
+                        "context upgrade failed"
+                    );
+                }
             }
-            Err(err) => {
-                failed += 1;
-                warn!(
-                    ?group_id,
-                    %context_id,
-                    ?err,
-                    failed,
-                    "context upgrade failed"
-                );
+
+            // Persist progress after each context
+            let status = GroupUpgradeStatus::InProgress {
+                total: total_contexts as u32,
+                completed,
+                failed,
+            };
+
+            if let Err(err) = update_upgrade_status(&datastore, &group_id, status) {
+                error!(?group_id, ?err, "failed to persist upgrade progress");
             }
         }
 
-        // Persist progress after each context
-        let status = GroupUpgradeStatus::InProgress {
-            total: total_contexts as u32,
-            completed,
-            failed,
-        };
-
-        if let Err(err) = update_upgrade_status(&datastore, &group_id, status) {
-            error!(?group_id, ?err, "failed to persist upgrade progress");
+        // All succeeded — no retry needed
+        if next_pending.is_empty() {
+            break;
         }
+
+        attempt += 1;
+
+        // Exhausted retry attempts
+        if attempt >= MAX_AUTO_RETRIES {
+            warn!(
+                ?group_id,
+                failed = next_pending.len(),
+                attempts = attempt,
+                "exhausted auto-retry attempts, remaining failures left as InProgress"
+            );
+            break;
+        }
+
+        // Exponential backoff before retrying
+        let delay_secs = RETRY_BASE_DELAY_SECS * (1 << (attempt - 1));
+        info!(
+            ?group_id,
+            failed = next_pending.len(),
+            attempt,
+            delay_secs,
+            "retrying failed context upgrades after delay"
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+
+        // Reset failed count for next round and retry only the failures
+        pending = next_pending;
     }
 
     // Final status
@@ -282,7 +331,7 @@ pub(crate) async fn propagate_upgrade(
     let final_status = if failed == 0 {
         GroupUpgradeStatus::Completed { completed_at: now }
     } else {
-        // Keep as InProgress with the final counts so retry can pick it up
+        // Keep as InProgress with the final counts so manual retry can pick it up
         GroupUpgradeStatus::InProgress {
             total: total_contexts as u32,
             completed,
@@ -299,6 +348,7 @@ pub(crate) async fn propagate_upgrade(
         completed,
         failed,
         total = total_contexts,
+        attempts = attempt + 1,
         "group upgrade propagation finished"
     );
 }

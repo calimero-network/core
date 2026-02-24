@@ -79,6 +79,5 @@ pub fn format_status(
             Some(*failed),
         ),
         GroupUpgradeStatus::Completed { .. } => ("completed".to_owned(), None, None, None),
-        GroupUpgradeStatus::RolledBack { .. } => ("rolled_back".to_owned(), None, None, None),
     }
 }

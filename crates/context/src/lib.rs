@@ -5,12 +5,13 @@ use std::collections::{btree_map, BTreeMap};
 use std::future::Future;
 use std::sync::Arc;
 
-use actix::Actor;
+use actix::{Actor, AsyncContext, WrapFuture};
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId};
+use calimero_store::key::GroupUpgradeStatus;
 use calimero_store::Store;
 use either::Either;
 use prometheus_client::registry::Registry;
@@ -118,6 +119,89 @@ impl ContextManager {
 /// they are received, which is the core of the actor model's safety guarantee for its internal state.
 impl Actor for ContextManager {
     type Context = actix::Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.recover_in_progress_upgrades(ctx);
+    }
+}
+
+impl ContextManager {
+    /// Scans the store for in-progress group upgrades and re-spawns
+    /// propagators for each. Called during actor startup for crash recovery.
+    fn recover_in_progress_upgrades(&self, ctx: &mut actix::Context<Self>) {
+        let upgrades = match group_store::enumerate_in_progress_upgrades(&self.datastore) {
+            Ok(u) => u,
+            Err(err) => {
+                tracing::error!(
+                    ?err,
+                    "failed to scan for in-progress upgrades during recovery"
+                );
+                return;
+            }
+        };
+
+        if upgrades.is_empty() {
+            return;
+        }
+
+        tracing::info!(
+            count = upgrades.len(),
+            "recovering in-progress group upgrades"
+        );
+
+        for (group_id, upgrade) in upgrades {
+            let (total, completed, failed) = match upgrade.status {
+                GroupUpgradeStatus::InProgress {
+                    total,
+                    completed,
+                    failed,
+                } => (total, completed, failed),
+                _ => continue, // shouldn't happen given our filter
+            };
+
+            tracing::info!(
+                ?group_id,
+                total,
+                completed,
+                failed,
+                "re-spawning propagator for in-progress upgrade"
+            );
+
+            // Extract migration method from stored bytes
+            let migration = upgrade
+                .migration
+                .as_ref()
+                .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
+                .map(|method| calimero_context_primitives::messages::MigrationParams { method });
+
+            let meta = match group_store::load_group_meta(&self.datastore, &group_id) {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    tracing::warn!(?group_id, "group not found during recovery, skipping");
+                    continue;
+                }
+                Err(err) => {
+                    tracing::error!(?group_id, ?err, "failed to load group meta during recovery");
+                    continue;
+                }
+            };
+
+            let propagator = handlers::upgrade_group::propagate_upgrade(
+                self.context_client.clone(),
+                self.datastore.clone(),
+                group_id,
+                meta.target_application_id,
+                upgrade.initiated_by,
+                migration,
+                // No canary skip on recovery — propagator's idempotency
+                // handles already-upgraded contexts gracefully
+                ContextId::from([0u8; 32]),
+                total as usize,
+            );
+
+            ctx.spawn(propagator.into_actor(self));
+        }
+    }
 }
 
 impl ContextMeta {
