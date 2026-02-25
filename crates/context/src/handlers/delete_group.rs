@@ -33,8 +33,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
 
             // Remove all members in bounded batches to cap peak allocation
             loop {
-                let batch =
-                    group_store::list_group_members(&self.datastore, &group_id, 0, 500)?;
+                let batch = group_store::list_group_members(&self.datastore, &group_id, 0, 500)?;
                 if batch.is_empty() {
                     break;
                 }

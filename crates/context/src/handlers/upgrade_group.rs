@@ -216,7 +216,8 @@ pub(crate) async fn propagate_upgrade(
     total_contexts: usize,
     initial_completed: u32,
 ) {
-    let contexts = match group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX) {
+    let contexts = match group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)
+    {
         Ok(c) => c,
         Err(err) => {
             error!(
