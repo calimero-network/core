@@ -16,7 +16,6 @@ use calimero_primitives::context::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::key::GroupUpgradeValue;
 use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
 use eyre::{bail, ContextCompat, WrapErr};
@@ -29,8 +28,9 @@ use crate::group::{
     AddGroupMembersRequest, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
     CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
     GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GroupInfoResponse, GroupMemberEntry,
-    JoinGroupRequest, JoinGroupResponse, ListGroupContextsRequest, ListGroupMembersRequest,
-    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    GroupUpgradeInfo, JoinGroupRequest, JoinGroupResponse, ListGroupContextsRequest,
+    ListGroupMembersRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
+    UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -1116,7 +1116,7 @@ impl ContextClient {
     pub async fn get_group_upgrade_status(
         &self,
         request: GetGroupUpgradeStatusRequest,
-    ) -> eyre::Result<Option<GroupUpgradeValue>> {
+    ) -> eyre::Result<Option<GroupUpgradeInfo>> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager

@@ -3,12 +3,11 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_primitives::group::UpgradeGroupRequest;
+use calimero_context_primitives::group::{GroupUpgradeStatus, UpgradeGroupRequest};
 use calimero_context_primitives::messages::MigrationParams;
 use calimero_server_primitives::admin::{
     UpgradeGroupApiRequest, UpgradeGroupApiResponse, UpgradeGroupApiResponseData,
 };
-use calimero_store::key::GroupUpgradeStatus;
 use tracing::{error, info};
 
 use super::parse_group_id;

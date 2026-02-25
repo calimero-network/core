@@ -5,9 +5,34 @@ use calimero_primitives::context::{
     ContextId, GroupInvitationPayload, GroupMemberRole, UpgradePolicy,
 };
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
 
 use crate::messages::MigrationParams;
+
+/// State machine for a group upgrade operation, returned by the API.
+/// Mirrors the storage-layer GroupUpgradeStatus without a direct store dependency.
+#[derive(Clone, Debug)]
+pub enum GroupUpgradeStatus {
+    InProgress {
+        total: u32,
+        completed: u32,
+        failed: u32,
+    },
+    Completed {
+        completed_at: u64,
+    },
+}
+
+/// Snapshot of an in-progress or completed group upgrade, returned by the API.
+/// Mirrors the storage-layer GroupUpgradeValue without a direct store dependency.
+#[derive(Clone, Debug)]
+pub struct GroupUpgradeInfo {
+    pub from_revision: u64,
+    pub to_revision: u64,
+    pub migration: Option<Vec<u8>>,
+    pub initiated_at: u64,
+    pub initiated_by: PublicKey,
+    pub status: GroupUpgradeStatus,
+}
 
 #[derive(Debug)]
 pub struct CreateGroupRequest {
@@ -81,7 +106,7 @@ pub struct GroupInfoResponse {
     pub upgrade_policy: UpgradePolicy,
     pub member_count: u64,
     pub context_count: u64,
-    pub active_upgrade: Option<GroupUpgradeValue>,
+    pub active_upgrade: Option<GroupUpgradeInfo>,
 }
 
 #[derive(Debug)]
@@ -136,7 +161,7 @@ pub struct GetGroupUpgradeStatusRequest {
 }
 
 impl Message for GetGroupUpgradeStatusRequest {
-    type Result = eyre::Result<Option<GroupUpgradeValue>>;
+    type Result = eyre::Result<Option<GroupUpgradeInfo>>;
 }
 
 #[derive(Debug)]
@@ -180,4 +205,36 @@ impl Message for JoinGroupRequest {
 pub struct JoinGroupResponse {
     pub group_id: ContextGroupId,
     pub member_identity: PublicKey,
+}
+
+impl From<calimero_store::key::GroupUpgradeStatus> for GroupUpgradeStatus {
+    fn from(s: calimero_store::key::GroupUpgradeStatus) -> Self {
+        match s {
+            calimero_store::key::GroupUpgradeStatus::InProgress {
+                total,
+                completed,
+                failed,
+            } => Self::InProgress {
+                total,
+                completed,
+                failed,
+            },
+            calimero_store::key::GroupUpgradeStatus::Completed { completed_at } => {
+                Self::Completed { completed_at }
+            }
+        }
+    }
+}
+
+impl From<calimero_store::key::GroupUpgradeValue> for GroupUpgradeInfo {
+    fn from(v: calimero_store::key::GroupUpgradeValue) -> Self {
+        Self {
+            from_revision: v.from_revision,
+            to_revision: v.to_revision,
+            migration: v.migration,
+            initiated_at: v.initiated_at,
+            initiated_by: v.initiated_by,
+            status: v.status.into(),
+        }
+    }
 }

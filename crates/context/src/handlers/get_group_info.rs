@@ -25,7 +25,8 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
             let context_count =
                 group_store::count_group_contexts(&self.datastore, &group_id)? as u64;
 
-            let active_upgrade = group_store::load_group_upgrade(&self.datastore, &group_id)?;
+            let active_upgrade =
+                group_store::load_group_upgrade(&self.datastore, &group_id)?.map(Into::into);
 
             Ok(GroupInfoResponse {
                 group_id,

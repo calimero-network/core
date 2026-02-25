@@ -140,13 +140,13 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 
                         return Ok(UpgradeGroupResponse {
                             group_id: group_id_clone,
-                            status: completed_status,
+                            status: completed_status.into(),
                         });
                     }
 
                     Ok(UpgradeGroupResponse {
                         group_id: group_id_clone,
-                        status,
+                        status: status.into(),
                     })
                 }
             },

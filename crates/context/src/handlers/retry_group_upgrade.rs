@@ -85,6 +85,9 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             failed: 0,
         };
 
-        ActorResponse::reply(Ok(UpgradeGroupResponse { group_id, status }))
+        ActorResponse::reply(Ok(UpgradeGroupResponse {
+            group_id,
+            status: status.into(),
+        }))
     }
 }
