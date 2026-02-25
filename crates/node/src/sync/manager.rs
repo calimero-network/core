@@ -348,11 +348,27 @@ impl SyncManager {
             return self.initiate_sync(context_id, peer_id).await;
         }
 
-        // CRITICAL FIX: Retry peer discovery if mesh is still forming
-        // After subscribing to a context, gossipsub needs time to form the mesh.
-        // We retry a few times with short delays to handle this gracefully.
+        // Check if we're uninitialized before peer discovery so we can use
+        // a longer mesh wait window for bootstrap scenarios.
+        let context = self
+            .context_client
+            .get_context(&context_id)?
+            .ok_or_else(|| eyre::eyre!("Context not found: {}", context_id))?;
+
+        let is_uninitialized = *context.root_hash == [0; 32];
+
+        // Retry peer discovery if mesh is still forming.
+        // Uninitialized nodes need a longer wait window (10s vs 1.5s) to avoid
+        // getting stuck before first snapshot sync. Gossipsub mesh takes 5-10
+        // heartbeats (~5-10s) to add a new subscriber after topic subscription.
+        let (max_retries, retry_delay_ms) = if is_uninitialized {
+            (10, 1_000)
+        } else {
+            (3, 500)
+        };
+
         let mut peers = Vec::new();
-        for attempt in 1..=3 {
+        for attempt in 1..=max_retries {
             peers = self
                 .network_client
                 .mesh_peers(TopicHash::from_raw(context_id))
@@ -362,27 +378,21 @@ impl SyncManager {
                 break;
             }
 
-            if attempt < 3 {
+            if attempt < max_retries {
                 debug!(
                     %context_id,
                     attempt,
+                    is_uninitialized,
+                    max_retries,
                     "No peers found yet, mesh may still be forming, retrying..."
                 );
-                time::sleep(std::time::Duration::from_millis(500)).await;
+                time::sleep(std::time::Duration::from_millis(retry_delay_ms)).await;
             }
         }
 
         if peers.is_empty() {
             bail!("No peers to sync with for context {}", context_id);
         }
-
-        // Check if we're uninitialized
-        let context = self
-            .context_client
-            .get_context(&context_id)?
-            .ok_or_else(|| eyre::eyre!("Context not found: {}", context_id))?;
-
-        let is_uninitialized = *context.root_hash == [0; 32];
 
         if is_uninitialized {
             // When uninitialized, we need to bootstrap from a peer that HAS data
