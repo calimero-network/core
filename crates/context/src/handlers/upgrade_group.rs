@@ -244,6 +244,30 @@ pub(crate) async fn propagate_upgrade(
         failed = 0;
 
         for context_id in &pending {
+            // Skip contexts already running the target application to avoid
+            // re-executing migrations on retry/recovery paths.
+            match context_client.get_context(context_id) {
+                Ok(Some(ctx)) if ctx.application_id == target_application_id => {
+                    completed += 1;
+                    debug!(
+                        ?group_id,
+                        %context_id,
+                        "context already on target application, skipping"
+                    );
+                    // Persist progress
+                    let status = GroupUpgradeStatus::InProgress {
+                        total: total_contexts as u32,
+                        completed,
+                        failed,
+                    };
+                    if let Err(err) = update_upgrade_status(&datastore, &group_id, status) {
+                        error!(?group_id, ?err, "failed to persist upgrade progress");
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+
             let migrate_method = migration.as_ref().map(|m| m.method.clone());
 
             match context_client

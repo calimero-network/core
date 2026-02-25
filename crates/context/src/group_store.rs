@@ -112,6 +112,10 @@ pub fn require_group_admin(
     Ok(())
 }
 
+// TODO: replace with iter.entries() for a single-pass scan once the
+// Iter::read() / Iter::next() borrow-conflict (read takes &'a self) is
+// resolved in the store API — currently each value requires a separate
+// handle.get() lookup after collecting the key.
 pub fn count_group_admins(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
     let handle = store.handle();
     let group_id_bytes: [u8; 32] = group_id.to_bytes();

@@ -1856,6 +1856,8 @@ pub struct GroupInfoApiResponseData {
     pub upgrade_policy: UpgradePolicy,
     pub member_count: u64,
     pub context_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_upgrade: Option<GroupUpgradeStatusApiData>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

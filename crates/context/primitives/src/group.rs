@@ -8,29 +8,46 @@ use calimero_primitives::identity::PublicKey;
 
 use crate::messages::MigrationParams;
 
-/// State machine for a group upgrade operation, returned by the API.
-/// Mirrors the storage-layer GroupUpgradeStatus without a direct store dependency.
+/// State machine for a group-wide upgrade operation.
+///
+/// Transitions: `InProgress` → `Completed` once all contexts are upgraded.
+/// If failures persist after retries, the status remains `InProgress` with a
+/// non-zero `failed` count, allowing manual retry via the retry endpoint.
 #[derive(Clone, Debug)]
 pub enum GroupUpgradeStatus {
+    /// Upgrade is actively being propagated across the group's contexts.
     InProgress {
+        /// Total number of contexts in the group at upgrade start.
         total: u32,
+        /// Number of contexts successfully upgraded so far.
         completed: u32,
+        /// Number of contexts that failed in the current round.
         failed: u32,
     },
+    /// All contexts in the group have been successfully upgraded.
     Completed {
+        /// Unix timestamp (seconds) when the last context was upgraded.
         completed_at: u64,
     },
 }
 
 /// Snapshot of an in-progress or completed group upgrade, returned by the API.
-/// Mirrors the storage-layer GroupUpgradeValue without a direct store dependency.
+///
+/// Contains the full context of the upgrade operation including source/target
+/// revisions, optional migration method, and current progress status.
 #[derive(Clone, Debug)]
 pub struct GroupUpgradeInfo {
+    /// Application revision the group was at before this upgrade.
     pub from_revision: u64,
+    /// Application revision the group is being upgraded to.
     pub to_revision: u64,
+    /// Optional Borsh-serialized migration method name.
     pub migration: Option<Vec<u8>>,
+    /// Unix timestamp (seconds) when the upgrade was initiated.
     pub initiated_at: u64,
+    /// Identity of the admin who initiated the upgrade.
     pub initiated_by: PublicKey,
+    /// Current progress of the upgrade.
     pub status: GroupUpgradeStatus,
 }
 

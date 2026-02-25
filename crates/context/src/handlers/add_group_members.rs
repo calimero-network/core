@@ -25,6 +25,10 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
 
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
 
+            // Note: member additions are not atomic — if a write fails mid-loop,
+            // previously added members remain. This is acceptable because the
+            // store API does not support batch transactions across multiple keys,
+            // and partial addition is a safe (non-corrupting) outcome.
             for (identity, role) in &members {
                 group_store::add_group_member(&self.datastore, &group_id, identity, role.clone())?;
             }
