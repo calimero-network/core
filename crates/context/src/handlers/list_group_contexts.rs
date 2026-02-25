@@ -15,8 +15,7 @@ impl Handler<ListGroupContextsRequest> for ContextManager {
         }: ListGroupContextsRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let result = group_store::enumerate_group_contexts(&self.datastore, &group_id)
-            .map(|contexts| contexts.into_iter().skip(offset).take(limit).collect());
+        let result = group_store::enumerate_group_contexts(&self.datastore, &group_id, offset, limit);
 
         ActorResponse::reply(result)
     }

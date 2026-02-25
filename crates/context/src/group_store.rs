@@ -112,13 +112,31 @@ pub fn require_group_admin(
     Ok(())
 }
 
-// TODO: optimize for large groups — consider maintaining admin_count in GroupMetaValue
 pub fn count_group_admins(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
-    let all_members = list_group_members(store, group_id, 0, usize::MAX)?;
-    Ok(all_members
-        .iter()
-        .filter(|(_, role)| *role == GroupMemberRole::Admin)
-        .count())
+    let handle = store.handle();
+    let group_id_bytes: [u8; 32] = group_id.to_bytes();
+    let start_key = GroupMember::new(group_id_bytes, [0u8; 32].into());
+    let mut iter = handle.iter::<GroupMember>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut count = 0usize;
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+        if key.as_key().as_bytes()[0] != GROUP_MEMBER_PREFIX {
+            break;
+        }
+        if key.group_id() != group_id_bytes {
+            break;
+        }
+        let role = handle
+            .get(&key)?
+            .ok_or_else(|| eyre::eyre!("member key exists but value is missing"))?;
+        if role == GroupMemberRole::Admin {
+            count += 1;
+        }
+    }
+
+    Ok(count)
 }
 
 pub fn list_group_members(
@@ -130,41 +148,35 @@ pub fn list_group_members(
     let handle = store.handle();
     let group_id_bytes: [u8; 32] = group_id.to_bytes();
     let start_key = GroupMember::new(group_id_bytes, [0u8; 32].into());
+    let mut iter = handle.iter::<GroupMember>()?;
+    let first_key = iter.seek(start_key).transpose();
+    let mut results = Vec::new();
+    let mut skipped = 0usize;
 
-    let member_keys = {
-        let mut iter = handle.iter::<GroupMember>()?;
-        let first_key = iter.seek(start_key).transpose();
-        let mut keys = Vec::new();
-        let mut skipped = 0usize;
+    // TODO: replace with iter.entries() for a single-pass scan once the
+    // Iter::read() / Iter::next() borrow-conflict (read takes &'a self) is
+    // resolved in the store API — currently each value requires a separate
+    // handle.get() lookup after collecting the key.
+    for key_result in first_key.into_iter().chain(iter.keys()) {
+        let key = key_result?;
 
-        for key_result in first_key.into_iter().chain(iter.keys()) {
-            let key = key_result?;
-
-            if key.as_key().as_bytes()[0] != GROUP_MEMBER_PREFIX {
-                break;
-            }
-
-            if key.group_id() != group_id_bytes {
-                break;
-            }
-
-            if skipped < offset {
-                skipped += 1;
-                continue;
-            }
-
-            if keys.len() >= limit {
-                break;
-            }
-
-            keys.push(key);
+        if key.as_key().as_bytes()[0] != GROUP_MEMBER_PREFIX {
+            break;
         }
 
-        keys
-    };
+        if key.group_id() != group_id_bytes {
+            break;
+        }
 
-    let mut results = Vec::with_capacity(member_keys.len());
-    for key in member_keys {
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+
+        if results.len() >= limit {
+            break;
+        }
+
         let role = handle
             .get(&key)?
             .ok_or_else(|| eyre::eyre!("member key exists but value is missing"))?;
@@ -233,15 +245,16 @@ pub fn get_group_for_context(
 pub fn enumerate_group_contexts(
     store: &Store,
     group_id: &ContextGroupId,
+    offset: usize,
+    limit: usize,
 ) -> EyreResult<Vec<ContextId>> {
     let handle = store.handle();
     let group_id_bytes: [u8; 32] = group_id.to_bytes();
     let start_key = GroupContextIndex::new(group_id_bytes, ContextId::from([0u8; 32]));
-
     let mut iter = handle.iter::<GroupContextIndex>()?;
     let first = iter.seek(start_key).transpose();
-
     let mut results = Vec::new();
+    let mut skipped = 0usize;
 
     for entry in first.into_iter().chain(iter.keys()) {
         let key = entry?;
@@ -254,6 +267,15 @@ pub fn enumerate_group_contexts(
             break;
         }
 
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+
+        if results.len() >= limit {
+            break;
+        }
+
         results.push(key.context_id());
     }
 
@@ -261,7 +283,25 @@ pub fn enumerate_group_contexts(
 }
 
 pub fn count_group_contexts(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
-    enumerate_group_contexts(store, group_id).map(|v| v.len())
+    let handle = store.handle();
+    let group_id_bytes: [u8; 32] = group_id.to_bytes();
+    let start_key = GroupContextIndex::new(group_id_bytes, ContextId::from([0u8; 32]));
+    let mut iter = handle.iter::<GroupContextIndex>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut count = 0usize;
+
+    for entry in first.into_iter().chain(iter.keys()) {
+        let key = entry?;
+        if key.as_key().as_bytes()[0] != GROUP_CONTEXT_INDEX_PREFIX {
+            break;
+        }
+        if key.group_id() != group_id_bytes {
+            break;
+        }
+        count += 1;
+    }
+
+    Ok(count)
 }
 
 // ---------------------------------------------------------------------------

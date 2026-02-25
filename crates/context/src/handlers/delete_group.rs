@@ -31,11 +31,16 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                 );
             }
 
-            // Remove all members first
-            let members =
-                group_store::list_group_members(&self.datastore, &group_id, 0, usize::MAX)?;
-            for (identity, _role) in &members {
-                group_store::remove_group_member(&self.datastore, &group_id, identity)?;
+            // Remove all members in bounded batches to cap peak allocation
+            loop {
+                let batch =
+                    group_store::list_group_members(&self.datastore, &group_id, 0, 500)?;
+                if batch.is_empty() {
+                    break;
+                }
+                for (identity, _role) in &batch {
+                    group_store::remove_group_member(&self.datastore, &group_id, identity)?;
+                }
             }
 
             // Clean up any in-progress or completed upgrade record so crash

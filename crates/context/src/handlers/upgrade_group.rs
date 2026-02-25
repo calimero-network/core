@@ -185,7 +185,7 @@ fn validate_upgrade(
     }
 
     // 5. Group must have contexts
-    let contexts = group_store::enumerate_group_contexts(datastore, group_id)?;
+    let contexts = group_store::enumerate_group_contexts(datastore, group_id, 0, usize::MAX)?;
     if contexts.is_empty() {
         bail!("group has no contexts to upgrade");
     }
@@ -216,7 +216,7 @@ pub(crate) async fn propagate_upgrade(
     total_contexts: usize,
     initial_completed: u32,
 ) {
-    let contexts = match group_store::enumerate_group_contexts(&datastore, &group_id) {
+    let contexts = match group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX) {
         Ok(c) => c,
         Err(err) => {
             error!(
