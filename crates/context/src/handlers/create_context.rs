@@ -438,11 +438,17 @@ async fn create_context(
 
     drop(handle);
 
-    node_client.subscribe(&context.id).await?;
-
+    // Register context in group BEFORE subscribing so that a registration
+    // failure does not leave a subscribed-but-unregistered context.
+    // Note: membership was verified in Prepared::new(); a TOCTOU gap exists
+    // because the async create_context future may interleave with other actor
+    // messages (e.g. RemoveGroupMembers), but the window is small and the
+    // worst case is a single context associated with a since-removed member.
     if let Some(ref gid) = group_id {
         group_store::register_context_in_group(&datastore, gid, &context.id)?;
     }
+
+    node_client.subscribe(&context.id).await?;
 
     Ok(context.root_hash)
 }
