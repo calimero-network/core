@@ -3,13 +3,11 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_primitives::group::{GetGroupInfoRequest, GroupUpgradeStatus};
-use calimero_server_primitives::admin::{
-    GroupInfoApiResponse, GroupInfoApiResponseData, GroupUpgradeStatusApiData,
-};
+use calimero_context_primitives::group::GetGroupInfoRequest;
+use calimero_server_primitives::admin::{GroupInfoApiResponse, GroupInfoApiResponseData};
 use tracing::{error, info};
 
-use super::parse_group_id;
+use super::{parse_group_id, upgrade_info_to_api_data};
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
@@ -33,36 +31,7 @@ pub async fn handler(
     match result {
         Ok(info) => {
             info!(group_id=%group_id_str, "Group info retrieved successfully");
-            let active_upgrade = info.active_upgrade.map(|u| {
-                let (status, total, completed, failed, completed_at) = match &u.status {
-                    GroupUpgradeStatus::InProgress {
-                        total,
-                        completed,
-                        failed,
-                    } => (
-                        "in_progress",
-                        Some(*total),
-                        Some(*completed),
-                        Some(*failed),
-                        None,
-                    ),
-                    GroupUpgradeStatus::Completed { completed_at } => {
-                        ("completed", None, None, None, Some(*completed_at))
-                    }
-                };
-
-                GroupUpgradeStatusApiData {
-                    from_revision: u.from_revision,
-                    to_revision: u.to_revision,
-                    initiated_at: u.initiated_at,
-                    initiated_by: u.initiated_by,
-                    status: status.to_owned(),
-                    total,
-                    completed,
-                    failed,
-                    completed_at,
-                }
-            });
+            let active_upgrade = info.active_upgrade.as_ref().map(upgrade_info_to_api_data);
 
             ApiResponse {
                 payload: GroupInfoApiResponse {

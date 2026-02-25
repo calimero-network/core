@@ -26,8 +26,8 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             let upgrade = group_store::load_group_upgrade(&self.datastore, &group_id)?
                 .ok_or_else(|| eyre::eyre!("no upgrade found for this group"))?;
 
-            let total = match upgrade.status {
-                GroupUpgradeStatus::InProgress { total, failed, .. } if failed > 0 => total,
+            match upgrade.status {
+                GroupUpgradeStatus::InProgress { failed, .. } if failed > 0 => {}
                 GroupUpgradeStatus::InProgress { .. } => {
                     bail!("upgrade is in progress with no failures — nothing to retry");
                 }
@@ -45,10 +45,14 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
                 .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
                 .map(|method| MigrationParams { method });
 
-            Ok((meta.target_application_id, migration, total))
+            // Use current context count rather than stored total which may be stale
+            let current_total =
+                group_store::count_group_contexts(&self.datastore, &group_id)? as u32;
+
+            Ok((meta.target_application_id, migration, current_total))
         })();
 
-        let (target_application_id, migration, total) = match result {
+        let (target_application_id, migration, current_total) = match result {
             Ok(v) => v,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
@@ -73,14 +77,13 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             migration,
             // Sentinel: no context to skip on retry
             ContextId::from([0u8; 32]),
-            total as usize,
             0, // retry: no canary assumption
         );
 
         ctx.spawn(propagator.into_actor(self));
 
         let status = GroupUpgradeStatus::InProgress {
-            total,
+            total: current_total,
             completed: 0,
             failed: 0,
         };

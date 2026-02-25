@@ -42,6 +42,35 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             total_contexts,
         } = preamble;
 
+        // --- Persist InProgress BEFORE the async canary ---
+        // This prevents a concurrent UpgradeGroupRequest from passing
+        // validate_upgrade while the canary is still running.
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let initial_status = GroupUpgradeStatus::InProgress {
+            total: total_contexts as u32,
+            completed: 0,
+            failed: 0,
+        };
+
+        let upgrade_value = GroupUpgradeValue {
+            from_revision: 0,
+            to_revision: 0,
+            migration: migration.as_ref().map(|m| m.method.as_bytes().to_vec()),
+            initiated_at: now,
+            initiated_by: requester,
+            status: initial_status,
+        };
+
+        if let Err(err) =
+            group_store::save_group_upgrade(&self.datastore, &group_id, &upgrade_value)
+        {
+            return ActorResponse::reply(Err(err.into()));
+        }
+
         // --- Async: run canary upgrade ---
         let context_client = self.context_client.clone();
         let datastore = self.datastore.clone();
@@ -72,6 +101,16 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         ?err,
                         "canary upgrade failed, aborting group upgrade"
                     );
+                    // Clean up the InProgress record so the group can be retried
+                    if let Err(cleanup_err) =
+                        group_store::delete_group_upgrade(&datastore, &group_id_clone)
+                    {
+                        error!(
+                            ?group_id,
+                            ?cleanup_err,
+                            "failed to clean up upgrade record after canary failure"
+                        );
+                    }
                     Err(eyre::eyre!(
                         "canary upgrade failed on context {canary_context_id}: {err}"
                     ))
@@ -90,28 +129,14 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     meta.target_application_id = target_application_id;
                     group_store::save_group_meta(&datastore, &group_id_clone, &meta)?;
 
-                    // Persist InProgress status (canary = 1 completed)
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-
+                    // Update InProgress status (canary = 1 completed)
                     let status = GroupUpgradeStatus::InProgress {
                         total: total_contexts as u32,
                         completed: 1,
                         failed: 0,
                     };
 
-                    let upgrade_value = GroupUpgradeValue {
-                        from_revision: 0,
-                        to_revision: 0,
-                        migration: migration.as_ref().map(|m| m.method.as_bytes().to_vec()),
-                        initiated_at: now,
-                        initiated_by: requester,
-                        status: status.clone(),
-                    };
-
-                    group_store::save_group_upgrade(&datastore, &group_id_clone, &upgrade_value)?;
+                    update_upgrade_status(&datastore, &group_id_clone, status.clone())?;
 
                     // Spawn propagator for remaining contexts
                     if total_contexts > 1 {
@@ -123,19 +148,20 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             requester,
                             migration,
                             canary_context_id,
-                            total_contexts,
                             1, // canary already upgraded
                         );
                         ctx.spawn(propagator.into_actor(act));
                     } else {
                         // Only one context (the canary) — mark completed
-                        let completed_status = GroupUpgradeStatus::Completed { completed_at: now };
-                        let mut completed_value = upgrade_value;
-                        completed_value.status = completed_status.clone();
-                        group_store::save_group_upgrade(
+                        let completed_at = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let completed_status = GroupUpgradeStatus::Completed { completed_at };
+                        update_upgrade_status(
                             &datastore,
                             &group_id_clone,
-                            &completed_value,
+                            completed_status.clone(),
                         )?;
 
                         return Ok(UpgradeGroupResponse {
@@ -213,7 +239,6 @@ pub(crate) async fn propagate_upgrade(
     requester: PublicKey,
     migration: Option<MigrationParams>,
     skip_context: ContextId,
-    total_contexts: usize,
     initial_completed: u32,
 ) {
     let contexts = match group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)
@@ -228,6 +253,10 @@ pub(crate) async fn propagate_upgrade(
             return;
         }
     };
+
+    // Use actual enumerated count as the authoritative total so that
+    // contexts added/removed since the upgrade started are reflected.
+    let total_contexts = contexts.len();
 
     // Build the list of contexts to upgrade (excluding the canary)
     let mut pending: Vec<ContextId> = contexts

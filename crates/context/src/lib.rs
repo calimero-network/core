@@ -196,7 +196,6 @@ impl ContextManager {
                 // No canary skip on recovery — propagator's idempotency
                 // handles already-upgraded contexts gracefully
                 ContextId::from([0u8; 32]),
-                total as usize,
                 0, // recovery: no canary assumption
             );
 
