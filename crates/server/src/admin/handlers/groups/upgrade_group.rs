@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use calimero_context_primitives::group::UpgradeGroupRequest;
 use calimero_context_primitives::messages::MigrationParams;
 use calimero_server_primitives::admin::{
@@ -12,13 +12,14 @@ use calimero_store::key::GroupUpgradeStatus;
 use tracing::{error, info};
 
 use super::parse_group_id;
+use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<UpgradeGroupApiRequest>,
+    ValidatedJson(req): ValidatedJson<UpgradeGroupApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
         Ok(id) => id,

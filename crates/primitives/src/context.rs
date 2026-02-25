@@ -351,7 +351,17 @@ const _: () = {
                 2 => {
                     let dur: Option<(u64, u32)> = BorshDeserialize::deserialize_reader(reader)?;
                     Ok(Self::Coordinated {
-                        deadline: dur.map(|(s, n)| Duration::new(s, n)),
+                        deadline: dur
+                            .map(|(s, n)| -> io::Result<Duration> {
+                                if n >= 1_000_000_000 {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "nanoseconds field exceeds 999_999_999",
+                                    ));
+                                }
+                                Ok(Duration::new(s, n))
+                            })
+                            .transpose()?,
                     })
                 }
                 _ => Err(io::Error::new(

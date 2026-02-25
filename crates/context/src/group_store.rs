@@ -186,10 +186,18 @@ pub fn register_context_in_group(
     let mut handle = store.handle();
     let group_id_bytes: [u8; 32] = group_id.to_bytes();
 
+    // If already registered in a different group, remove the stale index entry
+    // to prevent orphaned counts and enumerations for the old group.
+    let ref_key = ContextGroupRef::new(*context_id);
+    if let Some(existing_group_bytes) = handle.get(&ref_key)? {
+        if existing_group_bytes != group_id_bytes {
+            let old_idx = GroupContextIndex::new(existing_group_bytes, *context_id);
+            handle.delete(&old_idx)?;
+        }
+    }
+
     let idx_key = GroupContextIndex::new(group_id_bytes, *context_id);
     handle.put(&idx_key, &())?;
-
-    let ref_key = ContextGroupRef::new(*context_id);
     handle.put(&ref_key, &group_id_bytes)?;
 
     Ok(())

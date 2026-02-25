@@ -38,6 +38,10 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                 group_store::remove_group_member(&self.datastore, &group_id, identity)?;
             }
 
+            // Clean up any in-progress or completed upgrade record so crash
+            // recovery does not find orphaned entries for deleted groups.
+            group_store::delete_group_upgrade(&self.datastore, &group_id)?;
+
             group_store::delete_group_meta(&self.datastore, &group_id)?;
 
             info!(?group_id, %requester, "group deleted");

@@ -23,15 +23,14 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
 
             let admin_count = group_store::count_group_admins(&self.datastore, &group_id)?;
-            let admins_being_removed = members
-                .iter()
-                .filter(|id| {
-                    group_store::get_group_member_role(&self.datastore, &group_id, id)
-                        .ok()
-                        .flatten()
-                        == Some(GroupMemberRole::Admin)
-                })
-                .count();
+            let mut admins_being_removed: usize = 0;
+            for id in &members {
+                let role =
+                    group_store::get_group_member_role(&self.datastore, &group_id, id)?;
+                if role == Some(GroupMemberRole::Admin) {
+                    admins_being_removed += 1;
+                }
+            }
 
             if admin_count <= admins_being_removed {
                 bail!("cannot remove all admins from group '{group_id:?}': at least one admin must remain");
