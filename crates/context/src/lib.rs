@@ -197,6 +197,7 @@ impl ContextManager {
                 // handles already-upgraded contexts gracefully
                 ContextId::from([0u8; 32]),
                 total as usize,
+                0, // recovery: no canary assumption
             );
 
             ctx.spawn(propagator.into_actor(self));

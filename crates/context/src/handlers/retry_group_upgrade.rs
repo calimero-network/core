@@ -74,6 +74,7 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             // Sentinel: no context to skip on retry
             ContextId::from([0u8; 32]),
             total as usize,
+            0, // retry: no canary assumption
         );
 
         ctx.spawn(propagator.into_actor(self));

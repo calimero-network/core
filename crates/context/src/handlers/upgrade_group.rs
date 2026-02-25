@@ -124,6 +124,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             migration,
                             canary_context_id,
                             total_contexts,
+                            1, // canary already upgraded
                         );
                         ctx.spawn(propagator.into_actor(act));
                     } else {
@@ -213,6 +214,7 @@ pub(crate) async fn propagate_upgrade(
     migration: Option<MigrationParams>,
     skip_context: ContextId,
     total_contexts: usize,
+    initial_completed: u32,
 ) {
     let contexts = match group_store::enumerate_group_contexts(&datastore, &group_id) {
         Ok(c) => c,
@@ -232,7 +234,7 @@ pub(crate) async fn propagate_upgrade(
         .filter(|cid| *cid != skip_context)
         .collect();
 
-    let mut completed: u32 = 1; // canary already done
+    let mut completed: u32 = initial_completed;
     let mut failed: u32;
     let mut attempt: u32 = 0;
 
