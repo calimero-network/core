@@ -1,8 +1,10 @@
 pub mod add_group_members;
 pub mod create_group;
+pub mod create_group_invitation;
 pub mod delete_group;
 pub mod get_group_info;
 pub mod get_group_upgrade_status;
+pub mod join_group;
 pub mod list_group_contexts;
 pub mod list_group_members;
 pub mod remove_group_members;

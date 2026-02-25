@@ -10,9 +10,10 @@ use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AddGroupMembersRequest, CreateGroupRequest, DeleteGroupRequest, GetGroupInfoRequest,
-    GetGroupUpgradeStatusRequest, ListGroupContextsRequest, ListGroupMembersRequest,
-    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, UpgradeGroupRequest,
+    AddGroupMembersRequest, CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest,
+    GetGroupInfoRequest, GetGroupUpgradeStatusRequest, JoinGroupRequest, ListGroupContextsRequest,
+    ListGroupMembersRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
+    UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -231,5 +232,13 @@ pub enum ContextMessage {
     RetryGroupUpgrade {
         request: RetryGroupUpgradeRequest,
         outcome: oneshot::Sender<<RetryGroupUpgradeRequest as Message>::Result>,
+    },
+    CreateGroupInvitation {
+        request: CreateGroupInvitationRequest,
+        outcome: oneshot::Sender<<CreateGroupInvitationRequest as Message>::Result>,
+    },
+    JoinGroup {
+        request: JoinGroupRequest,
+        outcome: oneshot::Sender<<JoinGroupRequest as Message>::Result>,
     },
 }

@@ -2005,3 +2005,62 @@ impl Validate for RetryGroupUpgradeApiRequest {
         Vec::new()
     }
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupInvitationApiRequest {
+    pub requester: PublicKey,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invitee_identity: Option<PublicKey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiration: Option<u64>,
+}
+
+impl Validate for CreateGroupInvitationApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupInvitationApiResponse {
+    pub data: CreateGroupInvitationApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupInvitationApiResponseData {
+    pub payload: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGroupApiRequest {
+    pub invitation_payload: String,
+    pub joiner_identity: PublicKey,
+}
+
+impl Validate for JoinGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        if self.invitation_payload.is_empty() {
+            return vec![ValidationError::EmptyField {
+                field: "invitation_payload",
+            }];
+        }
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGroupApiResponse {
+    pub data: JoinGroupApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGroupApiResponseData {
+    pub group_id: String,
+    pub member_identity: PublicKey,
+}

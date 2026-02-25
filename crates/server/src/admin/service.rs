@@ -250,6 +250,14 @@ pub(crate) fn setup(
             "/groups/:group_id/upgrade/retry",
             post(groups::retry_group_upgrade::handler),
         )
+        .route(
+            "/groups/:group_id/invite",
+            post(groups::create_group_invitation::handler),
+        )
+        .route(
+            "/groups/join",
+            post(groups::join_group::handler),
+        )
         // Alias management
         .nest("/alias", alias::service())
         .layer(Extension(Arc::clone(&shared_state)))

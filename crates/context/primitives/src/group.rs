@@ -1,7 +1,9 @@
 use actix::Message;
 use calimero_context_config::types::{AppKey, ContextGroupId};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::{
+    ContextId, GroupInvitationPayload, GroupMemberRole, UpgradePolicy,
+};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
 
@@ -145,4 +147,37 @@ pub struct RetryGroupUpgradeRequest {
 
 impl Message for RetryGroupUpgradeRequest {
     type Result = eyre::Result<UpgradeGroupResponse>;
+}
+
+#[derive(Debug)]
+pub struct CreateGroupInvitationRequest {
+    pub group_id: ContextGroupId,
+    pub requester: PublicKey,
+    pub invitee_identity: Option<PublicKey>,
+    pub expiration: Option<u64>,
+}
+
+impl Message for CreateGroupInvitationRequest {
+    type Result = eyre::Result<CreateGroupInvitationResponse>;
+}
+
+#[derive(Debug)]
+pub struct CreateGroupInvitationResponse {
+    pub payload: GroupInvitationPayload,
+}
+
+#[derive(Debug)]
+pub struct JoinGroupRequest {
+    pub invitation_payload: GroupInvitationPayload,
+    pub joiner_identity: PublicKey,
+}
+
+impl Message for JoinGroupRequest {
+    type Result = eyre::Result<JoinGroupResponse>;
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct JoinGroupResponse {
+    pub group_id: ContextGroupId,
+    pub member_identity: PublicKey,
 }

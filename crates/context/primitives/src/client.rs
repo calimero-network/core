@@ -26,10 +26,11 @@ use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AddGroupMembersRequest, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
-    DeleteGroupResponse, GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GroupInfoResponse,
-    GroupMemberEntry, ListGroupContextsRequest, ListGroupMembersRequest, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    AddGroupMembersRequest, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
+    CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
+    GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GroupInfoResponse, GroupMemberEntry,
+    JoinGroupRequest, JoinGroupResponse, ListGroupContextsRequest, ListGroupMembersRequest,
+    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -1137,6 +1138,37 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::RetryGroupUpgrade {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn create_group_invitation(
+        &self,
+        request: CreateGroupInvitationRequest,
+    ) -> eyre::Result<CreateGroupInvitationResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::CreateGroupInvitation {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn join_group(&self, request: JoinGroupRequest) -> eyre::Result<JoinGroupResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::JoinGroup {
                 request,
                 outcome: sender,
             })
