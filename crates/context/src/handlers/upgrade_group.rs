@@ -5,7 +5,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::group::{UpgradeGroupRequest, UpgradeGroupResponse};
 use calimero_context_primitives::messages::MigrationParams;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
 use eyre::bail;
@@ -40,6 +40,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let UpgradePreamble {
             canary_context_id,
             total_contexts,
+            upgrade_policy,
         } = preamble;
 
         // --- Persist InProgress BEFORE the async canary ---
@@ -62,13 +63,39 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             migration: migration.as_ref().map(|m| m.method.as_bytes().to_vec()),
             initiated_at: now,
             initiated_by: requester,
-            status: initial_status,
+            status: initial_status.clone(),
         };
 
         if let Err(err) =
             group_store::save_group_upgrade(&self.datastore, &group_id, &upgrade_value)
         {
             return ActorResponse::reply(Err(err.into()));
+        }
+
+        // --- LazyOnAccess: update target and return without canary/propagator ---
+        // Contexts will be upgraded individually on their next execution.
+        // Launching a propagator would race with the lazy mechanism and could
+        // invoke migration functions twice on the same context.
+        if matches!(upgrade_policy, UpgradePolicy::LazyOnAccess) {
+            let result = (|| {
+                let mut meta = group_store::load_group_meta(&self.datastore, &group_id)?
+                    .ok_or_else(|| eyre::eyre!("group not found"))?;
+                meta.target_application_id = target_application_id;
+                group_store::save_group_meta(&self.datastore, &group_id, &meta)?;
+
+                info!(
+                    ?group_id,
+                    %target_application_id,
+                    "LazyOnAccess upgrade target set; contexts will upgrade on next access"
+                );
+
+                Ok(UpgradeGroupResponse {
+                    group_id,
+                    status: initial_status.into(),
+                })
+            })();
+
+            return ActorResponse::reply(result);
         }
 
         // --- Async: run canary upgrade ---
@@ -183,6 +210,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 struct UpgradePreamble {
     canary_context_id: ContextId,
     total_contexts: usize,
+    upgrade_policy: UpgradePolicy,
 }
 
 fn validate_upgrade(
@@ -222,6 +250,7 @@ fn validate_upgrade(
     Ok(UpgradePreamble {
         canary_context_id,
         total_contexts: contexts.len(),
+        upgrade_policy: meta.upgrade_policy.clone(),
     })
 }
 
