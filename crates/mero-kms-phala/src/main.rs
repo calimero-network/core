@@ -55,6 +55,8 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     /// Path to the dstack Unix socket.
     pub dstack_socket_path: String,
+    /// Challenge token TTL in seconds.
+    pub challenge_ttl_secs: u64,
     /// Whether to accept mock attestations (for development only).
     pub accept_mock_attestation: bool,
     /// Attestation policy used for key release decisions.
@@ -66,6 +68,7 @@ impl Default for Config {
         Self {
             listen_addr: SocketAddr::from(([0, 0, 0, 0], 8080)),
             dstack_socket_path: "/var/run/dstack.sock".to_string(),
+            challenge_ttl_secs: 60,
             accept_mock_attestation: false,
             attestation_policy: AttestationPolicy::default(),
         }
@@ -83,6 +86,11 @@ impl Config {
         let dstack_socket_path = std::env::var("DSTACK_SOCKET_PATH")
             .unwrap_or_else(|_| "/var/run/dstack.sock".to_string());
 
+        let challenge_ttl_secs = std::env::var("CHALLENGE_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60);
+
         let accept_mock_attestation = std::env::var("ACCEPT_MOCK_ATTESTATION")
             .map(|v| parse_bool_flag(&v))
             .unwrap_or(false);
@@ -91,8 +99,8 @@ impl Config {
             .map(|v| parse_bool_flag(&v))
             .unwrap_or(true);
 
-        let allowed_tcb_statuses = parse_csv_env("ALLOWED_TCB_STATUSES")
-            .unwrap_or_else(|| vec!["uptodate".to_owned()]);
+        let allowed_tcb_statuses =
+            parse_csv_env("ALLOWED_TCB_STATUSES").unwrap_or_else(|| vec!["uptodate".to_owned()]);
 
         let allowed_mrtd = parse_measurement_list_env("ALLOWED_MRTD", "MRTD", 48)?;
         let allowed_rtmr0 = parse_measurement_list_env("ALLOWED_RTMR0", "RTMR0", 48)?;
@@ -118,6 +126,7 @@ impl Config {
         Ok(Self {
             listen_addr,
             dstack_socket_path,
+            challenge_ttl_secs,
             accept_mock_attestation,
             attestation_policy: AttestationPolicy {
                 enforce_measurement_policy,
@@ -133,7 +142,10 @@ impl Config {
 }
 
 fn parse_bool_flag(value: &str) -> bool {
-    matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes"
+    )
 }
 
 fn parse_csv_env(name: &str) -> Option<Vec<String>> {
@@ -160,7 +172,13 @@ fn parse_measurement_list_env(
     for value in values {
         let normalized = normalize_hex(&value);
         let bytes = hex::decode(&normalized).map_err(|e| {
-            eyre::eyre!("{} value '{}' from {} is not valid hex: {}", label, value, name, e)
+            eyre::eyre!(
+                "{} value '{}' from {} is not valid hex: {}",
+                label,
+                value,
+                name,
+                e
+            )
         })?;
         if bytes.len() != expected_bytes {
             bail!(
@@ -199,6 +217,7 @@ async fn main() -> eyre::Result<()> {
     info!("Starting mero-kms-phala");
     info!("Listen address: {}", config.listen_addr);
     info!("Dstack socket: {}", config.dstack_socket_path);
+    info!("Challenge TTL (seconds): {}", config.challenge_ttl_secs);
     info!(
         "Accept mock attestation: {}",
         config.accept_mock_attestation

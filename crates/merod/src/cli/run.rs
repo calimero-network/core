@@ -49,7 +49,7 @@ impl RunCommand {
             let peer_id = config.identity.public().to_peer_id().to_base58();
             info!("TEE configured, fetching storage key for peer {}", peer_id);
 
-            let key = kms::fetch_storage_key(&tee_config.kms, &peer_id)
+            let key = kms::fetch_storage_key(&tee_config.kms, &peer_id, &config.identity)
                 .await
                 .wrap_err(
                     "TEE storage encryption is configured but failed to fetch key from KMS. \
