@@ -85,9 +85,12 @@ pub async fn fetch_storage_key(
 /// Fetch the storage encryption key from Phala Cloud KMS (mero-kms-phala).
 ///
 /// This function:
-/// 1. Generates a TDX attestation with SHA256(peer_id) in report_data[0..32]
-/// 2. Sends the attestation to the KMS service
-/// 3. Returns the encryption key bytes
+/// 1. Requests a one-time challenge nonce from KMS
+/// 2. Generates a TDX attestation with challenge nonce in report_data[0..32]
+///    and SHA256(peer_id) in report_data[32..64]
+/// 3. Signs challenge + quote hash with node identity key
+/// 4. Sends the signed attestation request to KMS
+/// 5. Returns the encryption key bytes
 ///
 /// # Arguments
 /// * `kms_url` - Base URL of the mero-kms-phala service

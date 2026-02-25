@@ -380,10 +380,10 @@ async fn get_key_handler(
     }))
 }
 
-/// Hash a peer ID string to create a 32-byte nonce.
+/// Hash a peer ID string to create a 32-byte identity binding value.
 ///
 /// The merod node should use the same hashing when creating the attestation,
-/// putting this hash in report_data[0..32].
+/// putting this hash in report_data[32..64].
 fn hash_peer_id(peer_id: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(peer_id.as_bytes());
