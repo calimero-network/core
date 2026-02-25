@@ -186,6 +186,28 @@ pub fn list_group_members(
     Ok(results)
 }
 
+pub fn count_group_members(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
+    let handle = store.handle();
+    let group_id_bytes: [u8; 32] = group_id.to_bytes();
+    let start_key = GroupMember::new(group_id_bytes, [0u8; 32].into());
+    let mut iter = handle.iter::<GroupMember>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut count = 0usize;
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+        if key.as_key().as_bytes()[0] != GROUP_MEMBER_PREFIX {
+            break;
+        }
+        if key.group_id() != group_id_bytes {
+            break;
+        }
+        count += 1;
+    }
+
+    Ok(count)
+}
+
 // ---------------------------------------------------------------------------
 // Context-group index helpers
 // ---------------------------------------------------------------------------
@@ -356,10 +378,9 @@ pub fn enumerate_in_progress_upgrades(
             break;
         }
 
-        let group_id = ContextGroupId::from(key.group_id());
-
-        if let Some(upgrade) = load_group_upgrade(store, &group_id)? {
+        if let Some(upgrade) = handle.get(&key)? {
             if matches!(upgrade.status, GroupUpgradeStatus::InProgress { .. }) {
+                let group_id = ContextGroupId::from(key.group_id());
                 results.push((group_id, upgrade));
             }
         }

@@ -18,9 +18,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 bail!("group '{group_id:?}' not found");
             };
 
-            let member_count =
-                group_store::list_group_members(&self.datastore, &group_id, 0, usize::MAX)?.len()
-                    as u64;
+            let member_count = group_store::count_group_members(&self.datastore, &group_id)? as u64;
 
             let context_count =
                 group_store::count_group_contexts(&self.datastore, &group_id)? as u64;
