@@ -179,7 +179,8 @@ pub fn calculate_divergence(local: &SyncHandshake, remote: &SyncHandshake) -> f6
 /// | # | Condition | Selected Protocol |
 /// |---|-----------|-------------------|
 /// | 1 | `root_hash` match | `None` |
-/// | 2 | `!has_state` (fresh node) | `Snapshot` |
+/// | 2a| local `!has_state` (fresh node) | `Snapshot` |
+/// | 2b| remote `!has_state` (fresh peer) | `None` |
 /// | 3 | `has_state` AND divergence >50% | `HashComparison` |
 /// | 4 | `max_depth` >3 AND divergence <20% | `SubtreePrefetch` |
 /// | 5 | `entity_count` >50 AND divergence <10% | `BloomFilter` |
@@ -210,7 +211,7 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
         };
     }
 
-    // Rule 2: Fresh node - Snapshot allowed
+    // Rule 2a: Fresh local node - Snapshot allowed
     // CRITICAL: This is the ONLY case where Snapshot is permitted
     if !local.has_state {
         return ProtocolSelection {
@@ -219,6 +220,16 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
                 verified: true,
             },
             reason: "fresh node bootstrap via snapshot",
+        };
+    }
+
+    // Rule 2b: Remote has no state - nothing to sync from them.
+    // The uninitialized remote must initiate its own snapshot pull when ready.
+    // Without this rule we'd run HashComparison against an empty Merkle tree.
+    if !remote.has_state {
+        return ProtocolSelection {
+            protocol: SyncProtocol::None,
+            reason: "remote is fresh, skipping (remote must initiate its own sync)",
         };
     }
 
@@ -486,6 +497,23 @@ mod tests {
         let selection = select_protocol(&local, &remote);
         assert!(matches!(selection.protocol, SyncProtocol::Snapshot { .. }));
         assert!(selection.reason.contains("fresh node"));
+    }
+
+    #[test]
+    fn test_select_protocol_rule2b_remote_fresh_returns_none() {
+        // When local has state but remote is fresh (uninitialized), we should
+        // return None — the remote must initiate its own snapshot pull.
+        // Without this rule we'd run HashComparison against an empty tree.
+        let local = SyncHandshake::new([42; 32], 100, 5, vec![[1; 32]]);
+        let remote = SyncHandshake::new([0; 32], 0, 0, vec![]); // Fresh peer
+
+        let selection = select_protocol(&local, &remote);
+        assert!(
+            matches!(selection.protocol, SyncProtocol::None),
+            "should be None when remote is fresh, got {:?}",
+            selection.protocol
+        );
+        assert!(selection.reason.contains("remote is fresh"));
     }
 
     #[test]
