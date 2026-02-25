@@ -58,7 +58,7 @@ impl AsKeyParts for GroupMeta {
     type Components = (GroupPrefix, GroupIdComponent);
 
     fn column() -> Column {
-        Column::Config
+        Column::Group
     }
 
     fn as_key(&self) -> &Key<Self::Components> {
@@ -113,7 +113,7 @@ impl AsKeyParts for GroupMember {
     type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
 
     fn column() -> Column {
-        Column::Config
+        Column::Group
     }
 
     fn as_key(&self) -> &Key<Self::Components> {
@@ -169,7 +169,7 @@ impl AsKeyParts for GroupContextIndex {
     type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
 
     fn column() -> Column {
-        Column::Config
+        Column::Group
     }
 
     fn as_key(&self) -> &Key<Self::Components> {
@@ -218,7 +218,7 @@ impl AsKeyParts for ContextGroupRef {
     type Components = (GroupPrefix, GroupIdComponent);
 
     fn column() -> Column {
-        Column::Config
+        Column::Group
     }
 
     fn as_key(&self) -> &Key<Self::Components> {
@@ -266,7 +266,7 @@ impl AsKeyParts for GroupUpgradeKey {
     type Components = (GroupPrefix, GroupIdComponent);
 
     fn column() -> Column {
-        Column::Config
+        Column::Group
     }
 
     fn as_key(&self) -> &Key<Self::Components> {
