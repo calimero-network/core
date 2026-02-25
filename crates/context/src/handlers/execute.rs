@@ -191,12 +191,13 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         let lazy_upgrade_task = guard_task.map(move |guard, _act, _ctx| {
             // If lazy upgrade is needed, send the update_application message
-            if let Some((target_app_id, migrate_method)) = lazy_upgrade_params {
+            if let Some((target_app_id, migrate_method, admin_identity)) = lazy_upgrade_params {
                 let ctx_client =
                     lazy_context_client.expect("cloned when lazy_upgrade_params is Some");
                 info!(
                     %context_id,
                     %target_app_id,
+                    %admin_identity,
                     "performing lazy upgrade before execution"
                 );
                 return Ok(Either::Right((
@@ -204,7 +205,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     ctx_client,
                     context_id,
                     target_app_id,
-                    executor,
+                    admin_identity,
                     migrate_method,
                 )));
             }
@@ -1195,12 +1196,15 @@ fn sign_user_actions(
 
 /// Checks if a context belongs to a group with LazyOnAccess policy and
 /// the context's current application differs from the group's target.
-/// Returns (target_application_id, migrate_method) if an upgrade is needed.
+/// Returns (target_application_id, migrate_method, admin_identity) if an
+/// upgrade is needed. The admin identity is the upgrade initiator (or group
+/// creator), which should be used for signing the contract transaction
+/// instead of the executing user.
 fn maybe_lazy_upgrade(
     datastore: &Store,
     context_id: &ContextId,
     current_application_id: &ApplicationId,
-) -> Option<(ApplicationId, Option<String>)> {
+) -> Option<(ApplicationId, Option<String>, PublicKey)> {
     use crate::group_store;
 
     // 1. Check if context belongs to a group
@@ -1233,22 +1237,28 @@ fn maybe_lazy_upgrade(
         return None; // already at target
     }
 
-    // 5. Check if there's an active upgrade with migration info
-    let migrate_method = match group_store::load_group_upgrade(datastore, &group_id) {
-        Ok(Some(upgrade)) => upgrade
-            .migration
-            .as_ref()
-            .and_then(|bytes| String::from_utf8(bytes.clone()).ok()),
-        _ => None,
-    };
+    // 5. Check if there's an active upgrade with migration info and admin identity
+    let (migrate_method, admin_identity) =
+        match group_store::load_group_upgrade(datastore, &group_id) {
+            Ok(Some(upgrade)) => (
+                upgrade
+                    .migration
+                    .as_ref()
+                    .and_then(|bytes| String::from_utf8(bytes.clone()).ok()),
+                // Use the admin who initiated the upgrade for signing
+                upgrade.initiated_by,
+            ),
+            _ => (None, meta.admin_identity),
+        };
 
     info!(
         %context_id,
         ?group_id,
         %current_application_id,
         target_app=%meta.target_application_id,
+        %admin_identity,
         "lazy upgrade triggered for context"
     );
 
-    Some((meta.target_application_id, migrate_method))
+    Some((meta.target_application_id, migrate_method, admin_identity))
 }
