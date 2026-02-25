@@ -18,6 +18,10 @@ pub struct VerificationResult {
     pub nonce_verified: bool,
     /// Whether the application hash matches (if an expected hash was provided).
     pub application_hash_verified: Option<bool>,
+    /// TCB status reported by DCAP verification (for policy decisions).
+    pub tcb_status: Option<String>,
+    /// Advisory IDs reported by DCAP verification.
+    pub advisory_ids: Vec<String>,
     /// The parsed quote structure.
     pub quote: Quote,
 }
@@ -76,14 +80,23 @@ pub async fn verify_attestation(
         })?
         .as_secs();
 
-    let quote_verified = match verify(quote_bytes, &collateral, now) {
-        Ok(_verified_report) => {
+    let (quote_verified, tcb_status, advisory_ids) = match verify(quote_bytes, &collateral, now) {
+        Ok(verified_report) => {
             info!("Quote cryptographic verification: PASSED");
-            true
+            info!(
+                tcb_status = %verified_report.status,
+                advisory_ids = ?verified_report.advisory_ids,
+                "Quote TCB status extracted from DCAP verification"
+            );
+            (
+                true,
+                Some(verified_report.status),
+                verified_report.advisory_ids,
+            )
         }
         Err(err) => {
             error!(error=?err, "Quote cryptographic verification: FAILED");
-            false
+            (false, None, Vec::new())
         }
     };
 
@@ -125,6 +138,8 @@ pub async fn verify_attestation(
         quote_verified,
         nonce_verified,
         application_hash_verified,
+        tcb_status,
+        advisory_ids,
         quote,
     };
 
@@ -221,6 +236,8 @@ pub fn verify_mock_attestation(
         quote_verified: true, // Mock quotes always pass signature verification
         nonce_verified,
         application_hash_verified,
+        tcb_status: Some("Mock".to_owned()),
+        advisory_ids: Vec::new(),
         quote,
     };
 

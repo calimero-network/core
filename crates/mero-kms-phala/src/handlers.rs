@@ -6,7 +6,9 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
-use calimero_tee_attestation::{is_mock_quote, verify_attestation, verify_mock_attestation};
+use calimero_tee_attestation::{
+    is_mock_quote, verify_attestation, verify_mock_attestation, VerificationResult,
+};
 use dstack_sdk::dstack_client::DstackClient;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -54,6 +56,8 @@ pub enum ServiceError {
     AttestationVerificationFailed(String),
     MockAttestationRejected,
     PeerIdMismatch,
+    TcbStatusRejected(String),
+    MeasurementPolicyRejected(String),
     KeyDerivationFailed(String),
 }
 
@@ -91,6 +95,20 @@ impl IntoResponse for ServiceError {
                         "The peer ID in the attestation does not match the claimed peer ID"
                             .to_string(),
                     ),
+                },
+            ),
+            ServiceError::TcbStatusRejected(msg) => (
+                StatusCode::FORBIDDEN,
+                ErrorResponse {
+                    error: "tcb_status_rejected".to_string(),
+                    details: Some(msg.clone()),
+                },
+            ),
+            ServiceError::MeasurementPolicyRejected(msg) => (
+                StatusCode::FORBIDDEN,
+                ErrorResponse {
+                    error: "measurement_policy_rejected".to_string(),
+                    details: Some(msg.clone()),
                 },
             ),
             ServiceError::KeyDerivationFailed(msg) => (
@@ -200,6 +218,12 @@ async fn get_key_handler(
         "Attestation verified successfully"
     );
 
+    if !is_mock {
+        enforce_attestation_policy(&state.config, &verification_result)?;
+    } else {
+        warn!("Skipping measurement policy checks for accepted mock attestation");
+    }
+
     // Derive the key using dstack SDK (returns hex-encoded key)
     let key_path = format!("merod/storage/{}", request.peer_id);
     let client = DstackClient::new(Some(&state.config.dstack_socket_path));
@@ -229,9 +253,79 @@ fn hash_peer_id(peer_id: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+fn enforce_attestation_policy(
+    config: &Config,
+    verification_result: &VerificationResult,
+) -> Result<(), ServiceError> {
+    let policy = &config.attestation_policy;
+
+    if !policy.enforce_measurement_policy {
+        return Ok(());
+    }
+
+    let actual_tcb_status = verification_result.tcb_status.clone().ok_or_else(|| {
+        ServiceError::TcbStatusRejected(
+            "Quote verification did not provide a TCB status".to_owned(),
+        )
+    })?;
+    let normalized_tcb_status = actual_tcb_status.to_ascii_lowercase();
+
+    if !policy
+        .allowed_tcb_statuses
+        .iter()
+        .any(|allowed| allowed == &normalized_tcb_status)
+    {
+        return Err(ServiceError::TcbStatusRejected(format!(
+            "TCB status '{}' is not allowed. Allowed values: {}",
+            actual_tcb_status,
+            policy.allowed_tcb_statuses.join(", ")
+        )));
+    }
+
+    let body = &verification_result.quote.body;
+    enforce_measurement_allowlist("MRTD", &body.mrtd, &policy.allowed_mrtd)?;
+    enforce_measurement_allowlist("RTMR0", &body.rtmr0, &policy.allowed_rtmr0)?;
+    enforce_measurement_allowlist("RTMR1", &body.rtmr1, &policy.allowed_rtmr1)?;
+    enforce_measurement_allowlist("RTMR2", &body.rtmr2, &policy.allowed_rtmr2)?;
+    enforce_measurement_allowlist("RTMR3", &body.rtmr3, &policy.allowed_rtmr3)?;
+
+    Ok(())
+}
+
+fn enforce_measurement_allowlist(
+    label: &str,
+    actual_measurement: &str,
+    allowed_measurements: &[String],
+) -> Result<(), ServiceError> {
+    if allowed_measurements.is_empty() {
+        return Ok(());
+    }
+
+    let normalized_actual = normalize_measurement(actual_measurement);
+    if allowed_measurements
+        .iter()
+        .any(|allowed| allowed == &normalized_actual)
+    {
+        return Ok(());
+    }
+
+    Err(ServiceError::MeasurementPolicyRejected(format!(
+        "{} '{}' is not in allowlist",
+        label, normalized_actual
+    )))
+}
+
+fn normalize_measurement(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches("0x")
+        .to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AttestationPolicy;
 
     #[test]
     fn test_hash_peer_id() {
@@ -264,5 +358,89 @@ mod tests {
         };
         let json = serde_json::to_string(&error_no_details).unwrap();
         assert!(!json.contains("details"));
+    }
+
+    #[test]
+    fn test_policy_rejects_tcb_status() {
+        let nonce = [0x11; 32];
+        let mut mock_quote = b"MOCK_TDX_QUOTE_V1".to_vec();
+        let mut report_data = [0u8; 64];
+        report_data[..32].copy_from_slice(&nonce);
+        mock_quote.extend_from_slice(&report_data);
+        mock_quote.resize(256, 0);
+
+        let mut verification = verify_mock_attestation(&mock_quote, &nonce, None).unwrap();
+        verification.tcb_status = Some("OutOfDate".to_owned());
+
+        let config = Config {
+            attestation_policy: AttestationPolicy {
+                enforce_measurement_policy: true,
+                allowed_tcb_statuses: vec!["uptodate".to_owned()],
+                ..AttestationPolicy::default()
+            },
+            ..Config::default()
+        };
+
+        let result = enforce_attestation_policy(&config, &verification);
+        assert!(matches!(result, Err(ServiceError::TcbStatusRejected(_))));
+    }
+
+    #[test]
+    fn test_policy_rejects_untrusted_mrtd() {
+        let nonce = [0x22; 32];
+        let mut mock_quote = b"MOCK_TDX_QUOTE_V1".to_vec();
+        let mut report_data = [0u8; 64];
+        report_data[..32].copy_from_slice(&nonce);
+        mock_quote.extend_from_slice(&report_data);
+        mock_quote.resize(256, 0);
+
+        let mut verification = verify_mock_attestation(&mock_quote, &nonce, None).unwrap();
+        verification.tcb_status = Some("UpToDate".to_owned());
+
+        let config = Config {
+            attestation_policy: AttestationPolicy {
+                enforce_measurement_policy: true,
+                allowed_tcb_statuses: vec!["uptodate".to_owned()],
+                allowed_mrtd: vec!["1".repeat(96)],
+                ..AttestationPolicy::default()
+            },
+            ..Config::default()
+        };
+
+        let result = enforce_attestation_policy(&config, &verification);
+        assert!(matches!(
+            result,
+            Err(ServiceError::MeasurementPolicyRejected(_))
+        ));
+    }
+
+    #[test]
+    fn test_policy_accepts_allowlisted_measurements() {
+        let nonce = [0x33; 32];
+        let mut mock_quote = b"MOCK_TDX_QUOTE_V1".to_vec();
+        let mut report_data = [0u8; 64];
+        report_data[..32].copy_from_slice(&nonce);
+        mock_quote.extend_from_slice(&report_data);
+        mock_quote.resize(256, 0);
+
+        let mut verification = verify_mock_attestation(&mock_quote, &nonce, None).unwrap();
+        verification.tcb_status = Some("UpToDate".to_owned());
+        let zero_48b = "0".repeat(96);
+
+        let config = Config {
+            attestation_policy: AttestationPolicy {
+                enforce_measurement_policy: true,
+                allowed_tcb_statuses: vec!["uptodate".to_owned()],
+                allowed_mrtd: vec![zero_48b.clone()],
+                allowed_rtmr0: vec![zero_48b.clone()],
+                allowed_rtmr1: vec![zero_48b.clone()],
+                allowed_rtmr2: vec![zero_48b.clone()],
+                allowed_rtmr3: vec![zero_48b],
+            },
+            ..Config::default()
+        };
+
+        let result = enforce_attestation_policy(&config, &verification);
+        assert!(result.is_ok());
     }
 }
