@@ -367,8 +367,11 @@ impl SyncManager {
             (3, 500)
         };
 
+        let mesh_discovery_start = Instant::now();
         let mut peers = Vec::new();
+        let mut final_attempt = 0u32;
         for attempt in 1..=max_retries {
+            final_attempt = attempt;
             peers = self
                 .network_client
                 .mesh_peers(TopicHash::from_raw(context_id))
@@ -389,10 +392,28 @@ impl SyncManager {
                 time::sleep(std::time::Duration::from_millis(retry_delay_ms)).await;
             }
         }
+        let mesh_elapsed = mesh_discovery_start.elapsed();
 
         if peers.is_empty() {
+            warn!(
+                %context_id,
+                is_uninitialized,
+                attempts = max_retries,
+                ?mesh_elapsed,
+                "Mesh peer discovery exhausted all retries"
+            );
             bail!("No peers to sync with for context {}", context_id);
         }
+
+        info!(
+            %context_id,
+            peer_count = peers.len(),
+            attempts = final_attempt,
+            ?mesh_elapsed,
+            is_uninitialized,
+            peers = ?peers,
+            "Mesh peer discovery succeeded"
+        );
 
         if is_uninitialized {
             // When uninitialized, we need to bootstrap from a peer that HAS data
@@ -991,11 +1012,16 @@ impl SyncManager {
             // Select optimal sync protocol based on state comparison
             let selection = select_protocol(&local_hs, &remote_hs);
 
-            debug!(
+            info!(
                 %context_id,
+                %chosen_peer,
                 protocol = ?selection.protocol,
                 reason = %selection.reason,
-                "Protocol selected per CIP §2.3"
+                local_root = %context.root_hash,
+                remote_root = %peer_root_hash,
+                local_entities = local_hs.entity_count,
+                remote_entities = remote_hs.entity_count,
+                "Protocol selected"
             );
 
             // Dispatch based on selected protocol
@@ -1005,7 +1031,9 @@ impl SyncManager {
                         %context_id,
                         %chosen_peer,
                         root_hash = %context.root_hash,
-                        "Already in sync"
+                        reason = %selection.reason,
+                        "No sync needed: {}",
+                        selection.reason
                     );
                     return Ok(None);
                 }
@@ -1289,10 +1317,23 @@ impl SyncManager {
         context_id: ContextId,
         chosen_peer: PeerId,
     ) -> eyre::Result<SyncProtocol> {
+        let sync_start = Instant::now();
+
         let mut context = self
             .context_client
             .sync_context_config(context_id, None)
             .await?;
+
+        let is_uninitialized = *context.root_hash == [0; 32];
+        info!(
+            %context_id,
+            %chosen_peer,
+            is_uninitialized,
+            root_hash = %context.root_hash,
+            dag_heads_count = context.dag_heads.len(),
+            application_id = %context.application_id,
+            "Starting sync session"
+        );
 
         // Get application - if not found, we'll try to install it after blob sharing
         let mut application = self.node_client.get_application(&context.application_id)?;
@@ -1317,11 +1358,22 @@ impl SyncManager {
             .await
             .wrap_err("open stream for sync")?;
 
+        // Phase 1: Key share
+        let phase_start = Instant::now();
         self.initiate_key_share_process(&mut context, our_identity, &mut stream)
             .await
             .wrap_err("key share")?;
+        let key_share_elapsed = phase_start.elapsed();
+        debug!(
+            %context_id,
+            %chosen_peer,
+            ?key_share_elapsed,
+            "Phase 1/3 complete: key share"
+        );
 
+        // Phase 2: Blob share (if needed)
         if !self.node_client.has_blob(&blob_id)? {
+            let phase_start = Instant::now();
             // Get size from application config if we don't have application yet
             let size = self
                 .get_application_size(&context_id, &application, &app_config_opt)
@@ -1330,6 +1382,14 @@ impl SyncManager {
             self.initiate_blob_share_process(&context, our_identity, blob_id, size, &mut stream)
                 .await
                 .wrap_err("blob share")?;
+
+            let blob_share_elapsed = phase_start.elapsed();
+            debug!(
+                %context_id,
+                %chosen_peer,
+                ?blob_share_elapsed,
+                "Phase 2/3 complete: blob share"
+            );
 
             // After blob sharing, try to install application if it doesn't exist
             if application.is_none() {
@@ -1349,17 +1409,36 @@ impl SyncManager {
             bail!("application not found: {}", context.application_id);
         };
 
-        // Handle DAG synchronization if needed (uninitialized or incomplete DAG)
+        // Phase 3: DAG synchronization (if needed — uninitialized or incomplete DAG)
+        let phase_start = Instant::now();
         if let Some(result) = self
             .handle_dag_sync(context_id, &context, chosen_peer, our_identity, &mut stream)
             .await
             .wrap_err("DAG sync")?
         {
+            let dag_sync_elapsed = phase_start.elapsed();
+            let total_elapsed = sync_start.elapsed();
+            info!(
+                %context_id,
+                %chosen_peer,
+                ?key_share_elapsed,
+                ?dag_sync_elapsed,
+                ?total_elapsed,
+                protocol = ?result,
+                "Sync session complete (DAG sync performed)"
+            );
             return Ok(result);
         }
 
+        let total_elapsed = sync_start.elapsed();
         // Otherwise, DAG-based sync happens automatically via BroadcastMessage::StateDelta
-        debug!(%context_id, "Node is in sync, no active protocol needed");
+        debug!(
+            %context_id,
+            %chosen_peer,
+            ?key_share_elapsed,
+            ?total_elapsed,
+            "Sync session complete: node is in sync, no active protocol needed"
+        );
         Ok(SyncProtocol::None)
     }
 
