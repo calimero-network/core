@@ -37,9 +37,10 @@ pub enum GroupUpgradeStatus {
 /// revisions, optional migration method, and current progress status.
 #[derive(Clone, Debug)]
 pub struct GroupUpgradeInfo {
-    /// Application revision the group was at before this upgrade.
+    /// Application revision before the upgrade (currently `0`; requires async
+    /// blockchain config lookup — see TODO in `upgrade_group.rs`).
     pub from_revision: u64,
-    /// Application revision the group is being upgraded to.
+    /// Target application revision (currently `0`; same limitation as above).
     pub to_revision: u64,
     /// Optional Borsh-serialized migration method name.
     pub migration: Option<Vec<u8>>,

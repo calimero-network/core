@@ -310,7 +310,11 @@ pub struct GroupMetaValue {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupUpgradeValue {
+    /// Application revision before the upgrade. Currently `0` — populating this
+    /// requires an async lookup of `ContextConfig.application_revision` from the
+    /// blockchain-backed config contract (tracked as TODO).
     pub from_revision: u64,
+    /// Target application revision. Currently `0` — same limitation as above.
     pub to_revision: u64,
     pub migration: Option<Vec<u8>>,
     pub initiated_at: u64,

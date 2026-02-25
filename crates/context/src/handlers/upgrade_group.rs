@@ -57,6 +57,12 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             failed: 0,
         };
 
+        // TODO(revision-tracking): `from_revision` and `to_revision` should be
+        // populated from the blockchain-backed `ContextConfig.application_revision`.
+        // This requires an async external config lookup which isn't available in
+        // this synchronous validation phase. For now, the API exposes 0/0; the
+        // `ApplicationId` change (stored in group meta) is the authoritative record
+        // of what was upgraded.
         let upgrade_value = GroupUpgradeValue {
             from_revision: 0,
             to_revision: 0,
