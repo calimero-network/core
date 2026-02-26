@@ -340,7 +340,15 @@ pub(crate) async fn propagate_upgrade(
         .filter(|cid| *cid != skip_context)
         .collect();
 
-    let mut completed: u32 = initial_completed;
+    // If the canary was removed from the group between the initial upgrade
+    // and this enumeration, it won't appear in the list and shouldn't count
+    // toward completed — otherwise completed can exceed total.
+    let canary_in_group = pending.len() < total_contexts;
+    let mut completed: u32 = if canary_in_group {
+        initial_completed
+    } else {
+        0
+    };
     let mut failed: u32;
     let mut attempt: u32 = 0;
 
