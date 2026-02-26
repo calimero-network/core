@@ -34,14 +34,15 @@ pub enum GroupUpgradeStatus {
 /// Snapshot of an in-progress or completed group upgrade, returned by the API.
 ///
 /// Contains the full context of the upgrade operation including source/target
-/// revisions, optional migration method, and current progress status.
+/// versions, optional migration method, and current progress status.
 #[derive(Clone, Debug)]
 pub struct GroupUpgradeInfo {
-    /// Application revision before the upgrade (currently `0`; requires async
-    /// blockchain config lookup — see TODO in `upgrade_group.rs`).
-    pub from_revision: u64,
-    /// Target application revision (currently `0`; same limitation as above).
-    pub to_revision: u64,
+    /// Semver version of the application before the upgrade, read from the
+    /// current application's `ApplicationMeta.version`.
+    pub from_version: String,
+    /// Semver version of the target application, read from the target
+    /// application's `ApplicationMeta.version`.
+    pub to_version: String,
     /// Optional Borsh-serialized migration method name.
     pub migration: Option<Vec<u8>>,
     /// Unix timestamp (seconds) when the upgrade was initiated.
@@ -247,8 +248,8 @@ impl From<calimero_store::key::GroupUpgradeStatus> for GroupUpgradeStatus {
 impl From<calimero_store::key::GroupUpgradeValue> for GroupUpgradeInfo {
     fn from(v: calimero_store::key::GroupUpgradeValue) -> Self {
         Self {
-            from_revision: v.from_revision,
-            to_revision: v.to_revision,
+            from_version: v.from_version,
+            to_version: v.to_version,
             migration: v.migration,
             initiated_at: v.initiated_at,
             initiated_by: v.initiated_by,

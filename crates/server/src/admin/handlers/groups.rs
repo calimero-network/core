@@ -37,8 +37,8 @@ fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiDat
     };
 
     GroupUpgradeStatusApiData {
-        from_revision: info.from_revision,
-        to_revision: info.to_revision,
+        from_version: info.from_version.clone(),
+        to_version: info.to_version.clone(),
         initiated_at: info.initiated_at,
         initiated_by: info.initiated_by,
         status: status.to_owned(),

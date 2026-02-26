@@ -1985,8 +1985,8 @@ pub struct GetGroupUpgradeStatusApiResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupUpgradeStatusApiData {
-    pub from_revision: u64,
-    pub to_revision: u64,
+    pub from_version: String,
+    pub to_version: String,
     pub initiated_at: u64,
     pub initiated_by: PublicKey,
     pub status: String,

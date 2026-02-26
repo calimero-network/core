@@ -629,8 +629,8 @@ mod tests {
         assert!(load_group_upgrade(&store, &gid).unwrap().is_none());
 
         let upgrade = GroupUpgradeValue {
-            from_revision: 1,
-            to_revision: 2,
+            from_version: "1.0.0".to_owned(),
+            to_version: "2.0.0".to_owned(),
             migration: None,
             initiated_at: 1_700_000_000,
             initiated_by: PublicKey::from([0x01; 32]),
@@ -643,8 +643,8 @@ mod tests {
 
         save_group_upgrade(&store, &gid, &upgrade).unwrap();
         let loaded = load_group_upgrade(&store, &gid).unwrap().unwrap();
-        assert_eq!(loaded.from_revision, 1);
-        assert_eq!(loaded.to_revision, 2);
+        assert_eq!(loaded.from_version, "1.0.0");
+        assert_eq!(loaded.to_version, "2.0.0");
 
         delete_group_upgrade(&store, &gid).unwrap();
         assert!(load_group_upgrade(&store, &gid).unwrap().is_none());
@@ -660,8 +660,8 @@ mod tests {
             &store,
             &gid_in_progress,
             &GroupUpgradeValue {
-                from_revision: 1,
-                to_revision: 2,
+                from_version: "1.0.0".to_owned(),
+                to_version: "2.0.0".to_owned(),
                 migration: None,
                 initiated_at: 1_700_000_000,
                 initiated_by: PublicKey::from([0x01; 32]),
@@ -678,8 +678,8 @@ mod tests {
             &store,
             &gid_completed,
             &GroupUpgradeValue {
-                from_revision: 1,
-                to_revision: 2,
+                from_version: "1.0.0".to_owned(),
+                to_version: "2.0.0".to_owned(),
                 migration: None,
                 initiated_at: 1_700_000_000,
                 initiated_by: PublicKey::from([0x01; 32]),

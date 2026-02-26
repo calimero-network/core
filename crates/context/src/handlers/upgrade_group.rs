@@ -7,7 +7,7 @@ use calimero_context_primitives::messages::MigrationParams;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
+use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
 use eyre::bail;
 use tracing::{debug, error, info, warn};
 
@@ -41,6 +41,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             canary_context_id,
             total_contexts,
             upgrade_policy,
+            from_version,
+            to_version,
         } = preamble;
 
         // --- Persist InProgress BEFORE the async canary ---
@@ -57,15 +59,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             failed: 0,
         };
 
-        // TODO(revision-tracking): `from_revision` and `to_revision` should be
-        // populated from the blockchain-backed `ContextConfig.application_revision`.
-        // This requires an async external config lookup which isn't available in
-        // this synchronous validation phase. For now, the API exposes 0/0; the
-        // `ApplicationId` change (stored in group meta) is the authoritative record
-        // of what was upgraded.
         let upgrade_value = GroupUpgradeValue {
-            from_revision: 0,
-            to_revision: 0,
+            from_version,
+            to_version,
             migration: migration.as_ref().map(|m| m.method.as_bytes().to_vec()),
             initiated_at: now,
             initiated_by: requester,
@@ -217,6 +213,8 @@ struct UpgradePreamble {
     canary_context_id: ContextId,
     total_contexts: usize,
     upgrade_policy: UpgradePolicy,
+    from_version: String,
+    to_version: String,
 }
 
 fn validate_upgrade(
@@ -253,10 +251,24 @@ fn validate_upgrade(
     // 6. Select canary (first context, deterministic order)
     let canary_context_id = contexts[0];
 
+    // 7. Read current and target application versions from ApplicationMeta
+    let handle = datastore.handle();
+
+    let from_version = handle
+        .get(&key::ContextMeta::new(canary_context_id))?
+        .and_then(|ctx_meta| handle.get(&ctx_meta.application).ok().flatten())
+        .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version));
+
+    let to_version = handle
+        .get(&key::ApplicationMeta::new(*target_application_id))?
+        .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version));
+
     Ok(UpgradePreamble {
         canary_context_id,
         total_contexts: contexts.len(),
         upgrade_policy: meta.upgrade_policy.clone(),
+        from_version,
+        to_version,
     })
 }
 

@@ -306,16 +306,17 @@ pub struct GroupMetaValue {
 /// Stored against [`GroupUpgradeKey`].
 ///
 /// `ApplicationId` is stable across versions (`hash(package, signer_id)`), so
-/// upgrades are tracked by revision number, not by application id.
+/// upgrades are tracked by semver version string from the local
+/// `ApplicationMeta`, not by application id.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupUpgradeValue {
-    /// Application revision before the upgrade. Currently `0` — populating this
-    /// requires an async lookup of `ContextConfig.application_revision` from the
-    /// blockchain-backed config contract (tracked as TODO).
-    pub from_revision: u64,
-    /// Target application revision. Currently `0` — same limitation as above.
-    pub to_revision: u64,
+    /// Semver version of the application before the upgrade, read from the
+    /// current application's `ApplicationMeta.version`.
+    pub from_version: String,
+    /// Semver version of the target application, read from the target
+    /// application's `ApplicationMeta.version`.
+    pub to_version: String,
     pub migration: Option<Vec<u8>>,
     pub initiated_at: u64,
     pub initiated_by: PrimitivePublicKey,
@@ -474,8 +475,8 @@ mod tests {
         #[test]
         fn group_upgrade_value_in_progress_roundtrip() {
             let value = GroupUpgradeValue {
-                from_revision: 1,
-                to_revision: 2,
+                from_version: "1.0.0".to_owned(),
+                to_version: "2.0.0".to_owned(),
                 migration: Some(vec![0xDE, 0xAD]),
                 initiated_at: 1_700_000_000,
                 initiated_by: PrimitivePublicKey::from([0x03; 32]),
@@ -489,8 +490,8 @@ mod tests {
             let bytes = to_vec(&value).expect("serialize");
             let decoded: GroupUpgradeValue = from_slice(&bytes).expect("deserialize");
 
-            assert_eq!(decoded.from_revision, 1);
-            assert_eq!(decoded.to_revision, 2);
+            assert_eq!(decoded.from_version, "1.0.0");
+            assert_eq!(decoded.to_version, "2.0.0");
             assert_eq!(decoded.migration, Some(vec![0xDE, 0xAD]));
             assert_eq!(decoded.initiated_at, value.initiated_at);
             assert_eq!(decoded.initiated_by, value.initiated_by);
@@ -511,8 +512,8 @@ mod tests {
         #[test]
         fn group_upgrade_value_no_migration_roundtrip() {
             let value = GroupUpgradeValue {
-                from_revision: 3,
-                to_revision: 4,
+                from_version: "3.0.0".to_owned(),
+                to_version: "4.0.0".to_owned(),
                 migration: None,
                 initiated_at: 1_700_000_000,
                 initiated_by: PrimitivePublicKey::from([0x06; 32]),
@@ -524,8 +525,8 @@ mod tests {
             let bytes = to_vec(&value).expect("serialize");
             let decoded: GroupUpgradeValue = from_slice(&bytes).expect("deserialize");
 
-            assert_eq!(decoded.from_revision, 3);
-            assert_eq!(decoded.to_revision, 4);
+            assert_eq!(decoded.from_version, "3.0.0");
+            assert_eq!(decoded.to_version, "4.0.0");
             assert_eq!(decoded.migration, None);
             match decoded.status {
                 GroupUpgradeStatus::Completed { completed_at } => {
