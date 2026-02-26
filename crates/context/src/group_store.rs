@@ -2,9 +2,9 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
-    AsKeyParts, ContextGroupRef, GroupContextIndex, GroupMember, GroupMeta, GroupMetaValue,
-    GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_INDEX_PREFIX,
-    GROUP_MEMBER_PREFIX, GROUP_UPGRADE_PREFIX,
+    AsKeyParts, ContextGroupRef, ContextIdentity, GroupContextIndex, GroupMember, GroupMeta,
+    GroupMetaValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
+    GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -210,6 +210,35 @@ pub fn count_group_members(store: &Store, group_id: &ContextGroupId) -> EyreResu
     }
 
     Ok(count)
+}
+
+/// Scans the ContextIdentity column for the given context and returns the first
+/// `PublicKey` for which the node holds a local private key. Used to find a
+/// valid signer when performing group upgrades on behalf of a context that the
+/// group admin may not be a member of.
+pub fn find_local_signing_identity(
+    store: &Store,
+    context_id: &ContextId,
+) -> EyreResult<Option<PublicKey>> {
+    let handle = store.handle();
+    let start_key = ContextIdentity::new(*context_id, [0u8; 32].into());
+    let mut iter = handle.iter::<ContextIdentity>()?;
+    let first = iter.seek(start_key).transpose();
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+        if key.context_id() != *context_id {
+            break;
+        }
+        let Some(value) = handle.get(&key)? else {
+            continue;
+        };
+        if value.private_key.is_some() {
+            return Ok(Some(key.public_key()));
+        }
+    }
+
+    Ok(None)
 }
 
 // ---------------------------------------------------------------------------

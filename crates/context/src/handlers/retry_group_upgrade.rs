@@ -87,7 +87,6 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             datastore,
             group_id,
             target_application_id,
-            requester,
             migration,
             // Sentinel: no context to skip on retry
             ContextId::from([0u8; 32]),

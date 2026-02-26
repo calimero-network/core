@@ -105,12 +105,23 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let migrate_method = migration.as_ref().map(|m| m.method.clone());
 
+        let canary_signer =
+            match group_store::find_local_signing_identity(&self.datastore, &canary_context_id) {
+                Ok(Some(s)) => s,
+                Ok(None) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "no local signing identity for canary context {canary_context_id}"
+                    )))
+                }
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
+
         let canary_task = async move {
             context_client
                 .update_application(
                     &canary_context_id,
                     &target_application_id,
-                    &requester,
+                    &canary_signer,
                     migrate_method,
                 )
                 .await
@@ -174,7 +185,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             datastore_for_propagator,
                             group_id_clone,
                             target_application_id,
-                            requester,
                             migration,
                             canary_context_id,
                             1, // canary already upgraded
@@ -283,7 +293,6 @@ pub(crate) async fn propagate_upgrade(
     datastore: calimero_store::Store,
     group_id: ContextGroupId,
     target_application_id: ApplicationId,
-    requester: PublicKey,
     migration: Option<MigrationParams>,
     skip_context: ContextId,
     initial_completed: u32,
@@ -346,13 +355,33 @@ pub(crate) async fn propagate_upgrade(
 
             let migrate_method = migration.as_ref().map(|m| m.method.clone());
 
+            let signer = match group_store::find_local_signing_identity(&datastore, context_id) {
+                Ok(Some(s)) => s,
+                Ok(None) => {
+                    warn!(
+                        ?group_id,
+                        %context_id,
+                        "no local signing identity for context, skipping upgrade"
+                    );
+                    failed += 1;
+                    next_pending.push(*context_id);
+                    continue;
+                }
+                Err(err) => {
+                    warn!(
+                        ?group_id,
+                        %context_id,
+                        ?err,
+                        "failed to look up local signing identity, skipping upgrade"
+                    );
+                    failed += 1;
+                    next_pending.push(*context_id);
+                    continue;
+                }
+            };
+
             match context_client
-                .update_application(
-                    context_id,
-                    &target_application_id,
-                    &requester,
-                    migrate_method,
-                )
+                .update_application(context_id, &target_application_id, &signer, migrate_method)
                 .await
             {
                 Ok(()) => {

@@ -197,7 +197,6 @@ impl ContextManager {
                 self.datastore.clone(),
                 group_id,
                 meta.target_application_id,
-                upgrade.initiated_by,
                 migration,
                 // No canary skip on recovery — propagator's idempotency
                 // handles already-upgraded contexts gracefully
