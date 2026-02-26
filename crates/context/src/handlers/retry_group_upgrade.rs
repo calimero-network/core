@@ -63,6 +63,20 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             "retrying group upgrade for failed contexts"
         );
 
+        // Persist reset status BEFORE spawning the propagator so that
+        // GET /upgrade/status immediately reflects the retry.
+        let status = GroupUpgradeStatus::InProgress {
+            total: current_total,
+            completed: 0,
+            failed: 0,
+        };
+
+        if let Err(err) =
+            super::upgrade_group::update_upgrade_status(&self.datastore, &group_id, status.clone())
+        {
+            return ActorResponse::reply(Err(err));
+        }
+
         // Re-spawn propagator (it will re-attempt all contexts; already-upgraded
         // ones should be handled gracefully by update_application)
         let context_client = self.context_client.clone();
@@ -81,12 +95,6 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
         );
 
         ctx.spawn(propagator.into_actor(self));
-
-        let status = GroupUpgradeStatus::InProgress {
-            total: current_total,
-            completed: 0,
-            failed: 0,
-        };
 
         ActorResponse::reply(Ok(UpgradeGroupResponse {
             group_id,

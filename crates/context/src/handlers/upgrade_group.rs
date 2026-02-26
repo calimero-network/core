@@ -456,7 +456,7 @@ pub(crate) async fn propagate_upgrade(
     );
 }
 
-fn update_upgrade_status(
+pub(crate) fn update_upgrade_status(
     datastore: &calimero_store::Store,
     group_id: &ContextGroupId,
     status: GroupUpgradeStatus,
