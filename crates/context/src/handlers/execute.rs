@@ -109,8 +109,13 @@ impl Handler<ExecuteRequest> for ContextManager {
         // trigger an upgrade before executing the method.
         // Note: placed after context.lock() so that `context` borrow is released
         // before we access self.datastore.
-        let lazy_upgrade_params =
-            maybe_lazy_upgrade(&self.datastore, &context_id, &current_application_id);
+        // Skip for sync operations — the state payload was produced by the old app
+        // version and must be applied as-is, not against a newly upgraded WASM.
+        let lazy_upgrade_params = if is_state_op {
+            None
+        } else {
+            maybe_lazy_upgrade(&self.datastore, &context_id, &current_application_id)
+        };
 
         let external_config = match self.context_client.context_config(&context_id) {
             Ok(Some(external_config)) => external_config,

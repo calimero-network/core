@@ -10,7 +10,7 @@ use calimero_context_config::client::config::ClientConfig as ExternalClientConfi
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::context::{Context, ContextId, UpgradePolicy};
 use calimero_store::key::GroupUpgradeStatus;
 use calimero_store::Store;
 use either::Either;
@@ -185,6 +185,12 @@ impl ContextManager {
                     continue;
                 }
             };
+
+            // Skip LazyOnAccess groups — they upgrade contexts on-demand, not via propagator
+            if matches!(meta.upgrade_policy, UpgradePolicy::LazyOnAccess) {
+                tracing::debug!(?group_id, "skipping crash recovery for LazyOnAccess group");
+                continue;
+            }
 
             let propagator = handlers::upgrade_group::propagate_upgrade(
                 self.context_client.clone(),
