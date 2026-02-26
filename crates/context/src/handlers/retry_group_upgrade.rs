@@ -1,4 +1,4 @@
-use actix::{ActorResponse, AsyncContext, Handler, Message, WrapFuture};
+use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::{RetryGroupUpgradeRequest, UpgradeGroupResponse};
 use calimero_context_primitives::messages::MigrationParams;
 use calimero_primitives::context::ContextId;
@@ -57,6 +57,15 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
+        // Reject if a propagator is already running for this group (e.g.
+        // still in its automatic backoff sleep). Spawning a second one would
+        // cause conflicting status writes and double-counted completions.
+        if self.active_propagators.contains(&group_id) {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "a propagator is already running for this group; wait for it to finish"
+            )));
+        }
+
         info!(
             ?group_id,
             %requester,
@@ -82,6 +91,8 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
         let context_client = self.context_client.clone();
         let datastore = self.datastore.clone();
 
+        self.active_propagators.insert(group_id);
+
         let propagator = super::upgrade_group::propagate_upgrade(
             context_client,
             datastore,
@@ -93,7 +104,9 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             0, // retry: no canary assumption
         );
 
-        ctx.spawn(propagator.into_actor(self));
+        ctx.spawn(propagator.into_actor(self).map(move |_, act, _| {
+            act.active_propagators.remove(&group_id);
+        }));
 
         ActorResponse::reply(Ok(UpgradeGroupResponse {
             group_id,

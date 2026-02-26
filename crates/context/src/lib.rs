@@ -1,12 +1,13 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
-use std::collections::{btree_map, BTreeMap};
+use std::collections::{btree_map, BTreeMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
-use actix::{Actor, AsyncContext, WrapFuture};
+use actix::{Actor, ActorFutureExt, AsyncContext, WrapFuture};
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
+use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
@@ -73,6 +74,11 @@ pub struct ContextManager {
     /// Prometheus metrics for monitoring the health and performance of the manager,
     /// such as number of active contexts, message processing latency, etc.
     metrics: Option<Metrics>,
+
+    /// Groups that currently have a running upgrade propagator. Prevents the
+    /// manual retry handler from spawning a second propagator while an
+    /// existing one is still active (e.g. sleeping in its backoff delay).
+    active_propagators: HashSet<ContextGroupId>,
     //
     // todo! when runtime let's us compile blobs separate from its
     // todo! execution, we can introduce a cached::TimedSizedCache
@@ -108,6 +114,7 @@ impl ContextManager {
             applications: BTreeMap::new(),
 
             metrics: prometheus_registry.map(Metrics::new),
+            active_propagators: HashSet::new(),
         }
     }
 }
@@ -128,7 +135,7 @@ impl Actor for ContextManager {
 impl ContextManager {
     /// Scans the store for in-progress group upgrades and re-spawns
     /// propagators for each. Called during actor startup for crash recovery.
-    fn recover_in_progress_upgrades(&self, ctx: &mut actix::Context<Self>) {
+    fn recover_in_progress_upgrades(&mut self, ctx: &mut actix::Context<Self>) {
         let upgrades = match group_store::enumerate_in_progress_upgrades(&self.datastore) {
             Ok(u) => u,
             Err(err) => {
@@ -192,6 +199,8 @@ impl ContextManager {
                 continue;
             }
 
+            self.active_propagators.insert(group_id);
+
             let propagator = handlers::upgrade_group::propagate_upgrade(
                 self.context_client.clone(),
                 self.datastore.clone(),
@@ -204,7 +213,9 @@ impl ContextManager {
                 0, // recovery: no canary assumption
             );
 
-            ctx.spawn(propagator.into_actor(self));
+            ctx.spawn(propagator.into_actor(self).map(move |_, act, _| {
+                act.active_propagators.remove(&group_id);
+            }));
         }
     }
 }

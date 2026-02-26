@@ -200,6 +200,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 
                     // Spawn propagator for remaining contexts
                     if total_contexts > 1 {
+                        act.active_propagators.insert(group_id_clone);
+
                         let propagator = propagate_upgrade(
                             context_client_for_propagator,
                             datastore_for_propagator,
@@ -209,7 +211,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             canary_context_id,
                             1, // canary already upgraded
                         );
-                        ctx.spawn(propagator.into_actor(act));
+                        ctx.spawn(propagator.into_actor(act).map(move |_, act, _| {
+                            act.active_propagators.remove(&group_id_clone);
+                        }));
                     } else {
                         // Only one context (the canary) — mark completed
                         let completed_at = SystemTime::now()
@@ -457,7 +461,7 @@ pub(crate) async fn propagate_upgrade(
         attempt += 1;
 
         // Exhausted retry attempts
-        if attempt >= MAX_AUTO_RETRIES {
+        if attempt > MAX_AUTO_RETRIES {
             warn!(
                 ?group_id,
                 failed = next_pending.len(),
