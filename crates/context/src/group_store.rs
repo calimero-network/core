@@ -451,6 +451,7 @@ mod tests {
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
             admin_identity: PublicKey::from([0x01; 32]),
+            migration: None,
         }
     }
 

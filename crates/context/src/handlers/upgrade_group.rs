@@ -45,45 +45,41 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             to_version,
         } = preamble;
 
-        // --- Persist InProgress BEFORE the async canary ---
-        // This prevents a concurrent UpgradeGroupRequest from passing
-        // validate_upgrade while the canary is still running.
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        let initial_status = GroupUpgradeStatus::InProgress {
-            total: total_contexts as u32,
-            completed: 0,
-            failed: 0,
-        };
-
-        let upgrade_value = GroupUpgradeValue {
-            from_version,
-            to_version,
-            migration: migration.as_ref().map(|m| m.method.as_bytes().to_vec()),
-            initiated_at: now,
-            initiated_by: requester,
-            status: initial_status.clone(),
-        };
-
-        if let Err(err) =
-            group_store::save_group_upgrade(&self.datastore, &group_id, &upgrade_value)
-        {
-            return ActorResponse::reply(Err(err.into()));
-        }
+        let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
 
         // --- LazyOnAccess: update target and return without canary/propagator ---
         // Contexts will be upgraded individually on their next execution.
         // Launching a propagator would race with the lazy mechanism and could
         // invoke migration functions twice on the same context.
+        //
+        // Save the upgrade record as Completed immediately — InProgress serves
+        // no purpose for lazy upgrades (no propagator runs) and would
+        // permanently block future upgrades since nothing transitions it out.
         if matches!(upgrade_policy, UpgradePolicy::LazyOnAccess) {
             let result = (|| {
                 let mut meta = group_store::load_group_meta(&self.datastore, &group_id)?
                     .ok_or_else(|| eyre::eyre!("group not found"))?;
                 meta.target_application_id = target_application_id;
+                meta.migration = migration_bytes.clone();
                 group_store::save_group_meta(&self.datastore, &group_id, &meta)?;
+
+                let completed_status = GroupUpgradeStatus::Completed { completed_at: now };
+
+                let upgrade_value = GroupUpgradeValue {
+                    from_version,
+                    to_version,
+                    migration: migration_bytes,
+                    initiated_at: now,
+                    initiated_by: requester,
+                    status: completed_status.clone(),
+                };
+
+                group_store::save_group_upgrade(&self.datastore, &group_id, &upgrade_value)?;
 
                 info!(
                     ?group_id,
@@ -93,11 +89,35 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 
                 Ok(UpgradeGroupResponse {
                     group_id,
-                    status: initial_status.into(),
+                    status: completed_status.into(),
                 })
             })();
 
             return ActorResponse::reply(result);
+        }
+
+        // --- Persist InProgress BEFORE the async canary ---
+        // This prevents a concurrent UpgradeGroupRequest from passing
+        // validate_upgrade while the canary is still running.
+        let initial_status = GroupUpgradeStatus::InProgress {
+            total: total_contexts as u32,
+            completed: 0,
+            failed: 0,
+        };
+
+        let upgrade_value = GroupUpgradeValue {
+            from_version,
+            to_version,
+            migration: migration_bytes,
+            initiated_at: now,
+            initiated_by: requester,
+            status: initial_status.clone(),
+        };
+
+        if let Err(err) =
+            group_store::save_group_upgrade(&self.datastore, &group_id, &upgrade_value)
+        {
+            return ActorResponse::reply(Err(err.into()));
         }
 
         // --- Async: run canary upgrade ---

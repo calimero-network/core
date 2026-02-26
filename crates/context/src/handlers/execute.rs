@@ -1239,14 +1239,11 @@ fn maybe_lazy_upgrade(
         return None; // already at target
     }
 
-    // 5. Extract migration method if an upgrade record exists
-    let migrate_method = match group_store::load_group_upgrade(datastore, &group_id) {
-        Ok(Some(upgrade)) => upgrade
-            .migration
-            .as_ref()
-            .and_then(|bytes| String::from_utf8(bytes.clone()).ok()),
-        _ => None,
-    };
+    // 5. Extract migration method from group meta (set during upgrade)
+    let migrate_method = meta
+        .migration
+        .as_ref()
+        .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
 
     info!(
         %context_id,

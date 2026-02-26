@@ -44,6 +44,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 upgrade_policy,
                 created_at: now,
                 admin_identity: admin_identity.into(),
+                migration: None,
             };
 
             group_store::save_group_meta(&self.datastore, &group_id, &meta)?;

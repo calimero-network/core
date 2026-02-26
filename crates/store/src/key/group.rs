@@ -300,6 +300,7 @@ pub struct GroupMetaValue {
     pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
     pub admin_identity: PrimitivePublicKey,
+    pub migration: Option<Vec<u8>>,
 }
 
 /// Tracks the progress of a group-wide upgrade operation.
@@ -426,6 +427,7 @@ mod tests {
                 upgrade_policy: UpgradePolicy::Automatic,
                 created_at: 1_700_000_000,
                 admin_identity: PrimitivePublicKey::from([0xCC; 32]),
+                migration: None,
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -450,6 +452,7 @@ mod tests {
                 },
                 created_at: 1_700_000_000,
                 admin_identity: PrimitivePublicKey::from([0x33; 32]),
+                migration: None,
             };
 
             let bytes = to_vec(&value).expect("serialize");
