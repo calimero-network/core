@@ -362,9 +362,15 @@ impl SyncManager {
         // getting stuck before first snapshot sync. Gossipsub mesh takes 5-10
         // heartbeats (~5-10s) to add a new subscriber after topic subscription.
         let (max_retries, retry_delay_ms) = if is_uninitialized {
-            (10, 1_000)
+            (
+                super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED,
+                super::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
+            )
         } else {
-            (3, 500)
+            (
+                super::config::DEFAULT_MESH_RETRIES_INITIALIZED,
+                super::config::DEFAULT_MESH_RETRY_DELAY_MS_INITIALIZED,
+            )
         };
 
         let mesh_discovery_start = Instant::now();
