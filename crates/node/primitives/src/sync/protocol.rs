@@ -517,6 +517,41 @@ mod tests {
     }
 
     #[test]
+    fn test_select_protocol_both_fresh_rule2a_takes_precedence() {
+        // When both local AND remote are fresh, Rule 2a (Snapshot) must fire
+        // before Rule 2b (None). The local node needs to bootstrap from the
+        // remote even though the remote is also fresh — both having zero
+        // root_hash but different hashes is impossible in practice, but the
+        // rule ordering must still be correct: local freshness is checked first.
+        let local = SyncHandshake::new([0; 32], 0, 0, vec![]); // Fresh local
+        let remote = SyncHandshake::new([0; 32], 0, 0, vec![]); // Fresh remote
+
+        let selection = select_protocol(&local, &remote);
+
+        // Rule 1 fires first: both have root_hash=[0;32] so they match → None
+        // This is correct: two fresh nodes have nothing to sync.
+        assert!(
+            matches!(selection.protocol, SyncProtocol::None),
+            "two fresh nodes with same root hash should be None (Rule 1), got {:?}",
+            selection.protocol
+        );
+        assert!(selection.reason.contains("already in sync"));
+
+        // Now test the case where local is fresh but remote has *some* state
+        // with a different root hash — Rule 2a must select Snapshot, not Rule 2b.
+        let local = SyncHandshake::new([0; 32], 0, 0, vec![]); // Fresh local
+        let remote = SyncHandshake::new([42; 32], 0, 0, vec![]); // Different hash, also no entities
+
+        let selection = select_protocol(&local, &remote);
+        assert!(
+            matches!(selection.protocol, SyncProtocol::Snapshot { .. }),
+            "fresh local should get Snapshot (Rule 2a) not None (Rule 2b), got {:?}",
+            selection.protocol
+        );
+        assert!(selection.reason.contains("fresh node"));
+    }
+
+    #[test]
     fn test_select_protocol_rule3_initialized_node_never_gets_snapshot() {
         // CRITICAL TEST for Invariant I5
         let local = SyncHandshake::new([1; 32], 1, 1, vec![]); // Has state!
