@@ -72,6 +72,64 @@ pub struct KmsConfig {
 pub struct PhalaKmsConfig {
     /// URL of the mero-kms-phala service.
     pub url: Url,
+    /// KMS self-attestation verification policy.
+    #[serde(default)]
+    pub attestation: KmsAttestationConfig,
+}
+
+/// Configuration for verifying KMS self-attestation (`POST /attest`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct KmsAttestationConfig {
+    /// Enable KMS attestation verification before requesting keys.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Accept mock quotes for development only.
+    #[serde(default)]
+    pub accept_mock: bool,
+    /// Allowed TCB statuses for KMS quote verification.
+    #[serde(default = "default_kms_attestation_tcb_statuses")]
+    pub allowed_tcb_statuses: Vec<String>,
+    /// Allowed KMS MRTD values (hex, with or without `0x` prefix).
+    #[serde(default)]
+    pub allowed_mrtd: Vec<String>,
+    /// Optional KMS RTMR0 allowlist (hex).
+    #[serde(default)]
+    pub allowed_rtmr0: Vec<String>,
+    /// Optional KMS RTMR1 allowlist (hex).
+    #[serde(default)]
+    pub allowed_rtmr1: Vec<String>,
+    /// Optional KMS RTMR2 allowlist (hex).
+    #[serde(default)]
+    pub allowed_rtmr2: Vec<String>,
+    /// Optional KMS RTMR3 allowlist (hex).
+    #[serde(default)]
+    pub allowed_rtmr3: Vec<String>,
+    /// Optional base64-encoded 32-byte binding value for `/attest`.
+    ///
+    /// If unset, merod uses the default domain separator binding.
+    #[serde(default)]
+    pub binding_b64: Option<String>,
+}
+
+impl Default for KmsAttestationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            accept_mock: false,
+            allowed_tcb_statuses: default_kms_attestation_tcb_statuses(),
+            allowed_mrtd: Vec::new(),
+            allowed_rtmr0: Vec::new(),
+            allowed_rtmr1: Vec::new(),
+            allowed_rtmr2: Vec::new(),
+            allowed_rtmr3: Vec::new(),
+            binding_b64: None,
+        }
+    }
+}
+
+fn default_kms_attestation_tcb_statuses() -> Vec<String> {
+    vec!["UpToDate".to_owned()]
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]

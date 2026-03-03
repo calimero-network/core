@@ -451,6 +451,22 @@ fn validate_required_credentials(config: &ConfigFile) -> EyreResult<()> {
                  Please configure the 'phala' KMS provider under [tee.kms.phala]."
             );
         }
+
+        if let Some(phala) = &tee_config.kms.phala {
+            if phala.attestation.enabled {
+                if phala.attestation.allowed_tcb_statuses.is_empty() {
+                    bail!(
+                        "tee.kms.phala.attestation.enabled is true, but allowed_tcb_statuses is empty."
+                    );
+                }
+                if phala.attestation.allowed_mrtd.is_empty() {
+                    bail!(
+                        "tee.kms.phala.attestation.enabled is true, but allowed_mrtd is empty. \
+                         Configure at least one trusted KMS MRTD."
+                    );
+                }
+            }
+        }
     }
 
     Ok(())
