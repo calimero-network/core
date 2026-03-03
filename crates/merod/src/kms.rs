@@ -321,44 +321,8 @@ async fn verify_kms_attestation(
     };
 
     info!(%attest_endpoint, "Verifying KMS self-attestation before key request");
-    let response = client
-        .post(attest_endpoint.as_str())
-        .json(&request)
-        .send()
-        .await
-        .context("Failed to request KMS attestation")?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let error_body = response.text().await.unwrap_or_default();
-
-        if let Ok(kms_error) = serde_json::from_str::<KmsErrorResponse>(&error_body) {
-            let details = kms_error.details.unwrap_or_default();
-            bail!(
-                "KMS attestation request failed ({}): {} - {}",
-                status,
-                kms_error.error,
-                details
-            );
-        }
-
-        bail!(
-            "KMS attestation request failed ({}): {}",
-            status,
-            error_body
-        );
-    }
-
-    let attest_response: PhalaKmsAttestResponse = response
-        .json()
-        .await
-        .context("Failed to parse KMS attest response")?;
-
-    let quote_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&attest_response.quote_b64)
-        .context("Failed to decode KMS quote from base64")?;
-    let report_data_bytes = hex::decode(&attest_response.report_data_hex)
-        .context("Failed to decode reportDataHex from KMS attest response")?;
+    let attest_response = request_kms_attestation(client, &attest_endpoint, &request).await?;
+    let (quote_bytes, report_data_bytes) = decode_kms_attestation_response(&attest_response)?;
 
     if report_data_bytes.len() != 64 {
         bail!(
@@ -400,6 +364,57 @@ async fn verify_kms_attestation(
     info!("KMS self-attestation verified successfully");
 
     Ok(())
+}
+
+async fn request_kms_attestation(
+    client: &reqwest::Client,
+    attest_endpoint: &Url,
+    request: &PhalaKmsAttestRequest,
+) -> Result<PhalaKmsAttestResponse> {
+    let response = client
+        .post(attest_endpoint.as_str())
+        .json(request)
+        .send()
+        .await
+        .context("Failed to request KMS attestation")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_body = response.text().await.unwrap_or_default();
+
+        if let Ok(kms_error) = serde_json::from_str::<KmsErrorResponse>(&error_body) {
+            let details = kms_error.details.unwrap_or_default();
+            bail!(
+                "KMS attestation request failed ({}): {} - {}",
+                status,
+                kms_error.error,
+                details
+            );
+        }
+
+        bail!(
+            "KMS attestation request failed ({}): {}",
+            status,
+            error_body
+        );
+    }
+
+    response
+        .json()
+        .await
+        .context("Failed to parse KMS attest response")
+}
+
+fn decode_kms_attestation_response(
+    attest_response: &PhalaKmsAttestResponse,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let quote_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&attest_response.quote_b64)
+        .context("Failed to decode KMS quote from base64")?;
+    let report_data_bytes = hex::decode(&attest_response.report_data_hex)
+        .context("Failed to decode reportDataHex from KMS attest response")?;
+
+    Ok((quote_bytes, report_data_bytes))
 }
 
 fn normalize_kms_attestation_policy(
