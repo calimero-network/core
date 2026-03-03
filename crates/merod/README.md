@@ -241,7 +241,7 @@ lsof -i :2528
 
 - [Calimero Documentation](https://docs.calimero.network) - Complete documentation
 - [Running Local Networks](../../docs/operator-track/run-a-local-network.md) - Local development guide
-- [Deploy merod on Phala Network (TEE)](../../docs/phala-tee-deployment.md) - Build, deploy, and configure merod on Phala Cloud
+- [merod in TEE mode](../../docs/tee-mode.md) - Configuring merod for TEE and KMS
 - [Node Architecture](../../crates/node/README.md) - Internal node architecture
 - [Network Configuration](../../crates/network/README.md) - P2P networking details
 - [Server API](../../crates/server/README.md) - JSON-RPC API reference
