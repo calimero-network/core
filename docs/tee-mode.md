@@ -2,6 +2,10 @@
 
 This document describes how **merod** operates in TEE (Trusted Execution Environment) mode. merod runs inside a confidential VM and obtains its storage encryption key from a KMS at startup. Actual deployment (GCP, Phala, etc.) is documented in [mero-tee](https://github.com/calimero-network/mero-tee).
 
+Important:
+- Only nodes with `[tee]` configuration perform KMS key-fetch and attestation flow.
+- Non-TEE nodes do not use KMS and communicate only over libp2p as regular peers.
+
 ## Overview
 
 When merod runs in TEE mode:
@@ -70,6 +74,19 @@ Or edit `config.toml` directly:
 [tee]
 [tee.kms.phala]
 url = "http://<kms-host>:8080/"
+
+[tee.kms.phala.attestation]
+enabled = true
+accept_mock = false
+allowed_tcb_statuses = ["UpToDate"]
+allowed_mrtd = ["<trusted_kms_mrtd_hex>"]
+# Optional hardening:
+# allowed_rtmr0 = ["<trusted_kms_rtmr0_hex>"]
+# allowed_rtmr1 = ["<trusted_kms_rtmr1_hex>"]
+# allowed_rtmr2 = ["<trusted_kms_rtmr2_hex>"]
+# allowed_rtmr3 = ["<trusted_kms_rtmr3_hex>"]
+# Optional base64-encoded 32-byte binding for /attest:
+# binding_b64 = "<base64_32_byte_value>"
 ```
 
 ### 3. Run merod
@@ -80,11 +97,15 @@ merod --home /data --node default run
 
 On startup, merod will:
 
-1. Request a challenge from the KMS
-2. Generate a TDX attestation quote with the challenge nonce and peer ID hash
-3. Sign the payload with the node identity key
-4. Submit the signed request to the KMS
-5. Receive the storage encryption key and use it for the datastore/blobstore
+1. (If attestation is enabled) request KMS self-attestation (`POST /attest`) and verify:
+   - quote cryptographic validity,
+   - nonce + binding in `reportData`,
+   - KMS measurement/TCB policy.
+2. Request a challenge from the KMS
+3. Generate a TDX attestation quote with the challenge nonce and peer ID hash
+4. Sign the payload with the node identity key
+5. Submit the signed request to the KMS
+6. Receive the storage encryption key and use it for the datastore/blobstore
 
 ## Troubleshooting
 
@@ -107,8 +128,19 @@ The node identity (libp2p keypair) is stored in `config.toml`. It is required fo
 
 Keep `config.toml` backed up; losing it means losing the node identity.
 
+## Deployment model (release isolation)
+
+Recommended production rollout model:
+
+- Keep each merod release line isolated with its own KMS deployment.
+- Old TEE nodes continue to use old KMS.
+- New TEE nodes are deployed fresh and use a new KMS deployment.
+- Do not mix old/new TEE node cohorts against the same KMS unless intentionally governed.
+- Pin attestation policy inputs to a specific signed `mero-tee` release tag (do not auto-follow `latest`).
+
 ## See Also
 
 - [merod README](../crates/merod/README.md) – TEE storage encryption and KMS flow
+- [Phala KMS attestation task list](phala-kms-attestation-task-list.md) – Implementation checklist
 - [mero-tee](https://github.com/calimero-network/mero-tee) – Deployment (GCP, Phala), KMS, locked images
 - [mero-kms-phala README](https://github.com/calimero-network/mero-tee/blob/master/crates/mero-kms-phala/README.md) – KMS build, deployment, and policy
