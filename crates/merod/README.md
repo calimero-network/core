@@ -245,5 +245,5 @@ lsof -i :2528
 - [Node Architecture](../../crates/node/README.md) - Internal node architecture
 - [Network Configuration](../../crates/network/README.md) - P2P networking details
 - [Server API](../../crates/server/README.md) - JSON-RPC API reference
-- [Phala KMS service](../../crates/mero-kms-phala/README.md) - KMS policy and endpoint configuration
+- [mero-tee mero-kms-phala](https://github.com/calimero-network/mero-tee) - KMS policy and endpoint configuration
 

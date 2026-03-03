@@ -68,7 +68,6 @@ members = [
     "./crates/storage",
     "./crates/storage-macros",
     "./crates/tee-attestation",
-    "./crates/mero-kms-phala",
 
     "./crates/store",
     "./crates/store/blobs",

@@ -40,15 +40,18 @@ docker pull ghcr.io/calimero-network/merod:<version>
 
 The KMS service must run inside the same CVM as merod (or be reachable from it) to access the dstack socket.
 
+**mero-kms-phala** is built and released from the [mero-tee](https://github.com/calimero-network/mero-tee) repository.
+
 Build from source:
 
 ```bash
-cd core
+git clone https://github.com/calimero-network/mero-tee.git
+cd mero-tee
 cargo build --release -p mero-kms-phala
 # Binary: target/release/mero-kms-phala
 ```
 
-Or use the prebuilt container:
+Or use the prebuilt container from mero-tee releases:
 
 ```bash
 docker pull ghcr.io/calimero-network/mero-kms-phala:<version>
@@ -190,7 +193,7 @@ For production, pin the measurements of your deployed image so only that exact s
 
 4. **Restart the KMS** with the new policy. Only nodes whose attestation matches these values will receive keys.
 
-See [mero-kms-phala README](../crates/mero-kms-phala/README.md) for full KMS configuration.
+See [mero-tee mero-kms-phala README](https://github.com/calimero-network/mero-tee/blob/master/crates/mero-kms-phala/README.md) for full KMS configuration.
 
 ## Development Mode (Non-TEE)
 
@@ -227,6 +230,6 @@ Keep `config.toml` backed up; losing it means losing the node identity.
 ## See Also
 
 - [merod README](../crates/merod/README.md) – TEE storage encryption and KMS flow
-- [mero-kms-phala README](../crates/mero-kms-phala/README.md) – KMS endpoints and policy
+- [mero-tee mero-kms-phala README](https://github.com/calimero-network/mero-tee/blob/master/crates/mero-kms-phala/README.md) – KMS endpoints and policy
 - [Phala Cloud Documentation](https://docs.phala.network/)
 - [dstack Overview](https://docs.phala.network/dstack/overview)
