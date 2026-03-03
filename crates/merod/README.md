@@ -185,6 +185,11 @@ On non-TDX environments, attestation generation may produce mock quotes. Those
 are accepted only if the KMS service explicitly allows mock attestation for
 local development.
 
+### Deployment and MRTDs
+
+- **Phala**: See [mero-tee deploy-phala](https://github.com/calimero-network/mero-tee/blob/master/docs/deploy-phala.md). KMS and merod binaries from [mero-tee releases](https://github.com/calimero-network/mero-tee/releases).
+- **GCP TDX**: See [mero-tee deploy-gcp](https://github.com/calimero-network/mero-tee/blob/master/docs/deploy-gcp.md). Operators verify nodes using `published-mrtds.json` from releases, e.g. `https://github.com/calimero-network/mero-tee/releases/download/2.1.1/published-mrtds.json`.
+
 ## Running Multiple Nodes
 
 To run a local multi-node network:
@@ -245,5 +250,6 @@ lsof -i :2528
 - [Node Architecture](../../crates/node/README.md) - Internal node architecture
 - [Network Configuration](../../crates/network/README.md) - P2P networking details
 - [Server API](../../crates/server/README.md) - JSON-RPC API reference
-- [mero-tee mero-kms-phala](https://github.com/calimero-network/mero-tee) - KMS policy and endpoint configuration
+- [mero-tee](https://github.com/calimero-network/mero-tee) - KMS, GCP locked images, deployment guides
+- [mero-tee releases](https://github.com/calimero-network/mero-tee/releases) - mero-kms-phala binaries, MRTDs (`published-mrtds.json`), attestation artifacts
 
