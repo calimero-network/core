@@ -381,9 +381,8 @@ impl InitCommand {
 
         config.save(&path).await?;
 
-        let mut store = Store::open::<RocksDB>(&StoreConfig::new(
-            path.join(config.datastore.path),
-        ))?;
+        let mut store =
+            Store::open::<RocksDB>(&StoreConfig::new(path.join(config.datastore.path)))?;
         crate::node_identity::save_to_store(&mut store, &identity)?;
         drop(store);
 

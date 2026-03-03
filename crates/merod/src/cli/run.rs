@@ -132,7 +132,8 @@ impl RunCommand {
                     })?;
                     node_identity::save_to_store(&mut store, &kp)?;
                     info!("Migrated node identity from config to datastore");
-                    config.identity = calimero_config::IdentityConfig::peer_id_only(peer_id.clone());
+                    config.identity =
+                        calimero_config::IdentityConfig::peer_id_only(peer_id.clone());
                     config.save(&path).await?;
                     kp
                 }

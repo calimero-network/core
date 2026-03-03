@@ -25,15 +25,17 @@ fn identity_key() -> Generic {
 /// Returns `None` if no identity is stored (e.g. before migration from config).
 pub fn load_from_store(store: &Store) -> Result<Option<Keypair>> {
     let key = identity_key();
-    let value = store.get(&key).context("Failed to read identity from datastore")?;
+    let value = store
+        .get(&key)
+        .context("Failed to read identity from datastore")?;
 
     let Some(slice) = value else {
         return Ok(None);
     };
 
     let bytes = slice.as_ref().to_vec();
-    let keypair = Keypair::from_protobuf_encoding(&bytes)
-        .context("Invalid keypair in datastore")?;
+    let keypair =
+        Keypair::from_protobuf_encoding(&bytes).context("Invalid keypair in datastore")?;
 
     Ok(Some(keypair))
 }
@@ -48,8 +50,12 @@ pub fn save_to_store(store: &mut Store, keypair: &Keypair) -> Result<()> {
         .context("Failed to encode keypair")?;
     let value = Slice::from(bytes.to_vec());
 
-    store.put(&key, value).context("Failed to write identity to datastore")?;
-    store.commit().context("Failed to commit identity to datastore")?;
+    store
+        .put(&key, value)
+        .context("Failed to write identity to datastore")?;
+    store
+        .commit()
+        .context("Failed to commit identity to datastore")?;
 
     Ok(())
 }
