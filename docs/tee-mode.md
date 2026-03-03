@@ -121,10 +121,13 @@ https://github.com/calimero-network/mero-tee/releases/download/<X.Y.Z>/published
 
 Example: `https://github.com/calimero-network/mero-tee/releases/download/2.1.1/published-mrtds.json`
 
+For step-by-step verification (curl commands, comparison script, full quote verification), see [mero-tee verify-mrtd](https://github.com/calimero-network/mero-tee/blob/master/docs/verify-mrtd.md).
+
 ## See Also
 
 - [merod README](../crates/merod/README.md) – TEE storage encryption and KMS flow
 - [mero-tee](https://github.com/calimero-network/mero-tee) – Deployment (GCP, Phala), KMS, locked images
 - [mero-tee deploy-gcp](https://github.com/calimero-network/mero-tee/blob/master/docs/deploy-gcp.md) – GCP TDX locked images
 - [mero-tee deploy-phala](https://github.com/calimero-network/mero-tee/blob/master/docs/deploy-phala.md) – Phala CVM deployment
+- [mero-tee verify-mrtd](https://github.com/calimero-network/mero-tee/blob/master/docs/verify-mrtd.md) – Verify nodes run the attested image
 - [mero-kms-phala README](https://github.com/calimero-network/mero-tee/blob/master/crates/mero-kms-phala/README.md) – KMS build, deployment, and policy
