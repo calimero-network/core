@@ -108,8 +108,9 @@ members = [
 [workspace.dependencies]
 actix = "0.13.5"
 aes-gcm = "0.10"
-alloy = { version = "1.0", default-features = false, features = ["std", "reqwest", "reqwest-rustls-tls", "essentials"] }
-alloy-transport-http = { version = "1.0", default-features = false, features = ["reqwest", "reqwest-rustls-tls"] }
+# Pinned to ~1.0 so resolution stays on 1.0.x (alloy 1.7+ requires Rust 1.91; workspace uses 1.88)
+alloy = { version = "~1.0", default-features = false, features = ["std", "reqwest", "reqwest-rustls-tls", "essentials"] }
+alloy-transport-http = { version = "~1.0", default-features = false, features = ["reqwest", "reqwest-rustls-tls"] }
 alloy-sol-types = "1.4"
 assert-json-diff = "2.0.2"
 async-stream = "0.3.5"

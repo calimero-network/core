@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-ARG RUST_VERSION=1.88.0
+ARG RUST_VERSION=1.91.0
 # ^~~ keep this in sync with rust-toolchain.toml
 
 ################################################################################
