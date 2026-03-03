@@ -141,6 +141,5 @@ Recommended production rollout model:
 ## See Also
 
 - [merod README](../crates/merod/README.md) – TEE storage encryption and KMS flow
-- [Phala KMS attestation task list](phala-kms-attestation-task-list.md) – Implementation checklist
 - [mero-tee](https://github.com/calimero-network/mero-tee) – Deployment (GCP, Phala), KMS, locked images
 - [mero-kms-phala README](https://github.com/calimero-network/mero-tee/blob/master/crates/mero-kms-phala/README.md) – KMS build, deployment, and policy
