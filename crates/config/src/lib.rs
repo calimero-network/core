@@ -8,7 +8,7 @@ use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::sse::SseConfig;
 use calimero_server::ws::WsConfig;
 use camino::{Utf8Path, Utf8PathBuf};
-use eyre::{Result as EyreResult, WrapErr};
+use eyre::{bail, Result as EyreResult, WrapErr};
 use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{read_to_string, write};
@@ -85,6 +85,9 @@ pub struct KmsAttestationConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Accept mock quotes for development only.
+    ///
+    /// WARNING: Enabling this in production bypasses real attestation
+    /// cryptographic guarantees and weakens the trust model.
     #[serde(default)]
     pub accept_mock: bool,
     /// Allowed TCB statuses for KMS quote verification.
@@ -126,6 +129,44 @@ impl Default for KmsAttestationConfig {
             binding_b64: None,
         }
     }
+}
+
+impl KmsAttestationConfig {
+    /// Validate required attestation policy fields when attestation is enabled.
+    ///
+    /// This keeps startup validation consistent with runtime policy normalization.
+    pub fn validate_enabled_policy(&self) -> EyreResult<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        let has_tcb_status = self
+            .allowed_tcb_statuses
+            .iter()
+            .map(|status| status.trim())
+            .any(|status| !status.is_empty());
+        if !has_tcb_status {
+            bail!("tee.kms.phala.attestation.enabled is true, but allowed_tcb_statuses is empty.");
+        }
+
+        let has_mrtd = self
+            .allowed_mrtd
+            .iter()
+            .map(|measurement| normalize_attestation_measurement(measurement))
+            .any(|measurement| !measurement.is_empty());
+        if !has_mrtd {
+            bail!(
+                "tee.kms.phala.attestation.enabled is true, but allowed_mrtd is empty. \
+                 Configure at least one trusted KMS MRTD."
+            );
+        }
+
+        Ok(())
+    }
+}
+
+fn normalize_attestation_measurement(value: &str) -> String {
+    value.trim().trim_start_matches("0x").to_ascii_lowercase()
 }
 
 fn default_kms_attestation_tcb_statuses() -> Vec<String> {

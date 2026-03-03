@@ -453,18 +453,13 @@ fn validate_required_credentials(config: &ConfigFile) -> EyreResult<()> {
         }
 
         if let Some(phala) = &tee_config.kms.phala {
-            if phala.attestation.enabled {
-                if phala.attestation.allowed_tcb_statuses.is_empty() {
-                    bail!(
-                        "tee.kms.phala.attestation.enabled is true, but allowed_tcb_statuses is empty."
-                    );
-                }
-                if phala.attestation.allowed_mrtd.is_empty() {
-                    bail!(
-                        "tee.kms.phala.attestation.enabled is true, but allowed_mrtd is empty. \
-                         Configure at least one trusted KMS MRTD."
-                    );
-                }
+            phala.attestation.validate_enabled_policy()?;
+
+            if phala.attestation.enabled && phala.attestation.accept_mock {
+                tracing::warn!(
+                    "tee.kms.phala.attestation.accept_mock=true is enabled. \
+                     This should only be used for development/testing."
+                );
             }
         }
     }

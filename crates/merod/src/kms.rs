@@ -378,6 +378,7 @@ async fn verify_kms_attestation(
             bail!("KMS returned mock attestation quote, but attestation.accept_mock is disabled");
         }
 
+        warn!("Accepting mock KMS attestation quote - this is insecure and for development only");
         verify_mock_attestation(&quote_bytes, &nonce, Some(&policy.binding))
             .context("Failed to verify mock KMS attestation")?
     } else {
@@ -404,6 +405,8 @@ async fn verify_kms_attestation(
 fn normalize_kms_attestation_policy(
     config: &KmsAttestationConfig,
 ) -> Result<NormalizedKmsAttestationPolicy> {
+    config.validate_enabled_policy()?;
+
     let allowed_tcb_statuses = config
         .allowed_tcb_statuses
         .iter()
@@ -411,17 +414,7 @@ fn normalize_kms_attestation_policy(
         .filter(|status| !status.is_empty())
         .collect::<Vec<_>>();
 
-    if allowed_tcb_statuses.is_empty() {
-        bail!("KMS attestation policy has empty allowed_tcb_statuses");
-    }
-
     let allowed_mrtd = parse_measurement_allowlist(&config.allowed_mrtd, "allowed_mrtd")?;
-    if allowed_mrtd.is_empty() {
-        bail!(
-            "KMS attestation policy requires at least one allowed MRTD when attestation is enabled"
-        );
-    }
-
     let allowed_rtmr0 = parse_measurement_allowlist(&config.allowed_rtmr0, "allowed_rtmr0")?;
     let allowed_rtmr1 = parse_measurement_allowlist(&config.allowed_rtmr1, "allowed_rtmr1")?;
     let allowed_rtmr2 = parse_measurement_allowlist(&config.allowed_rtmr2, "allowed_rtmr2")?;
