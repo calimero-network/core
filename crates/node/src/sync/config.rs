@@ -41,6 +41,22 @@ pub const DEFAULT_MAX_CONCURRENT_SYNCS: usize = 30;
 /// Default snapshot chunk size for full resync (64 KB)
 pub const DEFAULT_SNAPSHOT_CHUNK_SIZE: usize = 64 * 1024;
 
+/// Default mesh discovery retries for initialized nodes.
+/// Initialized nodes already have state and can afford to fail fast.
+pub const DEFAULT_MESH_RETRIES_INITIALIZED: u32 = 3;
+
+/// Default mesh discovery retry delay for initialized nodes (milliseconds).
+pub const DEFAULT_MESH_RETRY_DELAY_MS_INITIALIZED: u64 = 500;
+
+/// Default mesh discovery retries for uninitialized nodes.
+/// Gossipsub mesh takes 5-10 heartbeats (~5-10s) to add a new subscriber.
+/// Uninitialized nodes need a longer window to avoid getting stuck before
+/// their first snapshot sync.
+pub const DEFAULT_MESH_RETRIES_UNINITIALIZED: u32 = 10;
+
+/// Default mesh discovery retry delay for uninitialized nodes (milliseconds).
+pub const DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED: u64 = 1_000;
+
 /// Synchronization configuration.
 ///
 /// Controls timing, concurrency, and protocol behavior for node synchronization.
