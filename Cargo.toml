@@ -68,7 +68,6 @@ members = [
     "./crates/storage",
     "./crates/storage-macros",
     "./crates/tee-attestation",
-    "./crates/mero-kms-phala",
 
     "./crates/store",
     "./crates/store/blobs",
@@ -108,9 +107,6 @@ members = [
 [workspace.dependencies]
 actix = "0.13.5"
 aes-gcm = "0.10"
-alloy = { version = "1.0", default-features = false, features = ["std", "reqwest", "reqwest-rustls-tls", "essentials"] }
-alloy-transport-http = { version = "1.0", default-features = false, features = ["reqwest", "reqwest-rustls-tls"] }
-alloy-sol-types = "1.4"
 assert-json-diff = "2.0.2"
 async-stream = "0.3.5"
 async-trait = "0.1.89"
