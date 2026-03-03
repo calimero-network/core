@@ -46,7 +46,6 @@ calimero-node.workspace = true
 calimero-node-primitives.workspace = true
 calimero-server.workspace = true
 calimero-store.workspace = true
-calimero-store-encryption.workspace = true
 calimero-store-rocksdb.workspace = true
 calimero-tee-attestation.workspace = true
 calimero-utils-actix.workspace = true

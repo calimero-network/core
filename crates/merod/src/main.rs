@@ -13,7 +13,6 @@ mod cli;
 mod defaults;
 mod docker;
 mod kms;
-mod node_identity;
 mod version;
 
 use cli::RootCommand;

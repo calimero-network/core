@@ -5,10 +5,6 @@ use calimero_node::sync::SyncConfig;
 use calimero_node::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
-use calimero_store::db::Database;
-use calimero_store::Store;
-use calimero_store_encryption::EncryptedDatabase;
-use calimero_store_rocksdb::RocksDB;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult, WrapErr};
 use mero_auth::config::StorageConfig as AuthStorageConfig;
@@ -19,7 +15,6 @@ use super::auth_mode::AuthModeArg;
 use super::validation::validate_config;
 use crate::cli::RootArgs;
 use crate::kms;
-use crate::node_identity;
 
 /// Run a node
 #[derive(Debug, Parser)]
@@ -49,31 +44,12 @@ impl RunCommand {
             "Configuration validation failed - please fix the configuration and try again",
         )?;
 
-        let peer_id = config.identity.peer_id.clone();
-        let datastore_path = path.join(config.datastore.path.clone());
-
-        // For TEE, KMS requires identity to sign challenge. Load identity first (from config or datastore).
-        let identity_for_kms = if config.tee.is_some() {
-            let store_config = StoreConfig::new(datastore_path.clone());
-            let store = Store::open::<RocksDB>(&store_config)?;
-            match node_identity::load_from_store(&store)? {
-                Some(kp) => kp,
-                None => config.identity.to_keypair().map_err(|e| {
-                    eyre::eyre!(
-                        "TEE requires identity for KMS; none in datastore or config: {e}. \
-                         Run merod init first, or restore from backup."
-                    )
-                })?,
-            }
-        } else {
-            libp2p::identity::Keypair::generate_ed25519() // placeholder, not used
-        };
-
         // Fetch storage encryption key from KMS if configured
         let encryption_key = if let Some(ref tee_config) = config.tee {
+            let peer_id = config.identity.public().to_peer_id().to_base58();
             info!("TEE configured, fetching storage key for peer {}", peer_id);
 
-            let key = kms::fetch_storage_key(&tee_config.kms, &peer_id, &identity_for_kms)
+            let key = kms::fetch_storage_key(&tee_config.kms, &peer_id, &config.identity)
                 .await
                 .wrap_err(
                     "TEE storage encryption is configured but failed to fetch key from KMS. \
@@ -87,57 +63,6 @@ impl RunCommand {
             Some(key)
         } else {
             None
-        };
-
-        // Load identity from datastore (or migrate from config)
-        let identity = if let Some(ref key) = encryption_key {
-            let store_config = StoreConfig::with_encryption(datastore_path.clone(), key.clone());
-            let inner_db = RocksDB::open(&store_config)?;
-            let encrypted_db = EncryptedDatabase::wrap(inner_db, key.clone())?;
-            let mut store = Store::new(std::sync::Arc::new(encrypted_db));
-
-            match node_identity::load_from_store(&store)? {
-                Some(kp) => {
-                    info!("Loaded node identity from datastore");
-                    kp
-                }
-                None => {
-                    let kp = config.identity.to_keypair().map_err(|e| {
-                        eyre::eyre!(
-                            "No identity in datastore and config has no keypair: {e}. \
-                             Run merod init first, or restore from backup."
-                        )
-                    })?;
-                    node_identity::save_to_store(&mut store, &kp)?;
-                    info!("Migrated node identity from config to datastore");
-                    // Keep keypair in config for TEE (needed for KMS challenge signing on next run)
-                    kp
-                }
-            }
-        } else {
-            let store_config = StoreConfig::new(datastore_path.clone());
-            let mut store = Store::open::<RocksDB>(&store_config)?;
-
-            match node_identity::load_from_store(&store)? {
-                Some(kp) => {
-                    info!("Loaded node identity from datastore");
-                    kp
-                }
-                None => {
-                    let kp = config.identity.to_keypair().map_err(|e| {
-                        eyre::eyre!(
-                            "No identity in datastore and config has no keypair: {e}. \
-                             Run merod init first, or restore from backup."
-                        )
-                    })?;
-                    node_identity::save_to_store(&mut store, &kp)?;
-                    info!("Migrated node identity from config to datastore");
-                    config.identity =
-                        calimero_config::IdentityConfig::peer_id_only(peer_id.clone());
-                    config.save(&path).await?;
-                    kp
-                }
-            }
         };
 
         // Read node mode from config
@@ -179,7 +104,7 @@ impl RunCommand {
         }
         let server_config = ServerConfig::with_auth(
             server_source.listen,
-            identity.clone(),
+            config.identity.clone(),
             server_source.admin,
             server_source.jsonrpc,
             server_source.websocket,
@@ -189,19 +114,20 @@ impl RunCommand {
         );
 
         // Create store config with optional encryption
+        let datastore_path = path.join(config.datastore.path);
         let datastore_config = match encryption_key {
             Some(key) => {
                 info!("Storage encryption enabled");
-                StoreConfig::with_encryption(datastore_path.clone(), key)
+                StoreConfig::with_encryption(datastore_path, key)
             }
             None => StoreConfig::new(datastore_path),
         };
 
         start(NodeConfig {
             home: path.clone(),
-            identity: identity.clone(),
+            identity: config.identity.clone(),
             network: NetworkConfig::new(
-                identity.clone(),
+                config.identity.clone(),
                 network.swarm,
                 network.bootstrap,
                 network.discovery,

@@ -6732,7 +6732,6 @@ dependencies = [
  "calimero-primitives",
  "calimero-server",
  "calimero-store",
- "calimero-store-encryption",
  "calimero-store-rocksdb",
  "calimero-tee-attestation",
  "calimero-utils-actix",
