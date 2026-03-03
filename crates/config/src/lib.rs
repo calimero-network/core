@@ -20,54 +20,14 @@ pub use calimero_node_primitives::NodeMode;
 
 pub const CONFIG_FILE: &str = "config.toml";
 
-/// Node identity configuration.
-///
-/// The keypair is stored in the datastore (encrypted when TEE is configured).
-/// Config only holds `peer_id` for KMS attestation. `keypair` is optional for
-/// migration from nodes that had it in config.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct IdentityConfig {
-    /// Peer ID (base58) - used for KMS attestation.
-    pub peer_id: String,
-
-    /// Plaintext keypair (base58). Only present during migration from old config.
-    #[serde(default)]
-    pub keypair: Option<String>,
-}
-
-impl IdentityConfig {
-    /// Create with peer_id only (keypair in datastore).
-    #[must_use]
-    pub fn peer_id_only(peer_id: String) -> Self {
-        Self {
-            peer_id,
-            keypair: None,
-        }
-    }
-
-    /// Resolve to Keypair. From config (migration) or fails if not present.
-    pub fn to_keypair(&self) -> Result<libp2p_identity::Keypair, String> {
-        let Some(ref kp) = self.keypair else {
-            return Err("keypair not in config (expected in datastore)".to_string());
-        };
-        let bytes = bs58::decode(kp)
-            .into_vec()
-            .map_err(|_| "invalid base58 keypair")?;
-        let keypair = libp2p_identity::Keypair::from_protobuf_encoding(&bytes)
-            .map_err(|_| "invalid keypair encoding")?;
-        if self.peer_id != keypair.public().to_peer_id().to_base58() {
-            return Err("peer_id does not match keypair".to_string());
-        }
-        Ok(keypair)
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct ConfigFile {
-    #[serde(with = "serde_identity")]
-    pub identity: IdentityConfig,
+    #[serde(
+        with = "serde_identity",
+        default = "libp2p_identity::Keypair::generate_ed25519"
+    )]
+    pub identity: libp2p_identity::Keypair,
 
     #[serde(default)]
     pub mode: NodeMode,
@@ -304,8 +264,8 @@ impl BlobStoreConfig {
 
 impl ConfigFile {
     #[must_use]
-    pub fn new(
-        identity: IdentityConfig,
+    pub const fn new(
+        identity: libp2p_identity::Keypair,
         mode: NodeMode,
         network: NetworkConfig,
         sync: SyncConfig,
@@ -380,35 +340,35 @@ mod serde_duration {
 pub mod serde_identity {
     use core::fmt::{self, Formatter};
 
+    use libp2p_identity::Keypair;
     use serde::de::{self, MapAccess};
-    use serde::ser::SerializeMap;
+    use serde::ser::{self, SerializeMap};
     use serde::{Deserializer, Serializer};
 
-    use super::IdentityConfig;
-
-    pub fn serialize<S>(identity: &IdentityConfig, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(key: &Keypair, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("peer_id", &identity.peer_id)?;
-        if let Some(ref kp) = identity.keypair {
-            map.serialize_entry("keypair", kp)?;
-        }
-        map.end()
+        let mut keypair = serializer.serialize_map(Some(2))?;
+        keypair.serialize_entry("peer_id", &key.public().to_peer_id().to_base58())?;
+        keypair.serialize_entry(
+            "keypair",
+            &bs58::encode(&key.to_protobuf_encoding().map_err(ser::Error::custom)?).into_string(),
+        )?;
+        keypair.end()
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<IdentityConfig, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Keypair, D::Error>
     where
         D: Deserializer<'de>,
     {
         struct IdentityVisitor;
 
         impl<'de> de::Visitor<'de> for IdentityVisitor {
-            type Value = IdentityConfig;
+            type Value = Keypair;
 
             fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-                formatter.write_str("identity config with peer_id and optional keypair")
+                formatter.write_str("an identity")
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -416,12 +376,12 @@ pub mod serde_identity {
                 A: MapAccess<'de>,
             {
                 let mut peer_id = None::<String>;
-                let mut keypair = None::<String>;
+                let mut priv_key = None::<String>;
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "peer_id" => peer_id = Some(map.next_value()?),
-                        "keypair" => keypair = Some(map.next_value()?),
+                        "keypair" => priv_key = Some(map.next_value()?),
                         _ => {
                             drop(map.next_value::<de::IgnoredAny>());
                         }
@@ -429,11 +389,23 @@ pub mod serde_identity {
                 }
 
                 let peer_id = peer_id.ok_or_else(|| de::Error::missing_field("peer_id"))?;
+                let priv_key = priv_key.ok_or_else(|| de::Error::missing_field("keypair"))?;
 
-                Ok(IdentityConfig { peer_id, keypair })
+                let priv_key = bs58::decode(priv_key)
+                    .into_vec()
+                    .map_err(|_| de::Error::custom("invalid base58"))?;
+
+                let keypair = Keypair::from_protobuf_encoding(&priv_key)
+                    .map_err(|_| de::Error::custom("invalid protobuf"))?;
+
+                if peer_id != keypair.public().to_peer_id().to_base58() {
+                    return Err(de::Error::custom("Peer ID does not match public key"));
+                }
+
+                Ok(keypair)
             }
         }
 
-        deserializer.deserialize_struct("IdentityConfig", &["peer_id", "keypair"], IdentityVisitor)
+        deserializer.deserialize_struct("Keypair", &["peer_id", "keypair"], IdentityVisitor)
     }
 }

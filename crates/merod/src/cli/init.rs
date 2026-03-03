@@ -348,9 +348,8 @@ impl InitCommand {
             embedded_auth,
         );
 
-        let peer_id = identity.public().to_peer_id().to_base58();
         let config = ConfigFile::new(
-            calimero_config::IdentityConfig::peer_id_only(peer_id),
+            identity,
             self.mode,
             NetworkConfig::new(
                 SwarmConfig::new(listen),
@@ -381,11 +380,9 @@ impl InitCommand {
 
         config.save(&path).await?;
 
-        let mut store = Store::open::<RocksDB>(&StoreConfig::new(
+        drop(Store::open::<RocksDB>(&StoreConfig::new(
             path.join(config.datastore.path),
-        ))?;
-        crate::node_identity::save_to_store(&mut store, &identity)?;
-        drop(store);
+        ))?);
 
         info!("Initialized a node in {:?}", path);
 
