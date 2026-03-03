@@ -119,3 +119,7 @@ export ACCEPT_MOCK_ATTESTATION=true
 ```
 
 Do not use mock attestation in production.
+
+## Deployment
+
+For a complete guide on building images, deploying to Phala Cloud, and configuring merod for TEE nodes, see [Deploy merod on Phala Network (TEE)](../../docs/phala-tee-deployment.md).
