@@ -8,7 +8,7 @@ use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::sse::SseConfig;
 use calimero_server::ws::WsConfig;
 use camino::{Utf8Path, Utf8PathBuf};
-use eyre::{bail, Result as EyreResult, WrapErr};
+use eyre::{Result as EyreResult, WrapErr};
 use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{read_to_string, write};
@@ -72,113 +72,6 @@ pub struct KmsConfig {
 pub struct PhalaKmsConfig {
     /// URL of the mero-kms-phala service.
     pub url: Url,
-    /// KMS self-attestation verification policy.
-    #[serde(default)]
-    pub attestation: KmsAttestationConfig,
-}
-
-/// Configuration for verifying KMS self-attestation (`POST /attest`).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct KmsAttestationConfig {
-    /// Enable KMS attestation verification before requesting keys.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Accept mock quotes for development only.
-    ///
-    /// WARNING: Enabling this in production bypasses real attestation
-    /// cryptographic guarantees and weakens the trust model.
-    #[serde(default)]
-    pub accept_mock: bool,
-    /// Allowed TCB statuses for KMS quote verification.
-    #[serde(default = "default_kms_attestation_tcb_statuses")]
-    pub allowed_tcb_statuses: Vec<String>,
-    /// Allowed KMS MRTD values (hex, with or without `0x` prefix).
-    #[serde(default)]
-    pub allowed_mrtd: Vec<String>,
-    /// Optional KMS RTMR0 allowlist (hex).
-    #[serde(default)]
-    pub allowed_rtmr0: Vec<String>,
-    /// Optional KMS RTMR1 allowlist (hex).
-    #[serde(default)]
-    pub allowed_rtmr1: Vec<String>,
-    /// Optional KMS RTMR2 allowlist (hex).
-    #[serde(default)]
-    pub allowed_rtmr2: Vec<String>,
-    /// Optional KMS RTMR3 allowlist (hex).
-    #[serde(default)]
-    pub allowed_rtmr3: Vec<String>,
-    /// Optional base64-encoded 32-byte binding value for `/attest`.
-    ///
-    /// If unset, merod uses the default domain separator binding.
-    #[serde(default)]
-    pub binding_b64: Option<String>,
-    /// Optional path to externally-generated attestation policy JSON.
-    ///
-    /// This is intended for deployment startup scripts (e.g. mero-tee image
-    /// startup hooks) that fetch and verify signed policy artifacts, then
-    /// provide policy allowlists to merod.
-    #[serde(default)]
-    pub policy_json_path: Option<Utf8PathBuf>,
-}
-
-impl Default for KmsAttestationConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            accept_mock: false,
-            allowed_tcb_statuses: default_kms_attestation_tcb_statuses(),
-            allowed_mrtd: Vec::new(),
-            allowed_rtmr0: Vec::new(),
-            allowed_rtmr1: Vec::new(),
-            allowed_rtmr2: Vec::new(),
-            allowed_rtmr3: Vec::new(),
-            binding_b64: None,
-            policy_json_path: None,
-        }
-    }
-}
-
-impl KmsAttestationConfig {
-    /// Validate required attestation policy fields when attestation is enabled.
-    ///
-    /// This keeps startup validation consistent with runtime policy normalization.
-    pub fn validate_enabled_policy(&self) -> EyreResult<()> {
-        if !self.enabled {
-            return Ok(());
-        }
-
-        let has_tcb_status = self
-            .allowed_tcb_statuses
-            .iter()
-            .map(|status| status.trim())
-            .any(|status| !status.is_empty());
-        if !has_tcb_status {
-            bail!("tee.kms.phala.attestation.enabled is true, but allowed_tcb_statuses is empty.");
-        }
-
-        let has_mrtd = self
-            .allowed_mrtd
-            .iter()
-            .map(|measurement| normalize_attestation_measurement(measurement))
-            .any(|measurement| !measurement.is_empty());
-        if !has_mrtd {
-            bail!(
-                "tee.kms.phala.attestation.enabled is true, but allowed_mrtd is empty. \
-                 Configure at least one trusted KMS MRTD."
-            );
-        }
-
-        Ok(())
-    }
-}
-
-fn normalize_attestation_measurement(value: &str) -> String {
-    value.trim().trim_start_matches("0x").to_ascii_lowercase()
-}
-
-fn default_kms_attestation_tcb_statuses() -> Vec<String> {
-    vec!["UpToDate".to_owned()]
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
