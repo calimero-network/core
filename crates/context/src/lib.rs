@@ -8,6 +8,7 @@ use std::sync::Arc;
 use actix::{Actor, ActorFutureExt, AsyncContext, WrapFuture};
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_primitives::client::external::group::ExternalGroupClient;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
@@ -116,6 +117,26 @@ impl ContextManager {
             metrics: prometheus_registry.map(Metrics::new),
             active_propagators: HashSet::new(),
         }
+    }
+
+    fn group_client(
+        &self,
+        group_id: ContextGroupId,
+        signing_key: [u8; 32],
+    ) -> eyre::Result<ExternalGroupClient<'_>> {
+        let params = self
+            .external_config
+            .params
+            .get("near")
+            .ok_or_else(|| eyre::eyre!("no 'near' protocol config"))?;
+
+        Ok(self.context_client.group_client(
+            group_id,
+            signing_key,
+            "near".to_owned(),
+            params.network.clone(),
+            params.contract_id.clone(),
+        ))
     }
 }
 
