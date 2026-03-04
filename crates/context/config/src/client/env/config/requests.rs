@@ -129,10 +129,16 @@ pub struct FetchGroupNonceRequest {
 }
 
 /// Response type for group info queries.
+///
+/// Uses `serde_json::Value` for `target_application` because the contract
+/// serializes `Application<'static>` (which contains `#[serde(borrow)]`
+/// `Cow` fields) and deserializing it back into `Application<'static>`
+/// requires `'de: 'static` — a constraint that `Method::Returns` (which
+/// must be `'static`) cannot satisfy with `serde_json::from_slice`.
 #[derive(Debug, Deserialize)]
 pub struct GroupInfoQueryResponse {
     pub app_key: Repr<AppKey>,
-    pub target_application: Application<'static>,
+    pub target_application: serde_json::Value,
     pub member_count: u64,
     pub context_count: u64,
 }

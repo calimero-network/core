@@ -123,7 +123,7 @@ impl ContextManager {
         &self,
         group_id: ContextGroupId,
         signing_key: [u8; 32],
-    ) -> eyre::Result<ExternalGroupClient<'_>> {
+    ) -> eyre::Result<ExternalGroupClient> {
         let params = self
             .external_config
             .params

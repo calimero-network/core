@@ -391,6 +391,12 @@ async fn create_context(
 
     // Height-based delta tracking removed - now using DAG-based approach
 
+    // Capture config strings before they are consumed by into_owned() below,
+    // so we can pass them to group_client for on-chain registration if needed.
+    let group_protocol = external_config.protocol.to_string();
+    let group_network_id = external_config.network_id.to_string();
+    let group_contract_id = external_config.contract_id.to_string();
+
     let mut handle = datastore.handle();
 
     handle.put(
@@ -445,14 +451,15 @@ async fn create_context(
     // messages (e.g. RemoveGroupMembers), but the window is small and the
     // worst case is a single context associated with a since-removed member.
     if let Some(ref gid) = group_id {
-        // Call contract if signing_key is available (derived from identity_secret)
+        // Call contract to register context in the group on-chain.
+        // Derive signing key from the creator's identity_secret.
         let signing_key_bytes: [u8; 32] = *identity_secret;
         let mut group_client = context_client.group_client(
             *gid,
             signing_key_bytes,
-            external_config.protocol.to_string(),
-            external_config.network_id.to_string(),
-            external_config.contract_id.to_string(),
+            group_protocol.clone(),
+            group_network_id.clone(),
+            group_contract_id.clone(),
         );
         group_client
             .register_context_in_group(context.id)

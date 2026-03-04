@@ -1,7 +1,7 @@
 use core::future::Future;
 
 use calimero_context_config::client::env::config::ContextConfig;
-use calimero_context_config::client::AnyTransport;
+use calimero_context_config::client::{AnyTransport, Client};
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_config::types::{self as types};
 use calimero_primitives::context::ContextId;
@@ -12,14 +12,28 @@ use super::ContextClient;
 
 const MAX_RETRIES: u8 = 3;
 
-pub struct ExternalGroupClient<'a> {
-    nonce: Option<u64>,
+/// Immutable configuration for a group contract client.
+///
+/// Separated from the mutable `nonce` field so that Rust 2021's field-level
+/// closure capture allows closures to borrow `inner` while `nonce` is
+/// mutably borrowed by the retry loop.
+struct GroupClientInner {
     signing_key: [u8; 32],
     group_id: types::ContextGroupId,
     protocol: String,
     network_id: String,
     contract_id: String,
-    client: &'a ContextClient,
+    sdk_client: Client<AnyTransport>,
+}
+
+/// A contract client for group operations.
+///
+/// Unlike `ExternalConfigClient` (context-scoped, borrows `ContextClient`),
+/// this struct owns a clone of the SDK `Client<AnyTransport>` so it can be
+/// moved into `'static` async blocks inside actix handlers.
+pub struct ExternalGroupClient {
+    nonce: Option<u64>,
+    inner: GroupClientInner,
 }
 
 impl ContextClient {
@@ -30,31 +44,29 @@ impl ContextClient {
         protocol: String,
         network_id: String,
         contract_id: String,
-    ) -> ExternalGroupClient<'_> {
+    ) -> ExternalGroupClient {
         ExternalGroupClient {
             nonce: None,
-            signing_key,
-            group_id,
-            protocol,
-            network_id,
-            contract_id,
-            client: self,
+            inner: GroupClientInner {
+                signing_key,
+                group_id,
+                protocol,
+                network_id,
+                contract_id,
+                sdk_client: self.external_client.clone(),
+            },
         }
     }
 }
 
-impl ExternalGroupClient<'_> {
-    fn sdk_client(&self) -> &calimero_context_config::client::Client<AnyTransport> {
-        &self.client.external_client
-    }
-
+impl GroupClientInner {
     fn signer_id(&self) -> eyre::Result<types::SignerId> {
         let sk = SigningKey::from_bytes(&self.signing_key);
         sk.verifying_key().rt().map_err(Into::into)
     }
 
-    pub async fn fetch_nonce(&self) -> eyre::Result<u64> {
-        let query = self.sdk_client().query::<ContextConfig>(
+    async fn fetch_nonce(&self) -> eyre::Result<u64> {
+        let query = self.sdk_client.query::<ContextConfig>(
             self.protocol.as_str().into(),
             self.network_id.as_str().into(),
             self.contract_id.as_str().into(),
@@ -69,68 +81,79 @@ impl ExternalGroupClient<'_> {
 
         Ok(nonce)
     }
+}
 
-    async fn with_nonce<T, E, F>(&mut self, f: impl Fn(u64) -> F) -> eyre::Result<T>
-    where
-        E: Into<eyre::Report>,
-        F: Future<Output = Result<T, E>>,
-    {
-        let retries = MAX_RETRIES + u8::from(self.nonce.is_none());
+/// Retry loop with nonce management.
+///
+/// Free function (not a method) so the call site can split borrows:
+/// `&mut self.nonce` is mutably borrowed while `&self.inner` is shared.
+async fn with_nonce<T, E, F>(
+    nonce: &mut Option<u64>,
+    inner: &GroupClientInner,
+    f: impl Fn(u64) -> F,
+) -> eyre::Result<T>
+where
+    E: Into<eyre::Report>,
+    F: Future<Output = Result<T, E>>,
+{
+    let retries = MAX_RETRIES + u8::from(nonce.is_none());
 
-        for _ in 0..=retries {
-            let mut error = None;
+    for _ in 0..=retries {
+        let mut error = None;
 
-            if let Some(nonce) = self.nonce {
-                match f(nonce).await {
-                    Ok(value) => return Ok(value),
-                    Err(err) => error = Some(err),
-                }
-            }
-
-            let old = self.nonce;
-
-            self.nonce = Some(self.fetch_nonce().await?);
-
-            if let Some(err) = error {
-                if old == self.nonce {
-                    return Err(err.into());
-                }
+        if let Some(n) = *nonce {
+            match f(n).await {
+                Ok(value) => return Ok(value),
+                Err(err) => error = Some(err),
             }
         }
 
-        bail!("max retries exceeded");
+        let old = *nonce;
+
+        *nonce = Some(inner.fetch_nonce().await?);
+
+        if let Some(err) = error {
+            if old == *nonce {
+                return Err(err.into());
+            }
+        }
     }
 
+    bail!("max retries exceeded");
+}
+
+impl ExternalGroupClient {
     pub async fn create_group(
         &mut self,
         app_key: types::AppKey,
         target_application: types::Application<'_>,
     ) -> eyre::Result<()> {
-        let client = self.sdk_client().mutate::<ContextConfig>(
-            self.protocol.as_str().into(),
-            self.network_id.as_str().into(),
-            self.contract_id.as_str().into(),
-        );
+        let c = &self.inner;
 
-        client
-            .create_group(self.group_id, app_key, target_application)
-            .send(self.signing_key, 0)
+        c.sdk_client
+            .mutate::<ContextConfig>(
+                c.protocol.as_str().into(),
+                c.network_id.as_str().into(),
+                c.contract_id.as_str().into(),
+            )
+            .create_group(c.group_id, app_key, target_application)
+            .send(c.signing_key, 0)
             .await?;
 
         Ok(())
     }
 
     pub async fn delete_group(&mut self) -> eyre::Result<()> {
-        self.with_nonce(async |nonce| {
-            let client = self.sdk_client().mutate::<ContextConfig>(
-                self.protocol.as_str().into(),
-                self.network_id.as_str().into(),
-                self.contract_id.as_str().into(),
-            );
-
-            client
-                .delete_group(self.group_id)
-                .send(self.signing_key, nonce)
+        with_nonce(&mut self.nonce, &self.inner, async |nonce| {
+            let c = &self.inner;
+            c.sdk_client
+                .mutate::<ContextConfig>(
+                    c.protocol.as_str().into(),
+                    c.network_id.as_str().into(),
+                    c.contract_id.as_str().into(),
+                )
+                .delete_group(c.group_id)
+                .send(c.signing_key, nonce)
                 .await
         })
         .await?;
@@ -139,16 +162,16 @@ impl ExternalGroupClient<'_> {
     }
 
     pub async fn add_group_members(&mut self, members: &[types::SignerId]) -> eyre::Result<()> {
-        self.with_nonce(async |nonce| {
-            let client = self.sdk_client().mutate::<ContextConfig>(
-                self.protocol.as_str().into(),
-                self.network_id.as_str().into(),
-                self.contract_id.as_str().into(),
-            );
-
-            client
-                .add_group_members(self.group_id, members)
-                .send(self.signing_key, nonce)
+        with_nonce(&mut self.nonce, &self.inner, async |nonce| {
+            let c = &self.inner;
+            c.sdk_client
+                .mutate::<ContextConfig>(
+                    c.protocol.as_str().into(),
+                    c.network_id.as_str().into(),
+                    c.contract_id.as_str().into(),
+                )
+                .add_group_members(c.group_id, members)
+                .send(c.signing_key, nonce)
                 .await
         })
         .await?;
@@ -160,16 +183,16 @@ impl ExternalGroupClient<'_> {
         &mut self,
         members: &[types::SignerId],
     ) -> eyre::Result<()> {
-        self.with_nonce(async |nonce| {
-            let client = self.sdk_client().mutate::<ContextConfig>(
-                self.protocol.as_str().into(),
-                self.network_id.as_str().into(),
-                self.contract_id.as_str().into(),
-            );
-
-            client
-                .remove_group_members(self.group_id, members)
-                .send(self.signing_key, nonce)
+        with_nonce(&mut self.nonce, &self.inner, async |nonce| {
+            let c = &self.inner;
+            c.sdk_client
+                .mutate::<ContextConfig>(
+                    c.protocol.as_str().into(),
+                    c.network_id.as_str().into(),
+                    c.contract_id.as_str().into(),
+                )
+                .remove_group_members(c.group_id, members)
+                .send(c.signing_key, nonce)
                 .await
         })
         .await?;
@@ -183,16 +206,16 @@ impl ExternalGroupClient<'_> {
     ) -> eyre::Result<()> {
         let context_id: types::ContextId = context_id.rt()?;
 
-        self.with_nonce(async |nonce| {
-            let client = self.sdk_client().mutate::<ContextConfig>(
-                self.protocol.as_str().into(),
-                self.network_id.as_str().into(),
-                self.contract_id.as_str().into(),
-            );
-
-            client
-                .register_context_in_group(self.group_id, context_id)
-                .send(self.signing_key, nonce)
+        with_nonce(&mut self.nonce, &self.inner, async |nonce| {
+            let c = &self.inner;
+            c.sdk_client
+                .mutate::<ContextConfig>(
+                    c.protocol.as_str().into(),
+                    c.network_id.as_str().into(),
+                    c.contract_id.as_str().into(),
+                )
+                .register_context_in_group(c.group_id, context_id)
+                .send(c.signing_key, nonce)
                 .await
         })
         .await?;
@@ -206,16 +229,16 @@ impl ExternalGroupClient<'_> {
     ) -> eyre::Result<()> {
         let context_id: types::ContextId = context_id.rt()?;
 
-        self.with_nonce(async |nonce| {
-            let client = self.sdk_client().mutate::<ContextConfig>(
-                self.protocol.as_str().into(),
-                self.network_id.as_str().into(),
-                self.contract_id.as_str().into(),
-            );
-
-            client
-                .unregister_context_from_group(self.group_id, context_id)
-                .send(self.signing_key, nonce)
+        with_nonce(&mut self.nonce, &self.inner, async |nonce| {
+            let c = &self.inner;
+            c.sdk_client
+                .mutate::<ContextConfig>(
+                    c.protocol.as_str().into(),
+                    c.network_id.as_str().into(),
+                    c.contract_id.as_str().into(),
+                )
+                .unregister_context_from_group(c.group_id, context_id)
+                .send(c.signing_key, nonce)
                 .await
         })
         .await?;
@@ -227,16 +250,16 @@ impl ExternalGroupClient<'_> {
         &mut self,
         target_application: types::Application<'_>,
     ) -> eyre::Result<()> {
-        self.with_nonce(async |nonce| {
-            let client = self.sdk_client().mutate::<ContextConfig>(
-                self.protocol.as_str().into(),
-                self.network_id.as_str().into(),
-                self.contract_id.as_str().into(),
-            );
-
-            client
-                .set_group_target(self.group_id, target_application.clone())
-                .send(self.signing_key, nonce)
+        with_nonce(&mut self.nonce, &self.inner, async |nonce| {
+            let c = &self.inner;
+            c.sdk_client
+                .mutate::<ContextConfig>(
+                    c.protocol.as_str().into(),
+                    c.network_id.as_str().into(),
+                    c.contract_id.as_str().into(),
+                )
+                .set_group_target(c.group_id, target_application.clone())
+                .send(c.signing_key, nonce)
                 .await
         })
         .await?;
