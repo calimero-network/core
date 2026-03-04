@@ -14,6 +14,8 @@ use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
+use super::decode_signing_key;
+
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     ValidatedJson(req): ValidatedJson<CreateGroupApiRequest>,
@@ -32,6 +34,12 @@ pub async fn handler(
         }
     };
 
+    let signing_key = match req.requester_secret.as_deref().map(decode_signing_key) {
+        Some(Ok(key)) => Some(key),
+        Some(Err(err)) => return err.into_response(),
+        None => None,
+    };
+
     info!(application_id=%req.application_id, "Creating group");
 
     let result = state
@@ -42,6 +50,7 @@ pub async fn handler(
             application_id: req.application_id,
             upgrade_policy: req.upgrade_policy,
             admin_identity: req.admin_identity,
+            signing_key,
         })
         .await
         .map_err(parse_api_error);

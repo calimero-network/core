@@ -49,6 +49,17 @@ fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiDat
     }
 }
 
+fn decode_signing_key(hex_str: &str) -> Result<[u8; 32], ApiError> {
+    let bytes = hex::decode(hex_str).map_err(|_| ApiError {
+        status_code: StatusCode::BAD_REQUEST,
+        message: "Invalid requester_secret: expected hex-encoded 32 bytes".into(),
+    })?;
+    bytes.try_into().map_err(|_| ApiError {
+        status_code: StatusCode::BAD_REQUEST,
+        message: "Invalid requester_secret: must be exactly 32 bytes".into(),
+    })
+}
+
 fn parse_group_id(s: &str) -> Result<ContextGroupId, ApiError> {
     let bytes = hex::decode(s).map_err(|_| ApiError {
         status_code: StatusCode::BAD_REQUEST,

@@ -7,7 +7,7 @@ use calimero_context_primitives::group::AddGroupMembersRequest;
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use tracing::{error, info};
 
-use super::parse_group_id;
+use super::{decode_signing_key, parse_group_id};
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse, Empty};
 use crate::AdminState;
@@ -20,6 +20,12 @@ pub async fn handler(
     let group_id = match parse_group_id(&group_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
+    };
+
+    let signing_key = match req.requester_secret.as_deref().map(decode_signing_key) {
+        Some(Ok(key)) => Some(key),
+        Some(Err(err)) => return err.into_response(),
+        None => None,
     };
 
     info!(group_id=%group_id_str, count=%req.members.len(), "Adding group members");
@@ -36,6 +42,7 @@ pub async fn handler(
             group_id,
             members,
             requester: req.requester,
+            signing_key,
         })
         .await
         .map_err(parse_api_error);

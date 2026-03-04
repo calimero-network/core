@@ -1800,6 +1800,8 @@ pub struct CreateGroupApiRequest {
     pub application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
     pub admin_identity: PublicKey,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_secret: Option<String>,
 }
 
 impl Validate for CreateGroupApiRequest {
@@ -1828,6 +1830,8 @@ pub struct CreateGroupApiResponseData {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteGroupApiRequest {
     pub requester: PublicKey,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_secret: Option<String>,
 }
 
 impl Validate for DeleteGroupApiRequest {
@@ -1872,6 +1876,8 @@ pub struct GroupInfoApiResponseData {
 pub struct AddGroupMembersApiRequest {
     pub members: Vec<GroupMemberApiInput>,
     pub requester: PublicKey,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_secret: Option<String>,
 }
 
 impl Validate for AddGroupMembersApiRequest {
@@ -1896,6 +1902,8 @@ pub struct GroupMemberApiInput {
 pub struct RemoveGroupMembersApiRequest {
     pub members: Vec<PublicKey>,
     pub requester: PublicKey,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_secret: Option<String>,
 }
 
 impl Validate for RemoveGroupMembersApiRequest {
@@ -1946,6 +1954,8 @@ pub struct UpgradeGroupApiRequest {
     pub requester: PublicKey,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub migrate_method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_secret: Option<String>,
 }
 
 impl Validate for UpgradeGroupApiRequest {
@@ -2048,6 +2058,8 @@ pub struct CreateGroupInvitationApiResponseData {
 pub struct JoinGroupApiRequest {
     pub invitation_payload: String,
     pub joiner_identity: PublicKey,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_secret: Option<String>,
 }
 
 impl Validate for JoinGroupApiRequest {

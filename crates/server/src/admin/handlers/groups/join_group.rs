@@ -10,6 +10,7 @@ use calimero_server_primitives::admin::{
 use reqwest::StatusCode;
 use tracing::{error, info};
 
+use crate::admin::handlers::groups::decode_signing_key;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
@@ -29,6 +30,12 @@ pub async fn handler(
         }
     };
 
+    let signing_key = match req.requester_secret.as_deref().map(decode_signing_key) {
+        Some(Ok(key)) => Some(key),
+        Some(Err(err)) => return err.into_response(),
+        None => None,
+    };
+
     info!(joiner=%req.joiner_identity, "Joining group via invitation");
 
     let result = state
@@ -36,6 +43,7 @@ pub async fn handler(
         .join_group(JoinGroupRequest {
             invitation_payload,
             joiner_identity: req.joiner_identity,
+            signing_key,
         })
         .await
         .map_err(parse_api_error);

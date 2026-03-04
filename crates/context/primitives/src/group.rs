@@ -60,6 +60,7 @@ pub struct CreateGroupRequest {
     pub application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
     pub admin_identity: PublicKey,
+    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for CreateGroupRequest {
@@ -75,6 +76,7 @@ pub struct CreateGroupResponse {
 pub struct DeleteGroupRequest {
     pub group_id: ContextGroupId,
     pub requester: PublicKey,
+    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for DeleteGroupRequest {
@@ -91,6 +93,7 @@ pub struct AddGroupMembersRequest {
     pub group_id: ContextGroupId,
     pub members: Vec<(PublicKey, GroupMemberRole)>,
     pub requester: PublicKey,
+    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for AddGroupMembersRequest {
@@ -102,6 +105,7 @@ pub struct RemoveGroupMembersRequest {
     pub group_id: ContextGroupId,
     pub members: Vec<PublicKey>,
     pub requester: PublicKey,
+    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for RemoveGroupMembersRequest {
@@ -162,6 +166,7 @@ pub struct UpgradeGroupRequest {
     pub target_application_id: ApplicationId,
     pub requester: PublicKey,
     pub migration: Option<MigrationParams>,
+    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for UpgradeGroupRequest {
@@ -214,6 +219,7 @@ pub struct CreateGroupInvitationResponse {
 pub struct JoinGroupRequest {
     pub invitation_payload: GroupInvitationPayload,
     pub joiner_identity: PublicKey,
+    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for JoinGroupRequest {

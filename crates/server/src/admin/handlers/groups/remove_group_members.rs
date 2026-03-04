@@ -7,7 +7,7 @@ use calimero_context_primitives::group::RemoveGroupMembersRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use tracing::{error, info};
 
-use super::parse_group_id;
+use super::{decode_signing_key, parse_group_id};
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse, Empty};
 use crate::AdminState;
@@ -22,6 +22,12 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
+    let signing_key = match req.requester_secret.as_deref().map(decode_signing_key) {
+        Some(Ok(key)) => Some(key),
+        Some(Err(err)) => return err.into_response(),
+        None => None,
+    };
+
     info!(group_id=%group_id_str, count=%req.members.len(), "Removing group members");
 
     let result = state
@@ -30,6 +36,7 @@ pub async fn handler(
             group_id,
             members: req.members,
             requester: req.requester,
+            signing_key,
         })
         .await
         .map_err(parse_api_error);
