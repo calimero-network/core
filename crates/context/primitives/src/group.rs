@@ -268,6 +268,7 @@ pub struct UpdateMemberRoleRequest {
     pub identity: PublicKey,
     pub new_role: GroupMemberRole,
     pub requester: PublicKey,
+    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for UpdateMemberRoleRequest {
@@ -293,6 +294,30 @@ pub struct GetGroupForContextRequest {
 
 impl Message for GetGroupForContextRequest {
     type Result = eyre::Result<Option<ContextGroupId>>;
+}
+
+#[derive(Debug)]
+pub struct SyncGroupRequest {
+    pub group_id: ContextGroupId,
+    pub requester: PublicKey,
+    /// Optional contract coordinates. If not provided, uses the node's
+    /// configured "near" protocol params.
+    pub protocol: Option<String>,
+    pub network_id: Option<String>,
+    pub contract_id: Option<String>,
+}
+
+impl Message for SyncGroupRequest {
+    type Result = eyre::Result<SyncGroupResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct SyncGroupResponse {
+    pub group_id: ContextGroupId,
+    pub app_key: [u8; 32],
+    pub target_application_id: ApplicationId,
+    pub member_count: u64,
+    pub context_count: u64,
 }
 
 impl From<calimero_store::key::GroupUpgradeStatus> for GroupUpgradeStatus {

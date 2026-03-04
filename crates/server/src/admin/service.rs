@@ -270,6 +270,10 @@ pub(crate) fn setup(
             post(groups::register_signing_key::handler),
         )
         .route(
+            "/groups/:group_id/sync",
+            post(groups::sync_group::handler),
+        )
+        .route(
             "/groups/:group_id/invite",
             post(groups::create_group_invitation::handler),
         )

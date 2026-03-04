@@ -1,4 +1,8 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_primitives::client::ContextClient;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
@@ -511,6 +515,71 @@ pub fn delete_group_upgrade(store: &Store, group_id: &ContextGroupId) -> EyreRes
     handle.delete(&key)?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Cross-node sync helpers
+// ---------------------------------------------------------------------------
+
+/// Queries the on-chain contract for group state and updates local storage.
+/// Returns the synced `GroupMetaValue`.
+///
+/// Does NOT sync individual members (contract doesn't expose member lists for
+/// privacy). Members sync via: join_group adds self, admin mutation handlers
+/// update both chain + local, P2P gossip (future).
+pub async fn sync_group_state_from_contract(
+    datastore: &Store,
+    context_client: &ContextClient,
+    group_id: &ContextGroupId,
+    protocol: &str,
+    network_id: &str,
+    contract_id: &str,
+) -> EyreResult<GroupMetaValue> {
+    let info = context_client
+        .query_group_info(*group_id, protocol, network_id, contract_id)
+        .await?
+        .ok_or_else(|| eyre::eyre!("group '{group_id:?}' not found on-chain"))?;
+
+    let app_key: [u8; 32] = info.app_key.to_bytes();
+    let target_application_id = extract_application_id(&info.target_application)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let existing = load_group_meta(datastore, group_id)?;
+    let meta = GroupMetaValue {
+        app_key,
+        target_application_id,
+        upgrade_policy: existing
+            .as_ref()
+            .map(|m| m.upgrade_policy.clone())
+            .unwrap_or_default(),
+        created_at: existing.as_ref().map(|m| m.created_at).unwrap_or(now),
+        admin_identity: existing
+            .as_ref()
+            .map(|m| m.admin_identity)
+            .unwrap_or_else(|| PublicKey::from([0u8; 32])),
+        migration: existing.and_then(|m| m.migration),
+    };
+
+    save_group_meta(datastore, group_id, &meta)?;
+    Ok(meta)
+}
+
+fn extract_application_id(app_json: &serde_json::Value) -> EyreResult<ApplicationId> {
+    let id_str = app_json
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| eyre::eyre!("missing 'id' in target_application"))?;
+    let bytes: [u8; 32] = hex::decode(id_str)?
+        .try_into()
+        .map_err(|_| eyre::eyre!("invalid application id length"))?;
+    Ok(ApplicationId::from(bytes))
+}
+
+// ---------------------------------------------------------------------------
+// Group upgrade helpers
+// ---------------------------------------------------------------------------
 
 /// Scans all GroupUpgradeKey entries and returns (group_id, upgrade_value)
 /// pairs where status is InProgress. Used for crash recovery on startup.

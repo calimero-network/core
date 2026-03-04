@@ -31,8 +31,8 @@ use crate::group::{
     GetGroupUpgradeStatusRequest, GroupInfoResponse, GroupMemberEntry, GroupSummary,
     GroupUpgradeInfo, JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest,
     ListGroupContextsRequest, ListGroupMembersRequest, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
-    UpgradeGroupRequest, UpgradeGroupResponse,
+    RetryGroupUpgradeRequest, SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest,
+    UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -1254,6 +1254,20 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::GetGroupForContext {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn sync_group(&self, request: SyncGroupRequest) -> eyre::Result<SyncGroupResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::SyncGroup {
                 request,
                 outcome: sender,
             })

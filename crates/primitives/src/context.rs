@@ -312,12 +312,13 @@ pub struct ContextConfigParams<'a> {
 }
 
 /// Controls how application upgrades propagate across contexts in a group.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum UpgradePolicy {
     /// Upgrade all contexts immediately when the group target changes.
     Automatic,
     /// Upgrade each context transparently on its next execution.
+    #[default]
     LazyOnAccess,
     /// Upgrade all contexts with an optional deadline for completion.
     Coordinated { deadline: Option<Duration> },
@@ -444,6 +445,9 @@ const _: () = {
         inviter_identity: [u8; DIGEST_SIZE],
         invitee_identity: Option<[u8; DIGEST_SIZE]>,
         expiration: Option<u64>,
+        protocol: String,
+        network_id: String,
+        contract_id: String,
     }
 
     impl GroupInvitationPayload {
@@ -454,17 +458,26 @@ const _: () = {
         /// * `inviter_identity` - The public key of the admin who created the invitation.
         /// * `invitee_identity` - Optional specific invitee. `None` means open invitation.
         /// * `expiration` - Optional unix timestamp after which the invitation is invalid.
+        /// * `protocol` - Protocol name (e.g., "near").
+        /// * `network_id` - Network identifier (e.g., "testnet").
+        /// * `contract_id` - Contract account ID on the external network.
         pub fn new(
             group_id: [u8; DIGEST_SIZE],
             inviter_identity: PublicKey,
             invitee_identity: Option<PublicKey>,
             expiration: Option<u64>,
+            protocol: &str,
+            network_id: &str,
+            contract_id: &str,
         ) -> io::Result<Self> {
             let payload = GroupInvitationInner {
                 group_id,
                 inviter_identity: *inviter_identity,
                 invitee_identity: invitee_identity.map(|pk| *pk),
                 expiration,
+                protocol: protocol.to_owned(),
+                network_id: network_id.to_owned(),
+                contract_id: contract_id.to_owned(),
             };
 
             borsh::to_vec(&payload).map(Self)
@@ -473,10 +486,20 @@ const _: () = {
         /// Deserializes the payload and extracts its constituent parts.
         ///
         /// # Returns
-        /// A tuple of `(group_id_bytes, inviter_identity, invitee_identity, expiration)`.
+        /// A tuple of `(group_id_bytes, inviter_identity, invitee_identity, expiration,
+        /// protocol, network_id, contract_id)`.
+        #[allow(clippy::type_complexity)]
         pub fn parts(
             &self,
-        ) -> io::Result<([u8; DIGEST_SIZE], PublicKey, Option<PublicKey>, Option<u64>)> {
+        ) -> io::Result<(
+            [u8; DIGEST_SIZE],
+            PublicKey,
+            Option<PublicKey>,
+            Option<u64>,
+            String,
+            String,
+            String,
+        )> {
             let payload: GroupInvitationInner = borsh::from_slice(&self.0)?;
 
             Ok((
@@ -484,6 +507,9 @@ const _: () = {
                 payload.inviter_identity.into(),
                 payload.invitee_identity.map(Into::into),
                 payload.expiration,
+                payload.protocol,
+                payload.network_id,
+                payload.contract_id,
             ))
         }
     }
@@ -581,9 +607,16 @@ mod tests {
         let inviter = PublicKey::from([4; DIGEST_SIZE]);
         let invitee = PublicKey::from([5; DIGEST_SIZE]);
 
-        let payload =
-            GroupInvitationPayload::new(group_id, inviter, Some(invitee), Some(1_700_000_000))
-                .expect("Payload creation should succeed");
+        let payload = GroupInvitationPayload::new(
+            group_id,
+            inviter,
+            Some(invitee),
+            Some(1_700_000_000),
+            "near",
+            "testnet",
+            "calimero.testnet",
+        )
+        .expect("Payload creation should succeed");
 
         let encoded = payload.to_string();
         assert!(!encoded.is_empty());
@@ -591,11 +624,15 @@ mod tests {
         let decoded =
             GroupInvitationPayload::from_str(&encoded).expect("Payload decoding should succeed");
 
-        let (g, inv, invitee_out, exp) = decoded.parts().expect("Parts extraction should succeed");
+        let (g, inv, invitee_out, exp, protocol, network_id, contract_id) =
+            decoded.parts().expect("Parts extraction should succeed");
         assert_eq!(g, group_id);
         assert_eq!(inv, inviter);
         assert_eq!(invitee_out, Some(invitee));
         assert_eq!(exp, Some(1_700_000_000));
+        assert_eq!(protocol, "near");
+        assert_eq!(network_id, "testnet");
+        assert_eq!(contract_id, "calimero.testnet");
     }
 
     #[test]
@@ -603,18 +640,23 @@ mod tests {
         let group_id = [6u8; DIGEST_SIZE];
         let inviter = PublicKey::from([7; DIGEST_SIZE]);
 
-        let payload = GroupInvitationPayload::new(group_id, inviter, None, None)
-            .expect("Payload creation should succeed");
+        let payload =
+            GroupInvitationPayload::new(group_id, inviter, None, None, "near", "testnet", "c.near")
+                .expect("Payload creation should succeed");
 
         let encoded = payload.to_string();
         let decoded =
             GroupInvitationPayload::from_str(&encoded).expect("Payload decoding should succeed");
 
-        let (g, inv, invitee_out, exp) = decoded.parts().expect("Parts extraction should succeed");
+        let (g, inv, invitee_out, exp, protocol, network_id, contract_id) =
+            decoded.parts().expect("Parts extraction should succeed");
         assert_eq!(g, group_id);
         assert_eq!(inv, inviter);
         assert_eq!(invitee_out, None);
         assert_eq!(exp, None);
+        assert_eq!(protocol, "near");
+        assert_eq!(network_id, "testnet");
+        assert_eq!(contract_id, "c.near");
     }
 
     #[test]

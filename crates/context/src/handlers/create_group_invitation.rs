@@ -43,12 +43,22 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 }
             }
 
-            // 5. Build the invitation payload
+            // 5. Extract contract coordinates
+            let params = self
+                .external_config
+                .params
+                .get("near")
+                .ok_or_else(|| eyre::eyre!("no 'near' protocol config"))?;
+
+            // 6. Build the invitation payload
             let payload = GroupInvitationPayload::new(
                 group_id.to_bytes(),
                 requester,
                 invitee_identity,
                 expiration,
+                "near",
+                &params.network,
+                &params.contract_id,
             )?;
 
             Ok(CreateGroupInvitationResponse { payload })

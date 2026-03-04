@@ -13,7 +13,7 @@ use crate::group::{
     AddGroupMembersRequest, CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest,
     DetachContextFromGroupRequest, GetGroupForContextRequest, GetGroupInfoRequest,
     GetGroupUpgradeStatusRequest, JoinGroupRequest, ListAllGroupsRequest, ListGroupContextsRequest,
-    ListGroupMembersRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
+    ListGroupMembersRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SyncGroupRequest,
     UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
@@ -262,5 +262,9 @@ pub enum ContextMessage {
     GetGroupForContext {
         request: GetGroupForContextRequest,
         outcome: oneshot::Sender<<GetGroupForContextRequest as Message>::Result>,
+    },
+    SyncGroup {
+        request: SyncGroupRequest,
+        outcome: oneshot::Sender<<SyncGroupRequest as Message>::Result>,
     },
 }

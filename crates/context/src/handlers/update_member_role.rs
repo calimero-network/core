@@ -16,6 +16,7 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
             identity,
             new_role,
             requester,
+            signing_key,
         }: UpdateMemberRoleRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -25,6 +26,17 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
             }
 
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
+
+            // Auto-store signing key if provided
+            if let Some(ref sk) = signing_key {
+                let _ = group_store::store_group_signing_key(
+                    &self.datastore,
+                    &group_id,
+                    &requester,
+                    sk,
+                );
+            }
+
             group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
 
             let Some(current_role) =

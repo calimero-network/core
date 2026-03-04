@@ -57,6 +57,44 @@ impl ContextClient {
             },
         }
     }
+
+    /// Read-only query for group info from the on-chain contract.
+    pub async fn query_group_info(
+        &self,
+        group_id: types::ContextGroupId,
+        protocol: &str,
+        network_id: &str,
+        contract_id: &str,
+    ) -> eyre::Result<
+        Option<calimero_context_config::client::env::config::requests::GroupInfoQueryResponse>,
+    > {
+        let query = self.external_client.query::<ContextConfig>(
+            protocol.into(),
+            network_id.into(),
+            contract_id.into(),
+        );
+        query.group_info(group_id).await.map_err(Into::into)
+    }
+
+    /// Read-only query to check if an identity is a group admin on-chain.
+    pub async fn query_is_group_admin(
+        &self,
+        group_id: types::ContextGroupId,
+        identity: types::SignerId,
+        protocol: &str,
+        network_id: &str,
+        contract_id: &str,
+    ) -> eyre::Result<bool> {
+        let query = self.external_client.query::<ContextConfig>(
+            protocol.into(),
+            network_id.into(),
+            contract_id.into(),
+        );
+        query
+            .is_group_admin(group_id, identity)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 impl GroupClientInner {

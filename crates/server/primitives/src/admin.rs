@@ -1795,6 +1795,8 @@ impl Validate for JwtRefreshRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupApiRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
     pub app_key: String,
     pub application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
@@ -2131,6 +2133,8 @@ impl Validate for UpdateGroupSettingsApiRequest {
 pub struct UpdateMemberRoleApiRequest {
     pub role: GroupMemberRole,
     pub requester: PublicKey,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_secret: Option<String>,
 }
 
 impl Validate for UpdateMemberRoleApiRequest {
@@ -2185,6 +2189,42 @@ pub struct RegisterGroupSigningKeyApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct RegisterGroupSigningKeyApiResponseData {
     pub public_key: PublicKey,
+}
+
+// ---- Sync Group ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncGroupApiRequest {
+    pub requester: PublicKey,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_id: Option<String>,
+}
+
+impl Validate for SyncGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncGroupApiResponse {
+    pub data: SyncGroupApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncGroupApiResponseData {
+    pub group_id: String,
+    pub app_key: String,
+    pub target_application_id: ApplicationId,
+    pub member_count: u64,
+    pub context_count: u64,
 }
 
 // ---- Get Context Group ----

@@ -14,7 +14,7 @@ use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
-use super::decode_signing_key;
+use super::{decode_signing_key, parse_group_id};
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
@@ -34,6 +34,12 @@ pub async fn handler(
         }
     };
 
+    let group_id = match req.group_id.as_deref().map(parse_group_id) {
+        Some(Ok(id)) => Some(id),
+        Some(Err(err)) => return err.into_response(),
+        None => None,
+    };
+
     if req.requester_secret.is_some() {
         warn!("requester_secret is deprecated; register signing key via POST /admin-api/groups/:id/signing-key");
     }
@@ -49,7 +55,7 @@ pub async fn handler(
     let result = state
         .ctx_client
         .create_group(CreateGroupRequest {
-            group_id: None,
+            group_id,
             app_key: AppKey::from(app_key_bytes),
             application_id: req.application_id,
             upgrade_policy: req.upgrade_policy,

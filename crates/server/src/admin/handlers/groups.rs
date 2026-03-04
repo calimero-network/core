@@ -12,6 +12,7 @@ pub mod list_group_members;
 pub mod register_signing_key;
 pub mod remove_group_members;
 pub mod retry_group_upgrade;
+pub mod sync_group;
 pub mod update_group_settings;
 pub mod update_member_role;
 pub mod upgrade_group;
