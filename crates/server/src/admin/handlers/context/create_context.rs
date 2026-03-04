@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
+use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponse, CreateContextResponseData,
 };
@@ -17,15 +18,17 @@ pub async fn handler(
 ) -> impl IntoResponse {
     info!(application_id=%req.application_id, "Creating context");
 
+    let identity_secret = req.identity_secret.map(PrivateKey::from);
+
     let result = state
         .ctx_client
         .create_context(
             req.protocol,
             &req.application_id,
-            None,
+            identity_secret,
             req.initialization_params,
             req.context_seed.map(Into::into),
-            None,
+            req.group_id,
         )
         .await
         .map_err(parse_api_error);

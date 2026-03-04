@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{
-    BlockHeight, Capability, ContextIdentity, ContextStorageEntry, SignedOpenInvitation,
+    BlockHeight, Capability, ContextGroupId, ContextIdentity, ContextStorageEntry,
+    SignedOpenInvitation,
 };
 use calimero_context_config::{Proposal, ProposalWithApprovals};
 use calimero_primitives::alias::Alias;
@@ -223,6 +224,8 @@ pub struct CreateContextRequest {
     pub application_id: ApplicationId,
     pub context_seed: Option<Hash>,
     pub initialization_params: Vec<u8>,
+    pub group_id: Option<ContextGroupId>,
+    pub identity_secret: Option<[u8; 32]>,
 }
 
 impl CreateContextRequest {
@@ -231,12 +234,16 @@ impl CreateContextRequest {
         application_id: ApplicationId,
         context_seed: Option<Hash>,
         initialization_params: Vec<u8>,
+        group_id: Option<ContextGroupId>,
+        identity_secret: Option<[u8; 32]>,
     ) -> Self {
         Self {
             protocol,
             application_id,
             context_seed,
             initialization_params,
+            group_id,
+            identity_secret,
         }
     }
 }

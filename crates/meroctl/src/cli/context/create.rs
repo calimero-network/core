@@ -174,6 +174,8 @@ pub async fn create_context(
         application_id,
         context_seed,
         params.map(String::into_bytes).unwrap_or_default(),
+        None,
+        None,
     );
 
     let response: CreateContextResponse = client.create_context(request).await?;
