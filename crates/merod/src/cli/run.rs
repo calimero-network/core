@@ -62,6 +62,7 @@ impl RunCommand {
             );
             Some(key)
         } else {
+            info!("TEE not configured; starting without KMS key-fetch flow");
             None
         };
 

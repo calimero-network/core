@@ -5614,6 +5614,7 @@ dependencies = [
 name = "merod"
 version = "0.1.0"
 dependencies = [
+ "axum 0.7.9",
  "base64 0.22.1",
  "calimero-blobstore",
  "calimero-build-utils",
