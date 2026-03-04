@@ -178,7 +178,11 @@ impl KmsAttestationConfig {
 /// Trims surrounding whitespace, strips a leading `0x` prefix if present, and
 /// lowercases ASCII hex characters.
 pub fn normalize_attestation_measurement(value: &str) -> String {
-    value.trim().trim_start_matches("0x").to_ascii_lowercase()
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized
+        .strip_prefix("0x")
+        .unwrap_or(normalized.as_str())
+        .to_owned()
 }
 
 fn default_kms_attestation_tcb_statuses() -> Vec<String> {

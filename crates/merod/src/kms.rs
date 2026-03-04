@@ -908,6 +908,14 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_measurement_allowlist_accepts_uppercase_prefixed_hex() {
+        let values = vec![format!("0X{}", "AB".repeat(48))];
+        let parsed = parse_measurement_allowlist(&values, "allowed_mrtd").unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0], "ab".repeat(48));
+    }
+
+    #[test]
     fn test_parse_measurement_allowlist_rejects_invalid_length() {
         let values = vec!["ff".repeat(47)];
         assert!(parse_measurement_allowlist(&values, "allowed_mrtd").is_err());
