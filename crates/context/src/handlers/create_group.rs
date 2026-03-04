@@ -34,9 +34,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
         });
 
         if let Ok(Some(_)) = group_store::load_group_meta(&self.datastore, &group_id) {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "group '{group_id:?}' already exists"
-            )));
+            return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
         }
 
         // Load application meta to build contract Application type
@@ -56,14 +54,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 if let Some(client_result) = group_client_result {
                     let mut group_client = client_result?;
 
-                    let contract_app = build_contract_application(
-                        &application_id,
-                        &app_meta,
-                    )?;
+                    let contract_app = build_contract_application(&application_id, &app_meta)?;
 
-                    group_client
-                        .create_group(app_key, contract_app)
-                        .await?;
+                    group_client.create_group(app_key, contract_app).await?;
                 }
 
                 // Local cache write
@@ -118,8 +111,8 @@ pub(crate) fn build_contract_application(
         app_meta.bytecode.blob_id().rt()?,
         app_meta.size,
         config_types::ApplicationSource(app_meta.source.to_string().into()),
-        config_types::ApplicationMetadata(
-            calimero_context_config::repr::Repr::new(app_meta.metadata.to_vec().into()),
-        ),
+        config_types::ApplicationMetadata(calimero_context_config::repr::Repr::new(
+            app_meta.metadata.to_vec().into(),
+        )),
     ))
 }

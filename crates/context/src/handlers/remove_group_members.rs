@@ -31,8 +31,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
             let admin_count = group_store::count_group_admins(&self.datastore, &group_id)?;
             let mut unique_admins_being_removed: BTreeSet<PublicKey> = BTreeSet::new();
             for id in &members {
-                let role =
-                    group_store::get_group_member_role(&self.datastore, &group_id, id)?;
+                let role = group_store::get_group_member_role(&self.datastore, &group_id, id)?;
                 if role == Some(GroupMemberRole::Admin) {
                     unique_admins_being_removed.insert(*id);
                 }

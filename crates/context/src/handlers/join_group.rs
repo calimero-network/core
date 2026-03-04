@@ -54,11 +54,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 }
             }
 
-            if group_store::check_group_membership(
-                &self.datastore,
-                &group_id,
-                &joiner_identity,
-            )? {
+            if group_store::check_group_membership(&self.datastore, &group_id, &joiner_identity)? {
                 bail!("identity is already a member of this group");
             }
 

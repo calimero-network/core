@@ -206,8 +206,7 @@ impl Method<Near> for GroupContextsRequest {
             clippy::transmute_undefined_repr,
             reason = "Repr<T> is a transparent wrapper around T"
         )]
-        let contexts =
-            unsafe { mem::transmute::<Vec<Repr<ContextId>>, Vec<ContextId>>(contexts) };
+        let contexts = unsafe { mem::transmute::<Vec<Repr<ContextId>>, Vec<ContextId>>(contexts) };
 
         Ok(contexts)
     }

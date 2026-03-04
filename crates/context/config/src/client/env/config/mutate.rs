@@ -226,9 +226,8 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         members: &'a [SignerId],
     ) -> ContextConfigMutateRequest<'a, T> {
         // safety: `Repr<T>` is a transparent wrapper around `T`
-        let members = unsafe {
-            &*(ptr::from_ref::<[SignerId]>(members) as *const [Repr<SignerId>])
-        };
+        let members =
+            unsafe { &*(ptr::from_ref::<[SignerId]>(members) as *const [Repr<SignerId>]) };
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Group(GroupRequest::new(
@@ -246,9 +245,8 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         members: &'a [SignerId],
     ) -> ContextConfigMutateRequest<'a, T> {
         // safety: `Repr<T>` is a transparent wrapper around `T`
-        let members = unsafe {
-            &*(ptr::from_ref::<[SignerId]>(members) as *const [Repr<SignerId>])
-        };
+        let members =
+            unsafe { &*(ptr::from_ref::<[SignerId]>(members) as *const [Repr<SignerId>]) };
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Group(GroupRequest::new(
@@ -301,9 +299,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
             client: self.client,
             kind: RequestKind::Group(GroupRequest::new(
                 Repr::new(group_id),
-                GroupRequestKind::SetTargetApplication {
-                    target_application,
-                },
+                GroupRequestKind::SetTargetApplication { target_application },
             )),
         }
     }

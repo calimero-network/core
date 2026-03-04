@@ -46,12 +46,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                 }
 
                 for (identity, role) in &members {
-                    group_store::add_group_member(
-                        &datastore,
-                        &group_id,
-                        identity,
-                        role.clone(),
-                    )?;
+                    group_store::add_group_member(&datastore, &group_id, identity, role.clone())?;
                 }
 
                 info!(?group_id, count = members.len(), %requester, "members added to group");

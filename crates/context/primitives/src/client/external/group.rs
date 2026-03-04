@@ -179,10 +179,7 @@ impl ExternalGroupClient {
         Ok(())
     }
 
-    pub async fn remove_group_members(
-        &mut self,
-        members: &[types::SignerId],
-    ) -> eyre::Result<()> {
+    pub async fn remove_group_members(&mut self, members: &[types::SignerId]) -> eyre::Result<()> {
         with_nonce(&mut self.nonce, &self.inner, async |nonce| {
             let c = &self.inner;
             c.sdk_client
@@ -200,10 +197,7 @@ impl ExternalGroupClient {
         Ok(())
     }
 
-    pub async fn register_context_in_group(
-        &mut self,
-        context_id: ContextId,
-    ) -> eyre::Result<()> {
+    pub async fn register_context_in_group(&mut self, context_id: ContextId) -> eyre::Result<()> {
         let context_id: types::ContextId = context_id.rt()?;
 
         with_nonce(&mut self.nonce, &self.inner, async |nonce| {

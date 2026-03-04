@@ -88,11 +88,10 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         (group_client_result, &app_meta_for_contract)
                     {
                         let mut group_client = client_result?;
-                        let contract_app =
-                            super::create_group::build_contract_application(
-                                &target_application_id,
-                                app_meta,
-                            )?;
+                        let contract_app = super::create_group::build_contract_application(
+                            &target_application_id,
+                            app_meta,
+                        )?;
                         group_client.set_group_target(contract_app).await?;
                     }
 
@@ -176,11 +175,10 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 (group_client_result, &app_meta_for_contract)
             {
                 let mut group_client = client_result?;
-                let contract_app =
-                    super::create_group::build_contract_application(
-                        &target_application_id,
-                        app_meta,
-                    )?;
+                let contract_app = super::create_group::build_contract_application(
+                    &target_application_id,
+                    app_meta,
+                )?;
                 group_client.set_group_target(contract_app).await?;
             }
 

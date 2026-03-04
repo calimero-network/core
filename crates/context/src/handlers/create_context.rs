@@ -461,9 +461,7 @@ async fn create_context(
             group_network_id.clone(),
             group_contract_id.clone(),
         );
-        group_client
-            .register_context_in_group(context.id)
-            .await?;
+        group_client.register_context_in_group(context.id).await?;
 
         group_store::register_context_in_group(&datastore, gid, &context.id)?;
     }
