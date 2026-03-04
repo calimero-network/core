@@ -61,6 +61,10 @@ pub fn enumerate_all_groups(
     for key_result in first.into_iter().chain(iter.keys()) {
         let key = key_result?;
 
+        if key.as_key().as_bytes()[0] >= GROUP_MEMBER_PREFIX {
+            break;
+        }
+
         if skipped < offset {
             skipped += 1;
             continue;
@@ -567,14 +571,15 @@ pub async fn sync_group_state_from_contract(
 }
 
 fn extract_application_id(app_json: &serde_json::Value) -> EyreResult<ApplicationId> {
-    let id_str = app_json
+    use calimero_context_config::repr::{Repr, ReprBytes};
+    use calimero_context_config::types::ApplicationId as ConfigApplicationId;
+
+    let id_val = app_json
         .get("id")
-        .and_then(|v| v.as_str())
         .ok_or_else(|| eyre::eyre!("missing 'id' in target_application"))?;
-    let bytes: [u8; 32] = hex::decode(id_str)?
-        .try_into()
-        .map_err(|_| eyre::eyre!("invalid application id length"))?;
-    Ok(ApplicationId::from(bytes))
+    let repr: Repr<ConfigApplicationId> = serde_json::from_value(id_val.clone())
+        .map_err(|e| eyre::eyre!("invalid application id encoding: {e}"))?;
+    Ok(ApplicationId::from(repr.as_bytes()))
 }
 
 // ---------------------------------------------------------------------------
@@ -968,5 +973,90 @@ mod tests {
         let results = enumerate_in_progress_upgrades(&store).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, gid_in_progress);
+    }
+
+    // -----------------------------------------------------------------------
+    // enumerate_all_groups — prefix guard regression test
+    // -----------------------------------------------------------------------
+
+    /// Regression test: `enumerate_all_groups` must stop at GroupMeta keys and
+    /// not spill into adjacent GroupMember keys (prefix 0x21).  Before the fix,
+    /// the function would attempt to deserialise a `GroupMemberRole` value as
+    /// `GroupMetaValue`, panicking with "failed to fill whole buffer".
+    #[test]
+    fn enumerate_all_groups_stops_before_member_keys() {
+        let store = test_store();
+        let gid = test_group_id();
+        let meta = test_meta();
+        let member = PublicKey::from([0x10; 32]);
+
+        save_group_meta(&store, &gid, &meta).unwrap();
+        // Add a group member — this writes a GroupMember key (prefix 0x21)
+        // into the same column, right after GroupMeta keys (prefix 0x20).
+        add_group_member(&store, &gid, &member, GroupMemberRole::Admin).unwrap();
+
+        // Must return exactly one group without panicking.
+        let groups = enumerate_all_groups(&store, 0, 100).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, gid.to_bytes());
+    }
+
+    #[test]
+    fn enumerate_all_groups_multiple_groups_with_members() {
+        let store = test_store();
+        let gid1 = ContextGroupId::from([0x01; 32]);
+        let gid2 = ContextGroupId::from([0x02; 32]);
+        let meta = test_meta();
+
+        save_group_meta(&store, &gid1, &meta).unwrap();
+        save_group_meta(&store, &gid2, &meta).unwrap();
+        add_group_member(&store, &gid1, &PublicKey::from([0xAA; 32]), GroupMemberRole::Admin)
+            .unwrap();
+        add_group_member(&store, &gid2, &PublicKey::from([0xBB; 32]), GroupMemberRole::Member)
+            .unwrap();
+
+        let groups = enumerate_all_groups(&store, 0, 100).unwrap();
+        assert_eq!(groups.len(), 2);
+
+        // Pagination
+        let page = enumerate_all_groups(&store, 1, 1).unwrap();
+        assert_eq!(page.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_application_id — base58 decoding regression test
+    // -----------------------------------------------------------------------
+
+    /// Regression test: `extract_application_id` must decode the `id` field
+    /// using base58 (via `Repr<ApplicationId>`), not hex.  Before the fix,
+    /// `hex::decode` was called on a base58 string, producing
+    /// "Invalid character 'g' at position 1" errors at runtime.
+    #[test]
+    fn extract_application_id_decodes_base58() {
+        // Repr<[u8; 32]> serialises as base58, matching what the NEAR contract
+        // returns for Repr<ConfigApplicationId> with the same underlying bytes.
+        use calimero_context_config::repr::Repr;
+
+        let raw: [u8; 32] = [0xDE; 32];
+        let encoded = Repr::new(raw).to_string(); // base58 string
+
+        let json = serde_json::json!({ "id": encoded });
+        let result = extract_application_id(&json).unwrap();
+        assert_eq!(*result, raw);
+    }
+
+    #[test]
+    fn extract_application_id_rejects_hex() {
+        // A hex string decodes to ~46 bytes via base58, causing a length
+        // mismatch against the required 32-byte ApplicationId.
+        let hex_str = hex::encode([0xDE; 32]);
+        let json = serde_json::json!({ "id": hex_str });
+        assert!(extract_application_id(&json).is_err());
+    }
+
+    #[test]
+    fn extract_application_id_missing_field_returns_error() {
+        let json = serde_json::json!({});
+        assert!(extract_application_id(&json).is_err());
     }
 }
