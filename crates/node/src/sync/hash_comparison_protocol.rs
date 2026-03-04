@@ -335,6 +335,7 @@ async fn run_initiator_impl<T: SyncTransport>(
         %context_id,
         nodes_compared = stats.nodes_compared,
         entities_merged = stats.entities_merged,
+        entities_pushed = stats.entities_pushed,
         nodes_skipped = stats.nodes_skipped,
         "HashComparison sync complete"
     );
@@ -572,10 +573,6 @@ fn build_tree_node_response_internal(
 }
 
 // =============================================================================
-// Helper Functions
-// =============================================================================
-
-// =============================================================================
 // Bidirectional Sync: Push Helpers
 // =============================================================================
 
@@ -612,7 +609,14 @@ fn collect_leaves_recursive(
     let index = match Index::<MainStorage>::get_index(entity_id) {
         Ok(Some(idx)) => idx,
         Ok(None) => return Ok(()),
-        Err(_) => return Ok(()),
+        Err(e) => {
+            warn!(
+                %entity_id,
+                error = %e,
+                "collect_leaves_recursive: failed to read index, skipping subtree"
+            );
+            return Ok(());
+        }
     };
 
     let children_ids: Vec<[u8; 32]> = index
@@ -628,6 +632,11 @@ fn collect_leaves_recursive(
                     LeafMetadata::new(crdt_type.clone(), index.metadata.updated_at(), [0u8; 32]);
                 let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
                 leaves.push(leaf_data);
+            } else {
+                warn!(
+                    %entity_id,
+                    "collect_leaves_recursive: leaf missing crdt_type, skipping"
+                );
             }
         }
     } else {

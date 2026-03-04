@@ -546,4 +546,70 @@ mod tests {
             _ => panic!("wrong variant"),
         }
     }
+
+    // =========================================================================
+    // EntityPush / EntityPushAck Wire Protocol Tests
+    // =========================================================================
+
+    #[test]
+    fn test_init_payload_entity_push_roundtrip() {
+        use crate::sync::hash_comparison::{CrdtType, LeafMetadata, TreeLeafData};
+
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
+        let leaf = TreeLeafData::new([10u8; 32], vec![1, 2, 3, 4], metadata);
+
+        let request = InitPayload::EntityPush {
+            context_id: ContextId::from([5u8; 32]),
+            entities: vec![leaf],
+        };
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: InitPayload = borsh::from_slice(&encoded).expect("deserialize");
+
+        match decoded {
+            InitPayload::EntityPush {
+                context_id,
+                entities,
+            } => {
+                assert_eq!(*context_id.as_ref(), [5u8; 32]);
+                assert_eq!(entities.len(), 1);
+                assert_eq!(entities[0].key, [10u8; 32]);
+                assert_eq!(entities[0].value, vec![1, 2, 3, 4]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_init_payload_entity_push_empty() {
+        let request = InitPayload::EntityPush {
+            context_id: ContextId::from([1u8; 32]),
+            entities: vec![],
+        };
+
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        let decoded: InitPayload = borsh::from_slice(&encoded).expect("deserialize");
+
+        match decoded {
+            InitPayload::EntityPush { entities, .. } => {
+                assert!(entities.is_empty());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_message_payload_entity_push_ack_roundtrip() {
+        let response = MessagePayload::EntityPushAck { applied_count: 42 };
+
+        let encoded = borsh::to_vec(&response).expect("serialize");
+        let decoded: MessagePayload = borsh::from_slice(&encoded).expect("deserialize");
+
+        match decoded {
+            MessagePayload::EntityPushAck { applied_count } => {
+                assert_eq!(applied_count, 42);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
 }

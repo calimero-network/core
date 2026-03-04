@@ -886,4 +886,111 @@ mod tests {
             stats.entities_pushed,
         );
     }
+
+    /// CRDT conflict during push: alice pushes entity that bob already has
+    /// with a different value. LWW merge should resolve deterministically.
+    #[tokio::test]
+    async fn test_crdt_conflict_during_push() {
+        use calimero_primitives::crdt::CrdtType;
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Shared base
+        let base_id = EntityId::from_u64(1000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+
+        // Both have the conflict entity, different values and timestamps
+        let conflict_id = EntityId::from_u64(42);
+        alice.insert_entity_with_metadata(
+            conflict_id,
+            b"alice-wins".to_vec(),
+            EntityMetadata::new(CrdtType::lww_register("test"), 200), // newer
+        );
+        bob.insert_entity_with_metadata(
+            conflict_id,
+            b"bob-loses".to_vec(),
+            EntityMetadata::new(CrdtType::lww_register("test"), 100), // older
+        );
+
+        // Alice also has extra entities to trigger push
+        for i in 1..=3 {
+            alice.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("alice-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        assert_ne!(alice.root_hash(), bob.root_hash());
+
+        // Round 1: Alice initiates → pushes her data to bob, pulls bob's
+        execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("a->b should succeed");
+
+        // Round 2: Bob initiates → pushes merged state back to alice
+        execute_hash_comparison_sync(&mut bob, &alice)
+            .await
+            .expect("b->a should succeed");
+
+        // After two rounds, both should converge
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "Should converge after bidirectional CRDT merge"
+        );
+
+        // Both should have: 1 base + 1 conflict (merged) + 3 unique = 5
+        assert_eq!(alice.entity_count(), 5);
+        assert_eq!(bob.entity_count(), 5);
+    }
+
+    /// Symmetric sync: A→B then B→A should produce identical state.
+    #[tokio::test]
+    async fn test_symmetric_sync_converges() {
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Shared base
+        let base_id = EntityId::from_u64(1000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+
+        // Each has unique data
+        for i in 1..=5 {
+            alice.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("a-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+            bob.insert_entity_with_metadata(
+                EntityId::from_u64(100 + i),
+                format!("b-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        // A→B: alice initiates, pushes her data, pulls bob's
+        execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("a->b");
+
+        // Should already converge after one bidirectional sync
+        assert_eq!(alice.entity_count(), 11); // 1 base + 5 alice + 5 bob
+        assert_eq!(bob.entity_count(), 11);
+        assert_eq!(alice.root_hash(), bob.root_hash());
+
+        // B→A: bob initiates (should be no-op since already converged)
+        let stats = execute_hash_comparison_sync(&mut bob, &alice)
+            .await
+            .expect("b->a");
+
+        assert_eq!(stats.entities_transferred, 0, "no-op when already synced");
+        assert_eq!(stats.entities_pushed, 0, "no-op when already synced");
+        assert_eq!(alice.root_hash(), bob.root_hash());
+    }
 }
