@@ -143,14 +143,14 @@ impl SyncManager {
             // Check if root Index exists
             let root_index = Index::<MainStorage>::get_index(root_id).ok().flatten()?;
 
-            // Count children (leaf entities) under root
+            // Count children (leaf entities) under root.
+            // Minimum 1 when root exists (consistent with fallback estimation).
             let children = root_index.children().unwrap_or_default();
-            let entity_count = children.len() as u64;
+            let entity_count = (children.len() as u64).max(1);
 
-            // Depth: root + 1 level of children = at most 2 for flat trees.
-            // For deeper trees, we'd need recursive traversal, but this is
-            // good enough for protocol selection heuristics.
-            let max_depth = if entity_count == 0 { 0 } else { 1 };
+            // Depth: 1 when root has data (consistent with fallback).
+            // For deeper trees, we'd need recursive traversal — tracked in #2054.
+            let max_depth = 1;
 
             Some((entity_count, max_depth))
         })

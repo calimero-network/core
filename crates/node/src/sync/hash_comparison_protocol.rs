@@ -38,7 +38,9 @@
 //! ).await?;
 //! ```
 
-use crate::sync::helpers::{apply_leaf_with_crdt_merge, generate_nonce, handle_entity_push};
+use crate::sync::helpers::{
+    apply_leaf_with_crdt_merge, generate_nonce, handle_entity_push, MAX_ENTITIES_PER_PUSH,
+};
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
     compare_tree_nodes, create_runtime_env, InitPayload, LeafMetadata, MessagePayload,
@@ -72,7 +74,7 @@ pub const MAX_REQUEST_DEPTH: u8 = 16;
 /// - For a tree with N nodes, HashComparison needs O(N) requests vs O(depth) for LevelWise
 ///
 /// With 10,000 requests and typical node sizes, this allows syncing trees up to ~10k entities.
-const MAX_HASH_COMPARISON_REQUESTS: u64 = 10_000;
+pub const MAX_HASH_COMPARISON_REQUESTS: u64 = 10_000;
 
 /// Configuration for HashComparison initiator.
 #[derive(Debug, Clone)]
@@ -93,11 +95,6 @@ pub struct HashComparisonFirstRequest {
     /// Maximum depth to return children.
     pub max_depth: Option<u8>,
 }
-
-/// Maximum number of entities per EntityPush message.
-///
-/// Prevents overly large messages when pushing local-only subtrees.
-const MAX_ENTITIES_PER_PUSH: usize = 500;
 
 /// Statistics from a HashComparison sync session.
 #[derive(Debug, Default, Clone)]

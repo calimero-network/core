@@ -41,10 +41,7 @@ use super::manager::SyncManager;
 /// Prevents malicious peers from requesting expensive deep traversals.
 pub const MAX_REQUEST_DEPTH: u8 = 16;
 
-/// Maximum requests allowed per HashComparison session (DoS protection).
-///
-/// Matches `MAX_HASH_COMPARISON_REQUESTS` in `hash_comparison_protocol.rs`.
-const MAX_REQUESTS_PER_SESSION: u64 = 10_000;
+use super::hash_comparison_protocol::MAX_HASH_COMPARISON_REQUESTS;
 
 // =============================================================================
 // SyncManager Responder Implementation
@@ -131,7 +128,7 @@ impl SyncManager {
         // Loop to handle subsequent requests until stream closes
         loop {
             // DoS protection: limit total requests per session
-            if requests_handled >= MAX_REQUESTS_PER_SESSION {
+            if requests_handled >= MAX_HASH_COMPARISON_REQUESTS {
                 warn!(
                     %context_id,
                     requests_handled,
