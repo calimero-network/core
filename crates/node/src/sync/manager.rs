@@ -133,6 +133,7 @@ impl SyncManager {
         use calimero_storage::store::MainStorage;
 
         let store = self.context_client.datastore_handle().into_inner();
+        // SAFETY: identity is unused for read-only Index queries via RuntimeEnv
         let identity = calimero_primitives::identity::PublicKey::from([0u8; 32]);
         let env = create_runtime_env(&store, *context_id, identity);
 

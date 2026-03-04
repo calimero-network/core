@@ -561,11 +561,19 @@ fn build_tree_node_response_internal(
 /// Prevents stack overflow from deeply nested or corrupted trees.
 const MAX_COLLECT_DEPTH: u32 = 64;
 
+/// Maximum leaves to collect from a single subtree.
+///
+/// Prevents unbounded memory growth for very wide trees.
+/// Matches `MAX_HASH_COMPARISON_REQUESTS` in scale.
+const MAX_LEAVES_PER_SUBTREE: usize = 10_000;
+
 /// Collect all leaf entities from a local subtree recursively.
 ///
 /// Walks the Merkle tree starting from `node_id` and collects all leaf
 /// entities (with their data and CRDT metadata). Used when the initiator
 /// needs to push local-only data to the peer.
+///
+/// Capped at `MAX_LEAVES_PER_SUBTREE` to prevent unbounded memory growth.
 ///
 /// Must be called within a `with_runtime_env` scope.
 fn collect_local_leaves(
@@ -592,6 +600,10 @@ fn collect_leaves_recursive(
             node_id = %hex::encode(node_id),
             "collect_leaves_recursive: max depth reached, truncating"
         );
+        return Ok(());
+    }
+
+    if leaves.len() >= MAX_LEAVES_PER_SUBTREE {
         return Ok(());
     }
     let entity_id = if is_root {
@@ -655,20 +667,19 @@ async fn push_local_subtrees<T: SyncTransport>(
     local_only_children: &[[u8; 32]],
     stats: &mut HashComparisonStats,
 ) -> Result<u64> {
-    let mut all_leaves = Vec::new();
+    let mut total = 0u64;
 
+    // Flush per-subtree to avoid accumulating all leaves in memory
     for child_id in local_only_children {
         let leaves = with_runtime_env(runtime_env.clone(), || {
             collect_local_leaves(context_id, child_id, false)
         })?;
-        all_leaves.extend(leaves);
+        if !leaves.is_empty() {
+            total += push_entities(transport, context_id, identity, &leaves, stats).await?;
+        }
     }
 
-    if all_leaves.is_empty() {
-        return Ok(0);
-    }
-
-    push_entities(transport, context_id, identity, &all_leaves, stats).await
+    Ok(total)
 }
 
 /// Send entities to the peer via `EntityPush` messages (batched).
