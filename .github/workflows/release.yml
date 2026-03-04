@@ -29,10 +29,9 @@ env:
     meroctl
     mero-relayer
     mero-abi
-    mero-kms-phala
   AUTH_BINARIES: |-
     mero-auth
-  # Binaries to publish to Homebrew (excludes specialized components like mero-kms-phala)
+  # Binaries to publish to Homebrew
   HOMEBREW_BINARIES: |-
     merod
     meroctl
@@ -318,37 +317,6 @@ jobs:
           binaries: ${{ env.AUTH_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth
-          platforms: ${{ env.DOCKER_PLATFORMS }}
-          include_aarch64: ${{ env.INCLUDE_AARCH64 }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-  release-mero-kms-phala-container:
-    name: Release Mero KMS Phala container
-    needs: [prepare, build-binaries]
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-mero-kms-phala-${{ needs.prepare.outputs.version }}
-      cancel-in-progress: true
-    permissions:
-      contents: read
-      packages: write
-    runs-on: big-machine
-    timeout-minutes: 120
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Release
-        uses: ./.github/actions/container-release
-        with:
-          version: ${{ needs.prepare.outputs.version }}
-          release: ${{ needs.prepare.outputs.docker_release }}
-          prerelease: ${{ needs.prepare.outputs.prerelease }}
-          push: ${{ needs.prepare.outputs.docker_push }}
-          binaries: ${{ env.BINARIES }}
-          dockerfile: .github/workflows/deps/prebuilt.mero-kms-phala.Dockerfile
-          container_name: mero-kms-phala
           platforms: ${{ env.DOCKER_PLATFORMS }}
           include_aarch64: ${{ env.INCLUDE_AARCH64 }}
           github-token: ${{ secrets.GITHUB_TOKEN }}

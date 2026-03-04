@@ -149,6 +149,42 @@ Configuration can be modified via:
 - `merod config` command
 - Direct TOML file editing (not recommended while node is running)
 
+## TEE storage encryption and KMS flow
+
+When TEE is enabled in node configuration, `merod` fetches its storage
+encryption key from KMS during startup.
+
+Configure Phala KMS under:
+
+```toml
+[tee.kms.phala]
+url = "http://127.0.0.1:8080/"
+```
+
+If `[tee]` is present but no provider is configured, startup fails with a
+configuration error.
+
+### Key fetch protocol
+
+`merod` uses a challenge-response flow with attestation and peer signature:
+
+1. Request one-time challenge from KMS (`POST /challenge`).
+2. Build TDX report data:
+   - bytes `[0..32]` = challenge nonce from KMS,
+   - bytes `[32..64]` = `sha256(peer_id)`.
+3. Generate quote/attestation.
+4. Sign the request payload using node identity key.
+5. Submit signed request + quote to KMS (`POST /get-key`).
+
+KMS verifies challenge freshness/single-use, peer key ownership, signature,
+quote validity, and policy compliance before releasing a key.
+
+### Development note
+
+On non-TDX environments, attestation generation may produce mock quotes. Those
+are accepted only if the KMS service explicitly allows mock attestation for
+local development.
+
 ## Running Multiple Nodes
 
 To run a local multi-node network:
@@ -205,7 +241,9 @@ lsof -i :2528
 
 - [Calimero Documentation](https://docs.calimero.network) - Complete documentation
 - [Running Local Networks](../../docs/operator-track/run-a-local-network.md) - Local development guide
+- [merod in TEE mode](../../docs/tee-mode.md) - Configuring merod for TEE and KMS
 - [Node Architecture](../../crates/node/README.md) - Internal node architecture
 - [Network Configuration](../../crates/network/README.md) - P2P networking details
 - [Server API](../../crates/server/README.md) - JSON-RPC API reference
+- [mero-tee mero-kms-phala](https://github.com/calimero-network/mero-tee) - KMS policy and endpoint configuration
 
