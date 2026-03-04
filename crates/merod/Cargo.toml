@@ -56,6 +56,7 @@ calimero-build-utils.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
 
 [package.metadata.workspaces]

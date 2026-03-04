@@ -173,7 +173,11 @@ impl KmsAttestationConfig {
     }
 }
 
-fn normalize_attestation_measurement(value: &str) -> String {
+/// Normalize a configured attestation measurement value for comparison.
+///
+/// Trims surrounding whitespace, strips a leading `0x` prefix if present, and
+/// lowercases ASCII hex characters.
+pub fn normalize_attestation_measurement(value: &str) -> String {
     value.trim().trim_start_matches("0x").to_ascii_lowercase()
 }
 

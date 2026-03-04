@@ -4,12 +4,14 @@
 //! encryption keys using TDX attestation. Currently supports Phala Cloud KMS.
 
 use base64::Engine;
-use calimero_config::{KmsAttestationConfig, KmsConfig, PhalaKmsConfig};
+use calimero_config::{
+    normalize_attestation_measurement, KmsAttestationConfig, KmsConfig, PhalaKmsConfig,
+};
 use calimero_tee_attestation::{
     generate_attestation, is_mock_quote, verify_attestation, verify_mock_attestation,
     VerificationResult,
 };
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{bail, Context, Result};
 use libp2p::identity::Keypair;
 use rand::rngs::OsRng;
@@ -91,7 +93,7 @@ struct NormalizedKmsAttestationPolicy {
     binding_b64: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 struct ExternalKmsAttestationPolicy {
     #[serde(default)]
     allowed_tcb_statuses: Option<Vec<String>>,
@@ -108,6 +110,9 @@ struct ExternalKmsAttestationPolicy {
     #[serde(default)]
     binding_b64: Option<String>,
 }
+
+const EXTERNAL_POLICY_ALLOWED_DIRS: &[&str] = &["/etc/calimero", "/run/calimero"];
+const MOCK_KMS_ATTESTATION_ENV: &str = "MEROD_ALLOW_MOCK_KMS_ATTESTATION";
 
 /// Fetch the storage encryption key using the configured KMS provider.
 ///
@@ -351,7 +356,7 @@ async fn verify_kms_attestation(
         );
     }
 
-    if report_data_bytes.as_slice() != expected_report_data {
+    if !constant_time_eq(&report_data_bytes, &expected_report_data) {
         bail!(
             "KMS attest reportData mismatch (nonce/binding mismatch or tampered response payload)"
         );
@@ -360,6 +365,14 @@ async fn verify_kms_attestation(
     let verification_result = if is_mock_quote(&quote_bytes) {
         if !policy.accept_mock {
             bail!("KMS returned mock attestation quote, but attestation.accept_mock is disabled");
+        }
+        if !mock_kms_attestation_runtime_opt_in() {
+            bail!(
+                "KMS returned mock attestation quote, but {} is not enabled. \
+                 Set {}=true only for development/testing.",
+                MOCK_KMS_ATTESTATION_ENV,
+                MOCK_KMS_ATTESTATION_ENV
+            );
         }
 
         warn!("Accepting mock KMS attestation quote - this is insecure and for development only");
@@ -403,7 +416,15 @@ pub(crate) fn resolve_effective_attestation_config(
             );
         }
 
-        let external_policy = load_external_attestation_policy(policy_path)?;
+        let policy_path = canonicalize_external_policy_path(policy_path)?;
+        if !is_allowed_external_policy_path(&policy_path) {
+            bail!(
+                "tee.kms.phala.attestation.policy_json_path must be under one of: {}",
+                EXTERNAL_POLICY_ALLOWED_DIRS.join(", ")
+            );
+        }
+
+        let external_policy = load_external_attestation_policy(&policy_path)?;
         if let Some(values) = external_policy.allowed_tcb_statuses {
             effective_config.allowed_tcb_statuses = values;
         }
@@ -439,6 +460,7 @@ pub(crate) fn resolve_effective_attestation_config(
 fn load_external_attestation_policy(
     policy_path: &Utf8Path,
 ) -> Result<ExternalKmsAttestationPolicy> {
+    // Intentional sync I/O: this path is used during startup preflight only.
     let policy_raw = std::fs::read_to_string(policy_path).with_context(|| {
         format!(
             "Failed to read external KMS attestation policy file at {}",
@@ -452,6 +474,32 @@ fn load_external_attestation_policy(
             policy_path
         )
     })
+}
+
+fn canonicalize_external_policy_path(policy_path: &Utf8Path) -> Result<Utf8PathBuf> {
+    let canonical_path = std::fs::canonicalize(policy_path).with_context(|| {
+        format!(
+            "Failed to canonicalize external KMS attestation policy path at {}",
+            policy_path
+        )
+    })?;
+    Utf8PathBuf::from_path_buf(canonical_path).map_err(|path| {
+        eyre::eyre!(
+            "External KMS attestation policy path is not valid UTF-8: {}",
+            path.display()
+        )
+    })
+}
+
+fn is_allowed_external_policy_path(policy_path: &Utf8Path) -> bool {
+    EXTERNAL_POLICY_ALLOWED_DIRS
+        .iter()
+        .any(|allowed_dir| policy_path.starts_with(allowed_dir))
+        || is_test_tmp_policy_path(policy_path)
+}
+
+fn is_test_tmp_policy_path(policy_path: &Utf8Path) -> bool {
+    cfg!(test) && policy_path.starts_with("/tmp")
 }
 
 async fn request_kms_attestation(
@@ -508,8 +556,6 @@ fn decode_kms_attestation_response(
 fn normalize_kms_attestation_policy(
     config: &KmsAttestationConfig,
 ) -> Result<NormalizedKmsAttestationPolicy> {
-    config.validate_enabled_policy()?;
-
     let allowed_tcb_statuses = config
         .allowed_tcb_statuses
         .iter()
@@ -551,7 +597,7 @@ fn parse_measurement_allowlist(values: &[String], field_name: &str) -> Result<Ve
     let mut normalized_values = Vec::with_capacity(values.len());
 
     for raw in values {
-        let normalized = normalize_measurement(raw);
+        let normalized = normalize_attestation_measurement(raw);
         if normalized.is_empty() {
             continue;
         }
@@ -588,7 +634,7 @@ fn enforce_kms_attestation_policy(
 ) -> Result<()> {
     let actual_tcb_status = verification_result
         .tcb_status
-        .clone()
+        .as_deref()
         .ok_or_else(|| eyre::eyre!("KMS attestation did not include TCB status"))?;
     let normalized_tcb_status = actual_tcb_status.to_ascii_lowercase();
     if !policy
@@ -613,6 +659,26 @@ fn enforce_kms_attestation_policy(
     Ok(())
 }
 
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+
+    let mut diff = 0u8;
+    for (lhs, rhs) in left.iter().zip(right.iter()) {
+        diff |= lhs ^ rhs;
+    }
+
+    diff == 0
+}
+
+fn mock_kms_attestation_runtime_opt_in() -> bool {
+    std::env::var(MOCK_KMS_ATTESTATION_ENV)
+        .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
+        .unwrap_or(false)
+        || cfg!(test)
+}
+
 fn enforce_measurement_allowlist(
     label: &str,
     actual_measurement: &str,
@@ -622,7 +688,7 @@ fn enforce_measurement_allowlist(
         return Ok(());
     }
 
-    let normalized_actual = normalize_measurement(actual_measurement);
+    let normalized_actual = normalize_attestation_measurement(actual_measurement);
     if allowed_measurements
         .iter()
         .any(|allowed| allowed == &normalized_actual)
@@ -631,10 +697,6 @@ fn enforce_measurement_allowlist(
     }
 
     bail!("{label} '{}' is not in allowlist", normalized_actual);
-}
-
-fn normalize_measurement(value: &str) -> String {
-    value.trim().trim_start_matches("0x").to_ascii_lowercase()
 }
 
 fn build_signature_payload(
@@ -679,7 +741,7 @@ fn ensure_trailing_slash(url: &Url) -> Url {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::io::Write;
 
     use axum::extract::State;
     use axum::routing::post;
@@ -687,6 +749,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use serde::Deserialize;
     use serde_json::json;
+    use tempfile::NamedTempFile;
 
     #[derive(Clone, Copy)]
     enum AttestResponseMode {
@@ -766,14 +829,15 @@ mod tests {
         Url::parse(&format!("http://{addr}/")).expect("base URL should parse")
     }
 
-    fn write_temp_policy_file(contents: &str) -> Utf8PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time must be monotonic")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("merod-kms-policy-{nanos}.json"));
-        std::fs::write(&path, contents).expect("should write temp policy file");
-        Utf8PathBuf::from_path_buf(path).expect("temp path should be valid utf-8")
+    fn write_temp_policy_file(contents: &str) -> NamedTempFile {
+        let mut file = tempfile::Builder::new()
+            .prefix("merod-kms-policy-")
+            .suffix(".json")
+            .tempfile_in("/tmp")
+            .expect("temp policy file should be created");
+        file.write_all(contents.as_bytes())
+            .expect("should write temp policy file");
+        file
     }
 
     #[test]
@@ -853,7 +917,7 @@ mod tests {
     fn test_normalize_kms_attestation_policy_requires_mrtd() {
         let mut cfg = KmsAttestationConfig::default();
         cfg.enabled = true;
-        let result = normalize_kms_attestation_policy(&cfg);
+        let result = resolve_effective_attestation_config(&cfg);
         assert!(result.is_err());
     }
 
@@ -869,12 +933,14 @@ mod tests {
 
     #[test]
     fn test_resolve_effective_attestation_config_applies_external_policy() {
-        let policy_path = write_temp_policy_file(
+        let policy_file = write_temp_policy_file(
             r#"{
   "allowed_tcb_statuses": ["Mock"],
   "allowed_mrtd": ["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]
 }"#,
         );
+        let policy_path = Utf8PathBuf::from_path_buf(policy_file.path().to_path_buf())
+            .expect("temp policy path should be valid utf-8");
 
         let mut cfg = KmsAttestationConfig::default();
         cfg.enabled = true;
@@ -891,18 +957,32 @@ mod tests {
                     .to_owned()
             ]
         );
+    }
 
-        std::fs::remove_file(policy_path).expect("should clean up temp policy");
+    #[test]
+    fn test_resolve_effective_attestation_config_rejects_policy_outside_allowed_dirs() {
+        let mut cfg = KmsAttestationConfig::default();
+        cfg.enabled = true;
+        cfg.allowed_tcb_statuses = vec!["Mock".to_owned()];
+        cfg.allowed_mrtd = vec![format!("{:0>96}", "")];
+        cfg.policy_json_path = Some(Utf8PathBuf::from("/etc/hosts"));
+
+        let result = resolve_effective_attestation_config(&cfg);
+        assert!(result.is_err());
+        let error_text = result.unwrap_err().to_string();
+        assert!(error_text.contains("must be under one of"));
     }
 
     #[tokio::test]
     async fn test_verify_kms_attestation_accepts_external_policy_json() {
-        let policy_path = write_temp_policy_file(
+        let policy_file = write_temp_policy_file(
             r#"{
   "allowed_tcb_statuses": ["Mock"],
   "allowed_mrtd": ["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]
 }"#,
         );
+        let policy_path = Utf8PathBuf::from_path_buf(policy_file.path().to_path_buf())
+            .expect("temp policy path should be valid utf-8");
 
         let mut cfg = KmsAttestationConfig::default();
         cfg.enabled = true;
@@ -913,7 +993,6 @@ mod tests {
         let base_url = spawn_attest_server(AttestResponseMode::Valid).await;
         let result = verify_kms_attestation(&client, &base_url, &cfg).await;
 
-        std::fs::remove_file(policy_path).expect("should clean up temp policy");
         assert!(result.is_ok());
     }
 
