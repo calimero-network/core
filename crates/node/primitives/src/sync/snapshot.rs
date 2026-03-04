@@ -634,6 +634,24 @@ pub enum BroadcastMessage<'a> {
         /// The nonce from the original discovery request
         nonce: [u8; 32],
     },
+
+    /// Notification that a group mutation occurred.
+    /// Receiving nodes should re-sync the group state from the contract.
+    GroupMutationNotification {
+        group_id: [u8; 32],
+        mutation_kind: GroupMutationKind,
+    },
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub enum GroupMutationKind {
+    MembersAdded,
+    MembersRemoved,
+    Upgraded,
+    Deleted,
+    ContextDetached,
+    SettingsUpdated,
+    MemberRoleUpdated,
 }
 
 // Wire protocol types (StreamMessage, InitPayload, MessagePayload) are in wire.rs

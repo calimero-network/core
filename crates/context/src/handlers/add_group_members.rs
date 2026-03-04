@@ -1,6 +1,7 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::group::AddGroupMembersRequest;
+use calimero_node_primitives::sync::GroupMutationKind;
 use eyre::bail;
 use tracing::info;
 
@@ -41,6 +42,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
         }
 
         let datastore = self.datastore.clone();
+        let node_client = self.node_client.clone();
         let effective_signing_key = match signing_key {
             Some(sk) => Some(sk),
             None => group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
@@ -65,6 +67,16 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                 }
 
                 info!(?group_id, count = members.len(), %requester, "members added to group");
+
+                let contexts =
+                    group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;
+                let _ = node_client
+                    .broadcast_group_mutation(
+                        &contexts,
+                        group_id.to_bytes(),
+                        GroupMutationKind::MembersAdded,
+                    )
+                    .await;
 
                 Ok(())
             }

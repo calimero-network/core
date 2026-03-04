@@ -1,5 +1,6 @@
-use actix::{ActorResponse, Handler, Message};
+use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::UpdateMemberRoleRequest;
+use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::context::GroupMemberRole;
 use eyre::bail;
 
@@ -20,7 +21,7 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
         }: UpdateMemberRoleRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let result = (|| {
+        if let Err(err) = (|| -> eyre::Result<()> {
             if group_store::load_group_meta(&self.datastore, &group_id)?.is_none() {
                 bail!("group '{group_id:?}' not found");
             }
@@ -59,8 +60,27 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
             group_store::add_group_member(&self.datastore, &group_id, &identity, new_role)?;
 
             Ok(())
-        })();
+        })() {
+            return ActorResponse::reply(Err(err));
+        }
 
-        ActorResponse::reply(result)
+        let datastore = self.datastore.clone();
+        let node_client = self.node_client.clone();
+
+        ActorResponse::r#async(
+            async move {
+                let contexts =
+                    group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;
+                let _ = node_client
+                    .broadcast_group_mutation(
+                        &contexts,
+                        group_id.to_bytes(),
+                        GroupMutationKind::MemberRoleUpdated,
+                    )
+                    .await;
+                Ok(())
+            }
+            .into_actor(self),
+        )
     }
 }

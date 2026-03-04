@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::group::RemoveGroupMembersRequest;
+use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
@@ -55,6 +56,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
         }
 
         let datastore = self.datastore.clone();
+        let node_client = self.node_client.clone();
         let effective_signing_key = match signing_key {
             Some(sk) => Some(sk),
             None => group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
@@ -79,6 +81,16 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                 }
 
                 info!(?group_id, count = members.len(), %requester, "members removed from group");
+
+                let contexts =
+                    group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;
+                let _ = node_client
+                    .broadcast_group_mutation(
+                        &contexts,
+                        group_id.to_bytes(),
+                        GroupMutationKind::MembersRemoved,
+                    )
+                    .await;
 
                 Ok(())
             }

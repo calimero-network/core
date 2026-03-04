@@ -5,6 +5,7 @@ use calimero_context_config::repr::ReprTransmute;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::group::{UpgradeGroupRequest, UpgradeGroupResponse};
 use calimero_context_primitives::messages::MigrationParams;
+use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_primitives::identity::PublicKey;
@@ -84,6 +85,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             None
         };
 
+        let node_client = self.node_client.clone();
+
         // --- LazyOnAccess: update target and return without canary/propagator ---
         // Contexts will be upgraded individually on their next execution.
         // Launching a propagator would race with the lazy mechanism and could
@@ -132,6 +135,20 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         %target_application_id,
                         "LazyOnAccess upgrade target set; contexts will upgrade on next access"
                     );
+
+                    let contexts = group_store::enumerate_group_contexts(
+                        &datastore,
+                        &group_id,
+                        0,
+                        usize::MAX,
+                    )?;
+                    let _ = node_client
+                        .broadcast_group_mutation(
+                            &contexts,
+                            group_id.to_bytes(),
+                            GroupMutationKind::Upgraded,
+                        )
+                        .await;
 
                     Ok(UpgradeGroupResponse {
                         group_id,
@@ -209,6 +226,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let group_id_clone = group_id;
         let context_client_for_propagator = self.context_client.clone();
         let datastore_for_propagator = self.datastore.clone();
+        let node_client_for_gossip = self.node_client.clone();
+        let datastore_for_gossip = self.datastore.clone();
 
         ActorResponse::r#async(canary_task.map(
             move |canary_result, act, ctx| match canary_result {
@@ -255,6 +274,29 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     };
 
                     update_upgrade_status(&datastore, &group_id_clone, status.clone())?;
+
+                    // Gossip upgrade notification to peers
+                    if let Ok(contexts) = group_store::enumerate_group_contexts(
+                        &datastore_for_gossip,
+                        &group_id_clone,
+                        0,
+                        usize::MAX,
+                    ) {
+                        let nc = node_client_for_gossip;
+                        let gid = group_id_clone.to_bytes();
+                        ctx.spawn(
+                            async move {
+                                let _ = nc
+                                    .broadcast_group_mutation(
+                                        &contexts,
+                                        gid,
+                                        GroupMutationKind::Upgraded,
+                                    )
+                                    .await;
+                            }
+                            .into_actor(act),
+                        );
+                    }
 
                     // Spawn propagator for remaining contexts
                     if total_contexts > 1 {

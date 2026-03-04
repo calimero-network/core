@@ -30,7 +30,7 @@ pub async fn handler(
         .ctx_client
         .sync_group(SyncGroupRequest {
             group_id,
-            requester: req.requester,
+            requester: Some(req.requester),
             protocol: req.protocol,
             network_id: req.network_id,
             contract_id: req.contract_id,

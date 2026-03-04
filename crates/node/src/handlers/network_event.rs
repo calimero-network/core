@@ -284,6 +284,45 @@ impl Handler<NetworkEvent> for NodeManager {
                         let pending_invites = self.state.pending_specialized_node_invites.clone();
                         specialized_node_invite::handle_join_confirmation(&pending_invites, nonce);
                     }
+                    BroadcastMessage::GroupMutationNotification {
+                        group_id,
+                        mutation_kind,
+                    } => {
+                        info!(
+                            ?group_id,
+                            ?mutation_kind,
+                            %source,
+                            "Received group mutation notification, triggering sync"
+                        );
+
+                        let context_client = self.clients.context.clone();
+
+                        let _ignored = ctx.spawn(
+                            async move {
+                                use calimero_context_config::types::ContextGroupId;
+                                use calimero_context_primitives::group::SyncGroupRequest;
+
+                                let group_id = ContextGroupId::from(group_id);
+
+                                if let Err(err) = context_client
+                                    .sync_group(SyncGroupRequest {
+                                        group_id,
+                                        requester: None,
+                                        protocol: None,
+                                        network_id: None,
+                                        contract_id: None,
+                                    })
+                                    .await
+                                {
+                                    warn!(
+                                        ?err,
+                                        "Failed to auto-sync group after mutation notification"
+                                    );
+                                }
+                            }
+                            .into_actor(self),
+                        );
+                    }
                     _ => {
                         // Future message types - log and ignore
                         debug!(?message, "Received unknown broadcast message type");
