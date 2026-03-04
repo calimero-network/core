@@ -1,3 +1,4 @@
+use core::ptr;
 use std::fmt::Debug;
 
 use super::requests::{
@@ -8,10 +9,12 @@ use super::requests::{
 use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
+use crate::repr::Repr;
 use crate::types::{
-    Application, BlockHeight, Capability, ContextId, ContextIdentity, SignedRevealPayload,
+    AppKey, Application, BlockHeight, Capability, ContextGroupId, ContextId, ContextIdentity,
+    SignedRevealPayload, SignerId,
 };
-use crate::{ContextRequest, ContextRequestKind, RequestKind};
+use crate::{ContextRequest, ContextRequestKind, GroupRequest, GroupRequestKind, RequestKind};
 
 #[derive(Debug)]
 pub struct ContextConfigMutate<'a, T> {
@@ -186,6 +189,122 @@ impl<'a, T> ContextConfigMutate<'a, T> {
                 context_id: update_request.context_id,
                 kind: ContextRequestKind::UpdateProxyContract,
             }),
+        }
+    }
+
+    pub fn create_group(
+        self,
+        group_id: ContextGroupId,
+        app_key: AppKey,
+        target_application: Application<'a>,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::Create {
+                    app_key: Repr::new(app_key),
+                    target_application,
+                },
+            )),
+        }
+    }
+
+    pub fn delete_group(self, group_id: ContextGroupId) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::Delete,
+            )),
+        }
+    }
+
+    pub fn add_group_members(
+        self,
+        group_id: ContextGroupId,
+        members: &'a [SignerId],
+    ) -> ContextConfigMutateRequest<'a, T> {
+        // safety: `Repr<T>` is a transparent wrapper around `T`
+        let members = unsafe {
+            &*(ptr::from_ref::<[SignerId]>(members) as *const [Repr<SignerId>])
+        };
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::AddMembers {
+                    members: members.into(),
+                },
+            )),
+        }
+    }
+
+    pub fn remove_group_members(
+        self,
+        group_id: ContextGroupId,
+        members: &'a [SignerId],
+    ) -> ContextConfigMutateRequest<'a, T> {
+        // safety: `Repr<T>` is a transparent wrapper around `T`
+        let members = unsafe {
+            &*(ptr::from_ref::<[SignerId]>(members) as *const [Repr<SignerId>])
+        };
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::RemoveMembers {
+                    members: members.into(),
+                },
+            )),
+        }
+    }
+
+    pub fn register_context_in_group(
+        self,
+        group_id: ContextGroupId,
+        context_id: ContextId,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::RegisterContext {
+                    context_id: Repr::new(context_id),
+                },
+            )),
+        }
+    }
+
+    pub fn unregister_context_from_group(
+        self,
+        group_id: ContextGroupId,
+        context_id: ContextId,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::UnregisterContext {
+                    context_id: Repr::new(context_id),
+                },
+            )),
+        }
+    }
+
+    pub fn set_group_target(
+        self,
+        group_id: ContextGroupId,
+        target_application: Application<'a>,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::SetTargetApplication {
+                    target_application,
+                },
+            )),
         }
     }
 }
