@@ -21,6 +21,7 @@ mod app;
 mod blob;
 mod call;
 mod context;
+mod group;
 mod node;
 mod peers;
 pub mod validation;
@@ -29,6 +30,7 @@ use app::AppCommand;
 use blob::BlobCommand;
 use call::CallCommand;
 use context::ContextCommand;
+use group::GroupCommand;
 use node::NodeCommand;
 use peers::PeersCommand;
 
@@ -40,6 +42,9 @@ pub const EXAMPLES: &str = r"
 
   # List all contexts
   $ meroctl --node node1 context ls
+
+  # List all groups
+  $ meroctl --node node1 group ls
 
   # List all blobs
   $ meroctl --node node1 blob ls
@@ -77,6 +82,7 @@ pub enum SubCommands {
     App(AppCommand),
     Blob(BlobCommand),
     Context(ContextCommand),
+    Group(GroupCommand),
     Call(CallCommand),
     Peers(PeersCommand),
     #[command(subcommand)]
@@ -148,6 +154,7 @@ impl RootCommand {
             SubCommands::App(application) => application.run(&mut environment).await,
             SubCommands::Blob(blob) => blob.run(&mut environment).await,
             SubCommands::Context(context) => context.run(&mut environment).await,
+            SubCommands::Group(group) => group.run(&mut environment).await,
             SubCommands::Call(call) => call.run(&mut environment).await,
             SubCommands::Peers(peers) => peers.run(&mut environment).await,
             SubCommands::Node(node) => node.run(&environment).await,

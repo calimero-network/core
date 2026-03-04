@@ -1,0 +1,38 @@
+use calimero_primitives::identity::PublicKey;
+use calimero_server_primitives::admin::DeleteGroupApiRequest;
+use clap::Parser;
+use eyre::Result;
+
+use crate::cli::Environment;
+
+#[derive(Clone, Debug, Parser)]
+#[command(about = "Delete a group")]
+pub struct DeleteCommand {
+    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    pub group_id: String,
+
+    #[clap(long, help = "Public key of the requester (group admin)")]
+    pub requester: PublicKey,
+
+    #[clap(
+        long,
+        help = "Requester private key (hex). Deprecated: register a signing key instead"
+    )]
+    pub requester_secret: Option<String>,
+}
+
+impl DeleteCommand {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let request = DeleteGroupApiRequest {
+            requester: self.requester,
+            requester_secret: self.requester_secret,
+        };
+
+        let client = environment.client()?;
+        let response = client.delete_group(&self.group_id, request).await?;
+
+        environment.output.write(&response);
+
+        Ok(())
+    }
+}

@@ -2126,7 +2126,25 @@ impl Validate for UpdateGroupSettingsApiRequest {
     }
 }
 
+// ---- Update Group Settings ----
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct UpdateGroupSettingsApiResponse;
+
 // ---- Update Member Role ----
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct UpdateMemberRoleApiResponse;
+
+// ---- Add Group Members (empty response) ----
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct AddGroupMembersApiResponse;
+
+// ---- Remove Group Members (empty response) ----
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct RemoveGroupMembersApiResponse;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2144,6 +2162,9 @@ impl Validate for UpdateMemberRoleApiRequest {
 }
 
 // ---- Detach Context From Group ----
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct DetachContextFromGroupApiResponse;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
