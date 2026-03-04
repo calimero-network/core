@@ -19,7 +19,7 @@
 //! └────────────────────────────────────────────┘
 //! ```
 
-use crate::sync::helpers::apply_leaf_with_crdt_merge;
+use crate::sync::helpers::handle_entity_push;
 use calimero_crypto::Nonce;
 use calimero_node_primitives::sync::{
     create_runtime_env, InitPayload, LeafMetadata, MessagePayload, StreamMessage, SyncTransport,
@@ -40,6 +40,11 @@ use super::manager::SyncManager;
 ///
 /// Prevents malicious peers from requesting expensive deep traversals.
 pub const MAX_REQUEST_DEPTH: u8 = 16;
+
+/// Maximum requests allowed per HashComparison session (DoS protection).
+///
+/// Matches `MAX_HASH_COMPARISON_REQUESTS` in `hash_comparison_protocol.rs`.
+const MAX_REQUESTS_PER_SESSION: u64 = 10_000;
 
 // =============================================================================
 // SyncManager Responder Implementation
@@ -125,12 +130,21 @@ impl SyncManager {
 
         // Loop to handle subsequent requests until stream closes
         loop {
+            // DoS protection: limit total requests per session
+            if requests_handled >= MAX_REQUESTS_PER_SESSION {
+                warn!(
+                    %context_id,
+                    requests_handled,
+                    "Request limit reached, closing responder"
+                );
+                break;
+            }
+
             let Some(request) = transport.recv().await? else {
                 debug!(%context_id, requests_handled, "Stream closed, responder done");
                 break;
             };
 
-            // Expect Init messages with TreeNodeRequest
             let StreamMessage::Init { payload, .. } = request else {
                 debug!(%context_id, "Received non-Init message, ending responder");
                 break;
@@ -165,29 +179,10 @@ impl SyncManager {
                 }
 
                 InitPayload::EntityPush { entities, .. } => {
-                    // Bidirectional sync: initiator is pushing local-only entities
                     let entity_count = entities.len();
-                    trace!(
-                        %context_id,
-                        entity_count,
-                        "Handling EntityPush from initiator"
-                    );
+                    trace!(%context_id, entity_count, "Handling EntityPush from initiator");
 
-                    let mut applied = 0u32;
-                    for leaf in &entities {
-                        let result = with_runtime_env(runtime_env.clone(), || {
-                            apply_leaf_with_crdt_merge(context_id, leaf)
-                        });
-                        if result.is_ok() {
-                            applied += 1;
-                        } else {
-                            warn!(
-                                %context_id,
-                                key = %hex::encode(leaf.key),
-                                "Failed to apply pushed entity"
-                            );
-                        }
-                    }
+                    let applied = handle_entity_push(&runtime_env, context_id, &entities);
 
                     let msg = StreamMessage::Message {
                         sequence_id: sqx.next(),

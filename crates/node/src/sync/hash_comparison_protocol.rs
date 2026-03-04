@@ -38,7 +38,7 @@
 //! ).await?;
 //! ```
 
-use crate::sync::helpers::{apply_leaf_with_crdt_merge, generate_nonce};
+use crate::sync::helpers::{apply_leaf_with_crdt_merge, generate_nonce, handle_entity_push};
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
     compare_tree_nodes, create_runtime_env, InitPayload, LeafMetadata, MessagePayload,
@@ -482,31 +482,11 @@ async fn run_responder_impl<T: SyncTransport>(
             }
 
             InitPayload::EntityPush { entities, .. } => {
-                // Bidirectional sync: initiator is pushing local-only entities to us
                 let entity_count = entities.len();
-                trace!(
-                    %context_id,
-                    entity_count,
-                    "Handling EntityPush from initiator"
-                );
+                trace!(%context_id, entity_count, "Handling EntityPush from initiator");
 
-                let mut applied = 0u32;
-                for leaf in &entities {
-                    let result = with_runtime_env(runtime_env.clone(), || {
-                        apply_leaf_with_crdt_merge(context_id, leaf)
-                    });
-                    if result.is_ok() {
-                        applied += 1;
-                    } else {
-                        warn!(
-                            %context_id,
-                            key = %hex::encode(leaf.key),
-                            "Failed to apply pushed entity"
-                        );
-                    }
-                }
+                let applied = handle_entity_push(&runtime_env, context_id, &entities);
 
-                // Send acknowledgment
                 let msg = StreamMessage::Message {
                     sequence_id,
                     payload: MessagePayload::EntityPushAck {
@@ -576,6 +556,11 @@ fn build_tree_node_response_internal(
 // Bidirectional Sync: Push Helpers
 // =============================================================================
 
+/// Maximum recursion depth for collecting leaves from a subtree.
+///
+/// Prevents stack overflow from deeply nested or corrupted trees.
+const MAX_COLLECT_DEPTH: u32 = 64;
+
 /// Collect all leaf entities from a local subtree recursively.
 ///
 /// Walks the Merkle tree starting from `node_id` and collects all leaf
@@ -589,7 +574,7 @@ fn collect_local_leaves(
     is_root: bool,
 ) -> Result<Vec<TreeLeafData>> {
     let mut leaves = Vec::new();
-    collect_leaves_recursive(context_id, node_id, is_root, &mut leaves)?;
+    collect_leaves_recursive(context_id, node_id, is_root, &mut leaves, 0)?;
     Ok(leaves)
 }
 
@@ -599,7 +584,16 @@ fn collect_leaves_recursive(
     node_id: &[u8; 32],
     is_root: bool,
     leaves: &mut Vec<TreeLeafData>,
+    depth: u32,
 ) -> Result<()> {
+    if depth >= MAX_COLLECT_DEPTH {
+        warn!(
+            depth,
+            node_id = %hex::encode(node_id),
+            "collect_leaves_recursive: max depth reached, truncating"
+        );
+        return Ok(());
+    }
     let entity_id = if is_root {
         Id::new(*context_id.as_ref())
     } else {
@@ -642,7 +636,7 @@ fn collect_leaves_recursive(
     } else {
         // Internal node — recurse into children
         for child_id in &children_ids {
-            collect_leaves_recursive(context_id, child_id, false, leaves)?;
+            collect_leaves_recursive(context_id, child_id, false, leaves, depth + 1)?;
         }
     }
 
@@ -717,9 +711,8 @@ async fn push_entities<T: SyncTransport>(
                 total_pushed += u64::from(applied_count);
             }
             _ => {
-                warn!(
-                    %context_id,
-                    "Unexpected response to EntityPush, continuing"
+                bail!(
+                    "Unexpected response to EntityPush (peer may not support bidirectional sync)"
                 );
             }
         }

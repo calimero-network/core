@@ -117,6 +117,37 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     Ok(())
 }
 
+/// Handle an incoming `EntityPush` by applying CRDT merge for each entity.
+///
+/// Shared between the production responder (`hash_comparison.rs`) and the
+/// protocol responder (`hash_comparison_protocol.rs`).
+///
+/// Must be called within a `with_runtime_env` scope for each entity.
+///
+/// Returns the number of entities successfully applied.
+pub fn handle_entity_push(
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    context_id: ContextId,
+    entities: &[TreeLeafData],
+) -> u32 {
+    let mut applied = 0u32;
+    for leaf in entities {
+        let result = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
+            apply_leaf_with_crdt_merge(context_id, leaf)
+        });
+        if result.is_ok() {
+            applied += 1;
+        } else {
+            tracing::warn!(
+                %context_id,
+                key = %hex::encode(leaf.key),
+                "Failed to apply pushed entity"
+            );
+        }
+    }
+    applied
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
