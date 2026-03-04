@@ -23,6 +23,7 @@ impl Handler<UpdateGroupSettingsRequest> for ContextManager {
             };
 
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
+            group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
 
             meta.upgrade_policy = upgrade_policy;
             group_store::save_group_meta(&self.datastore, &group_id, &meta)?;

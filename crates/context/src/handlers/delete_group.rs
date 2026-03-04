@@ -24,6 +24,9 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                 bail!("group '{group_id:?}' not found");
             };
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
+            if signing_key.is_none() {
+                group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
+            }
             let ctx_count = group_store::count_group_contexts(&self.datastore, &group_id)?;
             if ctx_count > 0 {
                 bail!(
@@ -35,8 +38,20 @@ impl Handler<DeleteGroupRequest> for ContextManager {
             return ActorResponse::reply(Err(err));
         }
 
+        // Auto-store signing key for future use
+        if let Some(ref sk) = signing_key {
+            let _ =
+                group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
+        }
+
         let datastore = self.datastore.clone();
-        let group_client_result = signing_key.map(|sk| self.group_client(group_id, sk));
+        let effective_signing_key = match signing_key {
+            Some(sk) => Some(sk),
+            None => group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
+                .ok()
+                .flatten(),
+        };
+        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
 
         ActorResponse::r#async(
             async move {
@@ -59,6 +74,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                 // Clean up any in-progress or completed upgrade record so crash
                 // recovery does not find orphaned entries for deleted groups.
                 group_store::delete_group_upgrade(&datastore, &group_id)?;
+                group_store::delete_all_group_signing_keys(&datastore, &group_id)?;
                 group_store::delete_group_meta(&datastore, &group_id)?;
 
                 info!(?group_id, %requester, "group deleted");

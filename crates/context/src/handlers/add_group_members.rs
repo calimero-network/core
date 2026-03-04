@@ -26,13 +26,28 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                 bail!("group not found");
             }
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
+            if signing_key.is_none() {
+                group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
+            }
             Ok(())
         })() {
             return ActorResponse::reply(Err(err));
         }
 
+        // Auto-store signing key for future use
+        if let Some(ref sk) = signing_key {
+            let _ =
+                group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
+        }
+
         let datastore = self.datastore.clone();
-        let group_client_result = signing_key.map(|sk| self.group_client(group_id, sk));
+        let effective_signing_key = match signing_key {
+            Some(sk) => Some(sk),
+            None => group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
+                .ok()
+                .flatten(),
+        };
+        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
 
         ActorResponse::r#async(
             async move {

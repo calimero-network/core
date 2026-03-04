@@ -8,7 +8,7 @@ use calimero_server_primitives::admin::{
     CreateGroupApiRequest, CreateGroupApiResponse, CreateGroupApiResponseData,
 };
 use reqwest::StatusCode;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
@@ -33,6 +33,10 @@ pub async fn handler(
             .into_response();
         }
     };
+
+    if req.requester_secret.is_some() {
+        warn!("requester_secret is deprecated; register signing key via POST /admin-api/groups/:id/signing-key");
+    }
 
     let signing_key = match req.requester_secret.as_deref().map(decode_signing_key) {
         Some(Ok(key)) => Some(key),

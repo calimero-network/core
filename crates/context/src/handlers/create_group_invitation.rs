@@ -29,7 +29,10 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             // 2. Requester must be admin
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
 
-            // 3. Validate expiration (if set, must be in the future)
+            // 3. Verify node holds the requester's signing key
+            group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
+
+            // 4. Validate expiration (if set, must be in the future)
             if let Some(exp) = expiration {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -40,7 +43,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 }
             }
 
-            // 4. Build the invitation payload
+            // 5. Build the invitation payload
             let payload = GroupInvitationPayload::new(
                 group_id.to_bytes(),
                 requester,

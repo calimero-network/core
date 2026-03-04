@@ -5,7 +5,6 @@ use calimero_context_primitives::group::{CreateGroupRequest, CreateGroupResponse
 use calimero_primitives::context::GroupMemberRole;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-use eyre::bail;
 use rand::Rng;
 use tracing::info;
 
@@ -45,8 +44,25 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
 
-        // Build group_client if signing_key provided
-        let group_client_result = signing_key.map(|sk| self.group_client(group_id, sk));
+        // Auto-store signing key for future use (group is about to be created with
+        // admin_identity as the first admin, so store it keyed to that identity)
+        if let Some(ref sk) = signing_key {
+            let _ = group_store::store_group_signing_key(
+                &self.datastore,
+                &group_id,
+                &admin_identity,
+                sk,
+            );
+        }
+
+        // Build group_client if signing_key provided, falling back to stored key
+        let effective_signing_key = match signing_key {
+            Some(sk) => Some(sk),
+            None => group_store::get_group_signing_key(&self.datastore, &group_id, &admin_identity)
+                .ok()
+                .flatten(),
+        };
+        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
 
         ActorResponse::r#async(
             async move {

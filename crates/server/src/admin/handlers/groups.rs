@@ -9,6 +9,7 @@ pub mod join_group;
 pub mod list_all_groups;
 pub mod list_group_contexts;
 pub mod list_group_members;
+pub mod register_signing_key;
 pub mod remove_group_members;
 pub mod retry_group_upgrade;
 pub mod update_group_settings;

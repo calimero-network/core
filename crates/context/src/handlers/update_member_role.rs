@@ -25,6 +25,7 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
             }
 
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
+            group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
 
             let Some(current_role) =
                 group_store::get_group_member_role(&self.datastore, &group_id, &identity)?

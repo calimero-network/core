@@ -30,8 +30,9 @@ pub use context::{
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{
-    ContextGroupRef, GroupContextIndex, GroupMember, GroupMeta, GroupMetaValue, GroupUpgradeKey,
-    GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX,
+    ContextGroupRef, GroupContextIndex, GroupMember, GroupMeta, GroupMetaValue, GroupSigningKey,
+    GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
+    GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX, GROUP_SIGNING_KEY_PREFIX,
     GROUP_UPGRADE_PREFIX,
 };
 

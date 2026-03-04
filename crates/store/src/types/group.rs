@@ -30,3 +30,8 @@ impl PredefinedEntry for key::GroupUpgradeKey {
     type Codec = Borsh;
     type DataType<'a> = key::GroupUpgradeValue;
 }
+
+impl PredefinedEntry for key::GroupSigningKey {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupSigningKeyValue;
+}

@@ -34,6 +34,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             &group_id,
             &target_application_id,
             &requester,
+            signing_key.is_some(),
         ) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
@@ -54,8 +55,20 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 
         let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
 
-        // Build contract call if signing_key is provided
-        let group_client_result = signing_key.map(|sk| self.group_client(group_id, sk));
+        // Auto-store signing key for future use
+        if let Some(ref sk) = signing_key {
+            let _ =
+                group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
+        }
+
+        // Build contract call if signing_key is provided (or from stored key)
+        let effective_signing_key = match signing_key {
+            Some(sk) => Some(sk),
+            None => group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
+                .ok()
+                .flatten(),
+        };
+        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
         let app_meta_for_contract = if group_client_result.is_some() {
             match (|| {
                 let handle = self.datastore.handle();
@@ -301,6 +314,7 @@ fn validate_upgrade(
     group_id: &ContextGroupId,
     target_application_id: &ApplicationId,
     requester: &PublicKey,
+    has_raw_signing_key: bool,
 ) -> eyre::Result<UpgradePreamble> {
     // 1. Group must exist
     let meta = group_store::load_group_meta(datastore, group_id)?
@@ -309,28 +323,33 @@ fn validate_upgrade(
     // 2. Requester must be admin
     group_store::require_group_admin(datastore, group_id, requester)?;
 
-    // 3. No active upgrade in progress
+    // 3. Verify node holds the key (skip if raw key was provided)
+    if !has_raw_signing_key {
+        group_store::require_group_signing_key(datastore, group_id, requester)?;
+    }
+
+    // 4. No active upgrade in progress
     if let Some(existing) = group_store::load_group_upgrade(datastore, group_id)? {
         if matches!(existing.status, GroupUpgradeStatus::InProgress { .. }) {
             bail!("an upgrade is already in progress for this group");
         }
     }
 
-    // 4. Target must differ from current
+    // 5. Target must differ from current
     if meta.target_application_id == *target_application_id {
         bail!("group is already targeting this application");
     }
 
-    // 5. Group must have contexts
+    // 6. Group must have contexts
     let contexts = group_store::enumerate_group_contexts(datastore, group_id, 0, usize::MAX)?;
     if contexts.is_empty() {
         bail!("group has no contexts to upgrade");
     }
 
-    // 6. Select canary (first context, deterministic order)
+    // 7. Select canary (first context, deterministic order)
     let canary_context_id = contexts[0];
 
-    // 7. Read current and target application versions from ApplicationMeta
+    // 8. Read current and target application versions from ApplicationMeta
     let handle = datastore.handle();
 
     let from_version = handle

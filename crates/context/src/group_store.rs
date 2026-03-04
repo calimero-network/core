@@ -3,8 +3,9 @@ use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupContextIndex, GroupMember, GroupMeta,
-    GroupMetaValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
-    GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX, GROUP_UPGRADE_PREFIX,
+    GroupMetaValue, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus,
+    GroupUpgradeValue, GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX, GROUP_SIGNING_KEY_PREFIX,
+    GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -272,6 +273,93 @@ pub fn find_local_signing_identity(
     }
 
     Ok(None)
+}
+
+// ---------------------------------------------------------------------------
+// Group signing key helpers
+// ---------------------------------------------------------------------------
+
+pub fn store_group_signing_key(
+    store: &Store,
+    group_id: &ContextGroupId,
+    public_key: &PublicKey,
+    private_key: &[u8; 32],
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupSigningKey::new(group_id.to_bytes(), *public_key);
+    handle.put(
+        &key,
+        &GroupSigningKeyValue {
+            private_key: *private_key,
+        },
+    )?;
+    Ok(())
+}
+
+pub fn get_group_signing_key(
+    store: &Store,
+    group_id: &ContextGroupId,
+    public_key: &PublicKey,
+) -> EyreResult<Option<[u8; 32]>> {
+    let handle = store.handle();
+    let key = GroupSigningKey::new(group_id.to_bytes(), *public_key);
+    let value = handle.get(&key)?;
+    Ok(value.map(|v| v.private_key))
+}
+
+pub fn delete_group_signing_key(
+    store: &Store,
+    group_id: &ContextGroupId,
+    public_key: &PublicKey,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupSigningKey::new(group_id.to_bytes(), *public_key);
+    handle.delete(&key)?;
+    Ok(())
+}
+
+/// Verify that the node holds a signing key for the given requester in this group.
+pub fn require_group_signing_key(
+    store: &Store,
+    group_id: &ContextGroupId,
+    requester: &PublicKey,
+) -> EyreResult<()> {
+    if get_group_signing_key(store, group_id, requester)?.is_none() {
+        bail!(
+            "node does not hold a signing key for requester in group '{group_id:?}'; \
+             register one via POST /admin-api/groups/<id>/signing-key"
+        );
+    }
+    Ok(())
+}
+
+/// Delete all signing keys for a group (used during group deletion).
+pub fn delete_all_group_signing_keys(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
+    let handle = store.handle();
+    let group_id_bytes: [u8; 32] = group_id.to_bytes();
+    let start_key = GroupSigningKey::new(group_id_bytes, [0u8; 32].into());
+    let mut iter = handle.iter::<GroupSigningKey>()?;
+    let first = iter.seek(start_key).transpose();
+
+    let mut keys_to_delete = Vec::new();
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+        if key.as_key().as_bytes()[0] != GROUP_SIGNING_KEY_PREFIX {
+            break;
+        }
+        if key.group_id() != group_id_bytes {
+            break;
+        }
+        keys_to_delete.push(key);
+    }
+    drop(iter);
+
+    let mut handle = store.handle();
+    for key in keys_to_delete {
+        handle.delete(&key)?;
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +714,61 @@ mod tests {
 
         let page = list_group_members(&store, &gid, 1, 2).unwrap();
         assert_eq!(page.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Signing key tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn store_and_get_signing_key() {
+        let store = test_store();
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x10; 32]);
+        let sk = [0xAA; 32];
+
+        assert!(get_group_signing_key(&store, &gid, &pk).unwrap().is_none());
+
+        store_group_signing_key(&store, &gid, &pk, &sk).unwrap();
+        let loaded = get_group_signing_key(&store, &gid, &pk).unwrap().unwrap();
+        assert_eq!(loaded, sk);
+    }
+
+    #[test]
+    fn delete_signing_key() {
+        let store = test_store();
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x10; 32]);
+        let sk = [0xAA; 32];
+
+        store_group_signing_key(&store, &gid, &pk, &sk).unwrap();
+        delete_group_signing_key(&store, &gid, &pk).unwrap();
+        assert!(get_group_signing_key(&store, &gid, &pk).unwrap().is_none());
+    }
+
+    #[test]
+    fn require_signing_key_fails_when_missing() {
+        let store = test_store();
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x10; 32]);
+
+        assert!(require_group_signing_key(&store, &gid, &pk).is_err());
+    }
+
+    #[test]
+    fn delete_all_group_signing_keys_removes_all() {
+        let store = test_store();
+        let gid = test_group_id();
+        let pk1 = PublicKey::from([0x10; 32]);
+        let pk2 = PublicKey::from([0x11; 32]);
+
+        store_group_signing_key(&store, &gid, &pk1, &[0xAA; 32]).unwrap();
+        store_group_signing_key(&store, &gid, &pk2, &[0xBB; 32]).unwrap();
+
+        delete_all_group_signing_keys(&store, &gid).unwrap();
+
+        assert!(get_group_signing_key(&store, &gid, &pk1).unwrap().is_none());
+        assert!(get_group_signing_key(&store, &gid, &pk2).unwrap().is_none());
     }
 
     // -----------------------------------------------------------------------

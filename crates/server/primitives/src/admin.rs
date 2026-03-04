@@ -2155,6 +2155,38 @@ impl Validate for DetachContextFromGroupApiRequest {
     }
 }
 
+// ---- Register Group Signing Key ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterGroupSigningKeyApiRequest {
+    pub signing_key: String,
+}
+
+impl Validate for RegisterGroupSigningKeyApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.signing_key.is_empty() {
+            errors.push(ValidationError::EmptyField {
+                field: "signing_key",
+            });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterGroupSigningKeyApiResponse {
+    pub data: RegisterGroupSigningKeyApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterGroupSigningKeyApiResponseData {
+    pub public_key: PublicKey,
+}
+
 // ---- Get Context Group ----
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
