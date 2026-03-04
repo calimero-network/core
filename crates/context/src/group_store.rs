@@ -41,6 +41,39 @@ pub fn delete_group_meta(store: &Store, group_id: &ContextGroupId) -> EyreResult
     Ok(())
 }
 
+pub fn enumerate_all_groups(
+    store: &Store,
+    offset: usize,
+    limit: usize,
+) -> EyreResult<Vec<([u8; 32], GroupMetaValue)>> {
+    let handle = store.handle();
+    let start_key = GroupMeta::new([0u8; 32]);
+    let mut iter = handle.iter::<GroupMeta>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut results = Vec::new();
+    let mut skipped = 0usize;
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+
+        if results.len() >= limit {
+            break;
+        }
+
+        let Some(meta) = handle.get(&key)? else {
+            continue;
+        };
+        results.push((key.group_id(), meta));
+    }
+
+    Ok(results)
+}
+
 // ---------------------------------------------------------------------------
 // Group member helpers
 // ---------------------------------------------------------------------------

@@ -2085,3 +2085,81 @@ pub struct JoinGroupApiResponseData {
     pub group_id: String,
     pub member_identity: PublicKey,
 }
+
+// ---- List All Groups ----
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ListAllGroupsQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAllGroupsApiResponse {
+    pub data: Vec<GroupSummaryApiData>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSummaryApiData {
+    pub group_id: String,
+    pub app_key: String,
+    pub target_application_id: ApplicationId,
+    pub upgrade_policy: UpgradePolicy,
+    pub created_at: u64,
+}
+
+// ---- Update Group Settings ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateGroupSettingsApiRequest {
+    pub requester: PublicKey,
+    pub upgrade_policy: UpgradePolicy,
+}
+
+impl Validate for UpdateGroupSettingsApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+// ---- Update Member Role ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMemberRoleApiRequest {
+    pub role: GroupMemberRole,
+    pub requester: PublicKey,
+}
+
+impl Validate for UpdateMemberRoleApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+// ---- Detach Context From Group ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetachContextFromGroupApiRequest {
+    pub requester: PublicKey,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_secret: Option<String>,
+}
+
+impl Validate for DetachContextFromGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+// ---- Get Context Group ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextGroupApiResponse {
+    pub data: Option<String>,
+}

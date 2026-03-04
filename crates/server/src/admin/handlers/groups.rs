@@ -2,13 +2,17 @@ pub mod add_group_members;
 pub mod create_group;
 pub mod create_group_invitation;
 pub mod delete_group;
+pub mod detach_context_from_group;
 pub mod get_group_info;
 pub mod get_group_upgrade_status;
 pub mod join_group;
+pub mod list_all_groups;
 pub mod list_group_contexts;
 pub mod list_group_members;
 pub mod remove_group_members;
 pub mod retry_group_upgrade;
+pub mod update_group_settings;
+pub mod update_member_role;
 pub mod upgrade_group;
 
 use calimero_context_config::types::ContextGroupId;

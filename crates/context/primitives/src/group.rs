@@ -232,6 +232,69 @@ pub struct JoinGroupResponse {
     pub member_identity: PublicKey,
 }
 
+#[derive(Debug)]
+pub struct ListAllGroupsRequest {
+    pub offset: usize,
+    pub limit: usize,
+}
+
+impl Message for ListAllGroupsRequest {
+    type Result = eyre::Result<Vec<GroupSummary>>;
+}
+
+#[derive(Clone, Debug)]
+pub struct GroupSummary {
+    pub group_id: ContextGroupId,
+    pub app_key: AppKey,
+    pub target_application_id: ApplicationId,
+    pub upgrade_policy: UpgradePolicy,
+    pub created_at: u64,
+}
+
+#[derive(Debug)]
+pub struct UpdateGroupSettingsRequest {
+    pub group_id: ContextGroupId,
+    pub requester: PublicKey,
+    pub upgrade_policy: UpgradePolicy,
+}
+
+impl Message for UpdateGroupSettingsRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct UpdateMemberRoleRequest {
+    pub group_id: ContextGroupId,
+    pub identity: PublicKey,
+    pub new_role: GroupMemberRole,
+    pub requester: PublicKey,
+}
+
+impl Message for UpdateMemberRoleRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct DetachContextFromGroupRequest {
+    pub group_id: ContextGroupId,
+    pub context_id: ContextId,
+    pub requester: PublicKey,
+    pub signing_key: Option<[u8; 32]>,
+}
+
+impl Message for DetachContextFromGroupRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct GetGroupForContextRequest {
+    pub context_id: ContextId,
+}
+
+impl Message for GetGroupForContextRequest {
+    type Result = eyre::Result<Option<ContextGroupId>>;
+}
+
 impl From<calimero_store::key::GroupUpgradeStatus> for GroupUpgradeStatus {
     fn from(s: calimero_store::key::GroupUpgradeStatus) -> Self {
         match s {

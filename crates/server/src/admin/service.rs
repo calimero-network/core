@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use axum::{Extension, Router};
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
@@ -31,10 +31,11 @@ use crate::admin::handlers::applications::{
     uninstall_application,
 };
 use crate::admin::handlers::context::{
-    create_context, delete_context, get_context, get_context_identities, get_context_ids,
-    get_context_storage, get_contexts_for_application, get_contexts_with_executors_for_application,
-    invite_specialized_node, invite_to_context, invite_to_context_open_invitation, join_context,
-    join_context_open_invitation, sync, update_context_application,
+    create_context, delete_context, get_context, get_context_group, get_context_identities,
+    get_context_ids, get_context_storage, get_contexts_for_application,
+    get_contexts_with_executors_for_application, invite_specialized_node, invite_to_context,
+    invite_to_context_open_invitation, join_context, join_context_open_invitation, sync,
+    update_context_application,
 };
 use crate::admin::handlers::identity::generate_context_identity;
 use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
@@ -148,6 +149,10 @@ pub(crate) fn setup(
             get(get_context_identities::handler),
         )
         .route(
+            "/contexts/:context_id/group",
+            get(get_context_group::handler),
+        )
+        .route(
             "/contexts/:context_id/capabilities/grant",
             post(grant_capabilities::handler),
         )
@@ -220,11 +225,13 @@ pub(crate) fn setup(
         // Group management
         .route(
             "/groups",
-            post(groups::create_group::handler),
+            get(groups::list_all_groups::handler).post(groups::create_group::handler),
         )
         .route(
             "/groups/:group_id",
-            get(groups::get_group_info::handler).delete(groups::delete_group::handler),
+            get(groups::get_group_info::handler)
+                .patch(groups::update_group_settings::handler)
+                .delete(groups::delete_group::handler),
         )
         .route(
             "/groups/:group_id/contexts",
@@ -237,6 +244,14 @@ pub(crate) fn setup(
         .route(
             "/groups/:group_id/members/remove",
             post(groups::remove_group_members::handler),
+        )
+        .route(
+            "/groups/:group_id/members/:identity/role",
+            put(groups::update_member_role::handler),
+        )
+        .route(
+            "/groups/:group_id/contexts/:context_id/remove",
+            post(groups::detach_context_from_group::handler),
         )
         .route(
             "/groups/:group_id/upgrade",

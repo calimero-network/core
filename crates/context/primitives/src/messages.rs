@@ -11,9 +11,10 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AddGroupMembersRequest, CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest,
-    GetGroupInfoRequest, GetGroupUpgradeStatusRequest, JoinGroupRequest, ListGroupContextsRequest,
+    DetachContextFromGroupRequest, GetGroupForContextRequest, GetGroupInfoRequest,
+    GetGroupUpgradeStatusRequest, JoinGroupRequest, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
-    UpgradeGroupRequest,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -241,5 +242,25 @@ pub enum ContextMessage {
     JoinGroup {
         request: JoinGroupRequest,
         outcome: oneshot::Sender<<JoinGroupRequest as Message>::Result>,
+    },
+    ListAllGroups {
+        request: ListAllGroupsRequest,
+        outcome: oneshot::Sender<<ListAllGroupsRequest as Message>::Result>,
+    },
+    UpdateGroupSettings {
+        request: UpdateGroupSettingsRequest,
+        outcome: oneshot::Sender<<UpdateGroupSettingsRequest as Message>::Result>,
+    },
+    UpdateMemberRole {
+        request: UpdateMemberRoleRequest,
+        outcome: oneshot::Sender<<UpdateMemberRoleRequest as Message>::Result>,
+    },
+    DetachContextFromGroup {
+        request: DetachContextFromGroupRequest,
+        outcome: oneshot::Sender<<DetachContextFromGroupRequest as Message>::Result>,
+    },
+    GetGroupForContext {
+        request: GetGroupForContextRequest,
+        outcome: oneshot::Sender<<GetGroupForContextRequest as Message>::Result>,
     },
 }
