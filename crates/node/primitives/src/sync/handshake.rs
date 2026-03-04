@@ -42,6 +42,7 @@ impl Default for SyncCapabilities {
                 SyncProtocolKind::DeltaSync,
                 SyncProtocolKind::HashComparison,
                 SyncProtocolKind::Snapshot,
+                SyncProtocolKind::SubtreePrefetch,
                 SyncProtocolKind::LevelWise,
             ],
         }
