@@ -113,6 +113,13 @@ pub struct KmsAttestationConfig {
     /// If unset, merod uses the default domain separator binding.
     #[serde(default)]
     pub binding_b64: Option<String>,
+    /// Optional path to externally-generated attestation policy JSON.
+    ///
+    /// This is intended for deployment startup scripts (e.g. mero-tee image
+    /// startup hooks) that fetch and verify signed policy artifacts, then
+    /// provide policy allowlists to merod.
+    #[serde(default)]
+    pub policy_json_path: Option<Utf8PathBuf>,
 }
 
 impl Default for KmsAttestationConfig {
@@ -127,6 +134,7 @@ impl Default for KmsAttestationConfig {
             allowed_rtmr2: Vec::new(),
             allowed_rtmr3: Vec::new(),
             binding_b64: None,
+            policy_json_path: None,
         }
     }
 }

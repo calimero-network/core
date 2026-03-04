@@ -9,6 +9,7 @@ use calimero_tee_attestation::{
     generate_attestation, is_mock_quote, verify_attestation, verify_mock_attestation,
     VerificationResult,
 };
+use camino::Utf8Path;
 use eyre::{bail, Context, Result};
 use libp2p::identity::Keypair;
 use rand::rngs::OsRng;
@@ -87,6 +88,24 @@ struct NormalizedKmsAttestationPolicy {
     allowed_rtmr2: Vec<String>,
     allowed_rtmr3: Vec<String>,
     binding: [u8; 32],
+    binding_b64: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct ExternalKmsAttestationPolicy {
+    #[serde(default)]
+    allowed_tcb_statuses: Option<Vec<String>>,
+    #[serde(default)]
+    allowed_mrtd: Option<Vec<String>>,
+    #[serde(default)]
+    allowed_rtmr0: Option<Vec<String>>,
+    #[serde(default)]
+    allowed_rtmr1: Option<Vec<String>>,
+    #[serde(default)]
+    allowed_rtmr2: Option<Vec<String>>,
+    #[serde(default)]
+    allowed_rtmr3: Option<Vec<String>>,
+    #[serde(default)]
     binding_b64: Option<String>,
 }
 
@@ -305,7 +324,8 @@ async fn verify_kms_attestation(
     base_url: &Url,
     attestation_config: &KmsAttestationConfig,
 ) -> Result<()> {
-    let policy = normalize_kms_attestation_policy(attestation_config)?;
+    let effective_config = resolve_effective_attestation_config(attestation_config)?;
+    let policy = normalize_kms_attestation_policy(&effective_config)?;
     let attest_endpoint = base_url
         .join("attest")
         .context("Failed to build KMS attest endpoint URL")?;
@@ -364,6 +384,74 @@ async fn verify_kms_attestation(
     info!("KMS self-attestation verified successfully");
 
     Ok(())
+}
+
+pub(crate) fn resolve_effective_attestation_config(
+    config: &KmsAttestationConfig,
+) -> Result<KmsAttestationConfig> {
+    let mut effective_config = config.clone();
+
+    if !config.enabled {
+        return Ok(effective_config);
+    }
+
+    if let Some(policy_path) = config.policy_json_path.as_deref() {
+        if !policy_path.is_absolute() {
+            bail!(
+                "tee.kms.phala.attestation.policy_json_path must be an absolute path: {}",
+                policy_path
+            );
+        }
+
+        let external_policy = load_external_attestation_policy(policy_path)?;
+        if let Some(values) = external_policy.allowed_tcb_statuses {
+            effective_config.allowed_tcb_statuses = values;
+        }
+        if let Some(values) = external_policy.allowed_mrtd {
+            effective_config.allowed_mrtd = values;
+        }
+        if let Some(values) = external_policy.allowed_rtmr0 {
+            effective_config.allowed_rtmr0 = values;
+        }
+        if let Some(values) = external_policy.allowed_rtmr1 {
+            effective_config.allowed_rtmr1 = values;
+        }
+        if let Some(values) = external_policy.allowed_rtmr2 {
+            effective_config.allowed_rtmr2 = values;
+        }
+        if let Some(values) = external_policy.allowed_rtmr3 {
+            effective_config.allowed_rtmr3 = values;
+        }
+        if let Some(value) = external_policy.binding_b64 {
+            effective_config.binding_b64 = Some(value);
+        }
+
+        info!(
+            policy_path = %policy_path,
+            "Loaded external KMS attestation policy"
+        );
+    }
+
+    effective_config.validate_enabled_policy()?;
+    Ok(effective_config)
+}
+
+fn load_external_attestation_policy(
+    policy_path: &Utf8Path,
+) -> Result<ExternalKmsAttestationPolicy> {
+    let policy_raw = std::fs::read_to_string(policy_path).with_context(|| {
+        format!(
+            "Failed to read external KMS attestation policy file at {}",
+            policy_path
+        )
+    })?;
+
+    serde_json::from_str::<ExternalKmsAttestationPolicy>(&policy_raw).with_context(|| {
+        format!(
+            "Failed to parse external KMS attestation policy JSON at {}",
+            policy_path
+        )
+    })
 }
 
 async fn request_kms_attestation(
@@ -591,6 +679,102 @@ fn ensure_trailing_slash(url: &Url) -> Url {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use axum::extract::State;
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use camino::Utf8PathBuf;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[derive(Clone, Copy)]
+    enum AttestResponseMode {
+        Valid,
+        ReportDataMismatch,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AttestRequestBody {
+        nonce_b64: String,
+        #[serde(default)]
+        binding_b64: Option<String>,
+    }
+
+    fn mock_quote_bytes_with_report_data(report_data: &[u8; 64]) -> Vec<u8> {
+        let mut quote_bytes = b"MOCK_TDX_QUOTE_V1".to_vec();
+        quote_bytes.extend_from_slice(report_data);
+        quote_bytes.resize(256, 0);
+        quote_bytes
+    }
+
+    async fn attest_handler(
+        State(mode): State<AttestResponseMode>,
+        Json(request): Json<AttestRequestBody>,
+    ) -> Json<serde_json::Value> {
+        let nonce_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&request.nonce_b64)
+            .expect("request nonce must be valid base64");
+        let nonce: [u8; 32] = nonce_bytes
+            .try_into()
+            .expect("request nonce must decode to 32 bytes");
+
+        let binding = if let Some(binding_b64) = request.binding_b64 {
+            let binding_bytes = base64::engine::general_purpose::STANDARD
+                .decode(binding_b64)
+                .expect("binding must be valid base64");
+            binding_bytes
+                .try_into()
+                .expect("binding must decode to 32 bytes")
+        } else {
+            default_kms_attestation_binding()
+        };
+
+        let expected_report_data = build_kms_attestation_report_data(&nonce, &binding);
+        let report_data_hex = match mode {
+            AttestResponseMode::Valid => hex::encode(expected_report_data),
+            AttestResponseMode::ReportDataMismatch => hex::encode([0u8; 64]),
+        };
+
+        let quote_b64 = base64::engine::general_purpose::STANDARD
+            .encode(mock_quote_bytes_with_report_data(&expected_report_data));
+
+        Json(json!({
+            "quoteB64": quote_b64,
+            "reportDataHex": report_data_hex
+        }))
+    }
+
+    async fn spawn_attest_server(mode: AttestResponseMode) -> Url {
+        let app = Router::new()
+            .route("/attest", post(attest_handler))
+            .with_state(mode);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("attest test server should run");
+        });
+
+        Url::parse(&format!("http://{addr}/")).expect("base URL should parse")
+    }
+
+    fn write_temp_policy_file(contents: &str) -> Utf8PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time must be monotonic")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("merod-kms-policy-{nanos}.json"));
+        std::fs::write(&path, contents).expect("should write temp policy file");
+        Utf8PathBuf::from_path_buf(path).expect("temp path should be valid utf-8")
+    }
 
     #[test]
     fn test_hash_peer_id() {
@@ -681,5 +865,89 @@ mod tests {
         let report_data = build_kms_attestation_report_data(&nonce, &binding);
         assert_eq!(&report_data[..32], &nonce);
         assert_eq!(&report_data[32..], &binding);
+    }
+
+    #[test]
+    fn test_resolve_effective_attestation_config_applies_external_policy() {
+        let policy_path = write_temp_policy_file(
+            r#"{
+  "allowed_tcb_statuses": ["Mock"],
+  "allowed_mrtd": ["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]
+}"#,
+        );
+
+        let mut cfg = KmsAttestationConfig::default();
+        cfg.enabled = true;
+        cfg.allowed_tcb_statuses = vec!["UpToDate".to_owned()];
+        cfg.allowed_mrtd = vec!["ab".repeat(48)];
+        cfg.policy_json_path = Some(policy_path.clone());
+
+        let resolved = resolve_effective_attestation_config(&cfg).unwrap();
+        assert_eq!(resolved.allowed_tcb_statuses, vec!["Mock".to_owned()]);
+        assert_eq!(
+            resolved.allowed_mrtd,
+            vec![
+                "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                    .to_owned()
+            ]
+        );
+
+        std::fs::remove_file(policy_path).expect("should clean up temp policy");
+    }
+
+    #[tokio::test]
+    async fn test_verify_kms_attestation_accepts_external_policy_json() {
+        let policy_path = write_temp_policy_file(
+            r#"{
+  "allowed_tcb_statuses": ["Mock"],
+  "allowed_mrtd": ["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]
+}"#,
+        );
+
+        let mut cfg = KmsAttestationConfig::default();
+        cfg.enabled = true;
+        cfg.accept_mock = true;
+        cfg.policy_json_path = Some(policy_path.clone());
+
+        let client = reqwest::Client::new();
+        let base_url = spawn_attest_server(AttestResponseMode::Valid).await;
+        let result = verify_kms_attestation(&client, &base_url, &cfg).await;
+
+        std::fs::remove_file(policy_path).expect("should clean up temp policy");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_verify_kms_attestation_rejects_report_data_mismatch() {
+        let mut cfg = KmsAttestationConfig::default();
+        cfg.enabled = true;
+        cfg.accept_mock = true;
+        cfg.allowed_tcb_statuses = vec!["Mock".to_owned()];
+        cfg.allowed_mrtd = vec![format!("{:0>96}", "")];
+
+        let client = reqwest::Client::new();
+        let base_url = spawn_attest_server(AttestResponseMode::ReportDataMismatch).await;
+        let result = verify_kms_attestation(&client, &base_url, &cfg).await;
+
+        assert!(result.is_err());
+        let error_text = result.unwrap_err().to_string();
+        assert!(error_text.contains("reportData mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_verify_kms_attestation_rejects_disallowed_measurement() {
+        let mut cfg = KmsAttestationConfig::default();
+        cfg.enabled = true;
+        cfg.accept_mock = true;
+        cfg.allowed_tcb_statuses = vec!["Mock".to_owned()];
+        cfg.allowed_mrtd = vec!["ab".repeat(48)];
+
+        let client = reqwest::Client::new();
+        let base_url = spawn_attest_server(AttestResponseMode::Valid).await;
+        let result = verify_kms_attestation(&client, &base_url, &cfg).await;
+
+        assert!(result.is_err());
+        let error_text = result.unwrap_err().to_string();
+        assert!(error_text.contains("MRTD"));
     }
 }
