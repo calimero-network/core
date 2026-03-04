@@ -2,13 +2,17 @@ use core::mem;
 use std::collections::BTreeMap;
 
 use crate::client::env::config::requests::{
-    ApplicationRequest, ApplicationRevisionRequest, FetchNonceRequest, HasMemberRequest,
-    MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
+    ApplicationRequest, ApplicationRevisionRequest, ContextGroupRequest, FetchGroupNonceRequest,
+    FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse, GroupInfoRequest,
+    HasMemberRequest, IsGroupAdminRequest, MembersRequest, MembersRevisionRequest,
+    PrivilegesRequest, ProxyContractRequest,
 };
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::repr::Repr;
-use crate::types::{Application, Capability, ContextIdentity, Revision, SignerId};
+use crate::types::{
+    Application, Capability, ContextGroupId, ContextId, ContextIdentity, Revision, SignerId,
+};
 
 impl Method<Near> for ApplicationRequest {
     const METHOD: &'static str = "application";
@@ -145,6 +149,97 @@ impl Method<Near> for ProxyContractRequest {
 
 impl Method<Near> for FetchNonceRequest {
     const METHOD: &'static str = "fetch_nonce";
+
+    type Returns = Option<u64>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        serde_json::from_slice(&response).map_err(Into::into)
+    }
+}
+
+impl Method<Near> for GroupInfoRequest {
+    const METHOD: &'static str = "group";
+
+    type Returns = Option<GroupInfoQueryResponse>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        serde_json::from_slice(&response).map_err(Into::into)
+    }
+}
+
+impl Method<Near> for IsGroupAdminRequest {
+    const METHOD: &'static str = "is_group_admin";
+
+    type Returns = bool;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        serde_json::from_slice(&response).map_err(Into::into)
+    }
+}
+
+impl Method<Near> for GroupContextsRequest {
+    const METHOD: &'static str = "group_contexts";
+
+    type Returns = Vec<ContextId>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let contexts: Vec<Repr<ContextId>> = serde_json::from_slice(&response)?;
+
+        // safety: `Repr<T>` is a transparent wrapper around `T`
+        #[expect(
+            clippy::transmute_undefined_repr,
+            reason = "Repr<T> is a transparent wrapper around T"
+        )]
+        let contexts =
+            unsafe { mem::transmute::<Vec<Repr<ContextId>>, Vec<ContextId>>(contexts) };
+
+        Ok(contexts)
+    }
+}
+
+impl Method<Near> for ContextGroupRequest {
+    const METHOD: &'static str = "context_group";
+
+    type Returns = Option<ContextGroupId>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let group_id: Option<Repr<ContextGroupId>> = serde_json::from_slice(&response)?;
+
+        // safety: `Repr<T>` is a transparent wrapper around `T`
+        #[expect(
+            clippy::transmute_undefined_repr,
+            reason = "Repr<T> is a transparent wrapper around T"
+        )]
+        let group_id = unsafe {
+            mem::transmute::<Option<Repr<ContextGroupId>>, Option<ContextGroupId>>(group_id)
+        };
+
+        Ok(group_id)
+    }
+}
+
+impl Method<Near> for FetchGroupNonceRequest {
+    const METHOD: &'static str = "fetch_group_nonce";
 
     type Returns = Option<u64>;
 

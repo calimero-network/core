@@ -6,11 +6,12 @@
 
 use core::ptr;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::repr::Repr;
 use crate::types::{
-    Application, BlockHeight, Capability, ContextId, ContextIdentity, SignedRevealPayload,
+    AppKey, Application, BlockHeight, Capability, ContextGroupId, ContextId, ContextIdentity,
+    SignedRevealPayload, SignerId,
 };
 
 // ============================================================================
@@ -91,6 +92,49 @@ impl FetchNonceRequest {
             member_id: Repr::new(member_id),
         }
     }
+}
+
+/// Request to get group info.
+#[derive(Copy, Clone, Debug, Serialize)]
+pub struct GroupInfoRequest {
+    pub group_id: Repr<ContextGroupId>,
+}
+
+/// Request to check if an identity is a group admin.
+#[derive(Copy, Clone, Debug, Serialize)]
+pub struct IsGroupAdminRequest {
+    pub group_id: Repr<ContextGroupId>,
+    pub identity: Repr<SignerId>,
+}
+
+/// Request to get contexts in a group with pagination.
+#[derive(Copy, Clone, Debug, Serialize)]
+pub struct GroupContextsRequest {
+    pub group_id: Repr<ContextGroupId>,
+    pub offset: usize,
+    pub length: usize,
+}
+
+/// Request to get which group a context belongs to.
+#[derive(Copy, Clone, Debug, Serialize)]
+pub struct ContextGroupRequest {
+    pub context_id: Repr<ContextId>,
+}
+
+/// Request to fetch group nonce for an admin.
+#[derive(Copy, Clone, Debug, Serialize)]
+pub struct FetchGroupNonceRequest {
+    pub group_id: Repr<ContextGroupId>,
+    pub admin_id: Repr<SignerId>,
+}
+
+/// Response type for group info queries.
+#[derive(Debug, Deserialize)]
+pub struct GroupInfoQueryResponse {
+    pub app_key: Repr<AppKey>,
+    pub target_application: Application<'static>,
+    pub member_count: u64,
+    pub context_count: u64,
 }
 
 // ============================================================================
