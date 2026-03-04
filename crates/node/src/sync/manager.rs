@@ -2156,6 +2156,13 @@ impl SyncManager {
                 )
                 .await?
             }
+            InitPayload::EntityPush { .. } => {
+                // EntityPush is handled within the HashComparison responder loop,
+                // not as a top-level stream init. If received here, it means a
+                // protocol error — the initiator sent EntityPush outside of a
+                // HashComparison session. Log and ignore.
+                warn!("Received EntityPush outside of HashComparison session, ignoring");
+            }
         };
 
         Ok(Some(()))

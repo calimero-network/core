@@ -174,6 +174,20 @@ pub enum InitPayload {
         /// - `Some(ids)` = fetch only children of specified parents
         parent_ids: Option<Vec<[u8; 32]>>,
     },
+
+    /// Push local-only entities to the peer for bidirectional HashComparison sync.
+    ///
+    /// When the initiator detects subtrees that exist locally but not on the peer
+    /// (`RemoteMissing` or `Different` with `local_only_children`), it collects
+    /// the leaf data and pushes it to the responder via this message.
+    ///
+    /// The responder applies CRDT merge (Invariant I5) for each entity.
+    EntityPush {
+        /// Context being synchronized.
+        context_id: ContextId,
+        /// Leaf entities to push to the peer.
+        entities: Vec<super::hash_comparison::TreeLeafData>,
+    },
 }
 
 // =============================================================================
@@ -285,6 +299,14 @@ pub enum MessagePayload<'a> {
         nodes: Vec<LevelNode>,
         /// Whether there are more levels below this one.
         has_more_levels: bool,
+    },
+
+    /// Acknowledgment of received EntityPush for bidirectional HashComparison sync.
+    ///
+    /// Sent by the responder after applying CRDT merge for pushed entities.
+    EntityPushAck {
+        /// Number of entities successfully applied via CRDT merge.
+        applied_count: u32,
     },
 }
 

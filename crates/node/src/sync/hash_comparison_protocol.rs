@@ -94,13 +94,20 @@ pub struct HashComparisonFirstRequest {
     pub max_depth: Option<u8>,
 }
 
+/// Maximum number of entities per EntityPush message.
+///
+/// Prevents overly large messages when pushing local-only subtrees.
+const MAX_ENTITIES_PER_PUSH: usize = 500;
+
 /// Statistics from a HashComparison sync session.
 #[derive(Debug, Default, Clone)]
 pub struct HashComparisonStats {
     /// Number of tree nodes compared.
     pub nodes_compared: u64,
-    /// Number of leaf entities merged via CRDT.
+    /// Number of leaf entities merged via CRDT (pulled from peer).
     pub entities_merged: u64,
+    /// Number of leaf entities pushed to peer (bidirectional sync).
+    pub entities_pushed: u64,
     /// Number of nodes skipped (hashes matched).
     pub nodes_skipped: u64,
     /// Number of requests sent to peer.
@@ -273,18 +280,48 @@ async fn run_initiator_impl<T: SyncTransport>(
                     }
                     TreeCompareResult::Different {
                         remote_only_children,
+                        local_only_children,
                         common_children,
-                        ..
                     } => {
+                        // Recurse into remote-only and common children (pull)
                         for child_id in remote_only_children {
                             to_compare.push((child_id, false));
                         }
                         for child_id in common_children {
                             to_compare.push((child_id, false));
                         }
+
+                        // Bidirectional: push local-only subtrees to peer
+                        if !local_only_children.is_empty() {
+                            let pushed = push_local_subtrees(
+                                transport,
+                                &runtime_env,
+                                context_id,
+                                identity,
+                                &local_only_children,
+                                &mut stats,
+                            )
+                            .await?;
+                            debug!(
+                                %context_id,
+                                local_only = local_only_children.len(),
+                                entities_pushed = pushed,
+                                "Pushed local-only children to peer"
+                            );
+                        }
                     }
                     TreeCompareResult::RemoteMissing => {
-                        // Bidirectional sync: future work
+                        // Bidirectional: the initiator has this entire subtree
+                        // but the remote doesn't. Push all leaf data.
+                        if let Some(ref local_node) = local_version {
+                            let leaves = with_runtime_env(runtime_env.clone(), || {
+                                collect_local_leaves(context_id, &local_node.id, false)
+                            })?;
+                            if !leaves.is_empty() {
+                                push_entities(transport, context_id, identity, &leaves, &mut stats)
+                                    .await?;
+                            }
+                        }
                     }
                 }
             }
@@ -401,47 +438,100 @@ async fn run_responder_impl<T: SyncTransport>(
             break;
         };
 
-        let InitPayload::TreeNodeRequest {
-            node_id, max_depth, ..
-        } = payload
-        else {
-            // Different payload type - might be end of sync
-            debug!(%context_id, "Received non-TreeNodeRequest, ending responder");
-            break;
-        };
+        match payload {
+            InitPayload::TreeNodeRequest {
+                node_id, max_depth, ..
+            } => {
+                trace!(
+                    %context_id,
+                    node_id = %hex::encode(node_id),
+                    ?max_depth,
+                    "Handling TreeNodeRequest"
+                );
 
-        trace!(
-            %context_id,
-            node_id = %hex::encode(node_id),
-            ?max_depth,
-            "Handling TreeNodeRequest"
-        );
+                // Clamp depth for DoS protection
+                let clamped_depth = max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
+                let is_root_request = node_id == local_root_hash;
 
-        // Clamp depth for DoS protection
-        let clamped_depth = max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
-        let is_root_request = node_id == local_root_hash;
+                // Get the requested node
+                let local_node = with_runtime_env(runtime_env.clone(), || {
+                    get_local_tree_node(context_id, &node_id, is_root_request)
+                })?;
 
-        // Get the requested node
-        let local_node = with_runtime_env(runtime_env.clone(), || {
-            get_local_tree_node(context_id, &node_id, is_root_request)
-        })?;
+                let response = build_tree_node_response_internal(
+                    context_id,
+                    local_node,
+                    clamped_depth,
+                    &runtime_env,
+                )?;
 
-        let response =
-            build_tree_node_response_internal(context_id, local_node, clamped_depth, &runtime_env)?;
+                // Send response
+                let msg = StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::TreeNodeResponse {
+                        nodes: response.nodes,
+                        not_found: response.not_found,
+                    },
+                    next_nonce: generate_nonce(),
+                };
 
-        // Send response
-        let msg = StreamMessage::Message {
-            sequence_id,
-            payload: MessagePayload::TreeNodeResponse {
-                nodes: response.nodes,
-                not_found: response.not_found,
-            },
-            next_nonce: generate_nonce(),
-        };
+                transport.send(&msg).await?;
+                sequence_id += 1;
+                requests_handled += 1;
+            }
 
-        transport.send(&msg).await?;
-        sequence_id += 1;
-        requests_handled += 1;
+            InitPayload::EntityPush { entities, .. } => {
+                // Bidirectional sync: initiator is pushing local-only entities to us
+                let entity_count = entities.len();
+                trace!(
+                    %context_id,
+                    entity_count,
+                    "Handling EntityPush from initiator"
+                );
+
+                let mut applied = 0u32;
+                for leaf in &entities {
+                    let result = with_runtime_env(runtime_env.clone(), || {
+                        apply_leaf_with_crdt_merge(context_id, leaf)
+                    });
+                    if result.is_ok() {
+                        applied += 1;
+                    } else {
+                        warn!(
+                            %context_id,
+                            key = %hex::encode(leaf.key),
+                            "Failed to apply pushed entity"
+                        );
+                    }
+                }
+
+                // Send acknowledgment
+                let msg = StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::EntityPushAck {
+                        applied_count: applied,
+                    },
+                    next_nonce: generate_nonce(),
+                };
+
+                transport.send(&msg).await?;
+                sequence_id += 1;
+                requests_handled += 1;
+
+                info!(
+                    %context_id,
+                    applied,
+                    total = entity_count,
+                    "Applied pushed entities via CRDT merge"
+                );
+            }
+
+            _ => {
+                // Unknown payload type - end responder
+                debug!(%context_id, "Received unknown payload, ending responder");
+                break;
+            }
+        }
     }
 
     info!(%context_id, requests_handled, "HashComparison responder complete");
@@ -483,6 +573,155 @@ fn build_tree_node_response_internal(
 
 // =============================================================================
 // Helper Functions
+// =============================================================================
+
+// =============================================================================
+// Bidirectional Sync: Push Helpers
+// =============================================================================
+
+/// Collect all leaf entities from a local subtree recursively.
+///
+/// Walks the Merkle tree starting from `node_id` and collects all leaf
+/// entities (with their data and CRDT metadata). Used when the initiator
+/// needs to push local-only data to the peer.
+///
+/// Must be called within a `with_runtime_env` scope.
+fn collect_local_leaves(
+    context_id: ContextId,
+    node_id: &[u8; 32],
+    is_root: bool,
+) -> Result<Vec<TreeLeafData>> {
+    let mut leaves = Vec::new();
+    collect_leaves_recursive(context_id, node_id, is_root, &mut leaves)?;
+    Ok(leaves)
+}
+
+/// Recursively collect leaf data from a subtree.
+fn collect_leaves_recursive(
+    context_id: ContextId,
+    node_id: &[u8; 32],
+    is_root: bool,
+    leaves: &mut Vec<TreeLeafData>,
+) -> Result<()> {
+    let entity_id = if is_root {
+        Id::new(*context_id.as_ref())
+    } else {
+        Id::new(*node_id)
+    };
+
+    let index = match Index::<MainStorage>::get_index(entity_id) {
+        Ok(Some(idx)) => idx,
+        Ok(None) => return Ok(()),
+        Err(_) => return Ok(()),
+    };
+
+    let children_ids: Vec<[u8; 32]> = index
+        .children()
+        .map(|children| children.iter().map(|c| *c.id().as_bytes()).collect())
+        .unwrap_or_default();
+
+    if children_ids.is_empty() {
+        // Leaf node — collect its data
+        if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
+            if let Some(ref crdt_type) = index.metadata.crdt_type {
+                let metadata =
+                    LeafMetadata::new(crdt_type.clone(), index.metadata.updated_at(), [0u8; 32]);
+                let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
+                leaves.push(leaf_data);
+            }
+        }
+    } else {
+        // Internal node — recurse into children
+        for child_id in &children_ids {
+            collect_leaves_recursive(context_id, child_id, false, leaves)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Push local-only subtrees to the peer.
+///
+/// For each child ID in `local_only_children`, walks the local tree to
+/// collect leaf data, then sends it to the peer via `EntityPush` messages.
+async fn push_local_subtrees<T: SyncTransport>(
+    transport: &mut T,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    context_id: ContextId,
+    identity: PublicKey,
+    local_only_children: &[[u8; 32]],
+    stats: &mut HashComparisonStats,
+) -> Result<u64> {
+    let mut all_leaves = Vec::new();
+
+    for child_id in local_only_children {
+        let leaves = with_runtime_env(runtime_env.clone(), || {
+            collect_local_leaves(context_id, child_id, false)
+        })?;
+        all_leaves.extend(leaves);
+    }
+
+    if all_leaves.is_empty() {
+        return Ok(0);
+    }
+
+    push_entities(transport, context_id, identity, &all_leaves, stats).await
+}
+
+/// Send entities to the peer via `EntityPush` messages (batched).
+///
+/// Sends in batches of `MAX_ENTITIES_PER_PUSH` to avoid overly large messages.
+async fn push_entities<T: SyncTransport>(
+    transport: &mut T,
+    context_id: ContextId,
+    identity: PublicKey,
+    leaves: &[TreeLeafData],
+    stats: &mut HashComparisonStats,
+) -> Result<u64> {
+    let mut total_pushed = 0u64;
+
+    for chunk in leaves.chunks(MAX_ENTITIES_PER_PUSH) {
+        let push_msg = StreamMessage::Init {
+            context_id,
+            party_id: identity,
+            payload: InitPayload::EntityPush {
+                context_id,
+                entities: chunk.to_vec(),
+            },
+            next_nonce: generate_nonce(),
+        };
+
+        transport.send(&push_msg).await?;
+        stats.requests_sent += 1;
+
+        // Wait for acknowledgment
+        let ack = transport
+            .recv()
+            .await?
+            .ok_or_else(|| eyre::eyre!("stream closed while waiting for EntityPushAck"))?;
+
+        match ack {
+            StreamMessage::Message {
+                payload: MessagePayload::EntityPushAck { applied_count },
+                ..
+            } => {
+                total_pushed += u64::from(applied_count);
+            }
+            _ => {
+                warn!(
+                    %context_id,
+                    "Unexpected response to EntityPush, continuing"
+                );
+            }
+        }
+    }
+
+    stats.entities_pushed += total_pushed;
+    Ok(total_pushed)
+}
+
+// =============================================================================
+// Local Tree Node Lookup
 // =============================================================================
 
 /// Get a tree node from the local Merkle tree Index.
