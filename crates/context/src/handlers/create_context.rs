@@ -445,6 +445,19 @@ async fn create_context(
     // messages (e.g. RemoveGroupMembers), but the window is small and the
     // worst case is a single context associated with a since-removed member.
     if let Some(ref gid) = group_id {
+        // Call contract if signing_key is available (derived from identity_secret)
+        let signing_key_bytes: [u8; 32] = *identity_secret;
+        let mut group_client = context_client.group_client(
+            *gid,
+            signing_key_bytes,
+            external_config.protocol.to_string(),
+            external_config.network_id.to_string(),
+            external_config.contract_id.to_string(),
+        );
+        group_client
+            .register_context_in_group(context.id)
+            .await?;
+
         group_store::register_context_in_group(&datastore, gid, &context.id)?;
     }
 

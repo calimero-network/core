@@ -969,6 +969,7 @@ impl ContextClient {
             .send(ContextMessage::DeleteContext {
                 request: DeleteContextRequest {
                     context_id: *context_id,
+                    signing_key: None,
                 },
                 outcome: sender,
             })

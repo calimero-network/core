@@ -2093,6 +2093,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-store",
  "calimero-utils-actix",
+ "ed25519-dalek",
  "eyre",
  "futures-util",
  "hex",

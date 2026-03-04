@@ -17,7 +17,10 @@ impl Handler<DeleteContextRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        DeleteContextRequest { context_id }: DeleteContextRequest,
+        DeleteContextRequest {
+            context_id,
+            signing_key,
+        }: DeleteContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let context = self.contexts.get(&context_id);
@@ -38,6 +41,16 @@ impl Handler<DeleteContextRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let context_client = self.context_client.clone();
+        let group_client_result = signing_key.and_then(|sk| {
+            let params = self.external_config.params.get("near")?;
+            Some((
+                sk,
+                "near".to_owned(),
+                params.network.clone(),
+                params.contract_id.clone(),
+            ))
+        });
 
         let task = async move {
             let _guard = match guard {
@@ -46,7 +59,14 @@ impl Handler<DeleteContextRequest> for ContextManager {
                 None => None,
             };
 
-            delete_context(datastore, node_client, context_id).await?;
+            delete_context(
+                datastore,
+                node_client,
+                context_client,
+                context_id,
+                group_client_result,
+            )
+            .await?;
 
             Ok(DeleteContextResponse { deleted: true })
         };
@@ -62,7 +82,9 @@ impl Handler<DeleteContextRequest> for ContextManager {
 async fn delete_context(
     datastore: Store,
     node_client: NodeClient,
+    context_client: calimero_context_primitives::client::ContextClient,
     context_id: ContextId,
+    group_client_params: Option<([u8; 32], String, String, String)>,
 ) -> eyre::Result<()> {
     node_client.unsubscribe(&context_id).await?;
 
@@ -90,6 +112,14 @@ async fn delete_context(
     // rather than actually removing DAG history. See issue for details.
 
     if let Some(group_id) = group_store::get_group_for_context(&datastore, &context_id)? {
+        if let Some((sk, protocol, network_id, contract_id)) = group_client_params {
+            let mut group_client =
+                context_client.group_client(group_id, sk, protocol, network_id, contract_id);
+            group_client
+                .unregister_context_from_group(context_id)
+                .await?;
+        }
+
         group_store::unregister_context_from_group(&datastore, &group_id, &context_id)?;
     }
 

@@ -1,7 +1,10 @@
-use actix::{ActorResponse, Handler, Message};
+use actix::{ActorResponse, Handler, Message, WrapFuture};
+use calimero_context_config::repr::ReprTransmute;
+use calimero_context_config::types as config_types;
 use calimero_context_primitives::group::{CreateGroupRequest, CreateGroupResponse};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_store::key::GroupMetaValue;
+use calimero_store::Store;
 use eyre::bail;
 use rand::Rng;
 use tracing::info;
@@ -20,46 +23,103 @@ impl Handler<CreateGroupRequest> for ContextManager {
             application_id,
             upgrade_policy,
             admin_identity,
+            signing_key,
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let result = (|| {
-            let group_id = group_id.unwrap_or_else(|| {
-                let bytes: [u8; 32] = rand::thread_rng().gen();
-                bytes.into()
-            });
+        // Sync validation
+        let group_id = group_id.unwrap_or_else(|| {
+            let bytes: [u8; 32] = rand::thread_rng().gen();
+            bytes.into()
+        });
 
-            if group_store::load_group_meta(&self.datastore, &group_id)?.is_some() {
-                bail!("group '{group_id:?}' already exists");
+        if let Ok(Some(_)) = group_store::load_group_meta(&self.datastore, &group_id) {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "group '{group_id:?}' already exists"
+            )));
+        }
+
+        // Load application meta to build contract Application type
+        let app_meta = match load_app_meta(&self.datastore, &application_id) {
+            Ok(meta) => meta,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+
+        let datastore = self.datastore.clone();
+
+        // Build group_client if signing_key provided
+        let group_client_result = signing_key.map(|sk| self.group_client(group_id, sk));
+
+        ActorResponse::r#async(
+            async move {
+                // Call contract if signing_key was provided
+                if let Some(client_result) = group_client_result {
+                    let mut group_client = client_result?;
+
+                    let contract_app = build_contract_application(
+                        &application_id,
+                        &app_meta,
+                    )?;
+
+                    group_client
+                        .create_group(app_key, contract_app)
+                        .await?;
+                }
+
+                // Local cache write
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                let meta = GroupMetaValue {
+                    app_key: app_key.to_bytes(),
+                    target_application_id: application_id,
+                    upgrade_policy,
+                    created_at: now,
+                    admin_identity: admin_identity.into(),
+                    migration: None,
+                };
+
+                group_store::save_group_meta(&datastore, &group_id, &meta)?;
+                group_store::add_group_member(
+                    &datastore,
+                    &group_id,
+                    &admin_identity,
+                    GroupMemberRole::Admin,
+                )?;
+
+                info!(?group_id, %admin_identity, "group created");
+
+                Ok(CreateGroupResponse { group_id })
             }
-
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-
-            let meta = GroupMetaValue {
-                app_key: app_key.to_bytes(),
-                target_application_id: application_id,
-                upgrade_policy,
-                created_at: now,
-                admin_identity: admin_identity.into(),
-                migration: None,
-            };
-
-            group_store::save_group_meta(&self.datastore, &group_id, &meta)?;
-            group_store::add_group_member(
-                &self.datastore,
-                &group_id,
-                &admin_identity,
-                GroupMemberRole::Admin,
-            )?;
-
-            info!(?group_id, %admin_identity, "group created");
-
-            Ok(CreateGroupResponse { group_id })
-        })();
-
-        ActorResponse::reply(result)
+            .into_actor(self),
+        )
     }
+}
+
+fn load_app_meta(
+    datastore: &Store,
+    application_id: &calimero_primitives::application::ApplicationId,
+) -> eyre::Result<calimero_store::types::ApplicationMeta> {
+    let handle = datastore.handle();
+    let key = calimero_store::key::ApplicationMeta::new(*application_id);
+    handle
+        .get(&key)?
+        .ok_or_else(|| eyre::eyre!("application '{application_id}' not found"))
+}
+
+pub(crate) fn build_contract_application(
+    application_id: &calimero_primitives::application::ApplicationId,
+    app_meta: &calimero_store::types::ApplicationMeta,
+) -> eyre::Result<config_types::Application<'static>> {
+    Ok(config_types::Application::new(
+        application_id.rt()?,
+        app_meta.bytecode.blob_id().rt()?,
+        app_meta.size,
+        config_types::ApplicationSource(app_meta.source.to_string().into()),
+        config_types::ApplicationMetadata(
+            calimero_context_config::repr::Repr::new(app_meta.metadata.to_vec().into()),
+        ),
+    ))
 }

@@ -1,6 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
+use calimero_context_config::repr::ReprTransmute;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::group::{UpgradeGroupRequest, UpgradeGroupResponse};
 use calimero_context_primitives::messages::MigrationParams;
@@ -23,6 +24,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             target_application_id,
             requester,
             migration,
+            signing_key,
         }: UpgradeGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -52,6 +54,23 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 
         let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
 
+        // Build contract call if signing_key is provided
+        let group_client_result = signing_key.map(|sk| self.group_client(group_id, sk));
+        let app_meta_for_contract = if group_client_result.is_some() {
+            match (|| {
+                let handle = self.datastore.handle();
+                let key = key::ApplicationMeta::new(target_application_id);
+                handle
+                    .get(&key)?
+                    .ok_or_else(|| eyre::eyre!("target application not found"))
+            })() {
+                Ok(meta) => Some(meta),
+                Err(err) => return ActorResponse::reply(Err(err)),
+            }
+        } else {
+            None
+        };
+
         // --- LazyOnAccess: update target and return without canary/propagator ---
         // Contexts will be upgraded individually on their next execution.
         // Launching a propagator would race with the lazy mechanism and could
@@ -61,39 +80,54 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         // no purpose for lazy upgrades (no propagator runs) and would
         // permanently block future upgrades since nothing transitions it out.
         if matches!(upgrade_policy, UpgradePolicy::LazyOnAccess) {
-            let result = (|| {
-                let mut meta = group_store::load_group_meta(&self.datastore, &group_id)?
-                    .ok_or_else(|| eyre::eyre!("group not found"))?;
-                meta.target_application_id = target_application_id;
-                meta.migration = migration_bytes.clone();
-                group_store::save_group_meta(&self.datastore, &group_id, &meta)?;
+            let datastore = self.datastore.clone();
+            return ActorResponse::r#async(
+                async move {
+                    // Call contract if signing_key was provided
+                    if let (Some(client_result), Some(ref app_meta)) =
+                        (group_client_result, &app_meta_for_contract)
+                    {
+                        let mut group_client = client_result?;
+                        let contract_app =
+                            super::create_group::build_contract_application(
+                                &target_application_id,
+                                app_meta,
+                            )?;
+                        group_client.set_group_target(contract_app).await?;
+                    }
 
-                let completed_status = GroupUpgradeStatus::Completed { completed_at: now };
+                    let mut meta = group_store::load_group_meta(&datastore, &group_id)?
+                        .ok_or_else(|| eyre::eyre!("group not found"))?;
+                    meta.target_application_id = target_application_id;
+                    meta.migration = migration_bytes.clone();
+                    group_store::save_group_meta(&datastore, &group_id, &meta)?;
 
-                let upgrade_value = GroupUpgradeValue {
-                    from_version,
-                    to_version,
-                    migration: migration_bytes,
-                    initiated_at: now,
-                    initiated_by: requester,
-                    status: completed_status.clone(),
-                };
+                    let completed_status = GroupUpgradeStatus::Completed { completed_at: now };
 
-                group_store::save_group_upgrade(&self.datastore, &group_id, &upgrade_value)?;
+                    let upgrade_value = GroupUpgradeValue {
+                        from_version,
+                        to_version,
+                        migration: migration_bytes,
+                        initiated_at: now,
+                        initiated_by: requester,
+                        status: completed_status.clone(),
+                    };
 
-                info!(
-                    ?group_id,
-                    %target_application_id,
-                    "LazyOnAccess upgrade target set; contexts will upgrade on next access"
-                );
+                    group_store::save_group_upgrade(&datastore, &group_id, &upgrade_value)?;
 
-                Ok(UpgradeGroupResponse {
-                    group_id,
-                    status: completed_status.into(),
-                })
-            })();
+                    info!(
+                        ?group_id,
+                        %target_application_id,
+                        "LazyOnAccess upgrade target set; contexts will upgrade on next access"
+                    );
 
-            return ActorResponse::reply(result);
+                    Ok(UpgradeGroupResponse {
+                        group_id,
+                        status: completed_status.into(),
+                    })
+                }
+                .into_actor(self),
+            );
         }
 
         // --- Persist InProgress BEFORE the async canary ---
@@ -137,6 +171,19 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             };
 
         let canary_task = async move {
+            // Call set_group_target on contract before canary
+            if let (Some(client_result), Some(ref app_meta)) =
+                (group_client_result, &app_meta_for_contract)
+            {
+                let mut group_client = client_result?;
+                let contract_app =
+                    super::create_group::build_contract_application(
+                        &target_application_id,
+                        app_meta,
+                    )?;
+                group_client.set_group_target(contract_app).await?;
+            }
+
             context_client
                 .update_application(
                     &canary_context_id,
