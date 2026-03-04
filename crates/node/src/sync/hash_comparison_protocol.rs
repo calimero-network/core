@@ -312,7 +312,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                         // but the remote doesn't. Push all leaf data.
                         if let Some(ref local_node) = local_version {
                             let leaves = with_runtime_env(runtime_env.clone(), || {
-                                collect_local_leaves(context_id, &local_node.id, false)
+                                collect_local_leaves(context_id, &local_node.id, is_this_node_root)
                             })?;
                             if !leaves.is_empty() {
                                 push_entities(transport, context_id, identity, &leaves, &mut stats)
@@ -600,7 +600,7 @@ fn collect_leaves_recursive(
         return Ok(());
     }
 
-    if leaves.len() >= MAX_LEAVES_PER_SUBTREE {
+    if leaves.len() > MAX_LEAVES_PER_SUBTREE {
         return Ok(());
     }
     let entity_id = if is_root {
