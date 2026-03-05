@@ -137,6 +137,18 @@ merod can ingest externally-generated attestation allowlists via
 `tee.kms.phala.attestation.policy_json_path` (JSON). Artifact fetching/signature
 verification is expected to be handled by deployment tooling (e.g. mero-tee).
 
+Example using a mero-tee release policy file:
+
+```toml
+[tee.kms.phala.attestation]
+enabled = true
+accept_mock = false
+policy_json_path = "/etc/calimero/mero-kms-phala-attestation-policy.json"
+```
+
+The file may use the mero-tee nested schema (`policy.allowed_*` and
+`kms.default_binding_b64`) or flat top-level `allowed_*` fields.
+
 ## Deployment model (release isolation)
 
 Recommended production rollout model:
