@@ -29,6 +29,7 @@ semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
+subtle.workspace = true
 starknet.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "fs"] }
 toml_edit.workspace = true
@@ -53,6 +54,11 @@ mero-auth = { path = "../auth" }
 
 [build-dependencies]
 calimero-build-utils.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
 
 [package.metadata.workspaces]
 independent = true
