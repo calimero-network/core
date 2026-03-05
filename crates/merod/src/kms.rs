@@ -109,6 +109,32 @@ struct ExternalKmsAttestationPolicy {
     allowed_rtmr3: Option<Vec<String>>,
     #[serde(default)]
     binding_b64: Option<String>,
+    #[serde(default)]
+    policy: Option<ExternalKmsAttestationPolicyValues>,
+    #[serde(default)]
+    kms: Option<ExternalKmsAttestationPolicyKms>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExternalKmsAttestationPolicyValues {
+    #[serde(default)]
+    allowed_tcb_statuses: Option<Vec<String>>,
+    #[serde(default)]
+    allowed_mrtd: Option<Vec<String>>,
+    #[serde(default)]
+    allowed_rtmr0: Option<Vec<String>>,
+    #[serde(default)]
+    allowed_rtmr1: Option<Vec<String>>,
+    #[serde(default)]
+    allowed_rtmr2: Option<Vec<String>>,
+    #[serde(default)]
+    allowed_rtmr3: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExternalKmsAttestationPolicyKms {
+    #[serde(default)]
+    default_binding_b64: Option<String>,
 }
 
 const EXTERNAL_POLICY_ALLOWED_DIRS: &[&str] = &["/etc/calimero", "/run/calimero"];
@@ -425,25 +451,59 @@ pub(crate) fn resolve_effective_attestation_config(
         }
 
         let external_policy = load_external_attestation_policy(&policy_path)?;
-        if let Some(values) = external_policy.allowed_tcb_statuses {
+        let nested_policy = external_policy
+            .policy
+            .unwrap_or(ExternalKmsAttestationPolicyValues {
+                allowed_tcb_statuses: None,
+                allowed_mrtd: None,
+                allowed_rtmr0: None,
+                allowed_rtmr1: None,
+                allowed_rtmr2: None,
+                allowed_rtmr3: None,
+            });
+        let nested_kms = external_policy
+            .kms
+            .unwrap_or(ExternalKmsAttestationPolicyKms {
+                default_binding_b64: None,
+            });
+
+        if let Some(values) = external_policy
+            .allowed_tcb_statuses
+            .or(nested_policy.allowed_tcb_statuses)
+        {
             effective_config.allowed_tcb_statuses = values;
         }
-        if let Some(values) = external_policy.allowed_mrtd {
+        if let Some(values) = external_policy.allowed_mrtd.or(nested_policy.allowed_mrtd) {
             effective_config.allowed_mrtd = values;
         }
-        if let Some(values) = external_policy.allowed_rtmr0 {
+        if let Some(values) = external_policy
+            .allowed_rtmr0
+            .or(nested_policy.allowed_rtmr0)
+        {
             effective_config.allowed_rtmr0 = values;
         }
-        if let Some(values) = external_policy.allowed_rtmr1 {
+        if let Some(values) = external_policy
+            .allowed_rtmr1
+            .or(nested_policy.allowed_rtmr1)
+        {
             effective_config.allowed_rtmr1 = values;
         }
-        if let Some(values) = external_policy.allowed_rtmr2 {
+        if let Some(values) = external_policy
+            .allowed_rtmr2
+            .or(nested_policy.allowed_rtmr2)
+        {
             effective_config.allowed_rtmr2 = values;
         }
-        if let Some(values) = external_policy.allowed_rtmr3 {
+        if let Some(values) = external_policy
+            .allowed_rtmr3
+            .or(nested_policy.allowed_rtmr3)
+        {
             effective_config.allowed_rtmr3 = values;
         }
-        if let Some(value) = external_policy.binding_b64 {
+        if let Some(value) = external_policy
+            .binding_b64
+            .or(nested_kms.default_binding_b64)
+        {
             effective_config.binding_b64 = Some(value);
         }
 
@@ -965,6 +1025,42 @@ mod tests {
                     .to_owned()
             ]
         );
+    }
+
+    #[test]
+    fn test_resolve_effective_attestation_config_accepts_mero_tee_policy_shape() {
+        let binding_b64 = base64::engine::general_purpose::STANDARD.encode([0x33u8; 32]);
+        let policy_file = write_temp_policy_file(&format!(
+            r#"{{
+  "schema_version": 2,
+  "policy": {{
+    "allowed_tcb_statuses": ["Mock"],
+    "allowed_mrtd": ["{mrtd}"],
+    "allowed_rtmr0": [],
+    "allowed_rtmr1": [],
+    "allowed_rtmr2": [],
+    "allowed_rtmr3": []
+  }},
+  "kms": {{
+    "default_binding_b64": "{binding}"
+  }}
+}}"#,
+            mrtd = "00".repeat(48),
+            binding = binding_b64
+        ));
+        let policy_path = Utf8PathBuf::from_path_buf(policy_file.path().to_path_buf())
+            .expect("temp policy path should be valid utf-8");
+
+        let mut cfg = KmsAttestationConfig::default();
+        cfg.enabled = true;
+        cfg.allowed_tcb_statuses = vec!["UpToDate".to_owned()];
+        cfg.allowed_mrtd = vec!["ab".repeat(48)];
+        cfg.policy_json_path = Some(policy_path);
+
+        let resolved = resolve_effective_attestation_config(&cfg).unwrap();
+        assert_eq!(resolved.allowed_tcb_statuses, vec!["Mock".to_owned()]);
+        assert_eq!(resolved.allowed_mrtd, vec!["00".repeat(48)]);
+        assert_eq!(resolved.binding_b64, Some(binding_b64));
     }
 
     #[test]
