@@ -451,6 +451,17 @@ fn validate_required_credentials(config: &ConfigFile) -> EyreResult<()> {
                  Please configure the 'phala' KMS provider under [tee.kms.phala]."
             );
         }
+
+        if let Some(phala) = &tee_config.kms.phala {
+            phala.attestation.validate_enabled_policy()?;
+
+            if phala.attestation.enabled && phala.attestation.accept_mock {
+                tracing::warn!(
+                    "tee.kms.phala.attestation.accept_mock=true is enabled. \
+                     This should only be used for development/testing."
+                );
+            }
+        }
     }
 
     Ok(())

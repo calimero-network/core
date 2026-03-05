@@ -5616,6 +5616,7 @@ dependencies = [
 name = "merod"
 version = "0.1.0"
 dependencies = [
+ "axum 0.7.9",
  "base64 0.22.1",
  "calimero-blobstore",
  "calimero-build-utils",
@@ -5651,6 +5652,8 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "starknet",
+ "subtle",
+ "tempfile",
  "tokio",
  "toml_edit 0.22.27",
  "tracing",

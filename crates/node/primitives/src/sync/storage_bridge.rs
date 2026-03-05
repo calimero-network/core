@@ -181,4 +181,95 @@ mod tests {
         // Root index doesn't exist yet, should be Ok(None)
         assert!(result.is_ok());
     }
+
+    /// Test: write an entity through the bridge, then read it back.
+    ///
+    /// Reproduces the production path:
+    /// 1. Create RuntimeEnv via `create_runtime_env` (same as sync bridge)
+    /// 2. Write an entity via `Interface::apply_action` (same as WASM runtime)
+    /// 3. Read back via `Index::get_index` (same as HashComparison responder)
+    #[test]
+    fn test_write_and_read_entity_via_bridge() {
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::Metadata;
+        use calimero_storage::interface::{Action, Interface};
+
+        let db = InMemoryDB::owned();
+        let store = Store::new(Arc::new(db));
+        let context_id = ContextId::from([1u8; 32]);
+        let identity = PublicKey::from([2u8; 32]);
+
+        let env = create_runtime_env(&store, context_id, identity);
+
+        // Write: create root entity
+        let root_id = Id::new(*context_id.as_ref());
+        let write_result = with_runtime_env(env.clone(), || {
+            Interface::<MainStorage>::apply_action(Action::Update {
+                id: root_id,
+                data: vec![],
+                ancestors: vec![],
+                metadata: Metadata::default(),
+            })
+        });
+        assert!(write_result.is_ok(), "apply_action should succeed");
+
+        // Read back: Index::get_index should find the root
+        let read_result =
+            with_runtime_env(env.clone(), || Index::<MainStorage>::get_index(root_id));
+        assert!(read_result.is_ok(), "get_index should not error");
+        assert!(
+            read_result.unwrap().is_some(),
+            "root entity should exist after apply_action"
+        );
+
+        // Verify root hash is non-zero
+        let hash_result = with_runtime_env(env.clone(), || {
+            Index::<MainStorage>::get_hashes_for(root_id)
+        });
+        assert!(hash_result.is_ok());
+        let hashes = hash_result.unwrap();
+        assert!(hashes.is_some(), "root should have hashes");
+
+        // Now simulate snapshot: read raw ContextState, write to new store, read back
+        let db2 = InMemoryDB::owned();
+        let store2 = Store::new(Arc::new(db2));
+
+        // Copy all ContextState records from store to store2 (like snapshot sync)
+        {
+            let src_handle = store.handle();
+            let mut dst_handle = store2.handle();
+            let mut copied = 0;
+            let mut iter = src_handle
+                .iter::<calimero_store::key::ContextState>()
+                .unwrap();
+            for (key_result, value_result) in iter.entries() {
+                let key = key_result.unwrap();
+                let value = value_result.unwrap();
+                if key.context_id() == context_id {
+                    let state_key = key.state_key();
+                    let dst_key = calimero_store::key::ContextState::new(context_id, state_key);
+                    let slice: calimero_store::slice::Slice<'_> = value.value.to_vec().into();
+                    let dst_value = calimero_store::types::ContextState::from(slice);
+                    dst_handle.put(&dst_key, &dst_value).unwrap();
+                    copied += 1;
+                }
+            }
+            eprintln!("Copied {} ContextState records", copied);
+            assert!(copied > 0, "should have copied records");
+        }
+
+        // Read from store2 via bridge (like the HashComparison responder)
+        let env2 = create_runtime_env(&store2, context_id, identity);
+        let read_result2 = with_runtime_env(env2, || Index::<MainStorage>::get_index(root_id));
+        eprintln!("Read from store2: {:?}", read_result2);
+        assert!(
+            read_result2.is_ok(),
+            "get_index from snapshot-restored store should not error: {:?}",
+            read_result2.err()
+        );
+        assert!(
+            read_result2.unwrap().is_some(),
+            "root entity should exist in snapshot-restored store"
+        );
+    }
 }
