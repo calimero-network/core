@@ -59,8 +59,6 @@ pub struct CreateGroupRequest {
     pub app_key: Option<AppKey>,
     pub application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
-    pub admin_identity: Option<PublicKey>,
-    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for CreateGroupRequest {
@@ -76,7 +74,6 @@ pub struct CreateGroupResponse {
 pub struct DeleteGroupRequest {
     pub group_id: ContextGroupId,
     pub requester: Option<PublicKey>,
-    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for DeleteGroupRequest {
@@ -93,7 +90,6 @@ pub struct AddGroupMembersRequest {
     pub group_id: ContextGroupId,
     pub members: Vec<(PublicKey, GroupMemberRole)>,
     pub requester: Option<PublicKey>,
-    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for AddGroupMembersRequest {
@@ -105,7 +101,6 @@ pub struct RemoveGroupMembersRequest {
     pub group_id: ContextGroupId,
     pub members: Vec<PublicKey>,
     pub requester: Option<PublicKey>,
-    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for RemoveGroupMembersRequest {
@@ -166,7 +161,6 @@ pub struct UpgradeGroupRequest {
     pub target_application_id: ApplicationId,
     pub requester: Option<PublicKey>,
     pub migration: Option<MigrationParams>,
-    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for UpgradeGroupRequest {
@@ -218,8 +212,6 @@ pub struct CreateGroupInvitationResponse {
 #[derive(Debug)]
 pub struct JoinGroupRequest {
     pub invitation_payload: GroupInvitationPayload,
-    pub joiner_identity: Option<PublicKey>,
-    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for JoinGroupRequest {
@@ -268,7 +260,6 @@ pub struct UpdateMemberRoleRequest {
     pub identity: PublicKey,
     pub new_role: GroupMemberRole,
     pub requester: Option<PublicKey>,
-    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for UpdateMemberRoleRequest {
@@ -280,7 +271,6 @@ pub struct DetachContextFromGroupRequest {
     pub group_id: ContextGroupId,
     pub context_id: ContextId,
     pub requester: Option<PublicKey>,
-    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for DetachContextFromGroupRequest {
@@ -324,8 +314,6 @@ pub struct SyncGroupResponse {
 pub struct JoinGroupContextRequest {
     pub group_id: ContextGroupId,
     pub context_id: ContextId,
-    pub joiner_identity: Option<PublicKey>,
-    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Message for JoinGroupContextRequest {

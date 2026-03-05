@@ -16,25 +16,18 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
         JoinGroupContextRequest {
             group_id,
             context_id,
-            joiner_identity,
-            signing_key,
         }: JoinGroupContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Resolve joiner identity: use provided value or fall back to node NEAR identity.
-        let (joiner_identity, node_sk) = match joiner_identity {
-            Some(pk) => (pk, signing_key),
-            None => match self.node_near_identity() {
-                Some((pk, sk)) => (pk, signing_key.or(Some(sk))),
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "joiner_identity not provided and node has no configured NEAR identity"
-                    )));
-                }
-            },
+        // Resolve joiner identity from node group identity.
+        let (joiner_identity, effective_signing_key) = match self.node_group_identity() {
+            Some((pk, sk)) => (pk, Some(sk)),
+            None => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "joiner_identity not provided and node has no configured group identity"
+                )));
+            }
         };
-
-        let effective_signing_key = node_sk;
 
         // Validate: group exists and joiner is a member.
         if let Err(err) = (|| -> eyre::Result<()> {

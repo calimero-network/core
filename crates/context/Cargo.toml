@@ -11,6 +11,7 @@ publish = true
 [dependencies]
 actix.workspace = true
 borsh.workspace = true
+bs58.workspace = true
 either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
@@ -27,7 +28,6 @@ tokio = { workspace = true, features = ["sync", "macros"] }
 tracing.workspace = true
 
 calimero-context-config = { workspace = true, features = ["client"] }
-near-crypto = { workspace = true }
 calimero-context-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-prelude.workspace = true

@@ -94,6 +94,10 @@ pub enum NodeCommand {
     /// List all configured nodes
     #[command(alias = "ls")]
     List,
+
+    /// Display the node's group identity public key
+    #[command(alias = "id")]
+    Identity,
 }
 
 impl NodeCommand {
@@ -191,6 +195,32 @@ impl NodeCommand {
                     }
                 }
                 println!("{table}");
+                return Ok(());
+            }
+            NodeCommand::Identity => {
+                let active = config
+                    .active_node
+                    .as_ref()
+                    .ok_or_else(|| eyre::eyre!("no active node; run `meroctl node use <name>`"))?;
+
+                let conn = config
+                    .nodes
+                    .get(active)
+                    .ok_or_else(|| eyre::eyre!("active node '{active}' not found in config"))?;
+
+                let path = match conn {
+                    NodeConnection::Local { path, .. } => path,
+                    NodeConnection::Remote { .. } => {
+                        bail!("identity command is only supported for local nodes");
+                    }
+                };
+
+                let node_config = load_config(path, active).await?;
+
+                match node_config.identity.group {
+                    Some(gi) => println!("Group Identity: {}", gi.public_key),
+                    None => println!("No group identity configured (node may need re-initialization)"),
+                }
                 return Ok(());
             }
         }

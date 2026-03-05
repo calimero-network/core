@@ -50,12 +50,6 @@ pub struct TriggerUpgradeCommand {
 
     #[clap(long, help = "Optional migration method name to call on each context")]
     pub migrate_method: Option<String>,
-
-    #[clap(
-        long,
-        help = "Requester private key (hex). Deprecated: register a signing key instead"
-    )]
-    pub requester_secret: Option<String>,
 }
 
 impl TriggerUpgradeCommand {
@@ -64,7 +58,6 @@ impl TriggerUpgradeCommand {
             target_application_id: self.target_application_id,
             requester: self.requester,
             migrate_method: self.migrate_method,
-            requester_secret: self.requester_secret,
         };
 
         let client = environment.client()?;

@@ -1146,6 +1146,7 @@ version = "0.0.0"
 dependencies = [
  "actix",
  "borsh",
+ "bs58 0.5.1",
  "calimero-context-config",
  "calimero-context-primitives",
  "calimero-node-primitives",
@@ -1160,7 +1161,6 @@ dependencies = [
  "futures-util",
  "hex",
  "memchr",
- "near-crypto",
  "ouroboros",
  "prometheus-client",
  "rand 0.8.5",
@@ -5620,6 +5620,7 @@ version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
  "base64 0.22.1",
+ "bs58 0.5.1",
  "calimero-blobstore",
  "calimero-build-utils",
  "calimero-config",

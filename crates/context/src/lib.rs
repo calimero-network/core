@@ -57,6 +57,9 @@ pub struct ContextManager {
     /// Configuration for interacting with external blockchain contracts (e.g., NEAR).
     external_config: ExternalClientConfig,
 
+    /// Dedicated group identity keypair, decoupled from the NEAR signer key.
+    group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
+
     /// An in-memory cache of active contexts (`ContextId` -> `ContextMeta`).
     /// This serves as a hot cache to avoid expensive disk I/O for frequently accessed contexts.
     // todo! potentially make this a dashmap::DashMap
@@ -103,6 +106,7 @@ impl ContextManager {
         node_client: NodeClient,
         context_client: ContextClient,
         external_config: ExternalClientConfig,
+        group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
         Self {
@@ -110,6 +114,7 @@ impl ContextManager {
             node_client,
             context_client,
             external_config,
+            group_identity,
 
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
@@ -119,38 +124,16 @@ impl ContextManager {
         }
     }
 
-    pub fn node_near_identity(
+    pub fn node_group_identity(
         &self,
     ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
-        use calimero_context_config::client::config::Credentials;
+        let gi = self.group_identity.as_ref()?;
 
-        let params = self.external_config.params.get("near")?;
-        let signer = self
-            .external_config
-            .signer
-            .local
-            .protocols
-            .get("near")?
-            .signers
-            .get(&params.network)?;
+        let pk_str = gi.public_key.strip_prefix("ed25519:")?;
+        let sk_str = gi.secret_key.strip_prefix("ed25519:")?;
 
-        let Credentials::Near(creds) = &signer.credentials else {
-            return None;
-        };
-
-        let sk_bytes = match &creds.secret_key {
-            near_crypto::SecretKey::ED25519(key) => {
-                let mut buf = [0u8; 32];
-                buf.copy_from_slice(&key.0[..32]);
-                buf
-            }
-            _ => return None,
-        };
-
-        let pk_bytes: [u8; 32] = match &creds.public_key {
-            near_crypto::PublicKey::ED25519(pk) => pk.0,
-            _ => return None,
-        };
+        let pk_bytes: [u8; 32] = bs58::decode(pk_str).into_vec().ok()?.try_into().ok()?;
+        let sk_bytes: [u8; 32] = bs58::decode(sk_str).into_vec().ok()?.try_into().ok()?;
 
         Some((
             calimero_primitives::identity::PublicKey::from(pk_bytes),

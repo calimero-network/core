@@ -41,6 +41,12 @@ impl Handler<CreateContextRequest> for ContextManager {
         }: CreateContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        let identity_secret = identity_secret.or_else(|| {
+            group_id.as_ref()?;
+            let (_, sk) = self.node_group_identity()?;
+            Some(PrivateKey::from(sk))
+        });
+
         let prepared = match Prepared::new(
             &self.node_client,
             &self.context_client,

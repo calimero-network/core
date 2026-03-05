@@ -8,9 +8,9 @@ use calimero_context_primitives::messages::MigrationParams;
 use calimero_server_primitives::admin::{
     UpgradeGroupApiRequest, UpgradeGroupApiResponse, UpgradeGroupApiResponseData,
 };
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
-use super::{decode_signing_key, parse_group_id};
+use super::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
@@ -25,16 +25,6 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    if req.requester_secret.is_some() {
-        warn!("requester_secret is deprecated; register signing key via POST /admin-api/groups/:id/signing-key");
-    }
-
-    let signing_key = match req.requester_secret.as_deref().map(decode_signing_key) {
-        Some(Ok(key)) => Some(key),
-        Some(Err(err)) => return err.into_response(),
-        None => None,
-    };
-
     info!(group_id=%group_id_str, %req.target_application_id, "Initiating group upgrade");
 
     let migration = req.migrate_method.map(|method| MigrationParams { method });
@@ -46,7 +36,6 @@ pub async fn handler(
             target_application_id: req.target_application_id,
             requester: req.requester,
             migration,
-            signing_key,
         })
         .await
         .map_err(parse_api_error);

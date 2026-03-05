@@ -22,24 +22,19 @@ impl Handler<CreateGroupRequest> for ContextManager {
             app_key,
             application_id,
             upgrade_policy,
-            admin_identity,
-            signing_key,
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_near_identity();
+        let node_identity = self.node_group_identity();
 
-        // Resolve admin_identity: use provided value or fall back to node NEAR identity
-        let admin_identity = match admin_identity {
-            Some(pk) => pk,
-            None => match node_identity {
-                Some((pk, _)) => pk,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "admin_identity not provided and node has no configured NEAR identity"
-                    )))
-                }
-            },
+        // Resolve admin_identity from node group identity
+        let admin_identity = match node_identity {
+            Some((pk, _)) => pk,
+            None => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "admin_identity not provided and node has no configured group identity"
+                )))
+            }
         };
 
         // Resolve app_key: use provided value or generate random
@@ -48,9 +43,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
             AppKey::from(bytes)
         });
 
-        // Resolve signing_key: prefer explicit, then node identity key, then stored key
+        // Resolve signing_key: node identity key or stored key
         let node_sk = node_identity.map(|(_, sk)| sk);
-        let signing_key = signing_key.or(node_sk);
+        let signing_key = node_sk;
 
         // Sync validation
         let group_id = group_id.unwrap_or_else(|| {

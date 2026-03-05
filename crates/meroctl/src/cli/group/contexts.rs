@@ -59,19 +59,12 @@ pub struct DetachContextCommand {
 
     #[clap(long, help = "Public key of the requester (group admin)")]
     pub requester: PublicKey,
-
-    #[clap(
-        long,
-        help = "Requester private key (hex). Deprecated: register a signing key instead"
-    )]
-    pub requester_secret: Option<String>,
 }
 
 impl DetachContextCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let request = DetachContextFromGroupApiRequest {
             requester: Some(self.requester),
-            requester_secret: self.requester_secret,
         };
 
         let client = environment.client()?;

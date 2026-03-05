@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::UpgradePolicy;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::CreateGroupApiRequest;
 use clap::{Parser, ValueEnum};
 use eyre::Result;
@@ -41,21 +40,9 @@ pub struct CreateCommand {
 
     #[clap(
         long,
-        help = "Admin identity public key for the group (defaults to node NEAR identity)"
-    )]
-    pub admin_identity: Option<PublicKey>,
-
-    #[clap(
-        long,
         help = "Optional group ID (hex-encoded 32 bytes); generated if not provided"
     )]
     pub group_id: Option<String>,
-
-    #[clap(
-        long,
-        help = "Requester private key (hex). Deprecated: register a signing key instead"
-    )]
-    pub requester_secret: Option<String>,
 }
 
 impl CreateCommand {
@@ -73,8 +60,6 @@ impl CreateCommand {
             app_key: self.app_key,
             application_id: self.application_id,
             upgrade_policy,
-            admin_identity: self.admin_identity,
-            requester_secret: self.requester_secret,
         };
 
         let client = environment.client()?;

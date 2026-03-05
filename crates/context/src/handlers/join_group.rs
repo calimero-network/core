@@ -21,29 +21,24 @@ impl Handler<JoinGroupRequest> for ContextManager {
         &mut self,
         JoinGroupRequest {
             invitation_payload,
-            joiner_identity,
-            signing_key,
         }: JoinGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_near_identity();
+        let node_identity = self.node_group_identity();
 
-        // Resolve joiner_identity: use provided value or fall back to node NEAR identity
-        let joiner_identity = match joiner_identity {
-            Some(pk) => pk,
-            None => match node_identity {
-                Some((pk, _)) => pk,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "joiner_identity not provided and node has no configured NEAR identity"
-                    )))
-                }
-            },
+        // Resolve joiner_identity from node group identity
+        let joiner_identity = match node_identity {
+            Some((pk, _)) => pk,
+            None => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "joiner_identity not provided and node has no configured group identity"
+                )))
+            }
         };
 
-        // Resolve signing_key: prefer explicit, then node identity key
+        // Resolve signing_key from node identity key
         let node_sk = node_identity.map(|(_, sk)| sk);
-        let signing_key = signing_key.or(node_sk);
+        let signing_key = node_sk;
 
         // Decode invitation (now includes inviter_signature, secret_salt, expiration_block_height)
         let (

@@ -18,16 +18,16 @@ impl Handler<UpdateGroupSettingsRequest> for ContextManager {
         }: UpdateGroupSettingsRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_near_identity();
+        let node_identity = self.node_group_identity();
 
-        // Resolve requester: use provided value or fall back to node NEAR identity
+        // Resolve requester: use provided value or fall back to node group identity
         let requester = match requester {
             Some(pk) => pk,
             None => match node_identity {
                 Some((pk, _)) => pk,
                 None => {
                     return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured NEAR identity"
+                        "requester not provided and node has no configured group identity"
                     )))
                 }
             },

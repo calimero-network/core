@@ -16,19 +16,12 @@ pub struct DeleteCommand {
         help = "Public key of the requester (group admin) (defaults to node NEAR identity)"
     )]
     pub requester: Option<PublicKey>,
-
-    #[clap(
-        long,
-        help = "Requester private key (hex). Deprecated: register a signing key instead"
-    )]
-    pub requester_secret: Option<String>,
 }
 
 impl DeleteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let request = DeleteGroupApiRequest {
             requester: self.requester,
-            requester_secret: self.requester_secret,
         };
 
         let client = environment.client()?;

@@ -1,4 +1,3 @@
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::JoinGroupApiRequest;
 use clap::Parser;
 use eyre::Result;
@@ -13,26 +12,12 @@ pub struct JoinCommand {
         help = "The invitation payload (obtained from 'meroctl group invite')"
     )]
     pub invitation_payload: String,
-
-    #[clap(
-        long,
-        help = "Public key of the identity joining the group (defaults to node NEAR identity)"
-    )]
-    pub joiner_identity: Option<PublicKey>,
-
-    #[clap(
-        long,
-        help = "Requester private key (hex). Deprecated: register a signing key instead"
-    )]
-    pub requester_secret: Option<String>,
 }
 
 impl JoinCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let request = JoinGroupApiRequest {
             invitation_payload: self.invitation_payload,
-            joiner_identity: self.joiner_identity,
-            requester_secret: self.requester_secret,
         };
 
         let client = environment.client()?;
