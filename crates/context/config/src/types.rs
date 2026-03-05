@@ -103,7 +103,18 @@ impl From<[u8; 32]> for Identity {
 }
 
 #[derive(
-    Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize, Hash,
+    Eq,
+    Ord,
+    Copy,
+    Debug,
+    Deserialize,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    BorshSerialize,
+    BorshDeserialize,
+    Hash,
+    Serialize,
 )]
 pub struct SignerId(Identity);
 
@@ -663,6 +674,53 @@ pub struct SignedRevealPayload {
     /// The data that is needed to join the context.
     pub data: RevealPayloadData,
     /// The invitee's signature over the `data` (`RevealPayloadData`).
+    pub invitee_signature: String,
+}
+
+/// An open invitation payload for joining a context group.
+/// Created and signed by a group admin.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
+pub struct GroupInvitationFromAdmin {
+    /// The identity of the inviter (group admin public key).
+    pub inviter_identity: SignerId,
+    /// The group being invited to.
+    pub group_id: ContextGroupId,
+    /// The block height at which the invitation expires.
+    pub expiration_height: BlockHeight,
+    /// Secret salt for MEV protection.
+    pub secret_salt: [u8; 32],
+    /// The protocol ID (e.g. "near").
+    pub protocol: String,
+    /// The protocol network (e.g. "testnet").
+    pub network: String,
+    /// The contract ID on the target protocol.
+    pub contract_id: String,
+}
+
+/// A container for a group invitation and the admin's signature over it.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
+pub struct SignedGroupOpenInvitation {
+    /// The open invitation to the group.
+    pub invitation: GroupInvitationFromAdmin,
+    /// Admin's signature for the invitation payload (hex-encoded).
+    pub inviter_signature: String,
+}
+
+/// The full payload the joiner reveals in the second transaction.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Deserialize, Clone, Serialize)]
+pub struct GroupRevealPayloadData {
+    /// The signed open invitation from the admin.
+    pub signed_open_invitation: SignedGroupOpenInvitation,
+    /// The identity of the new member joining the group.
+    pub new_member_identity: SignerId,
+}
+
+/// The final object submitted to the `reveal_group_invitation` method.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Deserialize, Clone, Serialize)]
+pub struct SignedGroupRevealPayload {
+    /// The data needed to join the group.
+    pub data: GroupRevealPayloadData,
+    /// The joiner's signature over the `data`.
     pub invitee_signature: String,
 }
 

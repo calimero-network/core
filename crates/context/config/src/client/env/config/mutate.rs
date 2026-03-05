@@ -12,7 +12,7 @@ use crate::client::{CallClient, ClientError, Operation};
 use crate::repr::Repr;
 use crate::types::{
     AppKey, Application, BlockHeight, Capability, ContextGroupId, ContextId, ContextIdentity,
-    SignedRevealPayload, SignerId,
+    SignedGroupRevealPayload, SignedRevealPayload, SignerId,
 };
 use crate::{ContextRequest, ContextRequestKind, GroupRequest, GroupRequestKind, RequestKind};
 
@@ -300,6 +300,38 @@ impl<'a, T> ContextConfigMutate<'a, T> {
             kind: RequestKind::Group(GroupRequest::new(
                 Repr::new(group_id),
                 GroupRequestKind::SetTargetApplication { target_application },
+            )),
+        }
+    }
+
+    pub fn commit_group_invitation(
+        self,
+        group_id: ContextGroupId,
+        commitment_hash: String,
+        expiration_block_height: BlockHeight,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::CommitGroupInvitation {
+                    commitment_hash,
+                    expiration_block_height,
+                },
+            )),
+        }
+    }
+
+    pub fn reveal_group_invitation(
+        self,
+        group_id: ContextGroupId,
+        payload: SignedGroupRevealPayload,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::RevealGroupInvitation { payload },
             )),
         }
     }

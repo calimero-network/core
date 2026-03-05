@@ -298,4 +298,43 @@ impl ExternalGroupClient {
 
         Ok(())
     }
+
+    /// Commit a group invitation hash on-chain. No nonce required.
+    pub async fn commit_group_invitation(
+        &self,
+        commitment_hash: String,
+        expiration_block_height: u64,
+    ) -> eyre::Result<()> {
+        let c = &self.inner;
+        c.sdk_client
+            .mutate::<ContextConfig>(
+                c.protocol.as_str().into(),
+                c.network_id.as_str().into(),
+                c.contract_id.as_str().into(),
+            )
+            .commit_group_invitation(c.group_id, commitment_hash, expiration_block_height)
+            .send(c.signing_key, 0)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Reveal a group invitation on-chain. No nonce required.
+    pub async fn reveal_group_invitation(
+        &self,
+        payload: types::SignedGroupRevealPayload,
+    ) -> eyre::Result<()> {
+        let c = &self.inner;
+        c.sdk_client
+            .mutate::<ContextConfig>(
+                c.protocol.as_str().into(),
+                c.network_id.as_str().into(),
+                c.contract_id.as_str().into(),
+            )
+            .reveal_group_invitation(c.group_id, payload)
+            .send(c.signing_key, 0)
+            .await?;
+
+        Ok(())
+    }
 }

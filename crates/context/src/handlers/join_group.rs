@@ -1,11 +1,15 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_config::repr::ReprTransmute;
-use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::types::{
+    ContextGroupId, GroupInvitationFromAdmin, GroupRevealPayloadData, SignedGroupOpenInvitation,
+    SignedGroupRevealPayload, SignerId,
+};
 use calimero_context_primitives::group::{JoinGroupRequest, JoinGroupResponse};
 use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
+use sha2::{Digest, Sha256};
 use tracing::info;
 
 use crate::{group_store, ContextManager};
@@ -22,7 +26,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
         }: JoinGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Decode invitation
+        // Decode invitation (now includes inviter_signature, secret_salt, expiration_block_height)
         let (
             group_id_bytes,
             inviter_identity,
@@ -31,6 +35,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
             protocol,
             network_id,
             contract_id,
+            inviter_signature,
+            secret_salt,
+            expiration_block_height,
         ) = match invitation_payload.parts() {
             Ok(parts) => parts,
             Err(err) => {
@@ -124,12 +131,67 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     bail!("identity is already a member of this group");
                 }
 
-                // Phase 3: Contract + local store
+                // Phase 3: Contract commit/reveal + local store
                 if let Some(client_result) = group_client_result {
-                    let mut group_client = client_result?;
-                    let signer_id: calimero_context_config::types::SignerId =
-                        joiner_identity.rt()?;
-                    group_client.add_group_members(&[signer_id]).await?;
+                    let group_client = client_result?;
+
+                    // Convert identities to contract types via borsh roundtrip
+                    let inviter_bytes: [u8; 32] = *inviter_identity;
+                    let inviter_signer_id: SignerId =
+                        borsh::from_slice(&borsh::to_vec(&inviter_bytes)?)?;
+
+                    let joiner_bytes: [u8; 32] = *joiner_identity;
+                    let new_member_signer_id: SignerId =
+                        borsh::from_slice(&borsh::to_vec(&joiner_bytes)?)?;
+
+                    // Reconstruct the GroupInvitationFromAdmin
+                    let invitation = GroupInvitationFromAdmin {
+                        inviter_identity: inviter_signer_id,
+                        group_id,
+                        expiration_height: expiration_block_height,
+                        secret_salt,
+                        protocol: protocol.clone(),
+                        network: network_id.clone(),
+                        contract_id: contract_id.clone(),
+                    };
+
+                    let signed_open_invitation = SignedGroupOpenInvitation {
+                        invitation,
+                        inviter_signature,
+                    };
+
+                    // Build the reveal payload data
+                    let reveal_payload_data = GroupRevealPayloadData {
+                        signed_open_invitation,
+                        new_member_identity: new_member_signer_id,
+                    };
+
+                    // Compute commitment hash
+                    let reveal_data_bytes = borsh::to_vec(&reveal_payload_data)?;
+                    let commitment_hash = hex::encode(Sha256::digest(&reveal_data_bytes));
+
+                    // Step 1: Commit
+                    group_client
+                        .commit_group_invitation(commitment_hash, expiration_block_height)
+                        .await?;
+
+                    // Step 2: Sign the reveal payload data with the joiner's key
+                    let effective_key = effective_signing_key
+                        .ok_or_else(|| eyre::eyre!("signing key required for commit/reveal"))?;
+                    let joiner_private_key = PrivateKey::from(effective_key);
+                    let hash = Sha256::digest(&reveal_data_bytes);
+                    let signature = joiner_private_key
+                        .sign(&hash)
+                        .map_err(|e| eyre::eyre!("signing reveal payload failed: {e}"))?;
+                    let invitee_signature = hex::encode(signature.to_bytes());
+
+                    let signed_payload = SignedGroupRevealPayload {
+                        data: reveal_payload_data,
+                        invitee_signature,
+                    };
+
+                    // Step 3: Reveal
+                    group_client.reveal_group_invitation(signed_payload).await?;
                 }
 
                 group_store::add_group_member(

@@ -448,6 +448,9 @@ const _: () = {
         protocol: String,
         network_id: String,
         contract_id: String,
+        inviter_signature: String,
+        secret_salt: [u8; 32],
+        expiration_block_height: u64,
     }
 
     impl GroupInvitationPayload {
@@ -461,6 +464,10 @@ const _: () = {
         /// * `protocol` - Protocol name (e.g., "near").
         /// * `network_id` - Network identifier (e.g., "testnet").
         /// * `contract_id` - Contract account ID on the external network.
+        /// * `inviter_signature` - Hex-encoded admin signature over the invitation.
+        /// * `secret_salt` - Random salt for MEV protection.
+        /// * `expiration_block_height` - Block-height expiration for the contract.
+        #[allow(clippy::too_many_arguments)]
         pub fn new(
             group_id: [u8; DIGEST_SIZE],
             inviter_identity: PublicKey,
@@ -469,6 +476,9 @@ const _: () = {
             protocol: &str,
             network_id: &str,
             contract_id: &str,
+            inviter_signature: String,
+            secret_salt: [u8; 32],
+            expiration_block_height: u64,
         ) -> io::Result<Self> {
             let payload = GroupInvitationInner {
                 group_id,
@@ -478,6 +488,9 @@ const _: () = {
                 protocol: protocol.to_owned(),
                 network_id: network_id.to_owned(),
                 contract_id: contract_id.to_owned(),
+                inviter_signature,
+                secret_salt,
+                expiration_block_height,
             };
 
             borsh::to_vec(&payload).map(Self)
@@ -487,7 +500,8 @@ const _: () = {
         ///
         /// # Returns
         /// A tuple of `(group_id_bytes, inviter_identity, invitee_identity, expiration,
-        /// protocol, network_id, contract_id)`.
+        /// protocol, network_id, contract_id, inviter_signature, secret_salt,
+        /// expiration_block_height)`.
         #[allow(clippy::type_complexity)]
         pub fn parts(
             &self,
@@ -499,6 +513,9 @@ const _: () = {
             String,
             String,
             String,
+            String,
+            [u8; 32],
+            u64,
         )> {
             let payload: GroupInvitationInner = borsh::from_slice(&self.0)?;
 
@@ -510,6 +527,9 @@ const _: () = {
                 payload.protocol,
                 payload.network_id,
                 payload.contract_id,
+                payload.inviter_signature,
+                payload.secret_salt,
+                payload.expiration_block_height,
             ))
         }
     }
@@ -606,6 +626,7 @@ mod tests {
         let group_id = [3u8; DIGEST_SIZE];
         let inviter = PublicKey::from([4; DIGEST_SIZE]);
         let invitee = PublicKey::from([5; DIGEST_SIZE]);
+        let salt = [9u8; 32];
 
         let payload = GroupInvitationPayload::new(
             group_id,
@@ -615,6 +636,9 @@ mod tests {
             "near",
             "testnet",
             "calimero.testnet",
+            "abcd1234".to_string(),
+            salt,
+            999_999_999,
         )
         .expect("Payload creation should succeed");
 
@@ -624,8 +648,18 @@ mod tests {
         let decoded =
             GroupInvitationPayload::from_str(&encoded).expect("Payload decoding should succeed");
 
-        let (g, inv, invitee_out, exp, protocol, network_id, contract_id) =
-            decoded.parts().expect("Parts extraction should succeed");
+        let (
+            g,
+            inv,
+            invitee_out,
+            exp,
+            protocol,
+            network_id,
+            contract_id,
+            sig,
+            decoded_salt,
+            exp_bh,
+        ) = decoded.parts().expect("Parts extraction should succeed");
         assert_eq!(g, group_id);
         assert_eq!(inv, inviter);
         assert_eq!(invitee_out, Some(invitee));
@@ -633,23 +667,47 @@ mod tests {
         assert_eq!(protocol, "near");
         assert_eq!(network_id, "testnet");
         assert_eq!(contract_id, "calimero.testnet");
+        assert_eq!(sig, "abcd1234");
+        assert_eq!(decoded_salt, salt);
+        assert_eq!(exp_bh, 999_999_999);
     }
 
     #[test]
     fn test_group_invitation_payload_roundtrip_open() {
         let group_id = [6u8; DIGEST_SIZE];
         let inviter = PublicKey::from([7; DIGEST_SIZE]);
+        let salt = [10u8; 32];
 
-        let payload =
-            GroupInvitationPayload::new(group_id, inviter, None, None, "near", "testnet", "c.near")
-                .expect("Payload creation should succeed");
+        let payload = GroupInvitationPayload::new(
+            group_id,
+            inviter,
+            None,
+            None,
+            "near",
+            "testnet",
+            "c.near",
+            "sig_hex".to_string(),
+            salt,
+            1_000_000_000,
+        )
+        .expect("Payload creation should succeed");
 
         let encoded = payload.to_string();
         let decoded =
             GroupInvitationPayload::from_str(&encoded).expect("Payload decoding should succeed");
 
-        let (g, inv, invitee_out, exp, protocol, network_id, contract_id) =
-            decoded.parts().expect("Parts extraction should succeed");
+        let (
+            g,
+            inv,
+            invitee_out,
+            exp,
+            protocol,
+            network_id,
+            contract_id,
+            sig,
+            decoded_salt,
+            exp_bh,
+        ) = decoded.parts().expect("Parts extraction should succeed");
         assert_eq!(g, group_id);
         assert_eq!(inv, inviter);
         assert_eq!(invitee_out, None);
@@ -657,6 +715,9 @@ mod tests {
         assert_eq!(protocol, "near");
         assert_eq!(network_id, "testnet");
         assert_eq!(contract_id, "c.near");
+        assert_eq!(sig, "sig_hex");
+        assert_eq!(decoded_salt, salt);
+        assert_eq!(exp_bh, 1_000_000_000);
     }
 
     #[test]

@@ -13,7 +13,7 @@ pub mod types;
 use repr::Repr;
 use types::{
     AppKey, Application, BlockHeight, Capability, ContextGroupId, ContextId, ContextIdentity,
-    ProposalId, SignedRevealPayload, SignerId,
+    ProposalId, SignedGroupRevealPayload, SignedRevealPayload, SignerId,
 };
 
 pub type Timestamp = u64;
@@ -154,6 +154,13 @@ pub enum GroupRequestKind<'a> {
     /// Must be called by a group admin before the proxy path is exercised.
     ApproveContextRegistration {
         context_id: Repr<ContextId>,
+    },
+    CommitGroupInvitation {
+        commitment_hash: String,
+        expiration_block_height: BlockHeight,
+    },
+    RevealGroupInvitation {
+        payload: SignedGroupRevealPayload,
     },
 }
 
