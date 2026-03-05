@@ -451,9 +451,9 @@ async fn create_context(
     // messages (e.g. RemoveGroupMembers), but the window is small and the
     // worst case is a single context associated with a since-removed member.
     if let Some(ref gid) = group_id {
-        // Call contract to register context in the group on-chain.
-        // Derive signing key from the creator's identity_secret.
-        let signing_key_bytes: [u8; 32] = *identity_secret;
+        let admin_signing_key = group_store::find_admin_signing_key(&datastore, gid)?
+            .ok_or_eyre("no admin signing key found for group")?;
+        let signing_key_bytes: [u8; 32] = admin_signing_key.1;
         let mut group_client = context_client.group_client(
             *gid,
             signing_key_bytes,

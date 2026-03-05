@@ -341,6 +341,37 @@ pub fn require_group_signing_key(
     Ok(())
 }
 
+/// Finds any admin with a stored signing key for the group.
+/// Returns the public key and private key bytes if found.
+pub fn find_admin_signing_key(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<(PublicKey, [u8; 32])>> {
+    let handle = store.handle();
+    let group_id_bytes: [u8; 32] = group_id.to_bytes();
+    let start_key = GroupSigningKey::new(group_id_bytes, [0u8; 32].into());
+    let mut iter = handle.iter::<GroupSigningKey>()?;
+    let first = iter.seek(start_key).transpose();
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+        if key.as_key().as_bytes()[0] != GROUP_SIGNING_KEY_PREFIX {
+            break;
+        }
+        if key.group_id() != group_id_bytes {
+            break;
+        }
+        let public_key = PublicKey::from(key.public_key());
+        if is_group_admin(store, group_id, &public_key)? {
+            if let Some(value) = handle.get(&key)? {
+                return Ok(Some((public_key, value.private_key)));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 /// Delete all signing keys for a group (used during group deletion).
 pub fn delete_all_group_signing_keys(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     let handle = store.handle();
@@ -1010,10 +1041,20 @@ mod tests {
 
         save_group_meta(&store, &gid1, &meta).unwrap();
         save_group_meta(&store, &gid2, &meta).unwrap();
-        add_group_member(&store, &gid1, &PublicKey::from([0xAA; 32]), GroupMemberRole::Admin)
-            .unwrap();
-        add_group_member(&store, &gid2, &PublicKey::from([0xBB; 32]), GroupMemberRole::Member)
-            .unwrap();
+        add_group_member(
+            &store,
+            &gid1,
+            &PublicKey::from([0xAA; 32]),
+            GroupMemberRole::Admin,
+        )
+        .unwrap();
+        add_group_member(
+            &store,
+            &gid2,
+            &PublicKey::from([0xBB; 32]),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
 
         let groups = enumerate_all_groups(&store, 0, 100).unwrap();
         assert_eq!(groups.len(), 2);

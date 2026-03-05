@@ -1,7 +1,6 @@
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::{RetryGroupUpgradeRequest, UpgradeGroupResponse};
 use calimero_context_primitives::messages::MigrationParams;
-use calimero_primitives::context::ContextId;
 use calimero_store::key::GroupUpgradeStatus;
 use eyre::bail;
 use tracing::info;
@@ -99,8 +98,7 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             group_id,
             target_application_id,
             migration,
-            // Sentinel: no context to skip on retry
-            ContextId::from([0u8; 32]),
+            None,
             0, // retry: no canary assumption
         );
 
