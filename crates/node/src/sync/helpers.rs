@@ -117,6 +117,56 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     Ok(())
 }
 
+/// Maximum entities per `EntityPush` message (shared between initiator and responder).
+///
+/// The initiator batches at this limit; the responder truncates messages exceeding it.
+pub const MAX_ENTITIES_PER_PUSH: usize = 500;
+
+/// Handle an incoming `EntityPush` by applying CRDT merge for each entity.
+///
+/// Shared between the production responder (`hash_comparison.rs`) and the
+/// protocol responder (`hash_comparison_protocol.rs`).
+///
+/// Must be called within a `with_runtime_env` scope for each entity.
+/// Truncates to `MAX_ENTITIES_PER_PUSH` entities per message for DoS protection.
+///
+/// Returns the number of entities successfully applied.
+pub fn handle_entity_push(
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    context_id: ContextId,
+    entities: &[TreeLeafData],
+) -> u32 {
+    let entities = if entities.len() > MAX_ENTITIES_PER_PUSH {
+        tracing::warn!(
+            %context_id,
+            received = entities.len(),
+            max = MAX_ENTITIES_PER_PUSH,
+            "EntityPush exceeds max, truncating"
+        );
+        &entities[..MAX_ENTITIES_PER_PUSH]
+    } else {
+        entities
+    };
+
+    calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
+        let mut applied = 0u32;
+        for leaf in entities {
+            match apply_leaf_with_crdt_merge(context_id, leaf) {
+                Ok(()) => applied += 1,
+                Err(e) => {
+                    tracing::warn!(
+                        %context_id,
+                        key = %hex::encode(leaf.key),
+                        error = %e,
+                        "Failed to apply pushed entity"
+                    );
+                }
+            }
+        }
+        applied
+    })
+}
+
 // =============================================================================
 // Tests
 // =============================================================================

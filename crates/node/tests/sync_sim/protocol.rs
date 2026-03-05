@@ -7,13 +7,13 @@
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────┐
-//! │                    execute_hash_comparison_sync                  │
-//! │                                                                  │
-//! │  ┌────────────────────┐         ┌────────────────────┐         │
-//! │  │  Initiator Task    │         │  Responder Task    │         │
-//! │  │  (alice)           │◄───────►│  (bob)             │         │
+//! │                    execute_hash_comparison_sync                 │
+//! │                                                                 │
+//! │  ┌────────────────────┐          ┌────────────────────┐         │
+//! │  │  Initiator Task    │          │  Responder Task    │         │
+//! │  │  (alice)           │◄───────-►│  (bob)             │         │
 //! │  │                    │ SimStream│                    │         │
-//! │  │  Store (InMemory)  │  pair   │  Store (InMemory)  │         │
+//! │  │  Store (InMemory)  │  pair   │  Store (InMemory)   │         │
 //! │  └────────────────────┘         └────────────────────┘         │
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
@@ -51,8 +51,10 @@ use super::transport::SimStream;
 pub struct SimSyncStats {
     /// Number of tree nodes compared.
     pub nodes_compared: u64,
-    /// Number of leaf entities transferred.
+    /// Number of leaf entities transferred (pulled from peer).
     pub entities_transferred: u64,
+    /// Number of leaf entities pushed to peer (bidirectional sync).
+    pub entities_pushed: u64,
     /// Number of nodes skipped (hashes matched).
     pub nodes_skipped: u64,
     /// Number of request/response rounds.
@@ -64,6 +66,7 @@ impl From<HashComparisonStats> for SimSyncStats {
         Self {
             nodes_compared: stats.nodes_compared,
             entities_transferred: stats.entities_merged,
+            entities_pushed: stats.entities_pushed,
             nodes_skipped: stats.nodes_skipped,
             rounds: stats.requests_sent,
         }
@@ -588,5 +591,406 @@ mod tests {
         assert_eq!(alice.entity_count(), 1);
         assert_eq!(bob.entity_count(), 1);
         assert_eq!(charlie.entity_count(), 1);
+    }
+
+    // =========================================================================
+    // Bidirectional Sync Tests (Bug: initiator-has-more-data)
+    // =========================================================================
+    // These tests reproduce the bug from FIX-HASH-COMPARISON-SYNC.md where
+    // HashComparison protocol fails to transfer data when the INITIATOR has
+    // more data than the RESPONDER. The old protocol was pull-only.
+    //
+    // NOTE: Empty nodes (root_hash == [0;32]) use Snapshot, not HashComparison.
+    // The bug only manifests when BOTH nodes have state but the initiator has
+    // MORE entities. The root hashes differ but neither is zero.
+
+    /// **BUG REPRODUCTION**: Both nodes have state but initiator has more.
+    ///
+    /// Mirrors the CI failure scenario:
+    /// - Both nodes share a base entity (both initialized, has_state=true)
+    /// - Node 1 (alice) then writes 10 additional seed entities
+    /// - Alice initiates sync with Bob via HashComparison
+    /// - Old behavior: alice pulls nothing (bob has no new data), alice's
+    ///   local-only subtrees are ignored → bob never gets the seed data
+    /// - Fixed behavior: alice detects local-only children and pushes them
+    #[tokio::test]
+    async fn test_initiator_has_more_data_push_to_peer() {
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Both share a base entity (so both have has_state=true, non-zero root)
+        let base_id = EntityId::from_u64(1000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        // Sanity: both have the same base state
+        assert_eq!(alice.root_hash(), bob.root_hash());
+
+        // Now alice writes 10 additional seed entities
+        for i in 1..=10 {
+            alice.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("seed-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        assert_eq!(alice.entity_count(), 11); // 1 base + 10 seed
+        assert_eq!(bob.entity_count(), 1); // 1 base only
+        assert_ne!(alice.root_hash(), bob.root_hash());
+
+        // Alice initiates sync WITH bob (alice is initiator = puller)
+        // With the bug: alice gets nothing from bob, bob gets nothing.
+        // With the fix: alice pushes her local-only data to bob.
+        let stats = execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("sync should succeed");
+
+        println!(
+            "Stats: entities_pushed={}, entities_transferred={}, rounds={}",
+            stats.entities_pushed, stats.entities_transferred, stats.rounds
+        );
+
+        // Bob should now have all 11 entities (1 base + 10 pushed by alice)
+        assert_eq!(
+            bob.entity_count(),
+            11,
+            "Bob should have all 11 entities after bidirectional sync"
+        );
+
+        // Alice should still have her 11 entities
+        assert_eq!(alice.entity_count(), 11);
+
+        // Root hashes should converge
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "Root hashes should match after sync"
+        );
+
+        // Verify stats: entities were pushed, not pulled
+        assert!(
+            stats.entities_pushed >= 10,
+            "Should have pushed at least 10 entities, got {}",
+            stats.entities_pushed
+        );
+    }
+
+    /// **BUG REPRODUCTION**: Both nodes have unique data, initiator has MORE.
+    ///
+    /// Alice has 1 shared + 10 unique, Bob has 1 shared + 3 unique.
+    /// After single sync, both should have 1 + 10 + 3 = 14.
+    #[tokio::test]
+    async fn test_bidirectional_both_have_unique_data() {
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Shared base entity
+        let base_id = EntityId::from_u64(1000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+
+        // Alice adds 10 unique entities
+        for i in 1..=10 {
+            alice.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("alice-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        // Bob adds 3 unique entities (completely different IDs)
+        for i in 101..=103 {
+            bob.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("bob-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        assert_eq!(alice.entity_count(), 11); // 1 shared + 10 unique
+        assert_eq!(bob.entity_count(), 4); // 1 shared + 3 unique
+        assert_ne!(alice.root_hash(), bob.root_hash());
+
+        // Alice initiates sync WITH bob
+        // - Alice should pull Bob's 3 unique entities (entities_transferred)
+        // - Alice should push her 10 unique entities to Bob (entities_pushed)
+        let stats = execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("sync should succeed");
+
+        println!(
+            "Stats: pushed={}, transferred={}, compared={}, skipped={}, rounds={}",
+            stats.entities_pushed,
+            stats.entities_transferred,
+            stats.nodes_compared,
+            stats.nodes_skipped,
+            stats.rounds
+        );
+
+        // Alice should have all 14 entities (1 shared + 10 own + 3 from bob)
+        assert_eq!(
+            alice.entity_count(),
+            14,
+            "Alice should have 14 entities (1 shared + 10 own + 3 from bob)"
+        );
+
+        // Bob should also have all 14 entities (1 shared + 3 own + 10 from alice)
+        assert_eq!(
+            bob.entity_count(),
+            14,
+            "Bob should have 14 entities (1 shared + 3 own + 10 from alice)"
+        );
+
+        // Root hashes should converge
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "Root hashes should match after bidirectional sync"
+        );
+    }
+
+    /// Verify that single-direction pull sync still works (no regression).
+    ///
+    /// Both have base state, Bob has extra data, Alice initiates → Alice pulls.
+    #[tokio::test]
+    async fn test_pull_direction_still_works() {
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Shared base
+        let base_id = EntityId::from_u64(1000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+
+        // Bob has 5 extra entities
+        for i in 1..=5 {
+            bob.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("bob-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        let stats = execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("sync should succeed");
+
+        assert_eq!(alice.entity_count(), 6, "Alice should have 6 entities");
+        assert_eq!(alice.root_hash(), bob.root_hash(), "Hashes should match");
+        assert!(
+            stats.entities_transferred >= 5,
+            "Should have transferred at least 5 entities"
+        );
+    }
+
+    /// 4-node scenario mimicking the fuzzy test with initialized nodes.
+    ///
+    /// All nodes share a base entity. Node 1 then writes seed data.
+    /// After sync rounds, all should converge.
+    #[tokio::test]
+    async fn test_four_node_seed_data_propagation() {
+        let ctx = shared_context();
+        let mut node1 = SimNode::new_in_context("node1", ctx);
+        let mut node2 = SimNode::new_in_context("node2", ctx);
+        let mut node3 = SimNode::new_in_context("node3", ctx);
+        let mut node4 = SimNode::new_in_context("node4", ctx);
+
+        // All share a base entity (all initialized)
+        let base_id = EntityId::from_u64(1000);
+        for node in [&mut node1, &mut node2, &mut node3, &mut node4] {
+            node.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        }
+
+        // Node 1 writes 10 seed values (exactly like the fuzzy test)
+        for i in 1..=10 {
+            node1.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("seed-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        assert_eq!(node1.entity_count(), 11);
+        assert_eq!(node2.entity_count(), 1);
+        assert_eq!(node3.entity_count(), 1);
+        assert_eq!(node4.entity_count(), 1);
+
+        // Node 1 initiates sync with each other node (push direction)
+        execute_hash_comparison_sync(&mut node1, &node2)
+            .await
+            .expect("n1<->n2");
+        execute_hash_comparison_sync(&mut node1, &node3)
+            .await
+            .expect("n1<->n3");
+        execute_hash_comparison_sync(&mut node1, &node4)
+            .await
+            .expect("n1<->n4");
+
+        // All nodes should have the seed data after one round
+        assert_eq!(
+            node2.entity_count(),
+            11,
+            "Node 2 should have 11 entities after sync with node 1"
+        );
+        assert_eq!(
+            node3.entity_count(),
+            11,
+            "Node 3 should have 11 entities after sync with node 1"
+        );
+        assert_eq!(
+            node4.entity_count(),
+            11,
+            "Node 4 should have 11 entities after sync with node 1"
+        );
+
+        // All should converge to same root hash
+        assert_eq!(node1.root_hash(), node2.root_hash());
+        assert_eq!(node1.root_hash(), node3.root_hash());
+        assert_eq!(node1.root_hash(), node4.root_hash());
+    }
+
+    /// Minimal reproduction: initiator has 1 extra entity beyond shared base.
+    #[tokio::test]
+    async fn test_single_entity_push_with_shared_base() {
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Shared base
+        let base_id = EntityId::from_u64(1000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+
+        // Alice adds one extra entity
+        alice.insert_entity_with_metadata(
+            EntityId::from_u64(42),
+            b"hello".to_vec(),
+            EntityMetadata::default(),
+        );
+
+        assert_eq!(alice.entity_count(), 2);
+        assert_eq!(bob.entity_count(), 1);
+
+        let stats = execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("sync should succeed");
+
+        assert_eq!(bob.entity_count(), 2, "Bob should have 2 entities");
+        assert_eq!(alice.root_hash(), bob.root_hash());
+        assert!(
+            stats.entities_pushed >= 1,
+            "Should have pushed at least 1 entity, got {}",
+            stats.entities_pushed,
+        );
+    }
+
+    /// CRDT conflict during push: alice pushes entity that bob already has
+    /// with a different value. LWW merge should resolve deterministically.
+    #[tokio::test]
+    async fn test_crdt_conflict_during_push() {
+        use calimero_primitives::crdt::CrdtType;
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Shared base
+        let base_id = EntityId::from_u64(1000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+
+        // Both have the conflict entity, different values and timestamps
+        let conflict_id = EntityId::from_u64(42);
+        alice.insert_entity_with_metadata(
+            conflict_id,
+            b"alice-wins".to_vec(),
+            EntityMetadata::new(CrdtType::lww_register("test"), 200), // newer
+        );
+        bob.insert_entity_with_metadata(
+            conflict_id,
+            b"bob-loses".to_vec(),
+            EntityMetadata::new(CrdtType::lww_register("test"), 100), // older
+        );
+
+        // Alice also has extra entities to trigger push
+        for i in 1..=3 {
+            alice.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("alice-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        assert_ne!(alice.root_hash(), bob.root_hash());
+
+        // Round 1: Alice initiates → pushes her data to bob, pulls bob's
+        execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("a->b should succeed");
+
+        // Round 2: Bob initiates → pushes merged state back to alice
+        execute_hash_comparison_sync(&mut bob, &alice)
+            .await
+            .expect("b->a should succeed");
+
+        // After two rounds, both should converge
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "Should converge after bidirectional CRDT merge"
+        );
+
+        // Both should have: 1 base + 1 conflict (merged) + 3 unique = 5
+        assert_eq!(alice.entity_count(), 5);
+        assert_eq!(bob.entity_count(), 5);
+    }
+
+    /// Symmetric sync: A→B then B→A should produce identical state.
+    #[tokio::test]
+    async fn test_symmetric_sync_converges() {
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Shared base
+        let base_id = EntityId::from_u64(1000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+
+        // Each has unique data
+        for i in 1..=5 {
+            alice.insert_entity_with_metadata(
+                EntityId::from_u64(i),
+                format!("a-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+            bob.insert_entity_with_metadata(
+                EntityId::from_u64(100 + i),
+                format!("b-{i}").into_bytes(),
+                EntityMetadata::default(),
+            );
+        }
+
+        // A→B: alice initiates, pushes her data, pulls bob's
+        execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("a->b");
+
+        // Should already converge after one bidirectional sync
+        assert_eq!(alice.entity_count(), 11); // 1 base + 5 alice + 5 bob
+        assert_eq!(bob.entity_count(), 11);
+        assert_eq!(alice.root_hash(), bob.root_hash());
+
+        // B→A: bob initiates (should be no-op since already converged)
+        let stats = execute_hash_comparison_sync(&mut bob, &alice)
+            .await
+            .expect("b->a");
+
+        assert_eq!(stats.entities_transferred, 0, "no-op when already synced");
+        assert_eq!(stats.entities_pushed, 0, "no-op when already synced");
+        assert_eq!(alice.root_hash(), bob.root_hash());
     }
 }

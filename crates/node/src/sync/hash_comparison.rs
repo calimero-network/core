@@ -19,6 +19,7 @@
 //! └────────────────────────────────────────────┘
 //! ```
 
+use crate::sync::helpers::handle_entity_push;
 use calimero_crypto::Nonce;
 use calimero_node_primitives::sync::{
     create_runtime_env, InitPayload, LeafMetadata, MessagePayload, StreamMessage, SyncTransport,
@@ -39,6 +40,8 @@ use super::manager::SyncManager;
 ///
 /// Prevents malicious peers from requesting expensive deep traversals.
 pub const MAX_REQUEST_DEPTH: u8 = 16;
+
+use super::hash_comparison_protocol::MAX_HASH_COMPARISON_REQUESTS;
 
 // =============================================================================
 // SyncManager Responder Implementation
@@ -124,47 +127,83 @@ impl SyncManager {
 
         // Loop to handle subsequent requests until stream closes
         loop {
+            // DoS protection: limit total requests per session
+            if requests_handled >= MAX_HASH_COMPARISON_REQUESTS {
+                warn!(
+                    %context_id,
+                    requests_handled,
+                    "Request limit reached, closing responder"
+                );
+                break;
+            }
+
             let Some(request) = transport.recv().await? else {
                 debug!(%context_id, requests_handled, "Stream closed, responder done");
                 break;
             };
 
-            // Expect Init messages with TreeNodeRequest
             let StreamMessage::Init { payload, .. } = request else {
                 debug!(%context_id, "Received non-Init message, ending responder");
                 break;
             };
 
-            let InitPayload::TreeNodeRequest {
-                node_id, max_depth, ..
-            } = payload
-            else {
-                debug!(%context_id, "Received non-TreeNodeRequest, ending responder");
-                break;
-            };
+            match payload {
+                InitPayload::TreeNodeRequest {
+                    node_id, max_depth, ..
+                } => {
+                    trace!(
+                        %context_id,
+                        node_id = %hex::encode(node_id),
+                        ?max_depth,
+                        "Handling subsequent TreeNodeRequest"
+                    );
 
-            trace!(
-                %context_id,
-                node_id = %hex::encode(node_id),
-                ?max_depth,
-                "Handling subsequent TreeNodeRequest"
-            );
+                    let clamped_depth = max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
+                    let response = self
+                        .build_tree_node_response(context_id, &node_id, clamped_depth, &runtime_env)
+                        .await?;
 
-            let clamped_depth = max_depth.map(|d| d.min(MAX_REQUEST_DEPTH));
-            let response = self
-                .build_tree_node_response(context_id, &node_id, clamped_depth, &runtime_env)
-                .await?;
+                    let msg = StreamMessage::Message {
+                        sequence_id: sqx.next(),
+                        payload: MessagePayload::TreeNodeResponse {
+                            nodes: response.nodes,
+                            not_found: response.not_found,
+                        },
+                        next_nonce: super::helpers::generate_nonce(),
+                    };
+                    transport.send(&msg).await?;
+                    requests_handled += 1;
+                }
 
-            let msg = StreamMessage::Message {
-                sequence_id: sqx.next(),
-                payload: MessagePayload::TreeNodeResponse {
-                    nodes: response.nodes,
-                    not_found: response.not_found,
-                },
-                next_nonce: super::helpers::generate_nonce(),
-            };
-            transport.send(&msg).await?;
-            requests_handled += 1;
+                InitPayload::EntityPush { entities, .. } => {
+                    let entity_count = entities.len();
+                    trace!(%context_id, entity_count, "Handling EntityPush from initiator");
+
+                    let applied = handle_entity_push(&runtime_env, context_id, &entities);
+
+                    let msg = StreamMessage::Message {
+                        sequence_id: sqx.next(),
+                        payload: MessagePayload::EntityPushAck {
+                            applied_count: applied,
+                        },
+                        next_nonce: super::helpers::generate_nonce(),
+                    };
+                    transport.send(&msg).await?;
+                    requests_handled += 1;
+
+                    info!(
+                        %context_id,
+                        applied,
+                        total = entity_count,
+                        "Applied pushed entities via CRDT merge"
+                    );
+                }
+
+                _ => {
+                    debug!(%context_id, "Received unknown payload, ending responder");
+                    break;
+                }
+            }
         }
 
         info!(%context_id, requests_handled, "HashComparison responder complete");

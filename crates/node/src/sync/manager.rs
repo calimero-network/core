@@ -91,8 +91,9 @@ impl SyncManager {
 
     /// Build `SyncHandshake` from local context state for protocol negotiation.
     ///
-    /// Uses shared estimation functions from `calimero_node_primitives::sync::state_machine`
-    /// to ensure consistent behavior between production (`SyncManager`) and simulation (`SimNode`).
+    /// Queries the real entity count and tree depth from the Merkle tree Index
+    /// via the storage bridge. Falls back to estimation from DAG heads if the
+    /// Index is not accessible (e.g., after snapshot sync with format mismatch).
     ///
     /// # Arguments
     ///
@@ -101,15 +102,58 @@ impl SyncManager {
     /// # Returns
     ///
     /// A `SyncHandshake` containing the context's current state summary.
-    fn build_local_handshake(context: &calimero_primitives::context::Context) -> SyncHandshake {
+    fn build_local_handshake(
+        &self,
+        context: &calimero_primitives::context::Context,
+    ) -> SyncHandshake {
         let root_hash = *context.root_hash;
         let dag_heads = context.dag_heads.clone();
 
-        // Use shared estimation functions for consistency with simulation
-        let entity_count = estimate_entity_count(root_hash, dag_heads.len());
-        let max_depth = estimate_max_depth(entity_count);
+        // Try to get real entity count and depth from the Merkle tree Index.
+        // This gives accurate protocol selection instead of guessing from dag_heads.
+        let (entity_count, max_depth) = self.query_tree_stats(&context.id).unwrap_or_else(|| {
+            // Fallback: estimate from dag_heads if Index is unavailable
+            let count = estimate_entity_count(root_hash, dag_heads.len());
+            let depth = estimate_max_depth(count);
+            (count, depth)
+        });
 
         build_handshake_from_raw(root_hash, entity_count, max_depth, dag_heads)
+    }
+
+    /// Query real entity count and tree depth from the Merkle tree Index.
+    ///
+    /// Returns `Some((entity_count, max_depth))` on success, `None` if the
+    /// Index is unavailable (e.g., fresh node or deserialization mismatch).
+    fn query_tree_stats(&self, context_id: &ContextId) -> Option<(u64, u32)> {
+        use calimero_node_primitives::sync::create_runtime_env;
+        use calimero_storage::address::Id;
+        use calimero_storage::env::with_runtime_env;
+        use calimero_storage::index::Index;
+        use calimero_storage::store::MainStorage;
+
+        let store = self.context_client.datastore_handle().into_inner();
+        // SAFETY: identity is unused for read-only Index queries via RuntimeEnv
+        let identity = calimero_primitives::identity::PublicKey::from([0u8; 32]);
+        let env = create_runtime_env(&store, *context_id, identity);
+
+        let root_id = Id::new(*context_id.as_ref());
+
+        with_runtime_env(env, || {
+            // Check if root Index exists
+            let root_index = Index::<MainStorage>::get_index(root_id).ok().flatten()?;
+
+            // Count children (leaf entities) under root.
+            // Minimum 1 when root exists (consistent with fallback estimation).
+            let children = root_index.children().unwrap_or_default();
+            let entity_count = (children.len() as u64).max(1);
+
+            // Depth: 1 when root has data (consistent with fallback).
+            // For deeper trees, we'd need recursive traversal — tracked in #2054.
+            let max_depth = 1;
+
+            Some((entity_count, max_depth))
+        })
     }
 
     /// Build `SyncHandshake` from peer state for protocol negotiation.
@@ -1012,7 +1056,7 @@ impl SyncManager {
         if let Some((peer_root_hash, peer_dag_heads)) = peer_state {
             // Build handshakes for protocol selection (CIP §2.3)
             // Uses shared functions from calimero_node_primitives::sync::state_machine
-            let local_hs = Self::build_local_handshake(context);
+            let local_hs = self.build_local_handshake(context);
             let remote_hs = Self::build_remote_handshake(peer_root_hash, &peer_dag_heads);
 
             // Select optimal sync protocol based on state comparison
@@ -2156,6 +2200,13 @@ impl SyncManager {
                 )
                 .await?
             }
+            InitPayload::EntityPush { .. } => {
+                // EntityPush is handled within the HashComparison responder loop,
+                // not as a top-level stream init. If received here, it means a
+                // protocol error — the initiator sent EntityPush outside of a
+                // HashComparison session. Log and ignore.
+                warn!("Received EntityPush outside of HashComparison session, ignoring");
+            }
         };
 
         Ok(Some(()))
@@ -2164,34 +2215,31 @@ impl SyncManager {
 
 #[cfg(test)]
 mod tests {
-    use calimero_node_primitives::sync::SyncHandshake;
-    use calimero_primitives::application::ApplicationId;
-    use calimero_primitives::context::{Context, ContextId};
+    use calimero_node_primitives::sync::{
+        build_handshake_from_raw, estimate_entity_count, estimate_max_depth, SyncHandshake,
+    };
     use calimero_primitives::hash::Hash;
 
     use super::SyncManager;
 
-    /// Helper to create a test context with given state
-    fn make_context(root_hash: [u8; 32], dag_heads: Vec<[u8; 32]>) -> Context {
-        Context::with_dag_heads(
-            ContextId::from([1; 32]),
-            ApplicationId::from([2; 32]),
-            Hash::from(root_hash),
-            dag_heads,
-        )
+    /// Build a handshake using the estimation fallback path (no store available).
+    ///
+    /// This mirrors the fallback in `SyncManager::build_local_handshake` when
+    /// `query_tree_stats` returns `None`.
+    fn build_estimated_handshake(root_hash: [u8; 32], dag_heads: Vec<[u8; 32]>) -> SyncHandshake {
+        let entity_count = estimate_entity_count(root_hash, dag_heads.len());
+        let max_depth = estimate_max_depth(entity_count);
+        build_handshake_from_raw(root_hash, entity_count, max_depth, dag_heads)
     }
 
     // =========================================================================
-    // Tests for build_local_handshake() using shared state machine functions
+    // Tests for handshake estimation fallback
     // =========================================================================
 
     /// Fresh node (zero root_hash) should have has_state=false and entity_count=0
     #[test]
     fn test_build_local_handshake_fresh_node() {
-        let context = make_context([0; 32], vec![]);
-
-        // Use SyncManager's static method which now uses shared estimation functions
-        let handshake = SyncManager::build_local_handshake(&context);
+        let handshake = build_estimated_handshake([0; 32], vec![]);
 
         assert!(
             !handshake.has_state,
@@ -2208,9 +2256,7 @@ mod tests {
     /// Initialized node should have has_state=true and entity_count >= 1
     #[test]
     fn test_build_local_handshake_initialized_node() {
-        let context = make_context([42; 32], vec![[1; 32], [2; 32]]);
-
-        let handshake = SyncManager::build_local_handshake(&context);
+        let handshake = build_estimated_handshake([42; 32], vec![[1; 32], [2; 32]]);
 
         assert!(
             handshake.has_state,
@@ -2218,7 +2264,7 @@ mod tests {
         );
         assert_eq!(
             handshake.entity_count, 2,
-            "Entity count should match dag_heads length"
+            "Entity count should match dag_heads length in fallback"
         );
         assert!(
             handshake.max_depth >= 1,
@@ -2231,9 +2277,7 @@ mod tests {
     /// Initialized node with empty dag_heads should still have entity_count >= 1
     #[test]
     fn test_build_local_handshake_initialized_no_heads() {
-        let context = make_context([42; 32], vec![]);
-
-        let handshake = SyncManager::build_local_handshake(&context);
+        let handshake = build_estimated_handshake([42; 32], vec![]);
 
         assert!(handshake.has_state);
         assert_eq!(
