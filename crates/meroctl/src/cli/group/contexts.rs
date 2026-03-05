@@ -57,14 +57,17 @@ pub struct DetachContextCommand {
     #[clap(name = "CONTEXT_ID", help = "The context ID (base58)")]
     pub context_id: ContextId,
 
-    #[clap(long, help = "Public key of the requester (group admin)")]
-    pub requester: PublicKey,
+    #[clap(
+        long,
+        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
+    )]
+    pub requester: Option<PublicKey>,
 }
 
 impl DetachContextCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let request = DetachContextFromGroupApiRequest {
-            requester: Some(self.requester),
+            requester: self.requester,
         };
 
         let client = environment.client()?;

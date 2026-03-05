@@ -1,5 +1,5 @@
 use calimero_client::storage::JwtToken;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 use comfy_table::Table;
 use const_format::concatcp;
@@ -101,7 +101,12 @@ pub enum NodeCommand {
 }
 
 impl NodeCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
+    pub async fn run(
+        self,
+        environment: &Environment,
+        node_arg: Option<&str>,
+        home: &Utf8Path,
+    ) -> Result<()> {
         let mut config = Config::load().await?;
 
         match self {
@@ -198,28 +203,34 @@ impl NodeCommand {
                 return Ok(());
             }
             NodeCommand::Identity => {
-                let active = config
-                    .active_node
-                    .as_ref()
-                    .ok_or_else(|| eyre::eyre!("no active node; run `meroctl node use <name>`"))?;
+                let node_config = if let Some(name) = node_arg {
+                    load_config(home, name).await?
+                } else {
+                    let active = config.active_node.as_ref().ok_or_else(|| {
+                        eyre::eyre!(
+                            "no node specified; use `--node <name>` or `meroctl node use <name>`"
+                        )
+                    })?;
 
-                let conn = config
-                    .nodes
-                    .get(active)
-                    .ok_or_else(|| eyre::eyre!("active node '{active}' not found in config"))?;
+                    let conn = config.nodes.get(active).ok_or_else(|| {
+                        eyre::eyre!("active node '{active}' not found in config")
+                    })?;
 
-                let path = match conn {
-                    NodeConnection::Local { path, .. } => path,
-                    NodeConnection::Remote { .. } => {
-                        bail!("identity command is only supported for local nodes");
-                    }
+                    let path = match conn {
+                        NodeConnection::Local { path, .. } => path,
+                        NodeConnection::Remote { .. } => {
+                            bail!("identity command is only supported for local nodes");
+                        }
+                    };
+
+                    load_config(path, active).await?
                 };
 
-                let node_config = load_config(path, active).await?;
-
                 match node_config.identity.group {
-                    Some(gi) => println!("Group Identity: {}", gi.public_key),
-                    None => println!("No group identity configured (node may need re-initialization)"),
+                    Some(gi) => println!("{}", gi.public_key),
+                    None => {
+                        bail!("no group identity configured (node may need re-initialization)")
+                    }
                 }
                 return Ok(());
             }

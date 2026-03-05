@@ -13,7 +13,7 @@ pub struct DeleteCommand {
 
     #[clap(
         long,
-        help = "Public key of the requester (group admin) (defaults to node NEAR identity)"
+        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
     )]
     pub requester: Option<PublicKey>,
 }

@@ -157,7 +157,10 @@ impl RootCommand {
             SubCommands::Group(group) => group.run(&mut environment).await,
             SubCommands::Call(call) => call.run(&mut environment).await,
             SubCommands::Peers(peers) => peers.run(&mut environment).await,
-            SubCommands::Node(node) => node.run(&environment).await,
+            SubCommands::Node(node) => {
+                node.run(&environment, self.args.node.as_deref(), &self.args.home)
+                    .await
+            }
         };
 
         if let Err(err) = result {

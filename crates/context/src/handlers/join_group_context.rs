@@ -2,6 +2,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::group::{JoinGroupContextRequest, JoinGroupContextResponse};
+use calimero_primitives::context::ContextConfigParams;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
@@ -47,6 +48,14 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
         let context_client = self.context_client.clone();
         let node_client = self.node_client.clone();
 
+        let protocol = "near".to_owned();
+        let params = match self.external_config.params.get("near") {
+            Some(p) => p.clone(),
+            None => {
+                return ActorResponse::reply(Err(eyre::eyre!("no 'near' protocol config")));
+            }
+        };
+
         ActorResponse::r#async(
             async move {
                 // Generate a context identity for this context.
@@ -66,10 +75,33 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                         .await?;
                 }
 
-                // Ensure we have context config locally (sync if missing).
-                if !context_client.has_context(&context_id)? {
-                    let _ignored = context_client.sync_context_config(context_id, None).await?;
-                }
+                // Ensure we have context config locally.
+                // If the context is unknown, build config from protocol params
+                // and fetch the proxy contract so sync_context_config can
+                // bootstrap the context from on-chain state.
+                let config = if !context_client.has_context(&context_id)? {
+                    let mut external_config = ContextConfigParams {
+                        protocol: protocol.clone().into(),
+                        network_id: params.network.clone().into(),
+                        contract_id: params.contract_id.clone().into(),
+                        proxy_contract: "".into(),
+                        application_revision: 0,
+                        members_revision: 0,
+                    };
+
+                    let external_client =
+                        context_client.external_client(&context_id, &external_config)?;
+                    let proxy_contract = external_client.config().get_proxy_contract().await?;
+                    external_config.proxy_contract = proxy_contract.into();
+
+                    Some(external_config)
+                } else {
+                    None
+                };
+
+                let _ignored = context_client
+                    .sync_context_config(context_id, config)
+                    .await?;
 
                 // Store the context identity locally.
                 context_client.update_identity(

@@ -15,8 +15,11 @@ pub struct UpdateCommand {
     #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
     pub group_id: String,
 
-    #[clap(long, help = "Public key of the requester (group admin)")]
-    pub requester: PublicKey,
+    #[clap(
+        long,
+        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
+    )]
+    pub requester: Option<PublicKey>,
 
     #[clap(
         long,
@@ -41,7 +44,7 @@ impl UpdateCommand {
         };
 
         let request = UpdateGroupSettingsApiRequest {
-            requester: Some(self.requester),
+            requester: self.requester,
             upgrade_policy,
         };
 

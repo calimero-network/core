@@ -91,7 +91,7 @@ pub struct AddMembersCommand {
 
     #[clap(
         long,
-        help = "Public key of the requester (group admin) (defaults to node NEAR identity)"
+        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
     )]
     pub requester: Option<PublicKey>,
 }
@@ -130,7 +130,7 @@ pub struct RemoveMembersCommand {
 
     #[clap(
         long,
-        help = "Public key of the requester (group admin) (defaults to node NEAR identity)"
+        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
     )]
     pub requester: Option<PublicKey>,
 }
@@ -168,7 +168,7 @@ pub struct SetRoleCommand {
 
     #[clap(
         long,
-        help = "Public key of the requester (group admin) (defaults to node NEAR identity)"
+        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
     )]
     pub requester: Option<PublicKey>,
 }
