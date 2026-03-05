@@ -308,7 +308,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             group_id_clone,
                             target_application_id,
                             migration,
-                            canary_context_id,
+                            Some(canary_context_id),
                             1, // canary already upgraded
                         );
                         ctx.spawn(propagator.into_actor(act).map(move |_, act, _| {
@@ -424,7 +424,7 @@ pub(crate) async fn propagate_upgrade(
     group_id: ContextGroupId,
     target_application_id: ApplicationId,
     migration: Option<MigrationParams>,
-    skip_context: ContextId,
+    skip_context: Option<ContextId>,
     initial_completed: u32,
 ) {
     let contexts = match group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)
@@ -447,7 +447,7 @@ pub(crate) async fn propagate_upgrade(
     // Build the list of contexts to upgrade (excluding the canary)
     let mut pending: Vec<ContextId> = contexts
         .into_iter()
-        .filter(|cid| *cid != skip_context)
+        .filter(|cid| skip_context.map_or(true, |skip| *cid != skip))
         .collect();
 
     // If the canary was removed from the group between the initial upgrade

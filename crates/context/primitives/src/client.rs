@@ -964,6 +964,7 @@ impl ContextClient {
     pub async fn delete_context(
         &self,
         context_id: &ContextId,
+        requester: Option<PublicKey>,
     ) -> eyre::Result<DeleteContextResponse> {
         let (sender, receiver) = oneshot::channel();
 
@@ -971,7 +972,7 @@ impl ContextClient {
             .send(ContextMessage::DeleteContext {
                 request: DeleteContextRequest {
                     context_id: *context_id,
-                    signing_key: None,
+                    requester,
                 },
                 outcome: sender,
             })

@@ -41,7 +41,7 @@ pub struct CreateContextResponse {
 #[derive(Copy, Clone, Debug)]
 pub struct DeleteContextRequest {
     pub context_id: ContextId,
-    pub signing_key: Option<[u8; 32]>,
+    pub requester: Option<PublicKey>,
 }
 
 impl Message for DeleteContextRequest {

@@ -151,7 +151,7 @@ pub async fn process_context_mutations(
                     continue;
                 }
 
-                match context_client.delete_context(&target_ctx).await {
+                match context_client.delete_context(&target_ctx, None).await {
                     Ok(_) => {
                         info!(%context_id, target=%target_ctx, "Context deleted successfully via WASM host function");
                     }

@@ -271,6 +271,14 @@ impl CreateContextResponse {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteContextApiRequest {
+    /// Identity of the caller. Required when deleting a group-attached context;
+    /// the caller must be a group admin.
+    pub requester: Option<PublicKey>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletedContextResponseData {

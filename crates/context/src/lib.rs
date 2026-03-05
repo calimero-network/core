@@ -228,10 +228,8 @@ impl ContextManager {
                 group_id,
                 meta.target_application_id,
                 migration,
-                // No canary skip on recovery — propagator's idempotency
-                // handles already-upgraded contexts gracefully
-                ContextId::from([0u8; 32]),
-                0, // recovery: no canary assumption
+                None, // no canary skip on recovery — propagator's idempotency handles already-upgraded contexts
+                0,    // recovery: no canary assumption
             );
 
             ctx.spawn(propagator.into_actor(self).map(move |_, act, _| {

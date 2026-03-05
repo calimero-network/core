@@ -1010,10 +1010,20 @@ mod tests {
 
         save_group_meta(&store, &gid1, &meta).unwrap();
         save_group_meta(&store, &gid2, &meta).unwrap();
-        add_group_member(&store, &gid1, &PublicKey::from([0xAA; 32]), GroupMemberRole::Admin)
-            .unwrap();
-        add_group_member(&store, &gid2, &PublicKey::from([0xBB; 32]), GroupMemberRole::Member)
-            .unwrap();
+        add_group_member(
+            &store,
+            &gid1,
+            &PublicKey::from([0xAA; 32]),
+            GroupMemberRole::Admin,
+        )
+        .unwrap();
+        add_group_member(
+            &store,
+            &gid2,
+            &PublicKey::from([0xBB; 32]),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
 
         let groups = enumerate_all_groups(&store, 0, 100).unwrap();
         assert_eq!(groups.len(), 2);

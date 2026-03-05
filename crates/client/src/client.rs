@@ -18,8 +18,8 @@ use calimero_server_primitives::admin::{
     CreateAliasResponse, CreateApplicationIdAlias, CreateContextIdAlias,
     CreateContextIdentityAlias, CreateContextRequest, CreateContextResponse, CreateGroupApiRequest,
     CreateGroupApiResponse, CreateGroupInvitationApiRequest, CreateGroupInvitationApiResponse,
-    DeleteAliasResponse, DeleteContextResponse, DeleteGroupApiRequest, DeleteGroupApiResponse,
-    DetachContextFromGroupApiRequest, DetachContextFromGroupApiResponse,
+    DeleteAliasResponse, DeleteContextApiRequest, DeleteContextResponse, DeleteGroupApiRequest,
+    DeleteGroupApiResponse, DetachContextFromGroupApiRequest, DetachContextFromGroupApiResponse,
     GenerateContextIdentityResponse, GetApplicationResponse, GetContextClientKeysResponse,
     GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
     GetContextsResponse, GetGroupUpgradeStatusApiResponse, GetLatestVersionResponse,
@@ -498,10 +498,17 @@ where
         Ok(response)
     }
 
-    pub async fn delete_context(&self, context_id: &ContextId) -> Result<DeleteContextResponse> {
+    pub async fn delete_context(
+        &self,
+        context_id: &ContextId,
+        requester: Option<PublicKey>,
+    ) -> Result<DeleteContextResponse> {
         let response = self
             .connection
-            .delete(&format!("admin-api/contexts/{context_id}"))
+            .delete_with_body(
+                &format!("admin-api/contexts/{context_id}"),
+                DeleteContextApiRequest { requester },
+            )
             .await?;
         Ok(response)
     }
