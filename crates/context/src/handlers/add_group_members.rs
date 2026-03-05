@@ -21,6 +21,25 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
         }: AddGroupMembersRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        let node_identity = self.node_near_identity();
+
+        // Resolve requester: use provided value or fall back to node NEAR identity
+        let requester = match requester {
+            Some(pk) => pk,
+            None => match node_identity {
+                Some((pk, _)) => pk,
+                None => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "requester not provided and node has no configured NEAR identity"
+                    )))
+                }
+            },
+        };
+
+        // Resolve signing_key: prefer explicit, then node identity key
+        let node_sk = node_identity.map(|(_, sk)| sk);
+        let signing_key = signing_key.or(node_sk);
+
         // Sync validation
         if let Err(err) = (|| -> eyre::Result<()> {
             if group_store::load_group_meta(&self.datastore, &group_id)?.is_none() {
@@ -43,12 +62,11 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
-        let effective_signing_key = match signing_key {
-            Some(sk) => Some(sk),
-            None => group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
+        let effective_signing_key = signing_key.or_else(|| {
+            group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
-                .flatten(),
-        };
+                .flatten()
+        });
         let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
 
         ActorResponse::r#async(

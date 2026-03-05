@@ -89,8 +89,11 @@ pub struct AddMembersCommand {
     )]
     pub role: MemberRoleArg,
 
-    #[clap(long, help = "Public key of the requester (group admin)")]
-    pub requester: PublicKey,
+    #[clap(
+        long,
+        help = "Public key of the requester (group admin) (defaults to node NEAR identity)"
+    )]
+    pub requester: Option<PublicKey>,
 
     #[clap(
         long,
@@ -132,8 +135,11 @@ pub struct RemoveMembersCommand {
     )]
     pub identities: Vec<PublicKey>,
 
-    #[clap(long, help = "Public key of the requester (group admin)")]
-    pub requester: PublicKey,
+    #[clap(
+        long,
+        help = "Public key of the requester (group admin) (defaults to node NEAR identity)"
+    )]
+    pub requester: Option<PublicKey>,
 
     #[clap(
         long,
@@ -174,8 +180,11 @@ pub struct SetRoleCommand {
     #[clap(name = "ROLE", value_enum, help = "New role to assign")]
     pub role: MemberRoleArg,
 
-    #[clap(long, help = "Public key of the requester (group admin)")]
-    pub requester: PublicKey,
+    #[clap(
+        long,
+        help = "Public key of the requester (group admin) (defaults to node NEAR identity)"
+    )]
+    pub requester: Option<PublicKey>,
 
     #[clap(
         long,

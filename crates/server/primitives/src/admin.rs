@@ -1805,10 +1805,12 @@ impl Validate for JwtRefreshRequest {
 pub struct CreateGroupApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
-    pub app_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_key: Option<String>,
     pub application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
-    pub admin_identity: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_identity: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requester_secret: Option<String>,
 }
@@ -1816,8 +1818,10 @@ pub struct CreateGroupApiRequest {
 impl Validate for CreateGroupApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
-        if self.app_key.is_empty() {
-            errors.push(ValidationError::EmptyField { field: "app_key" });
+        if let Some(ref app_key) = self.app_key {
+            if app_key.is_empty() {
+                errors.push(ValidationError::EmptyField { field: "app_key" });
+            }
         }
         errors
     }
@@ -1838,7 +1842,8 @@ pub struct CreateGroupApiResponseData {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteGroupApiRequest {
-    pub requester: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requester_secret: Option<String>,
 }
@@ -1884,7 +1889,8 @@ pub struct GroupInfoApiResponseData {
 #[serde(rename_all = "camelCase")]
 pub struct AddGroupMembersApiRequest {
     pub members: Vec<GroupMemberApiInput>,
-    pub requester: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requester_secret: Option<String>,
 }
@@ -1910,7 +1916,8 @@ pub struct GroupMemberApiInput {
 #[serde(rename_all = "camelCase")]
 pub struct RemoveGroupMembersApiRequest {
     pub members: Vec<PublicKey>,
-    pub requester: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requester_secret: Option<String>,
 }
@@ -1960,7 +1967,8 @@ pub struct ListGroupContextsQuery {
 #[serde(rename_all = "camelCase")]
 pub struct UpgradeGroupApiRequest {
     pub target_application_id: ApplicationId,
-    pub requester: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub migrate_method: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2025,7 +2033,8 @@ pub struct GroupUpgradeStatusApiData {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RetryGroupUpgradeApiRequest {
-    pub requester: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
 }
 
 impl Validate for RetryGroupUpgradeApiRequest {
@@ -2037,7 +2046,8 @@ impl Validate for RetryGroupUpgradeApiRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInvitationApiRequest {
-    pub requester: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invitee_identity: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2066,7 +2076,8 @@ pub struct CreateGroupInvitationApiResponseData {
 #[serde(rename_all = "camelCase")]
 pub struct JoinGroupApiRequest {
     pub invitation_payload: String,
-    pub joiner_identity: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joiner_identity: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requester_secret: Option<String>,
 }
@@ -2124,7 +2135,8 @@ pub struct GroupSummaryApiData {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateGroupSettingsApiRequest {
-    pub requester: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
     pub upgrade_policy: UpgradePolicy,
 }
 
@@ -2158,7 +2170,8 @@ pub struct RemoveGroupMembersApiResponse;
 #[serde(rename_all = "camelCase")]
 pub struct UpdateMemberRoleApiRequest {
     pub role: GroupMemberRole,
-    pub requester: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requester_secret: Option<String>,
 }
@@ -2177,7 +2190,8 @@ pub struct DetachContextFromGroupApiResponse;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DetachContextFromGroupApiRequest {
-    pub requester: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requester_secret: Option<String>,
 }
@@ -2225,7 +2239,8 @@ pub struct RegisterGroupSigningKeyApiResponseData {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncGroupApiRequest {
-    pub requester: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2254,6 +2269,37 @@ pub struct SyncGroupApiResponseData {
     pub target_application_id: ApplicationId,
     pub member_count: u64,
     pub context_count: u64,
+}
+
+// ---- Join Group Context ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGroupContextApiRequest {
+    pub context_id: ContextId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joiner_identity: Option<PublicKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester_secret: Option<String>,
+}
+
+impl Validate for JoinGroupContextApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGroupContextApiResponse {
+    pub data: JoinGroupContextApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGroupContextApiResponseData {
+    pub context_id: ContextId,
+    pub member_public_key: PublicKey,
 }
 
 // ---- Get Context Group ----

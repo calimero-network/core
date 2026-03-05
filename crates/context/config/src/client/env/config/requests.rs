@@ -115,6 +115,21 @@ pub struct GroupContextsRequest {
     pub length: usize,
 }
 
+/// Request to get members of a group with pagination.
+#[derive(Copy, Clone, Debug, Serialize)]
+pub struct GroupMembersRequest {
+    pub group_id: Repr<ContextGroupId>,
+    pub offset: usize,
+    pub length: usize,
+}
+
+/// Response entry for a group member query.
+#[derive(Debug, Deserialize)]
+pub struct GroupMemberQueryEntry {
+    pub identity: Repr<SignerId>,
+    pub role: String,
+}
+
 /// Request to get which group a context belongs to.
 #[derive(Copy, Clone, Debug, Serialize)]
 pub struct ContextGroupRequest {

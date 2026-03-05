@@ -322,6 +322,24 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         }
     }
 
+    pub fn join_context_via_group(
+        self,
+        group_id: ContextGroupId,
+        context_id: ContextId,
+        new_member: ContextIdentity,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::JoinContextViaGroup {
+                    context_id: Repr::new(context_id),
+                    new_member: Repr::new(new_member),
+                },
+            )),
+        }
+    }
+
     pub fn reveal_group_invitation(
         self,
         group_id: ContextGroupId,

@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use super::requests::{
     ApplicationRequest, ApplicationRevisionRequest, ContextGroupRequest, FetchGroupNonceRequest,
     FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse, GroupInfoRequest,
-    HasMemberRequest, IsGroupAdminRequest, MembersRequest, MembersRevisionRequest,
-    PrivilegesRequest, ProxyContractRequest,
+    GroupMemberQueryEntry, GroupMembersRequest, HasMemberRequest, IsGroupAdminRequest,
+    MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
 };
 use crate::client::env::utils;
 use crate::client::transport::Transport;
@@ -144,6 +144,21 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         length: usize,
     ) -> Result<Vec<ContextId>, ClientError<T>> {
         let params = GroupContextsRequest {
+            group_id: Repr::new(group_id),
+            offset,
+            length,
+        };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn group_members(
+        &self,
+        group_id: ContextGroupId,
+        offset: usize,
+        length: usize,
+    ) -> Result<Vec<GroupMemberQueryEntry>, ClientError<T>> {
+        let params = GroupMembersRequest {
             group_id: Repr::new(group_id),
             offset,
             length,

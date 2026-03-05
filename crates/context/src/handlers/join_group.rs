@@ -26,6 +26,25 @@ impl Handler<JoinGroupRequest> for ContextManager {
         }: JoinGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        let node_identity = self.node_near_identity();
+
+        // Resolve joiner_identity: use provided value or fall back to node NEAR identity
+        let joiner_identity = match joiner_identity {
+            Some(pk) => pk,
+            None => match node_identity {
+                Some((pk, _)) => pk,
+                None => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "joiner_identity not provided and node has no configured NEAR identity"
+                    )))
+                }
+            },
+        };
+
+        // Resolve signing_key: prefer explicit, then node identity key
+        let node_sk = node_identity.map(|(_, sk)| sk);
+        let signing_key = signing_key.or(node_sk);
+
         // Decode invitation (now includes inviter_signature, secret_salt, expiration_block_height)
         let (
             group_id_bytes,
@@ -64,15 +83,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
             );
         }
 
-        // Resolve effective signing key (provided or previously stored)
-        let effective_signing_key = match signing_key {
-            Some(sk) => Some(sk),
-            None => {
-                group_store::get_group_signing_key(&self.datastore, &group_id, &joiner_identity)
-                    .ok()
-                    .flatten()
-            }
-        };
+        // Resolve effective signing key (provided, node key, or previously stored)
+        let effective_signing_key = signing_key.or_else(|| {
+            group_store::get_group_signing_key(&self.datastore, &group_id, &joiner_identity)
+                .ok()
+                .flatten()
+        });
 
         let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
 

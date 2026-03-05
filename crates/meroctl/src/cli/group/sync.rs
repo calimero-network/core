@@ -27,7 +27,7 @@ pub struct SyncCommand {
 impl SyncCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let request = SyncGroupApiRequest {
-            requester: self.requester,
+            requester: Some(self.requester),
             protocol: self.protocol,
             network_id: self.network_id,
             contract_id: self.contract_id,

@@ -17,6 +17,7 @@ pub mod get_group_info;
 pub mod get_group_upgrade_status;
 pub mod join_context;
 pub mod join_group;
+pub mod join_group_context;
 pub mod list_all_groups;
 pub mod list_group_contexts;
 pub mod list_group_members;
@@ -112,6 +113,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SyncGroup { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::JoinGroupContext { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }

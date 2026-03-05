@@ -41,7 +41,7 @@ impl UpdateCommand {
         };
 
         let request = UpdateGroupSettingsApiRequest {
-            requester: self.requester,
+            requester: Some(self.requester),
             upgrade_policy,
         };
 

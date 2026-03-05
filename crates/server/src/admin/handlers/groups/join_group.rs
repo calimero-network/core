@@ -40,7 +40,7 @@ pub async fn handler(
         None => None,
     };
 
-    info!(joiner=%req.joiner_identity, "Joining group via invitation");
+    info!(joiner=?req.joiner_identity, "Joining group via invitation");
 
     let result = state
         .ctx_client

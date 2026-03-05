@@ -42,8 +42,11 @@ pub struct TriggerUpgradeCommand {
     #[clap(long, help = "Target application ID to upgrade to")]
     pub target_application_id: ApplicationId,
 
-    #[clap(long, help = "Public key of the requester (group admin)")]
-    pub requester: PublicKey,
+    #[clap(
+        long,
+        help = "Public key of the requester (group admin) (defaults to node NEAR identity)"
+    )]
+    pub requester: Option<PublicKey>,
 
     #[clap(long, help = "Optional migration method name to call on each context")]
     pub migrate_method: Option<String>,
@@ -97,8 +100,11 @@ pub struct RetryUpgradeCommand {
     #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
     pub group_id: String,
 
-    #[clap(long, help = "Public key of the requester (group admin)")]
-    pub requester: PublicKey,
+    #[clap(
+        long,
+        help = "Public key of the requester (group admin) (defaults to node NEAR identity)"
+    )]
+    pub requester: Option<PublicKey>,
 }
 
 impl RetryUpgradeCommand {

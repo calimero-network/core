@@ -20,18 +20,24 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     ValidatedJson(req): ValidatedJson<CreateGroupApiRequest>,
 ) -> impl IntoResponse {
-    let app_key_bytes: [u8; 32] = match hex::decode(&req.app_key)
-        .map_err(|_| ())
-        .and_then(|v| v.try_into().map_err(|_| ()))
-    {
-        Ok(bytes) => bytes,
-        Err(()) => {
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "Invalid app_key: expected hex-encoded 32 bytes".into(),
-            }
-            .into_response();
+    let app_key = match &req.app_key {
+        Some(hex_str) => {
+            let bytes: [u8; 32] = match hex::decode(hex_str)
+                .map_err(|_| ())
+                .and_then(|v| v.try_into().map_err(|_| ()))
+            {
+                Ok(b) => b,
+                Err(()) => {
+                    return ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid app_key: expected hex-encoded 32 bytes".into(),
+                    }
+                    .into_response();
+                }
+            };
+            Some(AppKey::from(bytes))
         }
+        None => None,
     };
 
     let group_id = match req.group_id.as_deref().map(parse_group_id) {
@@ -56,7 +62,7 @@ pub async fn handler(
         .ctx_client
         .create_group(CreateGroupRequest {
             group_id,
-            app_key: AppKey::from(app_key_bytes),
+            app_key,
             application_id: req.application_id,
             upgrade_policy: req.upgrade_policy,
             admin_identity: req.admin_identity,

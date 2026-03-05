@@ -162,6 +162,12 @@ pub enum GroupRequestKind<'a> {
     RevealGroupInvitation {
         payload: SignedGroupRevealPayload,
     },
+    /// Join a context within a group using group membership as authorization.
+    /// Caller must be a group member; the context must belong to the group.
+    JoinContextViaGroup {
+        context_id: Repr<ContextId>,
+        new_member: Repr<ContextIdentity>,
+    },
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]

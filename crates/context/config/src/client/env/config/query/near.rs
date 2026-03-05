@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use crate::client::env::config::requests::{
     ApplicationRequest, ApplicationRevisionRequest, ContextGroupRequest, FetchGroupNonceRequest,
     FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse, GroupInfoRequest,
-    HasMemberRequest, IsGroupAdminRequest, MembersRequest, MembersRevisionRequest,
-    PrivilegesRequest, ProxyContractRequest,
+    GroupMemberQueryEntry, GroupMembersRequest, HasMemberRequest, IsGroupAdminRequest,
+    MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
 };
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
@@ -209,6 +209,20 @@ impl Method<Near> for GroupContextsRequest {
         let contexts = unsafe { mem::transmute::<Vec<Repr<ContextId>>, Vec<ContextId>>(contexts) };
 
         Ok(contexts)
+    }
+}
+
+impl Method<Near> for GroupMembersRequest {
+    const METHOD: &'static str = "group_members";
+
+    type Returns = Vec<GroupMemberQueryEntry>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        serde_json::from_slice(&response).map_err(Into::into)
     }
 }
 

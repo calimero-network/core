@@ -56,10 +56,10 @@ pub struct GroupUpgradeInfo {
 #[derive(Debug)]
 pub struct CreateGroupRequest {
     pub group_id: Option<ContextGroupId>,
-    pub app_key: AppKey,
+    pub app_key: Option<AppKey>,
     pub application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
-    pub admin_identity: PublicKey,
+    pub admin_identity: Option<PublicKey>,
     pub signing_key: Option<[u8; 32]>,
 }
 
@@ -72,10 +72,10 @@ pub struct CreateGroupResponse {
     pub group_id: ContextGroupId,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct DeleteGroupRequest {
     pub group_id: ContextGroupId,
-    pub requester: PublicKey,
+    pub requester: Option<PublicKey>,
     pub signing_key: Option<[u8; 32]>,
 }
 
@@ -92,7 +92,7 @@ pub struct DeleteGroupResponse {
 pub struct AddGroupMembersRequest {
     pub group_id: ContextGroupId,
     pub members: Vec<(PublicKey, GroupMemberRole)>,
-    pub requester: PublicKey,
+    pub requester: Option<PublicKey>,
     pub signing_key: Option<[u8; 32]>,
 }
 
@@ -104,7 +104,7 @@ impl Message for AddGroupMembersRequest {
 pub struct RemoveGroupMembersRequest {
     pub group_id: ContextGroupId,
     pub members: Vec<PublicKey>,
-    pub requester: PublicKey,
+    pub requester: Option<PublicKey>,
     pub signing_key: Option<[u8; 32]>,
 }
 
@@ -164,7 +164,7 @@ impl Message for ListGroupContextsRequest {
 pub struct UpgradeGroupRequest {
     pub group_id: ContextGroupId,
     pub target_application_id: ApplicationId,
-    pub requester: PublicKey,
+    pub requester: Option<PublicKey>,
     pub migration: Option<MigrationParams>,
     pub signing_key: Option<[u8; 32]>,
 }
@@ -191,7 +191,7 @@ impl Message for GetGroupUpgradeStatusRequest {
 #[derive(Debug)]
 pub struct RetryGroupUpgradeRequest {
     pub group_id: ContextGroupId,
-    pub requester: PublicKey,
+    pub requester: Option<PublicKey>,
 }
 
 impl Message for RetryGroupUpgradeRequest {
@@ -201,7 +201,7 @@ impl Message for RetryGroupUpgradeRequest {
 #[derive(Debug)]
 pub struct CreateGroupInvitationRequest {
     pub group_id: ContextGroupId,
-    pub requester: PublicKey,
+    pub requester: Option<PublicKey>,
     pub invitee_identity: Option<PublicKey>,
     pub expiration: Option<u64>,
 }
@@ -218,7 +218,7 @@ pub struct CreateGroupInvitationResponse {
 #[derive(Debug)]
 pub struct JoinGroupRequest {
     pub invitation_payload: GroupInvitationPayload,
-    pub joiner_identity: PublicKey,
+    pub joiner_identity: Option<PublicKey>,
     pub signing_key: Option<[u8; 32]>,
 }
 
@@ -226,7 +226,7 @@ impl Message for JoinGroupRequest {
     type Result = eyre::Result<JoinGroupResponse>;
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct JoinGroupResponse {
     pub group_id: ContextGroupId,
     pub member_identity: PublicKey,
@@ -254,7 +254,7 @@ pub struct GroupSummary {
 #[derive(Debug)]
 pub struct UpdateGroupSettingsRequest {
     pub group_id: ContextGroupId,
-    pub requester: PublicKey,
+    pub requester: Option<PublicKey>,
     pub upgrade_policy: UpgradePolicy,
 }
 
@@ -267,7 +267,7 @@ pub struct UpdateMemberRoleRequest {
     pub group_id: ContextGroupId,
     pub identity: PublicKey,
     pub new_role: GroupMemberRole,
-    pub requester: PublicKey,
+    pub requester: Option<PublicKey>,
     pub signing_key: Option<[u8; 32]>,
 }
 
@@ -279,7 +279,7 @@ impl Message for UpdateMemberRoleRequest {
 pub struct DetachContextFromGroupRequest {
     pub group_id: ContextGroupId,
     pub context_id: ContextId,
-    pub requester: PublicKey,
+    pub requester: Option<PublicKey>,
     pub signing_key: Option<[u8; 32]>,
 }
 
@@ -318,6 +318,24 @@ pub struct SyncGroupResponse {
     pub target_application_id: ApplicationId,
     pub member_count: u64,
     pub context_count: u64,
+}
+
+#[derive(Debug)]
+pub struct JoinGroupContextRequest {
+    pub group_id: ContextGroupId,
+    pub context_id: ContextId,
+    pub joiner_identity: Option<PublicKey>,
+    pub signing_key: Option<[u8; 32]>,
+}
+
+impl Message for JoinGroupContextRequest {
+    type Result = eyre::Result<JoinGroupContextResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct JoinGroupContextResponse {
+    pub context_id: ContextId,
+    pub member_public_key: PublicKey,
 }
 
 impl From<calimero_store::key::GroupUpgradeStatus> for GroupUpgradeStatus {

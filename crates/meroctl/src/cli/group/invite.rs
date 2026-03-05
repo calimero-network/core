@@ -11,8 +11,11 @@ pub struct InviteCommand {
     #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
     pub group_id: String,
 
-    #[clap(long, help = "Public key of the requester (group admin)")]
-    pub requester: PublicKey,
+    #[clap(
+        long,
+        help = "Public key of the requester (group admin) (defaults to node NEAR identity)"
+    )]
+    pub requester: Option<PublicKey>,
 
     #[clap(long, help = "Optional specific invitee public key")]
     pub invitee_identity: Option<PublicKey>,

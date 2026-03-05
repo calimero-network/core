@@ -70,7 +70,7 @@ pub struct DetachContextCommand {
 impl DetachContextCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let request = DetachContextFromGroupApiRequest {
-            requester: self.requester,
+            requester: Some(self.requester),
             requester_secret: self.requester_secret,
         };
 

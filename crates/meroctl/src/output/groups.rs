@@ -1,10 +1,10 @@
 use calimero_server_primitives::admin::{
     AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
     DeleteGroupApiResponse, DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
-    GroupInfoApiResponse, JoinGroupApiResponse, ListAllGroupsApiResponse,
-    ListGroupContextsApiResponse, ListGroupMembersApiResponse, RegisterGroupSigningKeyApiResponse,
-    RemoveGroupMembersApiResponse, SyncGroupApiResponse, UpdateGroupSettingsApiResponse,
-    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    GroupInfoApiResponse, JoinGroupApiResponse, JoinGroupContextApiResponse,
+    ListAllGroupsApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
+    RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse, SyncGroupApiResponse,
+    UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -260,6 +260,22 @@ impl Report for GetGroupUpgradeStatusApiResponse {
                 println!("{table}");
             }
         }
+    }
+}
+
+impl Report for JoinGroupContextApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Joined Context via Group").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Context ID", &self.data.context_id.to_string()]);
+        let _ = table.add_row(vec![
+            "Member Public Key",
+            &self.data.member_public_key.to_string(),
+        ]);
+        println!("{table}");
     }
 }
 

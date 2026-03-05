@@ -29,7 +29,8 @@ use calimero_server_primitives::admin::{
     InviteSpecializedNodeResponse, InviteToContextOpenInvitationRequest,
     InviteToContextOpenInvitationResponse, InviteToContextRequest, InviteToContextResponse,
     JoinContextByOpenInvitationRequest, JoinContextRequest, JoinContextResponse,
-    JoinGroupApiRequest, JoinGroupApiResponse, ListAliasesResponse, ListAllGroupsApiResponse,
+    JoinGroupApiRequest, JoinGroupApiResponse, JoinGroupContextApiRequest,
+    JoinGroupContextApiResponse, ListAliasesResponse, ListAllGroupsApiResponse,
     ListApplicationsResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
     ListPackagesResponse, ListVersionsResponse, LookupAliasResponse,
     RegisterGroupSigningKeyApiRequest, RegisterGroupSigningKeyApiResponse,
@@ -954,6 +955,21 @@ where
         let response = self
             .connection
             .post(&format!("admin-api/groups/{group_id}/sync"), request)
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn join_group_context(
+        &self,
+        group_id: &str,
+        request: JoinGroupContextApiRequest,
+    ) -> Result<JoinGroupContextApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/groups/{group_id}/join-context"),
+                request,
+            )
             .await?;
         Ok(response)
     }

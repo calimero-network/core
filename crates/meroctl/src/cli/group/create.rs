@@ -19,8 +19,11 @@ pub enum UpgradePolicyArg {
 #[derive(Debug, Parser)]
 #[command(about = "Create a new group")]
 pub struct CreateCommand {
-    #[clap(long, help = "Hex-encoded 32-byte app key for the group")]
-    pub app_key: String,
+    #[clap(
+        long,
+        help = "Hex-encoded 32-byte app key for the group (auto-generated if not provided)"
+    )]
+    pub app_key: Option<String>,
 
     #[clap(long, help = "The application ID to associate with the group")]
     pub application_id: ApplicationId,
@@ -36,8 +39,11 @@ pub struct CreateCommand {
     #[clap(long, help = "Deadline in seconds for coordinated upgrade policy")]
     pub deadline_secs: Option<u64>,
 
-    #[clap(long, help = "Admin identity public key for the group")]
-    pub admin_identity: PublicKey,
+    #[clap(
+        long,
+        help = "Admin identity public key for the group (defaults to node NEAR identity)"
+    )]
+    pub admin_identity: Option<PublicKey>,
 
     #[clap(
         long,

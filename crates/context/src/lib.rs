@@ -119,6 +119,45 @@ impl ContextManager {
         }
     }
 
+    pub fn node_near_identity(
+        &self,
+    ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
+        use calimero_context_config::client::config::Credentials;
+
+        let params = self.external_config.params.get("near")?;
+        let signer = self
+            .external_config
+            .signer
+            .local
+            .protocols
+            .get("near")?
+            .signers
+            .get(&params.network)?;
+
+        let Credentials::Near(creds) = &signer.credentials else {
+            return None;
+        };
+
+        let sk_bytes = match &creds.secret_key {
+            near_crypto::SecretKey::ED25519(key) => {
+                let mut buf = [0u8; 32];
+                buf.copy_from_slice(&key.0[..32]);
+                buf
+            }
+            _ => return None,
+        };
+
+        let pk_bytes: [u8; 32] = match &creds.public_key {
+            near_crypto::PublicKey::ED25519(pk) => pk.0,
+            _ => return None,
+        };
+
+        Some((
+            calimero_primitives::identity::PublicKey::from(pk_bytes),
+            sk_bytes,
+        ))
+    }
+
     fn group_client(
         &self,
         group_id: ContextGroupId,

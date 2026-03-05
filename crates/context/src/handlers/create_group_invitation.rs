@@ -25,6 +25,31 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         }: CreateGroupInvitationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        let node_identity = self.node_near_identity();
+
+        // Resolve requester: use provided value or fall back to node NEAR identity
+        let requester = match requester {
+            Some(pk) => pk,
+            None => match node_identity {
+                Some((pk, _)) => pk,
+                None => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "requester not provided and node has no configured NEAR identity"
+                    )))
+                }
+            },
+        };
+
+        // Auto-store node signing key so it's available for signing the invitation
+        if let Some((_, node_sk)) = node_identity {
+            let _ = group_store::store_group_signing_key(
+                &self.datastore,
+                &group_id,
+                &requester,
+                &node_sk,
+            );
+        }
+
         let result = (|| {
             // 1. Group must exist
             let _meta = group_store::load_group_meta(&self.datastore, &group_id)?

@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use calimero_context_config::repr::ReprBytes;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::client::ContextClient;
 use calimero_primitives::application::ApplicationId;
@@ -13,6 +15,7 @@ use calimero_store::key::{
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
+use tracing::debug;
 
 // ---------------------------------------------------------------------------
 // Group meta helpers
@@ -527,9 +530,9 @@ pub fn delete_group_upgrade(store: &Store, group_id: &ContextGroupId) -> EyreRes
 /// Queries the on-chain contract for group state and updates local storage.
 /// Returns the synced `GroupMetaValue`.
 ///
-/// Does NOT sync individual members (contract doesn't expose member lists for
-/// privacy). Members sync via: join_group adds self, admin mutation handlers
-/// update both chain + local, P2P gossip (future).
+/// Syncs metadata (app_key, target_application), group contexts, and group
+/// members from the on-chain contract. Prunes locally-stored entries that no
+/// longer exist on-chain.
 pub async fn sync_group_state_from_contract(
     datastore: &Store,
     context_client: &ContextClient,
@@ -567,7 +570,148 @@ pub async fn sync_group_state_from_contract(
     };
 
     save_group_meta(datastore, group_id, &meta)?;
+
+    // Sync group contexts from on-chain state.
+    sync_group_contexts_from_contract(
+        datastore,
+        context_client,
+        group_id,
+        protocol,
+        network_id,
+        contract_id,
+    )
+    .await?;
+
+    // Sync group members from on-chain state.
+    sync_group_members_from_contract(
+        datastore,
+        context_client,
+        group_id,
+        protocol,
+        network_id,
+        contract_id,
+    )
+    .await?;
+
     Ok(meta)
+}
+
+/// Paginates through `query_group_contexts()` and reconciles the local
+/// context-group index with the on-chain state (upsert + prune).
+async fn sync_group_contexts_from_contract(
+    datastore: &Store,
+    context_client: &ContextClient,
+    group_id: &ContextGroupId,
+    protocol: &str,
+    network_id: &str,
+    contract_id: &str,
+) -> EyreResult<()> {
+    const PAGE_SIZE: usize = 100;
+
+    let mut on_chain_contexts = HashSet::new();
+    let mut offset = 0;
+
+    loop {
+        let page = context_client
+            .query_group_contexts(
+                *group_id,
+                protocol,
+                network_id,
+                contract_id,
+                offset,
+                PAGE_SIZE,
+            )
+            .await?;
+
+        let page_len = page.len();
+        for context_id in page {
+            on_chain_contexts.insert(context_id);
+            register_context_in_group(datastore, group_id, &context_id)?;
+        }
+
+        if page_len < PAGE_SIZE {
+            break;
+        }
+        offset += page_len;
+    }
+
+    // Prune locally-registered contexts that no longer exist on-chain.
+    let local_contexts = enumerate_group_contexts(datastore, group_id, 0, usize::MAX)?;
+    for local_ctx in local_contexts {
+        if !on_chain_contexts.contains(&local_ctx) {
+            unregister_context_from_group(datastore, group_id, &local_ctx)?;
+            debug!(?group_id, ?local_ctx, "pruned stale context from group");
+        }
+    }
+
+    debug!(
+        ?group_id,
+        count = on_chain_contexts.len(),
+        "synced group contexts from contract"
+    );
+    Ok(())
+}
+
+/// Paginates through `query_group_members()` and reconciles the local
+/// member list with the on-chain state (upsert + prune).
+async fn sync_group_members_from_contract(
+    datastore: &Store,
+    context_client: &ContextClient,
+    group_id: &ContextGroupId,
+    protocol: &str,
+    network_id: &str,
+    contract_id: &str,
+) -> EyreResult<()> {
+    const PAGE_SIZE: usize = 100;
+
+    let mut on_chain_members: HashSet<[u8; 32]> = HashSet::new();
+    let mut offset = 0;
+
+    loop {
+        let page = context_client
+            .query_group_members(
+                *group_id,
+                protocol,
+                network_id,
+                contract_id,
+                offset,
+                PAGE_SIZE,
+            )
+            .await?;
+
+        let page_len = page.len();
+        for entry in page {
+            let identity_bytes: [u8; 32] = entry.identity.as_bytes();
+            let pk = PublicKey::from(identity_bytes);
+            let role = match entry.role.as_str() {
+                "Admin" => GroupMemberRole::Admin,
+                _ => GroupMemberRole::Member,
+            };
+            on_chain_members.insert(identity_bytes);
+            add_group_member(datastore, group_id, &pk, role)?;
+        }
+
+        if page_len < PAGE_SIZE {
+            break;
+        }
+        offset += page_len;
+    }
+
+    // Prune locally-stored members that no longer exist on-chain.
+    let local_members = list_group_members(datastore, group_id, 0, usize::MAX)?;
+    for (local_pk, _role) in local_members {
+        if !on_chain_members.contains(AsRef::<[u8; 32]>::as_ref(&local_pk)) {
+            remove_group_member(datastore, group_id, &local_pk)?;
+            debug!(?group_id, ?local_pk, "pruned stale member from group");
+        }
+    }
+
+    debug!(
+        ?group_id,
+        count = on_chain_members.len(),
+        "synced group members from contract"
+    );
+    Ok(())
 }
 
 fn extract_application_id(app_json: &serde_json::Value) -> EyreResult<ApplicationId> {

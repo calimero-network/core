@@ -18,6 +18,19 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
         }: RetryGroupUpgradeRequest,
         ctx: &mut Self::Context,
     ) -> Self::Result {
+        // Resolve requester: use provided value or fall back to node NEAR identity
+        let requester = match requester {
+            Some(pk) => pk,
+            None => match self.node_near_identity() {
+                Some((pk, _)) => pk,
+                None => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "requester not provided and node has no configured NEAR identity"
+                    )))
+                }
+            },
+        };
+
         // Validate
         let result = (|| {
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;

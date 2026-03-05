@@ -1160,6 +1160,7 @@ dependencies = [
  "futures-util",
  "hex",
  "memchr",
+ "near-crypto",
  "ouroboros",
  "prometheus-client",
  "rand 0.8.5",

@@ -278,6 +278,10 @@ pub(crate) fn setup(
             post(groups::create_group_invitation::handler),
         )
         .route(
+            "/groups/:group_id/join-context",
+            post(groups::join_group_context::handler),
+        )
+        .route(
             "/groups/join",
             post(groups::join_group::handler),
         )

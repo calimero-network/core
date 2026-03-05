@@ -29,10 +29,10 @@ use crate::group::{
     CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
     DetachContextFromGroupRequest, GetGroupForContextRequest, GetGroupInfoRequest,
     GetGroupUpgradeStatusRequest, GroupInfoResponse, GroupMemberEntry, GroupSummary,
-    GroupUpgradeInfo, JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    GroupUpgradeInfo, JoinGroupContextRequest, JoinGroupContextResponse, JoinGroupRequest,
+    JoinGroupResponse, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SyncGroupRequest, SyncGroupResponse,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -1269,6 +1269,23 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::SyncGroup {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn join_group_context(
+        &self,
+        request: JoinGroupContextRequest,
+    ) -> eyre::Result<JoinGroupContextResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::JoinGroupContext {
                 request,
                 outcome: sender,
             })

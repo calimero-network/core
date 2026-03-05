@@ -76,6 +76,51 @@ impl ContextClient {
         query.group_info(group_id).await.map_err(Into::into)
     }
 
+    /// Read-only query for group contexts from the on-chain contract (paginated).
+    pub async fn query_group_contexts(
+        &self,
+        group_id: types::ContextGroupId,
+        protocol: &str,
+        network_id: &str,
+        contract_id: &str,
+        offset: usize,
+        length: usize,
+    ) -> eyre::Result<Vec<ContextId>> {
+        let query = self.external_client.query::<ContextConfig>(
+            protocol.into(),
+            network_id.into(),
+            contract_id.into(),
+        );
+        let config_ids = query.group_contexts(group_id, offset, length).await?;
+        Ok(config_ids
+            .into_iter()
+            .map(|id| ContextId::from(id.to_bytes()))
+            .collect())
+    }
+
+    /// Read-only query for group members from the on-chain contract (paginated).
+    pub async fn query_group_members(
+        &self,
+        group_id: types::ContextGroupId,
+        protocol: &str,
+        network_id: &str,
+        contract_id: &str,
+        offset: usize,
+        length: usize,
+    ) -> eyre::Result<
+        Vec<calimero_context_config::client::env::config::requests::GroupMemberQueryEntry>,
+    > {
+        let query = self.external_client.query::<ContextConfig>(
+            protocol.into(),
+            network_id.into(),
+            contract_id.into(),
+        );
+        query
+            .group_members(group_id, offset, length)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Read-only query to check if an identity is a group admin on-chain.
     pub async fn query_is_group_admin(
         &self,
@@ -295,6 +340,28 @@ impl ExternalGroupClient {
                 .await
         })
         .await?;
+
+        Ok(())
+    }
+
+    /// Join a context via group membership. No nonce required (caller may be a
+    /// regular member with no admin nonce).
+    pub async fn join_context_via_group(
+        &self,
+        context_id: ContextId,
+        new_member: types::ContextIdentity,
+    ) -> eyre::Result<()> {
+        let context_id: types::ContextId = context_id.rt()?;
+        let c = &self.inner;
+        c.sdk_client
+            .mutate::<ContextConfig>(
+                c.protocol.as_str().into(),
+                c.network_id.as_str().into(),
+                c.contract_id.as_str().into(),
+            )
+            .join_context_via_group(c.group_id, context_id, new_member)
+            .send(c.signing_key, 0)
+            .await?;
 
         Ok(())
     }
