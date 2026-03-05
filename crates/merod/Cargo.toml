@@ -29,6 +29,7 @@ semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
+subtle.workspace = true
 starknet.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "fs"] }
 toml_edit.workspace = true

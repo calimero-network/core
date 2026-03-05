@@ -18,6 +18,7 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use tracing::{debug, info, warn};
 use url::Url;
 
@@ -109,8 +110,10 @@ struct ExternalKmsAttestationPolicy {
     allowed_rtmr3: Option<Vec<String>>,
     #[serde(default)]
     binding_b64: Option<String>,
+    // Canonical mero-tee policy schema nests allowlists under `policy`.
     #[serde(default)]
     policy: Option<ExternalKmsAttestationPolicyValues>,
+    // Canonical mero-tee policy schema nests default binding under `kms`.
     #[serde(default)]
     kms: Option<ExternalKmsAttestationPolicyKms>,
 }
@@ -382,7 +385,7 @@ async fn verify_kms_attestation(
         );
     }
 
-    if !constant_time_eq(&report_data_bytes, &expected_report_data) {
+    if !bool::from(report_data_bytes.ct_eq(expected_report_data.as_slice())) {
         bail!(
             "KMS attest reportData mismatch (nonce/binding mismatch or tampered response payload)"
         );
@@ -467,6 +470,9 @@ pub(crate) fn resolve_effective_attestation_config(
                 default_binding_b64: None,
             });
 
+        // Explicit `Some([])` from external policy intentionally clears the
+        // base allowlist (rather than "unset"), then validation enforces
+        // required fields such as allowed_mrtd.
         if let Some(values) = external_policy
             .allowed_tcb_statuses
             .or(nested_policy.allowed_tcb_statuses)
@@ -506,6 +512,9 @@ pub(crate) fn resolve_effective_attestation_config(
         {
             effective_config.binding_b64 = Some(value);
         }
+        // Mark policy as already resolved to avoid re-reading the JSON file on
+        // subsequent startup preflight calls.
+        effective_config.policy_json_path = None;
 
         info!(
             policy_path = %policy_path,
@@ -559,6 +568,8 @@ fn is_allowed_external_policy_path(policy_path: &Utf8Path) -> bool {
 }
 
 fn is_test_tmp_policy_path(policy_path: &Utf8Path) -> bool {
+    // Allow /tmp paths in tests so tempfile-backed policy fixtures work.
+    // Test binaries must never be deployed to production.
     cfg!(test) && policy_path.starts_with("/tmp")
 }
 
@@ -662,14 +673,15 @@ fn parse_measurement_allowlist(values: &[String], field_name: &str) -> Result<Ve
             continue;
         }
 
-        let decoded = hex::decode(&normalized)
-            .with_context(|| format!("{field_name} contains non-hex value: {raw}"))?;
-        if decoded.len() != 48 {
+        if normalized.len() != 96 {
             bail!(
-                "{field_name} contains invalid measurement length (expected 48 bytes, got {})",
-                decoded.len()
+                "{field_name} contains invalid measurement length (expected 48 bytes for TDX measurement, got {} bytes)",
+                normalized.len() / 2
             );
         }
+
+        hex::decode(&normalized)
+            .with_context(|| format!("{field_name} contains non-hex value: {raw}"))?;
 
         normalized_values.push(normalized);
     }
@@ -719,24 +731,10 @@ fn enforce_kms_attestation_policy(
     Ok(())
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-
-    let mut diff = 0u8;
-    for (lhs, rhs) in left.iter().zip(right.iter()) {
-        diff |= lhs ^ rhs;
-    }
-
-    diff == 0
-}
-
 fn mock_kms_attestation_runtime_opt_in() -> bool {
     std::env::var(MOCK_KMS_ATTESTATION_ENV)
         .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
         .unwrap_or(false)
-        || cfg!(test)
 }
 
 fn enforce_measurement_allowlist(
@@ -745,6 +743,10 @@ fn enforce_measurement_allowlist(
     allowed_measurements: &[String],
 ) -> Result<()> {
     if allowed_measurements.is_empty() {
+        debug!(
+            measurement = label,
+            "Skipping measurement allowlist check (allowlist is empty)"
+        );
         return Ok(());
     }
 
@@ -898,6 +900,14 @@ mod tests {
         file.write_all(contents.as_bytes())
             .expect("should write temp policy file");
         file
+    }
+
+    fn enable_mock_kms_attestation_env() {
+        // Tests that exercise mock quote acceptance must explicitly opt in to
+        // mirror production behavior.
+        unsafe {
+            std::env::set_var(MOCK_KMS_ATTESTATION_ENV, "true");
+        }
     }
 
     #[test]
@@ -1079,6 +1089,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_kms_attestation_accepts_external_policy_json() {
+        enable_mock_kms_attestation_env();
+
         let policy_file = write_temp_policy_file(
             r#"{
   "allowed_tcb_statuses": ["Mock"],
@@ -1102,6 +1114,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_kms_attestation_rejects_report_data_mismatch() {
+        enable_mock_kms_attestation_env();
+
         let mut cfg = KmsAttestationConfig::default();
         cfg.enabled = true;
         cfg.accept_mock = true;
@@ -1119,6 +1133,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_kms_attestation_rejects_disallowed_measurement() {
+        enable_mock_kms_attestation_env();
+
         let mut cfg = KmsAttestationConfig::default();
         cfg.enabled = true;
         cfg.accept_mock = true;

@@ -524,3 +524,48 @@ pub mod serde_identity {
         deserializer.deserialize_struct("Keypair", &["peer_id", "keypair"], IdentityVisitor)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_attestation_measurement, KmsAttestationConfig};
+
+    #[test]
+    fn validate_enabled_policy_allows_disabled_config() {
+        let cfg = KmsAttestationConfig::default();
+        assert!(cfg.validate_enabled_policy().is_ok());
+    }
+
+    #[test]
+    fn validate_enabled_policy_rejects_empty_tcb_statuses() {
+        let mut cfg = KmsAttestationConfig {
+            enabled: true,
+            ..KmsAttestationConfig::default()
+        };
+        cfg.allowed_tcb_statuses = vec!["   ".to_owned()];
+        cfg.allowed_mrtd = vec!["ab".repeat(48)];
+
+        let err = cfg.validate_enabled_policy().unwrap_err().to_string();
+        assert!(err.contains("allowed_tcb_statuses is empty"));
+    }
+
+    #[test]
+    fn validate_enabled_policy_rejects_empty_mrtd() {
+        let mut cfg = KmsAttestationConfig {
+            enabled: true,
+            ..KmsAttestationConfig::default()
+        };
+        cfg.allowed_tcb_statuses = vec!["UpToDate".to_owned()];
+        cfg.allowed_mrtd = vec!["  ".to_owned(), "0x".to_owned()];
+
+        let err = cfg.validate_enabled_policy().unwrap_err().to_string();
+        assert!(err.contains("allowed_mrtd is empty"));
+    }
+
+    #[test]
+    fn normalize_attestation_measurement_handles_uppercase_prefix() {
+        assert_eq!(
+            normalize_attestation_measurement(" 0XABCD "),
+            "abcd".to_owned()
+        );
+    }
+}

@@ -15,8 +15,6 @@ use eyre::{bail, Result as EyreResult, WrapErr};
 use multiaddr::{Multiaddr, Protocol};
 use tracing;
 
-use crate::kms::resolve_effective_attestation_config;
-
 /// Minimum sync timeout in milliseconds
 const MIN_SYNC_TIMEOUT_MS: u64 = 1000; // 1 second
 /// Maximum sync timeout in milliseconds
@@ -455,10 +453,9 @@ fn validate_required_credentials(config: &ConfigFile) -> EyreResult<()> {
         }
 
         if let Some(phala) = &tee_config.kms.phala {
-            let effective_attestation_config =
-                resolve_effective_attestation_config(&phala.attestation)?;
+            phala.attestation.validate_enabled_policy()?;
 
-            if effective_attestation_config.enabled && effective_attestation_config.accept_mock {
+            if phala.attestation.enabled && phala.attestation.accept_mock {
                 tracing::warn!(
                     "tee.kms.phala.attestation.accept_mock=true is enabled. \
                      This should only be used for development/testing."
