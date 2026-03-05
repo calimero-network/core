@@ -473,39 +473,36 @@ pub(crate) fn resolve_effective_attestation_config(
         // Explicit `Some([])` from external policy intentionally clears the
         // base allowlist (rather than "unset"), then validation enforces
         // required fields such as allowed_mrtd.
-        if let Some(values) = external_policy
-            .allowed_tcb_statuses
-            .or(nested_policy.allowed_tcb_statuses)
-        {
-            effective_config.allowed_tcb_statuses = values;
-        }
-        if let Some(values) = external_policy.allowed_mrtd.or(nested_policy.allowed_mrtd) {
-            effective_config.allowed_mrtd = values;
-        }
-        if let Some(values) = external_policy
-            .allowed_rtmr0
-            .or(nested_policy.allowed_rtmr0)
-        {
-            effective_config.allowed_rtmr0 = values;
-        }
-        if let Some(values) = external_policy
-            .allowed_rtmr1
-            .or(nested_policy.allowed_rtmr1)
-        {
-            effective_config.allowed_rtmr1 = values;
-        }
-        if let Some(values) = external_policy
-            .allowed_rtmr2
-            .or(nested_policy.allowed_rtmr2)
-        {
-            effective_config.allowed_rtmr2 = values;
-        }
-        if let Some(values) = external_policy
-            .allowed_rtmr3
-            .or(nested_policy.allowed_rtmr3)
-        {
-            effective_config.allowed_rtmr3 = values;
-        }
+        merge_external_allowlist(
+            &mut effective_config.allowed_tcb_statuses,
+            external_policy.allowed_tcb_statuses,
+            nested_policy.allowed_tcb_statuses,
+        );
+        merge_external_allowlist(
+            &mut effective_config.allowed_mrtd,
+            external_policy.allowed_mrtd,
+            nested_policy.allowed_mrtd,
+        );
+        merge_external_allowlist(
+            &mut effective_config.allowed_rtmr0,
+            external_policy.allowed_rtmr0,
+            nested_policy.allowed_rtmr0,
+        );
+        merge_external_allowlist(
+            &mut effective_config.allowed_rtmr1,
+            external_policy.allowed_rtmr1,
+            nested_policy.allowed_rtmr1,
+        );
+        merge_external_allowlist(
+            &mut effective_config.allowed_rtmr2,
+            external_policy.allowed_rtmr2,
+            nested_policy.allowed_rtmr2,
+        );
+        merge_external_allowlist(
+            &mut effective_config.allowed_rtmr3,
+            external_policy.allowed_rtmr3,
+            nested_policy.allowed_rtmr3,
+        );
         if let Some(value) = external_policy
             .binding_b64
             .or(nested_kms.default_binding_b64)
@@ -524,6 +521,16 @@ pub(crate) fn resolve_effective_attestation_config(
 
     effective_config.validate_enabled_policy()?;
     Ok(effective_config)
+}
+
+fn merge_external_allowlist(
+    target: &mut Vec<String>,
+    flat_override: Option<Vec<String>>,
+    nested_override: Option<Vec<String>>,
+) {
+    if let Some(values) = flat_override.or(nested_override) {
+        *target = values;
+    }
 }
 
 fn load_external_attestation_policy(
