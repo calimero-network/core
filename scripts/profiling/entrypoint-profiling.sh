@@ -251,7 +251,7 @@ detect_jemalloc_path() {
 }
 
 if [ "$ENABLE_PERF" = "true" ]; then
-    install_kernel_tools
+    install_kernel_tools || true
 fi
 
 if [ "$ENABLE_JEMALLOC" = "true" ]; then
