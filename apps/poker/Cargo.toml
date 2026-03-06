@@ -15,6 +15,10 @@ calimero-sdk.workspace = true
 calimero-storage.workspace = true
 thiserror.workspace = true
 bs58 = "0.5"
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }
+aes-gcm.workspace = true
+sha2.workspace = true
+getrandom = { version = "0.2", features = ["custom"] }
 
 [build-dependencies]
 calimero-wasm-abi.workspace = true

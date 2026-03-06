@@ -15,6 +15,7 @@
 
 mod bot;
 mod card;
+mod crypto;
 mod deck;
 mod hand;
 
@@ -237,6 +238,18 @@ pub enum PokerError {
     CannotLeaveInHand,
     #[error("player has not timed out yet")]
     NotTimedOut,
+    #[error("not the designated dealer")]
+    NotDealer,
+    #[error("seed already committed")]
+    AlreadyCommitted,
+    #[error("seed hash does not match commitment")]
+    SeedMismatch,
+    #[error("not all players have committed/revealed seeds")]
+    SeedsIncomplete,
+    #[error("encryption key not registered")]
+    NoEncryptionKey,
+    #[error("dealer not registered")]
+    NoDealerRegistered,
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -281,6 +294,25 @@ pub struct PokerGame {
 
     /// Lifetime hand counter.
     hands_played: Counter,
+
+    // ── Secure dealing (commit-reveal + encrypted cards) ──
+    /// Dealer's player ID (non-playing participant).
+    dealer_id: LwwRegister<String>,
+
+    /// Player id → X25519 public key (32 bytes, hex-encoded).
+    encryption_keys: UnorderedMap<String, LwwRegister<Vec<u8>>>,
+
+    /// Seed commitments: player_id → hash(seed).
+    seed_commits: UnorderedMap<String, LwwRegister<Vec<u8>>>,
+
+    /// Revealed seeds: player_id → seed.
+    seed_reveals: UnorderedMap<String, LwwRegister<Vec<u8>>>,
+
+    /// Encrypted hole cards: player_id → ciphertext.
+    encrypted_cards: UnorderedMap<String, LwwRegister<Vec<u8>>>,
+
+    /// Whether secure dealing mode is active.
+    secure_mode: LwwRegister<bool>,
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -365,6 +397,12 @@ impl PokerGame {
             history: Vec::<HandResult>::new().into(),
             win_count: UnorderedMap::new(),
             hands_played: Counter::new(),
+            dealer_id: String::new().into(),
+            encryption_keys: UnorderedMap::new(),
+            seed_commits: UnorderedMap::new(),
+            seed_reveals: UnorderedMap::new(),
+            encrypted_cards: UnorderedMap::new(),
+            secure_mode: false.into(),
         }
     }
 
@@ -897,6 +935,303 @@ impl PokerGame {
 
     // ── bot play ─────────────────────────────────────────────────────
 
+    // ── secure dealing ───────────────────────────────────────────
+
+    /// Enable secure dealing mode. Must be called before any hand starts.
+    pub fn enable_secure_mode(&mut self) -> app::Result<()> {
+        if self.hand.get().phase != PHASE_WAITING {
+            app::bail!(PokerError::HandInProgress);
+        }
+        self.secure_mode.set(true);
+        app::log!("Secure dealing mode enabled");
+        Ok(())
+    }
+
+    /// Register as the non-playing dealer. Generates an X25519 keypair.
+    pub fn register_dealer(&mut self) -> app::Result<()> {
+        let caller = player_id();
+        let (secret, public) = crypto::generate_keypair();
+
+        self.dealer_id.set(caller.clone());
+        self.encryption_keys
+            .insert(caller.clone(), public.to_vec().into())?;
+
+        // Store private key in dealer's private storage
+        calimero_sdk::private_storage::EntryHandle::<Vec<u8>>::new(b"x25519_secret")
+            .modify(|v| *v = secret.to_vec())?;
+
+        app::log!("Dealer registered: {}", caller);
+        Ok(())
+    }
+
+    /// Register an encryption key for receiving encrypted cards.
+    /// Each bot must call this before playing in secure mode.
+    pub fn register_encryption_key(&mut self) -> app::Result<()> {
+        let caller = player_id();
+        let (secret, public) = crypto::generate_keypair();
+
+        self.encryption_keys
+            .insert(caller.clone(), public.to_vec().into())?;
+
+        // Store private key in bot's private storage
+        calimero_sdk::private_storage::EntryHandle::<Vec<u8>>::new(b"x25519_secret")
+            .modify(|v| *v = secret.to_vec())?;
+
+        app::log!("Encryption key registered for {}", caller);
+        Ok(())
+    }
+
+    /// Commit a hash of your random seed (phase 1 of commit-reveal).
+    pub fn commit_seed(&mut self, seed_hash: Vec<u8>) -> app::Result<()> {
+        let caller = player_id();
+
+        if self
+            .seed_commits
+            .get(&caller)?
+            .map(|v| !v.get().is_empty())
+            .unwrap_or(false)
+        {
+            app::bail!(PokerError::AlreadyCommitted);
+        }
+
+        self.seed_commits.insert(caller.clone(), seed_hash.into())?;
+        app::log!("Seed committed by {}", caller);
+        Ok(())
+    }
+
+    /// Reveal your random seed (phase 2 of commit-reveal).
+    /// The hash of `seed` must match the previously committed hash.
+    pub fn reveal_seed(&mut self, seed: Vec<u8>) -> app::Result<()> {
+        let caller = player_id();
+
+        let commit = self
+            .seed_commits
+            .get(&caller)?
+            .map(|v| v.get().clone())
+            .unwrap_or_default();
+
+        if commit.is_empty() {
+            app::bail!(PokerError::SeedsIncomplete);
+        }
+
+        let expected = crypto::hash_seed(&seed);
+        if commit != expected.to_vec() {
+            app::bail!(PokerError::SeedMismatch);
+        }
+
+        self.seed_reveals.insert(caller.clone(), seed.into())?;
+        app::log!("Seed revealed by {}", caller);
+        Ok(())
+    }
+
+    /// Dealer deals cards: combines revealed seeds, shuffles deterministically,
+    /// encrypts each player's hole cards with their public key.
+    /// Community cards are stored in dealer's private storage.
+    pub fn dealer_deal(&mut self) -> app::Result<()> {
+        let caller = player_id();
+        if *self.dealer_id.get() != caller {
+            app::bail!(PokerError::NotDealer);
+        }
+        if self.hand.get().phase != PHASE_WAITING {
+            app::bail!(PokerError::HandInProgress);
+        }
+
+        // Collect all revealed seeds
+        let seated = self.get_seated_players()?;
+        if seated.len() < 2 {
+            app::bail!(PokerError::NotEnoughPlayers);
+        }
+
+        let mut seeds: Vec<Vec<u8>> = Vec::new();
+        for (_, pid) in &seated {
+            let seed = self
+                .seed_reveals
+                .get(pid)?
+                .map(|v| v.get().clone())
+                .unwrap_or_default();
+            if seed.is_empty() {
+                app::bail!(PokerError::SeedsIncomplete);
+            }
+            seeds.push(seed);
+        }
+
+        // Deterministic shuffle from combined seeds
+        let combined = crypto::combine_seeds(&seeds);
+        let mut deck = deck::new_shuffled_deck_from_seed(&combined);
+
+        // Read dealer's private key
+        let dealer_secret_ref =
+            calimero_sdk::private_storage::EntryHandle::<Vec<u8>>::new(b"x25519_secret")
+                .get_or_default()?;
+        let dealer_secret: [u8; 32] = dealer_secret_ref
+            .as_slice()
+            .try_into()
+            .map_err(|_| app::err!("dealer key missing"))?;
+
+        let hand_num = self.hands_played.value()? + 1;
+
+        // Deal and encrypt cards per player
+        let mut players: Vec<PlayerHand> = Vec::new();
+        let dealer_seat = *self.next_dealer.get();
+        let dealer_idx = nearest_index(&seated, dealer_seat);
+        let mut seated_rotated = seated.clone();
+        seated_rotated.rotate_left(dealer_idx);
+
+        for (seat, pid) in &seated_rotated {
+            let c1 = deck.pop().map(|c| c.0).unwrap_or(0);
+            let c2 = deck.pop().map(|c| c.0).unwrap_or(0);
+
+            // Encrypt for this player
+            let player_pubkey = self
+                .encryption_keys
+                .get(pid)?
+                .map(|v| v.get().clone())
+                .unwrap_or_default();
+
+            if player_pubkey.len() == 32 {
+                let pubkey: [u8; 32] = player_pubkey.try_into().unwrap_or([0u8; 32]);
+                let encrypted = crypto::encrypt_cards(&dealer_secret, &pubkey, &[c1, c2], hand_num);
+                let _ = self.encrypted_cards.insert(pid.clone(), encrypted.into());
+            }
+
+            players.push(PlayerHand {
+                player_id: pid.clone(),
+                seat: *seat,
+                cards: [c1, c2], // stored but only dealer node has the real values
+                ..PlayerHand::default()
+            });
+        }
+
+        // Store community cards in dealer's private storage
+        let mut community_all: Vec<u8> = Vec::new();
+        for _ in 0..5 {
+            if let Some(card) = deck.pop() {
+                community_all.push(card.0);
+            }
+        }
+        calimero_sdk::private_storage::EntryHandle::<Vec<u8>>::new(b"community_cards")
+            .modify(|v| *v = community_all)?;
+
+        // Post blinds
+        let sb = *self.small_blind.get();
+        let bb = *self.big_blind.get();
+        let num = players.len();
+        let (sb_idx, bb_idx) = if num == 2 { (0, 1) } else { (1, 2) };
+
+        let sb_actual = self.deduct_chips(&players[sb_idx].player_id, sb)?;
+        players[sb_idx].bet_this_round = sb_actual;
+        players[sb_idx].bet_total = sb_actual;
+        if sb_actual < sb {
+            players[sb_idx].all_in = true;
+        }
+
+        let bb_actual = self.deduct_chips(&players[bb_idx].player_id, bb)?;
+        players[bb_idx].bet_this_round = bb_actual;
+        players[bb_idx].bet_total = bb_actual;
+        if bb_actual < bb {
+            players[bb_idx].all_in = true;
+        }
+
+        let pot = sb_actual + bb_actual;
+        let first_to_act = if num == 2 { 0 } else { (bb_idx + 1) % num };
+        let mut acted = vec![false; num];
+        for (i, p) in players.iter().enumerate() {
+            if p.all_in {
+                acted[i] = true;
+            }
+        }
+
+        let new_hs = HandState {
+            phase: PHASE_PREFLOP,
+            deck: Vec::new(), // deck not stored in shared state!
+            community: Vec::new(),
+            players,
+            dealer_pos: 0,
+            action_pos: first_to_act as u8,
+            pot,
+            current_bet: bb_actual,
+            acted,
+            last_action_time: env::time_now(),
+        };
+
+        self.hand.set(new_hs);
+        self.hands_played.increment()?;
+        self.next_dealer
+            .set((dealer_seat + 1) % *self.max_seats.get());
+
+        // Clear seeds for next hand
+        for (_, pid) in &seated {
+            let _ = self.seed_commits.insert(pid.clone(), Vec::new().into());
+            let _ = self.seed_reveals.insert(pid.clone(), Vec::new().into());
+        }
+
+        app::log!("Secure deal complete: hand #{}", hand_num);
+        Ok(())
+    }
+
+    /// Dealer reveals flop (3 community cards from private storage).
+    pub fn dealer_reveal_flop(&mut self) -> app::Result<()> {
+        self.dealer_reveal_community(3)
+    }
+
+    /// Dealer reveals turn (1 more community card).
+    pub fn dealer_reveal_turn(&mut self) -> app::Result<()> {
+        self.dealer_reveal_community(1)
+    }
+
+    /// Dealer reveals river (1 more community card).
+    pub fn dealer_reveal_river(&mut self) -> app::Result<()> {
+        self.dealer_reveal_community(1)
+    }
+
+    /// Get your hole cards (decrypts from shared state in secure mode).
+    pub fn get_my_cards_secure(&self) -> app::Result<Vec<String>> {
+        let caller = player_id();
+
+        let encrypted = self
+            .encrypted_cards
+            .get(&caller)?
+            .map(|v| v.get().clone())
+            .unwrap_or_default();
+
+        if encrypted.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Read my X25519 private key from private storage
+        let my_secret_ref =
+            calimero_sdk::private_storage::EntryHandle::<Vec<u8>>::new(b"x25519_secret")
+                .get_or_default()?;
+        let my_secret: [u8; 32] = my_secret_ref
+            .as_slice()
+            .try_into()
+            .map_err(|_| app::err!("encryption key missing"))?;
+
+        // Get dealer's public key
+        let dealer_id = self.dealer_id.get().clone();
+        let dealer_pubkey = self
+            .encryption_keys
+            .get(&dealer_id)?
+            .map(|v| v.get().clone())
+            .unwrap_or_default();
+
+        if dealer_pubkey.len() != 32 {
+            app::bail!(PokerError::NoDealerRegistered);
+        }
+
+        let pubkey: [u8; 32] = dealer_pubkey.try_into().unwrap_or([0u8; 32]);
+        let hand_num = self.hands_played.value()?;
+
+        match crypto::decrypt_cards(&my_secret, &pubkey, &encrypted, hand_num) {
+            Some(cards) if cards.len() >= 2 => {
+                Ok(vec![Card(cards[0]).to_string(), Card(cards[1]).to_string()])
+            }
+            _ => Ok(vec![]),
+        }
+    }
+
+    // ── bot play ────────────────────────────────────────────────
+
     /// Let an AI bot make a decision and execute it.
     ///
     /// The caller's identity must be the action-on player.
@@ -1001,9 +1336,78 @@ impl PokerGame {
 
 // ══════════════════════════════════════════════════════════════════════
 // Internal helpers (not exposed in ABI)
+// ── dealer internals ────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════
 
 impl PokerGame {
+    // ── dealer reveal helper ────────────────────────────────────────
+
+    fn dealer_reveal_community(&mut self, count: usize) -> app::Result<()> {
+        let caller = player_id();
+        if *self.dealer_id.get() != caller {
+            app::bail!(PokerError::NotDealer);
+        }
+
+        // Read community cards from dealer's private storage
+        let all_community =
+            calimero_sdk::private_storage::EntryHandle::<Vec<u8>>::new(b"community_cards")
+                .get_or_default()?;
+
+        let mut hs = self.hand.get().clone();
+        let already = hs.community.len();
+        let end = (already + count).min(all_community.len());
+
+        for &card in &all_community[already..end] {
+            hs.community.push(card);
+        }
+
+        let s = cards_display(&hs.community);
+        app::emit!(PokerEvent::CommunityDealt { cards: &s });
+
+        // Advance phase
+        match already {
+            0 => {
+                hs.phase = PHASE_FLOP;
+                app::emit!(PokerEvent::PhaseChanged { phase: "Flop" });
+            }
+            3 => {
+                hs.phase = PHASE_TURN;
+                app::emit!(PokerEvent::PhaseChanged { phase: "Turn" });
+            }
+            4 => {
+                hs.phase = PHASE_RIVER;
+                app::emit!(PokerEvent::PhaseChanged { phase: "River" });
+            }
+            _ => {}
+        }
+
+        // Reset round tracking
+        for p in &mut hs.players {
+            p.bet_this_round = 0;
+        }
+        hs.current_bet = 0;
+        hs.acted = vec![false; hs.players.len()];
+        for (i, p) in hs.players.iter().enumerate() {
+            if p.folded || p.all_in {
+                hs.acted[i] = true;
+            }
+        }
+
+        // Set first-to-act post-flop
+        let n = hs.players.len();
+        let start = (hs.dealer_pos as usize + 1) % n;
+        for offset in 0..n {
+            let idx = (start + offset) % n;
+            if !hs.players[idx].folded && !hs.players[idx].all_in {
+                hs.action_pos = idx as u8;
+                break;
+            }
+        }
+
+        self.hand.set(hs);
+        Ok(())
+    }
+
     // ── seat helpers ────────────────────────────────────────────────
 
     fn find_empty_seat(&self) -> app::Result<Option<u8>> {
@@ -1088,6 +1492,25 @@ impl PokerGame {
     }
 
     fn advance_phase(&mut self, hs: &mut HandState) {
+        // In secure mode, don't auto-deal community cards.
+        // The dealer must call dealer_reveal_flop/turn/river.
+        // Just mark the round as complete and wait.
+        if *self.secure_mode.get() && hs.phase != PHASE_RIVER {
+            // Reset round-level tracking
+            for p in &mut hs.players {
+                p.bet_this_round = 0;
+            }
+            hs.current_bet = 0;
+            // Block further actions — dealer must call dealer_reveal_* to advance
+            hs.action_pos = 255;
+            return;
+        }
+
+        if *self.secure_mode.get() && hs.phase == PHASE_RIVER {
+            self.resolve_showdown(hs);
+            return;
+        }
+
         // Reset round-level tracking
         for p in &mut hs.players {
             p.bet_this_round = 0;
@@ -1100,7 +1523,7 @@ impl PokerGame {
             }
         }
 
-        // Deal community cards for the new phase
+        // Deal community cards for the new phase (non-secure mode only)
         match hs.phase {
             PHASE_PREFLOP => {
                 for _ in 0..3 {

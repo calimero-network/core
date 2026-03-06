@@ -1,0 +1,464 @@
+description: "Secure dealing: commit-reveal shuffle + encrypted hole cards"
+name: Poker Secure Dealing Test
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: sec
+
+steps:
+  # ============================================
+  # Setup: 3 nodes — node-1 = dealer, node-2 = bot A, node-3 = bot B
+  # ============================================
+
+  - name: Install
+    type: install_application
+    node: sec-1
+    path: res/poker.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: sec-1
+    application_id: "{{app_id}}"
+    params: '{"small_blind":5,"big_blind":10,"min_buy_in":50}'
+    nodes: [sec-2, sec-3]
+    capability: member
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # Enable secure mode
+  - name: Enable Secure Mode
+    type: call
+    node: sec-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: enable_secure_mode
+
+  # Register dealer (node-1, non-playing)
+  - name: Register Dealer
+    type: call
+    node: sec-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: register_dealer
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 120
+    check_interval: 3
+    trigger_sync: true
+
+  # Bot A registers encryption key + joins table
+  - name: Bot A Register Key
+    type: call
+    node: sec-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-2}}"
+    method: register_encryption_key
+
+  - name: Bot A Joins
+    type: call
+    node: sec-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-2}}"
+    method: join_table
+    args: { buy_in: 200 }
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Bot B registers encryption key + joins table
+  - name: Bot B Register Key
+    type: call
+    node: sec-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-3}}"
+    method: register_encryption_key
+
+  - name: Bot B Joins
+    type: call
+    node: sec-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-3}}"
+    method: join_table
+    args: { buy_in: 200 }
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ============================================
+  # Hand 1: Commit-Reveal + Secure Deal
+  # ============================================
+
+  # Phase 1: Commit seeds
+  # Seed "bot_a_seed_1" → hash it client-side (here we pass pre-computed hash)
+  # For testing, we use known seeds and their SHA-256 hashes
+
+  - name: Bot A Commits Seed
+    type: call
+    node: sec-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-2}}"
+    method: commit_seed
+    args:
+      seed_hash: [166, 224, 89, 219, 236, 143, 197, 20, 170, 166, 161, 39, 10, 252, 67, 100, 253, 171, 63, 187, 185, 25, 138, 200, 49, 230, 25, 127, 209, 180, 168, 125]
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Bot B Commits Seed
+    type: call
+    node: sec-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-3}}"
+    method: commit_seed
+    args:
+      seed_hash: [202, 123, 139, 230, 16, 134, 225, 58, 194, 171, 176, 75, 108, 125, 245, 251, 31, 244, 137, 41, 135, 135, 232, 38, 123, 40, 223, 59, 198, 16, 110, 183]
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Phase 2: Reveal seeds
+
+  - name: Bot A Reveals Seed
+    type: call
+    node: sec-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-2}}"
+    method: reveal_seed
+    args:
+      seed: [98, 111, 116, 95, 97, 95, 115, 101, 101, 100, 95, 49]
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Bot B Reveals Seed
+    type: call
+    node: sec-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-3}}"
+    method: reveal_seed
+    args:
+      seed: [98, 111, 116, 95, 98, 95, 115, 101, 101, 100, 95, 49]
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Phase 3: Dealer deals (encrypted)
+
+  - name: Dealer Deals Cards
+    type: call
+    node: sec-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: dealer_deal
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Verify game state is PreFlop
+  - name: Check PreFlop
+    type: call
+    node: sec-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-2}}"
+    method: get_game_state
+    outputs:
+      phase: result.output.phase
+      pot: result.output.pot
+
+  - name: Assert PreFlop
+    type: assert
+    statements:
+      - 'equal({{phase}}, "PreFlop")'
+      - "{{pot}} > 0"
+
+  # Bot A reads encrypted cards
+  - name: Bot A Reads Cards
+    type: call
+    node: sec-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-2}}"
+    method: get_my_cards_secure
+    outputs:
+      bot_a_cards: result.output
+
+  - name: Assert Bot A has cards
+    type: assert
+    statements:
+      - "is_set({{bot_a_cards}})"
+
+  # Bot B reads encrypted cards
+  - name: Bot B Reads Cards
+    type: call
+    node: sec-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-3}}"
+    method: get_my_cards_secure
+    outputs:
+      bot_b_cards: result.output
+
+  - name: Assert Bot B has cards
+    type: assert
+    statements:
+      - "is_set({{bot_b_cards}})"
+
+  # ============================================
+  # Betting + Dealer reveals community cards
+  # ============================================
+
+  # PreFlop: Bot A calls, Bot B checks (heads-up)
+  - name: Bot A Calls PreFlop
+    type: call
+    node: sec-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-2}}"
+    method: call
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Bot B Checks PreFlop
+    type: call
+    node: sec-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-3}}"
+    method: check
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Dealer reveals flop
+  - name: Dealer Reveals Flop
+    type: call
+    node: sec-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: dealer_reveal_flop
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Check Flop
+    type: call
+    node: sec-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-2}}"
+    method: get_game_state
+    outputs:
+      flop_phase: result.output.phase
+      flop_community: result.output.community_cards
+
+  - name: Assert Flop dealt
+    type: assert
+    statements:
+      - 'equal({{flop_phase}}, "Flop")'
+      - "is_set({{flop_community}})"
+
+  # Flop: both check
+  - name: Bot B Checks Flop
+    type: call
+    node: sec-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-3}}"
+    method: check
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Bot A Checks Flop
+    type: call
+    node: sec-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-2}}"
+    method: check
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Dealer reveals turn
+  - name: Dealer Reveals Turn
+    type: call
+    node: sec-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: dealer_reveal_turn
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Turn: both check
+  - name: Bot B Checks Turn
+    type: call
+    node: sec-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-3}}"
+    method: check
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Bot A Checks Turn
+    type: call
+    node: sec-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-2}}"
+    method: check
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Dealer reveals river
+  - name: Dealer Reveals River
+    type: call
+    node: sec-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: dealer_reveal_river
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # River: both check → showdown
+  - name: Bot B Checks River
+    type: call
+    node: sec-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-3}}"
+    method: check
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Bot A Checks River
+    type: call
+    node: sec-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-2}}"
+    method: check
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes: [sec-1, sec-2, sec-3]
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ============================================
+  # Verify hand completed
+  # ============================================
+
+  - name: Check Final State
+    type: call
+    node: sec-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_sec-2}}"
+    method: get_game_state
+    outputs:
+      final_phase: result.output.phase
+      final_hand: result.output.hand_number
+
+  - name: Assert hand completed
+    type: assert
+    statements:
+      - 'equal({{final_phase}}, "Waiting")'
+      - "{{final_hand}} == 1"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 300
