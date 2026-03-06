@@ -41,10 +41,6 @@
   .player .name { font-size: 12px; font-weight: bold; margin-top: 4px; }
   .player .chips { font-size: 11px; color: #ffd700; }
   .player .bet { font-size: 11px; color: #aaa; }
-  .player .role-badge { font-size: 9px; padding: 1px 6px; border-radius: 8px; display: inline-block; margin-top: 2px; font-weight: bold; letter-spacing: 0.5px; }
-  .role-dealer { background: #fff; color: #333; }
-  .role-sb { background: #1565c0; color: #fff; }
-  .role-bb { background: #c62828; color: #fff; }
   .player .cards { display: flex; gap: 3px; justify-content: center; margin-top: 4px; }
   .player .cards .card { width: 36px; height: 50px; font-size: 12px; }
   .player.dead .avatar { background: #333; border-color: #555; opacity: 0.3; }
@@ -56,6 +52,8 @@
   .player.p3 { bottom: -65px; left: 20%; }
   .player.p4 { top: 15%; left: -75px; }
   .player.p5 { bottom: 15%; left: -75px; }
+
+  .dealer-button { position: absolute; width: 28px; height: 28px; border-radius: 50%; background: #fff; color: #333; font-size: 11px; font-weight: 900; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,0.5); border: 2px solid #ccc; z-index: 10; transition: all 0.5s ease; }
 
   .player .action-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-top: 3px; display: inline-block; font-weight: bold; transition: all 0.3s; }
   .action-fold { background: #d32f2f; color: #fff; }
@@ -111,6 +109,7 @@
     <div class="phase" id="phase">Waiting</div>
   </div>
   <div id="players"></div>
+  <div class="dealer-button" id="dealerButton" style="display:none">D</div>
 </div>
 
 <div class="action-log" id="actionLog"><h3>Action Log</h3></div>
@@ -166,46 +165,20 @@ function getPlayerName(pid, idx) {
   return playerNames[pid];
 }
 
-function renderPlayers(players, actionOn, dealerSeat) {
+function renderPlayers(players, actionOn) {
   const el = document.getElementById('players');
   el.innerHTML = '';
-  const numPlayers = players.filter(p => p.in_hand || p.chips > 0).length;
   players.forEach((p, i) => {
     const info = getPlayerName(p.player_id, i);
     const isActive = p.player_id === actionOn;
     const isFolded = p.folded;
     const isDead = p.chips === 0 && !p.in_hand;
     const action = playerActions[p.player_id];
-
-    // Determine role: dealer, SB, BB based on seat and dealer position
-    let role = '';
-    if (p.in_hand && dealerSeat >= 0) {
-      const dealerIdx = players.findIndex(pp => pp.seat === dealerSeat);
-      if (dealerIdx >= 0) {
-        if (i === dealerIdx) role = 'dealer';
-        else if (numPlayers === 2) {
-          // Heads-up: dealer=SB, other=BB
-          if (i === dealerIdx) role = 'dealer';
-          else role = 'bb';
-        } else {
-          const sbIdx = (dealerIdx + 1) % players.length;
-          const bbIdx = (dealerIdx + 2) % players.length;
-          if (i === sbIdx) role = 'sb';
-          else if (i === bbIdx) role = 'bb';
-        }
-      }
-    }
-
-    const roleBadge = role === 'dealer' ? '<div class="role-badge role-dealer">D</div>'
-      : role === 'sb' ? '<div class="role-badge role-sb">SB</div>'
-      : role === 'bb' ? '<div class="role-badge role-bb">BB</div>' : '';
-
     const div = document.createElement('div');
     div.className = `player ${POSITIONS[i % 6]} ${isDead ? 'dead' : ''}`;
     div.innerHTML = `
       <div class="avatar ${isActive ? 'active' : ''} ${isFolded ? 'folded' : ''}">${info.emoji}</div>
       <div class="name">${info.name}</div>
-      ${roleBadge}
       <div class="chips">${p.chips} chips</div>
       ${p.bet > 0 ? `<div class="bet">Bet: ${p.bet}</div>` : ''}
       ${action ? `<div class="action-badge action-${action.toLowerCase()}">${action}</div>` : ''}
@@ -216,6 +189,31 @@ function renderPlayers(players, actionOn, dealerSeat) {
     `;
     el.appendChild(div);
   });
+}
+
+function positionDealerButton(players, dealerSeat) {
+  const btn = document.getElementById('dealerButton');
+  if (dealerSeat < 0) { btn.style.display = 'none'; return; }
+
+  // Find which player index has the dealer seat
+  const idx = players.findIndex(p => p.seat === dealerSeat);
+  if (idx < 0) { btn.style.display = 'none'; return; }
+
+  // Position offsets toward center of table for each player position
+  const positions = [
+    { top: '45px', left: '50%' },       // p0: top center
+    { top: '28%', right: '70px' },      // p1: right
+    { bottom: '45px', right: '25%' },   // p2: bottom-right
+    { bottom: '45px', left: '25%' },    // p3: bottom-left
+    { top: '28%', left: '70px' },       // p4: left
+    { bottom: '28%', left: '70px' },    // p5: bottom-left
+  ];
+
+  const pos = positions[idx % 6];
+  btn.style.display = 'flex';
+  // Reset all position props
+  btn.style.top = btn.style.bottom = btn.style.left = btn.style.right = 'auto';
+  Object.assign(btn.style, pos);
 }
 
 function logAction(emoji, name, action, phase) {
@@ -328,8 +326,9 @@ async function poll() {
   lastActionOn = state.action_on;
   lastPot = state.pot;
 
-  renderPlayers(state.players, state.action_on, state.dealer_seat);
+  renderPlayers(state.players, state.action_on);
   renderCommunity(state.community_cards || []);
+  positionDealerButton(state.players, state.dealer_seat);
 
   // Check for new hand result
   if (state.hand_number > lastHand) {
