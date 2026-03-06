@@ -89,7 +89,9 @@ struct PhalaKmsAttestResponse {
 
 #[derive(Debug, Clone, Copy)]
 enum KeyFetchAttestationMode {
+    /// Use attestation settings configured in `config.toml`.
     UseConfigPolicy,
+    /// Skip config attestation because release-policy verification already ran.
     AlreadyVerifiedFromReleasePolicy,
 }
 
@@ -176,14 +178,12 @@ pub async fn fetch_storage_key(
 ) -> Result<Vec<u8>> {
     if let Some(ref phala_config) = kms_config.phala {
         info!("Using Phala Cloud KMS");
-        let attestation_mode = if policy.is_some() {
+        let attestation_mode = if let Some(p) = policy {
+            verify_kms_attestation_from_release_policy(&phala_config.url, p).await?;
             KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy
         } else {
             KeyFetchAttestationMode::UseConfigPolicy
         };
-        if let Some(p) = policy {
-            verify_kms_attestation_from_release_policy(&phala_config.url, p).await?;
-        }
         let key = fetch_from_phala(phala_config, peer_id, identity, attestation_mode).await?;
         Ok(key)
     } else {
@@ -241,16 +241,26 @@ async fn verify_kms_attestation_from_release_policy(
         .await
         .context("Failed to parse KMS attest response")?;
 
-    let quote_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&attest.quote_b64)
-        .context("Failed to decode KMS quote from base64")?;
-
     let binding_bytes = base64::engine::general_purpose::STANDARD
         .decode(&policy.default_binding_b64)
         .context("Invalid policy default_binding_b64")?;
     let binding: [u8; 32] = binding_bytes
         .try_into()
         .map_err(|_| eyre::eyre!("Policy default_binding_b64 must be 32 bytes"))?;
+    let expected_report_data = build_kms_attestation_report_data(&nonce, &binding);
+
+    let (quote_bytes, report_data_bytes) = decode_kms_attestation_response(&attest)?;
+    if report_data_bytes.len() != 64 {
+        bail!(
+            "KMS attest reportDataHex must be 64 bytes, got {}",
+            report_data_bytes.len()
+        );
+    }
+    if !bool::from(report_data_bytes.ct_eq(expected_report_data.as_slice())) {
+        bail!(
+            "KMS attest reportData mismatch (nonce/binding mismatch or tampered response payload)"
+        );
+    }
 
     let is_mock = is_mock_quote(&quote_bytes);
     let verification_result = if is_mock {
@@ -312,6 +322,11 @@ fn enforce_attestation_policy(
         bail!("Quote verification did not provide a TCB status");
     }
 
+    warn_if_optional_measurement_allowlist_empty("RTMR0", &policy.allowed_rtmr0);
+    warn_if_optional_measurement_allowlist_empty("RTMR1", &policy.allowed_rtmr1);
+    warn_if_optional_measurement_allowlist_empty("RTMR2", &policy.allowed_rtmr2);
+    warn_if_optional_measurement_allowlist_empty("RTMR3", &policy.allowed_rtmr3);
+
     let body = &verification_result.quote.body;
     enforce_measurement_allowlist_for_release_policy("MRTD", &body.mrtd, &policy.allowed_mrtd)?;
     enforce_measurement_allowlist_for_release_policy("RTMR0", &body.rtmr0, &policy.allowed_rtmr0)?;
@@ -349,6 +364,15 @@ fn enforce_measurement_allowlist_for_release_policy(
         preview,
         suffix
     )
+}
+
+fn warn_if_optional_measurement_allowlist_empty(label: &str, allowed: &[String]) {
+    if allowed.is_empty() {
+        warn!(
+            measurement = label,
+            "Release policy allowlist is empty; skipping optional measurement check"
+        );
+    }
 }
 
 /// Fetch the storage encryption key from Phala Cloud KMS (mero-kms-phala).
