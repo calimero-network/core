@@ -326,6 +326,7 @@ impl ExternalGroupClient {
     pub async fn set_group_target(
         &mut self,
         target_application: types::Application<'_>,
+        migration_method: Option<String>,
     ) -> eyre::Result<()> {
         with_nonce(&mut self.nonce, &self.inner, async |nonce| {
             let c = &self.inner;
@@ -335,7 +336,7 @@ impl ExternalGroupClient {
                     c.network_id.as_str().into(),
                     c.contract_id.as_str().into(),
                 )
-                .set_group_target(c.group_id, target_application.clone())
+                .set_group_target(c.group_id, target_application.clone(), migration_method.clone())
                 .send(c.signing_key, nonce)
                 .await
         })

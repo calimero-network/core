@@ -45,6 +45,7 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
 
         let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
 
+        let datastore = self.datastore.clone();
         let context_client = self.context_client.clone();
         let node_client = self.node_client.clone();
 
@@ -74,6 +75,10 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                         .join_context_via_group(context_id, context_identity)
                         .await?;
                 }
+
+                // Register the context-group mapping locally so that
+                // maybe_lazy_upgrade can find the group for this context.
+                group_store::register_context_in_group(&datastore, &group_id, &context_id)?;
 
                 // Ensure we have context config locally.
                 // If the context is unknown, build config from protocol params

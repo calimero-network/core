@@ -19,9 +19,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        JoinGroupRequest {
-            invitation_payload,
-        }: JoinGroupRequest,
+        JoinGroupRequest { invitation_payload }: JoinGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let node_identity = self.node_group_identity();
@@ -94,7 +92,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
             async move {
                 // Phase 1: Bootstrap from chain if local state is missing
                 if needs_chain_sync {
-                    let mut meta = group_store::sync_group_state_from_contract(
+                    let (mut meta, _group_info) = group_store::sync_group_state_from_contract(
                         &datastore,
                         &context_client,
                         &group_id,

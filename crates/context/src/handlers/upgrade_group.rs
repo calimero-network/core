@@ -1,7 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
-use calimero_context_config::repr::ReprTransmute;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::group::{UpgradeGroupRequest, UpgradeGroupResponse};
 use calimero_context_primitives::messages::MigrationParams;
@@ -54,6 +53,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             &target_application_id,
             &requester,
             signing_key.is_some(),
+            migration.is_some(),
         ) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
@@ -73,6 +73,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             .as_secs();
 
         let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
+        let migration_method_str = migration.as_ref().map(|m| m.method.clone());
 
         // Auto-store signing key for future use
         if let Some(ref sk) = signing_key {
@@ -125,7 +126,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             &target_application_id,
                             app_meta,
                         )?;
-                        group_client.set_group_target(contract_app).await?;
+                        group_client
+                            .set_group_target(contract_app, migration_method_str.clone())
+                            .await?;
                     }
 
                     let mut meta = group_store::load_group_meta(&datastore, &group_id)?
@@ -216,6 +219,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
 
+        let migration_method_for_contract = migrate_method.clone();
         let canary_task = async move {
             // Call set_group_target on contract before canary
             if let (Some(client_result), Some(ref app_meta)) =
@@ -226,7 +230,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     &target_application_id,
                     app_meta,
                 )?;
-                group_client.set_group_target(contract_app).await?;
+                group_client
+                    .set_group_target(contract_app, migration_method_for_contract)
+                    .await?;
             }
 
             context_client
@@ -374,6 +380,7 @@ fn validate_upgrade(
     target_application_id: &ApplicationId,
     requester: &PublicKey,
     has_raw_signing_key: bool,
+    has_migration: bool,
 ) -> eyre::Result<UpgradePreamble> {
     // 1. Group must exist
     let meta = group_store::load_group_meta(datastore, group_id)?
@@ -395,8 +402,8 @@ fn validate_upgrade(
     }
 
     // 5. Target must differ from current
-    if meta.target_application_id == *target_application_id {
-        bail!("group is already targeting this application");
+    if meta.target_application_id == *target_application_id && !has_migration {
+        bail!("group is already targeting this application and no migration was requested");
     }
 
     // 6. Group must have contexts
@@ -487,7 +494,9 @@ pub(crate) async fn propagate_upgrade(
             // Skip contexts already running the target application to avoid
             // re-executing migrations on retry/recovery paths.
             match context_client.get_context(context_id) {
-                Ok(Some(ctx)) if ctx.application_id == target_application_id => {
+                Ok(Some(ctx))
+                    if ctx.application_id == target_application_id && migration.is_none() =>
+                {
                     completed += 1;
                     debug!(
                         ?group_id,

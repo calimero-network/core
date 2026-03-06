@@ -528,7 +528,8 @@ pub fn delete_group_upgrade(store: &Store, group_id: &ContextGroupId) -> EyreRes
 // ---------------------------------------------------------------------------
 
 /// Queries the on-chain contract for group state and updates local storage.
-/// Returns the synced `GroupMetaValue`.
+/// Returns the synced `GroupMetaValue` and the raw `GroupInfoQueryResponse`
+/// (so callers can extract target application blob info for P2P sharing).
 ///
 /// Syncs metadata (app_key, target_application), group contexts, and group
 /// members from the on-chain contract. Prunes locally-stored entries that no
@@ -540,7 +541,7 @@ pub async fn sync_group_state_from_contract(
     protocol: &str,
     network_id: &str,
     contract_id: &str,
-) -> EyreResult<GroupMetaValue> {
+) -> EyreResult<(GroupMetaValue, calimero_context_config::client::env::config::requests::GroupInfoQueryResponse)> {
     let info = context_client
         .query_group_info(*group_id, protocol, network_id, contract_id)
         .await?
@@ -566,7 +567,11 @@ pub async fn sync_group_state_from_contract(
             .as_ref()
             .map(|m| m.admin_identity)
             .unwrap_or_else(|| PublicKey::from([0u8; 32])),
-        migration: existing.and_then(|m| m.migration),
+        migration: info
+            .migration_method
+            .as_ref()
+            .map(|m| m.as_bytes().to_vec())
+            .or_else(|| existing.and_then(|m| m.migration)),
     };
 
     save_group_meta(datastore, group_id, &meta)?;
@@ -593,7 +598,25 @@ pub async fn sync_group_state_from_contract(
     )
     .await?;
 
-    Ok(meta)
+    Ok((meta, info))
+}
+
+/// Extracts the blob ID and source URL from the target application JSON
+/// returned by the on-chain contract query.
+pub fn extract_application_blob_info(
+    app_json: &serde_json::Value,
+) -> Option<(calimero_primitives::blobs::BlobId, String, u64)> {
+    use calimero_context_config::repr::{Repr, ReprBytes};
+    use calimero_context_config::types::BlobId as ConfigBlobId;
+
+    let blob_val = app_json.get("blob")?;
+    let repr: Repr<ConfigBlobId> = serde_json::from_value(blob_val.clone()).ok()?;
+    let blob_id = calimero_primitives::blobs::BlobId::from(repr.as_bytes());
+
+    let source = app_json.get("source")?.as_str()?.to_owned();
+    let size = app_json.get("size")?.as_u64().unwrap_or(0);
+
+    Some((blob_id, source, size))
 }
 
 /// Paginates through `query_group_contexts()` and reconciles the local

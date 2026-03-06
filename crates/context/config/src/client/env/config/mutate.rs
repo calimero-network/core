@@ -294,12 +294,16 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         self,
         group_id: ContextGroupId,
         target_application: Application<'a>,
+        migration_method: Option<String>,
     ) -> ContextConfigMutateRequest<'a, T> {
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Group(GroupRequest::new(
                 Repr::new(group_id),
-                GroupRequestKind::SetTargetApplication { target_application },
+                GroupRequestKind::SetTargetApplication {
+                    target_application,
+                    migration_method,
+                },
             )),
         }
     }

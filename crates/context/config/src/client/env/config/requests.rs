@@ -156,6 +156,7 @@ pub struct GroupInfoQueryResponse {
     pub target_application: serde_json::Value,
     pub member_count: u64,
     pub context_count: u64,
+    pub migration_method: Option<String>,
 }
 
 // ============================================================================

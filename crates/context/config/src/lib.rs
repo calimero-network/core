@@ -149,6 +149,7 @@ pub enum GroupRequestKind<'a> {
     SetTargetApplication {
         #[serde(borrow)]
         target_application: Application<'a>,
+        migration_method: Option<String>,
     },
     /// Pre-approve a specific context to register via its proxy contract.
     /// Must be called by a group admin before the proxy path is exercised.

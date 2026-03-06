@@ -40,10 +40,11 @@ impl Handler<SyncGroupRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let context_client = self.context_client.clone();
+        let node_client = self.node_client.clone();
 
         ActorResponse::r#async(
             async move {
-                let _meta = group_store::sync_group_state_from_contract(
+                let (meta, group_info) = group_store::sync_group_state_from_contract(
                     &datastore,
                     &context_client,
                     &group_id,
@@ -52,6 +53,45 @@ impl Handler<SyncGroupRequest> for ContextManager {
                     &contract_id,
                 )
                 .await?;
+
+                // Ensure target application binary is installed locally via P2P
+                // blob sharing. Without this, lazy upgrades on peer nodes fail
+                // because the new version's WASM binary isn't available locally.
+                if let Some((blob_id, source, _size)) =
+                    group_store::extract_application_blob_info(&group_info.target_application)
+                {
+                    if !node_client.has_blob(&blob_id)? {
+                        let contexts = group_store::enumerate_group_contexts(
+                            &datastore, &group_id, 0, 1,
+                        )?;
+                        if let Some(ctx_id) = contexts.first() {
+                            match node_client.get_blob_bytes(&blob_id, Some(ctx_id)).await {
+                                Ok(Some(_bytes)) => {
+                                    if let Ok(app_source) = source.parse() {
+                                        if let Err(err) = node_client
+                                            .install_application_from_bundle_blob(
+                                                &blob_id,
+                                                &app_source,
+                                            )
+                                            .await
+                                        {
+                                            warn!(
+                                                %err,
+                                                "failed to install target app bundle after blob share"
+                                            );
+                                        }
+                                    }
+                                }
+                                Ok(None) => {
+                                    warn!("target app blob not available from any peer yet");
+                                }
+                                Err(err) => {
+                                    warn!(%err, "failed to fetch target app blob from peers");
+                                }
+                            }
+                        }
+                    }
+                }
 
                 let contexts =
                     group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;
@@ -74,8 +114,8 @@ impl Handler<SyncGroupRequest> for ContextManager {
 
                 Ok(SyncGroupResponse {
                     group_id,
-                    app_key: _meta.app_key,
-                    target_application_id: _meta.target_application_id,
+                    app_key: meta.app_key,
+                    target_application_id: meta.target_application_id,
                     member_count,
                     context_count,
                 })
