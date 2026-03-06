@@ -199,10 +199,20 @@ configuration error.
 KMS verifies challenge freshness/single-use, peer key ownership, signature,
 quote validity, and policy compliance before releasing a key.
 
-When `MERO_TEE_VERSION` or `MERO_KMS_VERSION` is set, merod fetches the attestation
-policy from the official release and verifies the KMS via `POST /attest` before
-requesting keys. Use `USE_ENV_POLICY=true` for air-gapped deployments (policy
-must be applied via `apply-merod-kms-phala-attestation-config.sh`).
+When any of the following env vars is set, merod fetches the attestation policy
+from the official release and verifies the KMS via `POST /attest` before
+requesting keys:
+
+- `MERO_KMS_RELEASE_TAG` (highest priority; accepts `mero-kms-vX.Y.Z` or `X.Y.Z`)
+- `MERO_KMS_VERSION`
+- `MERO_TEE_VERSION`
+
+Precedence is: `MERO_KMS_RELEASE_TAG > MERO_KMS_VERSION > MERO_TEE_VERSION`.
+If a version is set and policy fetch fails, merod fails closed and aborts startup
+instead of proceeding without KMS verification.
+
+Use `USE_ENV_POLICY=true` for air-gapped deployments (policy must be applied via
+`apply-merod-kms-phala-attestation-config.sh`).
 
 For deployment-managed policy ingestion, merod can load allowlists from
 `tee.kms.phala.attestation.policy_json_path` (JSON) while mero-tee remains

@@ -98,10 +98,20 @@ allowed_mrtd = ["<trusted_kms_mrtd_hex>"]
 # binding_b64 = "<base64_32_byte_value>"
 ```
 
-When `MERO_TEE_VERSION` or `MERO_KMS_VERSION` is set (e.g. `2.1.14`), merod fetches
-the attestation policy from the official release and verifies the KMS via
-`POST /attest` before requesting keys. Use `USE_ENV_POLICY=true` for air-gapped
-deployments (policy must be applied via `apply-merod-kms-phala-attestation-config.sh`).
+When any of these env vars is set (e.g. `2.1.14`), merod fetches the attestation
+policy from the official release and verifies the KMS via `POST /attest` before
+requesting keys:
+
+- `MERO_KMS_RELEASE_TAG` (highest priority; accepts `mero-kms-vX.Y.Z` or `X.Y.Z`)
+- `MERO_KMS_VERSION`
+- `MERO_TEE_VERSION`
+
+Precedence is: `MERO_KMS_RELEASE_TAG > MERO_KMS_VERSION > MERO_TEE_VERSION`.
+If a version is set and policy fetch fails, merod fails closed and aborts startup
+instead of proceeding without KMS verification.
+
+Use `USE_ENV_POLICY=true` for air-gapped deployments (policy must be applied via
+`apply-merod-kms-phala-attestation-config.sh`).
 
 ### 3. Run merod
 
