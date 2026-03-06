@@ -1,16 +1,17 @@
 //! KMS attestation policy for merod.
 //!
-//! When MERO_TEE_VERSION or MERO_KMS_VERSION is set, merod fetches the attestation
-//! policy from the official mero-tee release instead of relying on config written
-//! by external scripts. Use USE_ENV_POLICY=true for air-gapped deployments
+//! When MERO_KMS_RELEASE_TAG, MERO_KMS_VERSION, or MERO_TEE_VERSION is set,
+//! merod fetches the attestation policy from the official mero-tee release
+//! instead of relying on config written by external scripts.
+//! Use USE_ENV_POLICY=true for air-gapped deployments
 //! (requires policy in config.toml via apply-merod-kms-phala-attestation-config.sh).
 
 use eyre::{bail, Result as EyreResult};
 use serde::Deserialize;
-use tracing::info;
+use tracing::{info, warn};
 
-const POLICY_RELEASE_BASE: &str =
-    "https://github.com/calimero-network/mero-tee/releases/download";
+const POLICY_RELEASE_BASE: &str = "https://github.com/calimero-network/mero-tee/releases/download";
+const POLICY_FETCH_RETRIES: usize = 3;
 
 /// Attestation policy for KMS verification (mirrors mero-kms AttestationPolicy).
 #[derive(Debug, Clone)]
@@ -59,18 +60,25 @@ struct KmsSection {
     default_binding_b64: String,
 }
 
-/// Read version from MERO_TEE_VERSION or MERO_KMS_VERSION.
-pub fn release_version_from_env() -> Option<String> {
-    let tag = std::env::var("MERO_KMS_RELEASE_TAG").ok();
-    let version = std::env::var("MERO_KMS_VERSION").ok();
-    let tee_version = std::env::var("MERO_TEE_VERSION").ok();
-    let v = tag.or(version).or(tee_version)?;
-    let s = v.trim();
-    Some(if s.starts_with("mero-kms-v") {
-        s.strip_prefix("mero-kms-v").unwrap_or(s).to_string()
-    } else {
-        s.to_string()
-    })
+/// Read release version from environment with explicit precedence:
+/// `MERO_KMS_RELEASE_TAG` > `MERO_KMS_VERSION` > `MERO_TEE_VERSION`.
+///
+/// Values may be either a plain version (`2.1.14`) or a prefixed tag
+/// (`mero-kms-v2.1.14`). Invalid values return an error.
+pub fn release_version_from_env() -> EyreResult<Option<String>> {
+    for env_var in [
+        "MERO_KMS_RELEASE_TAG",
+        "MERO_KMS_VERSION",
+        "MERO_TEE_VERSION",
+    ] {
+        if let Ok(raw) = std::env::var(env_var) {
+            return normalize_release_version(&raw)
+                .map(Some)
+                .map_err(|e| eyre::eyre!("{env_var} is invalid: {e}"));
+        }
+    }
+
+    Ok(None)
 }
 
 /// Whether to skip release fetch and use config.toml policy (air-gapped).
@@ -82,7 +90,8 @@ pub fn use_env_policy() -> bool {
 
 /// Fetch attestation policy from the official mero-tee release.
 pub async fn fetch_policy_from_release(version: &str) -> EyreResult<KmsAttestationPolicy> {
-    let tag = format!("mero-kms-v{}", version.trim());
+    let version = normalize_release_version(version)?;
+    let tag = format!("mero-kms-v{}", version);
     let url = format!(
         "{}/{}/kms-phala-attestation-policy.json",
         POLICY_RELEASE_BASE, tag
@@ -92,24 +101,59 @@ pub async fn fetch_policy_from_release(version: &str) -> EyreResult<KmsAttestati
         .user_agent("merod/1.0")
         .build()
         .map_err(|e| eyre::eyre!("Failed to create HTTP client: {}", e))?;
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| eyre::eyre!("Policy fetch failed: {}", e))?;
-    if !resp.status().is_success() {
-        bail!("Policy fetch failed: {} {}", resp.status(), url);
+    let mut last_error = String::new();
+    for attempt in 1..=POLICY_FETCH_RETRIES {
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let body = resp
+                    .text()
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to read policy response: {}", e))?;
+                return parse_policy_json(&body);
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                last_error = format!("Policy fetch failed: {} {} {}", status, url, body);
+
+                if (status.is_server_error() || status.as_u16() == 429)
+                    && attempt < POLICY_FETCH_RETRIES
+                {
+                    warn!(
+                        attempt,
+                        retries = POLICY_FETCH_RETRIES,
+                        %status,
+                        "Transient policy fetch status, retrying"
+                    );
+                    tokio::time::sleep(policy_fetch_backoff(attempt)).await;
+                    continue;
+                }
+
+                break;
+            }
+            Err(err) => {
+                last_error = format!("Policy fetch failed: {}", err);
+                if attempt < POLICY_FETCH_RETRIES {
+                    warn!(
+                        attempt,
+                        retries = POLICY_FETCH_RETRIES,
+                        error = %err,
+                        "Transient policy fetch error, retrying"
+                    );
+                    tokio::time::sleep(policy_fetch_backoff(attempt)).await;
+                    continue;
+                }
+                break;
+            }
+        }
     }
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| eyre::eyre!("Failed to read policy response: {}", e))?;
-    parse_policy_json(&body)
+
+    bail!("{last_error}")
 }
 
 fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
-    let root: PolicyJson = serde_json::from_str(json_str)
-        .map_err(|e| eyre::eyre!("Invalid policy JSON: {}", e))?;
+    let root: PolicyJson =
+        serde_json::from_str(json_str).map_err(|e| eyre::eyre!("Invalid policy JSON: {}", e))?;
 
     let allowed_tcb_statuses = if root.policy.allowed_tcb_statuses.is_empty() {
         vec!["uptodate".to_owned()]
@@ -127,6 +171,10 @@ fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
     let allowed_rtmr1 = parse_hex_array(&root.policy.allowed_rtmr1, 48)?;
     let allowed_rtmr2 = parse_hex_array(&root.policy.allowed_rtmr2, 48)?;
     let allowed_rtmr3 = parse_hex_array(&root.policy.allowed_rtmr3, 48)?;
+
+    if allowed_mrtd.is_empty() {
+        bail!("Policy JSON missing policy.allowed_mrtd (at least one MRTD value is required)");
+    }
 
     let default_binding_b64 = root.kms.default_binding_b64.trim().to_string();
     if default_binding_b64.is_empty() {
@@ -147,7 +195,12 @@ fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
 fn parse_hex_array(values: &[String], expected_bytes: usize) -> EyreResult<Vec<String>> {
     let mut parsed = Vec::with_capacity(values.len());
     for (i, v) in values.iter().enumerate() {
-        let normalized = v.trim().trim_start_matches("0x").to_ascii_lowercase();
+        let trimmed = v.trim();
+        let normalized = trimmed
+            .strip_prefix("0x")
+            .or_else(|| trimmed.strip_prefix("0X"))
+            .unwrap_or(trimmed)
+            .to_ascii_lowercase();
         if normalized.is_empty() {
             continue;
         }
@@ -166,30 +219,202 @@ fn parse_hex_array(values: &[String], expected_bytes: usize) -> EyreResult<Vec<S
     Ok(parsed)
 }
 
+fn normalize_release_version(raw: &str) -> EyreResult<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("release version cannot be empty");
+    }
+
+    let version = trimmed.strip_prefix("mero-kms-v").unwrap_or(trimmed);
+    if !is_valid_release_version(version) {
+        bail!(
+            "release version must be semver-like (e.g. 2.1.14 or 2.1.14-rc.1), got '{}'",
+            trimmed
+        );
+    }
+
+    Ok(version.to_owned())
+}
+
+fn is_valid_release_version(version: &str) -> bool {
+    let mut core_and_suffix = version.splitn(2, ['-', '+']);
+    let core = core_and_suffix.next().unwrap_or_default();
+    let suffix = core_and_suffix.next();
+
+    let mut core_segments = core.split('.');
+    let major = core_segments.next();
+    let minor = core_segments.next();
+    let patch = core_segments.next();
+    if core_segments.next().is_some() {
+        return false;
+    }
+
+    let Some(major) = major else {
+        return false;
+    };
+    let Some(minor) = minor else {
+        return false;
+    };
+    let Some(patch) = patch else {
+        return false;
+    };
+
+    if major.is_empty() || minor.is_empty() || patch.is_empty() {
+        return false;
+    }
+    if !major.chars().all(|c| c.is_ascii_digit())
+        || !minor.chars().all(|c| c.is_ascii_digit())
+        || !patch.chars().all(|c| c.is_ascii_digit())
+    {
+        return false;
+    }
+
+    if let Some(suffix) = suffix {
+        if suffix.is_empty() {
+            return false;
+        }
+        if !suffix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn policy_fetch_backoff(attempt: usize) -> std::time::Duration {
+    std::time::Duration::from_millis((attempt as u64) * 250)
+}
+
 /// Resolve policy: fetch from release when version is set, else None.
 pub async fn resolve_policy() -> EyreResult<Option<KmsAttestationPolicy>> {
     if use_env_policy() {
         info!("USE_ENV_POLICY=true: skipping release fetch, using config.toml policy");
         return Ok(None);
     }
-    let Some(version) = release_version_from_env() else {
+    let Some(version) = release_version_from_env()? else {
         return Ok(None);
     };
-    match fetch_policy_from_release(&version).await {
-        Ok(policy) => {
-            info!(
-                "Loaded KMS attestation policy from release mero-kms-v{}",
-                version
-            );
-            Ok(Some(policy))
+
+    // Security fail-closed: if operator explicitly configured a release version,
+    // we must not continue without attestation policy verification.
+    let policy = fetch_policy_from_release(&version).await.map_err(|e| {
+        eyre::eyre!(
+            "Failed to fetch policy from release mero-kms-v{}: {}",
+            version,
+            e
+        )
+    })?;
+
+    info!(
+        "Loaded KMS attestation policy from release mero-kms-v{}",
+        version
+    );
+    Ok(Some(policy))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn clear_release_env_vars() {
+        unsafe {
+            std::env::remove_var("MERO_KMS_RELEASE_TAG");
+            std::env::remove_var("MERO_KMS_VERSION");
+            std::env::remove_var("MERO_TEE_VERSION");
         }
-        Err(e) => {
-            tracing::warn!(
-                "Failed to fetch policy from release ({}): {}. Proceeding without KMS verification.",
-                version,
-                e
-            );
-            Ok(None)
+    }
+
+    #[test]
+    fn release_version_from_env_uses_priority_order() {
+        let _guard = env_lock().lock().expect("env mutex poisoned");
+        clear_release_env_vars();
+
+        unsafe {
+            std::env::set_var("MERO_TEE_VERSION", "2.1.10");
+            std::env::set_var("MERO_KMS_VERSION", "2.1.11");
+            std::env::set_var("MERO_KMS_RELEASE_TAG", "mero-kms-v2.1.12");
         }
+
+        let resolved = release_version_from_env().expect("version resolution should succeed");
+        assert_eq!(resolved.as_deref(), Some("2.1.12"));
+
+        clear_release_env_vars();
+    }
+
+    #[test]
+    fn release_version_from_env_rejects_invalid_value() {
+        let _guard = env_lock().lock().expect("env mutex poisoned");
+        clear_release_env_vars();
+
+        unsafe {
+            std::env::set_var("MERO_KMS_VERSION", "../malicious");
+        }
+
+        let err = release_version_from_env()
+            .expect_err("invalid release version should fail")
+            .to_string();
+        assert!(err.contains("MERO_KMS_VERSION is invalid"));
+
+        clear_release_env_vars();
+    }
+
+    #[test]
+    fn parse_policy_json_requires_non_empty_mrtd_allowlist() {
+        let json = r#"{
+            "policy": {
+                "allowed_tcb_statuses": ["UpToDate"],
+                "allowed_mrtd": []
+            },
+            "kms": {
+                "default_binding_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+            }
+        }"#;
+
+        let err = parse_policy_json(json)
+            .expect_err("empty MRTD allowlist should fail")
+            .to_string();
+        assert!(err.contains("policy.allowed_mrtd"));
+    }
+
+    #[test]
+    fn parse_policy_json_accepts_valid_policy() {
+        let json = format!(
+            r#"{{
+                "policy": {{
+                    "allowed_tcb_statuses": ["UpToDate"],
+                    "allowed_mrtd": ["{mrtd}"],
+                    "allowed_rtmr0": [],
+                    "allowed_rtmr1": [],
+                    "allowed_rtmr2": [],
+                    "allowed_rtmr3": []
+                }},
+                "kms": {{
+                    "default_binding_b64": "{binding}"
+                }}
+            }}"#,
+            mrtd = "ab".repeat(48),
+            binding = base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
+        );
+
+        let policy = parse_policy_json(&json).expect("policy should parse");
+        assert_eq!(policy.allowed_tcb_statuses, vec!["uptodate".to_owned()]);
+        assert_eq!(policy.allowed_mrtd, vec!["ab".repeat(48)]);
+    }
+
+    #[test]
+    fn parse_hex_array_accepts_uppercase_prefix() {
+        let values = vec![format!("0X{}", "CD".repeat(48))];
+        let parsed = parse_hex_array(&values, 48).expect("0X prefix should be accepted");
+        assert_eq!(parsed, vec!["cd".repeat(48)]);
     }
 }
