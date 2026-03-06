@@ -161,12 +161,37 @@ wait_timeout: 700
 
     return proc, ctx, dealer_key, bot_keys, ports
 
+# ── Spectator ────────────────────────────────────────────────
+def launch_spectator(script_dir, port, node_port, ctx, key):
+    """Start HTTP server and open spectator UI with pre-filled config."""
+    import http.server
+    import threading
+    import webbrowser
+    import urllib.parse
+
+    class QuietHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=script_dir, **kw)
+        def log_message(self, format, *a):
+            pass  # silence logs
+
+    server = http.server.HTTPServer(("", port), QuietHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    # Open browser with pre-filled URL params
+    params = urllib.parse.urlencode({"node": f"http://localhost:{node_port}", "ctx": ctx, "key": key})
+    url = f"http://localhost:{port}/spectator.html?{params}"
+    print(f"{C.CY}  🌐 Spectator: {url}{C.X}")
+    webbrowser.open(url)
+
 # ── Main ─────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Calimero Poker Demo")
     parser.add_argument("--pace", type=float, default=1.0, help="Seconds between actions")
     parser.add_argument("--max-hands", type=int, default=999, help="Max hands to play")
     parser.add_argument("--merod", type=str, default=None, help="Path to merod binary (default: target/release/merod)")
+    parser.add_argument("--spectator", action="store_true", help="Launch spectator UI in browser")
+    parser.add_argument("--spectator-port", type=int, default=8080, help="Port for spectator HTTP server")
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -218,6 +243,11 @@ def main():
         wait_sync(all_rpcs, args.pace)
 
     print(f"{C.G}✓ Players seated, keys registered{C.X}")
+
+    # Launch spectator UI if requested
+    if args.spectator:
+        launch_spectator(script_dir, args.spectator_port, dealer_port, ctx, dealer_key)
+
     print()
 
     # ── Game loop ────────────────────────────────────────

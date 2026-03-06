@@ -262,6 +262,15 @@ function startPolling() {
   poll();
   polling = setInterval(poll, 2000);
 }
+
+// Auto-fill from URL params and start
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('node')) document.getElementById('nodeUrl').value = urlParams.get('node');
+if (urlParams.get('ctx')) document.getElementById('contextId').value = urlParams.get('ctx');
+if (urlParams.get('key')) document.getElementById('pubKey').value = urlParams.get('key');
+if (urlParams.get('node') && urlParams.get('ctx') && urlParams.get('key')) {
+  startPolling();
+}
 </script>
 </body>
 </html>
