@@ -170,6 +170,24 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         )
                         .await;
 
+                    // Announce target app blob on DHT for each group context so
+                    // peer nodes can discover and fetch it during group sync.
+                    if let Some(ref app_meta) = app_meta_for_contract {
+                        let blob_id = app_meta.bytecode.blob_id();
+                        for context_id in &contexts {
+                            if let Err(err) = node_client
+                                .announce_blob_to_network(
+                                    &blob_id,
+                                    context_id,
+                                    app_meta.size,
+                                )
+                                .await
+                            {
+                                warn!(%err, "failed to announce target app blob");
+                            }
+                        }
+                    }
+
                     Ok(UpgradeGroupResponse {
                         group_id,
                         status: completed_status.into(),
@@ -219,6 +237,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
 
+        let target_blob_info = app_meta_for_contract
+            .as_ref()
+            .map(|m| (m.bytecode.blob_id(), m.size));
         let migration_method_for_contract = migrate_method.clone();
         let canary_task = async move {
             // Call set_group_target on contract before canary
@@ -316,6 +337,25 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                                         GroupMutationKind::Upgraded,
                                     )
                                     .await;
+
+                                // Announce target app blob on DHT for peers
+                                if let Some((blob_id, blob_size)) = target_blob_info {
+                                    for context_id in &contexts {
+                                        if let Err(err) = nc
+                                            .announce_blob_to_network(
+                                                &blob_id,
+                                                context_id,
+                                                blob_size,
+                                            )
+                                            .await
+                                        {
+                                            warn!(
+                                                %err,
+                                                "failed to announce target app blob"
+                                            );
+                                        }
+                                    }
+                                }
                             }
                             .into_actor(act),
                         );
