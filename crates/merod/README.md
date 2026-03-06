@@ -216,9 +216,9 @@ Use `USE_ENV_POLICY=true` for air-gapped deployments (policy must be applied via
 This flag bypasses release fetch and should only be used in controlled environments
 where policy artifacts are provisioned and verified by deployment tooling.
 
-Release-policy fetch currently trusts HTTPS transport and GitHub release integrity.
-If you require cryptographic artifact signature verification, perform it in
-deployment tooling and provide the verified policy via `USE_ENV_POLICY=true`.
+Release-policy fetch verifies Sigstore artifacts (`.sig` + `.bundle.json`)
+before trusting `kms-phala-attestation-policy.json`, including Rekor and Fulcio
+checks constrained to the expected mero-tee GitHub Actions workflow identity.
 
 For deployment-managed policy ingestion, merod can load allowlists from
 `tee.kms.phala.attestation.policy_json_path` (JSON) while mero-tee remains
