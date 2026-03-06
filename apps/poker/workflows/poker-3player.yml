@@ -1,0 +1,485 @@
+description: 3-player hand with a bet, a fold, and showdown — plus leave_table
+name: Poker 3-Player Test
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: poker3
+
+steps:
+  # ============================================
+  # Setup: install, mesh, seat 3 players
+  # ============================================
+
+  - name: Install Poker App
+    type: install_application
+    node: poker3-1
+    path: res/poker.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create 3-Node Mesh
+    type: create_mesh
+    context_node: poker3-1
+    application_id: "{{app_id}}"
+    params: '{}'
+    nodes:
+      - poker3-2
+      - poker3-3
+    capability: member
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # P1 joins first (node-1 owns the context, always works)
+  - name: P1 Joins (seat 0, 1000 chips)
+    type: call
+    node: poker3-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: join_table
+    args:
+      buy_in: 1000
+
+  - name: Sync after P1 join (let nodes 2 & 3 bootstrap context)
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 120
+    check_interval: 3
+    trigger_sync: true
+
+  - name: P2 Joins (seat 1, 1000 chips)
+    type: call
+    node: poker3-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker3-2}}"
+    method: join_table
+    args:
+      buy_in: 1000
+
+  - name: Sync after P2 join
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: P3 Joins (seat 2, 1000 chips)
+    type: call
+    node: poker3-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker3-3}}"
+    method: join_table
+    args:
+      buy_in: 1000
+
+  - name: Sync after all joins
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ============================================
+  # Hand: 3-player with Turn bet + fold
+  # ============================================
+  # After rotate: P1=dealer(idx0), P2=SB(idx1, bet10), P3=BB(idx2, bet20)
+  # Preflop first-to-act = UTG = (BB+1)%3 = 0 = P1
+
+  - name: Start Hand
+    type: call
+    node: poker3-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: start_hand
+
+  - name: Sync deal
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Check PreFlop state
+    type: call
+    node: poker3-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      pf_phase: result.output.phase
+      pf_pot: result.output.pot
+      pf_bet: result.output.current_bet
+
+  - name: Assert PreFlop pot=30 (SB10+BB20), bet=20
+    type: assert
+    statements:
+      - 'equal({{pf_phase}}, "PreFlop")'
+      - "{{pf_pot}} == 30"
+      - "{{pf_bet}} == 20"
+
+  # ── PreFlop round: P1 calls, P2 calls, P3 checks ──
+
+  - name: P1 Calls 20 (UTG)
+    type: call
+    node: poker3-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: call
+
+  - name: Sync P1 call
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: P2 Calls 20 (SB, needs 10 more)
+    type: call
+    node: poker3-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker3-2}}"
+    method: call
+
+  - name: Sync P2 call
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: P3 Checks (BB option)
+    type: call
+    node: poker3-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker3-3}}"
+    method: check
+
+  - name: Sync PreFlop → Flop
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Check Flop state
+    type: call
+    node: poker3-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      flop_phase: result.output.phase
+      flop_pot: result.output.pot
+
+  - name: Assert Flop, pot=60 (3×20)
+    type: assert
+    statements:
+      - 'equal({{flop_phase}}, "Flop")'
+      - "{{flop_pot}} == 60"
+
+  # ── Flop round: P2 checks, P3 checks, P1 checks ──
+  # Post-flop action: first active after dealer(idx0) → P2(idx1)
+
+  - name: P2 Checks (Flop)
+    type: call
+    node: poker3-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker3-2}}"
+    method: check
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: P3 Checks (Flop)
+    type: call
+    node: poker3-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker3-3}}"
+    method: check
+
+  - name: Sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: P1 Checks (Flop)
+    type: call
+    node: poker3-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: check
+
+  - name: Sync Flop → Turn
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Check Turn state
+    type: call
+    node: poker3-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      turn_phase: result.output.phase
+      turn_pot: result.output.pot
+
+  - name: Assert Turn, pot=60
+    type: assert
+    statements:
+      - 'equal({{turn_phase}}, "Turn")'
+      - "{{turn_pot}} == 60"
+
+  # ── Turn round: P2 bets 40, P3 folds, P1 calls ──
+
+  - name: P2 Bets 40 (Turn)
+    type: call
+    node: poker3-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker3-2}}"
+    method: raise_to
+    args:
+      amount: 40
+
+  - name: Sync P2 bet
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: P3 Folds (Turn)
+    type: call
+    node: poker3-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker3-3}}"
+    method: fold
+
+  - name: Sync P3 fold
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: P1 Calls 40 (Turn)
+    type: call
+    node: poker3-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: call
+
+  - name: Sync Turn → River
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Check River state
+    type: call
+    node: poker3-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      river_phase: result.output.phase
+      river_pot: result.output.pot
+
+  - name: Assert River, pot=140 (60 + 40 + 40)
+    type: assert
+    statements:
+      - 'equal({{river_phase}}, "River")'
+      - "{{river_pot}} == 140"
+
+  # ── River round: P2 checks, P1 checks → Showdown ──
+  # P3 folded, so only P2 and P1 act
+
+  - name: P2 Checks (River)
+    type: call
+    node: poker3-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker3-2}}"
+    method: check
+
+  - name: Sync P2 check
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: P1 Checks (River)
+    type: call
+    node: poker3-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: check
+
+  - name: Sync Showdown
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ============================================
+  # Verify hand outcome
+  # ============================================
+
+  - name: Get final state (Node 1)
+    type: call
+    node: poker3-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      fin_phase: result.output.phase
+      fin_pot: result.output.pot
+      fin_hand: result.output.hand_number
+
+  - name: Assert hand completed
+    type: assert
+    statements:
+      - 'equal({{fin_phase}}, "Waiting")'
+      - "{{fin_pot}} == 0"
+      - "{{fin_hand}} == 1"
+
+  # Verify all 3 nodes converge
+
+  - name: Get final state (Node 2)
+    type: call
+    node: poker3-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker3-2}}"
+    method: get_game_state
+    outputs:
+      fin_phase_n2: result.output.phase
+
+  - name: Get final state (Node 3)
+    type: call
+    node: poker3-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker3-3}}"
+    method: get_game_state
+    outputs:
+      fin_phase_n3: result.output.phase
+
+  - name: Assert all 3 nodes agree on Waiting
+    type: assert
+    statements:
+      - 'equal({{fin_phase_n2}}, "Waiting")'
+      - 'equal({{fin_phase_n3}}, "Waiting")'
+
+  # ============================================
+  # Test leave_table: P3 leaves after the hand
+  # ============================================
+
+  - name: P3 Leaves Table
+    type: call
+    node: poker3-3
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker3-3}}"
+    method: leave_table
+
+  - name: Sync leave
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker3-1
+      - poker3-2
+      - poker3-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get state after P3 left
+    type: call
+    node: poker3-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      post_leave_players: result.output.players
+
+  - name: Assert only 2 players remain
+    type: assert
+    statements:
+      - "is_set({{post_leave_players}})"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 180

@@ -1,0 +1,415 @@
+description: Tests raise → re-raise → call betting mechanics across all streets
+name: Poker Raise Mechanics Test
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: poker-raise
+
+steps:
+  # ============================================
+  # Setup
+  # ============================================
+
+  - name: Install Poker Application
+    type: install_application
+    node: poker-raise-1
+    path: res/poker.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: poker-raise-1
+    application_id: "{{app_id}}"
+    params: '{}'
+    nodes:
+      - poker-raise-2
+    capability: member
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  - name: Player 1 Joins (1000 chips)
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: join_table
+    args:
+      buy_in: 1000
+
+  - name: Player 2 Joins (1000 chips)
+    type: call
+    node: poker-raise-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-raise-2}}"
+    method: join_table
+    args:
+      buy_in: 1000
+
+  - name: Sync seats
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-raise-1
+      - poker-raise-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ============================================
+  # Hand: Raise → Re-Raise → Call + Flop Bet
+  # ============================================
+  # Heads-up: P1=seat0=dealer=SB(10), P2=seat1=BB(20)
+  # After blinds: P1 chips=990, P2 chips=980, pot=30
+
+  - name: Start Hand
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: start_hand
+
+  - name: Sync deal
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-raise-1
+      - poker-raise-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ── PreFlop: P1 raises to 60, P2 re-raises to 140, P1 calls ──
+
+  # P1 (SB/dealer, acts first in heads-up preflop)
+  # Already bet 10 (SB). Raises to 60 total. Needs 50 more.
+  # Min raise = current_bet(20) + BB(20) = 40.  60 >= 40 ✓
+  - name: P1 Raises to 60 (PreFlop)
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: raise_to
+    args:
+      amount: 60
+
+  - name: Sync P1 raise
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-raise-1
+      - poker-raise-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get state after P1 raise
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      after_raise1_pot: result.output.pot
+      after_raise1_bet: result.output.current_bet
+      after_raise1_phase: result.output.phase
+
+  - name: Assert pot=80, current_bet=60, still PreFlop
+    type: assert
+    statements:
+      - "{{after_raise1_pot}} == 80"
+      - "{{after_raise1_bet}} == 60"
+      - 'equal({{after_raise1_phase}}, "PreFlop")'
+
+  # P2 (BB) re-raises to 140.
+  # Already bet 20 (BB). Needs 120 more.
+  # Min raise = 60 + 20 = 80.  140 >= 80 ✓
+  - name: P2 Re-Raises to 140 (PreFlop)
+    type: call
+    node: poker-raise-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-raise-2}}"
+    method: raise_to
+    args:
+      amount: 140
+
+  - name: Sync P2 re-raise
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-raise-1
+      - poker-raise-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get state after P2 re-raise
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      after_reraise_pot: result.output.pot
+      after_reraise_bet: result.output.current_bet
+      after_reraise_phase: result.output.phase
+
+  - name: Assert pot=200, current_bet=140, still PreFlop (P1 must act)
+    type: assert
+    statements:
+      - "{{after_reraise_pot}} == 200"
+      - "{{after_reraise_bet}} == 140"
+      - 'equal({{after_reraise_phase}}, "PreFlop")'
+
+  # P1 calls the re-raise.
+  # P1 already bet 60, needs 80 more to match 140.
+  # pot: 200+80=280. Round complete → Flop.
+  - name: P1 Calls Re-Raise (PreFlop)
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: call
+
+  - name: Sync to Flop
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-raise-1
+      - poker-raise-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get Flop state
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      flop_pot: result.output.pot
+      flop_bet: result.output.current_bet
+      flop_phase: result.output.phase
+      flop_cards: result.output.community_cards
+
+  - name: Assert Flop with pot=280, bet reset to 0, 3 community cards
+    type: assert
+    statements:
+      - "{{flop_pot}} == 280"
+      - "{{flop_bet}} == 0"
+      - 'equal({{flop_phase}}, "Flop")'
+      - "is_set({{flop_cards}})"
+
+  # ── Flop: P2 bets 100, P1 calls ──
+  # Post-flop: P2 acts first (first player after dealer).
+
+  # P2 raises to 100 (no current bet, so this is an opening bet)
+  # Min raise = 0 + 20 = 20.  100 >= 20 ✓
+  - name: P2 Bets 100 (Flop)
+    type: call
+    node: poker-raise-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-raise-2}}"
+    method: raise_to
+    args:
+      amount: 100
+
+  - name: Sync P2 bet
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-raise-1
+      - poker-raise-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get state after P2 flop bet
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      after_flopbet_pot: result.output.pot
+      after_flopbet_bet: result.output.current_bet
+
+  - name: Assert pot=380, current_bet=100
+    type: assert
+    statements:
+      - "{{after_flopbet_pot}} == 380"
+      - "{{after_flopbet_bet}} == 100"
+
+  # P1 calls the 100 bet → pot=480, round complete → Turn
+  - name: P1 Calls 100 (Flop)
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: call
+
+  - name: Sync to Turn
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-raise-1
+      - poker-raise-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get Turn state
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      turn_pot: result.output.pot
+      turn_phase: result.output.phase
+
+  - name: Assert Turn with pot=480
+    type: assert
+    statements:
+      - "{{turn_pot}} == 480"
+      - 'equal({{turn_phase}}, "Turn")'
+
+  # ── Turn: check-check ──
+
+  - name: P2 Checks (Turn)
+    type: call
+    node: poker-raise-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-raise-2}}"
+    method: check
+
+  - name: Sync P2 check
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-raise-1
+      - poker-raise-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: P1 Checks (Turn)
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: check
+
+  - name: Sync to River
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-raise-1
+      - poker-raise-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get River state
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      river_phase: result.output.phase
+      river_pot: result.output.pot
+
+  - name: Assert River with pot=480
+    type: assert
+    statements:
+      - 'equal({{river_phase}}, "River")'
+      - "{{river_pot}} == 480"
+
+  # ── River: check-check → Showdown ──
+
+  - name: P2 Checks (River)
+    type: call
+    node: poker-raise-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-raise-2}}"
+    method: check
+
+  - name: Sync P2 river check
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-raise-1
+      - poker-raise-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: P1 Checks (River)
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: check
+
+  - name: Sync showdown
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-raise-1
+      - poker-raise-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ── Verify outcome ──
+
+  - name: Get final game state (Node 1)
+    type: call
+    node: poker-raise-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      final_phase: result.output.phase
+      final_pot: result.output.pot
+      final_hand_num: result.output.hand_number
+      final_players: result.output.players
+
+  - name: Assert hand completed
+    type: assert
+    statements:
+      - 'equal({{final_phase}}, "Waiting")'
+      - "{{final_pot}} == 0"
+      - "{{final_hand_num}} == 1"
+
+  # Verify chip conservation: total must be 2000
+  # Winner gets 480 pot.  Both started at 1000.
+  # Each put in 240 (140 preflop + 100 flop).
+  # Winner: 1000 - 240 + 480 = 1240.  Loser: 1000 - 240 = 760.
+  # 1240 + 760 = 2000 ✓
+
+  - name: Get final state from Node 2
+    type: call
+    node: poker-raise-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-raise-2}}"
+    method: get_game_state
+    outputs:
+      final_phase_n2: result.output.phase
+
+  - name: Assert Node 2 converged
+    type: assert
+    statements:
+      - 'equal({{final_phase_n2}}, "Waiting")'
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

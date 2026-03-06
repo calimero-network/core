@@ -1,0 +1,483 @@
+description: Plays a full hand of Texas Hold'em (2 players, check-down)
+name: Poker Full Hand Test
+
+force_pull_image: true
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: poker-node
+
+steps:
+  # ============================================
+  # Setup: install app, create mesh, seat players
+  # ============================================
+
+  - name: Install Poker Application on Node 1
+    type: install_application
+    node: poker-node-1
+    path: res/poker.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh (2-player table)
+    type: create_mesh
+    context_node: poker-node-1
+    application_id: "{{app_id}}"
+    params: '{}'
+    nodes:
+      - poker-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # ── Player 1 joins table (node-1, 1000 chips) ──
+
+  - name: Player 1 Joins Table
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: join_table
+    args:
+      buy_in: 1000
+
+  # ── Player 2 joins table (node-2, 1000 chips) ──
+
+  - name: Player 2 Joins Table
+    type: call
+    node: poker-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-node-2}}"
+    method: join_table
+    args:
+      buy_in: 1000
+
+  - name: Sync after both players join
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-node-1
+      - poker-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ── Verify waiting state ──
+
+  - name: Get Game State (Waiting)
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      waiting_phase: result.output.phase
+      waiting_player_count: result.output.players
+
+  - name: Assert table is waiting with 2 players
+    type: assert
+    statements:
+      - 'equal({{waiting_phase}}, "Waiting")'
+
+  # ============================================
+  # Hand 1: Full check-down
+  # ============================================
+
+  # ── Start the hand ──
+
+  - name: Player 1 Starts Hand
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: start_hand
+
+  - name: Sync after hand start
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-node-1
+      - poker-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ── Verify PreFlop state ──
+
+  - name: Get Game State (PreFlop)
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      preflop_phase: result.output.phase
+      preflop_pot: result.output.pot
+      preflop_bet: result.output.current_bet
+
+  - name: Assert PreFlop with blinds posted (pot = SB 10 + BB 20 = 30)
+    type: assert
+    statements:
+      - 'equal({{preflop_phase}}, "PreFlop")'
+      - "{{preflop_pot}} == 30"
+      - "{{preflop_bet}} == 20"
+
+  # ── Verify both players have hole cards ──
+
+  - name: Player 1 Gets Cards
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_my_cards
+    outputs:
+      p1_cards: result.output
+
+  - name: Assert Player 1 has cards
+    type: assert
+    statements:
+      - "is_set({{p1_cards}})"
+
+  - name: Player 2 Gets Cards
+    type: call
+    node: poker-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-node-2}}"
+    method: get_my_cards
+    outputs:
+      p2_cards: result.output
+
+  - name: Assert Player 2 has cards
+    type: assert
+    statements:
+      - "is_set({{p2_cards}})"
+
+  # ── PreFlop action: P1 (SB/dealer) calls, P2 (BB) checks ──
+  # In heads-up: dealer=SB=P1(seat 0), BB=P2(seat 1)
+  # P1 acts first preflop (calls BB of 20, needs 10 more)
+
+  - name: Player 1 Calls (PreFlop)
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: call
+
+  - name: Sync after P1 call
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-node-1
+      - poker-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get State After P1 Call
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      after_call_phase: result.output.phase
+      after_call_pot: result.output.pot
+
+  - name: Assert pot is 40 and still PreFlop (BB hasn't acted yet)
+    type: assert
+    statements:
+      - 'equal({{after_call_phase}}, "PreFlop")'
+      - "{{after_call_pot}} == 40"
+
+  # P2 (BB) checks (has option since bet is matched)
+
+  - name: Player 2 Checks (BB option)
+    type: call
+    node: poker-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-node-2}}"
+    method: check
+
+  - name: Sync after BB check -> Flop
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-node-1
+      - poker-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ── Verify Flop ──
+
+  - name: Get Game State (Flop)
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      flop_phase: result.output.phase
+      flop_pot: result.output.pot
+      flop_cards: result.output.community_cards
+
+  - name: Assert Flop dealt with 3 community cards
+    type: assert
+    statements:
+      - 'equal({{flop_phase}}, "Flop")'
+      - "{{flop_pot}} == 40"
+      - "is_set({{flop_cards}})"
+
+  # ── Flop action: P2 checks, P1 checks (P2 acts first post-flop) ──
+
+  - name: Player 2 Checks (Flop)
+    type: call
+    node: poker-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-node-2}}"
+    method: check
+
+  - name: Player 1 Checks (Flop)
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: check
+
+  - name: Sync after Flop -> Turn
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-node-1
+      - poker-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ── Verify Turn ──
+
+  - name: Get Game State (Turn)
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      turn_phase: result.output.phase
+      turn_pot: result.output.pot
+
+  - name: Assert Turn dealt
+    type: assert
+    statements:
+      - 'equal({{turn_phase}}, "Turn")'
+      - "{{turn_pot}} == 40"
+
+  # ── Turn action: P2 checks, P1 checks ──
+
+  - name: Player 2 Checks (Turn)
+    type: call
+    node: poker-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-node-2}}"
+    method: check
+
+  - name: Player 1 Checks (Turn)
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: check
+
+  - name: Sync after Turn -> River
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-node-1
+      - poker-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ── Verify River ──
+
+  - name: Get Game State (River)
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      river_phase: result.output.phase
+      river_pot: result.output.pot
+
+  - name: Assert River dealt
+    type: assert
+    statements:
+      - 'equal({{river_phase}}, "River")'
+      - "{{river_pot}} == 40"
+
+  # ── River action: P2 checks, P1 checks → Showdown ──
+
+  - name: Player 2 Checks (River)
+    type: call
+    node: poker-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-node-2}}"
+    method: check
+
+  - name: Player 1 Checks (River)
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: check
+
+  - name: Sync after Showdown
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-node-1
+      - poker-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ── Verify hand completed and returned to Waiting ──
+
+  - name: Get Game State (After Showdown)
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      final_phase: result.output.phase
+      final_pot: result.output.pot
+      final_hand_num: result.output.hand_number
+
+  - name: Assert hand completed and table is waiting again
+    type: assert
+    statements:
+      - 'equal({{final_phase}}, "Waiting")'
+      - "{{final_pot}} == 0"
+      - "{{final_hand_num}} == 1"
+
+  # ── Verify hand result is queryable ──
+
+  - name: Get Hand Result
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_hand_result
+    outputs:
+      result_winner: result.output.winner_id
+      result_pot: result.output.pot
+      result_reason: result.output.reason
+      result_hand_num: result.output.hand_number
+      result_community: result.output.community_cards
+
+  - name: Assert hand result is populated
+    type: assert
+    statements:
+      - "is_set({{result_winner}})"
+      - "{{result_pot}} == 40"
+      - 'equal({{result_reason}}, "showdown")'
+      - "{{result_hand_num}} == 1"
+      - "is_set({{result_community}})"
+
+  # ── Verify chip conservation (winner gets pot, total chips = 2000) ──
+
+  - name: Get Final State from Node 2
+    type: call
+    node: poker-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-node-2}}"
+    method: get_game_state
+    outputs:
+      final_phase_n2: result.output.phase
+
+  - name: Assert Node 2 also sees Waiting
+    type: assert
+    statements:
+      - 'equal({{final_phase_n2}}, "Waiting")'
+
+  # ============================================
+  # Hand 2: Test fold
+  # ============================================
+
+  - name: Player 1 Starts Hand 2
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: start_hand
+
+  - name: Sync after hand 2 start
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-node-1
+      - poker-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get Hand 2 State
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      hand2_phase: result.output.phase
+      hand2_pot: result.output.pot
+
+  - name: Assert Hand 2 is PreFlop
+    type: assert
+    statements:
+      - 'equal({{hand2_phase}}, "PreFlop")'
+
+  # In Hand 2 the dealer rotated to P2. Heads-up: dealer=SB acts first preflop.
+  # So P2 folds → P1 (BB) wins the blinds.
+
+  - name: Player 2 Folds (dealer/SB in Hand 2)
+    type: call
+    node: poker-node-2
+    context_id: "{{context_id}}"
+    executor_public_key: "{{public_key_poker-node-2}}"
+    method: fold
+
+  - name: Sync after fold
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - poker-node-1
+      - poker-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Get State After Fold
+    type: call
+    node: poker-node-1
+    context_id: "{{context_id}}"
+    executor_public_key: "{{member_public_key}}"
+    method: get_game_state
+    outputs:
+      after_fold_phase: result.output.phase
+      after_fold_hand_num: result.output.hand_number
+
+  - name: Assert fold ended the hand immediately
+    type: assert
+    statements:
+      - 'equal({{after_fold_phase}}, "Waiting")'
+      - "{{after_fold_hand_num}} == 2"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
