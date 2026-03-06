@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>♠ Calimero Poker — Spectator</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a472a; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
+  
+  .header { text-align: center; padding: 20px; }
+  .header h1 { font-size: 28px; color: #ffd700; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
+  .header .subtitle { color: #aaa; font-size: 14px; margin-top: 4px; }
+  .header .secure { color: #4caf50; font-size: 12px; margin-top: 2px; }
+
+  .config { background: #0d2818; padding: 12px 20px; border-radius: 8px; margin: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .config label { font-size: 13px; color: #aaa; }
+  .config input { background: #1a3a2a; border: 1px solid #2a5a3a; color: #fff; padding: 6px 10px; border-radius: 4px; width: 260px; font-size: 13px; }
+  .config button { background: #4caf50; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .config button:hover { background: #5cbf60; }
+
+  .table { position: relative; width: 700px; height: 420px; background: radial-gradient(ellipse at center, #2d7a3a 0%, #1a5a28 60%, #0d3818 100%); border-radius: 200px; border: 12px solid #5a3a1a; margin: 20px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+  .table-inner { position: absolute; inset: 15px; border: 2px solid rgba(255,255,255,0.1); border-radius: 200px; }
+
+  .community { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -70%); display: flex; gap: 6px; }
+  .pot-display { position: absolute; top: 55%; left: 50%; transform: translate(-50%, 0); text-align: center; }
+  .pot-display .pot { font-size: 22px; font-weight: bold; color: #ffd700; }
+  .pot-display .phase { font-size: 14px; color: #aaa; margin-top: 2px; }
+
+  .card { width: 48px; height: 68px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font-size: 16px; font-weight: bold; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
+  .card-front { background: #fff; color: #333; }
+  .card-red { color: #d32f2f; }
+  .card-black { color: #333; }
+  .card-back { background: linear-gradient(135deg, #1a237e, #283593); color: #5c6bc0; font-size: 20px; }
+  .card-empty { background: rgba(255,255,255,0.05); border: 1px dashed rgba(255,255,255,0.15); color: transparent; }
+
+  .player { position: absolute; text-align: center; width: 130px; }
+  .player .avatar { width: 50px; height: 50px; border-radius: 50%; background: #2a4a3a; border: 3px solid #555; display: flex; align-items: center; justify-content: center; font-size: 24px; margin: 0 auto; }
+  .player .avatar.active { border-color: #ffd700; box-shadow: 0 0 12px rgba(255,215,0,0.5); }
+  .player .avatar.folded { opacity: 0.4; }
+  .player .name { font-size: 12px; font-weight: bold; margin-top: 4px; }
+  .player .chips { font-size: 11px; color: #ffd700; }
+  .player .bet { font-size: 11px; color: #aaa; }
+  .player .cards { display: flex; gap: 3px; justify-content: center; margin-top: 4px; }
+  .player .cards .card { width: 36px; height: 50px; font-size: 12px; }
+  .player.dead .avatar { background: #333; border-color: #555; opacity: 0.3; }
+
+  /* Player positions around the table */
+  .player.p0 { top: -60px; left: 50%; transform: translateX(-50%); }
+  .player.p1 { top: 20%; right: -60px; }
+  .player.p2 { bottom: 20%; right: -60px; }
+  .player.p3 { bottom: -60px; left: 50%; transform: translateX(-50%); }
+  .player.p4 { bottom: 20%; left: -60px; }
+  .player.p5 { top: 20%; left: -60px; }
+
+  .hand-result { background: #0d2818; border: 1px solid #2a5a3a; border-radius: 8px; padding: 16px; margin: 10px; width: 700px; }
+  .hand-result h3 { color: #ffd700; margin-bottom: 8px; }
+  .hand-result .winner { color: #4caf50; font-size: 18px; font-weight: bold; }
+  .hand-result .board { color: #aaa; margin: 4px 0; }
+  .hand-result .player-cards { font-size: 13px; margin: 2px 0; }
+  .hand-result .trophy { color: #ffd700; }
+
+  .scoreboard { background: #0d2818; border: 1px solid #2a5a3a; border-radius: 8px; padding: 16px; margin: 10px; width: 700px; }
+  .scoreboard h3 { color: #fff; margin-bottom: 8px; }
+  .score-row { display: flex; align-items: center; gap: 10px; margin: 4px 0; font-size: 14px; }
+  .score-bar { height: 16px; background: #4caf50; border-radius: 3px; min-width: 2px; transition: width 0.5s; }
+  .score-chips { width: 80px; text-align: right; color: #ffd700; }
+  .score-wins { width: 40px; color: #aaa; font-size: 12px; }
+
+  .status { text-align: center; color: #666; font-size: 12px; margin: 10px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>♠♥♣♦ Calimero Poker</h1>
+  <div class="subtitle">Decentralized AI Poker — Spectator View</div>
+  <div class="secure">🔒 Secure Dealing: Commit-Reveal + Encrypted Cards</div>
+</div>
+
+<div class="config">
+  <label>Node:</label>
+  <input id="nodeUrl" value="http://localhost:3002" placeholder="http://localhost:PORT">
+  <label>Context:</label>
+  <input id="contextId" value="" placeholder="Context ID">
+  <label>Key:</label>
+  <input id="pubKey" value="" placeholder="Any player public key">
+  <button onclick="startPolling()">Watch Game</button>
+</div>
+
+<div class="table">
+  <div class="table-inner"></div>
+  <div class="community" id="community"></div>
+  <div class="pot-display">
+    <div class="pot" id="pot">Pot: 0</div>
+    <div class="phase" id="phase">Waiting</div>
+  </div>
+  <div id="players"></div>
+</div>
+
+<div class="hand-result" id="handResult" style="display:none"></div>
+<div class="scoreboard" id="scoreboard"></div>
+<div class="status" id="status">Enter node URL and context ID, then click Watch Game</div>
+
+<script>
+const EMOJIS = ['🦈','📞','🎲','🐺','🎰','🃏'];
+const NAMES = ['SHARK','STATION','GAMBLER','WOLF','WILDCARD','JOKER'];
+const POSITIONS = ['p0','p1','p2','p3','p4','p5'];
+
+let polling = null;
+let lastHand = 0;
+let playerNames = {};
+
+function cardHtml(card, size) {
+  if (!card || card === '??') return `<div class="card card-back ${size || ''}">♠</div>`;
+  const suit = card.slice(-1);
+  const rank = card.slice(0, -1);
+  const red = suit === 'h' || suit === 'd';
+  const suitSymbol = {c:'♣', d:'♦', h:'♥', s:'♠'}[suit] || suit;
+  return `<div class="card card-front ${red ? 'card-red' : 'card-black'} ${size || ''}">${rank}${suitSymbol}</div>`;
+}
+
+function emptyCard() {
+  return `<div class="card card-empty"></div>`;
+}
+
+async function rpc(method, args) {
+  const url = document.getElementById('nodeUrl').value + '/jsonrpc';
+  const ctx = document.getElementById('contextId').value;
+  const key = document.getElementById('pubKey').value;
+  const body = {
+    jsonrpc: '2.0', id: '1', method: 'execute',
+    params: { contextId: ctx, method, argsJson: args || {}, executorPublicKey: key, substitute: [] }
+  };
+  try {
+    const resp = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const data = await resp.json();
+    return data?.result?.output;
+  } catch(e) { return null; }
+}
+
+function getPlayerName(pid, idx) {
+  if (!playerNames[pid]) {
+    playerNames[pid] = { emoji: EMOJIS[idx % EMOJIS.length], name: NAMES[idx % NAMES.length] };
+  }
+  return playerNames[pid];
+}
+
+function renderPlayers(players, actionOn) {
+  const el = document.getElementById('players');
+  el.innerHTML = '';
+  players.forEach((p, i) => {
+    const info = getPlayerName(p.player_id, i);
+    const isActive = p.player_id === actionOn;
+    const isFolded = p.folded;
+    const isDead = p.chips === 0 && !p.in_hand;
+    const div = document.createElement('div');
+    div.className = `player ${POSITIONS[i % 6]} ${isDead ? 'dead' : ''}`;
+    div.innerHTML = `
+      <div class="avatar ${isActive ? 'active' : ''} ${isFolded ? 'folded' : ''}">${info.emoji}</div>
+      <div class="name">${info.name}</div>
+      <div class="chips">${p.chips} chips</div>
+      ${p.bet > 0 ? `<div class="bet">Bet: ${p.bet}</div>` : ''}
+      <div class="cards">
+        ${isFolded ? '<div class="card card-back" style="width:36px;height:50px;font-size:12px;opacity:0.3">♠</div>' 
+          : (p.in_hand ? '<div class="card card-back" style="width:36px;height:50px;font-size:12px">♠</div><div class="card card-back" style="width:36px;height:50px;font-size:12px">♠</div>' : '')}
+      </div>
+    `;
+    el.appendChild(div);
+  });
+}
+
+function renderCommunity(cards) {
+  const el = document.getElementById('community');
+  let html = '';
+  for (let i = 0; i < 5; i++) {
+    html += cards[i] ? cardHtml(cards[i]) : emptyCard();
+  }
+  el.innerHTML = html;
+}
+
+function renderResult(result) {
+  if (!result || !result.winner_id) return;
+  const el = document.getElementById('handResult');
+  const winnerInfo = playerNames[result.winner_id] || { emoji: '🏆', name: result.winner_id.slice(0,8) };
+  
+  let cardsHtml = '';
+  if (result.reason === 'showdown' && result.player_cards) {
+    result.player_cards.forEach(pc => {
+      const info = playerNames[pc.player_id] || { emoji: '?', name: pc.player_id.slice(0,8) };
+      const isWinner = pc.player_id === result.winner_id;
+      cardsHtml += `<div class="player-cards">${isWinner ? '<span class="trophy">🏆</span>' : '&nbsp;&nbsp;'} ${info.emoji} ${info.name}: ${cardHtml(pc.card1)} ${cardHtml(pc.card2)}</div>`;
+    });
+  }
+
+  el.style.display = 'block';
+  el.innerHTML = `
+    <h3>Hand #${result.hand_number} Result</h3>
+    ${result.community_cards?.length ? `<div class="board">Board: ${result.community_cards.map(c => cardHtml(c)).join(' ')}</div>` : ''}
+    ${cardsHtml}
+    <div class="winner">${winnerInfo.emoji} ${winnerInfo.name} wins ${result.pot} chips — ${result.winning_hand}</div>
+  `;
+}
+
+function renderScoreboard(stats) {
+  if (!stats) return;
+  const el = document.getElementById('scoreboard');
+  const maxChips = Math.max(...stats.players.map(p => p.chips), 1);
+  
+  let html = `<h3>Scoreboard — ${stats.hands_played} hands played</h3>`;
+  stats.players.sort((a, b) => b.chips - a.chips).forEach(p => {
+    const info = playerNames[p.player_id] || { emoji: '?', name: p.player_id.slice(0,8) };
+    const width = Math.max((p.chips / maxChips) * 300, 2);
+    html += `
+      <div class="score-row">
+        <span style="width:30px">${info.emoji}</span>
+        <span style="width:80px">${info.name}</span>
+        <span class="score-chips">${p.chips}</span>
+        <span class="score-wins">W:${p.wins}</span>
+        <div class="score-bar" style="width:${width}px"></div>
+      </div>
+    `;
+  });
+  el.innerHTML = html;
+}
+
+async function poll() {
+  const state = await rpc('get_game_state');
+  if (!state) {
+    document.getElementById('status').textContent = 'Connecting...';
+    return;
+  }
+
+  document.getElementById('status').textContent = `Hand #${state.hand_number + 1} — ${new Date().toLocaleTimeString()}`;
+  document.getElementById('pot').textContent = `Pot: ${state.pot}`;
+  document.getElementById('phase').textContent = state.phase + (state.phase !== 'Waiting' ? ` — ${state.small_blind}/${state.big_blind}` : '');
+
+  renderPlayers(state.players, state.action_on);
+  renderCommunity(state.community_cards || []);
+
+  // Check for new hand result
+  if (state.hand_number > lastHand && lastHand > 0) {
+    const result = await rpc('get_hand_result');
+    renderResult(result);
+    const stats = await rpc('get_stats');
+    renderScoreboard(stats);
+  }
+  lastHand = state.hand_number;
+
+  // Always update scoreboard if waiting
+  if (state.phase === 'Waiting' && state.hand_number > 0) {
+    const stats = await rpc('get_stats');
+    renderScoreboard(stats);
+  }
+}
+
+function startPolling() {
+  if (polling) clearInterval(polling);
+  lastHand = 0;
+  playerNames = {};
+  document.getElementById('status').textContent = 'Connecting...';
+  poll();
+  polling = setInterval(poll, 2000);
+}
+</script>
+</body>
+</html>
