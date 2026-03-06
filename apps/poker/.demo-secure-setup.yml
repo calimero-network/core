@@ -1,0 +1,13 @@
+name: Setup
+force_pull_image: true
+nodes:
+  chain_id: testnet-1
+  count: 4
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: demo
+steps:
+  - {name: Install, type: install_application, node: demo-1, path: res/poker.wasm, dev: true, outputs: {app_id: applicationId}}
+  - {name: Mesh, type: create_mesh, context_node: demo-1, application_id: "{{app_id}}", params: '{"small_blind":5,"big_blind":10,"min_buy_in":50}', nodes: [demo-2, demo-3, demo-4], capability: member, outputs: {context_id: contextId, member_public_key: memberPublicKey}}
+  - {name: READY, type: wait, seconds: 600}
+stop_all_nodes: false
+wait_timeout: 700

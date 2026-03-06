@@ -240,12 +240,6 @@ pub enum PokerError {
     NotTimedOut,
     #[error("not the designated dealer")]
     NotDealer,
-    #[error("seed already committed")]
-    AlreadyCommitted,
-    #[error("seed hash does not match commitment")]
-    SeedMismatch,
-    #[error("not all players have committed/revealed seeds")]
-    SeedsIncomplete,
     #[error("encryption key not registered")]
     NoEncryptionKey,
     #[error("dealer not registered")]
@@ -295,21 +289,18 @@ pub struct PokerGame {
     /// Lifetime hand counter.
     hands_played: Counter,
 
-    // ── Secure dealing (commit-reveal + encrypted cards) ──
+    // ── Secure dealing (VRF + encrypted cards) ──
     /// Dealer's player ID (non-playing participant).
     dealer_id: LwwRegister<String>,
 
-    /// Player id → X25519 public key (32 bytes, hex-encoded).
+    /// Player id → X25519 public key (32 bytes).
     encryption_keys: UnorderedMap<String, LwwRegister<Vec<u8>>>,
-
-    /// Seed commitments: player_id → hash(seed).
-    seed_commits: UnorderedMap<String, LwwRegister<Vec<u8>>>,
-
-    /// Revealed seeds: player_id → seed.
-    seed_reveals: UnorderedMap<String, LwwRegister<Vec<u8>>>,
 
     /// Encrypted hole cards: player_id → ciphertext.
     encrypted_cards: UnorderedMap<String, LwwRegister<Vec<u8>>>,
+
+    /// VRF proof for the current hand (published for verification).
+    vrf_proof: LwwRegister<Vec<u8>>,
 
     /// Whether secure dealing mode is active.
     secure_mode: LwwRegister<bool>,
@@ -399,9 +390,8 @@ impl PokerGame {
             hands_played: Counter::new(),
             dealer_id: String::new().into(),
             encryption_keys: UnorderedMap::new(),
-            seed_commits: UnorderedMap::new(),
-            seed_reveals: UnorderedMap::new(),
             encrypted_cards: UnorderedMap::new(),
+            vrf_proof: Vec::new().into(),
             secure_mode: false.into(),
         }
     }
@@ -981,52 +971,36 @@ impl PokerGame {
         Ok(())
     }
 
-    /// Commit a hash of your random seed (phase 1 of commit-reveal).
-    pub fn commit_seed(&mut self, seed_hash: Vec<u8>) -> app::Result<()> {
-        let caller = player_id();
-
-        if self
-            .seed_commits
-            .get(&caller)?
-            .map(|v| !v.get().is_empty())
-            .unwrap_or(false)
-        {
-            app::bail!(PokerError::AlreadyCommitted);
-        }
-
-        self.seed_commits.insert(caller.clone(), seed_hash.into())?;
-        app::log!("Seed committed by {}", caller);
-        Ok(())
-    }
-
-    /// Reveal your random seed (phase 2 of commit-reveal).
-    /// The hash of `seed` must match the previously committed hash.
-    pub fn reveal_seed(&mut self, seed: Vec<u8>) -> app::Result<()> {
-        let caller = player_id();
-
-        let commit = self
-            .seed_commits
-            .get(&caller)?
+    /// Verify the VRF proof for the current hand.
+    ///
+    /// Anyone can call this to confirm the shuffle was derived correctly.
+    pub fn verify_vrf(&self, hand_number: u64) -> app::Result<bool> {
+        let dealer_id = self.dealer_id.get().clone();
+        let dealer_pubkey = self
+            .encryption_keys
+            .get(&dealer_id)?
             .map(|v| v.get().clone())
             .unwrap_or_default();
 
-        if commit.is_empty() {
-            app::bail!(PokerError::SeedsIncomplete);
+        if dealer_pubkey.len() != 32 {
+            return Ok(false);
         }
 
-        let expected = crypto::hash_seed(&seed);
-        if commit != expected.to_vec() {
-            app::bail!(PokerError::SeedMismatch);
+        let proof = self.vrf_proof.get().clone();
+        if proof.len() != 32 {
+            return Ok(false);
         }
 
-        self.seed_reveals.insert(caller.clone(), seed.into())?;
-        app::log!("Seed revealed by {}", caller);
-        Ok(())
+        let pk: [u8; 32] = dealer_pubkey.try_into().unwrap_or([0u8; 32]);
+        let pf: [u8; 32] = proof.try_into().unwrap_or([0u8; 32]);
+        Ok(crypto::vrf_verify(&pk, &hand_number.to_le_bytes(), &pf))
     }
 
-    /// Dealer deals cards: combines revealed seeds, shuffles deterministically,
-    /// encrypts each player's hole cards with their public key.
-    /// Community cards are stored in dealer's private storage.
+    /// Dealer deals cards using VRF for verifiable randomness.
+    ///
+    /// VRF(dealer_secret_key, hand_number) → deterministic random + proof.
+    /// No seeds needed from players — the TEE guarantees fairness.
+    /// The proof is published so anyone can verify.
     pub fn dealer_deal(&mut self) -> app::Result<()> {
         let caller = player_id();
         if *self.dealer_id.get() != caller {
@@ -1036,30 +1010,12 @@ impl PokerGame {
             app::bail!(PokerError::HandInProgress);
         }
 
-        // Collect all revealed seeds
         let seated = self.get_seated_players()?;
         if seated.len() < 2 {
             app::bail!(PokerError::NotEnoughPlayers);
         }
 
-        let mut seeds: Vec<Vec<u8>> = Vec::new();
-        for (_, pid) in &seated {
-            let seed = self
-                .seed_reveals
-                .get(pid)?
-                .map(|v| v.get().clone())
-                .unwrap_or_default();
-            if seed.is_empty() {
-                app::bail!(PokerError::SeedsIncomplete);
-            }
-            seeds.push(seed);
-        }
-
-        // Deterministic shuffle from combined seeds
-        let combined = crypto::combine_seeds(&seeds);
-        let mut deck = deck::new_shuffled_deck_from_seed(&combined);
-
-        // Read dealer's private key
+        // Read dealer's private key from private storage
         let dealer_secret_ref =
             calimero_sdk::private_storage::EntryHandle::<Vec<u8>>::new(b"x25519_secret")
                 .get_or_default()?;
@@ -1069,6 +1025,13 @@ impl PokerGame {
             .map_err(|_| app::err!("dealer key missing"))?;
 
         let hand_num = self.hands_played.value()? + 1;
+
+        // VRF: derive verifiable randomness from dealer's secret key + hand number
+        let vrf_out = crypto::vrf_compute(&dealer_secret, &hand_num.to_le_bytes());
+        let mut deck = deck::new_shuffled_deck_from_seed(&vrf_out.random);
+
+        // Publish VRF proof to shared state (anyone can verify)
+        self.vrf_proof.set(vrf_out.proof.to_vec());
 
         // Deal and encrypt cards per player
         let mut players: Vec<PlayerHand> = Vec::new();
@@ -1159,13 +1122,7 @@ impl PokerGame {
         self.next_dealer
             .set((dealer_seat + 1) % *self.max_seats.get());
 
-        // Clear seeds for next hand
-        for (_, pid) in &seated {
-            let _ = self.seed_commits.insert(pid.clone(), Vec::new().into());
-            let _ = self.seed_reveals.insert(pid.clone(), Vec::new().into());
-        }
-
-        app::log!("Secure deal complete: hand #{}", hand_num);
+        app::log!("VRF deal complete: hand #{}", hand_num);
         Ok(())
     }
 

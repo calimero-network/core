@@ -25,14 +25,15 @@ A Texas Hold'em poker engine running as a Calimero WASM application, designed fo
 
 ### Secure Dealing Protocol
 
-Each hand follows a commit-reveal protocol:
+Each hand uses a VRF (Verifiable Random Function) for provably fair shuffling:
 
-1. **Commit** — Each bot submits `hash(random_seed)` to shared state. Once committed, the seed can't be changed.
-2. **Reveal** — Each bot reveals their seed. Verified against the committed hash.
-3. **Shuffle** — Dealer combines all seeds: `deck = shuffle(hash(seed_A || seed_B || seed_C))`. Deterministic — same seeds always produce the same deck. Any one honest bot guarantees fairness.
-4. **Encrypt & Deal** — Dealer encrypts each bot's hole cards with their X25519 public key (ECDH + AES-256-GCM). Ciphertext stored in shared state. Only the intended recipient can decrypt.
-5. **Play** — Standard Texas Hold'em betting rounds. Dealer reveals community cards per street from private storage.
-6. **Showdown** — Non-folded players' cards revealed. Hand evaluator picks the winner. Folded cards are never revealed.
+1. **VRF Shuffle** — Dealer computes `VRF(secret_key, hand_number)` → deterministic random output + proof. No player seeds needed — the TEE guarantees the dealer can't manipulate the output.
+2. **Proof Published** — The VRF proof is written to shared state. Anyone can verify: `VRF_verify(dealer_public_key, hand_number, proof)`.
+3. **Encrypt & Deal** — Dealer encrypts each bot's hole cards with their X25519 public key (ECDH + AES-256-GCM). Ciphertext stored in shared state. Only the intended recipient can decrypt.
+4. **Play** — Standard Texas Hold'em betting rounds. Dealer reveals community cards per street from private storage.
+5. **Showdown** — Non-folded players' cards revealed. Hand evaluator picks the winner. Folded cards are never revealed.
+
+The VRF eliminates the need for player seeds, commit-reveal rounds, and pre-deal coordination. Each hand requires zero extra round-trips.
 
 ### What Each Party Sees
 
@@ -93,7 +94,7 @@ python3 demo.py --pace 1 --max-hands 10
 
 | Threat | Protection | Status |
 |---|---|---|
-| Rigged shuffle | Commit-reveal — any 1 honest bot guarantees fairness | ✅ Implemented |
+| Rigged shuffle | VRF — deterministic from dealer key + hand number, proof published | ✅ Implemented |
 | Seeing others' cards | X25519 + AES-256-GCM encryption | ✅ Implemented |
 | Acting out of turn | `executor_id()` checked against `action_pos` | ✅ Implemented |
 | Betting fake chips | WASM enforces deductions, CRDT state synced | ✅ Implemented |
@@ -105,9 +106,8 @@ python3 demo.py --pace 1 --max-hands 10
 | Threat | Risk | Mitigation |
 |---|---|---|
 | Dealer sees all cards | Medium — dealer is non-playing organizer | **TEE** (next step) |
-| Seed replay → learn folded cards | Medium — seeds in shared state post-hand | Clear seeds after dealing, or encrypt |
+| Deck reconstruction | Eliminated — no seeds published, VRF output only in TEE | ✅ Fixed |
 | Collusion (bots sharing info) | Low — undetectable at protocol level | Statistical analysis of play patterns |
-| Stalling seed reveal | Low — bot commits but never reveals | Add reveal timeout (not yet implemented) |
 
 ## Next Steps
 

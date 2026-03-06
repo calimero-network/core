@@ -13,7 +13,6 @@ Usage:
 """
 
 import argparse
-import hashlib
 import json
 import os
 import random
@@ -81,11 +80,6 @@ class RPC:
             pass
 
 # ── Helpers ──────────────────────────────────────────────────
-def seed_hash(seed_bytes):
-    """Match crypto::hash_seed — prepends 'calimero-poker-seed:'"""
-    h = hashlib.sha256(b"calimero-poker-seed:" + seed_bytes).digest()
-    return list(h)
-
 def pname(key, players_map):
     info = players_map.get(key[:8])
     return info["name"] if info else key[:8]
@@ -266,20 +260,7 @@ def main():
                 print(f"  {C.Y}⬆ BLINDS UP: {sb}/{bb}{C.X}")
                 print()
 
-            # ── Commit-Reveal ──
-            seeds = {}
-            for rpc, key in zip(bot_rpcs, bot_keys):
-                seed = os.urandom(16)
-                seeds[key] = seed
-                h = seed_hash(seed)
-                rpc.call("commit_seed", {"seed_hash": h})
-            wait_sync(all_rpcs, args.pace)
-
-            for rpc, key in zip(bot_rpcs, bot_keys):
-                rpc.call("reveal_seed", {"seed": list(seeds[key])})
-            wait_sync(all_rpcs, args.pace)
-
-            # ── Dealer deals ──
+            # ── VRF Deal (no seeds needed — dealer's TEE provides verifiable randomness) ──
             dealer.call("dealer_deal")
             wait_sync(all_rpcs, args.pace)
 

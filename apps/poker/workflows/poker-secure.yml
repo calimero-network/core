@@ -1,4 +1,4 @@
-description: "Secure dealing: commit-reveal shuffle + encrypted hole cards"
+description: "Secure dealing: VRF shuffle + encrypted hole cards (no seeds needed)"
 name: Poker Secure Dealing Test
 
 force_pull_image: true
@@ -106,86 +106,10 @@ steps:
     trigger_sync: true
 
   # ============================================
-  # Hand 1: Commit-Reveal + Secure Deal
+  # Hand 1: VRF Deal (no seeds needed)
   # ============================================
 
-  # Phase 1: Commit seeds
-  # Seed "bot_a_seed_1" → hash it client-side (here we pass pre-computed hash)
-  # For testing, we use known seeds and their SHA-256 hashes
-
-  - name: Bot A Commits Seed
-    type: call
-    node: sec-2
-    context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_sec-2}}"
-    method: commit_seed
-    args:
-      seed_hash: [166, 224, 89, 219, 236, 143, 197, 20, 170, 166, 161, 39, 10, 252, 67, 100, 253, 171, 63, 187, 185, 25, 138, 200, 49, 230, 25, 127, 209, 180, 168, 125]
-
-  - name: Sync
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [sec-1, sec-2, sec-3]
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
-
-  - name: Bot B Commits Seed
-    type: call
-    node: sec-3
-    context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_sec-3}}"
-    method: commit_seed
-    args:
-      seed_hash: [202, 123, 139, 230, 16, 134, 225, 58, 194, 171, 176, 75, 108, 125, 245, 251, 31, 244, 137, 41, 135, 135, 232, 38, 123, 40, 223, 59, 198, 16, 110, 183]
-
-  - name: Sync
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [sec-1, sec-2, sec-3]
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
-
-  # Phase 2: Reveal seeds
-
-  - name: Bot A Reveals Seed
-    type: call
-    node: sec-2
-    context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_sec-2}}"
-    method: reveal_seed
-    args:
-      seed: [98, 111, 116, 95, 97, 95, 115, 101, 101, 100, 95, 49]
-
-  - name: Sync
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [sec-1, sec-2, sec-3]
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
-
-  - name: Bot B Reveals Seed
-    type: call
-    node: sec-3
-    context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_sec-3}}"
-    method: reveal_seed
-    args:
-      seed: [98, 111, 116, 95, 98, 95, 115, 101, 101, 100, 95, 49]
-
-  - name: Sync
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes: [sec-1, sec-2, sec-3]
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
-
-  # Phase 3: Dealer deals (encrypted)
-
-  - name: Dealer Deals Cards
+  - name: Dealer Deals Cards (VRF)
     type: call
     node: sec-1
     context_id: "{{context_id}}"
