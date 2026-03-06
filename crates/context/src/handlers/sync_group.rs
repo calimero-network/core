@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::{SyncGroupRequest, SyncGroupResponse};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{group_store, ContextManager};
 
@@ -52,6 +52,19 @@ impl Handler<SyncGroupRequest> for ContextManager {
                     &contract_id,
                 )
                 .await?;
+
+                let contexts =
+                    group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;
+                for context_id in &contexts {
+                    if let Err(err) = context_client.sync_context_config(*context_id, None).await {
+                        warn!(
+                            ?group_id,
+                            %context_id,
+                            ?err,
+                            "failed to sync context while syncing group"
+                        );
+                    }
+                }
 
                 let member_count = group_store::count_group_members(&datastore, &group_id)? as u64;
                 let context_count =

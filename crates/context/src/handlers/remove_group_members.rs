@@ -75,6 +75,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let context_client = self.context_client.clone();
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
@@ -108,6 +109,17 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                         GroupMutationKind::MembersRemoved,
                     )
                     .await;
+
+                for context_id in &contexts {
+                    if let Err(err) = context_client.sync_context_config(*context_id, None).await {
+                        tracing::warn!(
+                            ?group_id,
+                            %context_id,
+                            ?err,
+                            "failed to sync context after group member removal"
+                        );
+                    }
+                }
 
                 Ok(())
             }
