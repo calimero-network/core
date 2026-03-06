@@ -179,6 +179,11 @@ configuration error.
 KMS verifies challenge freshness/single-use, peer key ownership, signature,
 quote validity, and policy compliance before releasing a key.
 
+When `MERO_TEE_VERSION` or `MERO_KMS_VERSION` is set, merod fetches the attestation
+policy from the official release and verifies the KMS via `POST /attest` before
+requesting keys. Use `USE_ENV_POLICY=true` for air-gapped deployments (policy
+must be applied via `apply-merod-kms-phala-attestation-config.sh`).
+
 ### Development note
 
 On non-TDX environments, attestation generation may produce mock quotes. Those

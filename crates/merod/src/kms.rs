@@ -2,16 +2,23 @@
 //!
 //! This module handles communication with KMS services to obtain storage
 //! encryption keys using TDX attestation. Currently supports Phala Cloud KMS.
+//!
+//! When MERO_TEE_VERSION or MERO_KMS_VERSION is set, merod verifies the KMS
+//! via POST /attest before requesting keys, using policy fetched from the release.
 
 use base64::Engine;
 use calimero_config::KmsConfig;
-use calimero_tee_attestation::generate_attestation;
+use calimero_tee_attestation::{
+    generate_attestation, is_mock_quote, verify_attestation, verify_mock_attestation,
+};
 use eyre::{bail, Context, Result};
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use url::Url;
+
+use crate::kms_policy::KmsAttestationPolicy;
 
 /// Request body for the Phala KMS challenge endpoint.
 #[derive(Debug, Serialize)]
@@ -55,7 +62,28 @@ struct KmsErrorResponse {
     details: Option<String>,
 }
 
+/// Request body for the KMS attest endpoint.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KmsAttestRequest {
+    nonce_b64: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binding_b64: Option<String>,
+}
+
+/// Response body from the KMS attest endpoint.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KmsAttestResponse {
+    quote_b64: String,
+    #[allow(dead_code)] // Required for deserialization; used for audit/debug if needed
+    report_data_hex: String,
+}
+
 /// Fetch the storage encryption key using the configured KMS provider.
+///
+/// When `policy` is provided (from MERO_TEE_VERSION / MERO_KMS_VERSION), verifies
+/// the KMS via POST /attest before requesting keys.
 ///
 /// Returns an error if no KMS provider is configured (incomplete TEE configuration)
 /// or if key fetching fails.
@@ -64,13 +92,18 @@ struct KmsErrorResponse {
 /// * `kms_config` - KMS configuration specifying which provider to use
 /// * `peer_id` - The peer ID string (base58 encoded)
 /// * `identity` - Local node identity keypair used to sign challenge payloads
+/// * `policy` - Optional attestation policy from release (when MERO_TEE_VERSION set)
 pub async fn fetch_storage_key(
     kms_config: &KmsConfig,
     peer_id: &str,
     identity: &Keypair,
+    policy: Option<&KmsAttestationPolicy>,
 ) -> Result<Vec<u8>> {
     if let Some(ref phala_config) = kms_config.phala {
         info!("Using Phala Cloud KMS");
+        if let Some(p) = policy {
+            verify_kms_attestation(&phala_config.url, p).await?;
+        }
         let key = fetch_from_phala(&phala_config.url, peer_id, identity).await?;
         Ok(key)
     } else {
@@ -80,6 +113,130 @@ pub async fn fetch_storage_key(
              Running a TEE node without storage encryption is not supported."
         );
     }
+}
+
+/// Verify KMS via POST /attest before requesting keys.
+///
+/// Calls KMS /attest, verifies the quote, and enforces measurement policy.
+async fn verify_kms_attestation(kms_url: &Url, policy: &KmsAttestationPolicy) -> Result<()> {
+    info!("Verifying KMS attestation before key fetch");
+
+    let base_url = ensure_trailing_slash(kms_url);
+    let attest_endpoint = base_url
+        .join("attest")
+        .context("Failed to build KMS attest endpoint URL")?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("Failed to build HTTP client")?;
+
+    let mut nonce = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+    let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
+
+    let request = KmsAttestRequest {
+        nonce_b64: nonce_b64.clone(),
+        binding_b64: Some(policy.default_binding_b64.clone()),
+    };
+
+    let response = client
+        .post(attest_endpoint.as_str())
+        .json(&request)
+        .send()
+        .await
+        .context("Failed to request KMS attestation")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        bail!("KMS attest request failed ({}): {}", status, body);
+    }
+
+    let attest: KmsAttestResponse = response
+        .json()
+        .await
+        .context("Failed to parse KMS attest response")?;
+
+    let quote_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&attest.quote_b64)
+        .context("Failed to decode KMS quote from base64")?;
+
+    let binding_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&policy.default_binding_b64)
+        .context("Invalid policy default_binding_b64")?;
+    let binding: [u8; 32] = binding_bytes
+        .try_into()
+        .map_err(|_| eyre::eyre!("Policy default_binding_b64 must be 32 bytes"))?;
+
+    let verification_result = if is_mock_quote(&quote_bytes) {
+        warn!("KMS returned mock attestation - skipping measurement policy");
+        verify_mock_attestation(&quote_bytes, &nonce, Some(&binding))
+            .context("KMS mock attestation verification failed")?
+    } else {
+        verify_attestation(&quote_bytes, &nonce, Some(&binding))
+            .await
+            .context("KMS attestation verification failed")?
+    };
+
+    if !verification_result.is_valid() {
+        error!(
+            quote_verified = verification_result.quote_verified,
+            nonce_verified = verification_result.nonce_verified,
+            "KMS attestation verification failed"
+        );
+        bail!("KMS attestation verification failed");
+    }
+
+    enforce_attestation_policy(policy, &verification_result)?;
+    info!("KMS attestation verified successfully");
+    Ok(())
+}
+
+fn enforce_attestation_policy(
+    policy: &KmsAttestationPolicy,
+    verification_result: &calimero_tee_attestation::VerificationResult,
+) -> Result<()> {
+    let actual_tcb_status = verification_result
+        .tcb_status
+        .as_ref()
+        .ok_or_else(|| eyre::eyre!("Quote verification did not provide a TCB status"))?;
+    let normalized_tcb = actual_tcb_status.to_lowercase();
+
+    if !policy
+        .allowed_tcb_statuses
+        .iter()
+        .any(|a| a == &normalized_tcb)
+    {
+        bail!(
+            "KMS TCB status '{}' is not allowed. Allowed: {:?}",
+            actual_tcb_status,
+            policy.allowed_tcb_statuses
+        );
+    }
+
+    let body = &verification_result.quote.body;
+    enforce_measurement_allowlist("MRTD", &body.mrtd, &policy.allowed_mrtd)?;
+    enforce_measurement_allowlist("RTMR0", &body.rtmr0, &policy.allowed_rtmr0)?;
+    enforce_measurement_allowlist("RTMR1", &body.rtmr1, &policy.allowed_rtmr1)?;
+    enforce_measurement_allowlist("RTMR2", &body.rtmr2, &policy.allowed_rtmr2)?;
+    enforce_measurement_allowlist("RTMR3", &body.rtmr3, &policy.allowed_rtmr3)?;
+    Ok(())
+}
+
+fn enforce_measurement_allowlist(
+    label: &str,
+    actual: &str,
+    allowed: &[String],
+) -> Result<()> {
+    if allowed.is_empty() {
+        return Ok(());
+    }
+    let normalized = actual.trim().trim_start_matches("0x").to_lowercase();
+    if allowed.iter().any(|a| a == &normalized) {
+        return Ok(());
+    }
+    bail!("KMS {} '{}' is not in allowlist", label, normalized)
 }
 
 /// Fetch the storage encryption key from Phala Cloud KMS (mero-kms-phala).

@@ -76,6 +76,11 @@ Or edit `config.toml` directly:
 url = "http://<kms-host>:8080/"
 ```
 
+When `MERO_TEE_VERSION` or `MERO_KMS_VERSION` is set (e.g. `2.1.14`), merod fetches
+the attestation policy from the official release and verifies the KMS via
+`POST /attest` before requesting keys. Use `USE_ENV_POLICY=true` for air-gapped
+deployments (policy must be applied via `apply-merod-kms-phala-attestation-config.sh`).
+
 ### 3. Run merod
 
 ```bash
