@@ -12,7 +12,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use sigstore::bundle::verify::policy::{
     AllOf, GitHubWorkflowName, GitHubWorkflowRef, GitHubWorkflowRepository, GitHubWorkflowTrigger,
-    OIDCIssuer, VerificationPolicy as SigstoreVerificationPolicy,
+    OIDCIssuer, SingleX509ExtPolicy, VerificationPolicy as SigstoreVerificationPolicy,
 };
 use sigstore::bundle::verify::Verifier as SigstoreBundleVerifier;
 use sigstore::cosign::bundle::SignedArtifactBundle;
