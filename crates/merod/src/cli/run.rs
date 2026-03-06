@@ -39,6 +39,17 @@ impl RunCommand {
             config.network.server.auth_mode = mode.into();
         }
 
+        // Resolve external attestation policy once at startup so downstream
+        // validation + key fetch paths reuse the same effective configuration.
+        if let Some(tee_config) = config.tee.as_mut() {
+            if let Some(phala) = tee_config.kms.phala.as_mut() {
+                phala.attestation = kms::resolve_effective_attestation_config(&phala.attestation)
+                    .wrap_err(
+                        "Failed to resolve tee.kms.phala.attestation policy (including external policy_json_path)",
+                    )?;
+            }
+        }
+
         // Validate configuration at startup (after CLI overrides are applied)
         validate_config(&config, &path).wrap_err(
             "Configuration validation failed - please fix the configuration and try again",
@@ -68,6 +79,7 @@ impl RunCommand {
             );
             Some(key)
         } else {
+            info!("TEE not configured; starting without KMS key-fetch flow");
             None
         };
 
