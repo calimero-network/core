@@ -15,6 +15,7 @@ use crate::tests::common::{Page, Paragraph};
 #[cfg(test)]
 mod interface__public_methods {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn children_of() {
@@ -90,6 +91,7 @@ mod interface__public_methods {
     }
 
     #[test]
+    #[serial]
     fn save__too_old() {
         crate::tests::common::register_test_merge_functions();
         let element1 = Element::root();
