@@ -275,7 +275,7 @@ fn is_valid_release_version(version: &str) -> bool {
         }
         if !suffix
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '+')
         {
             return false;
         }
