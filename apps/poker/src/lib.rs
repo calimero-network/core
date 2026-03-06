@@ -284,6 +284,13 @@ pub struct PokerGame {
     /// Maximum rake per hand
     rake_cap: LwwRegister<u64>,
 
+    /// Blind schedule SB values per level. Empty = no auto-escalation.
+    blind_schedule_sb: LwwRegister<Vec<u64>>,
+    /// Blind schedule BB values per level.
+    blind_schedule_bb: LwwRegister<Vec<u64>>,
+    /// Hands per blind level. 0 = no auto-escalation.
+    hands_per_level: LwwRegister<u64>,
+
     /// Seat index (string "0"-"5") → player id (base58). Empty string = vacant.
     seats: UnorderedMap<String, LwwRegister<String>>,
 
@@ -392,9 +399,11 @@ impl PokerGame {
         bet_structure: Option<u8>,
         rake_percent: Option<u8>,
         rake_cap: Option<u64>,
+        hands_per_level: Option<u64>,
     ) -> PokerGame {
         let sb = small_blind.unwrap_or(DEFAULT_SMALL_BLIND);
         let bb = big_blind.unwrap_or(DEFAULT_BIG_BLIND);
+        let hpl = hands_per_level.unwrap_or(0);
         let min_bi = min_buy_in.unwrap_or(DEFAULT_MIN_BUY_IN);
         let max_bi = max_buy_in.unwrap_or(DEFAULT_MAX_BUY_IN);
         let seats = max_seats.unwrap_or(MAX_SEATS);
@@ -429,6 +438,9 @@ impl PokerGame {
             bet_structure: structure.into(),
             rake_percent: rake_pct.into(),
             rake_cap: rake_c.into(),
+            blind_schedule_sb: Vec::<u64>::new().into(),
+            blind_schedule_bb: Vec::<u64>::new().into(),
+            hands_per_level: hpl.into(),
             seats: UnorderedMap::new(),
             chips: UnorderedMap::new(),
             num_players: 0u8.into(),
@@ -496,6 +508,37 @@ impl PokerGame {
         }
 
         app::log!("Table reconfigured");
+        Ok(())
+    }
+
+    /// Set the blind schedule for tournament-style play.
+    ///
+    /// `small_blinds`: list of SB values per level, e.g. `[5, 10, 25, 50, 100]`
+    /// `big_blinds`: list of BB values per level, e.g. `[10, 20, 50, 100, 200]`
+    /// `hands_per_level`: how many hands at each level before advancing.
+    ///
+    /// The WASM auto-advances blinds in `start_hand()` — no external calls needed.
+    pub fn set_blind_schedule(
+        &mut self,
+        small_blinds: Vec<u64>,
+        big_blinds: Vec<u64>,
+        hands_per_level: u64,
+    ) -> app::Result<()> {
+        if self.hand.get().phase != PHASE_WAITING {
+            app::bail!(PokerError::HandInProgress);
+        }
+
+        let len = small_blinds.len().min(big_blinds.len());
+
+        app::log!(
+            "Blind schedule set: {} levels, {} hands/level",
+            len,
+            hands_per_level
+        );
+
+        self.blind_schedule_sb.set(small_blinds[..len].to_vec());
+        self.blind_schedule_bb.set(big_blinds[..len].to_vec());
+        self.hands_per_level.set(hands_per_level);
         Ok(())
     }
 
@@ -595,6 +638,28 @@ impl PokerGame {
     pub fn start_hand(&mut self) -> app::Result<()> {
         if self.hand.get().phase != PHASE_WAITING {
             app::bail!(PokerError::HandInProgress);
+        }
+
+        // Auto-advance blinds if schedule is set
+        let hpl = *self.hands_per_level.get();
+        let sbs = self.blind_schedule_sb.get().clone();
+        let bbs = self.blind_schedule_bb.get().clone();
+        let sched_len = sbs.len().min(bbs.len());
+        if hpl > 0 && sched_len > 0 {
+            let hands = self.hands_played.value().unwrap_or(0);
+            let level = ((hands / hpl) as usize).min(sched_len - 1);
+            let new_sb = sbs[level];
+            let new_bb = bbs[level];
+            if new_sb != *self.small_blind.get() || new_bb != *self.big_blind.get() {
+                self.small_blind.set(new_sb);
+                self.big_blind.set(new_bb);
+                app::log!(
+                    "Blinds auto-advanced to {}/{} (level {})",
+                    new_sb,
+                    new_bb,
+                    level + 1
+                );
+            }
         }
 
         let mut seated = self.get_seated_players()?;
