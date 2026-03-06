@@ -40,8 +40,18 @@ const PHASE_RIVER: u8 = 4;
 const DEFAULT_SMALL_BLIND: u64 = 10;
 const DEFAULT_BIG_BLIND: u64 = 20;
 const DEFAULT_MIN_BUY_IN: u64 = 400; // 20× big blind
+const DEFAULT_MAX_BUY_IN: u64 = 2000; // 100× big blind
 const MAX_SEATS: u8 = 6;
 const DEFAULT_TIMEOUT_NS: u64 = 30_000_000_000; // 30 seconds in nanoseconds
+const DEFAULT_RAKE_PERCENT: u8 = 0; // no rake by default
+const DEFAULT_RAKE_CAP: u64 = 0;
+const FIXED_LIMIT_MAX_RAISES: u8 = 4; // max raises per betting round in FL
+
+/// Betting structure. Stored as u8 in state.
+/// 0 = No-Limit, 1 = Pot-Limit, 2 = Fixed-Limit
+const BET_NO_LIMIT: u8 = 0;
+const BET_POT_LIMIT: u8 = 1;
+const BET_FIXED_LIMIT: u8 = 2;
 
 // ══════════════════════════════════════════════════════════════════════
 // Per-Hand Types (serialised inside LwwRegister)
@@ -77,6 +87,8 @@ pub struct HandState {
     pub current_bet: u64,
     /// Which players have acted in the current betting round.
     pub acted: Vec<bool>,
+    /// Number of raises in the current betting round (for fixed-limit).
+    pub round_raises: u8,
     pub last_action_time: u64,
 }
 
@@ -230,6 +242,10 @@ pub enum PokerError {
     NotEnoughPlayers,
     #[error("buy-in below minimum")]
     BuyInTooLow,
+    #[error("buy-in above maximum")]
+    BuyInTooHigh,
+    #[error("raise exceeds limit (pot-limit or fixed-limit)")]
+    RaiseExceedsLimit,
     #[error("cannot check when facing a bet")]
     CannotCheck,
     #[error("raise must be at least the big blind above the current bet")]
@@ -257,7 +273,16 @@ pub struct PokerGame {
     small_blind: LwwRegister<u64>,
     big_blind: LwwRegister<u64>,
     min_buy_in: LwwRegister<u64>,
+    max_buy_in: LwwRegister<u64>,
     max_seats: LwwRegister<u8>,
+
+    /// Betting structure: 0=NoLimit, 1=PotLimit, 2=FixedLimit
+    bet_structure: LwwRegister<u8>,
+
+    /// Rake: percentage of pot taken by the house (0-10)
+    rake_percent: LwwRegister<u8>,
+    /// Maximum rake per hand
+    rake_cap: LwwRegister<u64>,
 
     /// Seat index (string "0"-"5") → player id (base58). Empty string = vacant.
     seats: UnorderedMap<String, LwwRegister<String>>,
@@ -351,33 +376,59 @@ impl PokerGame {
     /// ```json
     /// { "small_blind": 5, "big_blind": 10, "min_buy_in": 200, "max_seats": 4 }
     /// ```
+    /// Create a new poker table.
+    ///
+    /// All parameters optional. Defaults: NL 10/20, buy-in 400-2000, 6 seats, no rake.
+    ///
+    /// `bet_structure`: 0=NoLimit (default), 1=PotLimit, 2=FixedLimit
     #[app::init]
     pub fn init(
         small_blind: Option<u64>,
         big_blind: Option<u64>,
         min_buy_in: Option<u64>,
+        max_buy_in: Option<u64>,
         max_seats: Option<u8>,
         timeout_secs: Option<u64>,
+        bet_structure: Option<u8>,
+        rake_percent: Option<u8>,
+        rake_cap: Option<u64>,
     ) -> PokerGame {
         let sb = small_blind.unwrap_or(DEFAULT_SMALL_BLIND);
         let bb = big_blind.unwrap_or(DEFAULT_BIG_BLIND);
-        let min = min_buy_in.unwrap_or(DEFAULT_MIN_BUY_IN);
+        let min_bi = min_buy_in.unwrap_or(DEFAULT_MIN_BUY_IN);
+        let max_bi = max_buy_in.unwrap_or(DEFAULT_MAX_BUY_IN);
         let seats = max_seats.unwrap_or(MAX_SEATS);
         let timeout = timeout_secs.unwrap_or(30) * 1_000_000_000;
+        let structure = bet_structure.unwrap_or(BET_NO_LIMIT);
+        let rake_pct = rake_percent.unwrap_or(DEFAULT_RAKE_PERCENT).min(10);
+        let rake_c = rake_cap.unwrap_or(DEFAULT_RAKE_CAP);
+
+        let structure_name = match structure {
+            BET_POT_LIMIT => "Pot-Limit",
+            BET_FIXED_LIMIT => "Fixed-Limit",
+            _ => "No-Limit",
+        };
 
         app::log!(
-            "Initializing poker table: blinds {}/{}, buy-in ≥{}, {} seats",
+            "Initializing {} table: blinds {}/{}, buy-in {}-{}, {} seats, rake {}%",
+            structure_name,
             sb,
             bb,
-            min,
-            seats
+            min_bi,
+            max_bi,
+            seats,
+            rake_pct
         );
 
         PokerGame {
             small_blind: sb.into(),
             big_blind: bb.into(),
-            min_buy_in: min.into(),
+            min_buy_in: min_bi.into(),
+            max_buy_in: max_bi.into(),
             max_seats: seats.into(),
+            bet_structure: structure.into(),
+            rake_percent: rake_pct.into(),
+            rake_cap: rake_c.into(),
             seats: UnorderedMap::new(),
             chips: UnorderedMap::new(),
             num_players: 0u8.into(),
@@ -405,8 +456,12 @@ impl PokerGame {
         small_blind: Option<u64>,
         big_blind: Option<u64>,
         min_buy_in: Option<u64>,
+        max_buy_in: Option<u64>,
         max_seats: Option<u8>,
         timeout_secs: Option<u64>,
+        bet_structure: Option<u8>,
+        rake_percent: Option<u8>,
+        rake_cap: Option<u64>,
     ) -> app::Result<()> {
         if self.hand.get().phase != PHASE_WAITING {
             app::bail!(PokerError::HandInProgress);
@@ -421,20 +476,26 @@ impl PokerGame {
         if let Some(v) = min_buy_in {
             self.min_buy_in.set(v);
         }
+        if let Some(v) = max_buy_in {
+            self.max_buy_in.set(v);
+        }
         if let Some(v) = max_seats {
             self.max_seats.set(v);
         }
         if let Some(v) = timeout_secs {
             self.timeout_ns.set(v * 1_000_000_000);
         }
+        if let Some(v) = bet_structure {
+            self.bet_structure.set(v.min(2));
+        }
+        if let Some(v) = rake_percent {
+            self.rake_percent.set(v.min(10));
+        }
+        if let Some(v) = rake_cap {
+            self.rake_cap.set(v);
+        }
 
-        app::log!(
-            "Table reconfigured: blinds {}/{}, buy-in ≥{}, {} seats",
-            self.small_blind.get(),
-            self.big_blind.get(),
-            self.min_buy_in.get(),
-            self.max_seats.get()
-        );
+        app::log!("Table reconfigured");
         Ok(())
     }
 
@@ -444,9 +505,13 @@ impl PokerGame {
     pub fn join_table(&mut self, buy_in: u64) -> app::Result<()> {
         let caller = player_id();
         let min = *self.min_buy_in.get();
+        let max_bi = *self.max_buy_in.get();
 
         if buy_in < min {
             app::bail!(PokerError::BuyInTooLow);
+        }
+        if max_bi > 0 && buy_in > max_bi {
+            app::bail!(PokerError::BuyInTooHigh);
         }
 
         // Reject if already seated
@@ -600,6 +665,7 @@ impl PokerGame {
             pot,
             current_bet: bb_actual,
             acted,
+            round_raises: 0,
             last_action_time: env::time_now(),
         };
 
@@ -745,6 +811,11 @@ impl PokerGame {
     ///
     /// Minimum raise is `current_bet + big_blind`.
     /// Going all-in for less is allowed.
+    /// Raise the bet.  Behavior depends on table structure:
+    ///
+    /// - **No-Limit**: `amount` is total bet this round (min = current_bet + BB)
+    /// - **Pot-Limit**: `amount` capped at pot + current_bet + call amount
+    /// - **Fixed-Limit**: `amount` ignored, uses fixed bet size. Max 4 raises/round.
     pub fn raise_to(&mut self, amount: u64) -> app::Result<()> {
         let caller = player_id();
         let mut hs = self.hand.get().clone();
@@ -752,15 +823,43 @@ impl PokerGame {
         let pos = Self::verify_turn(&hs, &caller)?;
 
         let bb = *self.big_blind.get();
-        let min_raise = hs.current_bet + bb;
+        let sb = *self.small_blind.get();
+        let structure = *self.bet_structure.get();
         let already_bet = hs.players[pos].bet_this_round;
-        let needed = amount.saturating_sub(already_bet);
         let player_chips = self.get_player_chips(&caller)?;
 
-        // Allow all-in for less than min raise
-        if amount < min_raise && needed < player_chips {
-            app::bail!(PokerError::RaiseTooSmall);
-        }
+        // Determine the actual raise amount based on structure
+        let raise_amount = match structure {
+            BET_FIXED_LIMIT => {
+                // Fixed-limit: bet size = SB (preflop/flop) or BB (turn/river)
+                if hs.round_raises >= FIXED_LIMIT_MAX_RAISES {
+                    app::bail!(PokerError::RaiseExceedsLimit);
+                }
+                let fixed_bet = if hs.phase <= PHASE_FLOP { sb } else { bb };
+                hs.current_bet + fixed_bet
+            }
+            BET_POT_LIMIT => {
+                // Pot-limit: max raise = pot + current_bet + call_amount
+                let call_amount = hs.current_bet.saturating_sub(already_bet);
+                let max_raise = hs.pot + hs.current_bet + call_amount;
+                let capped = amount.min(max_raise);
+                let min_raise = hs.current_bet + bb;
+                if capped < min_raise && amount.saturating_sub(already_bet) < player_chips {
+                    app::bail!(PokerError::RaiseTooSmall);
+                }
+                capped
+            }
+            _ => {
+                // No-limit: standard min raise
+                let min_raise = hs.current_bet + bb;
+                if amount < min_raise && amount.saturating_sub(already_bet) < player_chips {
+                    app::bail!(PokerError::RaiseTooSmall);
+                }
+                amount
+            }
+        };
+
+        let needed = raise_amount.saturating_sub(already_bet);
         if needed == 0 {
             app::bail!(PokerError::RaiseTooSmall);
         }
@@ -770,6 +869,7 @@ impl PokerGame {
         hs.players[pos].bet_total += actual;
         hs.pot += actual;
         hs.current_bet = hs.players[pos].bet_this_round;
+        hs.round_raises += 1;
 
         if self.get_player_chips(&caller)? == 0 {
             hs.players[pos].all_in = true;
@@ -1114,6 +1214,7 @@ impl PokerGame {
             pot,
             current_bet: bb_actual,
             acted,
+            round_raises: 0,
             last_action_time: env::time_now(),
         };
 
@@ -1343,6 +1444,7 @@ impl PokerGame {
             p.bet_this_round = 0;
         }
         hs.current_bet = 0;
+        hs.round_raises = 0;
         hs.acted = vec![false; hs.players.len()];
         for (i, p) in hs.players.iter().enumerate() {
             if p.folded || p.all_in {
@@ -1458,6 +1560,7 @@ impl PokerGame {
                 p.bet_this_round = 0;
             }
             hs.current_bet = 0;
+            hs.round_raises = 0;
             // Block further actions — dealer must call dealer_reveal_* to advance
             hs.action_pos = 255;
             return;
@@ -1473,6 +1576,7 @@ impl PokerGame {
             p.bet_this_round = 0;
         }
         hs.current_bet = 0;
+        hs.round_raises = 0;
         hs.acted = vec![false; hs.players.len()];
         for (i, p) in hs.players.iter().enumerate() {
             if p.folded || p.all_in {
@@ -1578,7 +1682,21 @@ impl PokerGame {
 
     fn award_pot(&mut self, hs: &mut HandState, winner_idx: usize) {
         let winner_id = hs.players[winner_idx].player_id.clone();
-        let pot = hs.pot;
+        let gross_pot = hs.pot;
+
+        // Apply rake
+        let rake_pct = *self.rake_percent.get() as u64;
+        let rake_cap = *self.rake_cap.get();
+        let mut rake = if rake_pct > 0 {
+            (gross_pot * rake_pct) / 100
+        } else {
+            0
+        };
+        if rake_cap > 0 && rake > rake_cap {
+            rake = rake_cap;
+        }
+        let pot = gross_pot - rake;
+        hs.pot = pot; // update for display
 
         // Credit chips to winner
         let current = self.get_player_chips(&winner_id).unwrap_or(0);
