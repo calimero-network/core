@@ -12,8 +12,8 @@ pub mod types;
 
 use repr::Repr;
 use types::{
-    Application, BlockHeight, Capability, ContextId, ContextIdentity, ProposalId,
-    SignedRevealPayload, SignerId,
+    AppKey, Application, BlockHeight, Capability, ContextGroupId, ContextId, ContextIdentity,
+    ProposalId, SignedGroupRevealPayload, SignedRevealPayload, SignerId,
 };
 
 pub type Timestamp = u64;
@@ -47,6 +47,8 @@ impl<'a> Request<'a> {
 pub enum RequestKind<'a> {
     #[serde(borrow)]
     Context(ContextRequest<'a>),
+    #[serde(borrow)]
+    Group(GroupRequest<'a>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -103,6 +105,72 @@ pub enum ContextRequestKind<'a> {
     UpdateProxyContract,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct GroupRequest<'a> {
+    pub group_id: Repr<ContextGroupId>,
+
+    #[serde(borrow, flatten)]
+    pub kind: GroupRequestKind<'a>,
+}
+
+impl<'a> GroupRequest<'a> {
+    #[must_use]
+    pub const fn new(group_id: Repr<ContextGroupId>, kind: GroupRequestKind<'a>) -> Self {
+        GroupRequest { group_id, kind }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "scope", content = "params")]
+#[serde(deny_unknown_fields)]
+#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
+pub enum GroupRequestKind<'a> {
+    Create {
+        app_key: Repr<AppKey>,
+        #[serde(borrow)]
+        target_application: Application<'a>,
+    },
+    Delete,
+    AddMembers {
+        members: Cow<'a, [Repr<SignerId>]>,
+    },
+    RemoveMembers {
+        members: Cow<'a, [Repr<SignerId>]>,
+    },
+    RegisterContext {
+        context_id: Repr<ContextId>,
+    },
+    UnregisterContext {
+        context_id: Repr<ContextId>,
+    },
+    SetTargetApplication {
+        #[serde(borrow)]
+        target_application: Application<'a>,
+        migration_method: Option<String>,
+    },
+    /// Pre-approve a specific context to register via its proxy contract.
+    /// Must be called by a group admin before the proxy path is exercised.
+    ApproveContextRegistration {
+        context_id: Repr<ContextId>,
+    },
+    CommitGroupInvitation {
+        commitment_hash: String,
+        expiration_block_height: BlockHeight,
+    },
+    RevealGroupInvitation {
+        payload: SignedGroupRevealPayload,
+    },
+    /// Join a context within a group using group membership as authorization.
+    /// Caller must be a group member; the context must belong to the group.
+    JoinContextViaGroup {
+        context_id: Repr<ContextId>,
+        new_member: Repr<ContextIdentity>,
+    },
+}
+
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "scope", content = "params")]
 #[serde(deny_unknown_fields)]
@@ -155,6 +223,12 @@ pub enum ProposalAction {
     },
     DeleteProposal {
         proposal_id: Repr<ProposalId>,
+    },
+    RegisterInGroup {
+        group_id: Repr<ContextGroupId>,
+    },
+    UnregisterFromGroup {
+        group_id: Repr<ContextGroupId>,
     },
 }
 

@@ -170,6 +170,36 @@ impl NodeClient {
         Ok(())
     }
 
+    pub async fn broadcast_group_mutation(
+        &self,
+        contexts: &[ContextId],
+        group_id_bytes: [u8; 32],
+        mutation_kind: crate::sync::GroupMutationKind,
+    ) -> eyre::Result<()> {
+        if contexts.is_empty() {
+            return Ok(());
+        }
+
+        let payload = BroadcastMessage::GroupMutationNotification {
+            group_id: group_id_bytes,
+            mutation_kind,
+        };
+        let payload_bytes = borsh::to_vec(&payload)?;
+
+        for context_id in contexts {
+            if self.get_peers_count(Some(context_id)).await == 0 {
+                continue;
+            }
+            let topic = TopicHash::from_raw(*context_id);
+            let _ = self
+                .network_client
+                .publish(topic, payload_bytes.clone())
+                .await;
+        }
+
+        Ok(())
+    }
+
     /// Broadcast a specialized node invite discovery to the global invite topic.
     ///
     /// This broadcasts a discovery message and registers a pending invite so that

@@ -57,10 +57,10 @@ impl RunCommand {
 
         // Fetch storage encryption key from KMS if configured
         let encryption_key = if let Some(ref tee_config) = config.tee {
-            let peer_id = config.identity.public().to_peer_id().to_base58();
+            let peer_id = config.identity.keypair.public().to_peer_id().to_base58();
             info!("TEE configured, fetching storage key for peer {}", peer_id);
 
-            let key = kms::fetch_storage_key(&tee_config.kms, &peer_id, &config.identity)
+            let key = kms::fetch_storage_key(&tee_config.kms, &peer_id, &config.identity.keypair)
                 .await
                 .wrap_err(
                     "TEE storage encryption is configured but failed to fetch key from KMS. \
@@ -116,7 +116,7 @@ impl RunCommand {
         }
         let server_config = ServerConfig::with_auth(
             server_source.listen,
-            config.identity.clone(),
+            config.identity.keypair.clone(),
             server_source.admin,
             server_source.jsonrpc,
             server_source.websocket,
@@ -137,9 +137,10 @@ impl RunCommand {
 
         start(NodeConfig {
             home: path.clone(),
-            identity: config.identity.clone(),
+            identity: config.identity.keypair.clone(),
+            group_identity: config.identity.group.clone(),
             network: NetworkConfig::new(
-                config.identity.clone(),
+                config.identity.keypair.clone(),
                 network.swarm,
                 network.bootstrap,
                 network.discovery,

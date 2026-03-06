@@ -87,7 +87,14 @@ pub async fn process_context_mutations(
                 // The seed is also not passed as it should not be transferred via host function
                 // and should be generated instead.
                 match context_client
-                    .create_context(protocol.clone(), &app_id, None, init_args.clone(), None)
+                    .create_context(
+                        protocol.clone(),
+                        &app_id,
+                        None,
+                        init_args.clone(),
+                        None,
+                        None,
+                    )
                     .await
                 {
                     Ok(response) => {
@@ -144,7 +151,7 @@ pub async fn process_context_mutations(
                     continue;
                 }
 
-                match context_client.delete_context(&target_ctx).await {
+                match context_client.delete_context(&target_ctx, None).await {
                     Ok(_) => {
                         info!(%context_id, target=%target_ctx, "Context deleted successfully via WASM host function");
                     }

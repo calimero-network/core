@@ -4,6 +4,7 @@ pub mod applications;
 pub mod blobs;
 pub mod common;
 pub mod contexts;
+pub mod groups;
 pub mod proposals;
 
 // Re-export common types

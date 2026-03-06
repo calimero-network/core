@@ -67,6 +67,12 @@ pub struct CreateCommand {
 
     #[clap(long = "name", help = "Create an alias for the context")]
     pub context: Option<Alias<ContextId>>,
+
+    #[clap(long, help = "Group ID (hex) to attach this context to")]
+    pub group_id: Option<String>,
+
+    #[clap(long, help = "Identity secret (hex) for signing group membership")]
+    pub identity_secret: Option<String>,
 }
 
 impl CreateCommand {
@@ -84,6 +90,8 @@ impl CreateCommand {
                 protocol,
                 identity,
                 context,
+                group_id,
+                identity_secret,
             } => {
                 let _ = create_context(
                     environment,
@@ -94,6 +102,8 @@ impl CreateCommand {
                     protocol,
                     identity,
                     context,
+                    group_id,
+                    identity_secret,
                 )
                 .await?;
             }
@@ -106,6 +116,8 @@ impl CreateCommand {
                 protocol,
                 identity,
                 context,
+                group_id,
+                identity_secret,
             } => {
                 // Validate file exists before watching
                 validate_file_exists(path.as_std_path())?;
@@ -133,6 +145,8 @@ impl CreateCommand {
                     protocol,
                     identity,
                     context,
+                    group_id,
+                    identity_secret,
                 )
                 .await?;
 
@@ -162,6 +176,8 @@ pub async fn create_context(
     protocol: String,
     identity: Option<Alias<PublicKey>>,
     context: Option<Alias<ContextId>>,
+    group_id: Option<String>,
+    identity_secret: Option<String>,
 ) -> Result<(ContextId, PublicKey)> {
     let response: GetApplicationResponse = client.get_application(&application_id).await?;
 
@@ -174,6 +190,8 @@ pub async fn create_context(
         application_id,
         context_seed,
         params.map(String::into_bytes).unwrap_or_default(),
+        group_id,
+        identity_secret,
     );
 
     let response: CreateContextResponse = client.create_context(request).await?;
