@@ -112,6 +112,13 @@ instead of proceeding without KMS verification.
 
 Use `USE_ENV_POLICY=true` for air-gapped deployments (policy must be applied via
 `apply-merod-kms-phala-attestation-config.sh`).
+This flag bypasses release fetch and should only be used where environment
+configuration is tightly controlled and policy files are verified before startup.
+
+Release-policy fetch currently trusts HTTPS transport and GitHub release integrity.
+Operators requiring cryptographic signature verification of policy artifacts should
+enforce signature checks in deployment tooling, then provide the verified policy via
+`USE_ENV_POLICY=true`.
 
 ### 3. Run merod
 

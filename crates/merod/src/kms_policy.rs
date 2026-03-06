@@ -13,6 +13,7 @@ use tracing::{info, warn};
 
 const POLICY_RELEASE_BASE: &str = "https://github.com/calimero-network/mero-tee/releases/download";
 const POLICY_FETCH_RETRIES: usize = 3;
+const DEFAULT_ALLOWED_TCB_STATUSES: &[&str] = &["uptodate"];
 
 /// Attestation policy for KMS verification (mirrors mero-kms AttestationPolicy).
 #[derive(Debug, Clone)]
@@ -21,7 +22,8 @@ pub struct KmsAttestationPolicy {
     pub allowed_tcb_statuses: Vec<String>,
     /// Allowed MRTD values (hex, lowercase, no 0x prefix).
     pub allowed_mrtd: Vec<String>,
-    /// Allowed RTMR0-3 values (hex, lowercase, no 0x prefix).
+    /// Optional allowed RTMR0-3 values (hex, lowercase, no 0x prefix).
+    /// Empty lists intentionally skip the corresponding RTMR checks.
     pub allowed_rtmr0: Vec<String>,
     pub allowed_rtmr1: Vec<String>,
     pub allowed_rtmr2: Vec<String>,
@@ -95,6 +97,9 @@ where
 
 /// Whether to skip release fetch and use config.toml policy (air-gapped).
 pub fn use_env_policy() -> bool {
+    // Security note: this bypasses release-policy fetch. It is intended for
+    // controlled environments (for example air-gapped deployments) where policy
+    // files are provisioned and verified by deployment tooling.
     std::env::var("USE_ENV_POLICY")
         .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
@@ -174,7 +179,10 @@ fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
     let allowed_tcb_statuses = if root.policy.allowed_tcb_statuses.is_empty() {
         // Default to UpToDate when not specified, matching production hardening
         // expectations for Intel TDX attestation status.
-        vec!["uptodate".to_owned()]
+        DEFAULT_ALLOWED_TCB_STATUSES
+            .iter()
+            .map(|status| (*status).to_owned())
+            .collect()
     } else {
         root.policy
             .allowed_tcb_statuses

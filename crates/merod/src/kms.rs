@@ -1371,4 +1371,70 @@ mod tests {
         let error_text = result.unwrap_err().to_string();
         assert!(error_text.contains("MRTD"));
     }
+
+    fn make_release_policy(
+        allowed_tcb_statuses: Vec<String>,
+        allowed_mrtd: Vec<String>,
+    ) -> KmsAttestationPolicy {
+        KmsAttestationPolicy {
+            allowed_tcb_statuses,
+            allowed_mrtd,
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            default_binding_b64: base64::engine::general_purpose::STANDARD.encode([0x22u8; 32]),
+        }
+    }
+
+    fn make_mock_verification_result() -> VerificationResult {
+        let nonce = [0x11u8; 32];
+        let binding = [0x22u8; 32];
+        let report_data = build_kms_attestation_report_data(&nonce, &binding);
+        let quote_bytes = mock_quote_bytes_with_report_data(&report_data);
+        verify_mock_attestation(&quote_bytes, &nonce, Some(&binding))
+            .expect("mock verification result should be created")
+    }
+
+    #[test]
+    fn test_enforce_attestation_policy_rejects_disallowed_tcb_status() {
+        let verification_result = make_mock_verification_result();
+        let policy = make_release_policy(
+            vec!["uptodate".to_owned()],
+            vec![normalize_attestation_measurement(
+                &verification_result.quote.body.mrtd,
+            )],
+        );
+
+        let err = enforce_attestation_policy(&policy, &verification_result, false)
+            .expect_err("disallowed TCB status must fail")
+            .to_string();
+        assert!(err.contains("TCB status"));
+    }
+
+    #[test]
+    fn test_enforce_attestation_policy_handles_missing_tcb_status_for_mock_quotes() {
+        let mut verification_result = make_mock_verification_result();
+        verification_result.tcb_status = None;
+        let policy = make_release_policy(
+            vec!["mock".to_owned()],
+            vec![normalize_attestation_measurement(
+                &verification_result.quote.body.mrtd,
+            )],
+        );
+
+        assert!(enforce_attestation_policy(&policy, &verification_result, true).is_ok());
+        assert!(enforce_attestation_policy(&policy, &verification_result, false).is_err());
+    }
+
+    #[test]
+    fn test_enforce_attestation_policy_rejects_measurement_mismatch() {
+        let verification_result = make_mock_verification_result();
+        let policy = make_release_policy(vec!["mock".to_owned()], vec!["ab".repeat(48)]);
+
+        let err = enforce_attestation_policy(&policy, &verification_result, true)
+            .expect_err("mismatched MRTD must fail")
+            .to_string();
+        assert!(err.contains("MRTD"));
+    }
 }
