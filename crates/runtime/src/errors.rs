@@ -187,6 +187,8 @@ pub enum WasmTrap {
     Unreachable,
     #[error("unaligned atomic operation")]
     UnalignedAtomic,
+    #[error("execution exceeded timeout")]
+    ExecutionTimeout,
     #[error("indeterminate trap")]
     Indeterminate,
 }
