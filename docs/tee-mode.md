@@ -22,7 +22,11 @@ merod currently supports:
 
 - **Phala Cloud** – `mero-kms-phala` from [mero-tee](https://github.com/calimero-network/mero-tee). Used when merod runs in a Phala CVM with dstack.
 
-For deployment, KMS build, and configuration, see [mero-tee](https://github.com/calimero-network/mero-tee).
+For deployment, KMS build, and configuration, see [mero-tee](https://github.com/calimero-network/mero-tee):
+
+- **[Deploy on GCP](https://github.com/calimero-network/mero-tee/blob/master/docs/deploy-gcp.md)** – TDX locked images, Packer build
+- **[Deploy on Phala](https://github.com/calimero-network/mero-tee/blob/master/docs/deploy-phala.md)** – Phala CVM with mero-kms-phala
+- **[mero-tee releases](https://github.com/calimero-network/mero-tee/releases)** – mero-kms-phala binaries, MRTDs, attestation artifacts
 
 ## Building merod
 
@@ -94,6 +98,27 @@ allowed_mrtd = ["<trusted_kms_mrtd_hex>"]
 # binding_b64 = "<base64_32_byte_value>"
 ```
 
+When any of these env vars is set (e.g. `2.1.14`), merod fetches the attestation
+policy from the official release and verifies the KMS via `POST /attest` before
+requesting keys:
+
+- `MERO_KMS_RELEASE_TAG` (highest priority; accepts `mero-kms-vX.Y.Z` or `X.Y.Z`)
+- `MERO_KMS_VERSION`
+- `MERO_TEE_VERSION`
+
+Precedence is: `MERO_KMS_RELEASE_TAG > MERO_KMS_VERSION > MERO_TEE_VERSION`.
+If a version is set and policy fetch fails, merod fails closed and aborts startup
+instead of proceeding without KMS verification.
+
+Use `USE_ENV_POLICY=true` for air-gapped deployments (policy must be applied via
+`apply-merod-kms-phala-attestation-config.sh`).
+This flag bypasses release fetch and should only be used where environment
+configuration is tightly controlled and policy files are verified before startup.
+
+Release-policy fetch verifies Sigstore artifacts (`.sig` + `.bundle.json`)
+before trusting `kms-phala-attestation-policy.json`, including Rekor and Fulcio
+checks constrained to the expected mero-tee GitHub Actions workflow identity.
+
 ### 3. Run merod
 
 ```bash
@@ -133,6 +158,18 @@ The node identity (libp2p keypair) is stored in `config.toml`. It is required fo
 
 Keep `config.toml` backed up; losing it means losing the node identity.
 
+## GCP operators: MRTD verification
+
+For GCP TDX nodes, operators verify deployed nodes against published measurements. Fetch `published-mrtds.json` from mero-tee releases:
+
+```
+https://github.com/calimero-network/mero-tee/releases/download/<X.Y.Z>/published-mrtds.json
+```
+
+Example: `https://github.com/calimero-network/mero-tee/releases/download/2.1.1/published-mrtds.json`
+
+For step-by-step verification (curl commands, comparison script, full quote verification), see [mero-tee verify-mrtd](https://github.com/calimero-network/mero-tee/blob/master/docs/verify-mrtd.md).
+
 merod can ingest externally-generated attestation allowlists via
 `tee.kms.phala.attestation.policy_json_path` (JSON). Artifact fetching/signature
 verification is expected to be handled by deployment tooling (e.g. mero-tee).
@@ -163,4 +200,7 @@ Recommended production rollout model:
 
 - [merod README](../crates/merod/README.md) – TEE storage encryption and KMS flow
 - [mero-tee](https://github.com/calimero-network/mero-tee) – Deployment (GCP, Phala), KMS, locked images
+- [mero-tee deploy-gcp](https://github.com/calimero-network/mero-tee/blob/master/docs/deploy-gcp.md) – GCP TDX locked images
+- [mero-tee deploy-phala](https://github.com/calimero-network/mero-tee/blob/master/docs/deploy-phala.md) – Phala CVM deployment
+- [mero-tee verify-mrtd](https://github.com/calimero-network/mero-tee/blob/master/docs/verify-mrtd.md) – Verify nodes run the attested image
 - [mero-kms-phala README](https://github.com/calimero-network/mero-tee/blob/master/crates/mero-kms-phala/README.md) – KMS build, deployment, and policy

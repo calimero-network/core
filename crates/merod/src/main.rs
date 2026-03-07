@@ -13,6 +13,7 @@ mod cli;
 mod defaults;
 mod docker;
 mod kms;
+mod kms_policy;
 mod version;
 
 use cli::RootCommand;

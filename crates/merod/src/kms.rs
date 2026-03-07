@@ -2,6 +2,10 @@
 //!
 //! This module handles communication with KMS services to obtain storage
 //! encryption keys using TDX attestation. Currently supports Phala Cloud KMS.
+//!
+//! When MERO_KMS_RELEASE_TAG, MERO_KMS_VERSION, or MERO_TEE_VERSION is set,
+//! merod verifies the KMS via POST /attest before requesting keys, using
+//! policy fetched from the release.
 
 use base64::Engine;
 use calimero_config::{
@@ -19,8 +23,10 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use url::Url;
+
+use crate::kms_policy::KmsAttestationPolicy;
 
 /// Request body for the Phala KMS challenge endpoint.
 #[derive(Debug, Serialize)]
@@ -79,6 +85,14 @@ struct PhalaKmsAttestRequest {
 struct PhalaKmsAttestResponse {
     quote_b64: String,
     report_data_hex: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum KeyFetchAttestationMode {
+    /// Use attestation settings configured in `config.toml`.
+    UseConfigPolicy,
+    /// Skip config attestation because release-policy verification already ran.
+    AlreadyVerifiedFromReleasePolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +159,9 @@ const MOCK_KMS_ATTESTATION_ENV: &str = "MEROD_ALLOW_MOCK_KMS_ATTESTATION";
 
 /// Fetch the storage encryption key using the configured KMS provider.
 ///
+/// When `policy` is provided (from release-policy env vars), verifies the KMS
+/// via POST /attest before requesting keys.
+///
 /// Returns an error if no KMS provider is configured (incomplete TEE configuration)
 /// or if key fetching fails.
 ///
@@ -152,20 +169,208 @@ const MOCK_KMS_ATTESTATION_ENV: &str = "MEROD_ALLOW_MOCK_KMS_ATTESTATION";
 /// * `kms_config` - KMS configuration specifying which provider to use
 /// * `peer_id` - The peer ID string (base58 encoded)
 /// * `identity` - Local node identity keypair used to sign challenge payloads
+/// * `policy` - Optional attestation policy fetched from a release version
 pub async fn fetch_storage_key(
     kms_config: &KmsConfig,
     peer_id: &str,
     identity: &Keypair,
+    policy: Option<&KmsAttestationPolicy>,
 ) -> Result<Vec<u8>> {
     if let Some(ref phala_config) = kms_config.phala {
         info!("Using Phala Cloud KMS");
-        let key = fetch_from_phala(phala_config, peer_id, identity).await?;
+        let attestation_mode = if let Some(p) = policy {
+            verify_kms_attestation_from_release_policy(&phala_config.url, p).await?;
+            KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy
+        } else {
+            KeyFetchAttestationMode::UseConfigPolicy
+        };
+        let key = fetch_from_phala(phala_config, peer_id, identity, attestation_mode).await?;
         Ok(key)
     } else {
         bail!(
             "TEE is enabled but no KMS provider is configured. \
              Please configure [tee.kms.phala] in your config.toml to enable storage encryption. \
              Running a TEE node without storage encryption is not supported."
+        );
+    }
+}
+
+/// Verify KMS via POST /attest using policy fetched from release.
+///
+/// Calls KMS /attest, verifies the quote, and enforces measurement policy.
+async fn verify_kms_attestation_from_release_policy(
+    kms_url: &Url,
+    policy: &KmsAttestationPolicy,
+) -> Result<()> {
+    info!("Verifying KMS attestation before key fetch");
+
+    let base_url = ensure_trailing_slash(kms_url);
+    let attest_endpoint = base_url
+        .join("attest")
+        .context("Failed to build KMS attest endpoint URL")?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("Failed to build HTTP client")?;
+
+    let mut nonce = [0u8; 32];
+    OsRng.fill_bytes(&mut nonce);
+    let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
+
+    let request = PhalaKmsAttestRequest {
+        nonce_b64: nonce_b64.clone(),
+        binding_b64: Some(policy.default_binding_b64.clone()),
+    };
+
+    let response = client
+        .post(attest_endpoint.as_str())
+        .json(&request)
+        .send()
+        .await
+        .context("Failed to request KMS attestation")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        bail!("KMS attest request failed ({}): {}", status, body);
+    }
+
+    let attest: PhalaKmsAttestResponse = response
+        .json()
+        .await
+        .context("Failed to parse KMS attest response")?;
+
+    let binding_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&policy.default_binding_b64)
+        .context("Invalid policy default_binding_b64")?;
+    let binding: [u8; 32] = binding_bytes
+        .try_into()
+        .map_err(|_| eyre::eyre!("Policy default_binding_b64 must be 32 bytes"))?;
+    let expected_report_data = build_kms_attestation_report_data(&nonce, &binding);
+
+    let (quote_bytes, report_data_bytes) = decode_kms_attestation_response(&attest)?;
+    if report_data_bytes.len() != 64 {
+        bail!(
+            "KMS attest reportDataHex must be 64 bytes, got {}",
+            report_data_bytes.len()
+        );
+    }
+    if !bool::from(report_data_bytes.ct_eq(expected_report_data.as_slice())) {
+        bail!(
+            "KMS attest reportData mismatch (nonce/binding mismatch or tampered response payload)"
+        );
+    }
+
+    let is_mock = is_mock_quote(&quote_bytes);
+    let verification_result = if is_mock {
+        if !mock_kms_attestation_runtime_opt_in() {
+            bail!(
+                "KMS returned mock attestation quote, but {} is not enabled. \
+                 Set {}=true only for development/testing.",
+                MOCK_KMS_ATTESTATION_ENV,
+                MOCK_KMS_ATTESTATION_ENV
+            );
+        }
+
+        warn!(
+            "Accepting mock KMS attestation quote from release policy path - development/testing only"
+        );
+        verify_mock_attestation(&quote_bytes, &nonce, Some(&binding))
+            .context("KMS mock attestation verification failed")?
+    } else {
+        verify_attestation(&quote_bytes, &nonce, Some(&binding))
+            .await
+            .context("KMS attestation verification failed")?
+    };
+
+    if !verification_result.is_valid() {
+        error!(
+            quote_verified = verification_result.quote_verified,
+            nonce_verified = verification_result.nonce_verified,
+            "KMS attestation verification failed"
+        );
+        bail!("KMS attestation verification failed");
+    }
+
+    enforce_attestation_policy(policy, &verification_result, is_mock)?;
+    info!("KMS attestation verified successfully");
+    Ok(())
+}
+
+fn enforce_attestation_policy(
+    policy: &KmsAttestationPolicy,
+    verification_result: &calimero_tee_attestation::VerificationResult,
+    allow_missing_tcb_status: bool,
+) -> Result<()> {
+    if let Some(actual_tcb_status) = verification_result.tcb_status.as_ref() {
+        let normalized_tcb = actual_tcb_status.to_ascii_lowercase();
+        if !policy
+            .allowed_tcb_statuses
+            .iter()
+            .any(|a| a == &normalized_tcb)
+        {
+            bail!(
+                "KMS TCB status '{}' is not allowed. Allowed: {:?}",
+                actual_tcb_status,
+                policy.allowed_tcb_statuses
+            );
+        }
+    } else if allow_missing_tcb_status {
+        warn!("Mock KMS quote did not provide TCB status; skipping TCB status allowlist check");
+    } else {
+        bail!("Quote verification did not provide a TCB status");
+    }
+
+    warn_if_optional_measurement_allowlist_empty("RTMR0", &policy.allowed_rtmr0);
+    warn_if_optional_measurement_allowlist_empty("RTMR1", &policy.allowed_rtmr1);
+    warn_if_optional_measurement_allowlist_empty("RTMR2", &policy.allowed_rtmr2);
+    warn_if_optional_measurement_allowlist_empty("RTMR3", &policy.allowed_rtmr3);
+
+    let body = &verification_result.quote.body;
+    enforce_measurement_allowlist_for_release_policy("MRTD", &body.mrtd, &policy.allowed_mrtd)?;
+    enforce_measurement_allowlist_for_release_policy("RTMR0", &body.rtmr0, &policy.allowed_rtmr0)?;
+    enforce_measurement_allowlist_for_release_policy("RTMR1", &body.rtmr1, &policy.allowed_rtmr1)?;
+    enforce_measurement_allowlist_for_release_policy("RTMR2", &body.rtmr2, &policy.allowed_rtmr2)?;
+    enforce_measurement_allowlist_for_release_policy("RTMR3", &body.rtmr3, &policy.allowed_rtmr3)?;
+    Ok(())
+}
+
+fn enforce_measurement_allowlist_for_release_policy(
+    label: &str,
+    actual: &str,
+    allowed: &[String],
+) -> Result<()> {
+    if allowed.is_empty() {
+        return Ok(());
+    }
+    let normalized = normalize_attestation_measurement(actual);
+    if allowed.iter().any(|a| a == &normalized) {
+        return Ok(());
+    }
+
+    let preview_len = 5usize.min(allowed.len());
+    let preview = allowed[..preview_len].join(", ");
+    let suffix = if allowed.len() > preview_len {
+        format!(" ... ({} total)", allowed.len())
+    } else {
+        String::new()
+    };
+
+    bail!(
+        "KMS {} '{}' is not in allowlist [{}{}]",
+        label,
+        normalized,
+        preview,
+        suffix
+    )
+}
+
+fn warn_if_optional_measurement_allowlist_empty(label: &str, allowed: &[String]) {
+    if allowed.is_empty() {
+        warn!(
+            measurement = label,
+            "Release policy allowlist is empty; skipping optional measurement check"
         );
     }
 }
@@ -191,6 +396,7 @@ async fn fetch_from_phala(
     phala_config: &PhalaKmsConfig,
     peer_id: &str,
     identity: &Keypair,
+    attestation_mode: KeyFetchAttestationMode,
 ) -> Result<Vec<u8>> {
     info!(%peer_id, "Fetching storage key from KMS");
 
@@ -210,7 +416,16 @@ async fn fetch_from_phala(
         .context("Failed to build HTTP client")?;
 
     if phala_config.attestation.enabled {
-        verify_kms_attestation(&client, &base_url, &phala_config.attestation).await?;
+        match attestation_mode {
+            KeyFetchAttestationMode::UseConfigPolicy => {
+                verify_kms_attestation(&client, &base_url, &phala_config.attestation).await?;
+            }
+            KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy => {
+                info!(
+                    "Skipping config-based KMS attestation: release policy verification already completed"
+                );
+            }
+        }
     }
 
     // 1) Request one-time challenge nonce.
@@ -575,9 +790,9 @@ fn is_allowed_external_policy_path(policy_path: &Utf8Path) -> bool {
 }
 
 fn is_test_tmp_policy_path(policy_path: &Utf8Path) -> bool {
-    // Allow /tmp paths in tests so tempfile-backed policy fixtures work.
-    // Test binaries must never be deployed to production.
-    cfg!(test) && policy_path.starts_with("/tmp")
+    // Allow /tmp and /private/tmp (macOS canonicalizes /tmp to /private/tmp) in tests
+    // so tempfile-backed policy fixtures work. Test binaries must never be deployed to production.
+    cfg!(test) && (policy_path.starts_with("/tmp") || policy_path.starts_with("/private/tmp"))
 }
 
 async fn request_kms_attestation(
@@ -1155,5 +1370,71 @@ mod tests {
         assert!(result.is_err());
         let error_text = result.unwrap_err().to_string();
         assert!(error_text.contains("MRTD"));
+    }
+
+    fn make_release_policy(
+        allowed_tcb_statuses: Vec<String>,
+        allowed_mrtd: Vec<String>,
+    ) -> KmsAttestationPolicy {
+        KmsAttestationPolicy {
+            allowed_tcb_statuses,
+            allowed_mrtd,
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            default_binding_b64: base64::engine::general_purpose::STANDARD.encode([0x22u8; 32]),
+        }
+    }
+
+    fn make_mock_verification_result() -> VerificationResult {
+        let nonce = [0x11u8; 32];
+        let binding = [0x22u8; 32];
+        let report_data = build_kms_attestation_report_data(&nonce, &binding);
+        let quote_bytes = mock_quote_bytes_with_report_data(&report_data);
+        verify_mock_attestation(&quote_bytes, &nonce, Some(&binding))
+            .expect("mock verification result should be created")
+    }
+
+    #[test]
+    fn test_enforce_attestation_policy_rejects_disallowed_tcb_status() {
+        let verification_result = make_mock_verification_result();
+        let policy = make_release_policy(
+            vec!["uptodate".to_owned()],
+            vec![normalize_attestation_measurement(
+                &verification_result.quote.body.mrtd,
+            )],
+        );
+
+        let err = enforce_attestation_policy(&policy, &verification_result, false)
+            .expect_err("disallowed TCB status must fail")
+            .to_string();
+        assert!(err.contains("TCB status"));
+    }
+
+    #[test]
+    fn test_enforce_attestation_policy_handles_missing_tcb_status_for_mock_quotes() {
+        let mut verification_result = make_mock_verification_result();
+        verification_result.tcb_status = None;
+        let policy = make_release_policy(
+            vec!["mock".to_owned()],
+            vec![normalize_attestation_measurement(
+                &verification_result.quote.body.mrtd,
+            )],
+        );
+
+        assert!(enforce_attestation_policy(&policy, &verification_result, true).is_ok());
+        assert!(enforce_attestation_policy(&policy, &verification_result, false).is_err());
+    }
+
+    #[test]
+    fn test_enforce_attestation_policy_rejects_measurement_mismatch() {
+        let verification_result = make_mock_verification_result();
+        let policy = make_release_policy(vec!["mock".to_owned()], vec!["ab".repeat(48)]);
+
+        let err = enforce_attestation_policy(&policy, &verification_result, true)
+            .expect_err("mismatched MRTD must fail")
+            .to_string();
+        assert!(err.contains("MRTD"));
     }
 }
