@@ -199,6 +199,27 @@ configuration error.
 KMS verifies challenge freshness/single-use, peer key ownership, signature,
 quote validity, and policy compliance before releasing a key.
 
+When any of the following env vars is set, merod fetches the attestation policy
+from the official release and verifies the KMS via `POST /attest` before
+requesting keys:
+
+- `MERO_KMS_RELEASE_TAG` (highest priority; accepts `mero-kms-vX.Y.Z` or `X.Y.Z`)
+- `MERO_KMS_VERSION`
+- `MERO_TEE_VERSION`
+
+Precedence is: `MERO_KMS_RELEASE_TAG > MERO_KMS_VERSION > MERO_TEE_VERSION`.
+If a version is set and policy fetch fails, merod fails closed and aborts startup
+instead of proceeding without KMS verification.
+
+Use `USE_ENV_POLICY=true` for air-gapped deployments (policy must be applied via
+`apply-merod-kms-phala-attestation-config.sh`).
+This flag bypasses release fetch and should only be used in controlled environments
+where policy artifacts are provisioned and verified by deployment tooling.
+
+Release-policy fetch verifies Sigstore artifacts (`.sig` + `.bundle.json`)
+before trusting `kms-phala-attestation-policy.json`, including Rekor and Fulcio
+checks constrained to the expected mero-tee GitHub Actions workflow identity.
+
 For deployment-managed policy ingestion, merod can load allowlists from
 `tee.kms.phala.attestation.policy_json_path` (JSON) while mero-tee remains
 responsible for fetching and verifying signed policy artifacts.
@@ -218,6 +239,11 @@ explicitly govern and accept that coupling.
 On non-TDX environments, attestation generation may produce mock quotes. Those
 are accepted only if the KMS service explicitly allows mock attestation for
 local development.
+
+### Deployment and MRTDs
+
+- **Phala**: See [mero-tee deploy-phala](https://github.com/calimero-network/mero-tee/blob/master/docs/deploy-phala.md). KMS and merod binaries from [mero-tee releases](https://github.com/calimero-network/mero-tee/releases).
+- **GCP TDX**: See [mero-tee deploy-gcp](https://github.com/calimero-network/mero-tee/blob/master/docs/deploy-gcp.md). Operators verify nodes using `published-mrtds.json` from releases, e.g. `https://github.com/calimero-network/mero-tee/releases/download/2.1.1/published-mrtds.json`.
 
 ## Running Multiple Nodes
 
@@ -279,5 +305,6 @@ lsof -i :2528
 - [Node Architecture](../../crates/node/README.md) - Internal node architecture
 - [Network Configuration](../../crates/network/README.md) - P2P networking details
 - [Server API](../../crates/server/README.md) - JSON-RPC API reference
-- [mero-tee mero-kms-phala](https://github.com/calimero-network/mero-tee) - KMS policy and endpoint configuration
+- [mero-tee](https://github.com/calimero-network/mero-tee) - KMS, GCP locked images, deployment guides
+- [mero-tee releases](https://github.com/calimero-network/mero-tee/releases) - mero-kms-phala binaries, MRTDs (`published-mrtds.json`), attestation artifacts
 
