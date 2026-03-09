@@ -1419,4 +1419,238 @@ mod tests {
         let json = serde_json::json!({});
         assert!(extract_application_id(&json).is_err());
     }
+
+    // -----------------------------------------------------------------------
+    // Member capability tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_and_get_member_capability() {
+        let store = test_store();
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x10; 32]);
+
+        // No capability stored yet
+        assert!(get_member_capability(&store, &gid, &pk).unwrap().is_none());
+
+        // Set capabilities
+        set_member_capability(&store, &gid, &pk, 0b101).unwrap();
+        let caps = get_member_capability(&store, &gid, &pk).unwrap().unwrap();
+        assert_eq!(caps, 0b101);
+
+        // Update capabilities
+        set_member_capability(&store, &gid, &pk, 0b111).unwrap();
+        let caps = get_member_capability(&store, &gid, &pk).unwrap().unwrap();
+        assert_eq!(caps, 0b111);
+    }
+
+    #[test]
+    fn capability_zero_means_no_permissions() {
+        let store = test_store();
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x11; 32]);
+
+        set_member_capability(&store, &gid, &pk, 0).unwrap();
+        let caps = get_member_capability(&store, &gid, &pk).unwrap().unwrap();
+        assert_eq!(caps, 0);
+        // All capability bits are off
+        assert_eq!(caps & (1 << 0), 0); // CAN_CREATE_CONTEXT
+        assert_eq!(caps & (1 << 1), 0); // CAN_INVITE_MEMBERS
+        assert_eq!(caps & (1 << 2), 0); // CAN_JOIN_OPEN_CONTEXTS
+    }
+
+    #[test]
+    fn capabilities_isolated_per_member() {
+        let store = test_store();
+        let gid = test_group_id();
+        let alice = PublicKey::from([0x12; 32]);
+        let bob = PublicKey::from([0x13; 32]);
+
+        set_member_capability(&store, &gid, &alice, 0b001).unwrap();
+        set_member_capability(&store, &gid, &bob, 0b110).unwrap();
+
+        assert_eq!(
+            get_member_capability(&store, &gid, &alice).unwrap().unwrap(),
+            0b001
+        );
+        assert_eq!(
+            get_member_capability(&store, &gid, &bob).unwrap().unwrap(),
+            0b110
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Context visibility tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_and_get_context_visibility() {
+        let store = test_store();
+        let gid = test_group_id();
+        let ctx = ContextId::from([0x20; 32]);
+        let creator: [u8; 32] = [0x01; 32];
+
+        // No visibility stored yet
+        assert!(get_context_visibility(&store, &gid, &ctx)
+            .unwrap()
+            .is_none());
+
+        // Set to Open (0)
+        set_context_visibility(&store, &gid, &ctx, 0, creator).unwrap();
+        let (mode, stored_creator) = get_context_visibility(&store, &gid, &ctx).unwrap().unwrap();
+        assert_eq!(mode, 0);
+        assert_eq!(stored_creator, creator);
+
+        // Update to Restricted (1)
+        set_context_visibility(&store, &gid, &ctx, 1, creator).unwrap();
+        let (mode, _) = get_context_visibility(&store, &gid, &ctx).unwrap().unwrap();
+        assert_eq!(mode, 1);
+    }
+
+    #[test]
+    fn visibility_isolated_per_context() {
+        let store = test_store();
+        let gid = test_group_id();
+        let ctx1 = ContextId::from([0x21; 32]);
+        let ctx2 = ContextId::from([0x22; 32]);
+        let creator: [u8; 32] = [0x01; 32];
+
+        set_context_visibility(&store, &gid, &ctx1, 0, creator).unwrap();
+        set_context_visibility(&store, &gid, &ctx2, 1, creator).unwrap();
+
+        let (mode1, _) = get_context_visibility(&store, &gid, &ctx1).unwrap().unwrap();
+        let (mode2, _) = get_context_visibility(&store, &gid, &ctx2).unwrap().unwrap();
+        assert_eq!(mode1, 0);
+        assert_eq!(mode2, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Context allowlist tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn add_check_remove_context_allowlist() {
+        let store = test_store();
+        let gid = test_group_id();
+        let ctx = ContextId::from([0x30; 32]);
+        let member = PublicKey::from([0x31; 32]);
+
+        // Not on allowlist initially
+        assert!(!check_context_allowlist(&store, &gid, &ctx, &member).unwrap());
+
+        // Add to allowlist
+        add_to_context_allowlist(&store, &gid, &ctx, &member).unwrap();
+        assert!(check_context_allowlist(&store, &gid, &ctx, &member).unwrap());
+
+        // Remove from allowlist
+        remove_from_context_allowlist(&store, &gid, &ctx, &member).unwrap();
+        assert!(!check_context_allowlist(&store, &gid, &ctx, &member).unwrap());
+    }
+
+    #[test]
+    fn list_context_allowlist_returns_all_members() {
+        let store = test_store();
+        let gid = test_group_id();
+        let ctx = ContextId::from([0x32; 32]);
+        let m1 = PublicKey::from([0x33; 32]);
+        let m2 = PublicKey::from([0x34; 32]);
+        let m3 = PublicKey::from([0x35; 32]);
+
+        add_to_context_allowlist(&store, &gid, &ctx, &m1).unwrap();
+        add_to_context_allowlist(&store, &gid, &ctx, &m2).unwrap();
+        add_to_context_allowlist(&store, &gid, &ctx, &m3).unwrap();
+
+        let members = list_context_allowlist(&store, &gid, &ctx).unwrap();
+        assert_eq!(members.len(), 3);
+        assert!(members.contains(&m1));
+        assert!(members.contains(&m2));
+        assert!(members.contains(&m3));
+    }
+
+    #[test]
+    fn list_context_allowlist_isolated_per_context() {
+        let store = test_store();
+        let gid = test_group_id();
+        let ctx1 = ContextId::from([0x36; 32]);
+        let ctx2 = ContextId::from([0x37; 32]);
+        let m1 = PublicKey::from([0x38; 32]);
+        let m2 = PublicKey::from([0x39; 32]);
+
+        add_to_context_allowlist(&store, &gid, &ctx1, &m1).unwrap();
+        add_to_context_allowlist(&store, &gid, &ctx2, &m2).unwrap();
+
+        let ctx1_members = list_context_allowlist(&store, &gid, &ctx1).unwrap();
+        assert_eq!(ctx1_members.len(), 1);
+        assert!(ctx1_members.contains(&m1));
+
+        let ctx2_members = list_context_allowlist(&store, &gid, &ctx2).unwrap();
+        assert_eq!(ctx2_members.len(), 1);
+        assert!(ctx2_members.contains(&m2));
+    }
+
+    #[test]
+    fn allowlist_add_idempotent() {
+        let store = test_store();
+        let gid = test_group_id();
+        let ctx = ContextId::from([0x3A; 32]);
+        let member = PublicKey::from([0x3B; 32]);
+
+        add_to_context_allowlist(&store, &gid, &ctx, &member).unwrap();
+        add_to_context_allowlist(&store, &gid, &ctx, &member).unwrap();
+
+        let members = list_context_allowlist(&store, &gid, &ctx).unwrap();
+        assert_eq!(members.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Default capabilities and visibility tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_and_get_default_capabilities() {
+        let store = test_store();
+        let gid = test_group_id();
+
+        assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
+
+        set_default_capabilities(&store, &gid, 0b100).unwrap();
+        assert_eq!(get_default_capabilities(&store, &gid).unwrap().unwrap(), 0b100);
+
+        // Update
+        set_default_capabilities(&store, &gid, 0b111).unwrap();
+        assert_eq!(get_default_capabilities(&store, &gid).unwrap().unwrap(), 0b111);
+    }
+
+    #[test]
+    fn set_and_get_default_visibility() {
+        let store = test_store();
+        let gid = test_group_id();
+
+        assert!(get_default_visibility(&store, &gid).unwrap().is_none());
+
+        // Open = 0
+        set_default_visibility(&store, &gid, 0).unwrap();
+        assert_eq!(get_default_visibility(&store, &gid).unwrap().unwrap(), 0);
+
+        // Restricted = 1
+        set_default_visibility(&store, &gid, 1).unwrap();
+        assert_eq!(get_default_visibility(&store, &gid).unwrap().unwrap(), 1);
+    }
+
+    #[test]
+    fn defaults_isolated_per_group() {
+        let store = test_store();
+        let g1 = ContextGroupId::from([0x40; 32]);
+        let g2 = ContextGroupId::from([0x41; 32]);
+
+        set_default_capabilities(&store, &g1, 0b001).unwrap();
+        set_default_capabilities(&store, &g2, 0b110).unwrap();
+        set_default_visibility(&store, &g1, 0).unwrap();
+        set_default_visibility(&store, &g2, 1).unwrap();
+
+        assert_eq!(get_default_capabilities(&store, &g1).unwrap().unwrap(), 0b001);
+        assert_eq!(get_default_capabilities(&store, &g2).unwrap().unwrap(), 0b110);
+        assert_eq!(get_default_visibility(&store, &g1).unwrap().unwrap(), 0);
+        assert_eq!(get_default_visibility(&store, &g2).unwrap().unwrap(), 1);
+    }
 }
