@@ -121,6 +121,52 @@ impl ContextClient {
             .map_err(Into::into)
     }
 
+    /// Read-only query for context visibility from the on-chain contract.
+    pub async fn query_context_visibility(
+        &self,
+        group_id: types::ContextGroupId,
+        context_id: ContextId,
+        protocol: &str,
+        network_id: &str,
+        contract_id: &str,
+    ) -> eyre::Result<
+        Option<calimero_context_config::client::env::config::requests::ContextVisibilityQueryResponse>,
+    > {
+        let context_id: types::ContextId = context_id.rt()?;
+        let query = self.external_client.query::<ContextConfig>(
+            protocol.into(),
+            network_id.into(),
+            contract_id.into(),
+        );
+        query
+            .context_visibility(group_id, context_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Read-only query for context allowlist from the on-chain contract (paginated).
+    pub async fn query_context_allowlist(
+        &self,
+        group_id: types::ContextGroupId,
+        context_id: ContextId,
+        protocol: &str,
+        network_id: &str,
+        contract_id: &str,
+        offset: usize,
+        length: usize,
+    ) -> eyre::Result<Vec<types::SignerId>> {
+        let context_id: types::ContextId = context_id.rt()?;
+        let query = self.external_client.query::<ContextConfig>(
+            protocol.into(),
+            network_id.into(),
+            contract_id.into(),
+        );
+        query
+            .context_allowlist(group_id, context_id, offset, length)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Read-only query to check if an identity is a group admin on-chain.
     pub async fn query_is_group_admin(
         &self,
@@ -280,7 +326,11 @@ impl ExternalGroupClient {
         Ok(())
     }
 
-    pub async fn register_context_in_group(&mut self, context_id: ContextId) -> eyre::Result<()> {
+    pub async fn register_context_in_group(
+        &mut self,
+        context_id: ContextId,
+        visibility_mode: Option<calimero_context_config::VisibilityMode>,
+    ) -> eyre::Result<()> {
         let context_id: types::ContextId = context_id.rt()?;
 
         with_nonce(&mut self.nonce, &self.inner, async |nonce| {
@@ -291,7 +341,7 @@ impl ExternalGroupClient {
                     c.network_id.as_str().into(),
                     c.contract_id.as_str().into(),
                 )
-                .register_context_in_group(c.group_id, context_id)
+                .register_context_in_group(c.group_id, context_id, visibility_mode)
                 .send(c.signing_key, nonce)
                 .await
         })
@@ -387,6 +437,124 @@ impl ExternalGroupClient {
             .commit_group_invitation(c.group_id, commitment_hash, expiration_block_height)
             .send(c.signing_key, 0)
             .await?;
+
+        Ok(())
+    }
+
+    pub async fn set_member_capabilities(
+        &mut self,
+        member: types::SignerId,
+        capabilities: u32,
+    ) -> eyre::Result<()> {
+        with_nonce(&mut self.nonce, &self.inner, async |nonce| {
+            let c = &self.inner;
+            c.sdk_client
+                .mutate::<ContextConfig>(
+                    c.protocol.as_str().into(),
+                    c.network_id.as_str().into(),
+                    c.contract_id.as_str().into(),
+                )
+                .set_member_capabilities(c.group_id, member, capabilities)
+                .send(c.signing_key, nonce)
+                .await
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn set_context_visibility(
+        &mut self,
+        context_id: ContextId,
+        mode: calimero_context_config::VisibilityMode,
+    ) -> eyre::Result<()> {
+        let context_id: types::ContextId = context_id.rt()?;
+
+        with_nonce(&mut self.nonce, &self.inner, async |nonce| {
+            let c = &self.inner;
+            c.sdk_client
+                .mutate::<ContextConfig>(
+                    c.protocol.as_str().into(),
+                    c.network_id.as_str().into(),
+                    c.contract_id.as_str().into(),
+                )
+                .set_context_visibility(c.group_id, context_id, mode)
+                .send(c.signing_key, nonce)
+                .await
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn manage_context_allowlist(
+        &mut self,
+        context_id: ContextId,
+        add: Vec<types::SignerId>,
+        remove: Vec<types::SignerId>,
+    ) -> eyre::Result<()> {
+        let context_id: types::ContextId = context_id.rt()?;
+
+        with_nonce(&mut self.nonce, &self.inner, async |nonce| {
+            let c = &self.inner;
+            c.sdk_client
+                .mutate::<ContextConfig>(
+                    c.protocol.as_str().into(),
+                    c.network_id.as_str().into(),
+                    c.contract_id.as_str().into(),
+                )
+                .manage_context_allowlist(
+                    c.group_id,
+                    context_id,
+                    add.clone(),
+                    remove.clone(),
+                )
+                .send(c.signing_key, nonce)
+                .await
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn set_default_capabilities(
+        &mut self,
+        default_capabilities: u32,
+    ) -> eyre::Result<()> {
+        with_nonce(&mut self.nonce, &self.inner, async |nonce| {
+            let c = &self.inner;
+            c.sdk_client
+                .mutate::<ContextConfig>(
+                    c.protocol.as_str().into(),
+                    c.network_id.as_str().into(),
+                    c.contract_id.as_str().into(),
+                )
+                .set_default_capabilities(c.group_id, default_capabilities)
+                .send(c.signing_key, nonce)
+                .await
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn set_default_visibility(
+        &mut self,
+        default_visibility: calimero_context_config::VisibilityMode,
+    ) -> eyre::Result<()> {
+        with_nonce(&mut self.nonce, &self.inner, async |nonce| {
+            let c = &self.inner;
+            c.sdk_client
+                .mutate::<ContextConfig>(
+                    c.protocol.as_str().into(),
+                    c.network_id.as_str().into(),
+                    c.contract_id.as_str().into(),
+                )
+                .set_default_visibility(c.group_id, default_visibility)
+                .send(c.signing_key, nonce)
+                .await
+        })
+        .await?;
 
         Ok(())
     }

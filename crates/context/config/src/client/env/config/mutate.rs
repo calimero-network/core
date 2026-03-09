@@ -14,7 +14,9 @@ use crate::types::{
     AppKey, Application, BlockHeight, Capability, ContextGroupId, ContextId, ContextIdentity,
     SignedGroupRevealPayload, SignedRevealPayload, SignerId,
 };
-use crate::{ContextRequest, ContextRequestKind, GroupRequest, GroupRequestKind, RequestKind};
+use crate::{
+    ContextRequest, ContextRequestKind, GroupRequest, GroupRequestKind, RequestKind, VisibilityMode,
+};
 
 #[derive(Debug)]
 pub struct ContextConfigMutate<'a, T> {
@@ -262,6 +264,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         self,
         group_id: ContextGroupId,
         context_id: ContextId,
+        visibility_mode: Option<VisibilityMode>,
     ) -> ContextConfigMutateRequest<'a, T> {
         ContextConfigMutateRequest {
             client: self.client,
@@ -269,6 +272,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
                 Repr::new(group_id),
                 GroupRequestKind::RegisterContext {
                     context_id: Repr::new(context_id),
+                    visibility_mode,
                 },
             )),
         }
@@ -354,6 +358,101 @@ impl<'a, T> ContextConfigMutate<'a, T> {
             kind: RequestKind::Group(GroupRequest::new(
                 Repr::new(group_id),
                 GroupRequestKind::RevealGroupInvitation { payload },
+            )),
+        }
+    }
+
+    pub fn set_member_capabilities(
+        self,
+        group_id: ContextGroupId,
+        member: SignerId,
+        capabilities: u32,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::SetMemberCapabilities {
+                    member: Repr::new(member),
+                    capabilities,
+                },
+            )),
+        }
+    }
+
+    pub fn set_context_visibility(
+        self,
+        group_id: ContextGroupId,
+        context_id: ContextId,
+        mode: VisibilityMode,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::SetContextVisibility {
+                    context_id: Repr::new(context_id),
+                    mode,
+                },
+            )),
+        }
+    }
+
+    pub fn manage_context_allowlist(
+        self,
+        group_id: ContextGroupId,
+        context_id: ContextId,
+        add: Vec<SignerId>,
+        remove: Vec<SignerId>,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        // safety: `Repr<T>` is a transparent wrapper around `T`
+        let add = unsafe {
+            core::mem::transmute::<Vec<SignerId>, Vec<Repr<SignerId>>>(add)
+        };
+        let remove = unsafe {
+            core::mem::transmute::<Vec<SignerId>, Vec<Repr<SignerId>>>(remove)
+        };
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::ManageContextAllowlist {
+                    context_id: Repr::new(context_id),
+                    add,
+                    remove,
+                },
+            )),
+        }
+    }
+
+    pub fn set_default_capabilities(
+        self,
+        group_id: ContextGroupId,
+        default_capabilities: u32,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::SetDefaultCapabilities {
+                    default_capabilities,
+                },
+            )),
+        }
+    }
+
+    pub fn set_default_visibility(
+        self,
+        group_id: ContextGroupId,
+        default_visibility: VisibilityMode,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Group(GroupRequest::new(
+                Repr::new(group_id),
+                GroupRequestKind::SetDefaultVisibility {
+                    default_visibility,
+                },
             )),
         }
     }

@@ -2,10 +2,12 @@ use core::mem;
 use std::collections::BTreeMap;
 
 use crate::client::env::config::requests::{
-    ApplicationRequest, ApplicationRevisionRequest, ContextGroupRequest, FetchGroupNonceRequest,
-    FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse, GroupInfoRequest,
-    GroupMemberQueryEntry, GroupMembersRequest, HasMemberRequest, IsGroupAdminRequest,
-    MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
+    ApplicationRequest, ApplicationRevisionRequest, ContextAllowlistRequest,
+    ContextGroupRequest, ContextVisibilityQueryResponse, ContextVisibilityRequest,
+    FetchGroupNonceRequest, FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse,
+    GroupInfoRequest, GroupMemberQueryEntry, GroupMembersRequest, HasMemberRequest,
+    IsGroupAdminRequest, MembersRequest, MembersRevisionRequest, PrivilegesRequest,
+    ProxyContractRequest,
 };
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
@@ -262,5 +264,42 @@ impl Method<Near> for FetchGroupNonceRequest {
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         serde_json::from_slice(&response).map_err(Into::into)
+    }
+}
+
+impl Method<Near> for ContextVisibilityRequest {
+    const METHOD: &'static str = "context_visibility";
+
+    type Returns = Option<ContextVisibilityQueryResponse>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        serde_json::from_slice(&response).map_err(Into::into)
+    }
+}
+
+impl Method<Near> for ContextAllowlistRequest {
+    const METHOD: &'static str = "context_allowlist";
+
+    type Returns = Vec<SignerId>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let members: Vec<Repr<SignerId>> = serde_json::from_slice(&response)?;
+
+        // safety: `Repr<T>` is a transparent wrapper around `T`
+        #[expect(
+            clippy::transmute_undefined_repr,
+            reason = "Repr<T> is a transparent wrapper around T"
+        )]
+        let members = unsafe { mem::transmute::<Vec<Repr<SignerId>>, Vec<SignerId>>(members) };
+
+        Ok(members)
     }
 }

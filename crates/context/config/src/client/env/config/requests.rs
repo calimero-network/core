@@ -128,6 +128,7 @@ pub struct GroupMembersRequest {
 pub struct GroupMemberQueryEntry {
     pub identity: Repr<SignerId>,
     pub role: String,
+    pub capabilities: u32,
 }
 
 /// Request to get which group a context belongs to.
@@ -157,6 +158,32 @@ pub struct GroupInfoQueryResponse {
     pub member_count: u64,
     pub context_count: u64,
     pub migration_method: Option<String>,
+    pub default_member_capabilities: u32,
+    pub default_context_visibility: crate::VisibilityMode,
+}
+
+/// Response type for context visibility queries.
+#[derive(Debug, Deserialize)]
+pub struct ContextVisibilityQueryResponse {
+    pub mode: crate::VisibilityMode,
+    pub creator: Repr<SignerId>,
+    pub allowlist_count: u64,
+}
+
+/// Request to get context visibility info.
+#[derive(Copy, Clone, Debug, Serialize)]
+pub struct ContextVisibilityRequest {
+    pub group_id: Repr<ContextGroupId>,
+    pub context_id: Repr<ContextId>,
+}
+
+/// Request to get context allowlist (paginated).
+#[derive(Copy, Clone, Debug, Serialize)]
+pub struct ContextAllowlistRequest {
+    pub group_id: Repr<ContextGroupId>,
+    pub context_id: Repr<ContextId>,
+    pub offset: usize,
+    pub length: usize,
 }
 
 // ============================================================================

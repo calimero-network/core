@@ -123,6 +123,23 @@ impl<'a> GroupRequest<'a> {
     }
 }
 
+/// Visibility mode for a context within a group.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum VisibilityMode {
+    Open,
+    Restricted,
+}
+
+/// Bitfield constants for group member capabilities.
+#[derive(Copy, Clone, Debug)]
+pub struct MemberCapabilities;
+
+impl MemberCapabilities {
+    pub const CAN_CREATE_CONTEXT: u32 = 1 << 0;
+    pub const CAN_INVITE_MEMBERS: u32 = 1 << 1;
+    pub const CAN_JOIN_OPEN_CONTEXTS: u32 = 1 << 2;
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "scope", content = "params")]
 #[serde(deny_unknown_fields)]
@@ -142,6 +159,7 @@ pub enum GroupRequestKind<'a> {
     },
     RegisterContext {
         context_id: Repr<ContextId>,
+        visibility_mode: Option<VisibilityMode>,
     },
     UnregisterContext {
         context_id: Repr<ContextId>,
@@ -168,6 +186,30 @@ pub enum GroupRequestKind<'a> {
     JoinContextViaGroup {
         context_id: Repr<ContextId>,
         new_member: Repr<ContextIdentity>,
+    },
+    /// Set capability bits for a specific member (admin-only).
+    SetMemberCapabilities {
+        member: Repr<SignerId>,
+        capabilities: u32,
+    },
+    /// Set visibility mode for a context (creator or admin).
+    SetContextVisibility {
+        context_id: Repr<ContextId>,
+        mode: VisibilityMode,
+    },
+    /// Add/remove members from a context's allowlist (creator or admin).
+    ManageContextAllowlist {
+        context_id: Repr<ContextId>,
+        add: Vec<Repr<SignerId>>,
+        remove: Vec<Repr<SignerId>>,
+    },
+    /// Set the default capability bits for new members (admin-only).
+    SetDefaultCapabilities {
+        default_capabilities: u32,
+    },
+    /// Set the default visibility mode for new contexts (admin-only).
+    SetDefaultVisibility {
+        default_visibility: VisibilityMode,
     },
 }
 

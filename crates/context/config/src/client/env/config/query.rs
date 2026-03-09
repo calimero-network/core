@@ -2,10 +2,12 @@
 use std::collections::BTreeMap;
 
 use super::requests::{
-    ApplicationRequest, ApplicationRevisionRequest, ContextGroupRequest, FetchGroupNonceRequest,
-    FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse, GroupInfoRequest,
-    GroupMemberQueryEntry, GroupMembersRequest, HasMemberRequest, IsGroupAdminRequest,
-    MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
+    ApplicationRequest, ApplicationRevisionRequest, ContextAllowlistRequest,
+    ContextGroupRequest, ContextVisibilityQueryResponse, ContextVisibilityRequest,
+    FetchGroupNonceRequest, FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse,
+    GroupInfoRequest, GroupMemberQueryEntry, GroupMembersRequest, HasMemberRequest,
+    IsGroupAdminRequest, MembersRequest, MembersRevisionRequest, PrivilegesRequest,
+    ProxyContractRequest,
 };
 use crate::client::env::utils;
 use crate::client::transport::Transport;
@@ -186,6 +188,36 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         let params = FetchGroupNonceRequest {
             group_id: Repr::new(group_id),
             admin_id: Repr::new(admin_id),
+        };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn context_visibility(
+        &self,
+        group_id: ContextGroupId,
+        context_id: ContextId,
+    ) -> Result<Option<ContextVisibilityQueryResponse>, ClientError<T>> {
+        let params = ContextVisibilityRequest {
+            group_id: Repr::new(group_id),
+            context_id: Repr::new(context_id),
+        };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn context_allowlist(
+        &self,
+        group_id: ContextGroupId,
+        context_id: ContextId,
+        offset: usize,
+        length: usize,
+    ) -> Result<Vec<SignerId>, ClientError<T>> {
+        let params = ContextAllowlistRequest {
+            group_id: Repr::new(group_id),
+            context_id: Repr::new(context_id),
+            offset,
+            length,
         };
 
         utils::send(&self.client, Operation::Read(params)).await
