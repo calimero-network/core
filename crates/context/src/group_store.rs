@@ -847,10 +847,7 @@ pub fn set_context_visibility(
 ) -> EyreResult<()> {
     let mut handle = store.handle();
     let key = GroupContextVisibility::new(group_id.to_bytes(), *context_id);
-    handle.put(
-        &key,
-        &GroupContextVisibilityValue { mode, creator },
-    )?;
+    handle.put(&key, &GroupContextVisibilityValue { mode, creator })?;
     Ok(())
 }
 
@@ -946,10 +943,7 @@ pub fn set_default_capabilities(
     Ok(())
 }
 
-pub fn get_default_visibility(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<u8>> {
+pub fn get_default_visibility(store: &Store, group_id: &ContextGroupId) -> EyreResult<Option<u8>> {
     let handle = store.handle();
     let key = GroupDefaultVis::new(group_id.to_bytes());
     let value = handle.get(&key)?;
@@ -1470,7 +1464,9 @@ mod tests {
         set_member_capability(&store, &gid, &bob, 0b110).unwrap();
 
         assert_eq!(
-            get_member_capability(&store, &gid, &alice).unwrap().unwrap(),
+            get_member_capability(&store, &gid, &alice)
+                .unwrap()
+                .unwrap(),
             0b001
         );
         assert_eq!(
@@ -1518,8 +1514,12 @@ mod tests {
         set_context_visibility(&store, &gid, &ctx1, 0, creator).unwrap();
         set_context_visibility(&store, &gid, &ctx2, 1, creator).unwrap();
 
-        let (mode1, _) = get_context_visibility(&store, &gid, &ctx1).unwrap().unwrap();
-        let (mode2, _) = get_context_visibility(&store, &gid, &ctx2).unwrap().unwrap();
+        let (mode1, _) = get_context_visibility(&store, &gid, &ctx1)
+            .unwrap()
+            .unwrap();
+        let (mode2, _) = get_context_visibility(&store, &gid, &ctx2)
+            .unwrap()
+            .unwrap();
         assert_eq!(mode1, 0);
         assert_eq!(mode2, 1);
     }
@@ -1614,11 +1614,17 @@ mod tests {
         assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
 
         set_default_capabilities(&store, &gid, 0b100).unwrap();
-        assert_eq!(get_default_capabilities(&store, &gid).unwrap().unwrap(), 0b100);
+        assert_eq!(
+            get_default_capabilities(&store, &gid).unwrap().unwrap(),
+            0b100
+        );
 
         // Update
         set_default_capabilities(&store, &gid, 0b111).unwrap();
-        assert_eq!(get_default_capabilities(&store, &gid).unwrap().unwrap(), 0b111);
+        assert_eq!(
+            get_default_capabilities(&store, &gid).unwrap().unwrap(),
+            0b111
+        );
     }
 
     #[test]
@@ -1648,8 +1654,14 @@ mod tests {
         set_default_visibility(&store, &g1, 0).unwrap();
         set_default_visibility(&store, &g2, 1).unwrap();
 
-        assert_eq!(get_default_capabilities(&store, &g1).unwrap().unwrap(), 0b001);
-        assert_eq!(get_default_capabilities(&store, &g2).unwrap().unwrap(), 0b110);
+        assert_eq!(
+            get_default_capabilities(&store, &g1).unwrap().unwrap(),
+            0b001
+        );
+        assert_eq!(
+            get_default_capabilities(&store, &g2).unwrap().unwrap(),
+            0b110
+        );
         assert_eq!(get_default_visibility(&store, &g1).unwrap().unwrap(), 0);
         assert_eq!(get_default_visibility(&store, &g2).unwrap().unwrap(), 1);
     }

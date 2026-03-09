@@ -498,7 +498,12 @@ pub struct GroupContextVisibilityValue {
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupContextAllowlist(
-    Key<(GroupPrefix, GroupIdComponent, GroupIdComponent, GroupIdComponent)>,
+    Key<(
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    )>,
 );
 
 impl GroupContextAllowlist {
@@ -537,7 +542,12 @@ impl GroupContextAllowlist {
 }
 
 impl AsKeyParts for GroupContextAllowlist {
-    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent, GroupIdComponent);
+    type Components = (
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    );
 
     fn column() -> Column {
         Column::Group

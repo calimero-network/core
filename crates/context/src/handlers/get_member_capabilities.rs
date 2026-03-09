@@ -24,8 +24,9 @@ impl Handler<GetMemberCapabilitiesRequest> for ContextManager {
                 bail!("identity is not a member of group '{group_id:?}'");
             }
 
-            let capabilities = group_store::get_member_capability(&self.datastore, &group_id, &member)?
-                .unwrap_or(0);
+            let capabilities =
+                group_store::get_member_capability(&self.datastore, &group_id, &member)?
+                    .unwrap_or(0);
 
             Ok(GetMemberCapabilitiesResponse { capabilities })
         })();

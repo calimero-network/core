@@ -2,12 +2,11 @@
 use std::collections::BTreeMap;
 
 use super::requests::{
-    ApplicationRequest, ApplicationRevisionRequest, ContextAllowlistRequest,
-    ContextGroupRequest, ContextVisibilityQueryResponse, ContextVisibilityRequest,
-    FetchGroupNonceRequest, FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse,
-    GroupInfoRequest, GroupMemberQueryEntry, GroupMembersRequest, HasMemberRequest,
-    IsGroupAdminRequest, MembersRequest, MembersRevisionRequest, PrivilegesRequest,
-    ProxyContractRequest,
+    ApplicationRequest, ApplicationRevisionRequest, ContextAllowlistRequest, ContextGroupRequest,
+    ContextVisibilityQueryResponse, ContextVisibilityRequest, FetchGroupNonceRequest,
+    FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse, GroupInfoRequest,
+    GroupMemberQueryEntry, GroupMembersRequest, HasMemberRequest, IsGroupAdminRequest,
+    MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
 };
 use crate::client::env::utils;
 use crate::client::transport::Transport;

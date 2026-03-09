@@ -47,7 +47,11 @@ impl Handler<SetDefaultCapabilitiesRequest> for ContextManager {
                 group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
             }
 
-            group_store::set_default_capabilities(&self.datastore, &group_id, default_capabilities)?;
+            group_store::set_default_capabilities(
+                &self.datastore,
+                &group_id,
+                default_capabilities,
+            )?;
 
             Ok(())
         })() {
@@ -77,7 +81,10 @@ impl Handler<SetDefaultCapabilitiesRequest> for ContextManager {
                         .await?;
                 }
 
-                info!(?group_id, default_capabilities, "default member capabilities updated");
+                info!(
+                    ?group_id,
+                    default_capabilities, "default member capabilities updated"
+                );
 
                 let contexts =
                     group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;

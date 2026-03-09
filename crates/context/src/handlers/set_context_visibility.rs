@@ -43,8 +43,7 @@ impl Handler<SetContextVisibilityRequest> for ContextManager {
             }
 
             // Context visibility can be set by admin or the context creator
-            let is_admin =
-                group_store::is_group_admin(&self.datastore, &group_id, &requester)?;
+            let is_admin = group_store::is_group_admin(&self.datastore, &group_id, &requester)?;
             if !is_admin {
                 // Check if requester is the context creator
                 if let Some((_, creator_bytes)) =
@@ -68,13 +67,10 @@ impl Handler<SetContextVisibilityRequest> for ContextManager {
             };
 
             // Preserve creator from existing visibility, or use requester as creator
-            let creator = group_store::get_context_visibility(
-                &self.datastore,
-                &group_id,
-                &context_id,
-            )?
-            .map(|(_, c)| c)
-            .unwrap_or(*requester);
+            let creator =
+                group_store::get_context_visibility(&self.datastore, &group_id, &context_id)?
+                    .map(|(_, c)| c)
+                    .unwrap_or(*requester);
 
             group_store::set_context_visibility(
                 &self.datastore,

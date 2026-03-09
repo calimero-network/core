@@ -82,7 +82,11 @@ impl Handler<SetDefaultVisibilityRequest> for ContextManager {
                         .await?;
                 }
 
-                info!(?group_id, ?default_visibility, "default context visibility updated");
+                info!(
+                    ?group_id,
+                    ?default_visibility,
+                    "default context visibility updated"
+                );
 
                 let contexts =
                     group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;

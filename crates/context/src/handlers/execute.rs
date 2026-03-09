@@ -186,6 +186,8 @@ impl Handler<ExecuteRequest> for ContextManager {
             .as_ref()
             .map(|_| self.context_client.clone());
 
+        let datastore_for_migration_clear = self.datastore.clone();
+
         let guard_task = async move {
             match guard {
                 Either::Left(guard) => guard,
@@ -222,16 +224,30 @@ impl Handler<ExecuteRequest> for ContextManager {
                     Either::Left(guard) => guard,
                     Either::Right((guard, ctx_client, cid, target_app, migrate)) => {
                         // Perform the lazy upgrade (awaits completion)
-                        if let Err(err) = ctx_client
+                        match ctx_client
                             .update_application(&cid, &target_app, &executor, migrate)
                             .await
                         {
-                            warn!(
-                                %cid,
-                                %target_app,
-                                %err,
-                                "lazy upgrade failed, proceeding with current application"
-                            );
+                            Ok(()) => {
+                                // Clear migration from group meta after successful lazy upgrade
+                                if let Err(err) =
+                                    clear_group_migration(&datastore_for_migration_clear, &cid)
+                                {
+                                    warn!(
+                                        %cid,
+                                        %err,
+                                        "failed to clear migration after successful lazy upgrade"
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                warn!(
+                                    %cid,
+                                    %target_app,
+                                    %err,
+                                    "lazy upgrade failed, proceeding with current application"
+                                );
+                            }
                         }
                         guard
                     }
@@ -1254,4 +1270,26 @@ fn maybe_lazy_upgrade(
     );
 
     Some((meta.target_application_id, migrate_method))
+}
+
+/// Clears the migration field from the group metadata after a successful lazy upgrade.
+/// This prevents the migration from being re-triggered on every subsequent execution.
+fn clear_group_migration(datastore: &Store, context_id: &ContextId) -> eyre::Result<()> {
+    use crate::group_store;
+
+    let Some(group_id) = group_store::get_group_for_context(datastore, context_id)? else {
+        return Ok(());
+    };
+
+    let Some(mut meta) = group_store::load_group_meta(datastore, &group_id)? else {
+        return Ok(());
+    };
+
+    if meta.migration.is_some() {
+        meta.migration = None;
+        group_store::save_group_meta(datastore, &group_id, &meta)?;
+        debug!(?group_id, %context_id, "cleared migration from group meta after successful lazy upgrade");
+    }
+
+    Ok(())
 }

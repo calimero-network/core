@@ -45,8 +45,7 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
             }
 
             // Allowlist can be managed by admin or context creator
-            let is_admin =
-                group_store::is_group_admin(&self.datastore, &group_id, &requester)?;
+            let is_admin = group_store::is_group_admin(&self.datastore, &group_id, &requester)?;
             if !is_admin {
                 if let Some((_, creator_bytes)) =
                     group_store::get_context_visibility(&self.datastore, &group_id, &context_id)?

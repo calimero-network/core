@@ -33,10 +33,7 @@ pub enum ContextsSubCommands {
         about = "Set visibility mode for a context (open or restricted)"
     )]
     SetVisibility(SetVisibilityCommand),
-    #[command(
-        alias = "get-vis",
-        about = "Get visibility mode for a context"
-    )]
+    #[command(alias = "get-vis", about = "Get visibility mode for a context")]
     GetVisibility(GetVisibilityCommand),
     #[command(about = "Manage the allowlist for a restricted context")]
     Allowlist(AllowlistCommand),

@@ -127,13 +127,64 @@ impl ContextManager {
     pub fn node_group_identity(
         &self,
     ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
+        use tracing::warn;
+
         let gi = self.group_identity.as_ref()?;
 
-        let pk_str = gi.public_key.strip_prefix("ed25519:")?;
-        let sk_str = gi.secret_key.strip_prefix("ed25519:")?;
+        let pk_str = match gi.public_key.strip_prefix("ed25519:") {
+            Some(s) => s,
+            None => {
+                warn!(
+                    public_key = %gi.public_key,
+                    "group identity public key missing 'ed25519:' prefix"
+                );
+                return None;
+            }
+        };
 
-        let pk_bytes: [u8; 32] = bs58::decode(pk_str).into_vec().ok()?.try_into().ok()?;
-        let sk_bytes: [u8; 32] = bs58::decode(sk_str).into_vec().ok()?.try_into().ok()?;
+        let sk_str = match gi.secret_key.strip_prefix("ed25519:") {
+            Some(s) => s,
+            None => {
+                warn!("group identity secret key missing 'ed25519:' prefix");
+                return None;
+            }
+        };
+
+        let pk_bytes: [u8; 32] = match bs58::decode(pk_str).into_vec() {
+            Ok(vec) => match vec.try_into() {
+                Ok(bytes) => bytes,
+                Err(vec) => {
+                    warn!(
+                        expected_len = 32,
+                        actual_len = vec.len(),
+                        "group identity public key has invalid length"
+                    );
+                    return None;
+                }
+            },
+            Err(err) => {
+                warn!(%err, "group identity public key is not valid base58");
+                return None;
+            }
+        };
+
+        let sk_bytes: [u8; 32] = match bs58::decode(sk_str).into_vec() {
+            Ok(vec) => match vec.try_into() {
+                Ok(bytes) => bytes,
+                Err(vec) => {
+                    warn!(
+                        expected_len = 32,
+                        actual_len = vec.len(),
+                        "group identity secret key has invalid length"
+                    );
+                    return None;
+                }
+            },
+            Err(err) => {
+                warn!(%err, "group identity secret key is not valid base58");
+                return None;
+            }
+        };
 
         Some((
             calimero_primitives::identity::PublicKey::from(pk_bytes),
