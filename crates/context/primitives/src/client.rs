@@ -657,21 +657,35 @@ impl ContextClient {
     }
 
     /// Helper to compute root hash using full borsh deserialization.
+    ///
+    /// The minimal structs below MUST match the borsh layout of the real types in
+    /// `calimero-storage/src/entities.rs` and `calimero-storage/src/index.rs`.
+    /// We use `deserialize_reader` (not `try_from_slice`) so that trailing fields
+    /// after `full_hash` (own_hash, metadata, deleted_at) don't cause
+    /// "Not all bytes read" errors.
+    ///
+    /// **SYNC NOTE**: An identical copy of these minimal structs lives in
+    /// `calimero-storage/src/tests/index.rs` (`minimal_struct_layout_compat`).
+    /// When modifying the structs here, update the test copy too (and vice-versa).
     fn compute_root_hash_via_borsh(
         &self,
         context_id: &ContextId,
         bytes: &[u8],
     ) -> eyre::Result<[u8; 32]> {
-        // Minimal EntityIndex structure for deserialization
+        use calimero_primitives::crdt::CrdtType;
+
+        // EntityIndex: we only need fields through full_hash.
+        // Remaining fields (own_hash, metadata, deleted_at) are skipped by
+        // using deserialize_reader which doesn't require all bytes consumed.
         #[derive(BorshDeserialize)]
         struct EntityIndexMinimal {
             _id: [u8; 32],
             _parent_id: Option<[u8; 32]>,
             _children: Option<Vec<ChildInfoMinimal>>,
             full_hash: [u8; 32],
-            // Don't need rest
         }
 
+        // Must match ChildInfo in calimero-storage/src/entities.rs
         #[derive(BorshDeserialize)]
         struct ChildInfoMinimal {
             _id: [u8; 32],
@@ -679,18 +693,52 @@ impl ContextClient {
             _metadata: MetadataMinimal,
         }
 
+        // Must match Metadata in calimero-storage/src/entities.rs
+        // Fields: created_at, updated_at, storage_type, crdt_type, field_name
         #[derive(BorshDeserialize)]
         struct MetadataMinimal {
             _created_at: u64,
-            _updated_at: UpdatedAtMinimal,
-            _storage_type: u8,
+            _updated_at: u64, // UpdatedAt is a newtype over u64
+            _storage_type: StorageTypeMinimal,
+            _crdt_type: Option<CrdtType>,
+            _field_name: Option<String>,
         }
 
+        // Must match StorageType enum in calimero-storage/src/entities.rs
         #[derive(BorshDeserialize)]
-        struct UpdatedAtMinimal(u64);
+        #[allow(
+            dead_code,
+            reason = "fields required for correct borsh layout deserialization"
+        )]
+        enum StorageTypeMinimal {
+            Public,
+            User {
+                owner: [u8; 32], // PublicKey = Hash = 32 bytes in borsh
+                signature_data: Option<SignatureDataMinimal>,
+            },
+            Frozen,
+        }
 
-        let index: EntityIndexMinimal = EntityIndexMinimal::try_from_slice(bytes)
+        // Must match SignatureData in calimero-storage/src/entities.rs
+        #[derive(BorshDeserialize)]
+        struct SignatureDataMinimal {
+            _signature: [u8; 64],
+            _nonce: u64,
+        }
+
+        let mut reader: &[u8] = bytes;
+        let index = EntityIndexMinimal::deserialize_reader(&mut reader)
             .map_err(|e| eyre::eyre!("Failed to deserialize EntityIndex: {}", e))?;
+
+        let trailing = reader.len();
+        if trailing > 0 {
+            tracing::debug!(
+                %context_id,
+                trailing_bytes = trailing,
+                total_bytes = bytes.len(),
+                "EntityIndex deserialization skipped trailing bytes"
+            );
+        }
 
         tracing::debug!(
             %context_id,

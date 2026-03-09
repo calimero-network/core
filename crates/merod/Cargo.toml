@@ -52,6 +52,8 @@ calimero-tee-attestation.workspace = true
 calimero-utils-actix.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh"] }
 mero-auth = { path = "../auth" }
+sigstore = { version = "0.13.0", default-features = false, features = ["verify", "cosign", "sigstore-trust-root", "rustls-tls"] }
+x509-cert = "0.2.5"
 
 [build-dependencies]
 calimero-build-utils.workspace = true

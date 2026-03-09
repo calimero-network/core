@@ -60,12 +60,18 @@ impl RunCommand {
             let peer_id = config.identity.keypair.public().to_peer_id().to_base58();
             info!("TEE configured, fetching storage key for peer {}", peer_id);
 
-            let key = kms::fetch_storage_key(&tee_config.kms, &peer_id, &config.identity.keypair)
-                .await
-                .wrap_err(
-                    "TEE storage encryption is configured but failed to fetch key from KMS. \
+            let policy = crate::kms_policy::resolve_policy().await?;
+            let key = kms::fetch_storage_key(
+                &tee_config.kms,
+                &peer_id,
+                &config.identity,
+                policy.as_ref(),
+            )
+            .await
+            .wrap_err(
+                "TEE storage encryption is configured but failed to fetch key from KMS. \
                      The node cannot start without the encryption key to prevent unencrypted data storage.",
-                )?;
+            )?;
 
             info!(
                 "Storage encryption key fetched successfully (key_len={})",

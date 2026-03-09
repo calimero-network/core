@@ -935,3 +935,157 @@ mod hashing {
         assert_eq!(updated_root_index.own_hash, root_hash2);
     }
 }
+
+/// Guard against borsh layout drift between the real `EntityIndex` (and its
+/// nested types) and the "Minimal" mirror structs used in
+/// `calimero-context-primitives/src/client.rs::compute_root_hash_via_borsh`.
+///
+/// If any field is added/removed/reordered in the real types, this test will
+/// fail and remind the developer to update the minimal structs too.
+///
+/// **SYNC NOTE**: The minimal structs below are an identical copy of those in
+/// `calimero-context-primitives/src/client.rs::compute_root_hash_via_borsh`.
+/// When modifying either copy, update the other to keep them in sync.
+mod minimal_struct_layout_compat {
+    use borsh::BorshDeserialize;
+    use calimero_primitives::crdt::CrdtType;
+    use calimero_primitives::identity::PublicKey;
+
+    use crate::address::Id;
+    use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
+    use crate::index::EntityIndex;
+
+    // ---- Minimal mirror structs (must match client.rs) ----
+
+    #[derive(BorshDeserialize)]
+    struct EntityIndexMinimal {
+        _id: [u8; 32],
+        _parent_id: Option<[u8; 32]>,
+        _children: Option<Vec<ChildInfoMinimal>>,
+        full_hash: [u8; 32],
+    }
+
+    #[derive(BorshDeserialize)]
+    struct ChildInfoMinimal {
+        _id: [u8; 32],
+        _merkle_hash: [u8; 32],
+        _metadata: MetadataMinimal,
+    }
+
+    #[derive(BorshDeserialize)]
+    struct MetadataMinimal {
+        _created_at: u64,
+        _updated_at: u64,
+        _storage_type: StorageTypeMinimal,
+        _crdt_type: Option<CrdtType>,
+        _field_name: Option<String>,
+    }
+
+    #[derive(BorshDeserialize)]
+    #[allow(dead_code, reason = "fields required for correct borsh layout")]
+    enum StorageTypeMinimal {
+        Public,
+        User {
+            owner: [u8; 32],
+            signature_data: Option<SignatureDataMinimal>,
+        },
+        Frozen,
+    }
+
+    #[derive(BorshDeserialize)]
+    struct SignatureDataMinimal {
+        _signature: [u8; 64],
+        _nonce: u64,
+    }
+
+    fn make_index(
+        children: Option<Vec<ChildInfo>>,
+        storage_type: StorageType,
+        crdt_type: Option<CrdtType>,
+        field_name: Option<String>,
+    ) -> EntityIndex {
+        EntityIndex {
+            id: Id::new([0xAA; 32]),
+            parent_id: Some(Id::new([0xBB; 32])),
+            children,
+            full_hash: [0x11; 32],
+            own_hash: [0x22; 32],
+            metadata: Metadata {
+                created_at: 1000,
+                updated_at: 2000.into(),
+                storage_type,
+                crdt_type,
+                field_name,
+            },
+            deleted_at: Some(9999),
+        }
+    }
+
+    fn assert_round_trip(index: &EntityIndex) {
+        let bytes = borsh::to_vec(index).expect("serialize real EntityIndex");
+        let mut reader: &[u8] = &bytes;
+        let minimal = EntityIndexMinimal::deserialize_reader(&mut reader)
+            .expect("deserialize with minimal structs — layout may have drifted");
+        assert_eq!(
+            minimal.full_hash,
+            index.full_hash(),
+            "full_hash mismatch after round-trip"
+        );
+    }
+
+    #[test]
+    fn round_trip_no_children_public() {
+        let index = make_index(None, StorageType::Public, None, None);
+        assert_round_trip(&index);
+    }
+
+    #[test]
+    fn round_trip_with_children_and_crdt_type() {
+        let child = ChildInfo::new(
+            Id::new([0xCC; 32]),
+            [0x33; 32],
+            Metadata {
+                created_at: 500,
+                updated_at: 600.into(),
+                storage_type: StorageType::Public,
+                crdt_type: Some(CrdtType::GCounter),
+                field_name: Some("scores".to_owned()),
+            },
+        );
+        let index = make_index(
+            Some(vec![child]),
+            StorageType::Public,
+            Some(CrdtType::UnorderedMap {
+                key_type: "String".to_owned(),
+                value_type: "u64".to_owned(),
+            }),
+            Some("my_map".to_owned()),
+        );
+        assert_round_trip(&index);
+    }
+
+    #[test]
+    fn round_trip_user_storage_with_signature() {
+        let owner: PublicKey = [0xDD_u8; 32].into();
+        let sig_data = SignatureData {
+            signature: [0xEE; 64],
+            nonce: 42,
+        };
+        let index = make_index(
+            None,
+            StorageType::User {
+                owner,
+                signature_data: Some(sig_data),
+            },
+            None,
+            None,
+        );
+        assert_round_trip(&index);
+    }
+
+    #[test]
+    fn round_trip_frozen_storage() {
+        let index = make_index(None, StorageType::Frozen, None, None);
+        assert_round_trip(&index);
+    }
+}

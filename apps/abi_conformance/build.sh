@@ -14,5 +14,5 @@ mkdir -p res
 cp $TARGET/wasm32-unknown-unknown/app-release/abi_conformance.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/abi_conformance.wasm -o ./res/abi_conformance.wasm
+  wasm-opt -Oz --enable-bulk-memory ./res/abi_conformance.wasm -o ./res/abi_conformance.wasm
 fi 

@@ -14,6 +14,6 @@ cargo build --target wasm32-unknown-unknown --profile app-release
 cp $TARGET/wasm32-unknown-unknown/app-release/xcall_example.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/xcall_example.wasm -o ./res/xcall_example.wasm
+  wasm-opt -Oz --enable-bulk-memory ./res/xcall_example.wasm -o ./res/xcall_example.wasm
 fi
 

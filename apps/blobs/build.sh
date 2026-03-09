@@ -14,7 +14,7 @@ cargo build --target wasm32-unknown-unknown --profile app-release
 cp $TARGET/wasm32-unknown-unknown/app-release/blobs.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/blobs.wasm -o ./res/blobs.wasm
+  wasm-opt -Oz --enable-bulk-memory ./res/blobs.wasm -o ./res/blobs.wasm
 fi
 
 
