@@ -35,3 +35,28 @@ impl PredefinedEntry for key::GroupSigningKey {
     type Codec = Borsh;
     type DataType<'a> = key::GroupSigningKeyValue;
 }
+
+impl PredefinedEntry for key::GroupMemberCapability {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupMemberCapabilityValue;
+}
+
+impl PredefinedEntry for key::GroupContextVisibility {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupContextVisibilityValue;
+}
+
+impl PredefinedEntry for key::GroupContextAllowlist {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
+impl PredefinedEntry for key::GroupDefaultCaps {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupDefaultCapsValue;
+}
+
+impl PredefinedEntry for key::GroupDefaultVis {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupDefaultVisValue;
+}

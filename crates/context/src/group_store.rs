@@ -8,10 +8,13 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
-    AsKeyParts, ContextGroupRef, ContextIdentity, GroupContextIndex, GroupMember, GroupMeta,
-    GroupMetaValue, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus,
-    GroupUpgradeValue, GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX, GROUP_SIGNING_KEY_PREFIX,
-    GROUP_UPGRADE_PREFIX,
+    AsKeyParts, ContextGroupRef, ContextIdentity, GroupContextAllowlist, GroupContextIndex,
+    GroupContextVisibility, GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue,
+    GroupDefaultVis, GroupDefaultVisValue, GroupMember, GroupMemberCapability,
+    GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue,
+    GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
+    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
+    GROUP_MEMBER_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -601,6 +604,14 @@ pub async fn sync_group_state_from_contract(
     )
     .await?;
 
+    // Sync group default capabilities and visibility.
+    set_default_capabilities(datastore, group_id, info.default_member_capabilities)?;
+    let vis_mode = match info.default_context_visibility {
+        calimero_context_config::VisibilityMode::Open => 0u8,
+        calimero_context_config::VisibilityMode::Restricted => 1u8,
+    };
+    set_default_visibility(datastore, group_id, vis_mode)?;
+
     Ok((meta, info))
 }
 
@@ -715,6 +726,7 @@ async fn sync_group_members_from_contract(
             };
             on_chain_members.insert(identity_bytes);
             add_group_member(datastore, group_id, &pk, role)?;
+            set_member_capability(datastore, group_id, &pk, entry.capabilities)?;
         }
 
         if page_len < PAGE_SIZE {
@@ -785,6 +797,140 @@ pub fn enumerate_in_progress_upgrades(
     }
 
     Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// Permission helpers
+// ---------------------------------------------------------------------------
+
+pub fn get_member_capability(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+) -> EyreResult<Option<u32>> {
+    let handle = store.handle();
+    let key = GroupMemberCapability::new(group_id.to_bytes(), *member);
+    let value = handle.get(&key)?;
+    Ok(value.map(|v| v.capabilities))
+}
+
+pub fn set_member_capability(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+    caps: u32,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupMemberCapability::new(group_id.to_bytes(), *member);
+    handle.put(&key, &GroupMemberCapabilityValue { capabilities: caps })?;
+    Ok(())
+}
+
+/// Returns (mode, creator_pk). mode: 0 = Open, 1 = Restricted.
+pub fn get_context_visibility(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+) -> EyreResult<Option<(u8, [u8; 32])>> {
+    let handle = store.handle();
+    let key = GroupContextVisibility::new(group_id.to_bytes(), *context_id);
+    let value = handle.get(&key)?;
+    Ok(value.map(|v| (v.mode, v.creator)))
+}
+
+pub fn set_context_visibility(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+    mode: u8,
+    creator: [u8; 32],
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupContextVisibility::new(group_id.to_bytes(), *context_id);
+    handle.put(
+        &key,
+        &GroupContextVisibilityValue { mode, creator },
+    )?;
+    Ok(())
+}
+
+pub fn check_context_allowlist(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+    member: &PublicKey,
+) -> EyreResult<bool> {
+    let handle = store.handle();
+    let key = GroupContextAllowlist::new(group_id.to_bytes(), *context_id, *member);
+    // If the key exists (even with unit value), the member is on the allowlist
+    let value: Option<()> = handle.get(&key)?;
+    Ok(value.is_some())
+}
+
+pub fn add_to_context_allowlist(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+    member: &PublicKey,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupContextAllowlist::new(group_id.to_bytes(), *context_id, *member);
+    handle.put(&key, &())?;
+    Ok(())
+}
+
+pub fn remove_from_context_allowlist(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+    member: &PublicKey,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupContextAllowlist::new(group_id.to_bytes(), *context_id, *member);
+    handle.delete(&key)?;
+    Ok(())
+}
+
+pub fn get_default_capabilities(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<u32>> {
+    let handle = store.handle();
+    let key = GroupDefaultCaps::new(group_id.to_bytes());
+    let value = handle.get(&key)?;
+    Ok(value.map(|v| v.capabilities))
+}
+
+pub fn set_default_capabilities(
+    store: &Store,
+    group_id: &ContextGroupId,
+    caps: u32,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupDefaultCaps::new(group_id.to_bytes());
+    handle.put(&key, &GroupDefaultCapsValue { capabilities: caps })?;
+    Ok(())
+}
+
+pub fn get_default_visibility(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<u8>> {
+    let handle = store.handle();
+    let key = GroupDefaultVis::new(group_id.to_bytes());
+    let value = handle.get(&key)?;
+    Ok(value.map(|v| v.mode))
+}
+
+pub fn set_default_visibility(
+    store: &Store,
+    group_id: &ContextGroupId,
+    mode: u8,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupDefaultVis::new(group_id.to_bytes());
+    handle.put(&key, &GroupDefaultVisValue { mode })?;
+    Ok(())
 }
 
 #[cfg(test)]
