@@ -646,6 +646,10 @@ impl ContextClient {
     /// We use `deserialize_reader` (not `try_from_slice`) so that trailing fields
     /// after `full_hash` (own_hash, metadata, deleted_at) don't cause
     /// "Not all bytes read" errors.
+    ///
+    /// **SYNC NOTE**: An identical copy of these minimal structs lives in
+    /// `calimero-storage/src/tests/index.rs` (`minimal_struct_layout_compat`).
+    /// When modifying the structs here, update the test copy too (and vice-versa).
     fn compute_root_hash_via_borsh(
         &self,
         context_id: &ContextId,

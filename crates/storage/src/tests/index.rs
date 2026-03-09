@@ -942,6 +942,10 @@ mod hashing {
 ///
 /// If any field is added/removed/reordered in the real types, this test will
 /// fail and remind the developer to update the minimal structs too.
+///
+/// **SYNC NOTE**: The minimal structs below are an identical copy of those in
+/// `calimero-context-primitives/src/client.rs::compute_root_hash_via_borsh`.
+/// When modifying either copy, update the other to keep them in sync.
 mod minimal_struct_layout_compat {
     use borsh::BorshDeserialize;
     use calimero_primitives::crdt::CrdtType;
