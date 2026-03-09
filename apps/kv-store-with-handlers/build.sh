@@ -23,5 +23,5 @@ cp $TARGET/wasm32-unknown-unknown/$PROFILE/kv_store_with_handlers.wasm ./res/
 
 # Skip wasm-opt for profiling builds to preserve debug info
 if [ "$PROFILE" = "app-release" ] && command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/kv_store_with_handlers.wasm -o ./res/kv_store_with_handlers.wasm
+  wasm-opt -Oz --enable-bulk-memory ./res/kv_store_with_handlers.wasm -o ./res/kv_store_with_handlers.wasm
 fi

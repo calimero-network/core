@@ -14,5 +14,5 @@ RUSTFLAGS="--remap-path-prefix $HOME=~" cargo build --target wasm32-unknown-unkn
 cp "$TARGET/wasm32-unknown-unknown/app-release/blockchain.wasm" ./res/
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/blockchain.wasm -o ./res/blockchain.wasm
+  wasm-opt -Oz --enable-bulk-memory ./res/blockchain.wasm -o ./res/blockchain.wasm
 fi
