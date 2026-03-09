@@ -13,6 +13,7 @@ pub mod join;
 pub mod join_group_context;
 pub mod list;
 pub mod members;
+pub mod settings;
 pub mod signing_key;
 pub mod sync;
 pub mod update;
@@ -74,6 +75,7 @@ pub enum GroupSubCommands {
     Sync(sync::SyncCommand),
     #[command(alias = "join-group-context")]
     JoinGroupContext(join_group_context::JoinGroupContextCommand),
+    Settings(settings::SettingsCommand),
 }
 
 impl GroupCommand {
@@ -92,6 +94,7 @@ impl GroupCommand {
             GroupSubCommands::Upgrade(cmd) => cmd.run(environment).await,
             GroupSubCommands::Sync(cmd) => cmd.run(environment).await,
             GroupSubCommands::JoinGroupContext(cmd) => cmd.run(environment).await,
+            GroupSubCommands::Settings(cmd) => cmd.run(environment).await,
         }
     }
 }
