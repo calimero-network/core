@@ -33,9 +33,7 @@ pub async fn handler(
 
     let result = state
         .ctx_client
-        .join_group(JoinGroupRequest {
-            invitation_payload,
-        })
+        .join_group(JoinGroupRequest { invitation_payload })
         .await
         .map_err(parse_api_error);
 

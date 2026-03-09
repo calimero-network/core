@@ -45,10 +45,7 @@ impl IdentityConfig {
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct ConfigFile {
-    #[serde(
-        with = "serde_identity",
-        default = "IdentityConfig::generate_default"
-    )]
+    #[serde(with = "serde_identity", default = "IdentityConfig::generate_default")]
     pub identity: IdentityConfig,
 
     #[serde(default)]
@@ -490,10 +487,7 @@ pub mod serde_identity {
     {
         let entry_count = if config.group.is_some() { 3 } else { 2 };
         let mut map = serializer.serialize_map(Some(entry_count))?;
-        map.serialize_entry(
-            "peer_id",
-            &config.keypair.public().to_peer_id().to_base58(),
-        )?;
+        map.serialize_entry("peer_id", &config.keypair.public().to_peer_id().to_base58())?;
         map.serialize_entry(
             "keypair",
             &bs58::encode(
@@ -520,7 +514,9 @@ pub mod serde_identity {
             type Value = IdentityConfig;
 
             fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-                formatter.write_str("an identity configuration with peer_id, keypair, and optional group")
+                formatter.write_str(
+                    "an identity configuration with peer_id, keypair, and optional group",
+                )
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>

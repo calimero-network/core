@@ -212,9 +212,10 @@ impl NodeCommand {
                         )
                     })?;
 
-                    let conn = config.nodes.get(active).ok_or_else(|| {
-                        eyre::eyre!("active node '{active}' not found in config")
-                    })?;
+                    let conn = config
+                        .nodes
+                        .get(active)
+                        .ok_or_else(|| eyre::eyre!("active node '{active}' not found in config"))?;
 
                     let path = match conn {
                         NodeConnection::Local { path, .. } => path,

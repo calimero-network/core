@@ -63,14 +63,10 @@ impl Handler<SyncGroupRequest> for ContextManager {
                     group_store::extract_application_blob_info(&group_info.target_application)
                 {
                     if !node_client.has_blob(&blob_id)? {
-                        let contexts = group_store::enumerate_group_contexts(
-                            &datastore, &group_id, 0, 1,
-                        )?;
+                        let contexts =
+                            group_store::enumerate_group_contexts(&datastore, &group_id, 0, 1)?;
                         if let Some(ctx_id) = contexts.first() {
-                            match node_client
-                                .get_blob_bytes(&blob_id, Some(ctx_id))
-                                .await
-                            {
+                            match node_client.get_blob_bytes(&blob_id, Some(ctx_id)).await {
                                 Ok(Some(_bytes)) => {
                                     if let Ok(app_source) = source.parse() {
                                         if let Err(err) = node_client
@@ -88,9 +84,7 @@ impl Handler<SyncGroupRequest> for ContextManager {
                                     }
                                 }
                                 Ok(None) => {
-                                    warn!(
-                                        "target app blob not available from any peer yet"
-                                    );
+                                    warn!("target app blob not available from any peer yet");
                                 }
                                 Err(err) => {
                                     warn!(

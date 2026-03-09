@@ -541,7 +541,10 @@ pub async fn sync_group_state_from_contract(
     protocol: &str,
     network_id: &str,
     contract_id: &str,
-) -> EyreResult<(GroupMetaValue, calimero_context_config::client::env::config::requests::GroupInfoQueryResponse)> {
+) -> EyreResult<(
+    GroupMetaValue,
+    calimero_context_config::client::env::config::requests::GroupInfoQueryResponse,
+)> {
     let info = context_client
         .query_group_info(*group_id, protocol, network_id, contract_id)
         .await?

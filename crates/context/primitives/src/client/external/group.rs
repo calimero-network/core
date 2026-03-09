@@ -336,7 +336,11 @@ impl ExternalGroupClient {
                     c.network_id.as_str().into(),
                     c.contract_id.as_str().into(),
                 )
-                .set_group_target(c.group_id, target_application.clone(), migration_method.clone())
+                .set_group_target(
+                    c.group_id,
+                    target_application.clone(),
+                    migration_method.clone(),
+                )
                 .send(c.signing_key, nonce)
                 .await
         })

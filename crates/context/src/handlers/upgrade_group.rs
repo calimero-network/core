@@ -176,11 +176,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         let blob_id = app_meta.bytecode.blob_id();
                         for context_id in &contexts {
                             if let Err(err) = node_client
-                                .announce_blob_to_network(
-                                    &blob_id,
-                                    context_id,
-                                    app_meta.size,
-                                )
+                                .announce_blob_to_network(&blob_id, context_id, app_meta.size)
                                 .await
                             {
                                 warn!(%err, "failed to announce target app blob");
@@ -343,9 +339,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                                     for context_id in &contexts {
                                         if let Err(err) = nc
                                             .announce_blob_to_network(
-                                                &blob_id,
-                                                context_id,
-                                                blob_size,
+                                                &blob_id, context_id, blob_size,
                                             )
                                             .await
                                         {

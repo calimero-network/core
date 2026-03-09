@@ -239,8 +239,14 @@ impl InitCommand {
         let group_sk = ed25519_consensus::SigningKey::new(rand::thread_rng());
         let group_vk = group_sk.verification_key();
         let group_identity = GroupIdentityConfig {
-            public_key: format!("ed25519:{}", bs58::encode(group_vk.as_bytes()).into_string()),
-            secret_key: format!("ed25519:{}", bs58::encode(group_sk.as_bytes()).into_string()),
+            public_key: format!(
+                "ed25519:{}",
+                bs58::encode(group_vk.as_bytes()).into_string()
+            ),
+            secret_key: format!(
+                "ed25519:{}",
+                bs58::encode(group_sk.as_bytes()).into_string()
+            ),
         };
         info!("Generated group identity: {}", group_identity.public_key);
 

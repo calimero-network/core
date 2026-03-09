@@ -1235,8 +1235,8 @@ fn maybe_lazy_upgrade(
     }
 
     // 4. Compare current vs target application
-    if *current_application_id == meta.target_application_id {
-        return None; // already at target
+    if *current_application_id == meta.target_application_id && meta.migration.is_none() {
+        return None; // already at target and no migration pending
     }
 
     // 5. Extract migration method from group meta (set during upgrade)
