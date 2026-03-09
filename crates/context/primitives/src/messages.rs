@@ -11,11 +11,13 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AddGroupMembersRequest, CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest,
-    DetachContextFromGroupRequest, GetGroupForContextRequest, GetGroupInfoRequest,
-    GetGroupUpgradeStatusRequest, JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, SyncGroupRequest, UpdateGroupSettingsRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest,
+    DetachContextFromGroupRequest, GetContextAllowlistRequest, GetContextVisibilityRequest,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
+    GetMemberCapabilitiesRequest, JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, ManageContextAllowlistRequest,
+    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextVisibilityRequest,
+    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetMemberCapabilitiesRequest,
+    SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -271,5 +273,37 @@ pub enum ContextMessage {
     JoinGroupContext {
         request: JoinGroupContextRequest,
         outcome: oneshot::Sender<<JoinGroupContextRequest as Message>::Result>,
+    },
+    SetMemberCapabilities {
+        request: SetMemberCapabilitiesRequest,
+        outcome: oneshot::Sender<<SetMemberCapabilitiesRequest as Message>::Result>,
+    },
+    GetMemberCapabilities {
+        request: GetMemberCapabilitiesRequest,
+        outcome: oneshot::Sender<<GetMemberCapabilitiesRequest as Message>::Result>,
+    },
+    SetContextVisibility {
+        request: SetContextVisibilityRequest,
+        outcome: oneshot::Sender<<SetContextVisibilityRequest as Message>::Result>,
+    },
+    GetContextVisibility {
+        request: GetContextVisibilityRequest,
+        outcome: oneshot::Sender<<GetContextVisibilityRequest as Message>::Result>,
+    },
+    ManageContextAllowlist {
+        request: ManageContextAllowlistRequest,
+        outcome: oneshot::Sender<<ManageContextAllowlistRequest as Message>::Result>,
+    },
+    GetContextAllowlist {
+        request: GetContextAllowlistRequest,
+        outcome: oneshot::Sender<<GetContextAllowlistRequest as Message>::Result>,
+    },
+    SetDefaultCapabilities {
+        request: SetDefaultCapabilitiesRequest,
+        outcome: oneshot::Sender<<SetDefaultCapabilitiesRequest as Message>::Result>,
+    },
+    SetDefaultVisibility {
+        request: SetDefaultVisibilityRequest,
+        outcome: oneshot::Sender<<SetDefaultVisibilityRequest as Message>::Result>,
     },
 }

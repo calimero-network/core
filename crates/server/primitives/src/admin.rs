@@ -2285,3 +2285,144 @@ pub struct JoinGroupContextApiResponseData {
 pub struct GetContextGroupApiResponse {
     pub data: Option<String>,
 }
+
+// ---- Group Permissions API ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMemberCapabilitiesApiRequest {
+    pub capabilities: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetMemberCapabilitiesApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetMemberCapabilitiesApiResponse;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetMemberCapabilitiesApiResponse {
+    pub data: GetMemberCapabilitiesApiData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetMemberCapabilitiesApiData {
+    pub capabilities: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetContextVisibilityApiRequest {
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetContextVisibilityApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.mode != "open" && self.mode != "restricted" {
+            errors.push(ValidationError::InvalidFormat {
+                field: "mode",
+                reason: "must be 'open' or 'restricted'".into(),
+            });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetContextVisibilityApiResponse;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextVisibilityApiResponse {
+    pub data: GetContextVisibilityApiData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextVisibilityApiData {
+    pub mode: String,
+    pub creator: PublicKey,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManageContextAllowlistApiRequest {
+    #[serde(default)]
+    pub add: Vec<PublicKey>,
+    #[serde(default)]
+    pub remove: Vec<PublicKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for ManageContextAllowlistApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.add.is_empty() && self.remove.is_empty() {
+            errors.push(ValidationError::EmptyField {
+                field: "add/remove",
+            });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct ManageContextAllowlistApiResponse;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextAllowlistApiResponse {
+    pub data: Vec<PublicKey>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetDefaultCapabilitiesApiRequest {
+    pub default_capabilities: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetDefaultCapabilitiesApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetDefaultCapabilitiesApiResponse;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetDefaultVisibilityApiRequest {
+    pub default_visibility: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetDefaultVisibilityApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.default_visibility != "open" && self.default_visibility != "restricted" {
+            errors.push(ValidationError::InvalidFormat {
+                field: "default_visibility",
+                reason: "must be 'open' or 'restricted'".into(),
+            });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetDefaultVisibilityApiResponse;

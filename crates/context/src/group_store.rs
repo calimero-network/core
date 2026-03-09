@@ -13,8 +13,8 @@ use calimero_store::key::{
     GroupDefaultVis, GroupDefaultVisValue, GroupMember, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue,
     GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
-    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
-    GROUP_MEMBER_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
+    GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX, GROUP_SIGNING_KEY_PREFIX,
+    GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -889,6 +889,40 @@ pub fn remove_from_context_allowlist(
     let key = GroupContextAllowlist::new(group_id.to_bytes(), *context_id, *member);
     handle.delete(&key)?;
     Ok(())
+}
+
+pub fn list_context_allowlist(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+) -> EyreResult<Vec<PublicKey>> {
+    let handle = store.handle();
+    let group_id_bytes: [u8; 32] = group_id.to_bytes();
+    let start_key =
+        GroupContextAllowlist::new(group_id_bytes, *context_id, PublicKey::from([0u8; 32]));
+    let mut iter = handle.iter::<GroupContextAllowlist>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut results = Vec::new();
+
+    for entry in first.into_iter().chain(iter.keys()) {
+        let key = entry?;
+
+        if key.as_key().as_bytes()[0] != GROUP_CONTEXT_ALLOWLIST_PREFIX {
+            break;
+        }
+
+        if key.group_id() != group_id_bytes {
+            break;
+        }
+
+        if key.context_id() != *context_id {
+            break;
+        }
+
+        results.push(PublicKey::from(*key.member()));
+    }
+
+    Ok(results)
 }
 
 pub fn get_default_capabilities(

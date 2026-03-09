@@ -40,6 +40,14 @@ use calimero_server_primitives::admin::{
     UpdateContextApplicationResponse, UpdateGroupSettingsApiRequest,
     UpdateGroupSettingsApiResponse, UpdateMemberRoleApiRequest, UpdateMemberRoleApiResponse,
     UpgradeGroupApiRequest, UpgradeGroupApiResponse,
+    // Group permissions
+    GetContextAllowlistApiResponse, GetContextVisibilityApiResponse,
+    GetMemberCapabilitiesApiResponse, ManageContextAllowlistApiRequest,
+    ManageContextAllowlistApiResponse, SetContextVisibilityApiRequest,
+    SetContextVisibilityApiResponse, SetDefaultCapabilitiesApiRequest,
+    SetDefaultCapabilitiesApiResponse, SetDefaultVisibilityApiRequest,
+    SetDefaultVisibilityApiResponse, SetMemberCapabilitiesApiRequest,
+    SetMemberCapabilitiesApiResponse,
 };
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
 use calimero_server_primitives::jsonrpc::{Request, Response};
@@ -968,6 +976,128 @@ where
             .connection
             .post(
                 &format!("admin-api/groups/{group_id}/join-context"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    // ---- Group Permissions ----
+
+    pub async fn set_member_capabilities(
+        &self,
+        group_id: &str,
+        identity_hex: &str,
+        request: SetMemberCapabilitiesApiRequest,
+    ) -> Result<SetMemberCapabilitiesApiResponse> {
+        let response = self
+            .connection
+            .put_json(
+                &format!("admin-api/groups/{group_id}/members/{identity_hex}/capabilities"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_member_capabilities(
+        &self,
+        group_id: &str,
+        identity_hex: &str,
+    ) -> Result<GetMemberCapabilitiesApiResponse> {
+        let response = self
+            .connection
+            .get(&format!(
+                "admin-api/groups/{group_id}/members/{identity_hex}/capabilities"
+            ))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn set_context_visibility(
+        &self,
+        group_id: &str,
+        context_id: &str,
+        request: SetContextVisibilityApiRequest,
+    ) -> Result<SetContextVisibilityApiResponse> {
+        let response = self
+            .connection
+            .put_json(
+                &format!("admin-api/groups/{group_id}/contexts/{context_id}/visibility"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_context_visibility(
+        &self,
+        group_id: &str,
+        context_id: &str,
+    ) -> Result<GetContextVisibilityApiResponse> {
+        let response = self
+            .connection
+            .get(&format!(
+                "admin-api/groups/{group_id}/contexts/{context_id}/visibility"
+            ))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn manage_context_allowlist(
+        &self,
+        group_id: &str,
+        context_id: &str,
+        request: ManageContextAllowlistApiRequest,
+    ) -> Result<ManageContextAllowlistApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/groups/{group_id}/contexts/{context_id}/allowlist"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_context_allowlist(
+        &self,
+        group_id: &str,
+        context_id: &str,
+    ) -> Result<GetContextAllowlistApiResponse> {
+        let response = self
+            .connection
+            .get(&format!(
+                "admin-api/groups/{group_id}/contexts/{context_id}/allowlist"
+            ))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn set_default_capabilities(
+        &self,
+        group_id: &str,
+        request: SetDefaultCapabilitiesApiRequest,
+    ) -> Result<SetDefaultCapabilitiesApiResponse> {
+        let response = self
+            .connection
+            .put_json(
+                &format!("admin-api/groups/{group_id}/settings/default-capabilities"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn set_default_visibility(
+        &self,
+        group_id: &str,
+        request: SetDefaultVisibilityApiRequest,
+    ) -> Result<SetDefaultVisibilityApiResponse> {
+        let response = self
+            .connection
+            .put_json(
+                &format!("admin-api/groups/{group_id}/settings/default-visibility"),
                 request,
             )
             .await?;

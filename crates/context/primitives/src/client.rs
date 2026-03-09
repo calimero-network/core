@@ -27,11 +27,15 @@ use tokio::sync::oneshot;
 use crate::group::{
     AddGroupMembersRequest, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
     CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
-    DetachContextFromGroupRequest, GetGroupForContextRequest, GetGroupInfoRequest,
-    GetGroupUpgradeStatusRequest, GroupInfoResponse, GroupMemberEntry, GroupSummary,
-    GroupUpgradeInfo, JoinGroupContextRequest, JoinGroupContextResponse, JoinGroupRequest,
-    JoinGroupResponse, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
-    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SyncGroupRequest, SyncGroupResponse,
+    DetachContextFromGroupRequest, GetContextAllowlistRequest, GetContextVisibilityRequest,
+    GetContextVisibilityResponse, GetGroupForContextRequest, GetGroupInfoRequest,
+    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
+    GroupInfoResponse, GroupMemberEntry, GroupSummary, GroupUpgradeInfo,
+    JoinGroupContextRequest, JoinGroupContextResponse, JoinGroupRequest, JoinGroupResponse,
+    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    ManageContextAllowlistRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
+    SetContextVisibilityRequest, SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest,
+    SetMemberCapabilitiesRequest, SyncGroupRequest, SyncGroupResponse,
     UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
@@ -1286,6 +1290,142 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::JoinGroupContext {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn set_member_capabilities(
+        &self,
+        request: SetMemberCapabilitiesRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::SetMemberCapabilities {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn get_member_capabilities(
+        &self,
+        request: GetMemberCapabilitiesRequest,
+    ) -> eyre::Result<GetMemberCapabilitiesResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::GetMemberCapabilities {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn set_context_visibility(
+        &self,
+        request: SetContextVisibilityRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::SetContextVisibility {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn get_context_visibility(
+        &self,
+        request: GetContextVisibilityRequest,
+    ) -> eyre::Result<GetContextVisibilityResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::GetContextVisibility {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn manage_context_allowlist(
+        &self,
+        request: ManageContextAllowlistRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::ManageContextAllowlist {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn get_context_allowlist(
+        &self,
+        request: GetContextAllowlistRequest,
+    ) -> eyre::Result<Vec<PublicKey>> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::GetContextAllowlist {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn set_default_capabilities(
+        &self,
+        request: SetDefaultCapabilitiesRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::SetDefaultCapabilities {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn set_default_visibility(
+        &self,
+        request: SetDefaultVisibilityRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::SetDefaultVisibility {
                 request,
                 outcome: sender,
             })

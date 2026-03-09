@@ -30,6 +30,14 @@ pub mod update_group_settings;
 pub mod update_member_role;
 pub mod upgrade_group;
 mod utils;
+pub mod get_context_allowlist;
+pub mod get_context_visibility;
+pub mod get_member_capabilities;
+pub mod manage_context_allowlist;
+pub mod set_context_visibility;
+pub mod set_default_capabilities;
+pub mod set_default_visibility;
+pub mod set_member_capabilities;
 
 impl Handler<ContextMessage> for ContextManager {
     type Result = ();
@@ -116,6 +124,30 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::JoinGroupContext { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::SetMemberCapabilities { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetMemberCapabilities { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::SetContextVisibility { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetContextVisibility { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ManageContextAllowlist { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetContextAllowlist { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::SetDefaultCapabilities { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::SetDefaultVisibility { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }

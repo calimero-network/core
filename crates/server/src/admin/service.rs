@@ -282,6 +282,29 @@ pub(crate) fn setup(
             post(groups::join_group_context::handler),
         )
         .route(
+            "/groups/:group_id/members/:identity/capabilities",
+            get(groups::get_member_capabilities::handler)
+                .put(groups::set_member_capabilities::handler),
+        )
+        .route(
+            "/groups/:group_id/settings/default-capabilities",
+            put(groups::set_default_capabilities::handler),
+        )
+        .route(
+            "/groups/:group_id/settings/default-visibility",
+            put(groups::set_default_visibility::handler),
+        )
+        .route(
+            "/groups/:group_id/contexts/:context_id/visibility",
+            get(groups::get_context_visibility::handler)
+                .put(groups::set_context_visibility::handler),
+        )
+        .route(
+            "/groups/:group_id/contexts/:context_id/allowlist",
+            get(groups::get_context_allowlist::handler)
+                .post(groups::manage_context_allowlist::handler),
+        )
+        .route(
             "/groups/join",
             post(groups::join_group::handler),
         )
