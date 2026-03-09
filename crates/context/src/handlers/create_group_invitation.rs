@@ -22,6 +22,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             requester,
             invitee_identity,
             expiration,
+            expiration_block_height,
         }: CreateGroupInvitationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -88,8 +89,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             let mut rng = rand::thread_rng();
             let secret_salt: [u8; 32] = rng.gen();
 
-            // Use a large placeholder expiration block height (matches context invitation pattern).
-            let expiration_block_height: u64 = 999_999_999;
+            let expiration_block_height: u64 = expiration_block_height.unwrap_or(999_999_999);
 
             // Convert PublicKey to SignerId via borsh roundtrip (both are [u8; 32] wrappers).
             let requester_bytes: [u8; 32] = *requester;

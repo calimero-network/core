@@ -46,10 +46,7 @@ pub enum MembersSubCommands {
         about = "Set capabilities for a group member (admin-only)"
     )]
     SetCapabilities(SetCapabilitiesCommand),
-    #[command(
-        alias = "get-caps",
-        about = "Get capabilities of a group member"
-    )]
+    #[command(alias = "get-caps", about = "Get capabilities of a group member")]
     GetCapabilities(GetCapabilitiesCommand),
 }
 

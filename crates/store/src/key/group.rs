@@ -14,7 +14,7 @@ use crate::db::Column;
 use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 
-const GROUP_META_PREFIX: u8 = 0x20;
+pub const GROUP_META_PREFIX: u8 = 0x20;
 pub const GROUP_MEMBER_PREFIX: u8 = 0x21;
 pub const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
 const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
@@ -498,7 +498,12 @@ pub struct GroupContextVisibilityValue {
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupContextAllowlist(
-    Key<(GroupPrefix, GroupIdComponent, GroupIdComponent, GroupIdComponent)>,
+    Key<(
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    )>,
 );
 
 impl GroupContextAllowlist {
@@ -537,7 +542,12 @@ impl GroupContextAllowlist {
 }
 
 impl AsKeyParts for GroupContextAllowlist {
-    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent, GroupIdComponent);
+    type Components = (
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    );
 
     fn column() -> Column {
         Column::Group

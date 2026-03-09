@@ -22,6 +22,12 @@ pub struct InviteCommand {
 
     #[clap(long, help = "Optional expiration as Unix timestamp")]
     pub expiration: Option<u64>,
+
+    #[clap(
+        long,
+        help = "On-chain block height after which the invitation expires (defaults to 999_999_999)"
+    )]
+    pub expiration_block_height: Option<u64>,
 }
 
 impl InviteCommand {
@@ -30,6 +36,7 @@ impl InviteCommand {
             requester: self.requester,
             invitee_identity: self.invitee_identity,
             expiration: self.expiration,
+            expiration_block_height: self.expiration_block_height,
         };
 
         let client = environment.client()?;

@@ -419,6 +419,19 @@ impl TokenManager {
         Ok(())
     }
 
+    /// Return the `public_key` field stored for a given `key_id`, if any.
+    pub async fn get_public_key_for_key_id(
+        &self,
+        key_id: &str,
+    ) -> Result<Option<String>, AuthError> {
+        let key = self
+            .key_manager
+            .get_key(key_id)
+            .await
+            .map_err(|e| AuthError::StorageError(e.to_string()))?;
+        Ok(key.and_then(|k| k.public_key))
+    }
+
     /// Refresh a token pair using a refresh token
     ///
     /// This method verifies the refresh token and generates new tokens based on the key type.

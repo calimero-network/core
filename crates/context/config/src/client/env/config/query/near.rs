@@ -2,12 +2,11 @@ use core::mem;
 use std::collections::BTreeMap;
 
 use crate::client::env::config::requests::{
-    ApplicationRequest, ApplicationRevisionRequest, ContextAllowlistRequest,
-    ContextGroupRequest, ContextVisibilityQueryResponse, ContextVisibilityRequest,
-    FetchGroupNonceRequest, FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse,
-    GroupInfoRequest, GroupMemberQueryEntry, GroupMembersRequest, HasMemberRequest,
-    IsGroupAdminRequest, MembersRequest, MembersRevisionRequest, PrivilegesRequest,
-    ProxyContractRequest,
+    ApplicationRequest, ApplicationRevisionRequest, ContextAllowlistRequest, ContextGroupRequest,
+    ContextVisibilityQueryResponse, ContextVisibilityRequest, FetchGroupNonceRequest,
+    FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse, GroupInfoRequest,
+    GroupMemberQueryEntry, GroupMembersRequest, HasMemberRequest, IsGroupAdminRequest,
+    MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
 };
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;

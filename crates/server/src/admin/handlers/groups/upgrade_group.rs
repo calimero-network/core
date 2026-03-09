@@ -13,11 +13,13 @@ use tracing::{error, info};
 use super::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
+use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<UpgradeGroupApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
@@ -27,6 +29,10 @@ pub async fn handler(
 
     info!(group_id=%group_id_str, %req.target_application_id, "Initiating group upgrade");
 
+    // Prefer the authenticated identity over the caller-supplied requester to
+    // prevent authorization bypass via a spoofed public key in the request body.
+    let requester = auth_key.map(|Extension(k)| k.0).or(req.requester);
+
     let migration = req.migrate_method.map(|method| MigrationParams { method });
 
     let result = state
@@ -34,7 +40,7 @@ pub async fn handler(
         .upgrade_group(UpgradeGroupRequest {
             group_id,
             target_application_id: req.target_application_id,
-            requester: req.requester,
+            requester,
             migration,
         })
         .await

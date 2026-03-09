@@ -24,12 +24,9 @@ impl Handler<GetContextVisibilityRequest> for ContextManager {
                 bail!("group '{group_id:?}' not found");
             }
 
-            let (mode_u8, creator_bytes) = group_store::get_context_visibility(
-                &self.datastore,
-                &group_id,
-                &context_id,
-            )?
-            .ok_or_else(|| eyre::eyre!("context visibility not found"))?;
+            let (mode_u8, creator_bytes) =
+                group_store::get_context_visibility(&self.datastore, &group_id, &context_id)?
+                    .ok_or_else(|| eyre::eyre!("context visibility not found"))?;
 
             let mode = match mode_u8 {
                 0 => calimero_context_config::VisibilityMode::Open,

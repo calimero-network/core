@@ -198,6 +198,9 @@ pub struct CreateGroupInvitationRequest {
     pub requester: Option<PublicKey>,
     pub invitee_identity: Option<PublicKey>,
     pub expiration: Option<u64>,
+    /// On-chain block height after which the invitation commitment expires.
+    /// Defaults to 999_999_999 when not provided (backward-compatible).
+    pub expiration_block_height: Option<u64>,
 }
 
 impl Message for CreateGroupInvitationRequest {

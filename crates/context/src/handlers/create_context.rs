@@ -467,7 +467,9 @@ async fn create_context(
             group_network_id.clone(),
             group_contract_id.clone(),
         );
-        group_client.register_context_in_group(context.id, None).await?;
+        group_client
+            .register_context_in_group(context.id, None)
+            .await?;
 
         group_store::register_context_in_group(&datastore, gid, &context.id)?;
 
@@ -477,7 +479,11 @@ async fn create_context(
         if let Ok(Some(default_vis_mode)) = group_store::get_default_visibility(&datastore, gid) {
             let creator_bytes: [u8; 32] = *identity;
             let _ = group_store::set_context_visibility(
-                &datastore, gid, &context.id, default_vis_mode, creator_bytes,
+                &datastore,
+                gid,
+                &context.id,
+                default_vis_mode,
+                creator_bytes,
             );
             // Auto-add creator to allowlist for Restricted contexts
             if default_vis_mode == 1u8 {

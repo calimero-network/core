@@ -2040,6 +2040,10 @@ pub struct CreateGroupInvitationApiRequest {
     pub invitee_identity: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expiration: Option<u64>,
+    /// On-chain block height after which the invitation commitment expires.
+    /// Defaults to 999_999_999 when not provided (backward-compatible).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiration_block_height: Option<u64>,
 }
 
 impl Validate for CreateGroupInvitationApiRequest {

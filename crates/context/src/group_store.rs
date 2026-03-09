@@ -13,7 +13,7 @@ use calimero_store::key::{
     GroupDefaultVis, GroupDefaultVisValue, GroupMember, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue,
     GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
-    GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX, GROUP_SIGNING_KEY_PREFIX,
+    GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX,
     GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
@@ -67,7 +67,7 @@ pub fn enumerate_all_groups(
     for key_result in first.into_iter().chain(iter.keys()) {
         let key = key_result?;
 
-        if key.as_key().as_bytes()[0] >= GROUP_MEMBER_PREFIX {
+        if key.as_key().as_bytes()[0] != GROUP_META_PREFIX {
             break;
         }
 
@@ -704,8 +704,8 @@ async fn sync_group_contexts_from_contract(
                 }
 
                 // Sync allowlist: clear existing entries then re-populate from chain
-                let existing = list_context_allowlist(datastore, group_id, context_id)
-                    .unwrap_or_default();
+                let existing =
+                    list_context_allowlist(datastore, group_id, context_id).unwrap_or_default();
                 for member in &existing {
                     let _ = remove_from_context_allowlist(datastore, group_id, context_id, member);
                 }
@@ -730,9 +730,8 @@ async fn sync_group_contexts_from_contract(
                             for signer in &page {
                                 let bytes: [u8; 32] = signer.as_bytes();
                                 let pk = PublicKey::from(bytes);
-                                let _ = add_to_context_allowlist(
-                                    datastore, group_id, context_id, &pk,
-                                );
+                                let _ =
+                                    add_to_context_allowlist(datastore, group_id, context_id, &pk);
                             }
                             if page_len < AL_PAGE_SIZE {
                                 break;
@@ -927,10 +926,7 @@ pub fn set_context_visibility(
 ) -> EyreResult<()> {
     let mut handle = store.handle();
     let key = GroupContextVisibility::new(group_id.to_bytes(), *context_id);
-    handle.put(
-        &key,
-        &GroupContextVisibilityValue { mode, creator },
-    )?;
+    handle.put(&key, &GroupContextVisibilityValue { mode, creator })?;
     Ok(())
 }
 
@@ -1049,10 +1045,7 @@ pub fn set_default_capabilities(
     Ok(())
 }
 
-pub fn get_default_visibility(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<u8>> {
+pub fn get_default_visibility(store: &Store, group_id: &ContextGroupId) -> EyreResult<Option<u8>> {
     let handle = store.handle();
     let key = GroupDefaultVis::new(group_id.to_bytes());
     let value = handle.get(&key)?;
@@ -1573,7 +1566,9 @@ mod tests {
         set_member_capability(&store, &gid, &bob, 0b110).unwrap();
 
         assert_eq!(
-            get_member_capability(&store, &gid, &alice).unwrap().unwrap(),
+            get_member_capability(&store, &gid, &alice)
+                .unwrap()
+                .unwrap(),
             0b001
         );
         assert_eq!(
@@ -1621,8 +1616,12 @@ mod tests {
         set_context_visibility(&store, &gid, &ctx1, 0, creator).unwrap();
         set_context_visibility(&store, &gid, &ctx2, 1, creator).unwrap();
 
-        let (mode1, _) = get_context_visibility(&store, &gid, &ctx1).unwrap().unwrap();
-        let (mode2, _) = get_context_visibility(&store, &gid, &ctx2).unwrap().unwrap();
+        let (mode1, _) = get_context_visibility(&store, &gid, &ctx1)
+            .unwrap()
+            .unwrap();
+        let (mode2, _) = get_context_visibility(&store, &gid, &ctx2)
+            .unwrap()
+            .unwrap();
         assert_eq!(mode1, 0);
         assert_eq!(mode2, 1);
     }
@@ -1717,11 +1716,17 @@ mod tests {
         assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
 
         set_default_capabilities(&store, &gid, 0b100).unwrap();
-        assert_eq!(get_default_capabilities(&store, &gid).unwrap().unwrap(), 0b100);
+        assert_eq!(
+            get_default_capabilities(&store, &gid).unwrap().unwrap(),
+            0b100
+        );
 
         // Update
         set_default_capabilities(&store, &gid, 0b111).unwrap();
-        assert_eq!(get_default_capabilities(&store, &gid).unwrap().unwrap(), 0b111);
+        assert_eq!(
+            get_default_capabilities(&store, &gid).unwrap().unwrap(),
+            0b111
+        );
     }
 
     #[test]
@@ -1751,8 +1756,14 @@ mod tests {
         set_default_visibility(&store, &g1, 0).unwrap();
         set_default_visibility(&store, &g2, 1).unwrap();
 
-        assert_eq!(get_default_capabilities(&store, &g1).unwrap().unwrap(), 0b001);
-        assert_eq!(get_default_capabilities(&store, &g2).unwrap().unwrap(), 0b110);
+        assert_eq!(
+            get_default_capabilities(&store, &g1).unwrap().unwrap(),
+            0b001
+        );
+        assert_eq!(
+            get_default_capabilities(&store, &g2).unwrap().unwrap(),
+            0b110
+        );
         assert_eq!(get_default_visibility(&store, &g1).unwrap().unwrap(), 0);
         assert_eq!(get_default_visibility(&store, &g2).unwrap().unwrap(), 1);
     }

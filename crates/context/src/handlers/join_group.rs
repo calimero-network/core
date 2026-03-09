@@ -105,14 +105,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     // Set admin_identity to inviter (who created the invitation)
                     meta.admin_identity = inviter_identity;
                     group_store::save_group_meta(&datastore, &group_id, &meta)?;
-
-                    // Add inviter as admin locally so validation passes
-                    group_store::add_group_member(
-                        &datastore,
-                        &group_id,
-                        &inviter_identity,
-                        GroupMemberRole::Admin,
-                    )?;
+                    // sync_group_state_from_contract already reflects on-chain member state;
+                    // do NOT re-insert the inviter as Admin here — that would make the
+                    // is_group_admin check below trivially pass even for demoted admins.
                 }
 
                 // Phase 2: Validate

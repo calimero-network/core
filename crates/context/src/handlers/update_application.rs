@@ -390,7 +390,7 @@ fn verify_appkey_continuity(
 /// 3. Executes the migration function
 /// 4. Writes returned state bytes to root storage key
 /// 5. Updates context metadata and triggers sync
-async fn update_application_with_migration(
+pub(crate) async fn update_application_with_migration(
     datastore: calimero_store::Store,
     node_client: NodeClient,
     context_client: ContextClient,

@@ -10,7 +10,7 @@ use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::{
-    ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse,
+    ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse, MigrationParams,
 };
 use calimero_context_primitives::{ContextAtomic, ContextAtomicKey};
 use calimero_node_primitives::client::NodeClient;
@@ -39,6 +39,9 @@ use tokio::sync::OwnedMutexGuard;
 use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
+use crate::handlers::update_application::{
+    update_application_id, update_application_with_migration,
+};
 use crate::handlers::utils::{process_context_mutations, StoreContextHost};
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
@@ -182,10 +185,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                 }
             };
 
-        let lazy_context_client = lazy_upgrade_params
-            .as_ref()
-            .map(|_| self.context_client.clone());
-
         let guard_task = async move {
             match guard {
                 Either::Left(guard) => guard,
@@ -194,22 +193,32 @@ impl Handler<ExecuteRequest> for ContextManager {
         }
         .into_actor(self);
 
-        let lazy_upgrade_task = guard_task.map(move |guard, _act, _ctx| {
-            // If lazy upgrade is needed, send the update_application message
+        // Extract actor-owned values for the lazy upgrade path synchronously so the
+        // context_task future can call update_application_id / update_application_with_migration
+        // directly without routing through the actor mailbox (which would deadlock while an
+        // ActorFuture is in flight on the same actor).
+        let lazy_upgrade_task = guard_task.map(move |guard, act, _ctx| {
             if let Some((target_app_id, migrate_method)) = lazy_upgrade_params {
-                let ctx_client =
-                    lazy_context_client.expect("cloned when lazy_upgrade_params is Some");
                 info!(
                     %context_id,
                     %target_app_id,
                     %executor,
                     "performing lazy upgrade before execution"
                 );
+                let datastore = act.datastore.clone();
+                let node_client = act.node_client.clone();
+                let context_client = act.context_client.clone();
+                let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
+                let application = act.applications.get(&target_app_id).cloned();
                 return Ok(Either::Right((
                     guard,
-                    ctx_client,
+                    datastore,
+                    node_client,
+                    context_client,
                     context_id,
                     target_app_id,
+                    context_meta,
+                    application,
                     migrate_method,
                 )));
             }
@@ -217,28 +226,97 @@ impl Handler<ExecuteRequest> for ContextManager {
         });
 
         let context_task = lazy_upgrade_task.and_then(move |either, act, _ctx| {
-            async move {
-                let guard = match either {
-                    Either::Left(guard) => guard,
-                    Either::Right((guard, ctx_client, cid, target_app, migrate)) => {
-                        // Perform the lazy upgrade (awaits completion)
-                        if let Err(err) = ctx_client
-                            .update_application(&cid, &target_app, &executor, migrate)
+            match either {
+                Either::Left(guard) => async move { Ok(guard) }.into_actor(act).boxed_local(),
+                Either::Right((
+                    guard,
+                    datastore,
+                    node_client,
+                    context_client,
+                    cid,
+                    target_app,
+                    context_meta,
+                    application,
+                    migrate,
+                )) => {
+                    if let Some(method) = migrate {
+                        let migration_params = MigrationParams { method };
+                        // Migration: load the WASM module via get_module (actor-aware cache),
+                        // then call update_application_with_migration directly — no mailbox.
+                        act.get_module(target_app)
+                            .then(move |module_result, act, _ctx| {
+                                // Re-read cached values; they may have been refreshed during load
+                                let context_meta =
+                                    act.contexts.get(&cid).map(|c| c.meta.clone());
+                                let application = act.applications.get(&target_app).cloned();
+                                async move {
+                                    match module_result {
+                                        Ok(module) => {
+                                            if let Err(err) = update_application_with_migration(
+                                                datastore,
+                                                node_client,
+                                                context_client,
+                                                cid,
+                                                context_meta,
+                                                target_app,
+                                                application,
+                                                executor,
+                                                Some(migration_params),
+                                                module,
+                                            )
+                                            .await
+                                            {
+                                                warn!(
+                                                    %cid,
+                                                    %target_app,
+                                                    %err,
+                                                    "lazy upgrade (migration) failed, proceeding with current application"
+                                                );
+                                            }
+                                        }
+                                        Err(err) => {
+                                            warn!(
+                                                %cid,
+                                                %target_app,
+                                                %err,
+                                                "failed to load module for lazy upgrade migration"
+                                            );
+                                        }
+                                    }
+                                    Ok(guard)
+                                }
+                                .into_actor(act)
+                            })
+                            .boxed_local()
+                    } else {
+                        // No migration: call update_application_id directly — no mailbox.
+                        async move {
+                            if let Err(err) = update_application_id(
+                                datastore,
+                                node_client,
+                                context_client,
+                                cid,
+                                context_meta,
+                                target_app,
+                                application,
+                                executor,
+                            )
                             .await
-                        {
-                            warn!(
-                                %cid,
-                                %target_app,
-                                %err,
-                                "lazy upgrade failed, proceeding with current application"
-                            );
+                            {
+                                warn!(
+                                    %cid,
+                                    %target_app,
+                                    %err,
+                                    "lazy upgrade failed, proceeding with current application"
+                                );
+                            }
+                            Ok(guard)
                         }
-                        guard
+                        .into_actor(act)
+                        .boxed_local()
                     }
-                };
-                Ok(guard)
+                }
             }
-            .into_actor(act)
         });
 
         // Re-fetch context after possible lazy upgrade (application_id may have changed)
@@ -1235,8 +1313,8 @@ fn maybe_lazy_upgrade(
     }
 
     // 4. Compare current vs target application
-    if *current_application_id == meta.target_application_id && meta.migration.is_none() {
-        return None; // already at target and no migration pending
+    if *current_application_id == meta.target_application_id {
+        return None; // already at target version
     }
 
     // 5. Extract migration method from group meta (set during upgrade)

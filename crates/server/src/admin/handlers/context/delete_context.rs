@@ -13,12 +13,14 @@ use tower_sessions::Session;
 use tracing::{error, info};
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
+use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path(context_id): Path<String>,
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
     body: Option<Json<DeleteContextApiRequest>>,
 ) -> impl IntoResponse {
     let context_id_result = match ContextId::from_str(&context_id) {
@@ -33,7 +35,11 @@ pub async fn handler(
         }
     };
 
-    let requester = body.and_then(|Json(req)| req.requester);
+    // Prefer the authenticated identity over the caller-supplied requester to
+    // prevent authorization bypass via a spoofed public key in the request body.
+    let requester = auth_key
+        .map(|Extension(k)| k.0)
+        .or_else(|| body.and_then(|Json(req)| req.requester));
 
     info!(context_id=%context_id_result, "Deleting context");
 

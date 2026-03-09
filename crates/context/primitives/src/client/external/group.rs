@@ -130,7 +130,9 @@ impl ContextClient {
         network_id: &str,
         contract_id: &str,
     ) -> eyre::Result<
-        Option<calimero_context_config::client::env::config::requests::ContextVisibilityQueryResponse>,
+        Option<
+            calimero_context_config::client::env::config::requests::ContextVisibilityQueryResponse,
+        >,
     > {
         let context_id: types::ContextId = context_id.rt()?;
         let query = self.external_client.query::<ContextConfig>(
@@ -503,12 +505,7 @@ impl ExternalGroupClient {
                     c.network_id.as_str().into(),
                     c.contract_id.as_str().into(),
                 )
-                .manage_context_allowlist(
-                    c.group_id,
-                    context_id,
-                    add.clone(),
-                    remove.clone(),
-                )
+                .manage_context_allowlist(c.group_id, context_id, add.clone(), remove.clone())
                 .send(c.signing_key, nonce)
                 .await
         })

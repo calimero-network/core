@@ -406,12 +406,8 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         remove: Vec<SignerId>,
     ) -> ContextConfigMutateRequest<'a, T> {
         // safety: `Repr<T>` is a transparent wrapper around `T`
-        let add = unsafe {
-            core::mem::transmute::<Vec<SignerId>, Vec<Repr<SignerId>>>(add)
-        };
-        let remove = unsafe {
-            core::mem::transmute::<Vec<SignerId>, Vec<Repr<SignerId>>>(remove)
-        };
+        let add = unsafe { core::mem::transmute::<Vec<SignerId>, Vec<Repr<SignerId>>>(add) };
+        let remove = unsafe { core::mem::transmute::<Vec<SignerId>, Vec<Repr<SignerId>>>(remove) };
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Group(GroupRequest::new(
@@ -450,9 +446,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
             client: self.client,
             kind: RequestKind::Group(GroupRequest::new(
                 Repr::new(group_id),
-                GroupRequestKind::SetDefaultVisibility {
-                    default_visibility,
-                },
+                GroupRequestKind::SetDefaultVisibility { default_visibility },
             )),
         }
     }
