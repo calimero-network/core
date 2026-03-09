@@ -18,7 +18,7 @@ use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::PeerId;
 use rand::Rng;
 use tokio::sync::{broadcast, mpsc};
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 
@@ -177,6 +177,7 @@ impl NodeClient {
         mutation_kind: crate::sync::GroupMutationKind,
     ) -> eyre::Result<()> {
         if contexts.is_empty() {
+            debug!(?mutation_kind, "no contexts to broadcast group mutation to");
             return Ok(());
         }
 
@@ -188,13 +189,24 @@ impl NodeClient {
 
         for context_id in contexts {
             if self.get_peers_count(Some(context_id)).await == 0 {
+                debug!(
+                    %context_id,
+                    "skipping group mutation broadcast: 0 peers on context mesh"
+                );
                 continue;
             }
             let topic = TopicHash::from_raw(*context_id);
-            let _ = self
+            if let Err(err) = self
                 .network_client
                 .publish(topic, payload_bytes.clone())
-                .await;
+                .await
+            {
+                warn!(
+                    %context_id,
+                    %err,
+                    "failed to publish group mutation notification"
+                );
+            }
         }
 
         Ok(())

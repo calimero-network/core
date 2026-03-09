@@ -2,6 +2,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::DetachContextFromGroupRequest;
 use calimero_node_primitives::sync::GroupMutationKind;
 use eyre::bail;
+use tracing::warn;
 
 use crate::group_store;
 use crate::ContextManager;
@@ -90,6 +91,24 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
                 }
 
                 group_store::unregister_context_from_group(&datastore, &group_id, &context_id)?;
+
+                // Clean up orphaned visibility and allowlist data
+                if let Err(err) =
+                    group_store::delete_context_visibility(&datastore, &group_id, &context_id)
+                {
+                    warn!(
+                        ?group_id, %context_id, %err,
+                        "failed to clean up context visibility on detach"
+                    );
+                }
+                if let Err(err) =
+                    group_store::clear_context_allowlist(&datastore, &group_id, &context_id)
+                {
+                    warn!(
+                        ?group_id, %context_id, %err,
+                        "failed to clean up context allowlist on detach"
+                    );
+                }
 
                 let _ = node_client
                     .broadcast_group_mutation(

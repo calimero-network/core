@@ -18,7 +18,7 @@ use calimero_store::key::{
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
-use tracing::debug;
+use tracing::{debug, warn};
 
 // ---------------------------------------------------------------------------
 // Group meta helpers
@@ -681,6 +681,86 @@ async fn sync_group_contexts_from_contract(
         }
     }
 
+    // Sync visibility and allowlist for each on-chain context.
+    for context_id in &on_chain_contexts {
+        // Sync visibility
+        match context_client
+            .query_context_visibility(*group_id, *context_id, protocol, network_id, contract_id)
+            .await
+        {
+            Ok(Some(vis)) => {
+                let mode_u8 = match vis.mode {
+                    calimero_context_config::VisibilityMode::Open => 0u8,
+                    calimero_context_config::VisibilityMode::Restricted => 1u8,
+                };
+                let creator_bytes: [u8; 32] = vis.creator.as_bytes();
+                if let Err(err) =
+                    set_context_visibility(datastore, group_id, context_id, mode_u8, creator_bytes)
+                {
+                    warn!(
+                        ?group_id, %context_id, %err,
+                        "failed to store context visibility"
+                    );
+                }
+
+                // Sync allowlist: clear existing entries then re-populate from chain
+                let existing = list_context_allowlist(datastore, group_id, context_id)
+                    .unwrap_or_default();
+                for member in &existing {
+                    let _ = remove_from_context_allowlist(datastore, group_id, context_id, member);
+                }
+
+                let mut al_offset = 0;
+                const AL_PAGE_SIZE: usize = 100;
+                loop {
+                    match context_client
+                        .query_context_allowlist(
+                            *group_id,
+                            *context_id,
+                            protocol,
+                            network_id,
+                            contract_id,
+                            al_offset,
+                            AL_PAGE_SIZE,
+                        )
+                        .await
+                    {
+                        Ok(page) => {
+                            let page_len = page.len();
+                            for signer in &page {
+                                let bytes: [u8; 32] = signer.as_bytes();
+                                let pk = PublicKey::from(bytes);
+                                let _ = add_to_context_allowlist(
+                                    datastore, group_id, context_id, &pk,
+                                );
+                            }
+                            if page_len < AL_PAGE_SIZE {
+                                break;
+                            }
+                            al_offset += page_len;
+                        }
+                        Err(err) => {
+                            warn!(
+                                ?group_id, %context_id, %err,
+                                "failed to query context allowlist"
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(None) => {
+                // No visibility data on-chain (context may not have visibility set yet)
+            }
+            Err(err) => {
+                warn!(
+                    ?group_id, %context_id, %err,
+                    "failed to query context visibility"
+                );
+            }
+        }
+    }
+
     debug!(
         ?group_id,
         count = on_chain_contexts.len(),
@@ -923,6 +1003,29 @@ pub fn list_context_allowlist(
     }
 
     Ok(results)
+}
+
+pub fn delete_context_visibility(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupContextVisibility::new(group_id.to_bytes(), *context_id);
+    handle.delete(&key)?;
+    Ok(())
+}
+
+pub fn clear_context_allowlist(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+) -> EyreResult<()> {
+    let members = list_context_allowlist(store, group_id, context_id)?;
+    for member in &members {
+        remove_from_context_allowlist(store, group_id, context_id, member)?;
+    }
+    Ok(())
 }
 
 pub fn get_default_capabilities(

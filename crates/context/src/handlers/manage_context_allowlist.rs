@@ -131,7 +131,7 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
                     .broadcast_group_mutation(
                         &contexts,
                         group_id.to_bytes(),
-                        GroupMutationKind::MemberRoleUpdated,
+                        GroupMutationKind::VisibilityUpdated,
                     )
                     .await;
 

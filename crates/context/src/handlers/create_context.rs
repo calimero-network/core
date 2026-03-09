@@ -470,6 +470,25 @@ async fn create_context(
         group_client.register_context_in_group(context.id, None).await?;
 
         group_store::register_context_in_group(&datastore, gid, &context.id)?;
+
+        // Write-through: store initial visibility locally so queries work
+        // without waiting for a sync. Matches on-chain behavior where
+        // register_context_in_group creates visibility with group defaults.
+        if let Ok(Some(default_vis_mode)) = group_store::get_default_visibility(&datastore, gid) {
+            let creator_bytes: [u8; 32] = *identity;
+            let _ = group_store::set_context_visibility(
+                &datastore, gid, &context.id, default_vis_mode, creator_bytes,
+            );
+            // Auto-add creator to allowlist for Restricted contexts
+            if default_vis_mode == 1u8 {
+                let _ = group_store::add_to_context_allowlist(
+                    &datastore,
+                    gid,
+                    &context.id,
+                    &PublicKey::from(creator_bytes),
+                );
+            }
+        }
     }
 
     node_client.subscribe(&context.id).await?;

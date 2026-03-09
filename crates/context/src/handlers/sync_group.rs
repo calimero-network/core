@@ -54,46 +54,19 @@ impl Handler<SyncGroupRequest> for ContextManager {
                 )
                 .await?;
 
-                // Ensure target application binary is installed locally via P2P
-                // blob sharing. Without this, lazy upgrades on peer nodes fail
-                // because the new version's WASM binary isn't available locally.
-                // The admin node announces the blob on the DHT during upgrade,
-                // so get_blob_bytes should discover it via DHT and fetch via P2P.
-                if let Some((blob_id, source, _size)) =
+                // Check if target app blob is available (informational only).
+                // Blob fetching is handled by join_group_context when the node
+                // actually joins a context, which establishes P2P mesh connectivity.
+                if let Some((blob_id, _source, _size)) =
                     group_store::extract_application_blob_info(&group_info.target_application)
                 {
                     if !node_client.has_blob(&blob_id)? {
-                        let contexts =
-                            group_store::enumerate_group_contexts(&datastore, &group_id, 0, 1)?;
-                        if let Some(ctx_id) = contexts.first() {
-                            match node_client.get_blob_bytes(&blob_id, Some(ctx_id)).await {
-                                Ok(Some(_bytes)) => {
-                                    if let Ok(app_source) = source.parse() {
-                                        if let Err(err) = node_client
-                                            .install_application_from_bundle_blob(
-                                                &blob_id,
-                                                &app_source,
-                                            )
-                                            .await
-                                        {
-                                            warn!(
-                                                %err,
-                                                "failed to install target app bundle"
-                                            );
-                                        }
-                                    }
-                                }
-                                Ok(None) => {
-                                    warn!("target app blob not available from any peer yet");
-                                }
-                                Err(err) => {
-                                    warn!(
-                                        %err,
-                                        "failed to fetch target app blob from peers"
-                                    );
-                                }
-                            }
-                        }
+                        info!(
+                            ?group_id,
+                            %blob_id,
+                            "target app blob not available locally; \
+                             it will be fetched when joining a context"
+                        );
                     }
                 }
 

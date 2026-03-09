@@ -652,6 +652,7 @@ pub enum GroupMutationKind {
     ContextDetached,
     SettingsUpdated,
     MemberRoleUpdated,
+    VisibilityUpdated,
 }
 
 // Wire protocol types (StreamMessage, InitPayload, MessagePayload) are in wire.rs
