@@ -713,6 +713,16 @@ impl ContextClient {
         let index = EntityIndexMinimal::deserialize_reader(&mut reader)
             .map_err(|e| eyre::eyre!("Failed to deserialize EntityIndex: {}", e))?;
 
+        let trailing = reader.len();
+        if trailing > 0 {
+            tracing::debug!(
+                %context_id,
+                trailing_bytes = trailing,
+                total_bytes = bytes.len(),
+                "EntityIndex deserialization skipped trailing bytes"
+            );
+        }
+
         tracing::debug!(
             %context_id,
             computed_root = ?Hash::from(index.full_hash),
