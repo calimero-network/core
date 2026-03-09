@@ -14,5 +14,5 @@ RUSTFLAGS="--remap-path-prefix $HOME=~" cargo build --target wasm32-unknown-unkn
 cp $TARGET/wasm32-unknown-unknown/app-release/access_control.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/access_control.wasm -o ./res/access_control.wasm
+  wasm-opt -Oz --enable-bulk-memory ./res/access_control.wasm -o ./res/access_control.wasm
 fi

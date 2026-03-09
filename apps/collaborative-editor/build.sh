@@ -14,6 +14,6 @@ cargo build --target wasm32-unknown-unknown --profile app-release
 cp $TARGET/wasm32-unknown-unknown/app-release/collaborative_editor.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/collaborative_editor.wasm -o ./res/collaborative_editor.wasm
+  wasm-opt -Oz --enable-bulk-memory ./res/collaborative_editor.wasm -o ./res/collaborative_editor.wasm
 fi
 

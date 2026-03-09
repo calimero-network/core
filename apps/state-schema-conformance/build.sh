@@ -19,7 +19,7 @@ cp $TARGET/wasm32-unknown-unknown/app-release/state_schema_conformance.wasm ./re
 # Optimize with wasm-opt if available
 if command -v wasm-opt &> /dev/null; then
     echo "Optimizing WASM with wasm-opt..."
-    wasm-opt -Os res/state_schema_conformance.wasm -o ./res/state_schema_conformance.wasm
+    wasm-opt -Os --enable-bulk-memory res/state_schema_conformance.wasm -o ./res/state_schema_conformance.wasm
 fi
 
 echo "Build complete: res/state_schema_conformance.wasm"

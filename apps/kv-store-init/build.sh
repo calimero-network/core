@@ -14,5 +14,5 @@ cargo build --target wasm32-unknown-unknown --profile app-release
 cp $TARGET/wasm32-unknown-unknown/app-release/kv_store_init.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/kv_store_init.wasm -o ./res/kv_store_init.wasm
+  wasm-opt -Oz --enable-bulk-memory ./res/kv_store_init.wasm -o ./res/kv_store_init.wasm
 fi

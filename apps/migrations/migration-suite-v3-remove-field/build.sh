@@ -21,5 +21,5 @@ RUSTFLAGS="--remap-path-prefix $HOME=~" cargo build --target wasm32-unknown-unkn
 cp $TARGET/wasm32-unknown-unknown/$PROFILE/migration_suite_v3_remove_field.wasm ./res/
 
 if [ "$PROFILE" = "app-release" ] && command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/migration_suite_v3_remove_field.wasm -o ./res/migration_suite_v3_remove_field.wasm
+  wasm-opt -Oz --enable-bulk-memory ./res/migration_suite_v3_remove_field.wasm -o ./res/migration_suite_v3_remove_field.wasm
 fi
