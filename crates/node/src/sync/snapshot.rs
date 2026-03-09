@@ -284,10 +284,12 @@ impl SyncManager {
             .await?;
 
         // Verify snapshot integrity by computing the actual root hash from storage (I7).
-        // If compute_root_hash fails or returns a mismatch, fall back to the peer's
-        // claimed hash so that sync can still proceed. A mismatch may happen when the
-        // snapshot contains data that was written in a different entity order; the root
-        // hash will converge once subsequent deltas are applied.
+        // On success we always trust the locally-computed hash because it reflects what
+        // is actually persisted -- storing the peer's claimed hash when it disagrees
+        // with local storage would create a silent divergence.
+        // On failure (deserialization error) we fall back to the peer's claimed hash so
+        // that sync can still proceed; compute_root_hash may fail if the minimal structs
+        // drift from the real storage layout.
         let root_to_store = match self.context_client.compute_root_hash(&context_id) {
             Ok(computed_root) => {
                 if computed_root != *boundary.boundary_root_hash {
@@ -297,8 +299,13 @@ impl SyncManager {
                         claimed_root = %hex::encode(*boundary.boundary_root_hash),
                         "Snapshot root hash mismatch - using computed hash from storage"
                     );
+                } else {
+                    info!(
+                        %context_id,
+                        root_hash = %hex::encode(computed_root),
+                        "Snapshot root hash verified successfully"
+                    );
                 }
-                // Prefer the locally-computed hash when deserialization succeeds
                 computed_root
             }
             Err(e) => {
