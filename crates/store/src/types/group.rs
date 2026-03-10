@@ -60,3 +60,8 @@ impl PredefinedEntry for key::GroupDefaultVis {
     type Codec = Borsh;
     type DataType<'a> = key::GroupDefaultVisValue;
 }
+
+impl PredefinedEntry for key::GroupContextLastMigration {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupContextLastMigrationValue;
+}

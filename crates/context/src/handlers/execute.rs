@@ -198,7 +198,7 @@ impl Handler<ExecuteRequest> for ContextManager {
         // directly without routing through the actor mailbox (which would deadlock while an
         // ActorFuture is in flight on the same actor).
         let lazy_upgrade_task = guard_task.map(move |guard, act, _ctx| {
-            if let Some((target_app_id, migrate_method)) = lazy_upgrade_params {
+            if let Some((target_app_id, migrate_method, group_id)) = lazy_upgrade_params {
                 info!(
                     %context_id,
                     %target_app_id,
@@ -220,6 +220,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     context_meta,
                     application,
                     migrate_method,
+                    group_id,
                 )));
             }
             Ok(Either::Left(guard))
@@ -238,9 +239,10 @@ impl Handler<ExecuteRequest> for ContextManager {
                     context_meta,
                     application,
                     migrate,
+                    group_id,
                 )) => {
                     if let Some(method) = migrate {
-                        let migration_params = MigrationParams { method };
+                        let migration_params = MigrationParams { method: method.clone() };
                         // Migration: load the WASM module via get_module (actor-aware cache),
                         // then call update_application_with_migration directly — no mailbox.
                         act.get_module(target_app)
@@ -252,8 +254,8 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 async move {
                                     match module_result {
                                         Ok(module) => {
-                                            if let Err(err) = update_application_with_migration(
-                                                datastore,
+                                            match update_application_with_migration(
+                                                datastore.clone(),
                                                 node_client,
                                                 context_client,
                                                 cid,
@@ -266,12 +268,32 @@ impl Handler<ExecuteRequest> for ContextManager {
                                             )
                                             .await
                                             {
-                                                warn!(
-                                                    %cid,
-                                                    %target_app,
-                                                    %err,
-                                                    "lazy upgrade (migration) failed, proceeding with current application"
-                                                );
+                                                Ok(_) => {
+                                                    // Record that this migration was applied so
+                                                    // maybe_lazy_upgrade skips it on future accesses.
+                                                    if let Err(err) =
+                                                        crate::group_store::set_context_last_migration(
+                                                            &datastore,
+                                                            &group_id,
+                                                            &cid,
+                                                            &method,
+                                                        )
+                                                    {
+                                                        warn!(
+                                                            %cid,
+                                                            %err,
+                                                            "failed to record migration marker"
+                                                        );
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    warn!(
+                                                        %cid,
+                                                        %target_app,
+                                                        %err,
+                                                        "lazy upgrade (migration) failed, proceeding with current application"
+                                                    );
+                                                }
                                             }
                                         }
                                         Err(err) => {
@@ -1277,14 +1299,20 @@ fn sign_user_actions(
 }
 
 /// Checks if a context belongs to a group with LazyOnAccess policy and
-/// the context's current application differs from the group's target.
-/// Returns (target_application_id, migrate_method) if an upgrade is needed.
-/// The caller is responsible for providing the signing identity.
+/// needs an upgrade or migration.
+///
+/// Returns `(target_application_id, migrate_method, group_id)` when an
+/// upgrade should be performed.  The `group_id` is included so the caller
+/// can record a per-context migration marker after a successful run.
 fn maybe_lazy_upgrade(
     datastore: &Store,
     context_id: &ContextId,
     current_application_id: &ApplicationId,
-) -> Option<(ApplicationId, Option<String>)> {
+) -> Option<(
+    ApplicationId,
+    Option<String>,
+    calimero_context_config::types::ContextGroupId,
+)> {
     use crate::group_store;
 
     // 1. Check if context belongs to a group
@@ -1312,16 +1340,33 @@ fn maybe_lazy_upgrade(
         return None;
     }
 
-    // 4. Compare current vs target application
-    if *current_application_id == meta.target_application_id {
-        return None; // already at target version
-    }
-
-    // 5. Extract migration method from group meta (set during upgrade)
+    // 4. Extract migration method from group meta (set during upgrade)
     let migrate_method = meta
         .migration
         .as_ref()
         .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
+
+    // 5. Compare current vs target application
+    if *current_application_id == meta.target_application_id {
+        // IDs match — only proceed if there is a pending migration that
+        // hasn't been applied to this context yet.
+        let Some(ref method) = migrate_method else {
+            return None; // no migration, context is already up to date
+        };
+
+        // Check per-context marker set after a successful migration run.
+        let already_applied =
+            group_store::get_context_last_migration(datastore, &group_id, context_id)
+                .ok()
+                .flatten()
+                .map(|last| last == *method)
+                .unwrap_or(false);
+
+        if already_applied {
+            return None; // migration was already applied to this context
+        }
+        // Fall through: migration is pending.
+    }
 
     info!(
         %context_id,
@@ -1331,5 +1376,5 @@ fn maybe_lazy_upgrade(
         "lazy upgrade triggered for context"
     );
 
-    Some((meta.target_application_id, migrate_method))
+    Some((meta.target_application_id, migrate_method, group_id))
 }

@@ -9,10 +9,11 @@ use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupContextAllowlist, GroupContextIndex,
-    GroupContextVisibility, GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue,
-    GroupDefaultVis, GroupDefaultVisValue, GroupMember, GroupMemberCapability,
-    GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue,
-    GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
+    GroupContextLastMigration, GroupContextLastMigrationValue, GroupContextVisibility,
+    GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
+    GroupDefaultVisValue, GroupMember, GroupMemberCapability, GroupMemberCapabilityValue,
+    GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey,
+    GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
     GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX,
     GROUP_UPGRADE_PREFIX,
 };
@@ -1060,6 +1061,44 @@ pub fn set_default_visibility(
     let mut handle = store.handle();
     let key = GroupDefaultVis::new(group_id.to_bytes());
     handle.put(&key, &GroupDefaultVisValue { mode })?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Per-context migration tracking
+// ---------------------------------------------------------------------------
+
+/// Returns the migration method name that was last successfully applied to
+/// `context_id` within `group_id`, or `None` if no migration has been recorded.
+pub fn get_context_last_migration(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+) -> EyreResult<Option<String>> {
+    let handle = store.handle();
+    let key = GroupContextLastMigration::new(group_id.to_bytes(), (*context_id).into());
+    Ok(handle
+        .get(&key)?
+        .map(|v: GroupContextLastMigrationValue| v.method))
+}
+
+/// Records that `method` was successfully applied to `context_id` within
+/// `group_id`. Subsequent calls to `maybe_lazy_upgrade` will skip this
+/// migration for this context unless a different method is configured.
+pub fn set_context_last_migration(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+    method: &str,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupContextLastMigration::new(group_id.to_bytes(), (*context_id).into());
+    handle.put(
+        &key,
+        &GroupContextLastMigrationValue {
+            method: method.to_owned(),
+        },
+    )?;
     Ok(())
 }
 

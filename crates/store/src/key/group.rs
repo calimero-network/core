@@ -25,6 +25,7 @@ pub const GROUP_CONTEXT_VISIBILITY_PREFIX: u8 = 0x27;
 pub const GROUP_CONTEXT_ALLOWLIST_PREFIX: u8 = 0x28;
 pub const GROUP_DEFAULT_CAPS_PREFIX: u8 = 0x29;
 pub const GROUP_DEFAULT_VIS_PREFIX: u8 = 0x2A;
+pub const GROUP_CONTEXT_LAST_MIGRATION_PREFIX: u8 = 0x2B;
 
 #[derive(Clone, Copy, Debug)]
 pub struct GroupPrefix;
@@ -688,6 +689,77 @@ pub struct GroupDefaultVisValue {
     pub mode: u8,
 }
 
+/// Key for tracking the last migration applied to a specific context in a group:
+/// prefix + group_id + context_id.
+///
+/// The value is the migration method name that was last successfully applied.
+/// Used by `maybe_lazy_upgrade` to avoid re-running a migration that already
+/// completed for this context.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupContextLastMigration(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupContextLastMigration {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], context_id: PrimitiveContextId) -> Self {
+        Self(Key(GenericArray::from([
+            GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
+        ])
+        .concat(GenericArray::from(group_id))
+        .concat(GenericArray::from(*context_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..65]);
+        id.into()
+    }
+}
+
+impl AsKeyParts for GroupContextLastMigration {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupContextLastMigration {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupContextLastMigration {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupContextLastMigration")
+            .field("group_id", &self.group_id())
+            .field("context_id", &self.context_id())
+            .finish()
+    }
+}
+
+/// Value for [`GroupContextLastMigration`] — the migration method name that was last applied.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupContextLastMigrationValue {
+    pub method: String,
+}
+
 /// Stored against [`GroupMeta`]. Captures the immutable + mutable metadata of a
 /// context group.
 #[derive(Clone, Debug)]
@@ -816,6 +888,7 @@ mod tests {
             GROUP_CONTEXT_ALLOWLIST_PREFIX,
             GROUP_DEFAULT_CAPS_PREFIX,
             GROUP_DEFAULT_VIS_PREFIX,
+            GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {
@@ -938,7 +1011,7 @@ mod tests {
                 initiated_at: 1_700_000_000,
                 initiated_by: PrimitivePublicKey::from([0x06; 32]),
                 status: GroupUpgradeStatus::Completed {
-                    completed_at: 1_700_001_000,
+                    completed_at: Some(1_700_001_000),
                 },
             };
 
@@ -950,7 +1023,7 @@ mod tests {
             assert_eq!(decoded.migration, None);
             match decoded.status {
                 GroupUpgradeStatus::Completed { completed_at } => {
-                    assert_eq!(completed_at, 1_700_001_000);
+                    assert_eq!(completed_at, Some(1_700_001_000));
                 }
                 other => panic!("expected Completed, got {other:?}"),
             }

@@ -30,14 +30,15 @@ pub use context::{
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{
-    ContextGroupRef, GroupContextAllowlist, GroupContextIndex, GroupContextVisibility,
-    GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
-    GroupDefaultVisValue, GroupMember, GroupMemberCapability, GroupMemberCapabilityValue,
-    GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey,
-    GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
-    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX, GROUP_DEFAULT_CAPS_PREFIX,
-    GROUP_DEFAULT_VIS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_PREFIX,
-    GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
+    ContextGroupRef, GroupContextAllowlist, GroupContextIndex, GroupContextLastMigration,
+    GroupContextLastMigrationValue, GroupContextVisibility, GroupContextVisibilityValue,
+    GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis, GroupDefaultVisValue, GroupMember,
+    GroupMemberCapability, GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupSigningKey,
+    GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
+    GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
+    GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
+    GROUP_DEFAULT_CAPS_PREFIX, GROUP_DEFAULT_VIS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
+    GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
