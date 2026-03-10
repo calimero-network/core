@@ -64,7 +64,7 @@ impl RunCommand {
             let key = kms::fetch_storage_key(
                 &tee_config.kms,
                 &peer_id,
-                &config.identity,
+                &config.identity.keypair,
                 policy.as_ref(),
             )
             .await
