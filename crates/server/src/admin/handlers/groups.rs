@@ -47,7 +47,7 @@ fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiDat
             None,
         ),
         GroupUpgradeStatus::Completed { completed_at } => {
-            ("completed", None, None, None, Some(*completed_at))
+            ("completed", None, None, None, *completed_at)
         }
     };
 

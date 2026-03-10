@@ -137,7 +137,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     meta.migration = migration_bytes.clone();
                     group_store::save_group_meta(&datastore, &group_id, &meta)?;
 
-                    let completed_status = GroupUpgradeStatus::Completed { completed_at: now };
+                    // LazyOnAccess: contexts upgrade individually on demand; there is no single
+                    // "all done" moment, so completed_at is None.
+                    let completed_status = GroupUpgradeStatus::Completed { completed_at: None };
 
                     let upgrade_value = GroupUpgradeValue {
                         from_version,
@@ -377,7 +379,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             .duration_since(UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs();
-                        let completed_status = GroupUpgradeStatus::Completed { completed_at };
+                        let completed_status = GroupUpgradeStatus::Completed {
+                            completed_at: Some(completed_at),
+                        };
                         update_upgrade_status(
                             &datastore,
                             &group_id_clone,
@@ -449,12 +453,15 @@ fn validate_upgrade(
     // 7. Select canary (first context, deterministic order)
     let canary_context_id = contexts[0];
 
-    // 8. Read current and target application versions from ApplicationMeta
+    // 8. Read current and target application versions from ApplicationMeta.
+    //    Use the group's current target_application_id as the "from" version — NOT the
+    //    canary context's application. For LazyOnAccess, the canary may have already been
+    //    lazily upgraded on its last execute, making its app_id == new target_application_id,
+    //    which would produce from_version == to_version.
     let handle = datastore.handle();
 
     let from_version = handle
-        .get(&key::ContextMeta::new(canary_context_id))?
-        .and_then(|ctx_meta| handle.get(&ctx_meta.application).ok().flatten())
+        .get(&key::ApplicationMeta::new(meta.target_application_id))?
         .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version));
 
     let to_version = handle
@@ -659,7 +666,9 @@ pub(crate) async fn propagate_upgrade(
         .as_secs();
 
     let final_status = if failed == 0 {
-        GroupUpgradeStatus::Completed { completed_at: now }
+        GroupUpgradeStatus::Completed {
+            completed_at: Some(now),
+        }
     } else {
         // Keep as InProgress with the final counts so manual retry can pick it up
         GroupUpgradeStatus::InProgress {
