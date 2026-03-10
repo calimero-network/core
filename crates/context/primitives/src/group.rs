@@ -26,8 +26,10 @@ pub enum GroupUpgradeStatus {
     },
     /// All contexts in the group have been successfully upgraded.
     Completed {
-        /// Unix timestamp (seconds) when the last context was upgraded.
-        completed_at: u64,
+        /// Unix timestamp (seconds) when the last context was upgraded, or
+        /// `None` for `LazyOnAccess` upgrades where contexts upgrade individually
+        /// on demand with no single completion event.
+        completed_at: Option<u64>,
     },
 }
 
@@ -125,6 +127,8 @@ pub struct GroupInfoResponse {
     pub member_count: u64,
     pub context_count: u64,
     pub active_upgrade: Option<GroupUpgradeInfo>,
+    pub default_capabilities: u32,
+    pub default_visibility: String,
 }
 
 #[derive(Debug)]

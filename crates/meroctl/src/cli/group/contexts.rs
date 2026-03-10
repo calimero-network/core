@@ -188,6 +188,8 @@ pub enum AllowlistSubCommands {
     Add(AddAllowlistCommand),
     #[command(about = "Remove members from the allowlist")]
     Remove(RemoveAllowlistCommand),
+    #[command(about = "Check if an identity is on the allowlist")]
+    Check(AllowlistCheckCommand),
 }
 
 impl AllowlistCommand {
@@ -196,6 +198,7 @@ impl AllowlistCommand {
             AllowlistSubCommands::List(cmd) => cmd.run(environment).await,
             AllowlistSubCommands::Add(cmd) => cmd.run(environment).await,
             AllowlistSubCommands::Remove(cmd) => cmd.run(environment).await,
+            AllowlistSubCommands::Check(cmd) => cmd.run(environment).await,
         }
     }
 }
@@ -308,6 +311,45 @@ impl RemoveAllowlistCommand {
             .await?;
 
         environment.output.write(&response);
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Parser)]
+#[command(about = "Check if an identity is on the context allowlist")]
+pub struct AllowlistCheckCommand {
+    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    pub group_id: String,
+
+    #[clap(name = "CONTEXT_ID", help = "The context ID (base58)")]
+    pub context_id: ContextId,
+
+    #[clap(name = "IDENTITY", help = "Public key of the identity to check")]
+    pub identity: PublicKey,
+}
+
+impl AllowlistCheckCommand {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let context_id_hex = hex::encode(AsRef::<[u8; 32]>::as_ref(&self.context_id));
+
+        let client = environment.client()?;
+        let response = client
+            .get_context_allowlist(&self.group_id, &context_id_hex)
+            .await?;
+
+        let on_list = response.data.contains(&self.identity);
+        if on_list {
+            println!(
+                "{} IS on the allowlist for context {}",
+                self.identity, self.context_id
+            );
+        } else {
+            println!(
+                "{} is NOT on the allowlist for context {}",
+                self.identity, self.context_id
+            );
+        }
 
         Ok(())
     }

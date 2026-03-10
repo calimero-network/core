@@ -22,6 +22,8 @@ pub struct SettingsCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SettingsSubCommands {
+    #[command(about = "Get current default settings for a group")]
+    Get(SettingsGetCommand),
     #[command(
         alias = "set-default-caps",
         about = "Set default capabilities for new group members"
@@ -37,9 +39,62 @@ pub enum SettingsSubCommands {
 impl SettingsCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         match self.subcommand {
+            SettingsSubCommands::Get(cmd) => cmd.run(environment).await,
             SettingsSubCommands::SetDefaultCapabilities(cmd) => cmd.run(environment).await,
             SettingsSubCommands::SetDefaultVisibility(cmd) => cmd.run(environment).await,
         }
+    }
+}
+
+#[derive(Clone, Debug, Parser)]
+#[command(about = "Get current default settings for a group")]
+pub struct SettingsGetCommand {
+    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    pub group_id: String,
+}
+
+impl SettingsGetCommand {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let client = environment.client()?;
+        let response = client.get_group_info(&self.group_id).await?;
+
+        let caps = response.data.default_capabilities;
+        let vis = &response.data.default_visibility;
+
+        use comfy_table::{Cell, Color, Table};
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Default Setting").fg(Color::Blue),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Default Visibility", vis.as_str()]);
+        let _ = table.add_row(vec![
+            "CAN_CREATE_CONTEXT",
+            if caps & (1 << 0) != 0 {
+                "true"
+            } else {
+                "false"
+            },
+        ]);
+        let _ = table.add_row(vec![
+            "CAN_INVITE_MEMBERS",
+            if caps & (1 << 1) != 0 {
+                "true"
+            } else {
+                "false"
+            },
+        ]);
+        let _ = table.add_row(vec![
+            "CAN_JOIN_OPEN_CONTEXTS",
+            if caps & (1 << 2) != 0 {
+                "true"
+            } else {
+                "false"
+            },
+        ]);
+        println!("{table}");
+
+        Ok(())
     }
 }
 

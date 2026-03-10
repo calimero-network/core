@@ -397,7 +397,13 @@ where
             }
 
             if !response.status().is_success() {
-                bail!("Request failed with status: {}", response.status());
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                let msg = serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| v["error"].as_str().map(str::to_owned))
+                    .unwrap_or_else(|| format!("Request failed with status: {status}"));
+                bail!("{}", msg);
             }
 
             return Ok(response);

@@ -1877,6 +1877,8 @@ pub struct GroupInfoApiResponseData {
     pub context_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_upgrade: Option<GroupUpgradeStatusApiData>,
+    pub default_capabilities: u32,
+    pub default_visibility: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

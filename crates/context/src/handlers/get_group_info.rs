@@ -26,6 +26,16 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
             let active_upgrade =
                 group_store::load_group_upgrade(&self.datastore, &group_id)?.map(Into::into);
 
+            let default_capabilities =
+                group_store::get_default_capabilities(&self.datastore, &group_id)?.unwrap_or(0);
+
+            let default_visibility =
+                match group_store::get_default_visibility(&self.datastore, &group_id)?.unwrap_or(0)
+                {
+                    1 => "restricted".to_owned(),
+                    _ => "open".to_owned(),
+                };
+
             Ok(GroupInfoResponse {
                 group_id,
                 app_key: meta.app_key.into(),
@@ -34,6 +44,8 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 member_count,
                 context_count,
                 active_upgrade,
+                default_capabilities,
+                default_visibility,
             })
         })();
 

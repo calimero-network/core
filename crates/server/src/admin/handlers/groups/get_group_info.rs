@@ -43,6 +43,8 @@ pub async fn handler(
                         member_count: info.member_count,
                         context_count: info.context_count,
                         active_upgrade,
+                        default_capabilities: info.default_capabilities,
+                        default_visibility: info.default_visibility,
                     },
                 },
             }

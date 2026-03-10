@@ -1,4 +1,4 @@
-use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     AddGroupMembersApiRequest, GroupMemberApiInput, RemoveGroupMembersApiRequest,
@@ -48,6 +48,8 @@ pub enum MembersSubCommands {
     SetCapabilities(SetCapabilitiesCommand),
     #[command(alias = "get-caps", about = "Get capabilities of a group member")]
     GetCapabilities(GetCapabilitiesCommand),
+    #[command(about = "Check if an identity can join a context in this group")]
+    CheckAccess(CheckAccessCommand),
 }
 
 impl MembersCommand {
@@ -59,6 +61,7 @@ impl MembersCommand {
             MembersSubCommands::SetRole(cmd) => cmd.run(environment).await,
             MembersSubCommands::SetCapabilities(cmd) => cmd.run(environment).await,
             MembersSubCommands::GetCapabilities(cmd) => cmd.run(environment).await,
+            MembersSubCommands::CheckAccess(cmd) => cmd.run(environment).await,
         }
     }
 }
@@ -278,6 +281,105 @@ impl GetCapabilitiesCommand {
             .await?;
 
         environment.output.write(&response);
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Parser)]
+#[command(
+    about = "Diagnostic: check if an identity can join a context (role + capabilities + visibility + allowlist)"
+)]
+pub struct CheckAccessCommand {
+    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    pub group_id: String,
+
+    #[clap(name = "CONTEXT_ID", help = "The context ID (base58)")]
+    pub context_id: ContextId,
+
+    #[clap(name = "IDENTITY", help = "Public key of the identity to check")]
+    pub identity: PublicKey,
+}
+
+impl CheckAccessCommand {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let identity_hex = hex::encode(self.identity.digest());
+        let context_id_hex = hex::encode(AsRef::<[u8; 32]>::as_ref(&self.context_id));
+
+        let client = environment.client()?;
+
+        let caps_response = client
+            .get_member_capabilities(&self.group_id, &identity_hex)
+            .await?;
+        let visibility_response = client
+            .get_context_visibility(&self.group_id, &context_id_hex)
+            .await?;
+        let allowlist_response = client
+            .get_context_allowlist(&self.group_id, &context_id_hex)
+            .await?;
+        let members_response = client.list_group_members(&self.group_id).await?;
+
+        let caps = caps_response.data.capabilities;
+        let visibility = &visibility_response.data.mode;
+        let on_allowlist = allowlist_response.data.contains(&self.identity);
+        let role = members_response
+            .data
+            .iter()
+            .find(|m| m.identity == self.identity)
+            .map(|m| format!("{:?}", m.role).to_lowercase())
+            .unwrap_or_else(|| "not a member".to_owned());
+        let is_admin = members_response
+            .data
+            .iter()
+            .any(|m| m.identity == self.identity && m.role == GroupMemberRole::Admin);
+
+        println!("Role:                    {role}");
+        println!(
+            "CAN_CREATE_CONTEXT:      {}",
+            if caps & (1 << 0) != 0 {
+                "true"
+            } else {
+                "false"
+            }
+        );
+        println!(
+            "CAN_INVITE_MEMBERS:      {}",
+            if caps & (1 << 1) != 0 {
+                "true"
+            } else {
+                "false"
+            }
+        );
+        println!(
+            "CAN_JOIN_OPEN_CONTEXTS:  {}",
+            if caps & (1 << 2) != 0 {
+                "true"
+            } else {
+                "false"
+            }
+        );
+        println!();
+        println!("Context visibility:      {visibility}");
+        println!(
+            "On allowlist:            {}",
+            if on_allowlist { "YES" } else { "NO" }
+        );
+        println!();
+
+        let verdict = if visibility == "open" {
+            if caps & (1 << 2) != 0 {
+                "CAN JOIN — open context and identity has CAN_JOIN_OPEN_CONTEXTS".to_owned()
+            } else {
+                "CANNOT JOIN — open context but identity lacks CAN_JOIN_OPEN_CONTEXTS".to_owned()
+            }
+        } else if is_admin || on_allowlist {
+            "CAN JOIN — context is restricted and identity is on the allowlist (or is an admin)"
+                .to_owned()
+        } else {
+            "CANNOT JOIN — context is restricted and identity is not on the allowlist".to_owned()
+        };
+
+        println!("Verdict: {verdict}");
 
         Ok(())
     }
