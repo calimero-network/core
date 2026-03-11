@@ -85,14 +85,8 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
 
                 info!(?group_id, count = members.len(), %requester, "members added to group");
 
-                let contexts =
-                    group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;
                 let _ = node_client
-                    .broadcast_group_mutation(
-                        &contexts,
-                        group_id.to_bytes(),
-                        GroupMutationKind::MembersAdded,
-                    )
+                    .broadcast_group_mutation(group_id.to_bytes(), GroupMutationKind::MembersAdded)
                     .await;
 
                 Ok(())

@@ -65,7 +65,6 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
                 group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
         }
 
-        let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
@@ -86,11 +85,8 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
 
                 info!(?group_id, %member, capabilities, "member capabilities updated");
 
-                let contexts =
-                    group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;
                 let _ = node_client
                     .broadcast_group_mutation(
-                        &contexts,
                         group_id.to_bytes(),
                         GroupMutationKind::MemberRoleUpdated,
                     )

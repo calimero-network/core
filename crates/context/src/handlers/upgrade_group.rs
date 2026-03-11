@@ -165,11 +165,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         usize::MAX,
                     )?;
                     let _ = node_client
-                        .broadcast_group_mutation(
-                            &contexts,
-                            group_id.to_bytes(),
-                            GroupMutationKind::Upgraded,
-                        )
+                        .broadcast_group_mutation(group_id.to_bytes(), GroupMutationKind::Upgraded)
                         .await;
 
                     // Announce target app blob on DHT for each group context so
@@ -329,11 +325,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         ctx.spawn(
                             async move {
                                 let _ = nc
-                                    .broadcast_group_mutation(
-                                        &contexts,
-                                        gid,
-                                        GroupMutationKind::Upgraded,
-                                    )
+                                    .broadcast_group_mutation(gid, GroupMutationKind::Upgraded)
                                     .await;
 
                                 // Announce target app blob on DHT for peers

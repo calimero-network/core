@@ -64,16 +64,6 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
-        // Capture contexts before detach — the detached context is still subscribed
-        let contexts = match group_store::enumerate_group_contexts(
-            &self.datastore,
-            &group_id,
-            0,
-            usize::MAX,
-        ) {
-            Ok(c) => c,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
@@ -112,7 +102,6 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
 
                 let _ = node_client
                     .broadcast_group_mutation(
-                        &contexts,
                         group_id.to_bytes(),
                         GroupMutationKind::ContextDetached,
                     )
