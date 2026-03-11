@@ -505,7 +505,7 @@ impl ExternalGroupClient {
                     c.network_id.as_str().into(),
                     c.contract_id.as_str().into(),
                 )
-                .manage_context_allowlist(c.group_id, context_id, add.clone(), remove.clone())
+                .manage_context_allowlist(c.group_id, context_id, &add, &remove)
                 .send(c.signing_key, nonce)
                 .await
         })

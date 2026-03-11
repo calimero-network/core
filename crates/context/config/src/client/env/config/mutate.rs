@@ -402,20 +402,21 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         self,
         group_id: ContextGroupId,
         context_id: ContextId,
-        add: Vec<SignerId>,
-        remove: Vec<SignerId>,
+        add: &'a [SignerId],
+        remove: &'a [SignerId],
     ) -> ContextConfigMutateRequest<'a, T> {
         // safety: `Repr<T>` is a transparent wrapper around `T`
-        let add = unsafe { core::mem::transmute::<Vec<SignerId>, Vec<Repr<SignerId>>>(add) };
-        let remove = unsafe { core::mem::transmute::<Vec<SignerId>, Vec<Repr<SignerId>>>(remove) };
+        let add = unsafe { &*(ptr::from_ref::<[SignerId]>(add) as *const [Repr<SignerId>]) };
+        let remove =
+            unsafe { &*(ptr::from_ref::<[SignerId]>(remove) as *const [Repr<SignerId>]) };
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Group(GroupRequest::new(
                 Repr::new(group_id),
                 GroupRequestKind::ManageContextAllowlist {
                     context_id: Repr::new(context_id),
-                    add,
-                    remove,
+                    add: add.to_vec(),
+                    remove: remove.to_vec(),
                 },
             )),
         }
