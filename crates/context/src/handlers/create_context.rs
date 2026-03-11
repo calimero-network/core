@@ -499,5 +499,14 @@ async fn create_context(
 
     node_client.subscribe(&context.id).await?;
 
+    if let Some(ref gid) = group_id {
+        let _ = node_client
+            .broadcast_group_mutation(
+                gid.to_bytes(),
+                calimero_node_primitives::sync::GroupMutationKind::ContextAttached,
+            )
+            .await;
+    }
+
     Ok(context.root_hash)
 }
