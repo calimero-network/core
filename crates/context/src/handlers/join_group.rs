@@ -6,6 +6,7 @@ use calimero_context_config::types::{
     SignedGroupRevealPayload, SignerId,
 };
 use calimero_context_primitives::group::{JoinGroupRequest, JoinGroupResponse};
+use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
@@ -207,6 +208,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 )?;
 
                 let _ = node_client.subscribe_group(group_id.to_bytes()).await;
+                let _ = node_client
+                    .broadcast_group_mutation(group_id.to_bytes(), GroupMutationKind::MembersAdded)
+                    .await;
 
                 info!(
                     ?group_id,

@@ -30,7 +30,43 @@ impl Handler<NetworkEvent> for NodeManager {
             }
 
             NetworkEvent::Subscribed { peer_id, topic } => {
-                let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
+                let topic_str = topic.as_str();
+
+                // Check for group topic: "group/<hex32>"
+                if let Some(hex) = topic_str.strip_prefix("group/") {
+                    let mut bytes = [0u8; 32];
+                    if hex::decode_to_slice(hex, &mut bytes).is_ok() {
+                        info!(%peer_id, group_id=%hex, "Peer subscribed to group topic, triggering sync");
+                        let context_client = self.clients.context.clone();
+                        let _ignored = ctx.spawn(
+                            async move {
+                                use calimero_context_config::types::ContextGroupId;
+                                use calimero_context_primitives::group::SyncGroupRequest;
+
+                                let group_id = ContextGroupId::from(bytes);
+                                if let Err(err) = context_client
+                                    .sync_group(SyncGroupRequest {
+                                        group_id,
+                                        requester: None,
+                                        protocol: None,
+                                        network_id: None,
+                                        contract_id: None,
+                                    })
+                                    .await
+                                {
+                                    warn!(
+                                        ?err,
+                                        "Failed to auto-sync group after peer subscription"
+                                    );
+                                }
+                            }
+                            .into_actor(self),
+                        );
+                    }
+                    return;
+                }
+
+                let Ok(context_id): Result<ContextId, _> = topic_str.parse() else {
                     return;
                 };
 
