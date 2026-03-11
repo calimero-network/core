@@ -1,5 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::{DeleteGroupRequest, DeleteGroupResponse};
+use calimero_node_primitives::sync::GroupMutationKind;
 use eyre::bail;
 use tracing::info;
 
@@ -63,6 +64,8 @@ impl Handler<DeleteGroupRequest> for ContextManager {
         }
 
         let datastore = self.datastore.clone();
+        let node_client = self.node_client.clone();
+        let group_id_bytes = group_id.to_bytes();
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
@@ -93,6 +96,11 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                 group_store::delete_group_upgrade(&datastore, &group_id)?;
                 group_store::delete_all_group_signing_keys(&datastore, &group_id)?;
                 group_store::delete_group_meta(&datastore, &group_id)?;
+
+                let _ = node_client
+                    .broadcast_group_mutation(group_id_bytes, GroupMutationKind::Deleted)
+                    .await;
+                let _ = node_client.unsubscribe_group(group_id_bytes).await;
 
                 info!(?group_id, %requester, "group deleted");
 

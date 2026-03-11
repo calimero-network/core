@@ -73,6 +73,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                 group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
         }
 
+        let self_identity = self.node_group_identity().map(|(pk, _)| pk);
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let context_client = self.context_client.clone();
@@ -100,15 +101,22 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
 
                 info!(?group_id, count = members.len(), %requester, "members removed from group");
 
-                let contexts =
-                    group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;
                 let _ = node_client
                     .broadcast_group_mutation(
-                        &contexts,
                         group_id.to_bytes(),
                         GroupMutationKind::MembersRemoved,
                     )
                     .await;
+
+                // Unsubscribe if this node's identity was removed
+                if let Some(self_pk) = self_identity {
+                    if members.iter().any(|pk| *pk == self_pk) {
+                        let _ = node_client.unsubscribe_group(group_id.to_bytes()).await;
+                    }
+                }
+
+                let contexts =
+                    group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;
 
                 for context_id in &contexts {
                     if let Err(err) = context_client.sync_context_config(*context_id, None).await {

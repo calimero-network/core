@@ -64,6 +64,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
         };
 
         let datastore = self.datastore.clone();
+        let node_client = self.node_client.clone();
 
         // Auto-store signing key for future use (group is about to be created with
         // admin_identity as the first admin, so store it keyed to that identity)
@@ -117,6 +118,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     &admin_identity,
                     GroupMemberRole::Admin,
                 )?;
+
+                let _ = node_client.subscribe_group(group_id.to_bytes()).await;
 
                 info!(?group_id, %admin_identity, "group created");
 

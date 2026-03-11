@@ -87,6 +87,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let context_client = self.context_client.clone();
+        let node_client = self.node_client.clone();
 
         ActorResponse::r#async(
             async move {
@@ -204,6 +205,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &joiner_identity,
                     GroupMemberRole::Member,
                 )?;
+
+                let _ = node_client.subscribe_group(group_id.to_bytes()).await;
 
                 info!(
                     ?group_id,
