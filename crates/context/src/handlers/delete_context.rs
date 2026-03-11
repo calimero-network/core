@@ -152,6 +152,13 @@ async fn delete_context(
         }
 
         group_store::unregister_context_from_group(&datastore, &group_id, &context_id)?;
+
+        let _ = node_client
+            .broadcast_group_mutation(
+                group_id.to_bytes(),
+                calimero_node_primitives::sync::GroupMutationKind::ContextDetached,
+            )
+            .await;
     }
 
     Ok(())
