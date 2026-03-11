@@ -471,6 +471,36 @@ impl Actor for NodeManager {
             .into_actor(self),
         );
 
+        // Subscribe to all group topics
+        let node_client = self.clients.node.clone();
+        let context_client = self.clients.context.clone();
+
+        let _handle = ctx.spawn(
+            async move {
+                match context_client
+                    .list_all_groups(calimero_context_primitives::group::ListAllGroupsRequest {
+                        offset: 0,
+                        limit: usize::MAX,
+                    })
+                    .await
+                {
+                    Ok(groups) => {
+                        for group in groups {
+                            if let Err(err) =
+                                node_client.subscribe_group(group.group_id.to_bytes()).await
+                            {
+                                error!(?group.group_id, %err, "Failed to subscribe to group topic");
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        error!(%err, "Failed to list groups for startup subscription");
+                    }
+                }
+            }
+            .into_actor(self),
+        );
+
         // Periodic blob cache eviction (every 5 minutes)
         let _handle = ctx.run_interval(
             Duration::from_secs(constants::OLD_BLOBS_EVICTION_FREQUENCY_S),
