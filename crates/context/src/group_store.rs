@@ -577,8 +577,7 @@ pub async fn sync_group_state_from_contract(
         migration: info
             .migration_method
             .as_ref()
-            .map(|m| m.as_bytes().to_vec())
-            .or_else(|| existing.and_then(|m| m.migration)),
+            .map(|m| m.as_bytes().to_vec()),
     };
 
     save_group_meta(datastore, group_id, &meta)?;

@@ -129,11 +129,35 @@ impl ContextManager {
     ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
         let gi = self.group_identity.as_ref()?;
 
-        let pk_str = gi.public_key.strip_prefix("ed25519:")?;
-        let sk_str = gi.secret_key.strip_prefix("ed25519:")?;
+        let pk_str = gi.public_key.strip_prefix("ed25519:").or_else(|| {
+            tracing::warn!("node group identity: public_key missing 'ed25519:' prefix");
+            None
+        })?;
+        let sk_str = gi.secret_key.strip_prefix("ed25519:").or_else(|| {
+            tracing::warn!("node group identity: secret_key missing 'ed25519:' prefix");
+            None
+        })?;
 
-        let pk_bytes: [u8; 32] = bs58::decode(pk_str).into_vec().ok()?.try_into().ok()?;
-        let sk_bytes: [u8; 32] = bs58::decode(sk_str).into_vec().ok()?.try_into().ok()?;
+        let pk_bytes: [u8; 32] = bs58::decode(pk_str)
+            .into_vec()
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .or_else(|| {
+                tracing::warn!(
+                    "node group identity: failed to decode public_key (bad base58 or wrong length)"
+                );
+                None
+            })?;
+        let sk_bytes: [u8; 32] = bs58::decode(sk_str)
+            .into_vec()
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .or_else(|| {
+                tracing::warn!(
+                    "node group identity: failed to decode secret_key (bad base58 or wrong length)"
+                );
+                None
+            })?;
 
         Some((
             calimero_primitives::identity::PublicKey::from(pk_bytes),
