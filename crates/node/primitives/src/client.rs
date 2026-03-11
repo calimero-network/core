@@ -84,6 +84,20 @@ impl NodeClient {
         Ok(())
     }
 
+    pub async fn subscribe_group(&self, group_id: [u8; 32]) -> eyre::Result<()> {
+        let topic = IdentTopic::new(format!("group/{}", hex::encode(group_id)));
+        let _ignored = self.network_client.subscribe(topic).await?;
+        info!(?group_id, "Subscribed to group topic");
+        Ok(())
+    }
+
+    pub async fn unsubscribe_group(&self, group_id: [u8; 32]) -> eyre::Result<()> {
+        let topic = IdentTopic::new(format!("group/{}", hex::encode(group_id)));
+        let _ignored = self.network_client.unsubscribe(topic).await?;
+        info!(?group_id, "Unsubscribed from group topic");
+        Ok(())
+    }
+
     pub async fn get_peers_count(&self, context: Option<&ContextId>) -> usize {
         let Some(context) = context else {
             return self.network_client.peer_count().await;
@@ -172,41 +186,29 @@ impl NodeClient {
 
     pub async fn broadcast_group_mutation(
         &self,
-        contexts: &[ContextId],
-        group_id_bytes: [u8; 32],
+        group_id: [u8; 32],
         mutation_kind: crate::sync::GroupMutationKind,
     ) -> eyre::Result<()> {
-        if contexts.is_empty() {
-            debug!(?mutation_kind, "no contexts to broadcast group mutation to");
+        let topic_str = format!("group/{}", hex::encode(group_id));
+        let topic = TopicHash::from_raw(topic_str);
+
+        let peers = self.network_client.mesh_peer_count(topic.clone()).await;
+        if peers == 0 {
+            debug!(
+                ?mutation_kind,
+                "no peers on group topic, skipping broadcast"
+            );
             return Ok(());
         }
 
         let payload = BroadcastMessage::GroupMutationNotification {
-            group_id: group_id_bytes,
+            group_id,
             mutation_kind,
         };
         let payload_bytes = borsh::to_vec(&payload)?;
 
-        for context_id in contexts {
-            if self.get_peers_count(Some(context_id)).await == 0 {
-                debug!(
-                    %context_id,
-                    "skipping group mutation broadcast: 0 peers on context mesh"
-                );
-                continue;
-            }
-            let topic = TopicHash::from_raw(*context_id);
-            if let Err(err) = self
-                .network_client
-                .publish(topic, payload_bytes.clone())
-                .await
-            {
-                warn!(
-                    %context_id,
-                    %err,
-                    "failed to publish group mutation notification"
-                );
-            }
+        if let Err(err) = self.network_client.publish(topic, payload_bytes).await {
+            warn!(?group_id, %err, "failed to publish group mutation notification");
         }
 
         Ok(())
