@@ -407,8 +407,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
     ) -> ContextConfigMutateRequest<'a, T> {
         // safety: `Repr<T>` is a transparent wrapper around `T`
         let add = unsafe { &*(ptr::from_ref::<[SignerId]>(add) as *const [Repr<SignerId>]) };
-        let remove =
-            unsafe { &*(ptr::from_ref::<[SignerId]>(remove) as *const [Repr<SignerId>]) };
+        let remove = unsafe { &*(ptr::from_ref::<[SignerId]>(remove) as *const [Repr<SignerId>]) };
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Group(GroupRequest::new(
