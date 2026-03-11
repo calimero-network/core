@@ -1,9 +1,7 @@
 use actix::Message;
-use calimero_context_config::types::{AppKey, ContextGroupId};
+use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{
-    ContextId, GroupInvitationPayload, GroupMemberRole, UpgradePolicy,
-};
+use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::PublicKey;
 
 use crate::messages::MigrationParams;
@@ -200,8 +198,6 @@ impl Message for RetryGroupUpgradeRequest {
 pub struct CreateGroupInvitationRequest {
     pub group_id: ContextGroupId,
     pub requester: Option<PublicKey>,
-    pub invitee_identity: Option<PublicKey>,
-    pub expiration: Option<u64>,
     /// On-chain block height after which the invitation commitment expires.
     /// Defaults to 999_999_999 when not provided (backward-compatible).
     pub expiration_block_height: Option<u64>,
@@ -213,12 +209,12 @@ impl Message for CreateGroupInvitationRequest {
 
 #[derive(Debug)]
 pub struct CreateGroupInvitationResponse {
-    pub payload: GroupInvitationPayload,
+    pub invitation: SignedGroupOpenInvitation,
 }
 
 #[derive(Debug)]
 pub struct JoinGroupRequest {
-    pub invitation_payload: GroupInvitationPayload,
+    pub invitation: SignedGroupOpenInvitation,
 }
 
 impl Message for JoinGroupRequest {

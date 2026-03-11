@@ -38,8 +38,6 @@ pub async fn handler(
         .create_group_invitation(CreateGroupInvitationRequest {
             group_id,
             requester,
-            invitee_identity: req.invitee_identity,
-            expiration: req.expiration,
             expiration_block_height: req.expiration_block_height,
         })
         .await
@@ -51,7 +49,7 @@ pub async fn handler(
             ApiResponse {
                 payload: CreateGroupInvitationApiResponse {
                     data: CreateGroupInvitationApiResponseData {
-                        payload: resp.payload.to_string(),
+                        invitation: resp.invitation,
                     },
                 },
             }

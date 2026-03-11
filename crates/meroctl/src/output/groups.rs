@@ -172,14 +172,13 @@ impl Report for CreateGroupInvitationApiResponse {
     fn report(&self) {
         println!("{}", "Group Invitation Created Successfully".green());
         println!();
-        println!("Invitation Payload:");
-        println!("{}", self.data.payload);
+        let pretty = serde_json::to_string_pretty(&self.data.invitation)
+            .unwrap_or_else(|_| format!("{:?}", self.data.invitation));
+        println!("{pretty}");
         println!();
+        let compact = serde_json::to_string(&self.data.invitation).unwrap_or_default();
         println!("To join, run from another node:");
-        println!(
-            "  meroctl --node <NODE_ID> group join '{}'",
-            self.data.payload
-        );
+        println!("  meroctl --node <NODE_ID> group join '{compact}'");
     }
 }
 

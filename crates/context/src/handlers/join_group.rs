@@ -1,14 +1,9 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_config::types::{
-    ContextGroupId, GroupInvitationFromAdmin, GroupRevealPayloadData, SignedGroupOpenInvitation,
-    SignedGroupRevealPayload, SignerId,
-};
+use calimero_context_config::types::{GroupRevealPayloadData, SignedGroupRevealPayload, SignerId};
 use calimero_context_primitives::group::{JoinGroupRequest, JoinGroupResponse};
 use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PrivateKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use eyre::bail;
 use sha2::{Digest, Sha256};
 use tracing::info;
@@ -20,7 +15,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        JoinGroupRequest { invitation_payload }: JoinGroupRequest,
+        JoinGroupRequest { invitation }: JoinGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let node_identity = self.node_group_identity();
@@ -39,28 +34,25 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let node_sk = node_identity.map(|(_, sk)| sk);
         let signing_key = node_sk;
 
-        // Decode invitation (now includes inviter_signature, secret_salt, expiration_block_height)
-        let (
-            group_id_bytes,
-            inviter_identity,
-            invitee_identity,
-            expiration,
-            protocol,
-            network_id,
-            contract_id,
-            inviter_signature,
-            secret_salt,
-            expiration_block_height,
-        ) = match invitation_payload.parts() {
-            Ok(parts) => parts,
-            Err(err) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "failed to decode group invitation payload: {err}"
-                )));
-            }
-        };
+        // Extract fields directly from the SignedGroupOpenInvitation
+        let inv = &invitation.invitation;
+        let group_id = inv.group_id;
+        let protocol = inv.protocol.clone();
+        let network_id = inv.network.clone();
+        let contract_id = inv.contract_id.clone();
+        let expiration_block_height = inv.expiration_height;
 
-        let group_id = ContextGroupId::from(group_id_bytes);
+        // Derive inviter_identity (PublicKey) for local admin validation
+        let inviter_identity = match (|| -> eyre::Result<PublicKey> {
+            let bytes: [u8; 32] = borsh::from_slice(
+                &borsh::to_vec(&inv.inviter_identity)
+                    .map_err(|e| eyre::eyre!("borsh serialize inviter_identity: {e}"))?,
+            )?;
+            Ok(PublicKey::from(bytes))
+        })() {
+            Ok(pk) => pk,
+            Err(e) => return ActorResponse::reply(Err(e)),
+        };
 
         // Check if we need to bootstrap from chain
         let needs_chain_sync = group_store::load_group_meta(&self.datastore, &group_id)
@@ -117,22 +109,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     bail!("inviter is no longer an admin of this group");
                 }
 
-                if let Some(expected_invitee) = invitee_identity {
-                    if expected_invitee != joiner_identity {
-                        bail!("this invitation is for a different identity");
-                    }
-                }
-
-                if let Some(exp) = expiration {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    if now > exp {
-                        bail!("invitation has expired");
-                    }
-                }
-
                 if group_store::check_group_membership(&datastore, &group_id, &joiner_identity)? {
                     bail!("identity is already a member of this group");
                 }
@@ -141,34 +117,13 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 if let Some(client_result) = group_client_result {
                     let group_client = client_result?;
 
-                    // Convert identities to contract types via borsh roundtrip
-                    let inviter_bytes: [u8; 32] = *inviter_identity;
-                    let inviter_signer_id: SignerId =
-                        borsh::from_slice(&borsh::to_vec(&inviter_bytes)?)?;
-
                     let joiner_bytes: [u8; 32] = *joiner_identity;
                     let new_member_signer_id: SignerId =
                         borsh::from_slice(&borsh::to_vec(&joiner_bytes)?)?;
 
-                    // Reconstruct the GroupInvitationFromAdmin
-                    let invitation = GroupInvitationFromAdmin {
-                        inviter_identity: inviter_signer_id,
-                        group_id,
-                        expiration_height: expiration_block_height,
-                        secret_salt,
-                        protocol: protocol.clone(),
-                        network: network_id.clone(),
-                        contract_id: contract_id.clone(),
-                    };
-
-                    let signed_open_invitation = SignedGroupOpenInvitation {
-                        invitation,
-                        inviter_signature,
-                    };
-
-                    // Build the reveal payload data
+                    // Build the reveal payload data using the invitation directly
                     let reveal_payload_data = GroupRevealPayloadData {
-                        signed_open_invitation,
+                        signed_open_invitation: invitation,
                         new_member_identity: new_member_signer_id,
                     };
 

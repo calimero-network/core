@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{
-    BlockHeight, Capability, ContextIdentity, ContextStorageEntry, SignedOpenInvitation,
+    BlockHeight, Capability, ContextIdentity, ContextStorageEntry, SignedGroupOpenInvitation,
+    SignedOpenInvitation,
 };
 use calimero_context_config::{Proposal, ProposalWithApprovals};
 use calimero_primitives::alias::Alias;
@@ -2038,10 +2039,6 @@ impl Validate for RetryGroupUpgradeApiRequest {
 pub struct CreateGroupInvitationApiRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub invitee_identity: Option<PublicKey>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expiration: Option<u64>,
     /// On-chain block height after which the invitation commitment expires.
     /// Defaults to 999_999_999 when not provided (backward-compatible).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2063,22 +2060,17 @@ pub struct CreateGroupInvitationApiResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInvitationApiResponseData {
-    pub payload: String,
+    pub invitation: SignedGroupOpenInvitation,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JoinGroupApiRequest {
-    pub invitation_payload: String,
+    pub invitation: SignedGroupOpenInvitation,
 }
 
 impl Validate for JoinGroupApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        if self.invitation_payload.is_empty() {
-            return vec![ValidationError::EmptyField {
-                field: "invitation_payload",
-            }];
-        }
         Vec::new()
     }
 }
