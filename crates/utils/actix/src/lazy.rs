@@ -23,22 +23,37 @@ use itertools::Itertools;
 use tokio::runtime::{Handle, RuntimeFlavor};
 use tokio::sync::{oneshot, Mutex, MutexGuard, Notify, OwnedMutexGuard};
 
-/// Acquires the lock, blocking if necessary. Uses `block_in_place` on multi-threaded
-/// runtime (production); falls back to try_lock + yield on current_thread (tests).
-fn sync_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+/// Shared budget for try_lock fallback when not on multi-threaded runtime.
+/// Large enough for tests on slow CI; production uses `block_in_place` instead.
+const SYNC_LOCK_BUDGET: usize = 100_000;
+
+fn with_sync_lock<R, TryFn, BlockFn>(try_fn: TryFn, block_fn: BlockFn) -> R
+where
+    TryFn: Fn() -> Option<R>,
+    BlockFn: FnOnce() -> R,
+{
     if let Ok(handle) = Handle::try_current() {
         if handle.runtime_flavor() == RuntimeFlavor::MultiThread {
-            return tokio::task::block_in_place(|| mutex.blocking_lock());
+            return tokio::task::block_in_place(block_fn);
         }
     }
-    const BUDGET: usize = 100_000;
-    for _ in 0..BUDGET {
-        if let Ok(guard) = mutex.try_lock() {
+    for _ in 0..SYNC_LOCK_BUDGET {
+        if let Some(guard) = try_fn() {
             return guard;
         }
         thread::yield_now();
     }
     panic!("exhausted lock acquisition budget (not in multi-threaded runtime)");
+}
+
+/// Acquires the lock, blocking if necessary. Uses `block_in_place` on multi-threaded
+/// runtime (production); falls back to try_lock + yield on current_thread (tests).
+/// The fallback assumes no async contention on the same thread—tests satisfy this.
+fn sync_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    with_sync_lock(
+        || mutex.try_lock().ok(),
+        || mutex.blocking_lock(),
+    )
 }
 
 fn sync_lock_owned<T>(mutex: Arc<Mutex<T>>) -> OwnedMutexGuard<T> {
@@ -47,8 +62,7 @@ fn sync_lock_owned<T>(mutex: Arc<Mutex<T>>) -> OwnedMutexGuard<T> {
             return tokio::task::block_in_place(|| mutex.blocking_lock_owned());
         }
     }
-    const BUDGET: usize = 100_000;
-    for _ in 0..BUDGET {
+    for _ in 0..SYNC_LOCK_BUDGET {
         if let Ok(guard) = mutex.clone().try_lock_owned() {
             return guard;
         }
