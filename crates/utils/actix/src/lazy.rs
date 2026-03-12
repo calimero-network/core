@@ -50,10 +50,7 @@ where
 /// runtime (production); falls back to try_lock + yield on current_thread (tests).
 /// The fallback assumes no async contention on the same thread—tests satisfy this.
 fn sync_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    with_sync_lock(
-        || mutex.try_lock().ok(),
-        || mutex.blocking_lock(),
-    )
+    with_sync_lock(|| mutex.try_lock().ok(), || mutex.blocking_lock())
 }
 
 fn sync_lock_owned<T>(mutex: Arc<Mutex<T>>) -> OwnedMutexGuard<T> {
@@ -679,4 +676,3 @@ impl<T: Receiver> From<T> for Lazy<T> {
         Self { inner, store: None }
     }
 }
-
