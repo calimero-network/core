@@ -1103,21 +1103,25 @@ fn enforce_kms_attestation_policy(
         }
     }
 
-    let actual_tcb_status = verification_result
-        .tcb_status
-        .as_deref()
-        .ok_or_else(|| eyre::eyre!("KMS attestation did not include TCB status"))?;
-    let normalized_tcb_status = actual_tcb_status.to_ascii_lowercase();
-    if !policy
-        .allowed_tcb_statuses
-        .iter()
-        .any(|allowed| allowed == &normalized_tcb_status)
-    {
-        bail!(
-            "KMS TCB status '{}' is not allowed. Allowed: {}",
-            actual_tcb_status,
-            policy.allowed_tcb_statuses.join(", ")
-        );
+    if !strict_policy && policy.allowed_tcb_statuses.is_empty() {
+        debug!("Skipping TCB status allowlist check (allowlist is empty in mock mode)");
+    } else {
+        let actual_tcb_status = verification_result
+            .tcb_status
+            .as_deref()
+            .ok_or_else(|| eyre::eyre!("KMS attestation did not include TCB status"))?;
+        let normalized_tcb_status = actual_tcb_status.to_ascii_lowercase();
+        if !policy
+            .allowed_tcb_statuses
+            .iter()
+            .any(|allowed| allowed == &normalized_tcb_status)
+        {
+            bail!(
+                "KMS TCB status '{}' is not allowed. Allowed: {}",
+                actual_tcb_status,
+                policy.allowed_tcb_statuses.join(", ")
+            );
+        }
     }
 
     let body = &verification_result.quote.body;
@@ -1879,6 +1883,16 @@ mod tests {
             .expect_err("normalized-empty MRTD allowlist must fail")
             .to_string();
         assert!(err.contains("allowed_mrtd"));
+    }
+
+    #[test]
+    fn test_enforce_kms_attestation_policy_allows_empty_tcb_allowlist_in_mock_mode() {
+        let verification_result = make_mock_verification_result();
+        let mut policy = make_strict_runtime_policy(&verification_result);
+        policy.accept_mock = true;
+        policy.allowed_tcb_statuses.clear();
+
+        assert!(enforce_kms_attestation_policy(&policy, &verification_result).is_ok());
     }
 
     #[test]
