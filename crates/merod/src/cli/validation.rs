@@ -701,12 +701,13 @@ mod tests {
     use camino::Utf8PathBuf;
     use tempfile::NamedTempFile;
 
-    fn temp_file_path() -> Utf8PathBuf {
+    fn temp_file() -> (NamedTempFile, Utf8PathBuf) {
         let mut file = NamedTempFile::new().expect("temp file should be created");
         file.write_all(b"test")
             .expect("should write test file contents");
-        let (_, path) = file.keep().expect("temp file should be persisted");
-        Utf8PathBuf::from_path_buf(path).expect("temp path should be utf-8")
+        let path = Utf8PathBuf::from_path_buf(file.path().to_path_buf())
+            .expect("temp path should be utf-8");
+        (file, path)
     }
 
     #[test]
@@ -724,7 +725,8 @@ mod tests {
     fn validate_kms_tls_config_rejects_partial_mtls() {
         let url = url::Url::parse("https://kms.example.com/").unwrap();
         let mut tls = KmsTlsConfig::default();
-        tls.client_cert_path = Some(temp_file_path());
+        let (_cert_file, cert_path) = temp_file();
+        tls.client_cert_path = Some(cert_path);
         let err = validate_kms_tls_config(&url, &tls)
             .expect_err("partial mTLS config must fail")
             .to_string();
@@ -735,7 +737,8 @@ mod tests {
     fn validate_kms_tls_config_rejects_tls_over_http() {
         let url = url::Url::parse("http://127.0.0.1:8080/").unwrap();
         let mut tls = KmsTlsConfig::default();
-        tls.ca_cert_path = Some(temp_file_path());
+        let (_ca_file, ca_path) = temp_file();
+        tls.ca_cert_path = Some(ca_path);
         let err = validate_kms_tls_config(&url, &tls)
             .expect_err("TLS pinning over HTTP must fail")
             .to_string();
@@ -746,9 +749,12 @@ mod tests {
     fn validate_kms_tls_config_accepts_https_with_existing_absolute_paths() {
         let url = url::Url::parse("https://kms.example.com/").unwrap();
         let mut tls = KmsTlsConfig::default();
-        tls.ca_cert_path = Some(temp_file_path());
-        tls.client_cert_path = Some(temp_file_path());
-        tls.client_key_path = Some(temp_file_path());
+        let (_ca_file, ca_path) = temp_file();
+        let (_cert_file, cert_path) = temp_file();
+        let (_key_file, key_path) = temp_file();
+        tls.ca_cert_path = Some(ca_path);
+        tls.client_cert_path = Some(cert_path);
+        tls.client_key_path = Some(key_path);
         assert!(validate_kms_tls_config(&url, &tls).is_ok());
     }
 

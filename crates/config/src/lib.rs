@@ -87,16 +87,19 @@ pub struct KmsTlsConfig {
     /// Optional PEM-encoded CA certificate path for private trust roots.
     ///
     /// When set, merod adds this certificate to its trust store for KMS TLS.
+    /// Path must be absolute and point to an existing file.
     #[serde(default)]
     pub ca_cert_path: Option<Utf8PathBuf>,
     /// Optional PEM-encoded client certificate path for mTLS.
     ///
     /// Must be provided together with `client_key_path`.
+    /// Path must be absolute and point to an existing file.
     #[serde(default)]
     pub client_cert_path: Option<Utf8PathBuf>,
     /// Optional PEM-encoded client private key path for mTLS.
     ///
     /// Must be provided together with `client_cert_path`.
+    /// Path must be absolute and point to an existing file.
     #[serde(default)]
     pub client_key_path: Option<Utf8PathBuf>,
 }
@@ -184,77 +187,46 @@ impl KmsAttestationConfig {
             return Ok(());
         }
 
-        let has_tcb_status = self
-            .allowed_tcb_statuses
-            .iter()
-            .map(|status| status.trim())
-            .any(|status| !status.is_empty());
-        if !has_tcb_status {
+        if !has_non_empty_status_allowlist(&self.allowed_tcb_statuses) {
             bail!("tee.kms.phala.attestation.enabled is true, but allowed_tcb_statuses is empty.");
         }
 
-        let has_mrtd = self
-            .allowed_mrtd
-            .iter()
-            .map(|measurement| normalize_attestation_measurement(measurement))
-            .any(|measurement| !measurement.is_empty());
-        if !has_mrtd {
+        if !has_non_empty_measurement_allowlist(&self.allowed_mrtd) {
             bail!(
                 "tee.kms.phala.attestation.enabled is true, but allowed_mrtd is empty. \
                  Configure at least one trusted KMS MRTD."
             );
         }
 
-        let has_rtmr0 = self
-            .allowed_rtmr0
-            .iter()
-            .map(|measurement| normalize_attestation_measurement(measurement))
-            .any(|measurement| !measurement.is_empty());
-        if !has_rtmr0 {
-            bail!(
-                "tee.kms.phala.attestation.enabled is true and accept_mock is false, \
-                 but allowed_rtmr0 is empty."
-            );
-        }
+        for (field_name, values) in [
+            ("allowed_rtmr0", &self.allowed_rtmr0),
+            ("allowed_rtmr1", &self.allowed_rtmr1),
+            ("allowed_rtmr2", &self.allowed_rtmr2),
+            ("allowed_rtmr3", &self.allowed_rtmr3),
+        ] {
+            if has_non_empty_measurement_allowlist(values) {
+                continue;
+            }
 
-        let has_rtmr1 = self
-            .allowed_rtmr1
-            .iter()
-            .map(|measurement| normalize_attestation_measurement(measurement))
-            .any(|measurement| !measurement.is_empty());
-        if !has_rtmr1 {
             bail!(
                 "tee.kms.phala.attestation.enabled is true and accept_mock is false, \
-                 but allowed_rtmr1 is empty."
-            );
-        }
-
-        let has_rtmr2 = self
-            .allowed_rtmr2
-            .iter()
-            .map(|measurement| normalize_attestation_measurement(measurement))
-            .any(|measurement| !measurement.is_empty());
-        if !has_rtmr2 {
-            bail!(
-                "tee.kms.phala.attestation.enabled is true and accept_mock is false, \
-                 but allowed_rtmr2 is empty."
-            );
-        }
-
-        let has_rtmr3 = self
-            .allowed_rtmr3
-            .iter()
-            .map(|measurement| normalize_attestation_measurement(measurement))
-            .any(|measurement| !measurement.is_empty());
-        if !has_rtmr3 {
-            bail!(
-                "tee.kms.phala.attestation.enabled is true and accept_mock is false, \
-                 but allowed_rtmr3 is empty."
+                 but {field_name} is empty."
             );
         }
 
         Ok(())
     }
+}
+
+fn has_non_empty_status_allowlist(values: &[String]) -> bool {
+    values.iter().any(|status| !status.trim().is_empty())
+}
+
+fn has_non_empty_measurement_allowlist(values: &[String]) -> bool {
+    values
+        .iter()
+        .map(|measurement| normalize_attestation_measurement(measurement))
+        .any(|measurement| !measurement.is_empty())
 }
 
 /// Normalize a configured attestation measurement value for comparison.

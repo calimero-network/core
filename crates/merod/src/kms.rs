@@ -313,11 +313,15 @@ fn enforce_attestation_policy(
         "policy.allowed_tcb_statuses",
         &policy.allowed_tcb_statuses,
     )?;
-    enforce_required_allowlist_non_empty("policy.allowed_mrtd", &policy.allowed_mrtd)?;
-    enforce_required_allowlist_non_empty("policy.allowed_rtmr0", &policy.allowed_rtmr0)?;
-    enforce_required_allowlist_non_empty("policy.allowed_rtmr1", &policy.allowed_rtmr1)?;
-    enforce_required_allowlist_non_empty("policy.allowed_rtmr2", &policy.allowed_rtmr2)?;
-    enforce_required_allowlist_non_empty("policy.allowed_rtmr3", &policy.allowed_rtmr3)?;
+    for (field_name, values) in [
+        ("policy.allowed_mrtd", &policy.allowed_mrtd),
+        ("policy.allowed_rtmr0", &policy.allowed_rtmr0),
+        ("policy.allowed_rtmr1", &policy.allowed_rtmr1),
+        ("policy.allowed_rtmr2", &policy.allowed_rtmr2),
+        ("policy.allowed_rtmr3", &policy.allowed_rtmr3),
+    ] {
+        enforce_required_measurement_allowlist_non_empty(field_name, values)?;
+    }
 
     if let Some(actual_tcb_status) = verification_result.tcb_status.as_ref() {
         let normalized_tcb = actual_tcb_status.to_ascii_lowercase();
@@ -352,10 +356,6 @@ fn enforce_measurement_allowlist_for_release_policy(
     actual: &str,
     allowed: &[String],
 ) -> Result<()> {
-    enforce_required_allowlist_non_empty(
-        &format!("policy.allowed_{}", label.to_ascii_lowercase()),
-        allowed,
-    )?;
     let normalized = normalize_attestation_measurement(actual);
     if allowed.iter().any(|a| a == &normalized) {
         return Ok(());
@@ -379,7 +379,24 @@ fn enforce_measurement_allowlist_for_release_policy(
 }
 
 fn enforce_required_allowlist_non_empty(field_name: &str, values: &[String]) -> Result<()> {
-    if values.is_empty() {
+    if values.iter().all(|value| value.trim().is_empty()) {
+        bail!(
+            "KMS attestation policy is missing required non-empty allowlist '{}'",
+            field_name
+        );
+    }
+    Ok(())
+}
+
+fn enforce_required_measurement_allowlist_non_empty(
+    field_name: &str,
+    values: &[String],
+) -> Result<()> {
+    if values
+        .iter()
+        .map(|value| normalize_attestation_measurement(value))
+        .all(|value| value.is_empty())
+    {
         bail!(
             "KMS attestation policy is missing required non-empty allowlist '{}'",
             field_name
@@ -1060,26 +1077,30 @@ fn enforce_kms_attestation_policy(
             "tee.kms.phala.attestation.allowed_tcb_statuses",
             &policy.allowed_tcb_statuses,
         )?;
-        enforce_required_allowlist_non_empty(
-            "tee.kms.phala.attestation.allowed_mrtd",
-            &policy.allowed_mrtd,
-        )?;
-        enforce_required_allowlist_non_empty(
-            "tee.kms.phala.attestation.allowed_rtmr0",
-            &policy.allowed_rtmr0,
-        )?;
-        enforce_required_allowlist_non_empty(
-            "tee.kms.phala.attestation.allowed_rtmr1",
-            &policy.allowed_rtmr1,
-        )?;
-        enforce_required_allowlist_non_empty(
-            "tee.kms.phala.attestation.allowed_rtmr2",
-            &policy.allowed_rtmr2,
-        )?;
-        enforce_required_allowlist_non_empty(
-            "tee.kms.phala.attestation.allowed_rtmr3",
-            &policy.allowed_rtmr3,
-        )?;
+        for (field_name, values) in [
+            (
+                "tee.kms.phala.attestation.allowed_mrtd",
+                &policy.allowed_mrtd,
+            ),
+            (
+                "tee.kms.phala.attestation.allowed_rtmr0",
+                &policy.allowed_rtmr0,
+            ),
+            (
+                "tee.kms.phala.attestation.allowed_rtmr1",
+                &policy.allowed_rtmr1,
+            ),
+            (
+                "tee.kms.phala.attestation.allowed_rtmr2",
+                &policy.allowed_rtmr2,
+            ),
+            (
+                "tee.kms.phala.attestation.allowed_rtmr3",
+                &policy.allowed_rtmr3,
+            ),
+        ] {
+            enforce_required_measurement_allowlist_non_empty(field_name, values)?;
+        }
     }
 
     let actual_tcb_status = verification_result
@@ -1100,11 +1121,11 @@ fn enforce_kms_attestation_policy(
     }
 
     let body = &verification_result.quote.body;
-    enforce_measurement_allowlist("MRTD", &body.mrtd, &policy.allowed_mrtd, strict_policy)?;
-    enforce_measurement_allowlist("RTMR0", &body.rtmr0, &policy.allowed_rtmr0, strict_policy)?;
-    enforce_measurement_allowlist("RTMR1", &body.rtmr1, &policy.allowed_rtmr1, strict_policy)?;
-    enforce_measurement_allowlist("RTMR2", &body.rtmr2, &policy.allowed_rtmr2, strict_policy)?;
-    enforce_measurement_allowlist("RTMR3", &body.rtmr3, &policy.allowed_rtmr3, strict_policy)?;
+    enforce_measurement_allowlist("MRTD", &body.mrtd, &policy.allowed_mrtd)?;
+    enforce_measurement_allowlist("RTMR0", &body.rtmr0, &policy.allowed_rtmr0)?;
+    enforce_measurement_allowlist("RTMR1", &body.rtmr1, &policy.allowed_rtmr1)?;
+    enforce_measurement_allowlist("RTMR2", &body.rtmr2, &policy.allowed_rtmr2)?;
+    enforce_measurement_allowlist("RTMR3", &body.rtmr3, &policy.allowed_rtmr3)?;
 
     Ok(())
 }
@@ -1119,12 +1140,8 @@ fn enforce_measurement_allowlist(
     label: &str,
     actual_measurement: &str,
     allowed_measurements: &[String],
-    require_non_empty: bool,
 ) -> Result<()> {
     if allowed_measurements.is_empty() {
-        if require_non_empty {
-            bail!("KMS attestation policy is missing required {label} allowlist");
-        }
         debug!(
             measurement = label,
             "Skipping measurement allowlist check (allowlist is empty)"
@@ -1843,6 +1860,25 @@ mod tests {
             .expect_err("empty RTMR3 allowlist must fail")
             .to_string();
         assert!(err.contains("allowed_rtmr3"));
+    }
+
+    #[test]
+    fn test_enforce_kms_attestation_policy_rejects_effectively_empty_allowlists_in_strict_mode() {
+        let verification_result = make_mock_verification_result();
+
+        let mut policy = make_strict_runtime_policy(&verification_result);
+        policy.allowed_tcb_statuses = vec!["   ".to_owned()];
+        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+            .expect_err("whitespace-only TCB status allowlist must fail")
+            .to_string();
+        assert!(err.contains("allowed_tcb_statuses"));
+
+        let mut policy = make_strict_runtime_policy(&verification_result);
+        policy.allowed_mrtd = vec!["0x".to_owned(), " ".to_owned()];
+        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+            .expect_err("normalized-empty MRTD allowlist must fail")
+            .to_string();
+        assert!(err.contains("allowed_mrtd"));
     }
 
     #[test]
