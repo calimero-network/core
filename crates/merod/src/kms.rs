@@ -303,6 +303,16 @@ fn enforce_attestation_policy(
     verification_result: &calimero_tee_attestation::VerificationResult,
     allow_missing_tcb_status: bool,
 ) -> Result<()> {
+    enforce_required_allowlist_non_empty(
+        "policy.allowed_tcb_statuses",
+        &policy.allowed_tcb_statuses,
+    )?;
+    enforce_required_allowlist_non_empty("policy.allowed_mrtd", &policy.allowed_mrtd)?;
+    enforce_required_allowlist_non_empty("policy.allowed_rtmr0", &policy.allowed_rtmr0)?;
+    enforce_required_allowlist_non_empty("policy.allowed_rtmr1", &policy.allowed_rtmr1)?;
+    enforce_required_allowlist_non_empty("policy.allowed_rtmr2", &policy.allowed_rtmr2)?;
+    enforce_required_allowlist_non_empty("policy.allowed_rtmr3", &policy.allowed_rtmr3)?;
+
     if let Some(actual_tcb_status) = verification_result.tcb_status.as_ref() {
         let normalized_tcb = actual_tcb_status.to_ascii_lowercase();
         if !policy
@@ -322,11 +332,6 @@ fn enforce_attestation_policy(
         bail!("Quote verification did not provide a TCB status");
     }
 
-    warn_if_optional_measurement_allowlist_empty("RTMR0", &policy.allowed_rtmr0);
-    warn_if_optional_measurement_allowlist_empty("RTMR1", &policy.allowed_rtmr1);
-    warn_if_optional_measurement_allowlist_empty("RTMR2", &policy.allowed_rtmr2);
-    warn_if_optional_measurement_allowlist_empty("RTMR3", &policy.allowed_rtmr3);
-
     let body = &verification_result.quote.body;
     enforce_measurement_allowlist_for_release_policy("MRTD", &body.mrtd, &policy.allowed_mrtd)?;
     enforce_measurement_allowlist_for_release_policy("RTMR0", &body.rtmr0, &policy.allowed_rtmr0)?;
@@ -341,9 +346,10 @@ fn enforce_measurement_allowlist_for_release_policy(
     actual: &str,
     allowed: &[String],
 ) -> Result<()> {
-    if allowed.is_empty() {
-        return Ok(());
-    }
+    enforce_required_allowlist_non_empty(
+        &format!("policy.allowed_{}", label.to_ascii_lowercase()),
+        allowed,
+    )?;
     let normalized = normalize_attestation_measurement(actual);
     if allowed.iter().any(|a| a == &normalized) {
         return Ok(());
@@ -366,13 +372,14 @@ fn enforce_measurement_allowlist_for_release_policy(
     )
 }
 
-fn warn_if_optional_measurement_allowlist_empty(label: &str, allowed: &[String]) {
-    if allowed.is_empty() {
-        warn!(
-            measurement = label,
-            "Release policy allowlist is empty; skipping optional measurement check"
+fn enforce_required_allowlist_non_empty(field_name: &str, values: &[String]) -> Result<()> {
+    if values.is_empty() {
+        bail!(
+            "KMS attestation policy is missing required non-empty allowlist '{}'",
+            field_name
         );
     }
+    Ok(())
 }
 
 /// Fetch the storage encryption key from Phala Cloud KMS (mero-kms-phala).
@@ -687,7 +694,7 @@ pub(crate) fn resolve_effective_attestation_config(
 
         // Explicit `Some([])` from external policy intentionally clears the
         // base allowlist (rather than "unset"), then validation enforces
-        // required fields such as allowed_mrtd.
+        // required production fields such as allowed_mrtd and allowed_rtmr0..3.
         merge_external_allowlist(
             &mut effective_config.allowed_tcb_statuses,
             external_policy.allowed_tcb_statuses,
@@ -926,6 +933,34 @@ fn enforce_kms_attestation_policy(
     policy: &NormalizedKmsAttestationPolicy,
     verification_result: &VerificationResult,
 ) -> Result<()> {
+    let strict_policy = !policy.accept_mock;
+    if strict_policy {
+        enforce_required_allowlist_non_empty(
+            "tee.kms.phala.attestation.allowed_tcb_statuses",
+            &policy.allowed_tcb_statuses,
+        )?;
+        enforce_required_allowlist_non_empty(
+            "tee.kms.phala.attestation.allowed_mrtd",
+            &policy.allowed_mrtd,
+        )?;
+        enforce_required_allowlist_non_empty(
+            "tee.kms.phala.attestation.allowed_rtmr0",
+            &policy.allowed_rtmr0,
+        )?;
+        enforce_required_allowlist_non_empty(
+            "tee.kms.phala.attestation.allowed_rtmr1",
+            &policy.allowed_rtmr1,
+        )?;
+        enforce_required_allowlist_non_empty(
+            "tee.kms.phala.attestation.allowed_rtmr2",
+            &policy.allowed_rtmr2,
+        )?;
+        enforce_required_allowlist_non_empty(
+            "tee.kms.phala.attestation.allowed_rtmr3",
+            &policy.allowed_rtmr3,
+        )?;
+    }
+
     let actual_tcb_status = verification_result
         .tcb_status
         .as_deref()
@@ -944,11 +979,11 @@ fn enforce_kms_attestation_policy(
     }
 
     let body = &verification_result.quote.body;
-    enforce_measurement_allowlist("MRTD", &body.mrtd, &policy.allowed_mrtd)?;
-    enforce_measurement_allowlist("RTMR0", &body.rtmr0, &policy.allowed_rtmr0)?;
-    enforce_measurement_allowlist("RTMR1", &body.rtmr1, &policy.allowed_rtmr1)?;
-    enforce_measurement_allowlist("RTMR2", &body.rtmr2, &policy.allowed_rtmr2)?;
-    enforce_measurement_allowlist("RTMR3", &body.rtmr3, &policy.allowed_rtmr3)?;
+    enforce_measurement_allowlist("MRTD", &body.mrtd, &policy.allowed_mrtd, strict_policy)?;
+    enforce_measurement_allowlist("RTMR0", &body.rtmr0, &policy.allowed_rtmr0, strict_policy)?;
+    enforce_measurement_allowlist("RTMR1", &body.rtmr1, &policy.allowed_rtmr1, strict_policy)?;
+    enforce_measurement_allowlist("RTMR2", &body.rtmr2, &policy.allowed_rtmr2, strict_policy)?;
+    enforce_measurement_allowlist("RTMR3", &body.rtmr3, &policy.allowed_rtmr3, strict_policy)?;
 
     Ok(())
 }
@@ -963,8 +998,12 @@ fn enforce_measurement_allowlist(
     label: &str,
     actual_measurement: &str,
     allowed_measurements: &[String],
+    require_non_empty: bool,
 ) -> Result<()> {
     if allowed_measurements.is_empty() {
+        if require_non_empty {
+            bail!("KMS attestation policy is missing required {label} allowlist");
+        }
         debug!(
             measurement = label,
             "Skipping measurement allowlist check (allowlist is empty)"
@@ -1233,12 +1272,17 @@ mod tests {
 
     #[test]
     fn test_resolve_effective_attestation_config_applies_external_policy() {
-        let policy_file = write_temp_policy_file(
-            r#"{
+        let policy_file = write_temp_policy_file(&format!(
+            r#"{{
   "allowed_tcb_statuses": ["Mock"],
-  "allowed_mrtd": ["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]
-}"#,
-        );
+  "allowed_mrtd": ["{measurement}"],
+  "allowed_rtmr0": ["{measurement}"],
+  "allowed_rtmr1": ["{measurement}"],
+  "allowed_rtmr2": ["{measurement}"],
+  "allowed_rtmr3": ["{measurement}"]
+}}"#,
+            measurement = "00".repeat(48)
+        ));
         let policy_path = Utf8PathBuf::from_path_buf(policy_file.path().to_path_buf())
             .expect("temp policy path should be valid utf-8");
 
@@ -1250,13 +1294,11 @@ mod tests {
 
         let resolved = resolve_effective_attestation_config(&cfg).unwrap();
         assert_eq!(resolved.allowed_tcb_statuses, vec!["Mock".to_owned()]);
-        assert_eq!(
-            resolved.allowed_mrtd,
-            vec![
-                "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-                    .to_owned()
-            ]
-        );
+        assert_eq!(resolved.allowed_mrtd, vec!["00".repeat(48)]);
+        assert_eq!(resolved.allowed_rtmr0, vec!["00".repeat(48)]);
+        assert_eq!(resolved.allowed_rtmr1, vec!["00".repeat(48)]);
+        assert_eq!(resolved.allowed_rtmr2, vec!["00".repeat(48)]);
+        assert_eq!(resolved.allowed_rtmr3, vec!["00".repeat(48)]);
     }
 
     #[test]
@@ -1268,16 +1310,20 @@ mod tests {
   "policy": {{
     "allowed_tcb_statuses": ["Mock"],
     "allowed_mrtd": ["{mrtd}"],
-    "allowed_rtmr0": [],
-    "allowed_rtmr1": [],
-    "allowed_rtmr2": [],
-    "allowed_rtmr3": []
+    "allowed_rtmr0": ["{rtmr0}"],
+    "allowed_rtmr1": ["{rtmr1}"],
+    "allowed_rtmr2": ["{rtmr2}"],
+    "allowed_rtmr3": ["{rtmr3}"]
   }},
   "kms": {{
     "default_binding_b64": "{binding}"
   }}
 }}"#,
             mrtd = "00".repeat(48),
+            rtmr0 = "11".repeat(48),
+            rtmr1 = "22".repeat(48),
+            rtmr2 = "33".repeat(48),
+            rtmr3 = "44".repeat(48),
             binding = binding_b64
         ));
         let policy_path = Utf8PathBuf::from_path_buf(policy_file.path().to_path_buf())
@@ -1292,6 +1338,10 @@ mod tests {
         let resolved = resolve_effective_attestation_config(&cfg).unwrap();
         assert_eq!(resolved.allowed_tcb_statuses, vec!["Mock".to_owned()]);
         assert_eq!(resolved.allowed_mrtd, vec!["00".repeat(48)]);
+        assert_eq!(resolved.allowed_rtmr0, vec!["11".repeat(48)]);
+        assert_eq!(resolved.allowed_rtmr1, vec!["22".repeat(48)]);
+        assert_eq!(resolved.allowed_rtmr2, vec!["33".repeat(48)]);
+        assert_eq!(resolved.allowed_rtmr3, vec!["44".repeat(48)]);
         assert_eq!(resolved.binding_b64, Some(binding_b64));
     }
 
@@ -1309,22 +1359,39 @@ mod tests {
         assert!(error_text.contains("must be under one of"));
     }
 
+    fn make_runtime_attestation_config(accept_mock: bool) -> KmsAttestationConfig {
+        KmsAttestationConfig {
+            enabled: true,
+            accept_mock,
+            allowed_tcb_statuses: vec!["Mock".to_owned()],
+            allowed_mrtd: vec!["00".repeat(48)],
+            allowed_rtmr0: vec!["00".repeat(48)],
+            allowed_rtmr1: vec!["00".repeat(48)],
+            allowed_rtmr2: vec!["00".repeat(48)],
+            allowed_rtmr3: vec!["00".repeat(48)],
+            ..KmsAttestationConfig::default()
+        }
+    }
+
     #[tokio::test]
     async fn test_verify_kms_attestation_accepts_external_policy_json() {
         enable_mock_kms_attestation_env();
 
-        let policy_file = write_temp_policy_file(
-            r#"{
+        let policy_file = write_temp_policy_file(&format!(
+            r#"{{
   "allowed_tcb_statuses": ["Mock"],
-  "allowed_mrtd": ["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]
-}"#,
-        );
+  "allowed_mrtd": ["{measurement}"],
+  "allowed_rtmr0": ["{measurement}"],
+  "allowed_rtmr1": ["{measurement}"],
+  "allowed_rtmr2": ["{measurement}"],
+  "allowed_rtmr3": ["{measurement}"]
+}}"#,
+            measurement = "00".repeat(48)
+        ));
         let policy_path = Utf8PathBuf::from_path_buf(policy_file.path().to_path_buf())
             .expect("temp policy path should be valid utf-8");
 
-        let mut cfg = KmsAttestationConfig::default();
-        cfg.enabled = true;
-        cfg.accept_mock = true;
+        let mut cfg = make_runtime_attestation_config(true);
         cfg.policy_json_path = Some(policy_path.clone());
 
         let client = reqwest::Client::new();
@@ -1338,11 +1405,7 @@ mod tests {
     async fn test_verify_kms_attestation_rejects_report_data_mismatch() {
         enable_mock_kms_attestation_env();
 
-        let mut cfg = KmsAttestationConfig::default();
-        cfg.enabled = true;
-        cfg.accept_mock = true;
-        cfg.allowed_tcb_statuses = vec!["Mock".to_owned()];
-        cfg.allowed_mrtd = vec![format!("{:0>96}", "")];
+        let cfg = make_runtime_attestation_config(true);
 
         let client = reqwest::Client::new();
         let base_url = spawn_attest_server(AttestResponseMode::ReportDataMismatch).await;
@@ -1357,10 +1420,7 @@ mod tests {
     async fn test_verify_kms_attestation_rejects_disallowed_measurement() {
         enable_mock_kms_attestation_env();
 
-        let mut cfg = KmsAttestationConfig::default();
-        cfg.enabled = true;
-        cfg.accept_mock = true;
-        cfg.allowed_tcb_statuses = vec!["Mock".to_owned()];
+        let mut cfg = make_runtime_attestation_config(true);
         cfg.allowed_mrtd = vec!["ab".repeat(48)];
 
         let client = reqwest::Client::new();
@@ -1372,17 +1432,34 @@ mod tests {
         assert!(error_text.contains("MRTD"));
     }
 
+    #[tokio::test]
+    async fn test_verify_kms_attestation_rejects_mock_quote_when_accept_mock_disabled() {
+        enable_mock_kms_attestation_env();
+
+        let cfg = make_runtime_attestation_config(false);
+
+        let client = reqwest::Client::new();
+        let base_url = spawn_attest_server(AttestResponseMode::Valid).await;
+        let result = verify_kms_attestation(&client, &base_url, &cfg).await;
+
+        assert!(result.is_err());
+        let error_text = result.unwrap_err().to_string();
+        assert!(error_text.contains("accept_mock is disabled"));
+    }
+
     fn make_release_policy(
+        verification_result: &VerificationResult,
         allowed_tcb_statuses: Vec<String>,
         allowed_mrtd: Vec<String>,
     ) -> KmsAttestationPolicy {
+        let body = &verification_result.quote.body;
         KmsAttestationPolicy {
             allowed_tcb_statuses,
             allowed_mrtd,
-            allowed_rtmr0: vec![],
-            allowed_rtmr1: vec![],
-            allowed_rtmr2: vec![],
-            allowed_rtmr3: vec![],
+            allowed_rtmr0: vec![normalize_attestation_measurement(&body.rtmr0)],
+            allowed_rtmr1: vec![normalize_attestation_measurement(&body.rtmr1)],
+            allowed_rtmr2: vec![normalize_attestation_measurement(&body.rtmr2)],
+            allowed_rtmr3: vec![normalize_attestation_measurement(&body.rtmr3)],
             default_binding_b64: base64::engine::general_purpose::STANDARD.encode([0x22u8; 32]),
         }
     }
@@ -1400,6 +1477,7 @@ mod tests {
     fn test_enforce_attestation_policy_rejects_disallowed_tcb_status() {
         let verification_result = make_mock_verification_result();
         let policy = make_release_policy(
+            &verification_result,
             vec!["uptodate".to_owned()],
             vec![normalize_attestation_measurement(
                 &verification_result.quote.body.mrtd,
@@ -1417,6 +1495,7 @@ mod tests {
         let mut verification_result = make_mock_verification_result();
         verification_result.tcb_status = None;
         let policy = make_release_policy(
+            &verification_result,
             vec!["mock".to_owned()],
             vec![normalize_attestation_measurement(
                 &verification_result.quote.body.mrtd,
@@ -1430,11 +1509,123 @@ mod tests {
     #[test]
     fn test_enforce_attestation_policy_rejects_measurement_mismatch() {
         let verification_result = make_mock_verification_result();
-        let policy = make_release_policy(vec!["mock".to_owned()], vec!["ab".repeat(48)]);
+        let policy = make_release_policy(
+            &verification_result,
+            vec!["mock".to_owned()],
+            vec!["ab".repeat(48)],
+        );
 
         let err = enforce_attestation_policy(&policy, &verification_result, true)
             .expect_err("mismatched MRTD must fail")
             .to_string();
         assert!(err.contains("MRTD"));
+    }
+
+    fn make_strict_runtime_policy(
+        verification_result: &VerificationResult,
+    ) -> NormalizedKmsAttestationPolicy {
+        let body = &verification_result.quote.body;
+        NormalizedKmsAttestationPolicy {
+            accept_mock: false,
+            allowed_tcb_statuses: vec!["mock".to_owned()],
+            allowed_mrtd: vec![normalize_attestation_measurement(&body.mrtd)],
+            allowed_rtmr0: vec![normalize_attestation_measurement(&body.rtmr0)],
+            allowed_rtmr1: vec![normalize_attestation_measurement(&body.rtmr1)],
+            allowed_rtmr2: vec![normalize_attestation_measurement(&body.rtmr2)],
+            allowed_rtmr3: vec![normalize_attestation_measurement(&body.rtmr3)],
+            binding: [0x22; 32],
+            binding_b64: None,
+        }
+    }
+
+    #[test]
+    fn test_enforce_kms_attestation_policy_rejects_disallowed_tcb_status() {
+        let verification_result = make_mock_verification_result();
+        let mut policy = make_strict_runtime_policy(&verification_result);
+        policy.allowed_tcb_statuses = vec!["uptodate".to_owned()];
+
+        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+            .expect_err("disallowed TCB status must fail")
+            .to_string();
+        assert!(err.contains("TCB status"));
+    }
+
+    #[test]
+    fn test_enforce_kms_attestation_policy_rejects_rtmr_mismatch_for_each_lane() {
+        for lane in ["RTMR0", "RTMR1", "RTMR2", "RTMR3"] {
+            let mut verification_result = make_mock_verification_result();
+            let policy = make_strict_runtime_policy(&verification_result);
+
+            match lane {
+                "RTMR0" => verification_result.quote.body.rtmr0 = "ab".repeat(48),
+                "RTMR1" => verification_result.quote.body.rtmr1 = "ab".repeat(48),
+                "RTMR2" => verification_result.quote.body.rtmr2 = "ab".repeat(48),
+                "RTMR3" => verification_result.quote.body.rtmr3 = "ab".repeat(48),
+                _ => unreachable!(),
+            }
+
+            let err = enforce_kms_attestation_policy(&policy, &verification_result)
+                .expect_err("RTMR mismatch must fail")
+                .to_string();
+            assert!(err.contains(lane));
+        }
+    }
+
+    #[test]
+    fn test_enforce_kms_attestation_policy_rejects_empty_required_allowlists_in_strict_mode() {
+        let verification_result = make_mock_verification_result();
+
+        let mut policy = make_strict_runtime_policy(&verification_result);
+        policy.allowed_mrtd.clear();
+        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+            .expect_err("empty MRTD allowlist must fail")
+            .to_string();
+        assert!(err.contains("allowed_mrtd"));
+
+        let mut policy = make_strict_runtime_policy(&verification_result);
+        policy.allowed_rtmr0.clear();
+        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+            .expect_err("empty RTMR0 allowlist must fail")
+            .to_string();
+        assert!(err.contains("allowed_rtmr0"));
+
+        let mut policy = make_strict_runtime_policy(&verification_result);
+        policy.allowed_rtmr1.clear();
+        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+            .expect_err("empty RTMR1 allowlist must fail")
+            .to_string();
+        assert!(err.contains("allowed_rtmr1"));
+
+        let mut policy = make_strict_runtime_policy(&verification_result);
+        policy.allowed_rtmr2.clear();
+        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+            .expect_err("empty RTMR2 allowlist must fail")
+            .to_string();
+        assert!(err.contains("allowed_rtmr2"));
+
+        let mut policy = make_strict_runtime_policy(&verification_result);
+        policy.allowed_rtmr3.clear();
+        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+            .expect_err("empty RTMR3 allowlist must fail")
+            .to_string();
+        assert!(err.contains("allowed_rtmr3"));
+    }
+
+    #[test]
+    fn test_enforce_attestation_policy_rejects_empty_required_allowlists() {
+        let verification_result = make_mock_verification_result();
+        let mut policy = make_release_policy(
+            &verification_result,
+            vec!["mock".to_owned()],
+            vec![normalize_attestation_measurement(
+                &verification_result.quote.body.mrtd,
+            )],
+        );
+        policy.allowed_rtmr0.clear();
+
+        let err = enforce_attestation_policy(&policy, &verification_result, true)
+            .expect_err("empty RTMR0 allowlist must fail")
+            .to_string();
+        assert!(err.contains("policy.allowed_rtmr0"));
     }
 }

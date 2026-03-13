@@ -96,16 +96,24 @@ pub struct KmsAttestationConfig {
     /// Allowed KMS MRTD values (hex, with or without `0x` prefix).
     #[serde(default)]
     pub allowed_mrtd: Vec<String>,
-    /// Optional KMS RTMR0 allowlist (hex).
+    /// Allowed KMS RTMR0 values (hex).
+    ///
+    /// Required when `enabled=true` and `accept_mock=false`.
     #[serde(default)]
     pub allowed_rtmr0: Vec<String>,
-    /// Optional KMS RTMR1 allowlist (hex).
+    /// Allowed KMS RTMR1 values (hex).
+    ///
+    /// Required when `enabled=true` and `accept_mock=false`.
     #[serde(default)]
     pub allowed_rtmr1: Vec<String>,
-    /// Optional KMS RTMR2 allowlist (hex).
+    /// Allowed KMS RTMR2 values (hex).
+    ///
+    /// Required when `enabled=true` and `accept_mock=false`.
     #[serde(default)]
     pub allowed_rtmr2: Vec<String>,
-    /// Optional KMS RTMR3 allowlist (hex).
+    /// Allowed KMS RTMR3 values (hex).
+    ///
+    /// Required when `enabled=true` and `accept_mock=false`.
     #[serde(default)]
     pub allowed_rtmr3: Vec<String>,
     /// Optional base64-encoded 32-byte binding value for `/attest`.
@@ -147,6 +155,10 @@ impl KmsAttestationConfig {
         if !self.enabled {
             return Ok(());
         }
+        if self.accept_mock {
+            // Development mode: production strictness does not apply.
+            return Ok(());
+        }
 
         let has_tcb_status = self
             .allowed_tcb_statuses
@@ -166,6 +178,54 @@ impl KmsAttestationConfig {
             bail!(
                 "tee.kms.phala.attestation.enabled is true, but allowed_mrtd is empty. \
                  Configure at least one trusted KMS MRTD."
+            );
+        }
+
+        let has_rtmr0 = self
+            .allowed_rtmr0
+            .iter()
+            .map(|measurement| normalize_attestation_measurement(measurement))
+            .any(|measurement| !measurement.is_empty());
+        if !has_rtmr0 {
+            bail!(
+                "tee.kms.phala.attestation.enabled is true and accept_mock is false, \
+                 but allowed_rtmr0 is empty."
+            );
+        }
+
+        let has_rtmr1 = self
+            .allowed_rtmr1
+            .iter()
+            .map(|measurement| normalize_attestation_measurement(measurement))
+            .any(|measurement| !measurement.is_empty());
+        if !has_rtmr1 {
+            bail!(
+                "tee.kms.phala.attestation.enabled is true and accept_mock is false, \
+                 but allowed_rtmr1 is empty."
+            );
+        }
+
+        let has_rtmr2 = self
+            .allowed_rtmr2
+            .iter()
+            .map(|measurement| normalize_attestation_measurement(measurement))
+            .any(|measurement| !measurement.is_empty());
+        if !has_rtmr2 {
+            bail!(
+                "tee.kms.phala.attestation.enabled is true and accept_mock is false, \
+                 but allowed_rtmr2 is empty."
+            );
+        }
+
+        let has_rtmr3 = self
+            .allowed_rtmr3
+            .iter()
+            .map(|measurement| normalize_attestation_measurement(measurement))
+            .any(|measurement| !measurement.is_empty());
+        if !has_rtmr3 {
+            bail!(
+                "tee.kms.phala.attestation.enabled is true and accept_mock is false, \
+                 but allowed_rtmr3 is empty."
             );
         }
 
@@ -529,6 +589,20 @@ pub mod serde_identity {
 mod tests {
     use super::{normalize_attestation_measurement, KmsAttestationConfig};
 
+    fn make_strict_production_config() -> KmsAttestationConfig {
+        KmsAttestationConfig {
+            enabled: true,
+            accept_mock: false,
+            allowed_tcb_statuses: vec!["UpToDate".to_owned()],
+            allowed_mrtd: vec!["ab".repeat(48)],
+            allowed_rtmr0: vec!["ab".repeat(48)],
+            allowed_rtmr1: vec!["ab".repeat(48)],
+            allowed_rtmr2: vec!["ab".repeat(48)],
+            allowed_rtmr3: vec!["ab".repeat(48)],
+            ..KmsAttestationConfig::default()
+        }
+    }
+
     #[test]
     fn validate_enabled_policy_allows_disabled_config() {
         let cfg = KmsAttestationConfig::default();
@@ -550,15 +624,51 @@ mod tests {
 
     #[test]
     fn validate_enabled_policy_rejects_empty_mrtd() {
-        let mut cfg = KmsAttestationConfig {
-            enabled: true,
-            ..KmsAttestationConfig::default()
-        };
-        cfg.allowed_tcb_statuses = vec!["UpToDate".to_owned()];
+        let mut cfg = make_strict_production_config();
         cfg.allowed_mrtd = vec!["  ".to_owned(), "0x".to_owned()];
 
         let err = cfg.validate_enabled_policy().unwrap_err().to_string();
         assert!(err.contains("allowed_mrtd is empty"));
+    }
+
+    #[test]
+    fn validate_enabled_policy_rejects_empty_any_required_rtmr_allowlist() {
+        let mut cfg = make_strict_production_config();
+        cfg.allowed_rtmr0.clear();
+        let err = cfg.validate_enabled_policy().unwrap_err().to_string();
+        assert!(err.contains("allowed_rtmr0 is empty"));
+
+        let mut cfg = make_strict_production_config();
+        cfg.allowed_rtmr1.clear();
+        let err = cfg.validate_enabled_policy().unwrap_err().to_string();
+        assert!(err.contains("allowed_rtmr1 is empty"));
+
+        let mut cfg = make_strict_production_config();
+        cfg.allowed_rtmr2.clear();
+        let err = cfg.validate_enabled_policy().unwrap_err().to_string();
+        assert!(err.contains("allowed_rtmr2 is empty"));
+
+        let mut cfg = make_strict_production_config();
+        cfg.allowed_rtmr3.clear();
+        let err = cfg.validate_enabled_policy().unwrap_err().to_string();
+        assert!(err.contains("allowed_rtmr3 is empty"));
+    }
+
+    #[test]
+    fn validate_enabled_policy_allows_empty_allowlists_when_accept_mock_is_true() {
+        let mut cfg = KmsAttestationConfig {
+            enabled: true,
+            accept_mock: true,
+            ..KmsAttestationConfig::default()
+        };
+        cfg.allowed_tcb_statuses.clear();
+        cfg.allowed_mrtd.clear();
+        cfg.allowed_rtmr0.clear();
+        cfg.allowed_rtmr1.clear();
+        cfg.allowed_rtmr2.clear();
+        cfg.allowed_rtmr3.clear();
+
+        assert!(cfg.validate_enabled_policy().is_ok());
     }
 
     #[test]
