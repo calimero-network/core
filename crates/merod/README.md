@@ -161,7 +161,7 @@ Configure Phala KMS under:
 
 ```toml
 [tee.kms.phala]
-url = "http://127.0.0.1:8080/"
+url = "https://<kms-host>:8443/"
 
 [tee.kms.phala.attestation]
 enabled = true
@@ -203,6 +203,8 @@ Production requirement: when `tee.kms.phala.attestation.enabled=true` and
 `accept_mock=false`, merod requires successful quote verification plus policy
 verification of TCB + MRTD + RTMR0 + RTMR1 + RTMR2 + RTMR3 (all non-empty
 allowlists). Any mismatch or missing allowlist fails closed.
+In this mode, `tee.kms.phala.url` must use HTTPS (or loopback HTTP for local
+development only) to reduce KMS spoofing/MITM risk.
 
 When any of the following env vars is set, merod fetches the attestation policy
 from the official release and verifies the KMS via `POST /attest` before

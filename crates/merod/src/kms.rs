@@ -156,6 +156,11 @@ struct ExternalKmsAttestationPolicyKms {
 
 const EXTERNAL_POLICY_ALLOWED_DIRS: &[&str] = &["/etc/calimero", "/run/calimero"];
 const MOCK_KMS_ATTESTATION_ENV: &str = "MEROD_ALLOW_MOCK_KMS_ATTESTATION";
+const MAX_KMS_ATTEST_QUOTE_B64_LEN: usize = 128 * 1024;
+const MAX_KMS_REPORT_DATA_HEX_LEN: usize = 1024;
+const MAX_KMS_CHALLENGE_ID_LEN: usize = 512;
+const MAX_KMS_NONCE_B64_LEN: usize = 2048;
+const MAX_KMS_KEY_HEX_LEN: usize = 4096;
 
 /// Fetch the storage encryption key using the configured KMS provider.
 ///
@@ -178,6 +183,10 @@ pub async fn fetch_storage_key(
 ) -> Result<Vec<u8>> {
     if let Some(ref phala_config) = kms_config.phala {
         info!("Using Phala Cloud KMS");
+        let strict_transport = policy.is_some()
+            || (phala_config.attestation.enabled && !phala_config.attestation.accept_mock);
+        validate_kms_transport_security(&phala_config.url, strict_transport)?;
+
         let attestation_mode = if let Some(p) = policy {
             verify_kms_attestation_from_release_policy(&phala_config.url, p).await?;
             KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy
@@ -470,6 +479,18 @@ async fn fetch_from_phala(
         .json()
         .await
         .context("Failed to parse KMS challenge response")?;
+    if challenge.challenge_id.len() > MAX_KMS_CHALLENGE_ID_LEN {
+        bail!(
+            "KMS challengeId exceeds maximum allowed length ({} chars)",
+            MAX_KMS_CHALLENGE_ID_LEN
+        );
+    }
+    if challenge.nonce_b64.len() > MAX_KMS_NONCE_B64_LEN {
+        bail!(
+            "KMS challenge nonce exceeds maximum allowed size ({} chars base64)",
+            MAX_KMS_NONCE_B64_LEN
+        );
+    }
     let challenge_nonce_vec = base64::engine::general_purpose::STANDARD
         .decode(&challenge.nonce_b64)
         .context("Failed to decode challenge nonce from base64")?;
@@ -565,7 +586,21 @@ async fn fetch_from_phala(
         .context("Failed to parse KMS response")?;
 
     // Decode hex-encoded key from KMS
-    let key_bytes = hex::decode(&response.key).context("Failed to decode key from hex")?;
+    let key_hex = response.key.trim();
+    if key_hex.is_empty() {
+        bail!("KMS returned an empty encryption key");
+    }
+    if key_hex.len() > MAX_KMS_KEY_HEX_LEN {
+        bail!(
+            "KMS returned oversized encryption key ({} hex chars > {})",
+            key_hex.len(),
+            MAX_KMS_KEY_HEX_LEN
+        );
+    }
+    if key_hex.len() % 2 != 0 {
+        bail!("KMS returned encryption key with invalid odd hex length");
+    }
+    let key_bytes = hex::decode(key_hex).context("Failed to decode key from hex")?;
 
     info!(
         key_len = key_bytes.len(),
@@ -844,6 +879,27 @@ async fn request_kms_attestation(
 fn decode_kms_attestation_response(
     attest_response: &PhalaKmsAttestResponse,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
+    if attest_response.quote_b64.is_empty() {
+        bail!("KMS attest response quoteB64 is empty");
+    }
+    if attest_response.quote_b64.len() > MAX_KMS_ATTEST_QUOTE_B64_LEN {
+        bail!(
+            "KMS attest response quoteB64 exceeds maximum allowed size ({} chars > {})",
+            attest_response.quote_b64.len(),
+            MAX_KMS_ATTEST_QUOTE_B64_LEN
+        );
+    }
+    if attest_response.report_data_hex.is_empty() {
+        bail!("KMS attest response reportDataHex is empty");
+    }
+    if attest_response.report_data_hex.len() > MAX_KMS_REPORT_DATA_HEX_LEN {
+        bail!(
+            "KMS attest response reportDataHex exceeds maximum allowed size ({} chars > {})",
+            attest_response.report_data_hex.len(),
+            MAX_KMS_REPORT_DATA_HEX_LEN
+        );
+    }
+
     let quote_bytes = base64::engine::general_purpose::STANDARD
         .decode(&attest_response.quote_b64)
         .context("Failed to decode KMS quote from base64")?;
@@ -1061,6 +1117,46 @@ fn ensure_trailing_slash(url: &Url) -> Url {
     url
 }
 
+fn validate_kms_transport_security(kms_url: &Url, strict_mode: bool) -> Result<()> {
+    match kms_url.scheme() {
+        "https" => Ok(()),
+        "http" => {
+            if is_loopback_kms_host(kms_url) {
+                return Ok(());
+            }
+            if strict_mode {
+                bail!(
+                    "In production attestation mode, tee.kms.phala.url must use HTTPS or loopback HTTP to prevent KMS spoofing: {}",
+                    kms_url
+                );
+            }
+            warn!(
+                kms_url = %kms_url,
+                "Using non-loopback HTTP KMS endpoint; this is susceptible to spoofing/MITM and should only be used in trusted development setups"
+            );
+            Ok(())
+        }
+        scheme => bail!(
+            "Unsupported KMS URL scheme '{}'; expected https:// (or http:// for loopback development only)",
+            scheme
+        ),
+    }
+}
+
+fn is_loopback_kms_host(kms_url: &Url) -> bool {
+    let Some(host) = kms_url.host_str() else {
+        return false;
+    };
+
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1213,6 +1309,48 @@ mod tests {
         // Without the fix, this would produce http://host/api/get-key
         let endpoint = url_with_slash.join("get-key").unwrap();
         assert_eq!(endpoint.as_str(), "http://host/api/v1/get-key");
+    }
+
+    #[test]
+    fn test_validate_kms_transport_security_allows_https_and_loopback_http() {
+        let https_url = Url::parse("https://kms.example.com/").unwrap();
+        assert!(validate_kms_transport_security(&https_url, true).is_ok());
+
+        let loopback_http = Url::parse("http://127.0.0.1:8080/").unwrap();
+        assert!(validate_kms_transport_security(&loopback_http, true).is_ok());
+
+        let localhost_http = Url::parse("http://localhost:8080/").unwrap();
+        assert!(validate_kms_transport_security(&localhost_http, true).is_ok());
+    }
+
+    #[test]
+    fn test_validate_kms_transport_security_rejects_non_loopback_http_in_strict_mode() {
+        let remote_http = Url::parse("http://kms.example.com/").unwrap();
+        let err = validate_kms_transport_security(&remote_http, true)
+            .expect_err("strict mode must reject non-loopback HTTP")
+            .to_string();
+        assert!(err.contains("must use HTTPS or loopback HTTP"));
+    }
+
+    #[test]
+    fn test_decode_kms_attestation_response_rejects_oversized_fields() {
+        let oversized_quote = PhalaKmsAttestResponse {
+            quote_b64: "A".repeat(MAX_KMS_ATTEST_QUOTE_B64_LEN + 1),
+            report_data_hex: "00".repeat(64),
+        };
+        let err = decode_kms_attestation_response(&oversized_quote)
+            .expect_err("oversized quoteB64 must fail")
+            .to_string();
+        assert!(err.contains("quoteB64 exceeds maximum allowed size"));
+
+        let oversized_report = PhalaKmsAttestResponse {
+            quote_b64: base64::engine::general_purpose::STANDARD.encode([0u8; 32]),
+            report_data_hex: "0".repeat(MAX_KMS_REPORT_DATA_HEX_LEN + 1),
+        };
+        let err = decode_kms_attestation_response(&oversized_report)
+            .expect_err("oversized reportDataHex must fail")
+            .to_string();
+        assert!(err.contains("reportDataHex exceeds maximum allowed size"));
     }
 
     #[test]
