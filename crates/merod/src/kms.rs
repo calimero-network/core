@@ -188,7 +188,7 @@ pub async fn fetch_storage_key(
         validate_kms_transport_security(&phala_config.url, strict_transport)?;
 
         let attestation_mode = if let Some(p) = policy {
-            verify_kms_attestation_from_release_policy(&phala_config.url, p).await?;
+            verify_kms_attestation_from_release_policy(phala_config, p).await?;
             KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy
         } else {
             KeyFetchAttestationMode::UseConfigPolicy
@@ -208,20 +208,17 @@ pub async fn fetch_storage_key(
 ///
 /// Calls KMS /attest, verifies the quote, and enforces measurement policy.
 async fn verify_kms_attestation_from_release_policy(
-    kms_url: &Url,
+    phala_config: &PhalaKmsConfig,
     policy: &KmsAttestationPolicy,
 ) -> Result<()> {
     info!("Verifying KMS attestation before key fetch");
 
-    let base_url = ensure_trailing_slash(kms_url);
+    let base_url = ensure_trailing_slash(&phala_config.url);
     let attest_endpoint = base_url
         .join("attest")
         .context("Failed to build KMS attest endpoint URL")?;
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .context("Failed to build HTTP client")?;
+    let client = build_kms_http_client(phala_config)?;
 
     let mut nonce = [0u8; 32];
     OsRng.fill_bytes(&mut nonce);
@@ -425,11 +422,8 @@ async fn fetch_from_phala(
         .join("get-key")
         .context("Failed to build KMS get-key endpoint URL")?;
 
-    // Build HTTP client once and reuse for both requests.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .context("Failed to build HTTP client")?;
+    // Build HTTP client once and reuse for all KMS requests.
+    let client = build_kms_http_client(phala_config)?;
 
     if phala_config.attestation.enabled {
         match attestation_mode {
@@ -608,6 +602,77 @@ async fn fetch_from_phala(
     );
 
     Ok(key_bytes)
+}
+
+fn build_kms_http_client(phala_config: &PhalaKmsConfig) -> Result<reqwest::Client> {
+    let uses_https = phala_config.url.scheme().eq_ignore_ascii_case("https");
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
+
+    if let Some(ca_cert_path) = phala_config.tls.ca_cert_path.as_deref() {
+        if !uses_https {
+            bail!(
+                "tee.kms.phala.tls.ca_cert_path requires tee.kms.phala.url to use https:// (current: {})",
+                phala_config.url
+            );
+        }
+        let ca_pem = std::fs::read(ca_cert_path).with_context(|| {
+            format!(
+                "Failed to read tee.kms.phala.tls.ca_cert_path at {}",
+                ca_cert_path
+            )
+        })?;
+        let cert = reqwest::Certificate::from_pem(&ca_pem)
+            .context("Failed to parse tee.kms.phala.tls.ca_cert_path as PEM certificate")?;
+        builder = builder.add_root_certificate(cert);
+    }
+
+    match (
+        phala_config.tls.client_cert_path.as_deref(),
+        phala_config.tls.client_key_path.as_deref(),
+    ) {
+        (Some(client_cert_path), Some(client_key_path)) => {
+            if !uses_https {
+                bail!(
+                    "tee.kms.phala.tls.client_cert_path/client_key_path require tee.kms.phala.url to use https:// (current: {})",
+                    phala_config.url
+                );
+            }
+
+            let client_cert_pem = std::fs::read(client_cert_path).with_context(|| {
+                format!(
+                    "Failed to read tee.kms.phala.tls.client_cert_path at {}",
+                    client_cert_path
+                )
+            })?;
+            let client_key_pem = std::fs::read(client_key_path).with_context(|| {
+                format!(
+                    "Failed to read tee.kms.phala.tls.client_key_path at {}",
+                    client_key_path
+                )
+            })?;
+
+            let mut identity_pem =
+                Vec::with_capacity(client_cert_pem.len() + client_key_pem.len() + 1);
+            identity_pem.extend_from_slice(&client_cert_pem);
+            if !identity_pem.ends_with(b"\n") {
+                identity_pem.push(b'\n');
+            }
+            identity_pem.extend_from_slice(&client_key_pem);
+
+            let identity = reqwest::Identity::from_pem(&identity_pem).context(
+                "Failed to parse tee.kms.phala.tls.client_cert_path/client_key_path as PEM identity",
+            )?;
+            builder = builder.identity(identity);
+        }
+        (None, None) => {}
+        _ => {
+            bail!(
+                "tee.kms.phala.tls.client_cert_path and tee.kms.phala.tls.client_key_path must be set together"
+            );
+        }
+    }
+
+    builder.build().context("Failed to build HTTP client")
 }
 
 async fn verify_kms_attestation(
@@ -1330,6 +1395,38 @@ mod tests {
             .expect_err("strict mode must reject non-loopback HTTP")
             .to_string();
         assert!(err.contains("must use HTTPS or loopback HTTP"));
+    }
+
+    fn parse_phala_config(value: serde_json::Value) -> PhalaKmsConfig {
+        serde_json::from_value(value).expect("valid phala config fixture")
+    }
+
+    #[test]
+    fn test_build_kms_http_client_rejects_partial_mtls_configuration() {
+        let cfg = parse_phala_config(json!({
+            "url": "https://kms.example.com/",
+            "tls": {
+                "client_cert_path": "/etc/calimero/client-cert.pem"
+            }
+        }));
+        let err = build_kms_http_client(&cfg)
+            .expect_err("partial mTLS config must fail")
+            .to_string();
+        assert!(err.contains("must be set together"));
+    }
+
+    #[test]
+    fn test_build_kms_http_client_rejects_ca_pinning_on_http() {
+        let cfg = parse_phala_config(json!({
+            "url": "http://127.0.0.1:8080/",
+            "tls": {
+                "ca_cert_path": "/etc/calimero/kms-ca.pem"
+            }
+        }));
+        let err = build_kms_http_client(&cfg)
+            .expect_err("CA pinning over HTTP must fail")
+            .to_string();
+        assert!(err.contains("requires tee.kms.phala.url to use https://"));
     }
 
     #[test]

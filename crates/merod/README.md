@@ -162,6 +162,11 @@ Configure Phala KMS under:
 ```toml
 [tee.kms.phala]
 url = "https://<kms-host>:8443/"
+# Optional TLS hardening for private PKI and mTLS:
+# [tee.kms.phala.tls]
+# ca_cert_path = "/etc/calimero/kms-ca.pem"
+# client_cert_path = "/etc/calimero/kms-client-cert.pem"
+# client_key_path = "/etc/calimero/kms-client-key.pem"
 
 [tee.kms.phala.attestation]
 enabled = true

@@ -72,9 +72,33 @@ pub struct KmsConfig {
 pub struct PhalaKmsConfig {
     /// URL of the mero-kms-phala service.
     pub url: Url,
+    /// Optional TLS hardening settings for KMS transport.
+    #[serde(default)]
+    pub tls: KmsTlsConfig,
     /// KMS self-attestation verification policy.
     #[serde(default)]
     pub attestation: KmsAttestationConfig,
+}
+
+/// TLS configuration for KMS transport hardening.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct KmsTlsConfig {
+    /// Optional PEM-encoded CA certificate path for private trust roots.
+    ///
+    /// When set, merod adds this certificate to its trust store for KMS TLS.
+    #[serde(default)]
+    pub ca_cert_path: Option<Utf8PathBuf>,
+    /// Optional PEM-encoded client certificate path for mTLS.
+    ///
+    /// Must be provided together with `client_key_path`.
+    #[serde(default)]
+    pub client_cert_path: Option<Utf8PathBuf>,
+    /// Optional PEM-encoded client private key path for mTLS.
+    ///
+    /// Must be provided together with `client_cert_path`.
+    #[serde(default)]
+    pub client_key_path: Option<Utf8PathBuf>,
 }
 
 /// Configuration for verifying KMS self-attestation (`POST /attest`).

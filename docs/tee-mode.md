@@ -69,7 +69,7 @@ For Phala KMS:
 
 ```bash
 merod --home /data --node default config \
-  'tee.kms.phala.url="http://<kms-host>:8080/"'
+  'tee.kms.phala.url="https://<kms-host>:8443/"'
 ```
 
 Or edit `config.toml` directly:
@@ -78,6 +78,11 @@ Or edit `config.toml` directly:
 [tee]
 [tee.kms.phala]
 url = "https://<kms-host>:8443/"
+# Optional TLS hardening for private PKI and mTLS:
+# [tee.kms.phala.tls]
+# ca_cert_path = "/etc/calimero/kms-ca.pem"
+# client_cert_path = "/etc/calimero/kms-client-cert.pem"
+# client_key_path = "/etc/calimero/kms-client-key.pem"
 
 [tee.kms.phala.attestation]
 enabled = true
