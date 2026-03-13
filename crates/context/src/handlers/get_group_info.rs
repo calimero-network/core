@@ -18,6 +18,13 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 bail!("group '{group_id:?}' not found");
             };
 
+            let Some((node_identity, _)) = self.node_group_identity() else {
+                bail!("node has no group identity configured");
+            };
+            if !group_store::check_group_membership(&self.datastore, &group_id, &node_identity)? {
+                bail!("node is not a member of group '{group_id:?}'");
+            }
+
             let member_count = group_store::count_group_members(&self.datastore, &group_id)? as u64;
 
             let context_count =

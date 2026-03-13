@@ -18,8 +18,11 @@ impl Handler<GetContextAllowlistRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| -> eyre::Result<Vec<PublicKey>> {
-            if group_store::load_group_meta(&self.datastore, &group_id)?.is_none() {
-                bail!("group '{group_id:?}' not found");
+            let Some((node_identity, _)) = self.node_group_identity() else {
+                bail!("node has no group identity configured");
+            };
+            if !group_store::check_group_membership(&self.datastore, &group_id, &node_identity)? {
+                bail!("node is not a member of group '{group_id:?}'");
             }
 
             group_store::list_context_allowlist(&self.datastore, &group_id, &context_id)

@@ -14,18 +14,27 @@ impl Handler<ListAllGroupsRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
+            let Some((node_identity, _)) = self.node_group_identity() else {
+                return Ok(vec![]);
+            };
+
             let entries = group_store::enumerate_all_groups(&self.datastore, offset, limit)?;
 
-            Ok(entries
-                .into_iter()
-                .map(|(group_id_bytes, meta)| GroupSummary {
-                    group_id: ContextGroupId::from(group_id_bytes),
-                    app_key: meta.app_key.into(),
-                    target_application_id: meta.target_application_id,
-                    upgrade_policy: meta.upgrade_policy,
-                    created_at: meta.created_at,
-                })
-                .collect())
+            let mut summaries = Vec::with_capacity(entries.len());
+            for (group_id_bytes, meta) in entries {
+                let group_id = ContextGroupId::from(group_id_bytes);
+                if group_store::check_group_membership(&self.datastore, &group_id, &node_identity)?
+                {
+                    summaries.push(GroupSummary {
+                        group_id,
+                        app_key: meta.app_key.into(),
+                        target_application_id: meta.target_application_id,
+                        upgrade_policy: meta.upgrade_policy,
+                        created_at: meta.created_at,
+                    });
+                }
+            }
+            Ok(summaries)
         })();
 
         ActorResponse::reply(result)
