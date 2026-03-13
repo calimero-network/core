@@ -451,7 +451,7 @@ fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
     let root: PolicyJson =
         serde_json::from_str(json_str).map_err(|e| eyre::eyre!("Invalid policy JSON: {}", e))?;
 
-    let allowed_tcb_statuses = if root.policy.allowed_tcb_statuses.is_empty() {
+    let allowed_tcb_statuses: Vec<String> = if root.policy.allowed_tcb_statuses.is_empty() {
         // Default to UpToDate when not specified, matching production hardening
         // expectations for Intel TDX attestation status.
         DEFAULT_ALLOWED_TCB_STATUSES

@@ -1360,17 +1360,16 @@ mod tests {
     }
 
     fn make_runtime_attestation_config(accept_mock: bool) -> KmsAttestationConfig {
-        KmsAttestationConfig {
-            enabled: true,
-            accept_mock,
-            allowed_tcb_statuses: vec!["Mock".to_owned()],
-            allowed_mrtd: vec!["00".repeat(48)],
-            allowed_rtmr0: vec!["00".repeat(48)],
-            allowed_rtmr1: vec!["00".repeat(48)],
-            allowed_rtmr2: vec!["00".repeat(48)],
-            allowed_rtmr3: vec!["00".repeat(48)],
-            ..KmsAttestationConfig::default()
-        }
+        let mut cfg = KmsAttestationConfig::default();
+        cfg.enabled = true;
+        cfg.accept_mock = accept_mock;
+        cfg.allowed_tcb_statuses = vec!["Mock".to_owned()];
+        cfg.allowed_mrtd = vec!["00".repeat(48)];
+        cfg.allowed_rtmr0 = vec!["00".repeat(48)];
+        cfg.allowed_rtmr1 = vec!["00".repeat(48)];
+        cfg.allowed_rtmr2 = vec!["00".repeat(48)];
+        cfg.allowed_rtmr3 = vec!["00".repeat(48)];
+        cfg
     }
 
     #[tokio::test]
