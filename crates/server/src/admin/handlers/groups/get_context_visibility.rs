@@ -4,15 +4,13 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_primitives::group::GetContextVisibilityRequest;
-use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     GetContextVisibilityApiData, GetContextVisibilityApiResponse,
 };
-use reqwest::StatusCode;
 use tracing::{error, info};
 
-use super::parse_group_id;
-use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
+use super::{parse_context_id, parse_group_id};
+use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
@@ -63,16 +61,4 @@ pub async fn handler(
             err.into_response()
         }
     }
-}
-
-fn parse_context_id(s: &str) -> Result<ContextId, ApiError> {
-    let bytes = hex::decode(s).map_err(|_| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid context id format: expected hex-encoded 32 bytes".into(),
-    })?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|_| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid context id: must be exactly 32 bytes".into(),
-    })?;
-    Ok(ContextId::from(arr))
 }

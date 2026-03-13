@@ -28,6 +28,7 @@ pub mod upgrade_group;
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::group::{GroupUpgradeInfo, GroupUpgradeStatus};
+use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::GroupUpgradeStatusApiData;
 use reqwest::StatusCode;
 
@@ -74,4 +75,40 @@ fn parse_group_id(s: &str) -> Result<ContextGroupId, ApiError> {
         message: "Invalid group id: must be exactly 32 bytes".into(),
     })?;
     Ok(ContextGroupId::from(arr))
+}
+
+fn parse_context_id(s: &str) -> Result<ContextId, ApiError> {
+    if let Ok(context_id) = s.parse::<ContextId>() {
+        return Ok(context_id);
+    }
+
+    let bytes = hex::decode(s).map_err(|_| ApiError {
+        status_code: StatusCode::BAD_REQUEST,
+        message: "Invalid context id format: expected base58 or hex-encoded 32 bytes".into(),
+    })?;
+    let arr: [u8; 32] = bytes.try_into().map_err(|_| ApiError {
+        status_code: StatusCode::BAD_REQUEST,
+        message: "Invalid context id: must be exactly 32 bytes".into(),
+    })?;
+    Ok(ContextId::from(arr))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_context_id;
+
+    #[test]
+    fn parse_context_id_accepts_base58_context_ids() {
+        let context_id = parse_context_id("11111111111111111111111111111111");
+
+        assert!(context_id.is_ok());
+    }
+
+    #[test]
+    fn parse_context_id_keeps_accepting_hex_context_ids() {
+        let context_id =
+            parse_context_id("0000000000000000000000000000000000000000000000000000000000000000");
+
+        assert!(context_id.is_ok());
+    }
 }
