@@ -7,7 +7,7 @@ use core::future::Future;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::{fmt, mem};
 use std::collections::VecDeque;
-use std::sync::{Arc, LazyLock, Weak};
+use std::sync::{Arc, Weak};
 use std::thread;
 
 use actix::dev::{Envelope, EnvelopeProxy, ToEnvelope};
@@ -20,7 +20,53 @@ use async_stream::stream;
 use calimero_primitives::reflect::{Reflect, ReflectExt};
 use calimero_primitives::utils;
 use itertools::Itertools;
+use tokio::runtime::{Handle, RuntimeFlavor};
 use tokio::sync::{oneshot, Mutex, MutexGuard, Notify, OwnedMutexGuard};
+
+/// Shared budget for try_lock fallback when not on multi-threaded runtime.
+/// Large enough for tests on slow CI; production uses `block_in_place` instead.
+const SYNC_LOCK_BUDGET: usize = 100_000;
+
+fn with_sync_lock<R, TryFn, BlockFn>(try_fn: TryFn, block_fn: BlockFn) -> R
+where
+    TryFn: Fn() -> Option<R>,
+    BlockFn: FnOnce() -> R,
+{
+    if let Ok(handle) = Handle::try_current() {
+        if handle.runtime_flavor() == RuntimeFlavor::MultiThread {
+            return tokio::task::block_in_place(block_fn);
+        }
+    }
+    for _ in 0..SYNC_LOCK_BUDGET {
+        if let Some(guard) = try_fn() {
+            return guard;
+        }
+        thread::yield_now();
+    }
+    panic!("exhausted lock acquisition budget (not in multi-threaded runtime)");
+}
+
+/// Acquires the lock, blocking if necessary. Uses `block_in_place` on multi-threaded
+/// runtime (production); falls back to try_lock + yield on current_thread (tests).
+/// The fallback assumes no async contention on the same thread—tests satisfy this.
+fn sync_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    with_sync_lock(|| mutex.try_lock().ok(), || mutex.blocking_lock())
+}
+
+fn sync_lock_owned<T>(mutex: Arc<Mutex<T>>) -> OwnedMutexGuard<T> {
+    if let Ok(handle) = Handle::try_current() {
+        if handle.runtime_flavor() == RuntimeFlavor::MultiThread {
+            return tokio::task::block_in_place(|| mutex.blocking_lock_owned());
+        }
+    }
+    for _ in 0..SYNC_LOCK_BUDGET {
+        if let Ok(guard) = mutex.clone().try_lock_owned() {
+            return guard;
+        }
+        thread::yield_now();
+    }
+    panic!("exhausted lock acquisition budget (not in multi-threaded runtime)");
+}
 
 pub type LazyAddr<A> = Lazy<Addr<A>>;
 pub type LazyRecipient<M> = Lazy<Recipient<M>>;
@@ -184,7 +230,7 @@ where
     Addr<A>: IntoRef<T>,
 {
     fn resolve(&self, act: &mut A, ctx: &mut A::Context) {
-        let mut inner = self.spin_lock();
+        let mut inner = sync_lock(self);
 
         for item in inner.queue.drain(..) {
             item.into_envelope().handle(act, ctx);
@@ -393,7 +439,7 @@ where
         M: Message<Result: Send> + Send + 'static,
     {
         let recvr = {
-            let inner = self.inner.spin_lock();
+            let inner = sync_lock(&self.inner);
 
             inner.recvr.as_ref().map(|addr| addr.clone().recipient())
         };
@@ -413,7 +459,7 @@ where
 
                 let this_id = TypeId::of::<LazyResolver<Recipient<M>>>();
 
-                Some((store.spin_lock(), this_id))
+                Some((sync_lock(&*store), this_id))
             };
 
             if let Some((store, this_id)) = &mut store {
@@ -468,7 +514,7 @@ impl<T: Receiver + 'static> Lazy<T> {
             }
         }
 
-        let mut store = store.clone().spin_lock_owned();
+        let mut store = sync_lock_owned(store.clone());
 
         #[expect(trivial_casts, reason = "false flag, doesn't compile without it")]
         let maybe_inner = store
@@ -515,7 +561,7 @@ impl<T: Receiver + Clone> Lazy<T> {
 
     #[must_use]
     pub fn try_get(&self) -> Option<T> {
-        let inner = self.inner.spin_lock();
+        let inner = sync_lock(&self.inner);
 
         inner.recvr.clone()
     }
@@ -583,7 +629,7 @@ impl<T: Receiver> Lazy<T> {
         M: Message,
         T: Sender<M>,
     {
-        let mut inner = self.inner.spin_lock();
+        let mut inner = sync_lock(&self.inner);
 
         if let Some(rx) = inner.recvr.as_ref() {
             rx.do_send(msg);
@@ -601,7 +647,7 @@ impl<T: Receiver> Lazy<T> {
         M: Message,
         T: Sender<M>,
     {
-        let mut inner = self.inner.spin_lock();
+        let mut inner = sync_lock(&self.inner);
 
         if let Some(rx) = inner.recvr.as_ref() {
             return rx.try_send(msg);
@@ -628,47 +674,5 @@ impl<T: Receiver> From<T> for Lazy<T> {
         let inner = Arc::new(Mutex::new(LazyInner::new(Some(recvr))));
 
         Self { inner, store: None }
-    }
-}
-
-trait SpinLock<T> {
-    fn spin_lock(&self) -> MutexGuard<'_, T>;
-    fn spin_lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T>;
-}
-
-static AVAILABLE_PARALLELISM: LazyLock<usize> =
-    LazyLock::new(|| thread::available_parallelism().map_or(4, core::num::NonZero::get));
-
-static SPIN_BUDGET: LazyLock<usize> = LazyLock::new(|| *AVAILABLE_PARALLELISM * 100);
-
-impl<T> SpinLock<T> for Mutex<T> {
-    fn spin_lock(&self) -> MutexGuard<'_, T> {
-        for _ in 0..*SPIN_BUDGET {
-            if let Ok(guard) = self.try_lock() {
-                return guard;
-            }
-
-            thread::yield_now();
-        }
-
-        panic!(
-            "exhausted spin budget of {} trying to acquire lock",
-            *SPIN_BUDGET
-        );
-    }
-
-    fn spin_lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T> {
-        for _ in 0..*SPIN_BUDGET {
-            if let Ok(guard) = self.clone().try_lock_owned() {
-                return guard;
-            }
-
-            thread::yield_now();
-        }
-
-        panic!(
-            "exhausted spin budget of {} trying to acquire lock",
-            *SPIN_BUDGET
-        );
     }
 }
