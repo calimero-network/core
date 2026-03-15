@@ -162,6 +162,145 @@ const MAX_KMS_CHALLENGE_ID_LEN: usize = 512;
 const MAX_KMS_NONCE_B64_LEN: usize = 2048;
 const MAX_KMS_KEY_HEX_LEN: usize = 4096;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KmsProbeStage {
+    Transport,
+    Attest,
+    Challenge,
+    GetKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KmsProbeResult {
+    pub ok: bool,
+    pub stage: KmsProbeStage,
+    pub code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kms_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ProbeAttestation {
+    quote_bytes: Vec<u8>,
+    quote_b64: String,
+    is_mock: bool,
+}
+
+#[derive(Debug, Clone)]
+struct KmsProbeFailure {
+    stage: KmsProbeStage,
+    code: &'static str,
+    kms_error: Option<String>,
+    details: String,
+}
+
+impl KmsProbeFailure {
+    fn to_result(&self) -> KmsProbeResult {
+        KmsProbeResult {
+            ok: false,
+            stage: self.stage,
+            code: self.code.to_owned(),
+            kms_error: self.kms_error.clone(),
+            details: Some(self.details.clone()),
+        }
+    }
+}
+
+fn probe_failure(
+    stage: KmsProbeStage,
+    code: &'static str,
+    kms_error: Option<String>,
+    details: impl Into<String>,
+) -> KmsProbeFailure {
+    KmsProbeFailure {
+        stage,
+        code,
+        kms_error,
+        details: details.into(),
+    }
+}
+
+fn probe_success(details: impl Into<String>) -> KmsProbeResult {
+    KmsProbeResult {
+        ok: true,
+        stage: KmsProbeStage::GetKey,
+        code: "OK".to_owned(),
+        kms_error: None,
+        details: Some(details.into()),
+    }
+}
+
+fn map_kms_error_to_probe_code(kms_error: &str, fallback_code: &'static str) -> &'static str {
+    match kms_error.trim().to_ascii_lowercase().as_str() {
+        "measurement_policy_rejected" | "profile_policy_rejected" => "KMS_PROFILE_POLICY_REJECTED",
+        _ => fallback_code,
+    }
+}
+
+fn probe_http_failure(
+    stage: KmsProbeStage,
+    fallback_code: &'static str,
+    status: reqwest::StatusCode,
+    error_body: &str,
+) -> KmsProbeFailure {
+    if let Ok(kms_error) = serde_json::from_str::<KmsErrorResponse>(error_body) {
+        let code = map_kms_error_to_probe_code(&kms_error.error, fallback_code);
+        let details = kms_error.details.unwrap_or_default();
+        return probe_failure(
+            stage,
+            code,
+            Some(kms_error.error),
+            format!("KMS request failed ({status}): {details}"),
+        );
+    }
+
+    probe_failure(
+        stage,
+        fallback_code,
+        None,
+        format!("KMS request failed ({status}): {error_body}"),
+    )
+}
+
+fn generate_probe_attestation(report_data: [u8; 64]) -> std::result::Result<ProbeAttestation, String> {
+    generate_attestation(report_data)
+        .map(|attestation| ProbeAttestation {
+            quote_bytes: attestation.quote_bytes,
+            quote_b64: attestation.quote_b64,
+            is_mock: attestation.is_mock,
+        })
+        .map_err(|err| format!("Failed to generate TDX attestation: {err}"))
+}
+
+pub async fn probe_storage_key(
+    kms_config: &KmsConfig,
+    peer_id: &str,
+    identity: &Keypair,
+) -> KmsProbeResult {
+    let Some(phala_config) = kms_config.phala.as_ref() else {
+        return probe_failure(
+            KmsProbeStage::Transport,
+            "KMS_PROVIDER_NOT_CONFIGURED",
+            None,
+            "TEE is enabled but tee.kms.phala is not configured",
+        )
+        .to_result();
+    };
+
+    match probe_phala_storage_key_with_attestor(phala_config, peer_id, identity, generate_probe_attestation)
+        .await
+    {
+        Ok(key_bytes) => probe_success(format!(
+            "KMS probe succeeded and returned {} key bytes",
+            key_bytes.len()
+        )),
+        Err(err) => err.to_result(),
+    }
+}
+
 /// Fetch the storage encryption key using the configured KMS provider.
 ///
 /// When `policy` is provided (from release-policy env vars), verifies the KMS
@@ -202,6 +341,422 @@ pub async fn fetch_storage_key(
              Running a TEE node without storage encryption is not supported."
         );
     }
+}
+
+async fn probe_phala_storage_key_with_attestor<F>(
+    phala_config: &PhalaKmsConfig,
+    peer_id: &str,
+    identity: &Keypair,
+    attestor: F,
+) -> std::result::Result<Vec<u8>, KmsProbeFailure>
+where
+    F: Fn([u8; 64]) -> std::result::Result<ProbeAttestation, String>,
+{
+    let strict_transport = phala_config.attestation.enabled && !phala_config.attestation.accept_mock;
+    validate_kms_transport_security(&phala_config.url, strict_transport).map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Transport,
+            "KMS_HTTP_INSECURE",
+            None,
+            err.to_string(),
+        )
+    })?;
+
+    let base_url = ensure_trailing_slash(&phala_config.url);
+    let challenge_endpoint = base_url.join("challenge").map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Transport,
+            "KMS_ENDPOINT_URL_INVALID",
+            None,
+            format!("Failed to build KMS challenge endpoint URL: {err}"),
+        )
+    })?;
+    let key_endpoint = base_url.join("get-key").map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Transport,
+            "KMS_ENDPOINT_URL_INVALID",
+            None,
+            format!("Failed to build KMS get-key endpoint URL: {err}"),
+        )
+    })?;
+
+    let client = build_kms_http_client(phala_config).map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Transport,
+            "KMS_HTTP_CLIENT_SETUP_FAILED",
+            None,
+            err.to_string(),
+        )
+    })?;
+
+    if phala_config.attestation.enabled {
+        probe_verify_kms_attestation(&client, &base_url, &phala_config.attestation).await?;
+    }
+
+    let challenge_response = client
+        .post(challenge_endpoint.as_str())
+        .json(&PhalaChallengeRequest {
+            peer_id: peer_id.to_owned(),
+        })
+        .send()
+        .await
+        .map_err(|err| {
+            probe_failure(
+                KmsProbeStage::Challenge,
+                "KMS_CHALLENGE_REQUEST_FAILED",
+                None,
+                format!("Failed to request challenge from KMS: {err}"),
+            )
+        })?;
+
+    let challenge_status = challenge_response.status();
+    if !challenge_status.is_success() {
+        let error_body = challenge_response.text().await.unwrap_or_default();
+        return Err(probe_http_failure(
+            KmsProbeStage::Challenge,
+            "KMS_CHALLENGE_REJECTED",
+            challenge_status,
+            &error_body,
+        ));
+    }
+
+    let challenge: PhalaChallengeResponse = challenge_response.json().await.map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Challenge,
+            "KMS_CHALLENGE_RESPONSE_INVALID",
+            None,
+            format!("Failed to parse KMS challenge response: {err}"),
+        )
+    })?;
+
+    if challenge.challenge_id.len() > MAX_KMS_CHALLENGE_ID_LEN {
+        return Err(probe_failure(
+            KmsProbeStage::Challenge,
+            "KMS_CHALLENGE_ID_OVERSIZED",
+            None,
+            format!(
+                "KMS challengeId exceeds maximum allowed length ({} chars)",
+                MAX_KMS_CHALLENGE_ID_LEN
+            ),
+        ));
+    }
+
+    if challenge.nonce_b64.len() > MAX_KMS_NONCE_B64_LEN {
+        return Err(probe_failure(
+            KmsProbeStage::Challenge,
+            "KMS_CHALLENGE_NONCE_OVERSIZED",
+            None,
+            format!(
+                "KMS challenge nonce exceeds maximum allowed size ({} chars base64)",
+                MAX_KMS_NONCE_B64_LEN
+            ),
+        ));
+    }
+
+    let challenge_nonce_vec = base64::engine::general_purpose::STANDARD
+        .decode(&challenge.nonce_b64)
+        .map_err(|err| {
+            probe_failure(
+                KmsProbeStage::Challenge,
+                "KMS_CHALLENGE_NONCE_INVALID",
+                None,
+                format!("Failed to decode challenge nonce from base64: {err}"),
+            )
+        })?;
+    let challenge_nonce: [u8; 32] = challenge_nonce_vec.try_into().map_err(|_| {
+        probe_failure(
+            KmsProbeStage::Challenge,
+            "KMS_CHALLENGE_NONCE_INVALID",
+            None,
+            "Challenge nonce must be exactly 32 bytes",
+        )
+    })?;
+
+    let peer_id_hash = hash_peer_id(peer_id);
+    let mut report_data = [0u8; 64];
+    report_data[..32].copy_from_slice(&challenge_nonce);
+    report_data[32..].copy_from_slice(&peer_id_hash);
+
+    let attestation = attestor(report_data).map_err(|details| {
+        probe_failure(
+            KmsProbeStage::GetKey,
+            "KMS_GET_KEY_ATTESTATION_FAILED",
+            None,
+            details,
+        )
+    })?;
+    if attestation.is_mock {
+        warn!("Generated mock attestation during KMS probe");
+    }
+
+    let signature_payload =
+        build_signature_payload(&challenge.challenge_id, &challenge_nonce, &attestation.quote_bytes, peer_id)
+            .map_err(|err| {
+            probe_failure(
+                KmsProbeStage::GetKey,
+                "KMS_GET_KEY_SIGNATURE_FAILED",
+                None,
+                err.to_string(),
+            )
+        })?;
+    let signature = identity.sign(&signature_payload).map_err(|err| {
+        probe_failure(
+            KmsProbeStage::GetKey,
+            "KMS_GET_KEY_SIGNATURE_FAILED",
+            None,
+            format!("Failed to sign KMS challenge payload with node identity key: {err}"),
+        )
+    })?;
+    let peer_public_key = identity.public().encode_protobuf();
+
+    let key_response = client
+        .post(key_endpoint.as_str())
+        .json(&PhalaGetKeyRequest {
+            challenge_id: challenge.challenge_id,
+            quote_b64: attestation.quote_b64,
+            peer_id: peer_id.to_owned(),
+            peer_public_key_b64: base64::engine::general_purpose::STANDARD.encode(peer_public_key),
+            signature_b64: base64::engine::general_purpose::STANDARD.encode(signature),
+        })
+        .send()
+        .await
+        .map_err(|err| {
+            probe_failure(
+                KmsProbeStage::GetKey,
+                "KMS_GET_KEY_REQUEST_FAILED",
+                None,
+                format!("Failed to send get-key request to KMS: {err}"),
+            )
+        })?;
+
+    let key_status = key_response.status();
+    if !key_status.is_success() {
+        let error_body = key_response.text().await.unwrap_or_default();
+        return Err(probe_http_failure(
+            KmsProbeStage::GetKey,
+            "KMS_GET_KEY_REJECTED",
+            key_status,
+            &error_body,
+        ));
+    }
+
+    let key_response: PhalaGetKeyResponse = key_response.json().await.map_err(|err| {
+        probe_failure(
+            KmsProbeStage::GetKey,
+            "KMS_GET_KEY_RESPONSE_INVALID",
+            None,
+            format!("Failed to parse KMS get-key response: {err}"),
+        )
+    })?;
+
+    let key_hex = key_response.key.trim();
+    if key_hex.is_empty() {
+        return Err(probe_failure(
+            KmsProbeStage::GetKey,
+            "KMS_KEY_INVALID",
+            None,
+            "KMS returned an empty encryption key",
+        ));
+    }
+    if key_hex.len() > MAX_KMS_KEY_HEX_LEN {
+        return Err(probe_failure(
+            KmsProbeStage::GetKey,
+            "KMS_KEY_INVALID",
+            None,
+            format!(
+                "KMS returned oversized encryption key ({} hex chars > {})",
+                key_hex.len(),
+                MAX_KMS_KEY_HEX_LEN
+            ),
+        ));
+    }
+    if key_hex.len() % 2 != 0 {
+        return Err(probe_failure(
+            KmsProbeStage::GetKey,
+            "KMS_KEY_INVALID",
+            None,
+            "KMS returned encryption key with invalid odd hex length",
+        ));
+    }
+
+    hex::decode(key_hex).map_err(|err| {
+        probe_failure(
+            KmsProbeStage::GetKey,
+            "KMS_KEY_INVALID",
+            None,
+            format!("Failed to decode key from hex: {err}"),
+        )
+    })
+}
+
+async fn probe_verify_kms_attestation(
+    client: &reqwest::Client,
+    base_url: &Url,
+    attestation_config: &KmsAttestationConfig,
+) -> std::result::Result<(), KmsProbeFailure> {
+    let effective_config = resolve_effective_attestation_config(attestation_config).map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Attest,
+            "KMS_ATTEST_POLICY_INVALID",
+            None,
+            err.to_string(),
+        )
+    })?;
+    let policy = normalize_kms_attestation_policy(&effective_config).map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Attest,
+            "KMS_ATTEST_POLICY_INVALID",
+            None,
+            err.to_string(),
+        )
+    })?;
+    let attest_endpoint = base_url.join("attest").map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Attest,
+            "KMS_ATTEST_REQUEST_INVALID",
+            None,
+            format!("Failed to build KMS attest endpoint URL: {err}"),
+        )
+    })?;
+
+    let mut nonce = [0u8; 32];
+    OsRng.fill_bytes(&mut nonce);
+    let expected_report_data = build_kms_attestation_report_data(&nonce, &policy.binding);
+
+    let attest_response = client
+        .post(attest_endpoint.as_str())
+        .json(&PhalaKmsAttestRequest {
+            nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
+            binding_b64: policy.binding_b64.clone(),
+        })
+        .send()
+        .await
+        .map_err(|err| {
+            probe_failure(
+                KmsProbeStage::Attest,
+                "KMS_ATTEST_REQUEST_FAILED",
+                None,
+                format!("Failed to request KMS attestation: {err}"),
+            )
+        })?;
+
+    let attest_status = attest_response.status();
+    if !attest_status.is_success() {
+        let error_body = attest_response.text().await.unwrap_or_default();
+        return Err(probe_http_failure(
+            KmsProbeStage::Attest,
+            "KMS_ATTEST_REJECTED",
+            attest_status,
+            &error_body,
+        ));
+    }
+
+    let attest_response: PhalaKmsAttestResponse = attest_response.json().await.map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Attest,
+            "KMS_ATTEST_RESPONSE_INVALID",
+            None,
+            format!("Failed to parse KMS attest response: {err}"),
+        )
+    })?;
+
+    let (quote_bytes, report_data_bytes) =
+        decode_kms_attestation_response(&attest_response).map_err(|err| {
+            let details = err.to_string();
+            let code = if details.contains("exceeds maximum allowed size") {
+                "KMS_ATTEST_RESPONSE_OVERSIZED"
+            } else {
+                "KMS_ATTEST_RESPONSE_INVALID"
+            };
+            probe_failure(KmsProbeStage::Attest, code, None, details)
+        })?;
+
+    if report_data_bytes.len() != 64 {
+        return Err(probe_failure(
+            KmsProbeStage::Attest,
+            "KMS_ATTEST_RESPONSE_INVALID",
+            None,
+            format!(
+                "KMS attest reportDataHex must be 64 bytes, got {}",
+                report_data_bytes.len()
+            ),
+        ));
+    }
+
+    if !bool::from(report_data_bytes.ct_eq(expected_report_data.as_slice())) {
+        return Err(probe_failure(
+            KmsProbeStage::Attest,
+            "KMS_ATTEST_REPORT_DATA_MISMATCH",
+            None,
+            "KMS attest reportData mismatch (nonce/binding mismatch or tampered response payload)",
+        ));
+    }
+
+    let verification_result = if is_mock_quote(&quote_bytes) {
+        if !policy.accept_mock {
+            return Err(probe_failure(
+                KmsProbeStage::Attest,
+                "KMS_ATTEST_MOCK_QUOTE_REJECTED",
+                None,
+                "KMS returned mock attestation quote, but attestation.accept_mock is disabled",
+            ));
+        }
+        if !mock_kms_attestation_runtime_opt_in() {
+            return Err(probe_failure(
+                KmsProbeStage::Attest,
+                "KMS_ATTEST_MOCK_RUNTIME_NOT_ALLOWED",
+                None,
+                format!(
+                    "KMS returned mock attestation quote, but {} is not enabled",
+                    MOCK_KMS_ATTESTATION_ENV
+                ),
+            ));
+        }
+        verify_mock_attestation(&quote_bytes, &nonce, Some(&policy.binding)).map_err(|err| {
+            probe_failure(
+                KmsProbeStage::Attest,
+                "KMS_ATTEST_VERIFICATION_FAILED",
+                None,
+                format!("Failed to verify mock KMS attestation: {err}"),
+            )
+        })?
+    } else {
+        verify_attestation(&quote_bytes, &nonce, Some(&policy.binding))
+            .await
+            .map_err(|err| {
+                probe_failure(
+                    KmsProbeStage::Attest,
+                    "KMS_ATTEST_VERIFICATION_FAILED",
+                    None,
+                    format!("Failed to verify KMS attestation quote: {err}"),
+                )
+            })?
+    };
+
+    if !verification_result.is_valid() {
+        return Err(probe_failure(
+            KmsProbeStage::Attest,
+            "KMS_ATTEST_VERIFICATION_FAILED",
+            None,
+            format!(
+                "KMS attestation verification failed: quote_verified={}, nonce_verified={}, app_hash_verified={:?}",
+                verification_result.quote_verified,
+                verification_result.nonce_verified,
+                verification_result.application_hash_verified
+            ),
+        ));
+    }
+
+    enforce_kms_attestation_policy(&policy, &verification_result).map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Attest,
+            "KMS_PROFILE_POLICY_REJECTED",
+            None,
+            err.to_string(),
+        )
+    })?;
+
+    Ok(())
 }
 
 /// Verify KMS via POST /attest using policy fetched from release.
@@ -1246,9 +1801,12 @@ fn is_loopback_kms_host(kms_url: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::io::Write;
 
     use axum::extract::State;
+    use axum::http::StatusCode;
     use axum::routing::post;
     use axum::{Json, Router};
     use camino::Utf8PathBuf;
@@ -1332,6 +1890,216 @@ mod tests {
         });
 
         Url::parse(&format!("http://{addr}/")).expect("base URL should parse")
+    }
+
+    #[derive(Clone, Copy)]
+    enum ProbeChallengeMode {
+        Valid,
+        MalformedNonce,
+        OversizedNonce,
+    }
+
+    #[derive(Clone, Copy)]
+    enum ProbeGetKeyMode {
+        Success,
+        MeasurementPolicyRejected,
+    }
+
+    #[derive(Clone, Copy)]
+    struct ProbeServerMode {
+        attest: AttestResponseMode,
+        challenge: ProbeChallengeMode,
+        get_key: ProbeGetKeyMode,
+    }
+
+    #[derive(Clone)]
+    struct ProbeServerState {
+        mode: ProbeServerMode,
+        get_key_hits: Arc<AtomicUsize>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ChallengeRequestBody {
+        peer_id: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct GetKeyRequestBody {
+        challenge_id: String,
+        quote_b64: String,
+        peer_id: String,
+        peer_public_key_b64: String,
+        signature_b64: String,
+    }
+
+    async fn probe_attest_handler(
+        State(state): State<ProbeServerState>,
+        Json(request): Json<AttestRequestBody>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let nonce_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&request.nonce_b64)
+            .expect("request nonce must be valid base64");
+        let nonce: [u8; 32] = nonce_bytes
+            .try_into()
+            .expect("request nonce must decode to 32 bytes");
+
+        let binding = if let Some(binding_b64) = request.binding_b64 {
+            let binding_bytes = base64::engine::general_purpose::STANDARD
+                .decode(binding_b64)
+                .expect("binding must be valid base64");
+            binding_bytes
+                .try_into()
+                .expect("binding must decode to 32 bytes")
+        } else {
+            default_kms_attestation_binding()
+        };
+
+        let expected_report_data = build_kms_attestation_report_data(&nonce, &binding);
+        let report_data_hex = match state.mode.attest {
+            AttestResponseMode::Valid => hex::encode(expected_report_data),
+            AttestResponseMode::ReportDataMismatch => hex::encode([0u8; 64]),
+        };
+
+        let quote_b64 = base64::engine::general_purpose::STANDARD
+            .encode(mock_quote_bytes_with_report_data(&expected_report_data));
+
+        (
+            StatusCode::OK,
+            Json(json!({
+                "quoteB64": quote_b64,
+                "reportDataHex": report_data_hex
+            })),
+        )
+    }
+
+    async fn probe_challenge_handler(
+        State(state): State<ProbeServerState>,
+        Json(request): Json<ChallengeRequestBody>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let _ = request.peer_id;
+
+        let nonce_b64 = match state.mode.challenge {
+            ProbeChallengeMode::Valid => {
+                base64::engine::general_purpose::STANDARD.encode([0x33u8; 32])
+            }
+            ProbeChallengeMode::MalformedNonce => "***not-base64***".to_owned(),
+            ProbeChallengeMode::OversizedNonce => "A".repeat(MAX_KMS_NONCE_B64_LEN + 1),
+        };
+
+        (
+            StatusCode::OK,
+            Json(json!({
+                "challengeId": "probe-challenge",
+                "nonceB64": nonce_b64
+            })),
+        )
+    }
+
+    async fn probe_get_key_handler(
+        State(state): State<ProbeServerState>,
+        Json(request): Json<GetKeyRequestBody>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        state.get_key_hits.fetch_add(1, Ordering::SeqCst);
+
+        let has_empty_field = request.challenge_id.is_empty()
+            || request.quote_b64.is_empty()
+            || request.peer_id.is_empty()
+            || request.peer_public_key_b64.is_empty()
+            || request.signature_b64.is_empty();
+        if has_empty_field {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_request",
+                    "details": "required request fields are missing"
+                })),
+            );
+        }
+
+        match state.mode.get_key {
+            ProbeGetKeyMode::Success => (
+                StatusCode::OK,
+                Json(json!({
+                    "key": "11".repeat(32)
+                })),
+            ),
+            ProbeGetKeyMode::MeasurementPolicyRejected => (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "measurement_policy_rejected",
+                    "details": "MRTD mismatch"
+                })),
+            ),
+        }
+    }
+
+    async fn spawn_probe_server(mode: ProbeServerMode) -> (Url, Arc<AtomicUsize>) {
+        let get_key_hits = Arc::new(AtomicUsize::new(0));
+        let state = ProbeServerState {
+            mode,
+            get_key_hits: Arc::clone(&get_key_hits),
+        };
+
+        let app = Router::new()
+            .route("/attest", post(probe_attest_handler))
+            .route("/challenge", post(probe_challenge_handler))
+            .route("/get-key", post(probe_get_key_handler))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("probe test server should run");
+        });
+
+        (
+            Url::parse(&format!("http://{addr}/")).expect("base URL should parse"),
+            get_key_hits,
+        )
+    }
+
+    fn make_probe_phala_config(url: &Url, attestation_enabled: bool) -> PhalaKmsConfig {
+        if attestation_enabled {
+            return parse_phala_config(json!({
+                "url": url.as_str(),
+                "attestation": {
+                    "enabled": true,
+                    "accept_mock": true,
+                    "allowed_tcb_statuses": ["Mock"],
+                    "allowed_mrtd": ["00".repeat(48)],
+                    "allowed_rtmr0": ["00".repeat(48)],
+                    "allowed_rtmr1": ["00".repeat(48)],
+                    "allowed_rtmr2": ["00".repeat(48)],
+                    "allowed_rtmr3": ["00".repeat(48)]
+                }
+            }));
+        }
+
+        parse_phala_config(json!({
+            "url": url.as_str(),
+            "attestation": {
+                "enabled": false
+            }
+        }))
+    }
+
+    fn mock_probe_attestor(report_data: [u8; 64]) -> std::result::Result<ProbeAttestation, String> {
+        let quote_bytes = mock_quote_bytes_with_report_data(&report_data);
+        let quote_b64 = base64::engine::general_purpose::STANDARD.encode(&quote_bytes);
+        Ok(ProbeAttestation {
+            quote_bytes,
+            quote_b64,
+            is_mock: true,
+        })
     }
 
     fn write_temp_policy_file(contents: &str) -> NamedTempFile {
@@ -1700,6 +2468,168 @@ mod tests {
         assert!(result.is_err());
         let error_text = result.unwrap_err().to_string();
         assert!(error_text.contains("accept_mock is disabled"));
+    }
+
+    #[tokio::test]
+    async fn test_probe_phala_flow_succeeds() {
+        enable_mock_kms_attestation_env();
+        let (base_url, get_key_hits) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::Valid,
+            challenge: ProbeChallengeMode::Valid,
+            get_key: ProbeGetKeyMode::Success,
+        })
+        .await;
+        let phala_config = make_probe_phala_config(&base_url, true);
+        let identity = Keypair::generate_ed25519();
+        let peer_id = identity.public().to_peer_id().to_base58();
+
+        let key = probe_phala_storage_key_with_attestor(
+            &phala_config,
+            &peer_id,
+            &identity,
+            mock_probe_attestor,
+        )
+        .await
+        .expect("probe flow should succeed");
+
+        assert_eq!(key, vec![0x11u8; 32]);
+        assert_eq!(get_key_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_probe_phala_flow_rejects_spoofed_attest_before_key_fetch() {
+        enable_mock_kms_attestation_env();
+        let (base_url, get_key_hits) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::ReportDataMismatch,
+            challenge: ProbeChallengeMode::Valid,
+            get_key: ProbeGetKeyMode::Success,
+        })
+        .await;
+        let phala_config = make_probe_phala_config(&base_url, true);
+        let identity = Keypair::generate_ed25519();
+        let peer_id = identity.public().to_peer_id().to_base58();
+
+        let err = probe_phala_storage_key_with_attestor(
+            &phala_config,
+            &peer_id,
+            &identity,
+            mock_probe_attestor,
+        )
+        .await
+        .expect_err("reportData mismatch must fail probe");
+
+        assert_eq!(err.stage, KmsProbeStage::Attest);
+        assert_eq!(err.code, "KMS_ATTEST_REPORT_DATA_MISMATCH");
+        assert_eq!(get_key_hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_probe_phala_flow_propagates_measurement_policy_rejection_with_stable_code() {
+        enable_mock_kms_attestation_env();
+        let (base_url, _get_key_hits) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::Valid,
+            challenge: ProbeChallengeMode::Valid,
+            get_key: ProbeGetKeyMode::MeasurementPolicyRejected,
+        })
+        .await;
+        let phala_config = make_probe_phala_config(&base_url, true);
+        let identity = Keypair::generate_ed25519();
+        let peer_id = identity.public().to_peer_id().to_base58();
+
+        let err = probe_phala_storage_key_with_attestor(
+            &phala_config,
+            &peer_id,
+            &identity,
+            mock_probe_attestor,
+        )
+        .await
+        .expect_err("measurement policy rejection must fail probe");
+
+        assert_eq!(err.stage, KmsProbeStage::GetKey);
+        assert_eq!(err.code, "KMS_PROFILE_POLICY_REJECTED");
+        assert_eq!(
+            err.kms_error.as_deref(),
+            Some("measurement_policy_rejected")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_probe_phala_flow_rejects_malformed_challenge_nonce() {
+        enable_mock_kms_attestation_env();
+        let (base_url, _get_key_hits) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::Valid,
+            challenge: ProbeChallengeMode::MalformedNonce,
+            get_key: ProbeGetKeyMode::Success,
+        })
+        .await;
+        let phala_config = make_probe_phala_config(&base_url, false);
+        let identity = Keypair::generate_ed25519();
+        let peer_id = identity.public().to_peer_id().to_base58();
+
+        let err = probe_phala_storage_key_with_attestor(
+            &phala_config,
+            &peer_id,
+            &identity,
+            mock_probe_attestor,
+        )
+        .await
+        .expect_err("malformed challenge nonce must fail probe");
+
+        assert_eq!(err.stage, KmsProbeStage::Challenge);
+        assert_eq!(err.code, "KMS_CHALLENGE_NONCE_INVALID");
+    }
+
+    #[tokio::test]
+    async fn test_probe_phala_flow_rejects_oversized_challenge_nonce() {
+        enable_mock_kms_attestation_env();
+        let (base_url, _get_key_hits) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::Valid,
+            challenge: ProbeChallengeMode::OversizedNonce,
+            get_key: ProbeGetKeyMode::Success,
+        })
+        .await;
+        let phala_config = make_probe_phala_config(&base_url, false);
+        let identity = Keypair::generate_ed25519();
+        let peer_id = identity.public().to_peer_id().to_base58();
+
+        let err = probe_phala_storage_key_with_attestor(
+            &phala_config,
+            &peer_id,
+            &identity,
+            mock_probe_attestor,
+        )
+        .await
+        .expect_err("oversized challenge nonce must fail probe");
+
+        assert_eq!(err.stage, KmsProbeStage::Challenge);
+        assert_eq!(err.code, "KMS_CHALLENGE_NONCE_OVERSIZED");
+    }
+
+    #[tokio::test]
+    async fn test_probe_storage_key_rejects_insecure_transport_in_strict_mode() {
+        let phala_config = parse_phala_config(json!({
+            "url": "http://kms.example.com/",
+            "attestation": {
+                "enabled": true,
+                "accept_mock": false,
+                "allowed_tcb_statuses": ["UpToDate"],
+                "allowed_mrtd": ["00".repeat(48)],
+                "allowed_rtmr0": ["00".repeat(48)],
+                "allowed_rtmr1": ["00".repeat(48)],
+                "allowed_rtmr2": ["00".repeat(48)],
+                "allowed_rtmr3": ["00".repeat(48)]
+            }
+        }));
+        let kms_config = KmsConfig {
+            phala: Some(phala_config),
+        };
+        let identity = Keypair::generate_ed25519();
+        let peer_id = identity.public().to_peer_id().to_base58();
+
+        let result = probe_storage_key(&kms_config, &peer_id, &identity).await;
+        assert!(!result.ok);
+        assert_eq!(result.stage, KmsProbeStage::Transport);
+        assert_eq!(result.code, "KMS_HTTP_INSECURE");
     }
 
     fn make_release_policy(
