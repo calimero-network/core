@@ -1605,13 +1605,11 @@ fn validate_kms_transport_security(kms_url: &Url, strict_mode: bool) -> Result<(
 }
 
 fn is_loopback_kms_host(kms_url: &Url) -> bool {
-    let Some(host) = kms_url.host_str() else {
-        return false;
-    };
-
-    host.parse::<std::net::IpAddr>()
-        .map(|ip| ip.is_loopback())
-        .unwrap_or(false)
+    match kms_url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1988,6 +1986,9 @@ mod tests {
 
         let loopback_http = Url::parse("http://127.0.0.1:8080/").unwrap();
         assert!(validate_kms_transport_security(&loopback_http, true).is_ok());
+
+        let loopback_http_v6 = Url::parse("http://[::1]:8080/").unwrap();
+        assert!(validate_kms_transport_security(&loopback_http_v6, true).is_ok());
     }
 
     #[test]
