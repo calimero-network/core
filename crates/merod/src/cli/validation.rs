@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use calimero_config::ConfigFile;
+use calimero_config::{ConfigFile, KmsTlsConfig};
 use calimero_server::config::AuthMode;
 use camino::Utf8Path;
 use eyre::{bail, Result as EyreResult, WrapErr};
@@ -454,12 +454,67 @@ fn validate_required_credentials(config: &ConfigFile) -> EyreResult<()> {
 
         if let Some(phala) = &tee_config.kms.phala {
             phala.attestation.validate_enabled_policy()?;
+            validate_kms_tls_config(&phala.url, &phala.tls)?;
 
             if phala.attestation.enabled && phala.attestation.accept_mock {
                 tracing::warn!(
                     "tee.kms.phala.attestation.accept_mock=true is enabled. \
                      This should only be used for development/testing."
                 );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_kms_tls_config(kms_url: &url::Url, tls: &KmsTlsConfig) -> EyreResult<()> {
+    let uses_https = kms_url.scheme().eq_ignore_ascii_case("https");
+
+    if tls.ca_cert_path.is_some() && !uses_https {
+        bail!(
+            "tee.kms.phala.tls.ca_cert_path requires tee.kms.phala.url to use https:// (current: {})",
+            kms_url
+        );
+    }
+
+    let has_client_cert = tls.client_cert_path.is_some();
+    let has_client_key = tls.client_key_path.is_some();
+    if has_client_cert != has_client_key {
+        bail!(
+            "tee.kms.phala.tls.client_cert_path and tee.kms.phala.tls.client_key_path must be set together"
+        );
+    }
+    if has_client_cert && !uses_https {
+        bail!(
+            "tee.kms.phala.tls.client_cert_path/client_key_path require tee.kms.phala.url to use https:// (current: {})",
+            kms_url
+        );
+    }
+
+    for (field_name, path_opt) in [
+        (
+            "tee.kms.phala.tls.ca_cert_path",
+            tls.ca_cert_path.as_deref(),
+        ),
+        (
+            "tee.kms.phala.tls.client_cert_path",
+            tls.client_cert_path.as_deref(),
+        ),
+        (
+            "tee.kms.phala.tls.client_key_path",
+            tls.client_key_path.as_deref(),
+        ),
+    ] {
+        if let Some(path) = path_opt {
+            // Preflight check only: files are opened again during client
+            // construction, so this does not eliminate TOCTOU races.
+            // Operators should keep TLS material immutable while merod runs.
+            if !path.is_absolute() {
+                bail!("{field_name} must be an absolute path: {}", path);
+            }
+            if !path.is_file() {
+                bail!("{field_name} does not exist or is not a file: {}", path);
             }
         }
     }
@@ -644,6 +699,67 @@ fn validate_duration_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    use camino::Utf8PathBuf;
+    use tempfile::NamedTempFile;
+
+    fn temp_file() -> (NamedTempFile, Utf8PathBuf) {
+        let mut file = NamedTempFile::new().expect("temp file should be created");
+        file.write_all(b"test")
+            .expect("should write test file contents");
+        let path = Utf8PathBuf::from_path_buf(file.path().to_path_buf())
+            .expect("temp path should be utf-8");
+        (file, path)
+    }
+
+    #[test]
+    fn validate_kms_tls_config_rejects_relative_paths() {
+        let url = url::Url::parse("https://kms.example.com/").unwrap();
+        let mut tls = KmsTlsConfig::default();
+        tls.ca_cert_path = Some(Utf8PathBuf::from("relative-ca.pem"));
+        let err = validate_kms_tls_config(&url, &tls)
+            .expect_err("relative path must fail")
+            .to_string();
+        assert!(err.contains("must be an absolute path"));
+    }
+
+    #[test]
+    fn validate_kms_tls_config_rejects_partial_mtls() {
+        let url = url::Url::parse("https://kms.example.com/").unwrap();
+        let mut tls = KmsTlsConfig::default();
+        let (_cert_file, cert_path) = temp_file();
+        tls.client_cert_path = Some(cert_path);
+        let err = validate_kms_tls_config(&url, &tls)
+            .expect_err("partial mTLS config must fail")
+            .to_string();
+        assert!(err.contains("must be set together"));
+    }
+
+    #[test]
+    fn validate_kms_tls_config_rejects_tls_over_http() {
+        let url = url::Url::parse("http://127.0.0.1:8080/").unwrap();
+        let mut tls = KmsTlsConfig::default();
+        let (_ca_file, ca_path) = temp_file();
+        tls.ca_cert_path = Some(ca_path);
+        let err = validate_kms_tls_config(&url, &tls)
+            .expect_err("TLS pinning over HTTP must fail")
+            .to_string();
+        assert!(err.contains("requires tee.kms.phala.url to use https://"));
+    }
+
+    #[test]
+    fn validate_kms_tls_config_accepts_https_with_existing_absolute_paths() {
+        let url = url::Url::parse("https://kms.example.com/").unwrap();
+        let mut tls = KmsTlsConfig::default();
+        let (_ca_file, ca_path) = temp_file();
+        let (_cert_file, cert_path) = temp_file();
+        let (_key_file, key_path) = temp_file();
+        tls.ca_cert_path = Some(ca_path);
+        tls.client_cert_path = Some(cert_path);
+        tls.client_key_path = Some(key_path);
+        assert!(validate_kms_tls_config(&url, &tls).is_ok());
+    }
 
     #[test]
     fn test_extract_protocol_ports_from_multiaddr() {

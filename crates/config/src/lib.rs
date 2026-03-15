@@ -72,9 +72,36 @@ pub struct KmsConfig {
 pub struct PhalaKmsConfig {
     /// URL of the mero-kms-phala service.
     pub url: Url,
+    /// Optional TLS hardening settings for KMS transport.
+    #[serde(default)]
+    pub tls: KmsTlsConfig,
     /// KMS self-attestation verification policy.
     #[serde(default)]
     pub attestation: KmsAttestationConfig,
+}
+
+/// TLS configuration for KMS transport hardening.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct KmsTlsConfig {
+    /// Optional PEM-encoded CA certificate path for private trust roots.
+    ///
+    /// When set, merod adds this certificate to its trust store for KMS TLS.
+    /// Path must be absolute and point to an existing file.
+    #[serde(default)]
+    pub ca_cert_path: Option<Utf8PathBuf>,
+    /// Optional PEM-encoded client certificate path for mTLS.
+    ///
+    /// Must be provided together with `client_key_path`.
+    /// Path must be absolute and point to an existing file.
+    #[serde(default)]
+    pub client_cert_path: Option<Utf8PathBuf>,
+    /// Optional PEM-encoded client private key path for mTLS.
+    ///
+    /// Must be provided together with `client_cert_path`.
+    /// Path must be absolute and point to an existing file.
+    #[serde(default)]
+    pub client_key_path: Option<Utf8PathBuf>,
 }
 
 /// Configuration for verifying KMS self-attestation (`POST /attest`).
@@ -96,16 +123,24 @@ pub struct KmsAttestationConfig {
     /// Allowed KMS MRTD values (hex, with or without `0x` prefix).
     #[serde(default)]
     pub allowed_mrtd: Vec<String>,
-    /// Optional KMS RTMR0 allowlist (hex).
+    /// Allowed KMS RTMR0 values (hex).
+    ///
+    /// Required when `enabled=true` and `accept_mock=false`.
     #[serde(default)]
     pub allowed_rtmr0: Vec<String>,
-    /// Optional KMS RTMR1 allowlist (hex).
+    /// Allowed KMS RTMR1 values (hex).
+    ///
+    /// Required when `enabled=true` and `accept_mock=false`.
     #[serde(default)]
     pub allowed_rtmr1: Vec<String>,
-    /// Optional KMS RTMR2 allowlist (hex).
+    /// Allowed KMS RTMR2 values (hex).
+    ///
+    /// Required when `enabled=true` and `accept_mock=false`.
     #[serde(default)]
     pub allowed_rtmr2: Vec<String>,
-    /// Optional KMS RTMR3 allowlist (hex).
+    /// Allowed KMS RTMR3 values (hex).
+    ///
+    /// Required when `enabled=true` and `accept_mock=false`.
     #[serde(default)]
     pub allowed_rtmr3: Vec<String>,
     /// Optional base64-encoded 32-byte binding value for `/attest`.
@@ -147,30 +182,51 @@ impl KmsAttestationConfig {
         if !self.enabled {
             return Ok(());
         }
+        if self.accept_mock {
+            // Development mode: production strictness does not apply.
+            return Ok(());
+        }
 
-        let has_tcb_status = self
-            .allowed_tcb_statuses
-            .iter()
-            .map(|status| status.trim())
-            .any(|status| !status.is_empty());
-        if !has_tcb_status {
+        if !has_non_empty_status_allowlist(&self.allowed_tcb_statuses) {
             bail!("tee.kms.phala.attestation.enabled is true, but allowed_tcb_statuses is empty.");
         }
 
-        let has_mrtd = self
-            .allowed_mrtd
-            .iter()
-            .map(|measurement| normalize_attestation_measurement(measurement))
-            .any(|measurement| !measurement.is_empty());
-        if !has_mrtd {
+        if !has_non_empty_measurement_allowlist(&self.allowed_mrtd) {
             bail!(
                 "tee.kms.phala.attestation.enabled is true, but allowed_mrtd is empty. \
                  Configure at least one trusted KMS MRTD."
             );
         }
 
+        for (field_name, values) in [
+            ("allowed_rtmr0", &self.allowed_rtmr0),
+            ("allowed_rtmr1", &self.allowed_rtmr1),
+            ("allowed_rtmr2", &self.allowed_rtmr2),
+            ("allowed_rtmr3", &self.allowed_rtmr3),
+        ] {
+            if has_non_empty_measurement_allowlist(values) {
+                continue;
+            }
+
+            bail!(
+                "tee.kms.phala.attestation.enabled is true and accept_mock is false, \
+                 but {field_name} is empty."
+            );
+        }
+
         Ok(())
     }
+}
+
+fn has_non_empty_status_allowlist(values: &[String]) -> bool {
+    values.iter().any(|status| !status.trim().is_empty())
+}
+
+fn has_non_empty_measurement_allowlist(values: &[String]) -> bool {
+    values
+        .iter()
+        .map(|measurement| normalize_attestation_measurement(measurement))
+        .any(|measurement| !measurement.is_empty())
 }
 
 /// Normalize a configured attestation measurement value for comparison.
@@ -529,6 +585,20 @@ pub mod serde_identity {
 mod tests {
     use super::{normalize_attestation_measurement, KmsAttestationConfig};
 
+    fn make_strict_production_config() -> KmsAttestationConfig {
+        KmsAttestationConfig {
+            enabled: true,
+            accept_mock: false,
+            allowed_tcb_statuses: vec!["UpToDate".to_owned()],
+            allowed_mrtd: vec!["ab".repeat(48)],
+            allowed_rtmr0: vec!["ab".repeat(48)],
+            allowed_rtmr1: vec!["ab".repeat(48)],
+            allowed_rtmr2: vec!["ab".repeat(48)],
+            allowed_rtmr3: vec!["ab".repeat(48)],
+            ..KmsAttestationConfig::default()
+        }
+    }
+
     #[test]
     fn validate_enabled_policy_allows_disabled_config() {
         let cfg = KmsAttestationConfig::default();
@@ -550,15 +620,51 @@ mod tests {
 
     #[test]
     fn validate_enabled_policy_rejects_empty_mrtd() {
-        let mut cfg = KmsAttestationConfig {
-            enabled: true,
-            ..KmsAttestationConfig::default()
-        };
-        cfg.allowed_tcb_statuses = vec!["UpToDate".to_owned()];
+        let mut cfg = make_strict_production_config();
         cfg.allowed_mrtd = vec!["  ".to_owned(), "0x".to_owned()];
 
         let err = cfg.validate_enabled_policy().unwrap_err().to_string();
         assert!(err.contains("allowed_mrtd is empty"));
+    }
+
+    #[test]
+    fn validate_enabled_policy_rejects_empty_any_required_rtmr_allowlist() {
+        let mut cfg = make_strict_production_config();
+        cfg.allowed_rtmr0.clear();
+        let err = cfg.validate_enabled_policy().unwrap_err().to_string();
+        assert!(err.contains("allowed_rtmr0 is empty"));
+
+        let mut cfg = make_strict_production_config();
+        cfg.allowed_rtmr1.clear();
+        let err = cfg.validate_enabled_policy().unwrap_err().to_string();
+        assert!(err.contains("allowed_rtmr1 is empty"));
+
+        let mut cfg = make_strict_production_config();
+        cfg.allowed_rtmr2.clear();
+        let err = cfg.validate_enabled_policy().unwrap_err().to_string();
+        assert!(err.contains("allowed_rtmr2 is empty"));
+
+        let mut cfg = make_strict_production_config();
+        cfg.allowed_rtmr3.clear();
+        let err = cfg.validate_enabled_policy().unwrap_err().to_string();
+        assert!(err.contains("allowed_rtmr3 is empty"));
+    }
+
+    #[test]
+    fn validate_enabled_policy_allows_empty_allowlists_when_accept_mock_is_true() {
+        let mut cfg = KmsAttestationConfig {
+            enabled: true,
+            accept_mock: true,
+            ..KmsAttestationConfig::default()
+        };
+        cfg.allowed_tcb_statuses.clear();
+        cfg.allowed_mrtd.clear();
+        cfg.allowed_rtmr0.clear();
+        cfg.allowed_rtmr1.clear();
+        cfg.allowed_rtmr2.clear();
+        cfg.allowed_rtmr3.clear();
+
+        assert!(cfg.validate_enabled_policy().is_ok());
     }
 
     #[test]
