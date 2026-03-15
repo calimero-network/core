@@ -265,7 +265,9 @@ fn probe_http_failure(
     )
 }
 
-fn generate_probe_attestation(report_data: [u8; 64]) -> std::result::Result<ProbeAttestation, String> {
+fn generate_probe_attestation(
+    report_data: [u8; 64],
+) -> std::result::Result<ProbeAttestation, String> {
     generate_attestation(report_data)
         .map(|attestation| ProbeAttestation {
             quote_bytes: attestation.quote_bytes,
@@ -290,8 +292,13 @@ pub async fn probe_storage_key(
         .to_result();
     };
 
-    match probe_phala_storage_key_with_attestor(phala_config, peer_id, identity, generate_probe_attestation)
-        .await
+    match probe_phala_storage_key_with_attestor(
+        phala_config,
+        peer_id,
+        identity,
+        generate_probe_attestation,
+    )
+    .await
     {
         Ok(key_bytes) => probe_success(format!(
             "KMS probe succeeded and returned {} key bytes",
@@ -352,7 +359,8 @@ async fn probe_phala_storage_key_with_attestor<F>(
 where
     F: Fn([u8; 64]) -> std::result::Result<ProbeAttestation, String>,
 {
-    let strict_transport = phala_config.attestation.enabled && !phala_config.attestation.accept_mock;
+    let strict_transport =
+        phala_config.attestation.enabled && !phala_config.attestation.accept_mock;
     validate_kms_transport_security(&phala_config.url, strict_transport).map_err(|err| {
         probe_failure(
             KmsProbeStage::Transport,
@@ -489,16 +497,20 @@ where
         warn!("Generated mock attestation during KMS probe");
     }
 
-    let signature_payload =
-        build_signature_payload(&challenge.challenge_id, &challenge_nonce, &attestation.quote_bytes, peer_id)
-            .map_err(|err| {
-            probe_failure(
-                KmsProbeStage::GetKey,
-                "KMS_GET_KEY_SIGNATURE_FAILED",
-                None,
-                err.to_string(),
-            )
-        })?;
+    let signature_payload = build_signature_payload(
+        &challenge.challenge_id,
+        &challenge_nonce,
+        &attestation.quote_bytes,
+        peer_id,
+    )
+    .map_err(|err| {
+        probe_failure(
+            KmsProbeStage::GetKey,
+            "KMS_GET_KEY_SIGNATURE_FAILED",
+            None,
+            err.to_string(),
+        )
+    })?;
     let signature = identity.sign(&signature_payload).map_err(|err| {
         probe_failure(
             KmsProbeStage::GetKey,
@@ -594,14 +606,15 @@ async fn probe_verify_kms_attestation(
     base_url: &Url,
     attestation_config: &KmsAttestationConfig,
 ) -> std::result::Result<(), KmsProbeFailure> {
-    let effective_config = resolve_effective_attestation_config(attestation_config).map_err(|err| {
-        probe_failure(
-            KmsProbeStage::Attest,
-            "KMS_ATTEST_POLICY_INVALID",
-            None,
-            err.to_string(),
-        )
-    })?;
+    let effective_config =
+        resolve_effective_attestation_config(attestation_config).map_err(|err| {
+            probe_failure(
+                KmsProbeStage::Attest,
+                "KMS_ATTEST_POLICY_INVALID",
+                None,
+                err.to_string(),
+            )
+        })?;
     let policy = normalize_kms_attestation_policy(&effective_config).map_err(|err| {
         probe_failure(
             KmsProbeStage::Attest,
@@ -660,8 +673,8 @@ async fn probe_verify_kms_attestation(
         )
     })?;
 
-    let (quote_bytes, report_data_bytes) =
-        decode_kms_attestation_response(&attest_response).map_err(|err| {
+    let (quote_bytes, report_data_bytes) = decode_kms_attestation_response(&attest_response)
+        .map_err(|err| {
             let details = err.to_string();
             let code = if details.contains("exceeds maximum allowed size") {
                 "KMS_ATTEST_RESPONSE_OVERSIZED"
@@ -1801,9 +1814,9 @@ fn is_loopback_kms_host(kms_url: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::io::Write;
 
     use axum::extract::State;
     use axum::http::StatusCode;
@@ -2620,9 +2633,10 @@ mod tests {
                 "allowed_rtmr3": ["00".repeat(48)]
             }
         }));
-        let kms_config = KmsConfig {
-            phala: Some(phala_config),
-        };
+        let kms_config: KmsConfig = serde_json::from_value(json!({
+            "phala": phala_config
+        }))
+        .expect("valid kms config");
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 

@@ -38,6 +38,8 @@ impl KmsCommand {
 
 impl KmsProbeCommand {
     async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let kms_url = self.kms_url;
+        let json = self.json;
         let path = root_args.home.join(&root_args.node_name);
         if !ConfigFile::exists(&path) {
             bail!("Node is not initialized in {:?}", path);
@@ -58,7 +60,7 @@ impl KmsProbeCommand {
             .as_mut()
             .ok_or_else(|| eyre!("tee.kms.phala is not configured"))?;
 
-        if let Some(kms_url) = self.kms_url {
+        if let Some(kms_url) = kms_url {
             phala.url = kms_url;
         }
 
@@ -68,7 +70,7 @@ impl KmsProbeCommand {
 
         let peer_id = config.identity.public().to_peer_id().to_base58();
         let result = kms::probe_storage_key(&kms_config, &peer_id, &config.identity).await;
-        self.print_result(&result)?;
+        print_result(json, &result)?;
 
         if result.ok {
             return Ok(());
@@ -80,33 +82,33 @@ impl KmsProbeCommand {
             result.code
         );
     }
+}
 
-    fn print_result(&self, result: &KmsProbeResult) -> EyreResult<()> {
-        if self.json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(result).wrap_err("Failed to serialize probe result")?
-            );
-            return Ok(());
-        }
-
-        if result.ok {
-            println!(
-                "KMS probe succeeded: stage={:?} code={} details={}",
-                result.stage,
-                result.code,
-                result.details.as_deref().unwrap_or_default()
-            );
-        } else {
-            eprintln!(
-                "KMS probe failed: stage={:?} code={} kms_error={} details={}",
-                result.stage,
-                result.code,
-                result.kms_error.as_deref().unwrap_or("-"),
-                result.details.as_deref().unwrap_or("-")
-            );
-        }
-
-        Ok(())
+fn print_result(json: bool, result: &KmsProbeResult) -> EyreResult<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(result).wrap_err("Failed to serialize probe result")?
+        );
+        return Ok(());
     }
+
+    if result.ok {
+        println!(
+            "KMS probe succeeded: stage={:?} code={} details={}",
+            result.stage,
+            result.code,
+            result.details.as_deref().unwrap_or_default()
+        );
+    } else {
+        eprintln!(
+            "KMS probe failed: stage={:?} code={} kms_error={} details={}",
+            result.stage,
+            result.code,
+            result.kms_error.as_deref().unwrap_or("-"),
+            result.details.as_deref().unwrap_or("-")
+        );
+    }
+
+    Ok(())
 }
