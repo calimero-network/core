@@ -507,6 +507,9 @@ fn validate_kms_tls_config(kms_url: &url::Url, tls: &KmsTlsConfig) -> EyreResult
         ),
     ] {
         if let Some(path) = path_opt {
+            // Preflight check only: files are opened again during client
+            // construction, so this does not eliminate TOCTOU races.
+            // Operators should keep TLS material immutable while merod runs.
             if !path.is_absolute() {
                 bail!("{field_name} must be an absolute path: {}", path);
             }

@@ -70,6 +70,54 @@ struct KmsErrorResponse {
     details: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct KmsHttpFailure {
+    endpoint: &'static str,
+    status: reqwest::StatusCode,
+    kms_error: Option<String>,
+    details: String,
+}
+
+impl KmsHttpFailure {
+    fn from_response(endpoint: &'static str, status: reqwest::StatusCode, body: &str) -> Self {
+        if let Ok(kms_error) = serde_json::from_str::<KmsErrorResponse>(body) {
+            return Self {
+                endpoint,
+                status,
+                kms_error: Some(kms_error.error),
+                details: kms_error.details.unwrap_or_default(),
+            };
+        }
+
+        Self {
+            endpoint,
+            status,
+            kms_error: None,
+            details: body.to_owned(),
+        }
+    }
+}
+
+impl std::fmt::Display for KmsHttpFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(kms_error) = self.kms_error.as_deref() {
+            return write!(
+                f,
+                "KMS {} request failed ({}): {} - {}",
+                self.endpoint, self.status, kms_error, self.details
+            );
+        }
+
+        write!(
+            f,
+            "KMS {} request failed ({}): {}",
+            self.endpoint, self.status, self.details
+        )
+    }
+}
+
+impl std::error::Error for KmsHttpFailure {}
+
 /// Request body for KMS self-attestation endpoint.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -240,29 +288,102 @@ fn map_kms_error_to_probe_code(kms_error: &str, fallback_code: &'static str) -> 
     }
 }
 
-fn probe_http_failure(
+fn probe_failure_from_http(
     stage: KmsProbeStage,
     fallback_code: &'static str,
-    status: reqwest::StatusCode,
-    error_body: &str,
+    error: &KmsHttpFailure,
 ) -> KmsProbeFailure {
-    if let Ok(kms_error) = serde_json::from_str::<KmsErrorResponse>(error_body) {
-        let code = map_kms_error_to_probe_code(&kms_error.error, fallback_code);
-        let details = kms_error.details.unwrap_or_default();
-        return probe_failure(
-            stage,
-            code,
-            Some(kms_error.error),
-            format!("KMS request failed ({status}): {details}"),
+    let code = error
+        .kms_error
+        .as_deref()
+        .map(|kms_error| map_kms_error_to_probe_code(kms_error, fallback_code))
+        .unwrap_or(fallback_code);
+
+    probe_failure(stage, code, error.kms_error.clone(), error.to_string())
+}
+
+fn map_probe_attestation_failure(err: eyre::Report) -> KmsProbeFailure {
+    if let Some(http_error) = err.downcast_ref::<KmsHttpFailure>() {
+        return probe_failure_from_http(KmsProbeStage::Attest, "KMS_ATTEST_REJECTED", http_error);
+    }
+
+    let details = err.to_string();
+    let code = if details.contains("reportData mismatch") {
+        "KMS_ATTEST_REPORT_DATA_MISMATCH"
+    } else if details.contains("mock attestation quote")
+        && details.contains("accept_mock is disabled")
+    {
+        "KMS_ATTEST_MOCK_QUOTE_REJECTED"
+    } else if details.contains(MOCK_KMS_ATTESTATION_ENV) {
+        "KMS_ATTEST_MOCK_RUNTIME_NOT_ALLOWED"
+    } else if details.contains("Policy JSON")
+        || details.contains("allowed_")
+        || details.contains("allowlist")
+        || details.contains("TCB status")
+        || details.contains("did not include TCB status")
+    {
+        "KMS_PROFILE_POLICY_REJECTED"
+    } else if details.contains("exceeds maximum allowed size") {
+        "KMS_ATTEST_RESPONSE_OVERSIZED"
+    } else if details.contains("Failed to parse KMS attest response")
+        || details.contains("Failed to decode KMS quote")
+        || details.contains("Failed to decode reportDataHex")
+        || details.contains("reportDataHex must be 64 bytes")
+    {
+        "KMS_ATTEST_RESPONSE_INVALID"
+    } else {
+        "KMS_ATTEST_VERIFICATION_FAILED"
+    };
+
+    probe_failure(KmsProbeStage::Attest, code, None, details)
+}
+
+fn map_probe_challenge_failure(err: eyre::Report) -> KmsProbeFailure {
+    if let Some(http_error) = err.downcast_ref::<KmsHttpFailure>() {
+        return probe_failure_from_http(
+            KmsProbeStage::Challenge,
+            "KMS_CHALLENGE_REJECTED",
+            http_error,
         );
     }
 
-    probe_failure(
-        stage,
-        fallback_code,
-        None,
-        format!("KMS request failed ({status}): {error_body}"),
-    )
+    let details = err.to_string();
+    let code = if details.contains("Failed to parse KMS challenge response") {
+        "KMS_CHALLENGE_RESPONSE_INVALID"
+    } else if details.contains("challengeId exceeds maximum allowed length") {
+        "KMS_CHALLENGE_ID_OVERSIZED"
+    } else if details.contains("challenge nonce exceeds maximum allowed size") {
+        "KMS_CHALLENGE_NONCE_OVERSIZED"
+    } else if details.contains("Failed to decode challenge nonce")
+        || details.contains("Challenge nonce must be exactly 32 bytes")
+    {
+        "KMS_CHALLENGE_NONCE_INVALID"
+    } else {
+        "KMS_CHALLENGE_REQUEST_FAILED"
+    };
+
+    probe_failure(KmsProbeStage::Challenge, code, None, details)
+}
+
+fn map_probe_get_key_failure(err: eyre::Report) -> KmsProbeFailure {
+    if let Some(http_error) = err.downcast_ref::<KmsHttpFailure>() {
+        return probe_failure_from_http(KmsProbeStage::GetKey, "KMS_GET_KEY_REJECTED", http_error);
+    }
+
+    let details = err.to_string();
+    let code = if details.contains("Failed to parse KMS get-key response") {
+        "KMS_GET_KEY_RESPONSE_INVALID"
+    } else if details.contains("empty encryption key")
+        || details.contains("oversized encryption key")
+        || details.contains("odd hex length")
+        || details.contains("Failed to decode key from hex")
+    {
+        "KMS_KEY_INVALID"
+    } else {
+        "KMS_GET_KEY_REQUEST_FAILED"
+    };
+
+    probe_failure(KmsProbeStage::GetKey, code, None, details)
 }
 
 fn generate_probe_attestation(
@@ -398,87 +519,15 @@ where
     })?;
 
     if phala_config.attestation.enabled {
-        probe_verify_kms_attestation(&client, &base_url, &phala_config.attestation).await?;
+        verify_kms_attestation(&client, &base_url, &phala_config.attestation)
+            .await
+            .map_err(map_probe_attestation_failure)?;
     }
 
-    let challenge_response = client
-        .post(challenge_endpoint.as_str())
-        .json(&PhalaChallengeRequest {
-            peer_id: peer_id.to_owned(),
-        })
-        .send()
+    let challenge = request_kms_challenge(&client, &challenge_endpoint, peer_id)
         .await
-        .map_err(|err| {
-            probe_failure(
-                KmsProbeStage::Challenge,
-                "KMS_CHALLENGE_REQUEST_FAILED",
-                None,
-                format!("Failed to request challenge from KMS: {err}"),
-            )
-        })?;
-
-    let challenge_status = challenge_response.status();
-    if !challenge_status.is_success() {
-        let error_body = challenge_response.text().await.unwrap_or_default();
-        return Err(probe_http_failure(
-            KmsProbeStage::Challenge,
-            "KMS_CHALLENGE_REJECTED",
-            challenge_status,
-            &error_body,
-        ));
-    }
-
-    let challenge: PhalaChallengeResponse = challenge_response.json().await.map_err(|err| {
-        probe_failure(
-            KmsProbeStage::Challenge,
-            "KMS_CHALLENGE_RESPONSE_INVALID",
-            None,
-            format!("Failed to parse KMS challenge response: {err}"),
-        )
-    })?;
-
-    if challenge.challenge_id.len() > MAX_KMS_CHALLENGE_ID_LEN {
-        return Err(probe_failure(
-            KmsProbeStage::Challenge,
-            "KMS_CHALLENGE_ID_OVERSIZED",
-            None,
-            format!(
-                "KMS challengeId exceeds maximum allowed length ({} chars)",
-                MAX_KMS_CHALLENGE_ID_LEN
-            ),
-        ));
-    }
-
-    if challenge.nonce_b64.len() > MAX_KMS_NONCE_B64_LEN {
-        return Err(probe_failure(
-            KmsProbeStage::Challenge,
-            "KMS_CHALLENGE_NONCE_OVERSIZED",
-            None,
-            format!(
-                "KMS challenge nonce exceeds maximum allowed size ({} chars base64)",
-                MAX_KMS_NONCE_B64_LEN
-            ),
-        ));
-    }
-
-    let challenge_nonce_vec = base64::engine::general_purpose::STANDARD
-        .decode(&challenge.nonce_b64)
-        .map_err(|err| {
-            probe_failure(
-                KmsProbeStage::Challenge,
-                "KMS_CHALLENGE_NONCE_INVALID",
-                None,
-                format!("Failed to decode challenge nonce from base64: {err}"),
-            )
-        })?;
-    let challenge_nonce: [u8; 32] = challenge_nonce_vec.try_into().map_err(|_| {
-        probe_failure(
-            KmsProbeStage::Challenge,
-            "KMS_CHALLENGE_NONCE_INVALID",
-            None,
-            "Challenge nonce must be exactly 32 bytes",
-        )
-    })?;
+        .map_err(map_probe_challenge_failure)?;
+    let challenge_nonce = decode_kms_challenge_nonce(&challenge).map_err(map_probe_challenge_failure)?;
 
     let peer_id_hash = hash_peer_id(peer_id);
     let mut report_data = [0u8; 64];
@@ -521,255 +570,21 @@ where
     })?;
     let peer_public_key = identity.public().encode_protobuf();
 
-    let key_response = client
-        .post(key_endpoint.as_str())
-        .json(&PhalaGetKeyRequest {
+    let key_response = request_kms_key_release(
+        &client,
+        &key_endpoint,
+        &PhalaGetKeyRequest {
             challenge_id: challenge.challenge_id,
             quote_b64: attestation.quote_b64,
             peer_id: peer_id.to_owned(),
             peer_public_key_b64: base64::engine::general_purpose::STANDARD.encode(peer_public_key),
             signature_b64: base64::engine::general_purpose::STANDARD.encode(signature),
-        })
-        .send()
-        .await
-        .map_err(|err| {
-            probe_failure(
-                KmsProbeStage::GetKey,
-                "KMS_GET_KEY_REQUEST_FAILED",
-                None,
-                format!("Failed to send get-key request to KMS: {err}"),
-            )
-        })?;
+        },
+    )
+    .await
+    .map_err(map_probe_get_key_failure)?;
 
-    let key_status = key_response.status();
-    if !key_status.is_success() {
-        let error_body = key_response.text().await.unwrap_or_default();
-        return Err(probe_http_failure(
-            KmsProbeStage::GetKey,
-            "KMS_GET_KEY_REJECTED",
-            key_status,
-            &error_body,
-        ));
-    }
-
-    let key_response: PhalaGetKeyResponse = key_response.json().await.map_err(|err| {
-        probe_failure(
-            KmsProbeStage::GetKey,
-            "KMS_GET_KEY_RESPONSE_INVALID",
-            None,
-            format!("Failed to parse KMS get-key response: {err}"),
-        )
-    })?;
-
-    let key_hex = key_response.key.trim();
-    if key_hex.is_empty() {
-        return Err(probe_failure(
-            KmsProbeStage::GetKey,
-            "KMS_KEY_INVALID",
-            None,
-            "KMS returned an empty encryption key",
-        ));
-    }
-    if key_hex.len() > MAX_KMS_KEY_HEX_LEN {
-        return Err(probe_failure(
-            KmsProbeStage::GetKey,
-            "KMS_KEY_INVALID",
-            None,
-            format!(
-                "KMS returned oversized encryption key ({} hex chars > {})",
-                key_hex.len(),
-                MAX_KMS_KEY_HEX_LEN
-            ),
-        ));
-    }
-    if key_hex.len() % 2 != 0 {
-        return Err(probe_failure(
-            KmsProbeStage::GetKey,
-            "KMS_KEY_INVALID",
-            None,
-            "KMS returned encryption key with invalid odd hex length",
-        ));
-    }
-
-    hex::decode(key_hex).map_err(|err| {
-        probe_failure(
-            KmsProbeStage::GetKey,
-            "KMS_KEY_INVALID",
-            None,
-            format!("Failed to decode key from hex: {err}"),
-        )
-    })
-}
-
-async fn probe_verify_kms_attestation(
-    client: &reqwest::Client,
-    base_url: &Url,
-    attestation_config: &KmsAttestationConfig,
-) -> std::result::Result<(), KmsProbeFailure> {
-    let effective_config =
-        resolve_effective_attestation_config(attestation_config).map_err(|err| {
-            probe_failure(
-                KmsProbeStage::Attest,
-                "KMS_ATTEST_POLICY_INVALID",
-                None,
-                err.to_string(),
-            )
-        })?;
-    let policy = normalize_kms_attestation_policy(&effective_config).map_err(|err| {
-        probe_failure(
-            KmsProbeStage::Attest,
-            "KMS_ATTEST_POLICY_INVALID",
-            None,
-            err.to_string(),
-        )
-    })?;
-    let attest_endpoint = base_url.join("attest").map_err(|err| {
-        probe_failure(
-            KmsProbeStage::Attest,
-            "KMS_ATTEST_REQUEST_INVALID",
-            None,
-            format!("Failed to build KMS attest endpoint URL: {err}"),
-        )
-    })?;
-
-    let mut nonce = [0u8; 32];
-    OsRng.fill_bytes(&mut nonce);
-    let expected_report_data = build_kms_attestation_report_data(&nonce, &policy.binding);
-
-    let attest_response = client
-        .post(attest_endpoint.as_str())
-        .json(&PhalaKmsAttestRequest {
-            nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
-            binding_b64: policy.binding_b64.clone(),
-        })
-        .send()
-        .await
-        .map_err(|err| {
-            probe_failure(
-                KmsProbeStage::Attest,
-                "KMS_ATTEST_REQUEST_FAILED",
-                None,
-                format!("Failed to request KMS attestation: {err}"),
-            )
-        })?;
-
-    let attest_status = attest_response.status();
-    if !attest_status.is_success() {
-        let error_body = attest_response.text().await.unwrap_or_default();
-        return Err(probe_http_failure(
-            KmsProbeStage::Attest,
-            "KMS_ATTEST_REJECTED",
-            attest_status,
-            &error_body,
-        ));
-    }
-
-    let attest_response: PhalaKmsAttestResponse = attest_response.json().await.map_err(|err| {
-        probe_failure(
-            KmsProbeStage::Attest,
-            "KMS_ATTEST_RESPONSE_INVALID",
-            None,
-            format!("Failed to parse KMS attest response: {err}"),
-        )
-    })?;
-
-    let (quote_bytes, report_data_bytes) = decode_kms_attestation_response(&attest_response)
-        .map_err(|err| {
-            let details = err.to_string();
-            let code = if details.contains("exceeds maximum allowed size") {
-                "KMS_ATTEST_RESPONSE_OVERSIZED"
-            } else {
-                "KMS_ATTEST_RESPONSE_INVALID"
-            };
-            probe_failure(KmsProbeStage::Attest, code, None, details)
-        })?;
-
-    if report_data_bytes.len() != 64 {
-        return Err(probe_failure(
-            KmsProbeStage::Attest,
-            "KMS_ATTEST_RESPONSE_INVALID",
-            None,
-            format!(
-                "KMS attest reportDataHex must be 64 bytes, got {}",
-                report_data_bytes.len()
-            ),
-        ));
-    }
-
-    if !bool::from(report_data_bytes.ct_eq(expected_report_data.as_slice())) {
-        return Err(probe_failure(
-            KmsProbeStage::Attest,
-            "KMS_ATTEST_REPORT_DATA_MISMATCH",
-            None,
-            "KMS attest reportData mismatch (nonce/binding mismatch or tampered response payload)",
-        ));
-    }
-
-    let verification_result = if is_mock_quote(&quote_bytes) {
-        if !policy.accept_mock {
-            return Err(probe_failure(
-                KmsProbeStage::Attest,
-                "KMS_ATTEST_MOCK_QUOTE_REJECTED",
-                None,
-                "KMS returned mock attestation quote, but attestation.accept_mock is disabled",
-            ));
-        }
-        if !mock_kms_attestation_runtime_opt_in() {
-            return Err(probe_failure(
-                KmsProbeStage::Attest,
-                "KMS_ATTEST_MOCK_RUNTIME_NOT_ALLOWED",
-                None,
-                format!(
-                    "KMS returned mock attestation quote, but {} is not enabled",
-                    MOCK_KMS_ATTESTATION_ENV
-                ),
-            ));
-        }
-        verify_mock_attestation(&quote_bytes, &nonce, Some(&policy.binding)).map_err(|err| {
-            probe_failure(
-                KmsProbeStage::Attest,
-                "KMS_ATTEST_VERIFICATION_FAILED",
-                None,
-                format!("Failed to verify mock KMS attestation: {err}"),
-            )
-        })?
-    } else {
-        verify_attestation(&quote_bytes, &nonce, Some(&policy.binding))
-            .await
-            .map_err(|err| {
-                probe_failure(
-                    KmsProbeStage::Attest,
-                    "KMS_ATTEST_VERIFICATION_FAILED",
-                    None,
-                    format!("Failed to verify KMS attestation quote: {err}"),
-                )
-            })?
-    };
-
-    if !verification_result.is_valid() {
-        return Err(probe_failure(
-            KmsProbeStage::Attest,
-            "KMS_ATTEST_VERIFICATION_FAILED",
-            None,
-            format!(
-                "KMS attestation verification failed: quote_verified={}, nonce_verified={}, app_hash_verified={:?}",
-                verification_result.quote_verified,
-                verification_result.nonce_verified,
-                verification_result.application_hash_verified
-            ),
-        ));
-    }
-
-    enforce_kms_attestation_policy(&policy, &verification_result).map_err(|err| {
-        probe_failure(
-            KmsProbeStage::Attest,
-            "KMS_PROFILE_POLICY_REJECTED",
-            None,
-            err.to_string(),
-        )
-    })?;
-
-    Ok(())
+    decode_kms_encryption_key(&key_response).map_err(map_probe_get_key_failure)
 }
 
 /// Verify KMS via POST /attest using policy fetched from release.
@@ -877,6 +692,9 @@ fn enforce_attestation_policy(
     verification_result: &calimero_tee_attestation::VerificationResult,
     allow_missing_tcb_status: bool,
 ) -> Result<()> {
+    // Defense in depth: release-policy verification can run on paths that do
+    // not rely on startup config validation, so we re-check required allowlists
+    // here before enforcing measurement and TCB matching.
     enforce_required_allowlist_non_empty(
         "policy.allowed_tcb_statuses",
         &policy.allowed_tcb_statuses,
@@ -1025,57 +843,8 @@ async fn fetch_from_phala(
 
     // 1) Request one-time challenge nonce.
     info!(%challenge_endpoint, "Requesting key release challenge from KMS");
-    let challenge_request = PhalaChallengeRequest {
-        peer_id: peer_id.to_string(),
-    };
-    let challenge_response = client
-        .post(challenge_endpoint.as_str())
-        .json(&challenge_request)
-        .send()
-        .await
-        .context("Failed to request challenge from KMS")?;
-
-    let challenge_status = challenge_response.status();
-    if !challenge_status.is_success() {
-        let error_body = challenge_response.text().await.unwrap_or_default();
-        if let Ok(kms_error) = serde_json::from_str::<KmsErrorResponse>(&error_body) {
-            let details = kms_error.details.unwrap_or_default();
-            bail!(
-                "KMS challenge request failed ({}): {} - {}",
-                challenge_status,
-                kms_error.error,
-                details
-            );
-        }
-        bail!(
-            "KMS challenge request failed ({}): {}",
-            challenge_status,
-            error_body
-        );
-    }
-
-    let challenge: PhalaChallengeResponse = challenge_response
-        .json()
-        .await
-        .context("Failed to parse KMS challenge response")?;
-    if challenge.challenge_id.len() > MAX_KMS_CHALLENGE_ID_LEN {
-        bail!(
-            "KMS challengeId exceeds maximum allowed length ({} chars)",
-            MAX_KMS_CHALLENGE_ID_LEN
-        );
-    }
-    if challenge.nonce_b64.len() > MAX_KMS_NONCE_B64_LEN {
-        bail!(
-            "KMS challenge nonce exceeds maximum allowed size ({} chars base64)",
-            MAX_KMS_NONCE_B64_LEN
-        );
-    }
-    let challenge_nonce_vec = base64::engine::general_purpose::STANDARD
-        .decode(&challenge.nonce_b64)
-        .context("Failed to decode challenge nonce from base64")?;
-    let challenge_nonce: [u8; 32] = challenge_nonce_vec
-        .try_into()
-        .map_err(|_| eyre::eyre!("Challenge nonce must be exactly 32 bytes"))?;
+    let challenge = request_kms_challenge(&client, &challenge_endpoint, peer_id).await?;
+    let challenge_nonce = decode_kms_challenge_nonce(&challenge)?;
 
     debug!(
         challenge_id = %challenge.challenge_id,
@@ -1132,54 +901,8 @@ async fn fetch_from_phala(
     };
 
     info!(%key_endpoint, "Sending signed key request to KMS");
-    let response = client
-        .post(key_endpoint.as_str())
-        .json(&request)
-        .send()
-        .await
-        .context("Failed to send request to KMS")?;
-
-    let status = response.status();
-
-    if !status.is_success() {
-        let error_body = response.text().await.unwrap_or_default();
-
-        // Try to parse as KMS error response
-        if let Ok(kms_error) = serde_json::from_str::<KmsErrorResponse>(&error_body) {
-            let details = kms_error.details.unwrap_or_default();
-            bail!(
-                "KMS request failed ({}): {} - {}",
-                status,
-                kms_error.error,
-                details
-            );
-        }
-
-        bail!("KMS request failed ({}): {}", status, error_body);
-    }
-
-    // Parse response
-    let response: PhalaGetKeyResponse = response
-        .json()
-        .await
-        .context("Failed to parse KMS response")?;
-
-    // Decode hex-encoded key from KMS
-    let key_hex = response.key.trim();
-    if key_hex.is_empty() {
-        bail!("KMS returned an empty encryption key");
-    }
-    if key_hex.len() > MAX_KMS_KEY_HEX_LEN {
-        bail!(
-            "KMS returned oversized encryption key ({} hex chars > {})",
-            key_hex.len(),
-            MAX_KMS_KEY_HEX_LEN
-        );
-    }
-    if key_hex.len() % 2 != 0 {
-        bail!("KMS returned encryption key with invalid odd hex length");
-    }
-    let key_bytes = hex::decode(key_hex).context("Failed to decode key from hex")?;
+    let response = request_kms_key_release(&client, &key_endpoint, &request).await?;
+    let key_bytes = decode_kms_encryption_key(&response)?;
 
     info!(
         key_len = key_bytes.len(),
@@ -1193,6 +916,9 @@ fn build_kms_http_client(phala_config: &PhalaKmsConfig) -> Result<reqwest::Clien
     let uses_https = phala_config.url.scheme().eq_ignore_ascii_case("https");
     let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
 
+    // Keep TLS invariants here even though startup config validation checks the
+    // same constraints. This preserves fail-closed behavior if config is edited
+    // between validation and client construction.
     if let Some(ca_cert_path) = phala_config.tls.ca_cert_path.as_deref() {
         if !uses_https {
             bail!(
@@ -1200,6 +926,8 @@ fn build_kms_http_client(phala_config: &PhalaKmsConfig) -> Result<reqwest::Clien
                 phala_config.url
             );
         }
+        // Intentional sync I/O: this path is executed during startup preflight
+        // key-fetch/probe setup and keeps client construction fail-closed.
         let ca_pem = std::fs::read(ca_cert_path).with_context(|| {
             format!(
                 "Failed to read tee.kms.phala.tls.ca_cert_path at {}",
@@ -1223,6 +951,7 @@ fn build_kms_http_client(phala_config: &PhalaKmsConfig) -> Result<reqwest::Clien
                 );
             }
 
+            // Intentional sync I/O for startup-only TLS material loading.
             let client_cert_pem = std::fs::read(client_cert_path).with_context(|| {
                 format!(
                     "Failed to read tee.kms.phala.tls.client_cert_path at {}",
@@ -1487,6 +1216,96 @@ fn is_test_tmp_policy_path(policy_path: &Utf8Path) -> bool {
     cfg!(test) && (policy_path.starts_with("/tmp") || policy_path.starts_with("/private/tmp"))
 }
 
+async fn request_kms_challenge(
+    client: &reqwest::Client,
+    challenge_endpoint: &Url,
+    peer_id: &str,
+) -> Result<PhalaChallengeResponse> {
+    let challenge_response = client
+        .post(challenge_endpoint.as_str())
+        .json(&PhalaChallengeRequest {
+            peer_id: peer_id.to_owned(),
+        })
+        .send()
+        .await
+        .context("Failed to request challenge from KMS")?;
+
+    let challenge_status = challenge_response.status();
+    if !challenge_status.is_success() {
+        let error_body = challenge_response.text().await.unwrap_or_default();
+        return Err(KmsHttpFailure::from_response("challenge", challenge_status, &error_body).into());
+    }
+
+    challenge_response
+        .json()
+        .await
+        .context("Failed to parse KMS challenge response")
+}
+
+fn decode_kms_challenge_nonce(challenge: &PhalaChallengeResponse) -> Result<[u8; 32]> {
+    if challenge.challenge_id.len() > MAX_KMS_CHALLENGE_ID_LEN {
+        bail!(
+            "KMS challengeId exceeds maximum allowed length ({} chars)",
+            MAX_KMS_CHALLENGE_ID_LEN
+        );
+    }
+    if challenge.nonce_b64.len() > MAX_KMS_NONCE_B64_LEN {
+        bail!(
+            "KMS challenge nonce exceeds maximum allowed size ({} chars base64)",
+            MAX_KMS_NONCE_B64_LEN
+        );
+    }
+    let challenge_nonce_vec = base64::engine::general_purpose::STANDARD
+        .decode(&challenge.nonce_b64)
+        .context("Failed to decode challenge nonce from base64")?;
+    challenge_nonce_vec
+        .try_into()
+        .map_err(|_| eyre::eyre!("Challenge nonce must be exactly 32 bytes"))
+}
+
+async fn request_kms_key_release(
+    client: &reqwest::Client,
+    key_endpoint: &Url,
+    request: &PhalaGetKeyRequest,
+) -> Result<PhalaGetKeyResponse> {
+    let response = client
+        .post(key_endpoint.as_str())
+        .json(request)
+        .send()
+        .await
+        .context("Failed to send request to KMS")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_body = response.text().await.unwrap_or_default();
+        return Err(KmsHttpFailure::from_response("get-key", status, &error_body).into());
+    }
+
+    response
+        .json()
+        .await
+        .context("Failed to parse KMS get-key response")
+}
+
+fn decode_kms_encryption_key(response: &PhalaGetKeyResponse) -> Result<Vec<u8>> {
+    let key_hex = response.key.trim();
+    if key_hex.is_empty() {
+        bail!("KMS returned an empty encryption key");
+    }
+    if key_hex.len() > MAX_KMS_KEY_HEX_LEN {
+        bail!(
+            "KMS returned oversized encryption key ({} hex chars > {})",
+            key_hex.len(),
+            MAX_KMS_KEY_HEX_LEN
+        );
+    }
+    if key_hex.len() % 2 != 0 {
+        bail!("KMS returned encryption key with invalid odd hex length");
+    }
+
+    hex::decode(key_hex).context("Failed to decode key from hex")
+}
+
 async fn request_kms_attestation(
     client: &reqwest::Client,
     attest_endpoint: &Url,
@@ -1502,22 +1321,7 @@ async fn request_kms_attestation(
     let status = response.status();
     if !status.is_success() {
         let error_body = response.text().await.unwrap_or_default();
-
-        if let Ok(kms_error) = serde_json::from_str::<KmsErrorResponse>(&error_body) {
-            let details = kms_error.details.unwrap_or_default();
-            bail!(
-                "KMS attestation request failed ({}): {} - {}",
-                status,
-                kms_error.error,
-                details
-            );
-        }
-
-        bail!(
-            "KMS attestation request failed ({}): {}",
-            status,
-            error_body
-        );
+        return Err(KmsHttpFailure::from_response("attestation", status, &error_body).into());
     }
 
     response
@@ -1801,10 +1605,6 @@ fn is_loopback_kms_host(kms_url: &Url) -> bool {
     let Some(host) = kms_url.host_str() else {
         return false;
     };
-
-    if host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
 
     host.parse::<std::net::IpAddr>()
         .map(|ip| ip.is_loopback())
@@ -2185,9 +1985,6 @@ mod tests {
 
         let loopback_http = Url::parse("http://127.0.0.1:8080/").unwrap();
         assert!(validate_kms_transport_security(&loopback_http, true).is_ok());
-
-        let localhost_http = Url::parse("http://localhost:8080/").unwrap();
-        assert!(validate_kms_transport_security(&localhost_http, true).is_ok());
     }
 
     #[test]
@@ -2195,6 +1992,12 @@ mod tests {
         let remote_http = Url::parse("http://kms.example.com/").unwrap();
         let err = validate_kms_transport_security(&remote_http, true)
             .expect_err("strict mode must reject non-loopback HTTP")
+            .to_string();
+        assert!(err.contains("must use HTTPS or loopback HTTP"));
+
+        let localhost_http = Url::parse("http://localhost:8080/").unwrap();
+        let err = validate_kms_transport_security(&localhost_http, true)
+            .expect_err("strict mode must reject hostname-based localhost")
             .to_string();
         assert!(err.contains("must use HTTPS or loopback HTTP"));
     }
