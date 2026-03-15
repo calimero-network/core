@@ -527,7 +527,8 @@ where
     let challenge = request_kms_challenge(&client, &challenge_endpoint, peer_id)
         .await
         .map_err(map_probe_challenge_failure)?;
-    let challenge_nonce = decode_kms_challenge_nonce(&challenge).map_err(map_probe_challenge_failure)?;
+    let challenge_nonce =
+        decode_kms_challenge_nonce(&challenge).map_err(map_probe_challenge_failure)?;
 
     let peer_id_hash = hash_peer_id(peer_id);
     let mut report_data = [0u8; 64];
@@ -1233,7 +1234,9 @@ async fn request_kms_challenge(
     let challenge_status = challenge_response.status();
     if !challenge_status.is_success() {
         let error_body = challenge_response.text().await.unwrap_or_default();
-        return Err(KmsHttpFailure::from_response("challenge", challenge_status, &error_body).into());
+        return Err(
+            KmsHttpFailure::from_response("challenge", challenge_status, &error_body).into(),
+        );
     }
 
     challenge_response
