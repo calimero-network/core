@@ -760,6 +760,66 @@ pub struct GroupContextLastMigrationValue {
     pub method: String,
 }
 
+pub const GROUP_CONTEXT_ALIAS_PREFIX: u8 = 0x2C;
+
+/// Stores the human-readable alias for a context within a group.
+/// Key: prefix (1 byte) + group_id (32 bytes) + context_id (32 bytes) → alias string
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupContextAlias(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupContextAlias {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], context_id: PrimitiveContextId) -> Self {
+        Self(Key(GenericArray::from([GROUP_CONTEXT_ALIAS_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(*context_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..65]);
+        id.into()
+    }
+}
+
+impl AsKeyParts for GroupContextAlias {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupContextAlias {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupContextAlias {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupContextAlias")
+            .field("group_id", &self.group_id())
+            .field("context_id", &self.context_id())
+            .finish()
+    }
+}
+
 /// Stored against [`GroupMeta`]. Captures the immutable + mutable metadata of a
 /// context group.
 #[derive(Clone, Debug)]

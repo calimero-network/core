@@ -146,6 +146,12 @@ pub struct GroupMemberEntry {
     pub role: GroupMemberRole,
 }
 
+#[derive(Clone, Debug)]
+pub struct GroupContextEntry {
+    pub context_id: ContextId,
+    pub alias: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct ListGroupContextsRequest {
     pub group_id: ContextGroupId,
@@ -154,7 +160,18 @@ pub struct ListGroupContextsRequest {
 }
 
 impl Message for ListGroupContextsRequest {
-    type Result = eyre::Result<Vec<ContextId>>;
+    type Result = eyre::Result<Vec<GroupContextEntry>>;
+}
+
+#[derive(Debug)]
+pub struct StoreContextAliasRequest {
+    pub group_id: ContextGroupId,
+    pub context_id: ContextId,
+    pub alias: String,
+}
+
+impl Message for StoreContextAliasRequest {
+    type Result = eyre::Result<()>;
 }
 
 #[derive(Debug, Clone)]

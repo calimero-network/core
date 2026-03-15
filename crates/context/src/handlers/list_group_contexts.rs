@@ -1,5 +1,5 @@
 use actix::{ActorResponse, Handler, Message};
-use calimero_context_primitives::group::ListGroupContextsRequest;
+use calimero_context_primitives::group::{GroupContextEntry, ListGroupContextsRequest};
 use eyre::bail;
 
 use crate::{group_store, ContextManager};
@@ -23,7 +23,18 @@ impl Handler<ListGroupContextsRequest> for ContextManager {
             if !group_store::check_group_membership(&self.datastore, &group_id, &node_identity)? {
                 bail!("node is not a member of group '{group_id:?}'");
             }
-            group_store::enumerate_group_contexts(&self.datastore, &group_id, offset, limit)
+            group_store::enumerate_group_contexts_with_aliases(
+                &self.datastore,
+                &group_id,
+                offset,
+                limit,
+            )
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|(context_id, alias)| GroupContextEntry { context_id, alias })
+                    .collect()
+            })
         })();
 
         ActorResponse::reply(result)

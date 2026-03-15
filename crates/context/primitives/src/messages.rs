@@ -17,7 +17,8 @@ use crate::group::{
     ListGroupContextsRequest, ListGroupMembersRequest, ManageContextAllowlistRequest,
     RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextVisibilityRequest,
     SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetMemberCapabilitiesRequest,
-    SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    StoreContextAliasRequest, SyncGroupRequest, UpdateGroupSettingsRequest,
+    UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -29,6 +30,7 @@ pub struct CreateContextRequest {
     pub identity_secret: Option<PrivateKey>,
     pub init_params: Vec<u8>,
     pub group_id: Option<ContextGroupId>,
+    pub alias: Option<String>,
 }
 
 impl Message for CreateContextRequest {
@@ -305,5 +307,9 @@ pub enum ContextMessage {
     SetDefaultVisibility {
         request: SetDefaultVisibilityRequest,
         outcome: oneshot::Sender<<SetDefaultVisibilityRequest as Message>::Result>,
+    },
+    StoreContextAlias {
+        request: StoreContextAliasRequest,
+        outcome: oneshot::Sender<<StoreContextAliasRequest as Message>::Result>,
     },
 }

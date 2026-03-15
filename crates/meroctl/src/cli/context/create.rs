@@ -73,6 +73,9 @@ pub struct CreateCommand {
 
     #[clap(long, help = "Identity secret (hex) for signing group membership")]
     pub identity_secret: Option<String>,
+
+    #[clap(long, help = "Human-readable alias for the context within the group")]
+    pub alias: Option<String>,
 }
 
 impl CreateCommand {
@@ -92,6 +95,7 @@ impl CreateCommand {
                 context,
                 group_id,
                 identity_secret,
+                alias,
             } => {
                 let _ = create_context(
                     environment,
@@ -104,6 +108,7 @@ impl CreateCommand {
                     context,
                     group_id,
                     identity_secret,
+                    alias,
                 )
                 .await?;
             }
@@ -118,6 +123,7 @@ impl CreateCommand {
                 context,
                 group_id,
                 identity_secret,
+                alias,
             } => {
                 // Validate file exists before watching
                 validate_file_exists(path.as_std_path())?;
@@ -147,6 +153,7 @@ impl CreateCommand {
                     context,
                     group_id,
                     identity_secret,
+                    alias,
                 )
                 .await?;
 
@@ -178,6 +185,7 @@ pub async fn create_context(
     context: Option<Alias<ContextId>>,
     group_id: Option<String>,
     identity_secret: Option<String>,
+    alias: Option<String>,
 ) -> Result<(ContextId, PublicKey)> {
     let response: GetApplicationResponse = client.get_application(&application_id).await?;
 
@@ -185,7 +193,7 @@ pub async fn create_context(
         bail!("Application is not installed on node.")
     }
 
-    let request = CreateContextRequest::new(
+    let mut request = CreateContextRequest::new(
         protocol,
         application_id,
         context_seed,
@@ -193,6 +201,7 @@ pub async fn create_context(
         group_id,
         identity_secret,
     );
+    request.alias = alias;
 
     let response: CreateContextResponse = client.create_context(request).await?;
 

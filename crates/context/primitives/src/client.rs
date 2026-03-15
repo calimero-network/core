@@ -30,13 +30,13 @@ use crate::group::{
     DetachContextFromGroupRequest, GetContextAllowlistRequest, GetContextVisibilityRequest,
     GetContextVisibilityResponse, GetGroupForContextRequest, GetGroupInfoRequest,
     GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
-    GroupInfoResponse, GroupMemberEntry, GroupSummary, GroupUpgradeInfo, JoinGroupContextRequest,
-    JoinGroupContextResponse, JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, ManageContextAllowlistRequest,
-    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextVisibilityRequest,
-    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetMemberCapabilitiesRequest,
-    SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
-    UpgradeGroupRequest, UpgradeGroupResponse,
+    GroupContextEntry, GroupInfoResponse, GroupMemberEntry, GroupSummary, GroupUpgradeInfo,
+    JoinGroupContextRequest, JoinGroupContextResponse, JoinGroupRequest, JoinGroupResponse,
+    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    ManageContextAllowlistRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
+    SetContextVisibilityRequest, SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest,
+    SetMemberCapabilitiesRequest, StoreContextAliasRequest, SyncGroupRequest, SyncGroupResponse,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -113,6 +113,7 @@ impl ContextClient {
         init_params: Vec<u8>,
         seed: Option<[u8; DIGEST_SIZE]>,
         group_id: Option<ContextGroupId>,
+        alias: Option<String>,
     ) -> eyre::Result<CreateContextResponse> {
         let (sender, receiver) = oneshot::channel();
 
@@ -125,6 +126,7 @@ impl ContextClient {
                     identity_secret,
                     init_params,
                     group_id,
+                    alias,
                 },
                 outcome: sender,
             })
@@ -1138,11 +1140,25 @@ impl ContextClient {
     pub async fn list_group_contexts(
         &self,
         request: ListGroupContextsRequest,
-    ) -> eyre::Result<Vec<ContextId>> {
+    ) -> eyre::Result<Vec<GroupContextEntry>> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
             .send(ContextMessage::ListGroupContexts {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn store_context_alias(&self, request: StoreContextAliasRequest) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::StoreContextAlias {
                 request,
                 outcome: sender,
             })

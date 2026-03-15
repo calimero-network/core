@@ -226,6 +226,8 @@ pub struct CreateContextRequest {
     pub initialization_params: Vec<u8>,
     pub group_id: Option<String>,
     pub identity_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 impl CreateContextRequest {
@@ -244,6 +246,7 @@ impl CreateContextRequest {
             initialization_params,
             group_id,
             identity_secret,
+            alias: None,
         }
     }
 }
@@ -1946,8 +1949,16 @@ pub struct ListGroupMembersQuery {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GroupContextEntryResponse {
+    pub context_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListGroupContextsApiResponse {
-    pub data: Vec<String>,
+    pub data: Vec<GroupContextEntryResponse>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

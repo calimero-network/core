@@ -7,6 +7,7 @@ use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_config::client::utils::humanize_iter;
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::{CreateContextRequest, CreateContextResponse};
 use calimero_node_primitives::client::NodeClient;
@@ -38,6 +39,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             identity_secret,
             init_params,
             group_id,
+            alias,
         }: CreateContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -58,6 +60,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             &application_id,
             identity_secret,
             group_id,
+            alias,
             &self.datastore,
         ) {
             Ok(res) => res,
@@ -73,6 +76,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             identity_secret,
             sender_key,
             group_id,
+            alias,
         } = prepared;
 
         let guard = context
@@ -106,6 +110,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         init_params,
                         guard,
                         group_id,
+                        alias,
                     )
                     .into_actor(act)
                 })
@@ -141,6 +146,7 @@ struct Prepared<'a> {
     identity_secret: PrivateKey,
     sender_key: PrivateKey,
     group_id: Option<ContextGroupId>,
+    alias: Option<String>,
 }
 
 impl Prepared<'_> {
@@ -155,6 +161,7 @@ impl Prepared<'_> {
         application_id: &ApplicationId,
         identity_secret: Option<PrivateKey>,
         group_id: Option<ContextGroupId>,
+        alias: Option<String>,
         datastore: &Store,
     ) -> eyre::Result<Self> {
         let Some(external_config) = external_config.params.get(&protocol) else {
@@ -188,6 +195,18 @@ impl Prepared<'_> {
 
             if !group_store::check_group_membership(datastore, gid, &identity_pk)? {
                 bail!("identity is not a member of group '{gid:?}'");
+            }
+
+            if !group_store::is_group_admin_or_has_capability(
+                datastore,
+                gid,
+                &identity_pk,
+                MemberCapabilities::CAN_CREATE_CONTEXT,
+            )? {
+                bail!(
+                    "identity lacks permission to create a context in group '{gid:?}' \
+                     (not an admin and CAN_CREATE_CONTEXT is not set)"
+                );
             }
 
             if effective_app_id != meta.target_application_id {
@@ -276,6 +295,7 @@ impl Prepared<'_> {
             identity_secret,
             sender_key,
             group_id,
+            alias,
         })
     }
 }
@@ -295,6 +315,7 @@ async fn create_context(
     init_params: Vec<u8>,
     guard: OwnedMutexGuard<ContextId>,
     group_id: Option<ContextGroupId>,
+    alias: Option<String>,
 ) -> eyre::Result<Hash> {
     let storage = ContextStorage::from(datastore.clone(), context.id);
     // Create private storage (node-local, NOT synchronized)
@@ -506,6 +527,20 @@ async fn create_context(
                 calimero_node_primitives::sync::GroupMutationKind::ContextAttached,
             )
             .await;
+
+        if let Some(ref alias_str) = alias {
+            let _ = group_store::set_context_alias(&datastore, gid, &context.id, alias_str);
+
+            let _ = node_client
+                .broadcast_group_mutation(
+                    gid.to_bytes(),
+                    calimero_node_primitives::sync::GroupMutationKind::ContextAliasSet {
+                        context_id: *context.id,
+                        alias: alias_str.clone(),
+                    },
+                )
+                .await;
+        }
     }
 
     Ok(context.root_hash)

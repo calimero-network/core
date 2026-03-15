@@ -4,7 +4,9 @@ use axum::extract::{Path, Query};
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_primitives::group::ListGroupContextsRequest;
-use calimero_server_primitives::admin::{ListGroupContextsApiResponse, ListGroupContextsQuery};
+use calimero_server_primitives::admin::{
+    GroupContextEntryResponse, ListGroupContextsApiResponse, ListGroupContextsQuery,
+};
 use tracing::{error, info};
 
 use super::parse_group_id;
@@ -37,9 +39,15 @@ pub async fn handler(
         .map_err(parse_api_error);
 
     match result {
-        Ok(contexts) => {
-            info!(group_id=%group_id_str, count=%contexts.len(), "Group contexts retrieved successfully");
-            let data = contexts.into_iter().map(|c| hex::encode(*c)).collect();
+        Ok(entries) => {
+            info!(group_id=%group_id_str, count=%entries.len(), "Group contexts retrieved successfully");
+            let data = entries
+                .into_iter()
+                .map(|e| GroupContextEntryResponse {
+                    context_id: hex::encode(*e.context_id),
+                    alias: e.alias,
+                })
+                .collect();
             ApiResponse {
                 payload: ListGroupContextsApiResponse { data },
             }

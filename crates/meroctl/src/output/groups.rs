@@ -150,9 +150,13 @@ impl Report for ListGroupContextsApiResponse {
             println!("No contexts found in group");
         } else {
             let mut table = Table::new();
-            let _ = table.set_header(vec![Cell::new("Context ID").fg(Color::Blue)]);
-            for context_id in &self.data {
-                let _ = table.add_row(vec![context_id.clone()]);
+            let _ = table.set_header(vec![
+                Cell::new("Context ID").fg(Color::Blue),
+                Cell::new("Alias").fg(Color::Blue),
+            ]);
+            for entry in &self.data {
+                let alias = entry.alias.as_deref().unwrap_or("-");
+                let _ = table.add_row(vec![entry.context_id.clone(), alias.to_owned()]);
             }
             println!("{table}");
         }

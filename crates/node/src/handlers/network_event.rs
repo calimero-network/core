@@ -328,36 +328,69 @@ impl Handler<NetworkEvent> for NodeManager {
                             ?group_id,
                             ?mutation_kind,
                             %source,
-                            "Received group mutation notification, triggering sync"
+                            "Received group mutation notification"
                         );
 
                         let context_client = self.clients.context.clone();
 
-                        let _ignored = ctx.spawn(
-                            async move {
-                                use calimero_context_config::types::ContextGroupId;
-                                use calimero_context_primitives::group::SyncGroupRequest;
+                        match mutation_kind {
+                            calimero_node_primitives::sync::GroupMutationKind::ContextAliasSet {
+                                context_id,
+                                alias,
+                            } => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::StoreContextAliasRequest;
+                                        use calimero_primitives::context::ContextId;
 
-                                let group_id = ContextGroupId::from(group_id);
-
-                                if let Err(err) = context_client
-                                    .sync_group(SyncGroupRequest {
-                                        group_id,
-                                        requester: None,
-                                        protocol: None,
-                                        network_id: None,
-                                        contract_id: None,
-                                    })
-                                    .await
-                                {
-                                    warn!(
-                                        ?err,
-                                        "Failed to auto-sync group after mutation notification"
-                                    );
-                                }
+                                        let group_id = ContextGroupId::from(group_id);
+                                        let context_id = ContextId::from(context_id);
+                                        if let Err(err) = context_client
+                                            .store_context_alias(StoreContextAliasRequest {
+                                                group_id,
+                                                context_id,
+                                                alias,
+                                            })
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to store context alias from gossip"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
                             }
-                            .into_actor(self),
-                        );
+                            _ => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::SyncGroupRequest;
+
+                                        let group_id = ContextGroupId::from(group_id);
+
+                                        if let Err(err) = context_client
+                                            .sync_group(SyncGroupRequest {
+                                                group_id,
+                                                requester: None,
+                                                protocol: None,
+                                                network_id: None,
+                                                contract_id: None,
+                                            })
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to auto-sync group after mutation notification"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
+                        }
                     }
                     _ => {
                         // Future message types - log and ignore

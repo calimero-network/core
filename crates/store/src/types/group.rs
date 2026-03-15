@@ -65,3 +65,8 @@ impl PredefinedEntry for key::GroupContextLastMigration {
     type Codec = Borsh;
     type DataType<'a> = key::GroupContextLastMigrationValue;
 }
+
+impl PredefinedEntry for key::GroupContextAlias {
+    type Codec = Borsh;
+    type DataType<'a> = String;
+}

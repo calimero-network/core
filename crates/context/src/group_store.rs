@@ -8,12 +8,12 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
-    AsKeyParts, ContextGroupRef, ContextIdentity, GroupContextAllowlist, GroupContextIndex,
-    GroupContextLastMigration, GroupContextLastMigrationValue, GroupContextVisibility,
-    GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
-    GroupDefaultVisValue, GroupMember, GroupMemberCapability, GroupMemberCapabilityValue,
-    GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey,
-    GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
+    AsKeyParts, ContextGroupRef, ContextIdentity, GroupContextAlias, GroupContextAllowlist,
+    GroupContextIndex, GroupContextLastMigration, GroupContextLastMigrationValue,
+    GroupContextVisibility, GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue,
+    GroupDefaultVis, GroupDefaultVisValue, GroupMember, GroupMemberCapability,
+    GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue,
+    GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
     GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX,
     GROUP_UPGRADE_PREFIX,
 };
@@ -157,6 +157,38 @@ pub fn require_group_admin(
 ) -> EyreResult<()> {
     if !is_group_admin(store, group_id, identity)? {
         bail!("requester is not an admin of group '{group_id:?}'");
+    }
+    Ok(())
+}
+
+/// Returns `true` if `identity` is a group admin **or** holds the given capability bit.
+/// Admins always pass regardless of capability bits.
+pub fn is_group_admin_or_has_capability(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+    capability_bit: u32,
+) -> EyreResult<bool> {
+    if is_group_admin(store, group_id, identity)? {
+        return Ok(true);
+    }
+    let caps = get_member_capability(store, group_id, identity)?.unwrap_or(0);
+    Ok(caps & capability_bit != 0)
+}
+
+/// Enforces that `identity` is a group admin or holds the given capability bit.
+pub fn require_group_admin_or_capability(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+    capability_bit: u32,
+    operation: &str,
+) -> EyreResult<()> {
+    if !is_group_admin_or_has_capability(store, group_id, identity, capability_bit)? {
+        bail!(
+            "requester lacks permission to {operation} in group '{group_id:?}' \
+             (not an admin and capability bit 0x{capability_bit:x} is not set)"
+        );
     }
     Ok(())
 }
@@ -471,6 +503,49 @@ pub fn enumerate_group_contexts(
     }
 
     Ok(results)
+}
+
+/// Stores a human-readable alias for a context within a group.
+pub fn set_context_alias(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+    alias: &str,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    handle.put(
+        &GroupContextAlias::new(group_id.to_bytes(), *context_id),
+        &alias.to_owned(),
+    )?;
+    Ok(())
+}
+
+/// Returns the alias for a context within a group, if one was set.
+pub fn get_context_alias(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+) -> EyreResult<Option<String>> {
+    let handle = store.handle();
+    handle
+        .get(&GroupContextAlias::new(group_id.to_bytes(), *context_id))
+        .map_err(Into::into)
+}
+
+/// Returns context IDs together with their optional aliases.
+pub fn enumerate_group_contexts_with_aliases(
+    store: &Store,
+    group_id: &ContextGroupId,
+    offset: usize,
+    limit: usize,
+) -> EyreResult<Vec<(ContextId, Option<String>)>> {
+    let ids = enumerate_group_contexts(store, group_id, offset, limit)?;
+    ids.into_iter()
+        .map(|ctx_id| {
+            let alias = get_context_alias(store, group_id, &ctx_id)?;
+            Ok((ctx_id, alias))
+        })
+        .collect()
 }
 
 pub fn count_group_contexts(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {

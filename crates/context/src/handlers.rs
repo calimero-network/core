@@ -31,6 +31,7 @@ pub mod set_context_visibility;
 pub mod set_default_capabilities;
 pub mod set_default_visibility;
 pub mod set_member_capabilities;
+pub mod store_context_alias;
 pub mod sync;
 pub mod sync_group;
 pub mod update_application;
@@ -148,6 +149,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetDefaultVisibility { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::StoreContextAlias { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }
