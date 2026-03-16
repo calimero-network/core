@@ -17,10 +17,11 @@ use crate::group::{
     GetMemberCapabilitiesRequest, JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest,
     ListGroupContextsRequest, ListGroupMembersRequest, ManageContextAllowlistRequest,
     RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextVisibilityRequest,
-    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetMemberCapabilitiesRequest,
-    StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
-    StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreMemberCapabilityRequest,
-    SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetMemberAliasRequest,
+    SetMemberCapabilitiesRequest, StoreContextAliasRequest, StoreContextAllowlistRequest,
+    StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
+    StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -341,5 +342,13 @@ pub enum ContextMessage {
     StoreContextAllowlist {
         request: StoreContextAllowlistRequest,
         outcome: oneshot::Sender<<StoreContextAllowlistRequest as Message>::Result>,
+    },
+    SetMemberAlias {
+        request: SetMemberAliasRequest,
+        outcome: oneshot::Sender<<SetMemberAliasRequest as Message>::Result>,
+    },
+    StoreMemberAlias {
+        request: StoreMemberAliasRequest,
+        outcome: oneshot::Sender<<StoreMemberAliasRequest as Message>::Result>,
     },
 }
