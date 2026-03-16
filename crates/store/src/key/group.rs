@@ -820,6 +820,66 @@ impl Debug for GroupContextAlias {
     }
 }
 
+pub const GROUP_MEMBER_ALIAS_PREFIX: u8 = 0x2D;
+
+/// Stores a human-readable alias for a group member scoped to a specific group.
+/// Key: prefix (1 byte) + group_id (32 bytes) + member_pk (32 bytes) → alias String
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupMemberAlias(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupMemberAlias {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], member: PrimitivePublicKey) -> Self {
+        Self(Key(GenericArray::from([GROUP_MEMBER_ALIAS_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(*member))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn member(&self) -> PrimitivePublicKey {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        pk.into()
+    }
+}
+
+impl AsKeyParts for GroupMemberAlias {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupMemberAlias {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupMemberAlias {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupMemberAlias")
+            .field("group_id", &self.group_id())
+            .field("member", &self.member())
+            .finish()
+    }
+}
+
 /// Stored against [`GroupMeta`]. Captures the immutable + mutable metadata of a
 /// context group.
 #[derive(Clone, Debug)]
@@ -949,6 +1009,7 @@ mod tests {
             GROUP_DEFAULT_CAPS_PREFIX,
             GROUP_DEFAULT_VIS_PREFIX,
             GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
+            GROUP_MEMBER_ALIAS_PREFIX,
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {
@@ -958,6 +1019,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn group_member_alias_roundtrip() {
+        let gid = [0xDA; 32];
+        let pk = PrimitivePublicKey::from([0xDB; 32]);
+        let key = GroupMemberAlias::new(gid, pk);
+        assert_eq!(key.group_id(), gid);
+        assert_eq!(key.member(), pk);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_MEMBER_ALIAS_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 65);
     }
 
     #[cfg(feature = "borsh")]
