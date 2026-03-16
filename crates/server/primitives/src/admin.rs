@@ -1939,6 +1939,8 @@ pub struct ListGroupMembersApiResponse {
 pub struct GroupMemberApiEntry {
     pub identity: PublicKey,
     pub role: GroupMemberRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2313,6 +2315,32 @@ impl Validate for SetMemberCapabilitiesApiRequest {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct SetMemberCapabilitiesApiResponse;
+
+// ---- Set Member Alias ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMemberAliasApiRequest {
+    pub alias: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetMemberAliasApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.alias.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "alias" });
+        }
+        if let Some(e) = validate_string_length(&self.alias, "alias", 64) {
+            errors.push(e);
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetMemberAliasApiResponse;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
