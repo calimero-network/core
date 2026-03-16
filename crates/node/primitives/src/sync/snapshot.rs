@@ -680,6 +680,10 @@ pub enum GroupMutationKind {
         /// Full replacement list — receiver clears then inserts
         members: Vec<[u8; 32]>,
     },
+    MemberAliasSet {
+        member: [u8; 32],
+        alias: String,
+    },
 }
 
 // Wire protocol types (StreamMessage, InitPayload, MessagePayload) are in wire.rs
