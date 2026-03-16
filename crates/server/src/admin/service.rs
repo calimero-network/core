@@ -250,6 +250,10 @@ pub(crate) fn setup(
             put(groups::update_member_role::handler),
         )
         .route(
+            "/groups/:group_id/alias",
+            put(groups::set_group_alias::handler),
+        )
+        .route(
             "/groups/:group_id/members/:identity/alias",
             put(groups::set_member_alias::handler),
         )

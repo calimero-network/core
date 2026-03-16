@@ -684,6 +684,9 @@ pub enum GroupMutationKind {
         member: [u8; 32],
         alias: String,
     },
+    GroupAliasSet {
+        alias: String,
+    },
 }
 
 // Wire protocol types (StreamMessage, InitPayload, MessagePayload) are in wire.rs

@@ -59,6 +59,7 @@ pub struct CreateGroupRequest {
     pub app_key: Option<AppKey>,
     pub application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
+    pub alias: Option<String>,
 }
 
 impl Message for CreateGroupRequest {
@@ -127,6 +128,7 @@ pub struct GroupInfoResponse {
     pub active_upgrade: Option<GroupUpgradeInfo>,
     pub default_capabilities: u32,
     pub default_visibility: String,
+    pub alias: Option<String>,
 }
 
 #[derive(Debug)]
@@ -228,11 +230,13 @@ impl Message for CreateGroupInvitationRequest {
 #[derive(Debug)]
 pub struct CreateGroupInvitationResponse {
     pub invitation: SignedGroupOpenInvitation,
+    pub group_alias: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct JoinGroupRequest {
     pub invitation: SignedGroupOpenInvitation,
+    pub group_alias: Option<String>,
 }
 
 impl Message for JoinGroupRequest {
@@ -262,6 +266,7 @@ pub struct GroupSummary {
     pub target_application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
+    pub alias: Option<String>,
 }
 
 #[derive(Debug)]
@@ -506,6 +511,27 @@ pub struct StoreMemberAliasRequest {
 }
 
 impl Message for StoreMemberAliasRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct SetGroupAliasRequest {
+    pub group_id: ContextGroupId,
+    pub alias: String,
+    pub requester: Option<PublicKey>,
+}
+
+impl Message for SetGroupAliasRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct StoreGroupAliasRequest {
+    pub group_id: ContextGroupId,
+    pub alias: String,
+}
+
+impl Message for StoreGroupAliasRequest {
     type Result = eyre::Result<()>;
 }
 

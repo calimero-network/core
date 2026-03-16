@@ -15,7 +15,10 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        JoinGroupRequest { invitation }: JoinGroupRequest,
+        JoinGroupRequest {
+            invitation,
+            group_alias,
+        }: JoinGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let node_identity = self.node_group_identity();
@@ -161,6 +164,10 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &joiner_identity,
                     GroupMemberRole::Member,
                 )?;
+
+                if let Some(ref alias_str) = group_alias {
+                    group_store::set_group_alias(&datastore, &group_id, alias_str)?;
+                }
 
                 let _ = node_client.subscribe_group(group_id.to_bytes()).await;
                 let _ = node_client

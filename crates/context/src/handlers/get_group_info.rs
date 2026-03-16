@@ -43,6 +43,8 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                     _ => "open".to_owned(),
                 };
 
+            let alias = group_store::get_group_alias(&self.datastore, &group_id)?;
+
             Ok(GroupInfoResponse {
                 group_id,
                 app_key: meta.app_key.into(),
@@ -53,6 +55,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 active_upgrade,
                 default_capabilities,
                 default_visibility,
+                alias,
             })
         })();
 

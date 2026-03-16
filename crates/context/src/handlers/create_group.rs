@@ -22,6 +22,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             app_key,
             application_id,
             upgrade_policy,
+            alias,
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -118,6 +119,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     &admin_identity,
                     GroupMemberRole::Admin,
                 )?;
+
+                if let Some(ref alias_str) = alias {
+                    group_store::set_group_alias(&datastore, &group_id, alias_str)?;
+                }
 
                 let _ = node_client.subscribe_group(group_id.to_bytes()).await;
 

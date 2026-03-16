@@ -75,3 +75,8 @@ impl PredefinedEntry for key::GroupMemberAlias {
     type Codec = Borsh;
     type DataType<'a> = String;
 }
+
+impl PredefinedEntry for key::GroupAlias {
+    type Codec = Borsh;
+    type DataType<'a> = String;
+}

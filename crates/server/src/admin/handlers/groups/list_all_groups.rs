@@ -38,6 +38,7 @@ pub async fn handler(
                     target_application_id: g.target_application_id,
                     upgrade_policy: g.upgrade_policy,
                     created_at: g.created_at,
+                    alias: g.alias,
                 })
                 .collect();
             ApiResponse {

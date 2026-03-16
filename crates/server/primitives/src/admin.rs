@@ -1813,6 +1813,8 @@ pub struct CreateGroupApiRequest {
     pub app_key: Option<String>,
     pub application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 impl Validate for CreateGroupApiRequest {
@@ -1883,6 +1885,8 @@ pub struct GroupInfoApiResponseData {
     pub active_upgrade: Option<GroupUpgradeStatusApiData>,
     pub default_capabilities: u32,
     pub default_visibility: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2074,12 +2078,16 @@ pub struct CreateGroupInvitationApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInvitationApiResponseData {
     pub invitation: SignedGroupOpenInvitation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_alias: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JoinGroupApiRequest {
     pub invitation: SignedGroupOpenInvitation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_alias: Option<String>,
 }
 
 impl Validate for JoinGroupApiRequest {
@@ -2123,6 +2131,8 @@ pub struct GroupSummaryApiData {
     pub target_application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 // ---- Update Group Settings ----
@@ -2341,6 +2351,32 @@ impl Validate for SetMemberAliasApiRequest {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct SetMemberAliasApiResponse;
+
+// ---- Set Group Alias ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetGroupAliasApiRequest {
+    pub alias: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetGroupAliasApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.alias.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "alias" });
+        }
+        if let Some(e) = validate_string_length(&self.alias, "alias", 64) {
+            errors.push(e);
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetGroupAliasApiResponse;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

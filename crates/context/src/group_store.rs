@@ -8,15 +8,15 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
-    AsKeyParts, ContextGroupRef, ContextIdentity, GroupContextAlias, GroupContextAllowlist,
-    GroupContextIndex, GroupContextLastMigration, GroupContextLastMigrationValue,
-    GroupContextVisibility, GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue,
-    GroupDefaultVis, GroupDefaultVisValue, GroupMember, GroupMemberAlias, GroupMemberCapability,
-    GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue,
-    GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
-    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX, GROUP_MEMBER_ALIAS_PREFIX,
-    GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX,
-    GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
+    AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupContextAlias,
+    GroupContextAllowlist, GroupContextIndex, GroupContextLastMigration,
+    GroupContextLastMigrationValue, GroupContextVisibility, GroupContextVisibilityValue,
+    GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis, GroupDefaultVisValue, GroupMember,
+    GroupMemberAlias, GroupMemberCapability, GroupMemberCapabilityValue, GroupMeta, GroupMetaValue,
+    GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
+    GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
+    GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_PREFIX,
+    GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -573,6 +573,28 @@ pub fn get_member_alias(
     let handle = store.handle();
     handle
         .get(&GroupMemberAlias::new(group_id.to_bytes(), *member))
+        .map_err(Into::into)
+}
+
+/// Stores a human-readable alias for the group itself.
+pub fn set_group_alias(
+    store: &Store,
+    group_id: &ContextGroupId,
+    alias: &str,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    handle.put(&GroupAlias::new(group_id.to_bytes()), &alias.to_owned())?;
+    Ok(())
+}
+
+/// Returns the alias for a group, if one was set.
+pub fn get_group_alias(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<String>> {
+    let handle = store.handle();
+    handle
+        .get(&GroupAlias::new(group_id.to_bytes()))
         .map_err(Into::into)
 }
 

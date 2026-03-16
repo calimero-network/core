@@ -880,6 +880,58 @@ impl Debug for GroupMemberAlias {
     }
 }
 
+pub const GROUP_ALIAS_PREFIX: u8 = 0x2E;
+
+/// Stores a human-readable alias for the group itself.
+/// Key: prefix (1 byte) + group_id (32 bytes) → alias String
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAlias(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl GroupAlias {
+    #[must_use]
+    pub fn new(group_id: [u8; 32]) -> Self {
+        Self(Key(
+            GenericArray::from([GROUP_ALIAS_PREFIX]).concat(GenericArray::from(group_id))
+        ))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupAlias {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupAlias {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupAlias {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupAlias")
+            .field("group_id", &self.group_id())
+            .finish()
+    }
+}
+
 /// Stored against [`GroupMeta`]. Captures the immutable + mutable metadata of a
 /// context group.
 #[derive(Clone, Debug)]
@@ -1010,6 +1062,7 @@ mod tests {
             GROUP_DEFAULT_VIS_PREFIX,
             GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
             GROUP_MEMBER_ALIAS_PREFIX,
+            GROUP_ALIAS_PREFIX,
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {

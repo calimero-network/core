@@ -55,6 +55,7 @@ pub async fn handler(
             app_key,
             application_id: req.application_id,
             upgrade_policy: req.upgrade_policy,
+            alias: req.alias,
         })
         .await
         .map_err(parse_api_error);

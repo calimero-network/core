@@ -113,11 +113,14 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 .map_err(|e| eyre::eyre!("signing failed: {e}"))?;
             let inviter_signature = hex::encode(signature.to_bytes());
 
+            let group_alias = group_store::get_group_alias(&self.datastore, &group_id)?;
+
             Ok(CreateGroupInvitationResponse {
                 invitation: SignedGroupOpenInvitation {
                     invitation,
                     inviter_signature,
                 },
+                group_alias,
             })
         })();
 
