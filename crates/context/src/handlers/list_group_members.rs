@@ -28,10 +28,21 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
             let members =
                 group_store::list_group_members(&self.datastore, &group_id, offset, limit)?;
 
-            Ok(members
+            let entries = members
                 .into_iter()
-                .map(|(identity, role)| GroupMemberEntry { identity, role })
-                .collect())
+                .map(|(identity, role)| {
+                    let alias =
+                        group_store::get_member_alias(&self.datastore, &group_id, &identity)
+                            .ok()
+                            .flatten();
+                    GroupMemberEntry {
+                        identity,
+                        role,
+                        alias,
+                    }
+                })
+                .collect();
+            Ok(entries)
         })();
 
         ActorResponse::reply(result)
