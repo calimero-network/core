@@ -552,6 +552,34 @@ impl Handler<NetworkEvent> for NodeManager {
                                     .into_actor(self),
                                 );
                             }
+                            calimero_node_primitives::sync::GroupMutationKind::MemberAliasSet {
+                                member,
+                                alias,
+                            } => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::StoreMemberAliasRequest;
+                                        use calimero_primitives::identity::PublicKey;
+
+                                        let group_id = ContextGroupId::from(group_id);
+                                        if let Err(err) = context_client
+                                            .store_member_alias(StoreMemberAliasRequest {
+                                                group_id,
+                                                member: PublicKey::from(member),
+                                                alias,
+                                            })
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to store member alias from gossip"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
                             _ => {
                                 let _ignored = ctx.spawn(
                                     async move {
