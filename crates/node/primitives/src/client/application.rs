@@ -379,6 +379,20 @@ impl NodeClient {
 
         let response = reqwest::Client::new().get(url.clone()).send().await?;
 
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_owned());
+            eyre::bail!(
+                "Registry returned HTTP {} for {}: {}",
+                status,
+                url,
+                body
+            );
+        }
+
         let expected_size = response.content_length();
 
         // Check if URL indicates a bundle archive (.mpk - Mero Package Kit)

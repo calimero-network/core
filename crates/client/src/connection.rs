@@ -355,8 +355,20 @@ where
                         }
                     }
                     Err(RefreshError::NoRefreshToken) => {
-                        // No refresh token available, don't try re-authentication
-                        bail!("No refresh token available for authentication");
+                        // No refresh token — fall back to full browser re-authentication
+                        match self.authenticator.authenticate(&self.api_url).await {
+                            Ok(new_tokens) => {
+                                if let Some(ref node_name) = self.node_name {
+                                    self.client_storage
+                                        .update_tokens(node_name, &new_tokens)
+                                        .await?;
+                                }
+                                continue;
+                            }
+                            Err(auth_err) => {
+                                bail!("Authentication failed: {}", auth_err);
+                            }
+                        }
                     }
                 }
             }
@@ -460,24 +472,17 @@ where
 
     /// Detect the authentication mode for this connection
     pub async fn detect_auth_mode(&self) -> Result<AuthMode> {
-        // For local nodes (localhost), authentication is usually not required
-        if self.api_url.host_str() == Some("localhost")
-            || self.api_url.host_str() == Some("127.0.0.1")
-        {
-            return Ok(AuthMode::None);
-        }
+        // Probe a protected endpoint — if it returns 401, auth is required.
+        // admin-api/health is intentionally public, so we probe a protected endpoint instead.
+        let probe_url = self.api_url.join("admin-api/contexts")?;
 
-        // For remote nodes, check if authentication is actually required
-        // Try to access a public endpoint first
-        let health_url = self.api_url.join("admin-api/health")?;
-
-        match self.client.get(health_url).send().await {
+        match self.client.get(probe_url).send().await {
             Ok(response) => {
                 if response.status() == 401 {
                     // 401 Unauthorized means authentication is required
                     Ok(AuthMode::Required)
-                } else if response.status().is_success() {
-                    // 200 OK means no authentication required
+                } else if response.status().is_success() || response.status() == 404 {
+                    // 200/404 without auth challenge means no authentication required
                     Ok(AuthMode::None)
                 } else {
                     // Other status codes, assume authentication is required for safety

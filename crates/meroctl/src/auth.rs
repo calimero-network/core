@@ -42,8 +42,7 @@ pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
 
     let auth_url = build_auth_url(api_url, callback_port)?;
 
-    let info_msg = format!("Opening browser to start authentication");
-    output.write(&InfoLine(&info_msg));
+    output.write(&InfoLine("Opening browser for authentication — you have 2 minutes to complete sign-in."));
 
     if let Err(e) = webbrowser::open(&auth_url.to_string()) {
         let warning_msg = format!(
@@ -53,9 +52,9 @@ pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
         output.write(&WarnLine(&warning_msg));
     }
 
-    let auth_result = timeout(Duration::from_secs(300), callback_rx)
+    let auth_result = timeout(Duration::from_secs(120), callback_rx)
         .await
-        .map_err(|_| eyre!("Authentication timed out after 300 seconds"))?
+        .map_err(|_| eyre!("Authentication timed out — please try again"))?
         .map_err(|_| eyre!("Callback server error"))?;
 
     match auth_result {
@@ -124,197 +123,149 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
                     }
 
                     return Html(
-                        r#"
-                <!DOCTYPE html>
-                <html lang="en">
-                    <head>
-                        <meta charset="UTF-8">
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                        <title>Authentication Complete</title>
-                        <style>
-                            * {
-                                margin: 0;
-                                padding: 0;
-                                box-sizing: border-box;
-                            }
-                            
-                            body {
-                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                                min-height: 100vh;
-                                display: flex;
-                                align-items: center;
-                                justify-content: center;
-                                color: white;
-                            }
-                            
-                            .container {
-                                text-align: center;
-                                background: rgba(255, 255, 255, 0.1);
-                                backdrop-filter: blur(10px);
-                                border-radius: 20px;
-                                padding: 3rem 2rem;
-                                border: 1px solid rgba(255, 255, 255, 0.2);
-                                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-                                max-width: 400px;
-                                width: 90%;
-                            }
-                            
-                            .emoji {
-                                font-size: 4rem;
-                                margin-bottom: 1rem;
-                                animation: bounce 2s infinite;
-                            }
-                            
-                            @keyframes bounce {
-                                0%, 20%, 50%, 80%, 100% {
-                                    transform: translateY(0);
-                                }
-                                40% {
-                                    transform: translateY(-10px);
-                                }
-                                60% {
-                                    transform: translateY(-5px);
-                                }
-                            }
-                            
-                            h1 {
-                                font-size: 2rem;
-                                margin-bottom: 1rem;
-                                font-weight: 600;
-                            }
-                            
-                            p {
-                                font-size: 1.1rem;
-                                margin-bottom: 1.5rem;
-                                opacity: 0.9;
-                                line-height: 1.5;
-                            }
-                            
-                            .message {
-                                font-size: 1.1rem;
-                                opacity: 1;
-                                font-weight: 600;
-                            }
-                        </style>
-                    </head>
-                    <body>
-                        <div class="container">
-                            <div class="emoji">🎉</div>
-                            <h1>Authentication Complete!</h1>
-                            <p>You can now close this browser window and return to the terminal.</p>
-                            <div class="message">Authentication successful!</div>
-                        </div>
-                    </body>
-                </html>
-                "#,
+                        r##"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authentication Complete</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #111111;
+            color: #ffffff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background-color: #1c1c1c;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.75rem;
+            padding: 3rem 2rem;
+            max-width: 420px;
+            width: 90%;
+            text-align: center;
+        }
+        .icon {
+            width: 56px;
+            height: 56px;
+            background-color: rgba(255, 122, 0, 0.15);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1.5rem;
+        }
+        .icon svg { width: 28px; height: 28px; }
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            line-height: 2rem;
+            margin-bottom: 0.75rem;
+        }
+        p {
+            font-size: 0.875rem;
+            color: rgba(255, 255, 255, 0.7);
+            line-height: 1.5;
+        }
+        .accent { color: #ff7a00; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#ff7a00" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+        </div>
+        <h1>You're <span class="accent">authenticated</span></h1>
+        <p>You can close this window and return to the terminal.</p>
+    </div>
+</body>
+</html>
+                "##,
                     );
                 }
 
                 // No query parameters - serve HTML page that extracts tokens from fragments
                 Html(
                     r#"
-                <!DOCTYPE html>
-                <html lang="en">
-                    <head>
-                        <meta charset="UTF-8">
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                        <title>Processing Authentication</title>
-                        <style>
-                            * {
-                                margin: 0;
-                                padding: 0;
-                                box-sizing: border-box;
-                            }
-                            
-                            body {
-                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                                min-height: 100vh;
-                                display: flex;
-                                align-items: center;
-                                justify-content: center;
-                                color: white;
-                            }
-                            
-                            .container {
-                                text-align: center;
-                                background: rgba(255, 255, 255, 0.1);
-                                backdrop-filter: blur(10px);
-                                border-radius: 20px;
-                                padding: 3rem 2rem;
-                                border: 1px solid rgba(255, 255, 255, 0.2);
-                                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-                                max-width: 400px;
-                                width: 90%;
-                            }
-                            
-                            .spinner {
-                                border: 3px solid rgba(255, 255, 255, 0.3);
-                                border-radius: 50%;
-                                border-top: 3px solid white;
-                                width: 40px;
-                                height: 40px;
-                                animation: spin 1s linear infinite;
-                                margin: 0 auto 1rem;
-                            }
-                            
-                            @keyframes spin {
-                                0% { transform: rotate(0deg); }
-                                100% { transform: rotate(360deg); }
-                            }
-                            
-                            h1 {
-                                font-size: 2rem;
-                                margin-bottom: 1rem;
-                                font-weight: 600;
-                            }
-                            
-                            p {
-                                font-size: 1.1rem;
-                                opacity: 0.9;
-                                line-height: 1.5;
-                            }
-                        </style>
-                    </head>
-                    <body>
-                        <div class="container">
-                            <div class="spinner"></div>
-                            <h1>Processing Authentication</h1>
-                            <p>Extracting tokens from URL...</p>
-                        </div>
-                        
-                        <script>
-                            // Extract tokens from URL fragments
-                            function extractTokensFromFragment() {
-                                const hash = window.location.hash.substring(1); // Remove the # character
-                                const params = new URLSearchParams(hash);
-                                
-                                const accessToken = params.get('access_token');
-                                const refreshToken = params.get('refresh_token');
-                                
-                                if (accessToken) {
-                                    // Redirect to the same URL but with query parameters instead of fragments
-                                    const currentUrl = window.location.origin + window.location.pathname;
-                                    const queryParams = new URLSearchParams();
-                                    queryParams.set('access_token', accessToken);
-                                    if (refreshToken) {
-                                        queryParams.set('refresh_token', refreshToken);
-                                    }
-                                    
-                                    window.location.href = currentUrl + '?' + queryParams.toString();
-                                } else {
-                                    // No tokens found in fragments
-                                    document.querySelector('.container').innerHTML = 
-                                        '<h1>❌ No Authentication Tokens</h1><p>No tokens found in URL. Please try again.</p>';
-                                }
-                            }
-                            
-                            // Run when page loads
-                            extractTokensFromFragment();
-                        </script>
-                    </body>
-                </html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authenticating</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #111111;
+            color: #ffffff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background-color: #1c1c1c;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.75rem;
+            padding: 3rem 2rem;
+            max-width: 420px;
+            width: 90%;
+            text-align: center;
+        }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(255, 122, 0, 0.2);
+            border-top-color: #ff7a00;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 1.5rem;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.75rem; }
+        p { font-size: 0.875rem; color: rgba(255, 255, 255, 0.7); line-height: 1.5; }
+        .error { color: #ff4444; margin-top: 1rem; font-size: 0.875rem; display: none; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="spinner"></div>
+        <h1>Authenticating</h1>
+        <p>Completing sign-in, please wait...</p>
+        <p class="error" id="err"></p>
+    </div>
+    <script>
+        (function() {
+            const hash = window.location.hash.substring(1);
+            const params = new URLSearchParams(hash);
+            const accessToken = params.get('access_token');
+            const refreshToken = params.get('refresh_token');
+            if (accessToken) {
+                const q = new URLSearchParams();
+                q.set('access_token', accessToken);
+                if (refreshToken) q.set('refresh_token', refreshToken);
+                window.location.href = window.location.origin + window.location.pathname + '?' + q.toString();
+            } else {
+                document.querySelector('.spinner').style.display = 'none';
+                document.querySelector('h1').textContent = 'Authentication failed';
+                document.querySelector('p').textContent = 'No tokens found in the URL.';
+                document.getElementById('err').style.display = 'block';
+                document.getElementById('err').textContent = 'Please close this window and try again.';
+            }
+        })();
+    </script>
+</body>
+</html>
                 "#,
                 )
             }
@@ -401,7 +352,7 @@ pub async fn authenticate_with_session_cache(
             // We have existing tokens for this URL in session cache
             Ok(ConnectionInfo::new(
                 url.clone(),
-                None,
+                Some(node_name.to_owned()),
                 create_cli_authenticator(output),
                 FileTokenStorage::new(),
             ))
@@ -412,9 +363,25 @@ pub async fn authenticate_with_session_cache(
                     // Store in session cache for future use during this session
                     session_cache.store_tokens(url.as_str(), &jwt_tokens).await;
 
+                    // Register node in config so FileTokenStorage can persist tokens across sessions
+                    let mut config = crate::config::Config::load().await?;
+                    if !config.nodes.contains_key(node_name) {
+                        config.nodes.insert(
+                            node_name.to_owned(),
+                            crate::config::NodeConnection::Remote {
+                                url: url.clone(),
+                                jwt_tokens: Some(crate::storage::JwtToken {
+                                    access_token: jwt_tokens.access_token.clone(),
+                                    refresh_token: jwt_tokens.refresh_token.clone(),
+                                }),
+                            },
+                        );
+                        config.save().await?;
+                    }
+
                     Ok(ConnectionInfo::new(
                         url.clone(),
-                        None,
+                        Some(node_name.to_owned()),
                         create_cli_authenticator(output),
                         FileTokenStorage::new(),
                     ))
@@ -442,6 +409,8 @@ pub async fn authenticate_with_session_cache(
 pub struct MeroctlAuthenticator {
     /// Output handler for meroctl
     output: Box<dyn calimero_client::MeroctlOutputHandler + Send + Sync>,
+    /// Raw output kept for cloning (Output is Copy)
+    raw_output: Output,
 }
 
 impl std::fmt::Debug for MeroctlAuthenticator {
@@ -454,18 +423,13 @@ impl std::fmt::Debug for MeroctlAuthenticator {
 
 impl Clone for MeroctlAuthenticator {
     fn clone(&self) -> Self {
-        // Since we can't clone the trait object, we'll create a new one
-        // This is a limitation, but it's acceptable for now
-        Self {
-            output: Box::new(NoOpOutputHandler),
-        }
+        create_cli_authenticator(self.raw_output)
     }
 }
 
 impl MeroctlAuthenticator {
-    /// Create a new meroctl authenticator
-    pub fn new(output: Box<dyn calimero_client::MeroctlOutputHandler + Send + Sync>) -> Self {
-        Self { output }
+    pub fn new(output: Box<dyn calimero_client::MeroctlOutputHandler + Send + Sync>, raw_output: Output) -> Self {
+        Self { output, raw_output }
     }
 }
 
@@ -474,7 +438,7 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
     async fn authenticate(&self, api_url: &Url) -> Result<JwtToken> {
         // Use the proper OAuth authentication flow
         self.output
-            .display_message("Starting OAuth authentication...");
+            .display_message("Opening browser for authentication — you have 2 minutes to complete sign-in.");
 
         // Set up callback server
         let (callback_port, callback_rx) = start_callback_server().await?;
@@ -490,9 +454,9 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
         }
 
         // Wait for the OAuth callback
-        let auth_result = timeout(Duration::from_secs(300), callback_rx)
+        let auth_result = timeout(Duration::from_secs(120), callback_rx)
             .await
-            .map_err(|_| eyre!("Authentication timed out after 300 seconds"))?
+            .map_err(|_| eyre!("Authentication timed out — please try again"))?
             .map_err(|_| eyre!("Callback server error"))?;
 
         match auth_result {
@@ -638,5 +602,5 @@ pub type CliAuthenticator = MeroctlAuthenticator;
 /// Helper function to create a new CliAuthenticator
 pub fn create_cli_authenticator(output: Output) -> CliAuthenticator {
     let wrapper = MeroctlOutputWrapper::new(output);
-    MeroctlAuthenticator::new(Box::new(wrapper))
+    MeroctlAuthenticator::new(Box::new(wrapper), output)
 }
