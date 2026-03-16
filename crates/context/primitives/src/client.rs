@@ -25,18 +25,19 @@ use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AddGroupMembersRequest, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
-    CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
-    DetachContextFromGroupRequest, GetContextAllowlistRequest, GetContextVisibilityRequest,
-    GetContextVisibilityResponse, GetGroupForContextRequest, GetGroupInfoRequest,
-    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
-    GroupContextEntry, GroupInfoResponse, GroupMemberEntry, GroupSummary, GroupUpgradeInfo,
-    JoinGroupContextRequest, JoinGroupContextResponse, JoinGroupRequest, JoinGroupResponse,
-    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
-    ManageContextAllowlistRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
-    SetContextVisibilityRequest, SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest,
-    SetMemberCapabilitiesRequest, StoreContextAliasRequest, SyncGroupRequest, SyncGroupResponse,
-    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    AddGroupMembersRequest, BroadcastGroupAliasesRequest, CreateGroupInvitationRequest,
+    CreateGroupInvitationResponse, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
+    DeleteGroupResponse, DetachContextFromGroupRequest, GetContextAllowlistRequest,
+    GetContextVisibilityRequest, GetContextVisibilityResponse, GetGroupForContextRequest,
+    GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
+    GetMemberCapabilitiesResponse, GroupContextEntry, GroupInfoResponse, GroupMemberEntry,
+    GroupSummary, GroupUpgradeInfo, JoinGroupContextRequest, JoinGroupContextResponse,
+    JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest, ListGroupContextsRequest,
+    ListGroupMembersRequest, ManageContextAllowlistRequest, RemoveGroupMembersRequest,
+    RetryGroupUpgradeRequest, SetContextVisibilityRequest, SetDefaultCapabilitiesRequest,
+    SetDefaultVisibilityRequest, SetMemberCapabilitiesRequest, StoreContextAliasRequest,
+    SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
+    UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -1159,6 +1160,23 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::StoreContextAlias {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn broadcast_group_aliases(
+        &self,
+        request: BroadcastGroupAliasesRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::BroadcastGroupAliases {
                 request,
                 outcome: sender,
             })

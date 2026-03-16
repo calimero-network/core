@@ -10,15 +10,15 @@ use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AddGroupMembersRequest, CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest,
-    DetachContextFromGroupRequest, GetContextAllowlistRequest, GetContextVisibilityRequest,
-    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
-    GetMemberCapabilitiesRequest, JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, ManageContextAllowlistRequest,
-    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextVisibilityRequest,
-    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetMemberCapabilitiesRequest,
-    StoreContextAliasRequest, SyncGroupRequest, UpdateGroupSettingsRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest,
+    AddGroupMembersRequest, BroadcastGroupAliasesRequest, CreateGroupInvitationRequest,
+    CreateGroupRequest, DeleteGroupRequest, DetachContextFromGroupRequest,
+    GetContextAllowlistRequest, GetContextVisibilityRequest, GetGroupForContextRequest,
+    GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
+    JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest, ListGroupContextsRequest,
+    ListGroupMembersRequest, ManageContextAllowlistRequest, RemoveGroupMembersRequest,
+    RetryGroupUpgradeRequest, SetContextVisibilityRequest, SetDefaultCapabilitiesRequest,
+    SetDefaultVisibilityRequest, SetMemberCapabilitiesRequest, StoreContextAliasRequest,
+    SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -311,5 +311,9 @@ pub enum ContextMessage {
     StoreContextAlias {
         request: StoreContextAliasRequest,
         outcome: oneshot::Sender<<StoreContextAliasRequest as Message>::Result>,
+    },
+    BroadcastGroupAliases {
+        request: BroadcastGroupAliasesRequest,
+        outcome: oneshot::Sender<<BroadcastGroupAliasesRequest as Message>::Result>,
     },
 }

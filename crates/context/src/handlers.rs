@@ -5,6 +5,7 @@ use calimero_utils_actix::adapters::ActorExt;
 use crate::ContextManager;
 
 pub mod add_group_members;
+pub mod broadcast_group_aliases;
 pub mod create_context;
 pub mod create_group;
 pub mod create_group_invitation;
@@ -152,6 +153,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::StoreContextAlias { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::BroadcastGroupAliases { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }

@@ -467,6 +467,15 @@ impl Message for SetDefaultVisibilityRequest {
     type Result = eyre::Result<()>;
 }
 
+#[derive(Debug)]
+pub struct BroadcastGroupAliasesRequest {
+    pub group_id: ContextGroupId,
+}
+
+impl Message for BroadcastGroupAliasesRequest {
+    type Result = eyre::Result<()>;
+}
+
 impl From<calimero_store::key::GroupUpgradeValue> for GroupUpgradeInfo {
     fn from(v: calimero_store::key::GroupUpgradeValue) -> Self {
         Self {

@@ -62,6 +62,28 @@ impl Handler<NetworkEvent> for NodeManager {
                             }
                             .into_actor(self),
                         );
+
+                        let context_client_alias = self.clients.context.clone();
+                        let _ignored_alias = ctx.spawn(
+                            async move {
+                                use calimero_context_config::types::ContextGroupId;
+                                use calimero_context_primitives::group::BroadcastGroupAliasesRequest;
+
+                                let group_id = ContextGroupId::from(bytes);
+                                if let Err(err) = context_client_alias
+                                    .broadcast_group_aliases(BroadcastGroupAliasesRequest {
+                                        group_id,
+                                    })
+                                    .await
+                                {
+                                    warn!(
+                                        ?err,
+                                        "Failed to re-broadcast group aliases after peer subscription"
+                                    );
+                                }
+                            }
+                            .into_actor(self),
+                        );
                     }
                     return;
                 }
