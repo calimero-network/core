@@ -15,8 +15,7 @@ impl Handler<StoreMemberAliasRequest> for ContextManager {
         }: StoreMemberAliasRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let result =
-            group_store::set_member_alias(&self.datastore, &group_id, &member, &alias);
+        let result = group_store::set_member_alias(&self.datastore, &group_id, &member, &alias);
         ActorResponse::reply(result)
     }
 }

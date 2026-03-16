@@ -30,13 +30,56 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
             }
         };
 
-        // Validate: group exists and joiner is a member.
+        // Validate: group exists, joiner is a member, and has permission to join this context.
         if let Err(err) = (|| -> eyre::Result<()> {
             if group_store::load_group_meta(&self.datastore, &group_id)?.is_none() {
                 bail!("group not found");
             }
             if !group_store::check_group_membership(&self.datastore, &group_id, &joiner_identity)? {
                 bail!("identity is not a member of the group");
+            }
+            match group_store::get_context_visibility(&self.datastore, &group_id, &context_id)? {
+                Some((0, _)) => {
+                    // Open context: require admin or CAN_JOIN_OPEN_CONTEXTS.
+                    if !group_store::is_group_admin_or_has_capability(
+                        &self.datastore,
+                        &group_id,
+                        &joiner_identity,
+                        calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_CONTEXTS,
+                    )? {
+                        bail!(
+                            "identity lacks permission to join open context '{context_id:?}' \
+                             (not an admin and CAN_JOIN_OPEN_CONTEXTS is not set)"
+                        );
+                    }
+                }
+                Some((1, _)) => {
+                    // Restricted context: require admin or on allowlist.
+                    let is_admin =
+                        group_store::is_group_admin(&self.datastore, &group_id, &joiner_identity)?;
+                    let on_allowlist = group_store::check_context_allowlist(
+                        &self.datastore,
+                        &group_id,
+                        &context_id,
+                        &joiner_identity,
+                    )?;
+                    if !is_admin && !on_allowlist {
+                        bail!(
+                            "identity is not permitted to join restricted context '{context_id:?}' \
+                             (not an admin and not on the context allowlist)"
+                        );
+                    }
+                }
+                Some((mode, _)) => bail!("unknown context visibility mode: {mode}"),
+                None => {
+                    // No visibility record synced yet; only admins may proceed.
+                    if !group_store::is_group_admin(&self.datastore, &group_id, &joiner_identity)? {
+                        bail!(
+                            "context visibility not found for '{context_id:?}'; \
+                             only admins may join"
+                        );
+                    }
+                }
             }
             Ok(())
         })() {

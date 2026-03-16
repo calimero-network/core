@@ -2,6 +2,7 @@ use actix::{ActorResponse, Handler, Message};
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
+use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::group::{
     CreateGroupInvitationRequest, CreateGroupInvitationResponse,
 };
@@ -53,8 +54,14 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             let _meta = group_store::load_group_meta(&self.datastore, &group_id)?
                 .ok_or_else(|| eyre::eyre!("group not found"))?;
 
-            // 2. Requester must be admin
-            group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
+            // 2. Requester must be admin or hold CAN_INVITE_MEMBERS capability
+            group_store::require_group_admin_or_capability(
+                &self.datastore,
+                &group_id,
+                &requester,
+                MemberCapabilities::CAN_INVITE_MEMBERS,
+                "create group invitation",
+            )?;
 
             // 3. Verify node holds the requester's signing key
             group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;

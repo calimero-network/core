@@ -4,15 +4,13 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_primitives::group::GetMemberCapabilitiesRequest;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     GetMemberCapabilitiesApiData, GetMemberCapabilitiesApiResponse,
 };
-use reqwest::StatusCode;
 use tracing::{error, info};
 
-use super::parse_group_id;
-use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
+use super::{parse_group_id, parse_identity};
+use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
@@ -54,16 +52,4 @@ pub async fn handler(
             err.into_response()
         }
     }
-}
-
-fn parse_identity(s: &str) -> Result<PublicKey, ApiError> {
-    let bytes = hex::decode(s).map_err(|_| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid identity format: expected hex-encoded 32 bytes".into(),
-    })?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|_| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid identity: must be exactly 32 bytes".into(),
-    })?;
-    Ok(PublicKey::from(arr))
 }
