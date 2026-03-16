@@ -11,11 +11,12 @@ use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupContextAlias, GroupContextAllowlist,
     GroupContextIndex, GroupContextLastMigration, GroupContextLastMigrationValue,
     GroupContextVisibility, GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue,
-    GroupDefaultVis, GroupDefaultVisValue, GroupMember, GroupMemberCapability,
+    GroupDefaultVis, GroupDefaultVisValue, GroupMember, GroupMemberAlias, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue,
     GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
-    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
-    GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
+    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX, GROUP_MEMBER_ALIAS_PREFIX,
+    GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX,
+    GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -546,6 +547,62 @@ pub fn enumerate_group_contexts_with_aliases(
             Ok((ctx_id, alias))
         })
         .collect()
+}
+
+/// Stores a human-readable alias for a group member within a group.
+pub fn set_member_alias(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+    alias: &str,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    handle.put(
+        &GroupMemberAlias::new(group_id.to_bytes(), *member),
+        &alias.to_owned(),
+    )?;
+    Ok(())
+}
+
+/// Returns the alias for a group member within a group, if one was set.
+pub fn get_member_alias(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+) -> EyreResult<Option<String>> {
+    let handle = store.handle();
+    handle
+        .get(&GroupMemberAlias::new(group_id.to_bytes(), *member))
+        .map_err(Into::into)
+}
+
+/// Returns all member aliases stored for a group as `(PublicKey, alias_string)` pairs.
+pub fn enumerate_member_aliases(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Vec<(PublicKey, String)>> {
+    let handle = store.handle();
+    let group_id_bytes: [u8; 32] = group_id.to_bytes();
+    let start_key = GroupMemberAlias::new(group_id_bytes, PublicKey::from([0u8; 32]));
+    let mut iter = handle.iter::<GroupMemberAlias>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut results = Vec::new();
+
+    for entry in first.into_iter().chain(iter.keys()) {
+        let key = entry?;
+        if key.as_key().as_bytes()[0] != GROUP_MEMBER_ALIAS_PREFIX {
+            break;
+        }
+        if key.group_id() != group_id_bytes {
+            break;
+        }
+        let Some(alias) = handle.get(&key)? else {
+            continue;
+        };
+        results.push((key.member(), alias));
+    }
+
+    Ok(results)
 }
 
 pub fn count_group_contexts(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
