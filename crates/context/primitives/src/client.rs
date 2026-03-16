@@ -35,11 +35,11 @@ use crate::group::{
     JoinGroupContextResponse, JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest,
     ListGroupContextsRequest, ListGroupMembersRequest, ManageContextAllowlistRequest,
     RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextVisibilityRequest,
-    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetMemberCapabilitiesRequest,
-    StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
-    StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreMemberCapabilityRequest,
-    SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
-    UpgradeGroupRequest, UpgradeGroupResponse,
+    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetMemberAliasRequest,
+    SetMemberCapabilitiesRequest, StoreContextAliasRequest, StoreContextAllowlistRequest,
+    StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
+    StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -1281,6 +1281,34 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::StoreContextAllowlist {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn set_member_alias(&self, request: SetMemberAliasRequest) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::SetMemberAlias {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn store_member_alias(&self, request: StoreMemberAliasRequest) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::StoreMemberAlias {
                 request,
                 outcome: sender,
             })
