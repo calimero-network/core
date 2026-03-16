@@ -88,7 +88,10 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
                 let _ = node_client
                     .broadcast_group_mutation(
                         group_id.to_bytes(),
-                        GroupMutationKind::MemberRoleUpdated,
+                        GroupMutationKind::MemberCapabilitySet {
+                            member: *member,
+                            capabilities,
+                        },
                     )
                     .await;
 

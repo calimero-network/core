@@ -108,6 +108,17 @@ impl Handler<SetContextVisibilityRequest> for ContextManager {
                 group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
         }
 
+        let broadcast_mode_u8 = match mode {
+            calimero_context_config::VisibilityMode::Open => 0u8,
+            calimero_context_config::VisibilityMode::Restricted => 1u8,
+        };
+        let broadcast_creator: [u8; 32] =
+            group_store::get_context_visibility(&self.datastore, &group_id, &context_id)
+                .ok()
+                .flatten()
+                .map(|(_, c)| c)
+                .unwrap_or(*requester);
+
         let node_client = self.node_client.clone();
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
@@ -130,7 +141,11 @@ impl Handler<SetContextVisibilityRequest> for ContextManager {
                 let _ = node_client
                     .broadcast_group_mutation(
                         group_id.to_bytes(),
-                        GroupMutationKind::VisibilityUpdated,
+                        GroupMutationKind::ContextVisibilitySet {
+                            context_id: *context_id,
+                            mode: broadcast_mode_u8,
+                            creator: broadcast_creator,
+                        },
                     )
                     .await;
 

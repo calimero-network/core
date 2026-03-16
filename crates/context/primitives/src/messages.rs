@@ -10,14 +10,16 @@ use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AddGroupMembersRequest, BroadcastGroupAliasesRequest, CreateGroupInvitationRequest,
-    CreateGroupRequest, DeleteGroupRequest, DetachContextFromGroupRequest,
-    GetContextAllowlistRequest, GetContextVisibilityRequest, GetGroupForContextRequest,
-    GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
-    JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest, ListGroupContextsRequest,
-    ListGroupMembersRequest, ManageContextAllowlistRequest, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, SetContextVisibilityRequest, SetDefaultCapabilitiesRequest,
-    SetDefaultVisibilityRequest, SetMemberCapabilitiesRequest, StoreContextAliasRequest,
+    AddGroupMembersRequest, BroadcastGroupAliasesRequest, BroadcastGroupLocalStateRequest,
+    CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest,
+    DetachContextFromGroupRequest, GetContextAllowlistRequest, GetContextVisibilityRequest,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
+    GetMemberCapabilitiesRequest, JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, ManageContextAllowlistRequest,
+    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextVisibilityRequest,
+    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetMemberCapabilitiesRequest,
+    StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
+    StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreMemberCapabilityRequest,
     SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
@@ -315,5 +317,29 @@ pub enum ContextMessage {
     BroadcastGroupAliases {
         request: BroadcastGroupAliasesRequest,
         outcome: oneshot::Sender<<BroadcastGroupAliasesRequest as Message>::Result>,
+    },
+    BroadcastGroupLocalState {
+        request: BroadcastGroupLocalStateRequest,
+        outcome: oneshot::Sender<<BroadcastGroupLocalStateRequest as Message>::Result>,
+    },
+    StoreMemberCapability {
+        request: StoreMemberCapabilityRequest,
+        outcome: oneshot::Sender<<StoreMemberCapabilityRequest as Message>::Result>,
+    },
+    StoreDefaultCapabilities {
+        request: StoreDefaultCapabilitiesRequest,
+        outcome: oneshot::Sender<<StoreDefaultCapabilitiesRequest as Message>::Result>,
+    },
+    StoreContextVisibility {
+        request: StoreContextVisibilityRequest,
+        outcome: oneshot::Sender<<StoreContextVisibilityRequest as Message>::Result>,
+    },
+    StoreDefaultVisibility {
+        request: StoreDefaultVisibilityRequest,
+        outcome: oneshot::Sender<<StoreDefaultVisibilityRequest as Message>::Result>,
+    },
+    StoreContextAllowlist {
+        request: StoreContextAllowlistRequest,
+        outcome: oneshot::Sender<<StoreContextAllowlistRequest as Message>::Result>,
     },
 }

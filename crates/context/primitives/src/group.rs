@@ -476,6 +476,69 @@ impl Message for BroadcastGroupAliasesRequest {
     type Result = eyre::Result<()>;
 }
 
+#[derive(Debug)]
+pub struct BroadcastGroupLocalStateRequest {
+    pub group_id: ContextGroupId,
+}
+
+impl Message for BroadcastGroupLocalStateRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct StoreMemberCapabilityRequest {
+    pub group_id: ContextGroupId,
+    pub member: PublicKey,
+    pub capabilities: u32,
+}
+
+impl Message for StoreMemberCapabilityRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct StoreDefaultCapabilitiesRequest {
+    pub group_id: ContextGroupId,
+    pub capabilities: u32,
+}
+
+impl Message for StoreDefaultCapabilitiesRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct StoreContextVisibilityRequest {
+    pub group_id: ContextGroupId,
+    pub context_id: ContextId,
+    pub mode: u8,
+    pub creator: PublicKey,
+}
+
+impl Message for StoreContextVisibilityRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct StoreDefaultVisibilityRequest {
+    pub group_id: ContextGroupId,
+    pub mode: u8,
+}
+
+impl Message for StoreDefaultVisibilityRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct StoreContextAllowlistRequest {
+    pub group_id: ContextGroupId,
+    pub context_id: ContextId,
+    pub members: Vec<PublicKey>,
+}
+
+impl Message for StoreContextAllowlistRequest {
+    type Result = eyre::Result<()>;
+}
+
 impl From<calimero_store::key::GroupUpgradeValue> for GroupUpgradeInfo {
     fn from(v: calimero_store::key::GroupUpgradeValue) -> Self {
         Self {

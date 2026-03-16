@@ -90,6 +90,12 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
                 group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
         }
 
+        let current_allowlist =
+            match group_store::list_context_allowlist(&self.datastore, &group_id, &context_id) {
+                Ok(v) => v,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
+
         let node_client = self.node_client.clone();
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
@@ -123,10 +129,14 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
                     "context allowlist updated"
                 );
 
+                let members_raw: Vec<[u8; 32]> = current_allowlist.iter().map(|pk| **pk).collect();
                 let _ = node_client
                     .broadcast_group_mutation(
                         group_id.to_bytes(),
-                        GroupMutationKind::VisibilityUpdated,
+                        GroupMutationKind::ContextAllowlistSet {
+                            context_id: *context_id,
+                            members: members_raw,
+                        },
                     )
                     .await;
 

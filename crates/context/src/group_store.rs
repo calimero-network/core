@@ -14,8 +14,8 @@ use calimero_store::key::{
     GroupDefaultVis, GroupDefaultVisValue, GroupMember, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue,
     GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
-    GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX,
-    GROUP_UPGRADE_PREFIX,
+    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
+    GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -1097,6 +1097,87 @@ pub fn clear_context_allowlist(
         remove_from_context_allowlist(store, group_id, context_id, member)?;
     }
     Ok(())
+}
+
+pub fn enumerate_member_capabilities(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Vec<(PublicKey, u32)>> {
+    let handle = store.handle();
+    let group_id_bytes: [u8; 32] = group_id.to_bytes();
+    let start_key = GroupMemberCapability::new(group_id_bytes, PublicKey::from([0u8; 32]));
+    let mut iter = handle.iter::<GroupMemberCapability>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut results = Vec::new();
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+
+        if key.as_key().as_bytes()[0] != GROUP_MEMBER_CAPABILITY_PREFIX {
+            break;
+        }
+
+        if key.group_id() != group_id_bytes {
+            break;
+        }
+
+        let Some(val) = handle.get(&key)? else {
+            continue;
+        };
+
+        results.push((PublicKey::from(*key.identity()), val.capabilities));
+    }
+
+    Ok(results)
+}
+
+pub fn enumerate_context_visibilities(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Vec<(ContextId, u8, [u8; 32])>> {
+    let handle = store.handle();
+    let group_id_bytes: [u8; 32] = group_id.to_bytes();
+    let start_key = GroupContextVisibility::new(group_id_bytes, ContextId::from([0u8; 32]));
+    let mut iter = handle.iter::<GroupContextVisibility>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut results = Vec::new();
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+
+        if key.as_key().as_bytes()[0] != GROUP_CONTEXT_VISIBILITY_PREFIX {
+            break;
+        }
+
+        if key.group_id() != group_id_bytes {
+            break;
+        }
+
+        let Some(val) = handle.get(&key)? else {
+            continue;
+        };
+
+        results.push((ContextId::from(*key.context_id()), val.mode, val.creator));
+    }
+
+    Ok(results)
+}
+
+pub fn enumerate_contexts_with_allowlists(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Vec<(ContextId, Vec<PublicKey>)>> {
+    let context_ids = enumerate_group_contexts(store, group_id, 0, usize::MAX)?;
+    let mut results = Vec::new();
+
+    for context_id in context_ids {
+        let members = list_context_allowlist(store, group_id, &context_id)?;
+        if !members.is_empty() {
+            results.push((context_id, members));
+        }
+    }
+
+    Ok(results)
 }
 
 pub fn get_default_capabilities(

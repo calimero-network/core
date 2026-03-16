@@ -64,6 +64,11 @@ impl Handler<SetDefaultVisibilityRequest> for ContextManager {
                 group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
         }
 
+        let broadcast_mode_u8 = match default_visibility {
+            calimero_context_config::VisibilityMode::Open => 0u8,
+            calimero_context_config::VisibilityMode::Restricted => 1u8,
+        };
+
         let node_client = self.node_client.clone();
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
@@ -90,7 +95,9 @@ impl Handler<SetDefaultVisibilityRequest> for ContextManager {
                 let _ = node_client
                     .broadcast_group_mutation(
                         group_id.to_bytes(),
-                        GroupMutationKind::VisibilityUpdated,
+                        GroupMutationKind::DefaultVisibilitySet {
+                            mode: broadcast_mode_u8,
+                        },
                     )
                     .await;
 

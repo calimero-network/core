@@ -25,17 +25,19 @@ use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AddGroupMembersRequest, BroadcastGroupAliasesRequest, CreateGroupInvitationRequest,
-    CreateGroupInvitationResponse, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
-    DeleteGroupResponse, DetachContextFromGroupRequest, GetContextAllowlistRequest,
-    GetContextVisibilityRequest, GetContextVisibilityResponse, GetGroupForContextRequest,
-    GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
-    GetMemberCapabilitiesResponse, GroupContextEntry, GroupInfoResponse, GroupMemberEntry,
-    GroupSummary, GroupUpgradeInfo, JoinGroupContextRequest, JoinGroupContextResponse,
-    JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest, ListGroupContextsRequest,
-    ListGroupMembersRequest, ManageContextAllowlistRequest, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, SetContextVisibilityRequest, SetDefaultCapabilitiesRequest,
-    SetDefaultVisibilityRequest, SetMemberCapabilitiesRequest, StoreContextAliasRequest,
+    AddGroupMembersRequest, BroadcastGroupAliasesRequest, BroadcastGroupLocalStateRequest,
+    CreateGroupInvitationRequest, CreateGroupInvitationResponse, CreateGroupRequest,
+    CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse, DetachContextFromGroupRequest,
+    GetContextAllowlistRequest, GetContextVisibilityRequest, GetContextVisibilityResponse,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
+    GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse, GroupContextEntry,
+    GroupInfoResponse, GroupMemberEntry, GroupSummary, GroupUpgradeInfo, JoinGroupContextRequest,
+    JoinGroupContextResponse, JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, ManageContextAllowlistRequest,
+    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextVisibilityRequest,
+    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetMemberCapabilitiesRequest,
+    StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
+    StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreMemberCapabilityRequest,
     SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
     UpgradeGroupRequest, UpgradeGroupResponse,
 };
@@ -1177,6 +1179,108 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::BroadcastGroupAliases {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn broadcast_group_local_state(
+        &self,
+        request: BroadcastGroupLocalStateRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::BroadcastGroupLocalState {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn store_member_capability(
+        &self,
+        request: StoreMemberCapabilityRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::StoreMemberCapability {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn store_default_capabilities(
+        &self,
+        request: StoreDefaultCapabilitiesRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::StoreDefaultCapabilities {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn store_context_visibility(
+        &self,
+        request: StoreContextVisibilityRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::StoreContextVisibility {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn store_default_visibility(
+        &self,
+        request: StoreDefaultVisibilityRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::StoreDefaultVisibility {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn store_context_allowlist(
+        &self,
+        request: StoreContextAllowlistRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::StoreContextAllowlist {
                 request,
                 outcome: sender,
             })

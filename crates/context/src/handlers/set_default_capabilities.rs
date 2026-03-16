@@ -88,7 +88,9 @@ impl Handler<SetDefaultCapabilitiesRequest> for ContextManager {
                 let _ = node_client
                     .broadcast_group_mutation(
                         group_id.to_bytes(),
-                        GroupMutationKind::MemberRoleUpdated,
+                        GroupMutationKind::DefaultCapabilitiesSet {
+                            capabilities: default_capabilities,
+                        },
                     )
                     .await;
 

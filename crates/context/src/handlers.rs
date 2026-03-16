@@ -6,6 +6,7 @@ use crate::ContextManager;
 
 pub mod add_group_members;
 pub mod broadcast_group_aliases;
+pub mod broadcast_group_local_state;
 pub mod create_context;
 pub mod create_group;
 pub mod create_group_invitation;
@@ -33,6 +34,11 @@ pub mod set_default_capabilities;
 pub mod set_default_visibility;
 pub mod set_member_capabilities;
 pub mod store_context_alias;
+pub mod store_context_allowlist;
+pub mod store_context_visibility;
+pub mod store_default_capabilities;
+pub mod store_default_visibility;
+pub mod store_member_capability;
 pub mod sync;
 pub mod sync_group;
 pub mod update_application;
@@ -156,6 +162,24 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::BroadcastGroupAliases { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::BroadcastGroupLocalState { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::StoreMemberCapability { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::StoreDefaultCapabilities { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::StoreContextVisibility { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::StoreDefaultVisibility { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::StoreContextAllowlist { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }

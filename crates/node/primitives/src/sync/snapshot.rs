@@ -654,7 +654,32 @@ pub enum GroupMutationKind {
     MemberRoleUpdated,
     VisibilityUpdated,
     ContextAttached,
-    ContextAliasSet { context_id: [u8; 32], alias: String },
+    ContextAliasSet {
+        context_id: [u8; 32],
+        alias: String,
+    },
+    MemberCapabilitySet {
+        member: [u8; 32],
+        capabilities: u32,
+    },
+    DefaultCapabilitiesSet {
+        capabilities: u32,
+    },
+    ContextVisibilitySet {
+        context_id: [u8; 32],
+        /// 0 = Open, 1 = Restricted
+        mode: u8,
+        creator: [u8; 32],
+    },
+    DefaultVisibilitySet {
+        /// 0 = Open, 1 = Restricted
+        mode: u8,
+    },
+    ContextAllowlistSet {
+        context_id: [u8; 32],
+        /// Full replacement list — receiver clears then inserts
+        members: Vec<[u8; 32]>,
+    },
 }
 
 // Wire protocol types (StreamMessage, InitPayload, MessagePayload) are in wire.rs
