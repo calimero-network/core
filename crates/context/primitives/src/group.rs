@@ -144,6 +144,7 @@ impl Message for ListGroupMembersRequest {
 pub struct GroupMemberEntry {
     pub identity: PublicKey,
     pub role: GroupMemberRole,
+    pub alias: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -482,6 +483,29 @@ pub struct BroadcastGroupLocalStateRequest {
 }
 
 impl Message for BroadcastGroupLocalStateRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct SetMemberAliasRequest {
+    pub group_id: ContextGroupId,
+    pub member: PublicKey,
+    pub alias: String,
+    pub requester: Option<PublicKey>,
+}
+
+impl Message for SetMemberAliasRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct StoreMemberAliasRequest {
+    pub group_id: ContextGroupId,
+    pub member: PublicKey,
+    pub alias: String,
+}
+
+impl Message for StoreMemberAliasRequest {
     type Result = eyre::Result<()>;
 }
 
