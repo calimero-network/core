@@ -70,19 +70,19 @@ struct NoopStorage;
 #[async_trait]
 impl ClientAuthenticator for NoopAuth {
     async fn authenticate(&self, _: &Url) -> Result<JwtToken> {
-        unreachable!()
+        unimplemented!("NoopAuth is never called when node_name=None")
     }
 
     async fn refresh_tokens(&self, _: &str) -> Result<JwtToken> {
-        unreachable!()
+        unimplemented!("NoopAuth is never called when node_name=None")
     }
 
     async fn handle_auth_failure(&self, _: &Url) -> Result<JwtToken> {
-        unreachable!()
+        unimplemented!("NoopAuth is never called when node_name=None")
     }
 
     async fn check_auth_required(&self, _: &Url) -> Result<bool> {
-        unreachable!()
+        unimplemented!("NoopAuth is never called when node_name=None")
     }
 
     fn get_auth_method(&self) -> &'static str {
@@ -93,11 +93,11 @@ impl ClientAuthenticator for NoopAuth {
 #[async_trait]
 impl ClientStorage for NoopStorage {
     async fn load_tokens(&self, _: &str) -> Result<Option<JwtToken>> {
-        unreachable!()
+        unimplemented!("NoopStorage is never called when node_name=None")
     }
 
     async fn save_tokens(&self, _: &str, _: &JwtToken) -> Result<()> {
-        unreachable!()
+        unimplemented!("NoopStorage is never called when node_name=None")
     }
 }
 

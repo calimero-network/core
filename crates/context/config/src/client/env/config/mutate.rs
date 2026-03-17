@@ -400,16 +400,14 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         add: &'a [SignerId],
         remove: &'a [SignerId],
     ) -> ContextConfigMutateRequest<'a, T> {
-        let add = Repr::slice_from_inner(add);
-        let remove = Repr::slice_from_inner(remove);
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Group(GroupRequest::new(
                 Repr::new(group_id),
                 GroupRequestKind::ManageContextAllowlist {
                     context_id: Repr::new(context_id),
-                    add: add.to_vec(),
-                    remove: remove.to_vec(),
+                    add: add.iter().map(|s| Repr::new(*s)).collect(),
+                    remove: remove.iter().map(|s| Repr::new(*s)).collect(),
                 },
             )),
         }
