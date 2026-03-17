@@ -1063,6 +1063,7 @@ mod tests {
             GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
             GROUP_MEMBER_ALIAS_PREFIX,
             GROUP_ALIAS_PREFIX,
+            GROUP_CONTEXT_ALIAS_PREFIX,
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {

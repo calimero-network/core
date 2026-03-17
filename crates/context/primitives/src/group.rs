@@ -6,30 +6,7 @@ use calimero_primitives::identity::PublicKey;
 
 use crate::messages::MigrationParams;
 
-/// State machine for a group-wide upgrade operation.
-///
-/// Transitions: `InProgress` → `Completed` once all contexts are upgraded.
-/// If failures persist after retries, the status remains `InProgress` with a
-/// non-zero `failed` count, allowing manual retry via the retry endpoint.
-#[derive(Clone, Debug)]
-pub enum GroupUpgradeStatus {
-    /// Upgrade is actively being propagated across the group's contexts.
-    InProgress {
-        /// Total number of contexts in the group at upgrade start.
-        total: u32,
-        /// Number of contexts successfully upgraded so far.
-        completed: u32,
-        /// Number of contexts that failed in the current round.
-        failed: u32,
-    },
-    /// All contexts in the group have been successfully upgraded.
-    Completed {
-        /// Unix timestamp (seconds) when the last context was upgraded, or
-        /// `None` for `LazyOnAccess` upgrades where contexts upgrade individually
-        /// on demand with no single completion event.
-        completed_at: Option<u64>,
-    },
-}
+pub use calimero_store::key::GroupUpgradeStatus;
 
 /// Snapshot of an in-progress or completed group upgrade, returned by the API.
 ///
@@ -352,24 +329,6 @@ pub struct JoinGroupContextResponse {
     pub member_public_key: PublicKey,
 }
 
-impl From<calimero_store::key::GroupUpgradeStatus> for GroupUpgradeStatus {
-    fn from(s: calimero_store::key::GroupUpgradeStatus) -> Self {
-        match s {
-            calimero_store::key::GroupUpgradeStatus::InProgress {
-                total,
-                completed,
-                failed,
-            } => Self::InProgress {
-                total,
-                completed,
-                failed,
-            },
-            calimero_store::key::GroupUpgradeStatus::Completed { completed_at } => {
-                Self::Completed { completed_at }
-            }
-        }
-    }
-}
 
 // ---- Group Permission Types ----
 

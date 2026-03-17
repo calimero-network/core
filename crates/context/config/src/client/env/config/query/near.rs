@@ -1,4 +1,3 @@
-use core::mem;
 use std::collections::BTreeMap;
 
 use crate::client::env::config::requests::{
@@ -65,13 +64,7 @@ impl Method<Near> for MembersRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let members: Vec<Repr<ContextIdentity>> = serde_json::from_slice(&response)?;
 
-        // safety: `Repr<T>` is a transparent wrapper around `T`
-        #[expect(
-            clippy::transmute_undefined_repr,
-            reason = "Repr<T> is a transparent wrapper around T"
-        )]
-        let members =
-            unsafe { mem::transmute::<Vec<Repr<ContextIdentity>>, Vec<ContextIdentity>>(members) };
+        let members: Vec<ContextIdentity> = members.into_iter().map(|r| r.into_inner()).collect();
 
         Ok(members)
     }
@@ -118,17 +111,10 @@ impl<'a> Method<Near> for PrivilegesRequest<'a> {
         let privileges: BTreeMap<Repr<SignerId>, Vec<Capability>> =
             serde_json::from_slice(&response)?;
 
-        // safety: `Repr<T>` is a transparent wrapper around `T`
-        let privileges = unsafe {
-            #[expect(
-                clippy::transmute_undefined_repr,
-                reason = "Repr<T> is a transparent wrapper around T"
-            )]
-            mem::transmute::<
-                BTreeMap<Repr<SignerId>, Vec<Capability>>,
-                BTreeMap<SignerId, Vec<Capability>>,
-            >(privileges)
-        };
+        let privileges: BTreeMap<SignerId, Vec<Capability>> = privileges
+            .into_iter()
+            .map(|(k, v)| (k.into_inner(), v))
+            .collect();
 
         Ok(privileges)
     }
@@ -202,12 +188,7 @@ impl Method<Near> for GroupContextsRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let contexts: Vec<Repr<ContextId>> = serde_json::from_slice(&response)?;
 
-        // safety: `Repr<T>` is a transparent wrapper around `T`
-        #[expect(
-            clippy::transmute_undefined_repr,
-            reason = "Repr<T> is a transparent wrapper around T"
-        )]
-        let contexts = unsafe { mem::transmute::<Vec<Repr<ContextId>>, Vec<ContextId>>(contexts) };
+        let contexts: Vec<ContextId> = contexts.into_iter().map(|r| r.into_inner()).collect();
 
         Ok(contexts)
     }
@@ -239,14 +220,7 @@ impl Method<Near> for ContextGroupRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let group_id: Option<Repr<ContextGroupId>> = serde_json::from_slice(&response)?;
 
-        // safety: `Repr<T>` is a transparent wrapper around `T`
-        #[expect(
-            clippy::transmute_undefined_repr,
-            reason = "Repr<T> is a transparent wrapper around T"
-        )]
-        let group_id = unsafe {
-            mem::transmute::<Option<Repr<ContextGroupId>>, Option<ContextGroupId>>(group_id)
-        };
+        let group_id: Option<ContextGroupId> = group_id.map(|r| r.into_inner());
 
         Ok(group_id)
     }
@@ -292,12 +266,7 @@ impl Method<Near> for ContextAllowlistRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let members: Vec<Repr<SignerId>> = serde_json::from_slice(&response)?;
 
-        // safety: `Repr<T>` is a transparent wrapper around `T`
-        #[expect(
-            clippy::transmute_undefined_repr,
-            reason = "Repr<T> is a transparent wrapper around T"
-        )]
-        let members = unsafe { mem::transmute::<Vec<Repr<SignerId>>, Vec<SignerId>>(members) };
+        let members: Vec<SignerId> = members.into_iter().map(|r| r.into_inner()).collect();
 
         Ok(members)
     }

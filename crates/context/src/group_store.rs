@@ -692,6 +692,7 @@ pub fn delete_group_upgrade(store: &Store, group_id: &ContextGroupId) -> EyreRes
 /// Syncs metadata (app_key, target_application), group contexts, and group
 /// members from the on-chain contract. Prunes locally-stored entries that no
 /// longer exist on-chain.
+// TODO(test): add integration test with mock ContextClient — tracked in PR #2043 review
 pub async fn sync_group_state_from_contract(
     datastore: &Store,
     context_client: &ContextClient,
@@ -712,7 +713,10 @@ pub async fn sync_group_state_from_contract(
     let target_application_id = extract_application_id(&info.target_application)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+        .unwrap_or_else(|_| {
+            warn!("system clock is before Unix epoch, using 0 as timestamp");
+            std::time::Duration::ZERO
+        })
         .as_secs();
 
     let existing = load_group_meta(datastore, group_id)?;
