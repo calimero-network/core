@@ -42,8 +42,7 @@ pub struct KmsAttestationPolicy {
     pub allowed_tcb_statuses: Vec<String>,
     /// Allowed MRTD values (hex, lowercase, no 0x prefix).
     pub allowed_mrtd: Vec<String>,
-    /// Optional allowed RTMR0-3 values (hex, lowercase, no 0x prefix).
-    /// Empty lists intentionally skip the corresponding RTMR checks.
+    /// Allowed RTMR0-3 values (hex, lowercase, no 0x prefix).
     pub allowed_rtmr0: Vec<String>,
     pub allowed_rtmr1: Vec<String>,
     pub allowed_rtmr2: Vec<String>,
@@ -452,7 +451,7 @@ fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
     let root: PolicyJson =
         serde_json::from_str(json_str).map_err(|e| eyre::eyre!("Invalid policy JSON: {}", e))?;
 
-    let allowed_tcb_statuses = if root.policy.allowed_tcb_statuses.is_empty() {
+    let allowed_tcb_statuses: Vec<String> = if root.policy.allowed_tcb_statuses.is_empty() {
         // Default to UpToDate when not specified, matching production hardening
         // expectations for Intel TDX attestation status.
         DEFAULT_ALLOWED_TCB_STATUSES
@@ -474,8 +473,25 @@ fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
     let allowed_rtmr2 = parse_hex_array(&root.policy.allowed_rtmr2, 48)?;
     let allowed_rtmr3 = parse_hex_array(&root.policy.allowed_rtmr3, 48)?;
 
+    if allowed_tcb_statuses.is_empty() {
+        bail!(
+            "Policy JSON missing policy.allowed_tcb_statuses (at least one TCB status is required)"
+        );
+    }
     if allowed_mrtd.is_empty() {
         bail!("Policy JSON missing policy.allowed_mrtd (at least one MRTD value is required)");
+    }
+    if allowed_rtmr0.is_empty() {
+        bail!("Policy JSON missing policy.allowed_rtmr0 (at least one RTMR0 value is required)");
+    }
+    if allowed_rtmr1.is_empty() {
+        bail!("Policy JSON missing policy.allowed_rtmr1 (at least one RTMR1 value is required)");
+    }
+    if allowed_rtmr2.is_empty() {
+        bail!("Policy JSON missing policy.allowed_rtmr2 (at least one RTMR2 value is required)");
+    }
+    if allowed_rtmr3.is_empty() {
+        bail!("Policy JSON missing policy.allowed_rtmr3 (at least one RTMR3 value is required)");
     }
 
     let default_binding_b64 = root.kms.default_binding_b64.trim().to_string();
@@ -715,22 +731,30 @@ mod tests {
                 "policy": {{
                     "allowed_tcb_statuses": ["UpToDate"],
                     "allowed_mrtd": ["{mrtd}"],
-                    "allowed_rtmr0": [],
-                    "allowed_rtmr1": [],
-                    "allowed_rtmr2": [],
-                    "allowed_rtmr3": []
+                    "allowed_rtmr0": ["{rtmr0}"],
+                    "allowed_rtmr1": ["{rtmr1}"],
+                    "allowed_rtmr2": ["{rtmr2}"],
+                    "allowed_rtmr3": ["{rtmr3}"]
                 }},
                 "kms": {{
                     "default_binding_b64": "{binding}"
                 }}
             }}"#,
             mrtd = "ab".repeat(48),
+            rtmr0 = "cd".repeat(48),
+            rtmr1 = "ef".repeat(48),
+            rtmr2 = "12".repeat(48),
+            rtmr3 = "34".repeat(48),
             binding = base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
         );
 
         let policy = parse_policy_json(&json).expect("policy should parse");
         assert_eq!(policy.allowed_tcb_statuses, vec!["uptodate".to_owned()]);
         assert_eq!(policy.allowed_mrtd, vec!["ab".repeat(48)]);
+        assert_eq!(policy.allowed_rtmr0, vec!["cd".repeat(48)]);
+        assert_eq!(policy.allowed_rtmr1, vec!["ef".repeat(48)]);
+        assert_eq!(policy.allowed_rtmr2, vec!["12".repeat(48)]);
+        assert_eq!(policy.allowed_rtmr3, vec!["34".repeat(48)]);
     }
 
     #[test]
@@ -739,13 +763,21 @@ mod tests {
             r#"{{
                 "policy": {{
                     "allowed_tcb_statuses": ["UpToDate"],
-                    "allowed_mrtd": ["{mrtd}"]
+                    "allowed_mrtd": ["{mrtd}"],
+                    "allowed_rtmr0": ["{rtmr0}"],
+                    "allowed_rtmr1": ["{rtmr1}"],
+                    "allowed_rtmr2": ["{rtmr2}"],
+                    "allowed_rtmr3": ["{rtmr3}"]
                 }},
                 "kms": {{
                     "default_binding_b64": "{binding}"
                 }}
             }}"#,
             mrtd = "ab".repeat(48),
+            rtmr0 = "cd".repeat(48),
+            rtmr1 = "ef".repeat(48),
+            rtmr2 = "12".repeat(48),
+            rtmr3 = "34".repeat(48),
             binding = base64::engine::general_purpose::STANDARD.encode([7u8; 31]),
         );
 
@@ -753,6 +785,35 @@ mod tests {
             .expect_err("invalid binding size should fail")
             .to_string();
         assert!(err.contains("must decode to exactly 32 bytes"));
+    }
+
+    #[test]
+    fn parse_policy_json_requires_non_empty_rtmr_allowlists() {
+        let json = format!(
+            r#"{{
+                "policy": {{
+                    "allowed_tcb_statuses": ["UpToDate"],
+                    "allowed_mrtd": ["{mrtd}"],
+                    "allowed_rtmr0": [],
+                    "allowed_rtmr1": ["{rtmr1}"],
+                    "allowed_rtmr2": ["{rtmr2}"],
+                    "allowed_rtmr3": ["{rtmr3}"]
+                }},
+                "kms": {{
+                    "default_binding_b64": "{binding}"
+                }}
+            }}"#,
+            mrtd = "ab".repeat(48),
+            rtmr1 = "ef".repeat(48),
+            rtmr2 = "12".repeat(48),
+            rtmr3 = "34".repeat(48),
+            binding = base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
+        );
+
+        let err = parse_policy_json(&json)
+            .expect_err("empty RTMR allowlist should fail")
+            .to_string();
+        assert!(err.contains("policy.allowed_rtmr0"));
     }
 
     #[test]

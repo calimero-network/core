@@ -8,11 +8,13 @@ use crate::defaults;
 mod auth_mode;
 mod config;
 mod init;
+mod kms;
 mod run;
 mod validation;
 
 use config::ConfigCommand;
 use init::InitCommand;
+use kms::KmsCommand;
 use run::RunCommand;
 
 pub const EXAMPLES: &str = concat!(
@@ -69,6 +71,7 @@ pub struct RootCommand {
 pub enum SubCommands {
     Config(ConfigCommand),
     Init(InitCommand),
+    Kms(KmsCommand),
     #[command(alias = "up")]
     Run(RunCommand),
 }
@@ -90,6 +93,7 @@ impl RootCommand {
         match self.action {
             SubCommands::Config(config) => config.run(&self.args).await,
             SubCommands::Init(init) => init.run(self.args).await,
+            SubCommands::Kms(kms) => kms.run(&self.args).await,
             SubCommands::Run(run) => run.run(self.args).await,
         }
     }
