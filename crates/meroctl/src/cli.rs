@@ -176,20 +176,21 @@ impl RootCommand {
             }
 
             // Check if it's a local node at <home>/<node>
+            let node_path = self.args.home.join(node);
             let config = load_config(&self.args.home, node).await?;
             let multiaddr = fetch_multiaddr(&config)?;
             let url = multiaddr_to_url(&multiaddr, "")?;
 
-            // For unregistered local nodes, use authenticate_with_session_cache
-            // This will handle authentication if needed, or bypass it for local nodes
+            // Pass the local path so the node is registered as NodeConnection::Local,
+            // preserving dynamic URL resolution on future invocations.
             let connection =
-                authenticate_with_session_cache(&url, &format!("local node {}", node), output)
-                    .await?;
+                authenticate_with_session_cache(&url, node, Some(&node_path), output).await?;
             Ok(connection)
         } else if let Some(api_url) = &self.args.api {
             // Use specific API URL - check session cache first, then authenticate if needed
             let connection =
-                authenticate_with_session_cache(api_url, &api_url.to_string(), output).await?;
+                authenticate_with_session_cache(api_url, &api_url.to_string(), None, output)
+                    .await?;
             Ok(connection)
         } else {
             // Try to use active node
@@ -207,10 +208,9 @@ impl RootCommand {
             }
 
             // No active node set - fall back to default localhost server
-            // For default localhost, use authenticate_with_session_cache
             let default_url = "http://127.0.0.1:2528".parse()?;
             let connection =
-                authenticate_with_session_cache(&default_url, "default", output).await?;
+                authenticate_with_session_cache(&default_url, "default", None, output).await?;
             Ok(connection)
         }
     }

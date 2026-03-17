@@ -65,6 +65,20 @@ impl Config {
             .await
             .wrap_err_with(|| format!("Failed to write config file: {}", path.display()))?;
 
+        // Restrict permissions to owner-only (0600) so JWT tokens are not readable
+        // by other local users. No-op on non-Unix platforms.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(&path, perms).wrap_err_with(|| {
+                format!(
+                    "Failed to set permissions on config file: {}",
+                    path.display()
+                )
+            })?;
+        }
+
         Ok(())
     }
 
