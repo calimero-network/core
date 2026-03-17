@@ -1,4 +1,3 @@
-use core::ptr;
 use std::fmt::Debug;
 
 use super::requests::{
@@ -227,9 +226,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         group_id: ContextGroupId,
         members: &'a [SignerId],
     ) -> ContextConfigMutateRequest<'a, T> {
-        // safety: `Repr<T>` is a transparent wrapper around `T`
-        let members =
-            unsafe { &*(ptr::from_ref::<[SignerId]>(members) as *const [Repr<SignerId>]) };
+        let members = Repr::slice_from_inner(members);
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Group(GroupRequest::new(
@@ -246,9 +243,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         group_id: ContextGroupId,
         members: &'a [SignerId],
     ) -> ContextConfigMutateRequest<'a, T> {
-        // safety: `Repr<T>` is a transparent wrapper around `T`
-        let members =
-            unsafe { &*(ptr::from_ref::<[SignerId]>(members) as *const [Repr<SignerId>]) };
+        let members = Repr::slice_from_inner(members);
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Group(GroupRequest::new(
@@ -405,9 +400,8 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         add: &'a [SignerId],
         remove: &'a [SignerId],
     ) -> ContextConfigMutateRequest<'a, T> {
-        // safety: `Repr<T>` is a transparent wrapper around `T`
-        let add = unsafe { &*(ptr::from_ref::<[SignerId]>(add) as *const [Repr<SignerId>]) };
-        let remove = unsafe { &*(ptr::from_ref::<[SignerId]>(remove) as *const [Repr<SignerId>]) };
+        let add = Repr::slice_from_inner(add);
+        let remove = Repr::slice_from_inner(remove);
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Group(GroupRequest::new(

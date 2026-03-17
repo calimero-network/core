@@ -42,6 +42,30 @@ impl<T> Repr<T> {
     pub fn into_inner(self) -> T {
         self.inner
     }
+
+    /// Reinterprets `&[T]` as `&[Repr<T>]` without copying.
+    ///
+    /// Safe because `Repr<T>` is `#[repr(transparent)]` over `T`, meaning they
+    /// share identical size, alignment, and ABI. The inline `const` assertions
+    /// verify this at compile time per monomorphization so that removing
+    /// `#[repr(transparent)]` would become a compile error rather than UB.
+    pub fn slice_from_inner(slice: &[T]) -> &[Self] {
+        const {
+            assert!(
+                core::mem::size_of::<T>() == core::mem::size_of::<Repr<T>>(),
+                "Repr<T> size mismatch — is #[repr(transparent)] still present?"
+            )
+        };
+        const {
+            assert!(
+                core::mem::align_of::<T>() == core::mem::align_of::<Repr<T>>(),
+                "Repr<T> alignment mismatch — is #[repr(transparent)] still present?"
+            )
+        };
+        // SAFETY: `Repr<T>` is `#[repr(transparent)]` over `T`; identical
+        // layout is enforced by the const assertions above.
+        unsafe { &*(core::ptr::from_ref::<[T]>(slice) as *const [Self]) }
+    }
 }
 
 impl<T: ReprBytes> Display for Repr<T> {
