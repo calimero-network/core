@@ -329,7 +329,6 @@ pub struct JoinGroupContextResponse {
     pub member_public_key: PublicKey,
 }
 
-
 // ---- Group Permission Types ----
 
 #[derive(Debug)]

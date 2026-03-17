@@ -1347,10 +1347,7 @@ impl ContextClient {
         receiver.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn store_group_context(
-        &self,
-        request: StoreGroupContextRequest,
-    ) -> eyre::Result<()> {
+    pub async fn store_group_context(&self, request: StoreGroupContextRequest) -> eyre::Result<()> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager

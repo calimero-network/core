@@ -44,11 +44,15 @@ impl Handler<BroadcastGroupLocalStateRequest> for ContextManager {
             Ok(v) => v,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
-        let contexts =
-            match group_store::enumerate_group_contexts(&self.datastore, &group_id, 0, usize::MAX) {
-                Ok(v) => v,
-                Err(err) => return ActorResponse::reply(Err(err)),
-            };
+        let contexts = match group_store::enumerate_group_contexts(
+            &self.datastore,
+            &group_id,
+            0,
+            usize::MAX,
+        ) {
+            Ok(v) => v,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
 
         let node_client = self.node_client.clone();
         let group_id_bytes = group_id.to_bytes();
