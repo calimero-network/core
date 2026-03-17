@@ -47,16 +47,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let expiration_block_height = inv.expiration_height;
 
         // Derive inviter_identity (PublicKey) for local admin validation
-        let inviter_identity = match (|| -> eyre::Result<PublicKey> {
-            let bytes: [u8; 32] = borsh::from_slice(
-                &borsh::to_vec(&inv.inviter_identity)
-                    .map_err(|e| eyre::eyre!("borsh serialize inviter_identity: {e}"))?,
-            )?;
-            Ok(PublicKey::from(bytes))
-        })() {
-            Ok(pk) => pk,
-            Err(e) => return ActorResponse::reply(Err(e)),
-        };
+        let inviter_identity = PublicKey::from(inv.inviter_identity.to_bytes());
 
         // Check if we need to bootstrap from chain
         let needs_chain_sync = group_store::load_group_meta(&self.datastore, &group_id)
@@ -121,9 +112,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 if let Some(client_result) = group_client_result {
                     let group_client = client_result?;
 
-                    let joiner_bytes: [u8; 32] = *joiner_identity;
-                    let new_member_signer_id: SignerId =
-                        borsh::from_slice(&borsh::to_vec(&joiner_bytes)?)?;
+                    let new_member_signer_id = SignerId::from(*joiner_identity);
 
                     // Build the reveal payload data using the invitation directly
                     let reveal_payload_data = GroupRevealPayloadData {

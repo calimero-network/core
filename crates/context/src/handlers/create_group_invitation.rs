@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_config::types::{
-    ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::group::{
@@ -84,19 +84,11 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
 
             let expiration_block_height: u64 = expiration_block_height.unwrap_or(999_999_999);
 
-            // Convert PublicKey to SignerId via borsh roundtrip (both are [u8; 32] wrappers).
-            let requester_bytes: [u8; 32] = *requester;
-            let inviter_signer_id: SignerId = borsh::from_slice(
-                &borsh::to_vec(&requester_bytes)
-                    .map_err(|e| eyre::eyre!("borsh serialize failed: {e}"))?,
-            )
-            .map_err(|e| eyre::eyre!("borsh deserialize to SignerId failed: {e}"))?;
-
-            let config_group_id = ContextGroupId::from(group_id.to_bytes());
+            let inviter_signer_id = SignerId::from(*requester);
 
             let invitation = GroupInvitationFromAdmin {
                 inviter_identity: inviter_signer_id,
-                group_id: config_group_id,
+                group_id,
                 expiration_height: expiration_block_height,
                 secret_salt,
                 protocol: "near".to_string(),

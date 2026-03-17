@@ -136,6 +136,18 @@ impl ReprBytes for SignerId {
     }
 }
 
+impl SignerId {
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
+}
+
+impl From<[u8; 32]> for SignerId {
+    fn from(value: [u8; 32]) -> Self {
+        Self(Identity(value))
+    }
+}
+
 #[derive(
     Eq,
     Ord,
