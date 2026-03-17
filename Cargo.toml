@@ -32,8 +32,6 @@ exclude = [
     "./apps/xcall-example",
     "./apps/demo-blockchain-integrations",
     "./apps/e2e-kv-store",
-    "./apps/poker",
-    "./apps/poker-bot",
     "./crates/merod",
     "./crates/meroctl",
     "./crates/build-utils",
@@ -100,9 +98,6 @@ members = [
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
     "./apps/demo-blockchain-integrations",
-    "./apps/poker",
-    "./apps/poker-bot",
-
     "./tools/calimero-abi",
     "./tools/merodb",
     "./tools/mero-sign",
