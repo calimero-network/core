@@ -577,21 +577,14 @@ pub fn get_member_alias(
 }
 
 /// Stores a human-readable alias for the group itself.
-pub fn set_group_alias(
-    store: &Store,
-    group_id: &ContextGroupId,
-    alias: &str,
-) -> EyreResult<()> {
+pub fn set_group_alias(store: &Store, group_id: &ContextGroupId, alias: &str) -> EyreResult<()> {
     let mut handle = store.handle();
     handle.put(&GroupAlias::new(group_id.to_bytes()), &alias.to_owned())?;
     Ok(())
 }
 
 /// Returns the alias for a group, if one was set.
-pub fn get_group_alias(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<String>> {
+pub fn get_group_alias(store: &Store, group_id: &ContextGroupId) -> EyreResult<Option<String>> {
     let handle = store.handle();
     handle
         .get(&GroupAlias::new(group_id.to_bytes()))

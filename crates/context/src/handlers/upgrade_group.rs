@@ -527,9 +527,7 @@ pub(crate) async fn propagate_upgrade(
             // Skip contexts already running the target application to avoid
             // re-executing migrations on retry/recovery paths.
             match context_client.get_context(context_id) {
-                Ok(Some(ctx))
-                    if ctx.application_id == target_application_id && migration.is_none() =>
-                {
+                Ok(Some(ctx)) if ctx.application_id == target_application_id => {
                     completed += 1;
                     debug!(
                         ?group_id,

@@ -8,7 +8,10 @@ impl Handler<StoreGroupContextRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        StoreGroupContextRequest { group_id, context_id }: StoreGroupContextRequest,
+        StoreGroupContextRequest {
+            group_id,
+            context_id,
+        }: StoreGroupContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result =
