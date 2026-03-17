@@ -7,6 +7,7 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use eyre::bail;
 use sha2::{Digest, Sha256};
 use tracing::info;
+use tracing::warn;
 
 use crate::{group_store, ContextManager};
 
@@ -173,6 +174,22 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 let _ = node_client
                     .broadcast_group_mutation(group_id.to_bytes(), GroupMutationKind::MembersAdded)
                     .await;
+
+                // Always sync group state from contract after joining to ensure
+                // contexts registered before this node joined are immediately visible.
+                // This runs after Phase 3 (on-chain join) so Node B is an authorized member.
+                if let Err(err) = group_store::sync_group_state_from_contract(
+                    &datastore,
+                    &context_client,
+                    &group_id,
+                    &protocol,
+                    &network_id,
+                    &contract_id,
+                )
+                .await
+                {
+                    warn!(?err, "Failed to sync group state from contract after join");
+                }
 
                 info!(
                     ?group_id,
