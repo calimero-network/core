@@ -60,6 +60,7 @@ impl CreateCommand {
             app_key: self.app_key,
             application_id: self.application_id,
             upgrade_policy,
+            alias: None,
         };
 
         let client = environment.client()?;

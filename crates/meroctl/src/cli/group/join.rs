@@ -20,7 +20,10 @@ impl JoinCommand {
         let invitation: SignedGroupOpenInvitation = serde_json::from_str(&self.invitation_json)
             .map_err(|e| eyre::eyre!("invalid invitation JSON: {e}"))?;
 
-        let request = JoinGroupApiRequest { invitation };
+        let request = JoinGroupApiRequest {
+            invitation,
+            group_alias: None,
+        };
 
         let client = environment.client()?;
         let response = client.join_group(request).await?;
