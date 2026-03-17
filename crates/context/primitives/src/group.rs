@@ -536,6 +536,16 @@ impl Message for StoreGroupAliasRequest {
 }
 
 #[derive(Debug)]
+pub struct StoreGroupContextRequest {
+    pub group_id: ContextGroupId,
+    pub context_id: ContextId,
+}
+
+impl Message for StoreGroupContextRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
 pub struct StoreMemberCapabilityRequest {
     pub group_id: ContextGroupId,
     pub member: PublicKey,

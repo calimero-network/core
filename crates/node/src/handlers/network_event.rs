@@ -605,6 +605,33 @@ impl Handler<NetworkEvent> for NodeManager {
                                     .into_actor(self),
                                 );
                             }
+                            calimero_node_primitives::sync::GroupMutationKind::ContextRegistered {
+                                context_id,
+                            } => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::StoreGroupContextRequest;
+                                        use calimero_primitives::context::ContextId;
+
+                                        let group_id = ContextGroupId::from(group_id);
+                                        let context_id = ContextId::from(context_id);
+                                        if let Err(err) = context_client
+                                            .store_group_context(StoreGroupContextRequest {
+                                                group_id,
+                                                context_id,
+                                            })
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to store group context from gossip"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
                             _ => {
                                 let _ignored = ctx.spawn(
                                     async move {

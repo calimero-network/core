@@ -44,6 +44,11 @@ impl Handler<BroadcastGroupLocalStateRequest> for ContextManager {
             Ok(v) => v,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
+        let contexts =
+            match group_store::enumerate_group_contexts(&self.datastore, &group_id, 0, usize::MAX) {
+                Ok(v) => v,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
 
         let node_client = self.node_client.clone();
         let group_id_bytes = group_id.to_bytes();
@@ -123,6 +128,17 @@ impl Handler<BroadcastGroupLocalStateRequest> for ContextManager {
                         .broadcast_group_mutation(
                             group_id_bytes,
                             GroupMutationKind::GroupAliasSet { alias },
+                        )
+                        .await;
+                }
+
+                for context_id in contexts {
+                    let _ = node_client
+                        .broadcast_group_mutation(
+                            group_id_bytes,
+                            GroupMutationKind::ContextRegistered {
+                                context_id: *context_id,
+                            },
                         )
                         .await;
                 }

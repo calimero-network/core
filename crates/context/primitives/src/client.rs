@@ -38,9 +38,9 @@ use crate::group::{
     SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetGroupAliasRequest,
     SetMemberAliasRequest, SetMemberCapabilitiesRequest, StoreContextAliasRequest,
     StoreContextAllowlistRequest, StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest,
-    StoreDefaultVisibilityRequest, StoreGroupAliasRequest, StoreMemberAliasRequest,
-    StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    StoreDefaultVisibilityRequest, StoreGroupAliasRequest, StoreGroupContextRequest,
+    StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -1338,6 +1338,23 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::StoreGroupAlias {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn store_group_context(
+        &self,
+        request: StoreGroupContextRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::StoreGroupContext {
                 request,
                 outcome: sender,
             })

@@ -41,6 +41,7 @@ pub mod store_context_visibility;
 pub mod store_default_capabilities;
 pub mod store_default_visibility;
 pub mod store_group_alias;
+pub mod store_group_context;
 pub mod store_member_alias;
 pub mod store_member_capability;
 pub mod sync;
@@ -196,6 +197,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::StoreGroupAlias { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::StoreGroupContext { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }
