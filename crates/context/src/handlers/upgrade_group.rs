@@ -75,10 +75,16 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
         let migration_method_str = migration.as_ref().map(|m| m.method.clone());
 
-        // Auto-store signing key for future use
-        if let Some(ref sk) = signing_key {
-            let _ =
-                group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
+        // Auto-store signing key ONLY when the requester IS the node's own identity
+        if let (Some(sk), Some((node_pk, _))) = (signing_key, node_identity) {
+            if requester == node_pk {
+                let _ = group_store::store_group_signing_key(
+                    &self.datastore,
+                    &group_id,
+                    &requester,
+                    &sk,
+                );
+            }
         }
 
         // Build contract call if signing_key is available (or from stored key)

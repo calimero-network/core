@@ -39,14 +39,16 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             },
         };
 
-        // Auto-store node signing key so it's available for signing the invitation
-        if let Some((_, node_sk)) = node_identity {
-            let _ = group_store::store_group_signing_key(
-                &self.datastore,
-                &group_id,
-                &requester,
-                &node_sk,
-            );
+        // Auto-store node signing key ONLY when the requester IS the node's own identity
+        if let Some((node_pk, node_sk)) = node_identity {
+            if requester == node_pk {
+                let _ = group_store::store_group_signing_key(
+                    &self.datastore,
+                    &group_id,
+                    &requester,
+                    &node_sk,
+                );
+            }
         }
 
         let result = (|| {
