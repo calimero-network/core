@@ -31,12 +31,6 @@ enum RequestType {
     Delete,
 }
 
-#[derive(Debug)]
-enum RefreshError {
-    NoRefreshToken,
-    RefreshFailed,
-}
-
 /// Generic connection information that can work with any authenticator and storage implementation
 #[derive(Clone, Debug)]
 pub struct ConnectionInfo<A, S>
@@ -109,43 +103,14 @@ where
 
         let requires_auth = self.path_requires_auth(path);
 
-        let auth_header = if requires_auth && self.node_name.is_some() {
-            if let Ok(Some(tokens)) = self
-                .client_storage
-                .load_tokens(&self.node_name.as_ref().unwrap())
-                .await
-            {
-                Some(format!("Bearer {}", tokens.access_token))
-            } else {
-                match self.authenticator.authenticate(&self.api_url).await {
-                    Ok(new_tokens) => {
-                        self.client_storage
-                            .update_tokens(&self.node_name.as_ref().unwrap(), &new_tokens)
-                            .await?;
-                        Some(format!("Bearer {}", new_tokens.access_token))
-                    }
-                    Err(auth_err) => {
-                        bail!("Authentication failed: {}", auth_err);
-                    }
-                }
+        self.execute_request_with_auth_retry(requires_auth, |auth_header| {
+            let mut builder = self.client.put(url.clone()).body(data.clone());
+            if let Some(h) = auth_header {
+                builder = builder.header("Authorization", h);
             }
-        } else {
-            None
-        };
-
-        let response = self
-            .execute_request_with_auth_retry(|| {
-                let mut builder = self.client.put(url.clone()).body(data.clone());
-
-                if let Some(ref auth_header) = auth_header {
-                    builder = builder.header("Authorization", auth_header);
-                }
-
-                builder.send()
-            })
-            .await?;
-
-        Ok(response)
+            builder.send()
+        })
+        .await
     }
 
     pub async fn get_binary(&self, path: &str) -> Result<Vec<u8>> {
@@ -160,38 +125,12 @@ where
 
         let requires_auth = self.path_requires_auth(path);
 
-        let auth_header = if requires_auth && self.node_name.is_some() {
-            if let Ok(Some(tokens)) = self
-                .client_storage
-                .load_tokens(&self.node_name.as_ref().unwrap())
-                .await
-            {
-                Some(format!("Bearer {}", tokens.access_token))
-            } else {
-                match self.authenticator.authenticate(&self.api_url).await {
-                    Ok(new_tokens) => {
-                        self.client_storage
-                            .update_tokens(&self.node_name.as_ref().unwrap(), &new_tokens)
-                            .await?;
-                        Some(format!("Bearer {}", new_tokens.access_token))
-                    }
-                    Err(auth_err) => {
-                        bail!("Authentication failed: {}", auth_err);
-                    }
-                }
-            }
-        } else {
-            None
-        };
-
         let response = self
-            .execute_request_with_auth_retry(|| {
+            .execute_request_with_auth_retry(requires_auth, |auth_header| {
                 let mut builder = self.client.get(url.clone());
-
-                if let Some(ref auth_header) = auth_header {
-                    builder = builder.header("Authorization", auth_header);
+                if let Some(h) = auth_header {
+                    builder = builder.header("Authorization", h);
                 }
-
                 builder.send()
             })
             .await?;
@@ -207,44 +146,14 @@ where
         let mut url = self.api_url.clone();
         url.set_path(path);
 
-        // Check if this path requires authentication
         let requires_auth = self.path_requires_auth(path);
 
-        // Load tokens from storage before making the request
-        let auth_header = if requires_auth && self.node_name.is_some() {
-            if let Ok(Some(tokens)) = self
-                .client_storage
-                .load_tokens(&self.node_name.as_ref().unwrap())
-                .await
-            {
-                Some(format!("Bearer {}", tokens.access_token))
-            } else {
-                // No tokens available, try to authenticate proactively
-                match self.authenticator.authenticate(&self.api_url).await {
-                    Ok(new_tokens) => {
-                        // Update stored tokens
-                        self.client_storage
-                            .update_tokens(&self.node_name.as_ref().unwrap(), &new_tokens)
-                            .await?;
-                        Some(format!("Bearer {}", new_tokens.access_token))
-                    }
-                    Err(auth_err) => {
-                        bail!("Authentication failed: {}", auth_err);
-                    }
-                }
-            }
-        } else {
-            None
-        };
-
         let response = self
-            .execute_request_with_auth_retry(|| {
+            .execute_request_with_auth_retry(requires_auth, |auth_header| {
                 let mut builder = self.client.head(url.clone());
-
-                if let Some(ref auth_header) = auth_header {
-                    builder = builder.header("Authorization", auth_header);
+                if let Some(h) = auth_header {
+                    builder = builder.header("Authorization", h);
                 }
-
                 builder.send()
             })
             .await?;
@@ -260,48 +169,18 @@ where
         let mut url = self.api_url.clone();
         url.set_path(path);
 
-        // Check if this path requires authentication
         let requires_auth = self.path_requires_auth(path);
 
-        // Load tokens from storage before making the request
-        let auth_header = if requires_auth && self.node_name.is_some() {
-            if let Ok(Some(tokens)) = self
-                .client_storage
-                .load_tokens(&self.node_name.as_ref().unwrap())
-                .await
-            {
-                Some(format!("Bearer {}", tokens.access_token))
-            } else {
-                // No tokens available, try to authenticate proactively
-                match self.authenticator.authenticate(&self.api_url).await {
-                    Ok(new_tokens) => {
-                        // Update stored tokens
-                        self.client_storage
-                            .update_tokens(&self.node_name.as_ref().unwrap(), &new_tokens)
-                            .await?;
-                        Some(format!("Bearer {}", new_tokens.access_token))
-                    }
-                    Err(auth_err) => {
-                        bail!("Authentication failed: {}", auth_err);
-                    }
-                }
-            }
-        } else {
-            None
-        };
-
         let response = self
-            .execute_request_with_auth_retry(|| {
+            .execute_request_with_auth_retry(requires_auth, |auth_header| {
                 let mut builder = match req_type {
                     RequestType::Get => self.client.get(url.clone()),
                     RequestType::Post => self.client.post(url.clone()).json(&body),
                     RequestType::Delete => self.client.delete(url.clone()),
                 };
-
-                if let Some(ref auth_header) = auth_header {
-                    builder = builder.header("Authorization", auth_header);
+                if let Some(h) = auth_header {
+                    builder = builder.header("Authorization", h);
                 }
-
                 builder.send()
             })
             .await?;
@@ -309,53 +188,68 @@ where
         response.json::<O>().await.map_err(Into::into)
     }
 
+    /// Load a fresh auth header from storage, or authenticate proactively if no tokens exist.
+    /// Returns `None` if auth is not required or node_name is unset.
+    async fn load_auth_header(&self, requires_auth: bool) -> Result<Option<String>> {
+        if !requires_auth || self.node_name.is_none() {
+            return Ok(None);
+        }
+        let node_name = self.node_name.as_ref().unwrap();
+
+        if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
+            return Ok(Some(format!("Bearer {}", tokens.access_token)));
+        }
+
+        // No tokens — authenticate proactively
+        match self.authenticator.authenticate(&self.api_url).await {
+            Ok(new_tokens) => {
+                self.client_storage
+                    .update_tokens(node_name, &new_tokens)
+                    .await?;
+                Ok(Some(format!("Bearer {}", new_tokens.access_token)))
+            }
+            Err(auth_err) => {
+                bail!("Authentication failed: {}", auth_err);
+            }
+        }
+    }
+
+    /// Execute a request with automatic token refresh / re-authentication on 401.
+    ///
+    /// The closure receives a fresh `Option<String>` auth header on **every** call,
+    /// including retries after token refresh. This ensures stale tokens are never
+    /// reused across retry attempts.
     async fn execute_request_with_auth_retry<F, Fut>(
         &self,
+        requires_auth: bool,
         request_builder: F,
     ) -> Result<reqwest::Response>
     where
-        F: Fn() -> Fut,
+        F: Fn(Option<String>) -> Fut,
         Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
     {
         let mut retry_count = 0;
         const MAX_RETRIES: u32 = 2;
 
         loop {
-            let response = request_builder().await?;
+            // Load a fresh auth header on EVERY iteration so retries use up-to-date tokens.
+            let auth_header = self.load_auth_header(requires_auth).await?;
+
+            let response = request_builder(auth_header).await?;
 
             if response.status() == 401 && retry_count < MAX_RETRIES {
                 retry_count += 1;
 
-                // Try to refresh tokens
+                // Try to refresh first; fall back to full re-auth on any failure.
                 match self.refresh_token().await {
                     Ok(new_token) => {
-                        // Update stored tokens
                         if let Some(ref node_name) = self.node_name {
                             self.client_storage
                                 .update_tokens(node_name, &new_token)
                                 .await?;
                         }
-                        continue;
                     }
-                    Err(RefreshError::RefreshFailed) => {
-                        // Token refresh failed, try full re-authentication
-                        match self.authenticator.authenticate(&self.api_url).await {
-                            Ok(new_tokens) => {
-                                // Update stored tokens
-                                if let Some(ref node_name) = self.node_name {
-                                    self.client_storage
-                                        .update_tokens(node_name, &new_tokens)
-                                        .await?;
-                                }
-                                continue;
-                            }
-                            Err(auth_err) => {
-                                bail!("Authentication failed: {}", auth_err);
-                            }
-                        }
-                    }
-                    Err(RefreshError::NoRefreshToken) => {
-                        // No refresh token — fall back to full browser re-authentication
+                    Err(_) => {
                         match self.authenticator.authenticate(&self.api_url).await {
                             Ok(new_tokens) => {
                                 if let Some(ref node_name) = self.node_name {
@@ -363,7 +257,6 @@ where
                                         .update_tokens(node_name, &new_tokens)
                                         .await?;
                                 }
-                                continue;
                             }
                             Err(auth_err) => {
                                 bail!("Authentication failed: {}", auth_err);
@@ -371,43 +264,39 @@ where
                         }
                     }
                 }
+                // Loop back — next iteration loads fresh tokens.
+                continue;
             }
 
             if response.status() == 403 {
-                bail!("Access denied. Your authentication may not have sufficient permissions.");
+                bail!("Access denied — your token may not have sufficient permissions.");
             }
 
             if !response.status().is_success() {
-                bail!("Request failed with status: {}", response.status());
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                bail!("{}", extract_error_message(&body, status));
             }
 
             return Ok(response);
         }
     }
 
-    async fn refresh_token(&self) -> Result<JwtToken, RefreshError> {
+    async fn refresh_token(&self) -> Result<JwtToken> {
         if let Some(ref node_name) = self.node_name {
             if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
                 let refresh_token = tokens
                     .refresh_token
                     .clone()
-                    .ok_or(RefreshError::NoRefreshToken)?;
+                    .ok_or_else(|| eyre!("No refresh token available"))?;
 
-                match self
+                return self
                     .try_refresh_token(&tokens.access_token, &refresh_token)
-                    .await
-                {
-                    Ok(new_token) => {
-                        return Ok(new_token);
-                    }
-                    Err(_) => {
-                        return Err(RefreshError::RefreshFailed);
-                    }
-                }
+                    .await;
             }
         }
 
-        Err(RefreshError::NoRefreshToken)
+        Err(eyre!("No tokens available to refresh"))
     }
 
     async fn try_refresh_token(&self, access_token: &str, refresh_token: &str) -> Result<JwtToken> {
@@ -443,9 +332,11 @@ where
             .await?;
 
         if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
             return Err(eyre!(
-                "Token refresh failed with status: {}",
-                response.status()
+                "Token refresh failed: {}",
+                extract_error_message(&body, status)
             ));
         }
 
@@ -471,6 +362,7 @@ where
     }
 
     /// Detect the authentication mode for this connection
+
     pub async fn detect_auth_mode(&self) -> Result<AuthMode> {
         // Probe a protected endpoint — if it returns 401, auth is required.
         // admin-api/health is intentionally public, so we probe a protected endpoint instead.
@@ -496,4 +388,42 @@ where
             }
         }
     }
+}
+
+/// Extract a human-readable error message from an HTTP error response body.
+///
+/// Tries to parse JSON and look for common error envelope shapes used by the node.
+/// Falls back to the raw body text, then to just the status code.
+fn extract_error_message(body: &str, status: reqwest::StatusCode) -> String {
+    let trimmed = body.trim();
+
+    if trimmed.is_empty() {
+        return format!("HTTP {}", status.as_u16());
+    }
+
+    // Try to parse as JSON and extract a meaningful message
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        // { "error": { "message": "..." } }
+        if let Some(msg) = json
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            return msg.to_owned();
+        }
+        // { "error": "..." }
+        if let Some(msg) = json.get("error").and_then(|m| m.as_str()) {
+            return msg.to_owned();
+        }
+        // { "message": "..." }
+        if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
+            return msg.to_owned();
+        }
+        // { "data": null, "error": { ... } } — already handled above;
+        // fall through to raw body
+    }
+
+    // Not JSON or no message field — return raw body, truncated to 300 chars
+    let text: String = trimmed.chars().take(300).collect();
+    text
 }

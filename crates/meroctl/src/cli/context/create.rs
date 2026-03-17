@@ -169,11 +169,20 @@ pub async fn create_context(
         bail!("Application is not installed on node.")
     }
 
+    // Normalize protocol to lowercase so "NEAR" and "near" both work
+    let protocol = protocol.to_lowercase();
+
+    // Default initialization params to "{}" so the WASM application always
+    // receives valid JSON (empty bytes cause EOF deserialization errors)
+    let init_params = params
+        .map(String::into_bytes)
+        .unwrap_or_else(|| b"{}".to_vec());
+
     let request = CreateContextRequest::new(
         protocol,
         application_id,
         context_seed,
-        params.map(String::into_bytes).unwrap_or_default(),
+        init_params,
     );
 
     let response: CreateContextResponse = client.create_context(request).await?;
