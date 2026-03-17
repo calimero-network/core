@@ -36,4 +36,7 @@ pub use url::Url;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(test)]
+mod tests;
+
+#[cfg(test)]
 use tokio_test as _;
