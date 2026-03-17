@@ -385,7 +385,14 @@ impl NodeClient {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<unreadable body>".to_owned());
-            eyre::bail!("Registry returned HTTP {} for {}: {}", status, url, body);
+            // Truncate to avoid leaking sensitive data that may appear in error responses.
+            let truncated: String = body.chars().take(256).collect();
+            eyre::bail!(
+                "Registry returned HTTP {} for {}: {}",
+                status,
+                url,
+                truncated
+            );
         }
 
         let expected_size = response.content_length();

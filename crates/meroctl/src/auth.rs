@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use camino::Utf8PathBuf;
+
 use axum::extract::Query;
 use axum::response::Html;
 use axum::routing::get;
@@ -332,10 +334,14 @@ pub async fn check_authentication(
 }
 
 /// Helper function for session-based authentication with caching for external connections
-/// Returns a ConnectionInfo with appropriate authentication tokens
+/// Returns a ConnectionInfo with appropriate authentication tokens.
+///
+/// `local_node_path` should be `Some(path)` when the node is a local node found via the
+/// filesystem (so it is persisted as `NodeConnection::Local`).  Pass `None` for remote/URL nodes.
 pub async fn authenticate_with_session_cache(
     url: &Url,
     node_name: &str,
+    local_node_path: Option<&Utf8PathBuf>,
     output: Output,
 ) -> Result<ConnectionInfo> {
     let temp_connection = ConnectionInfo::new(
@@ -365,21 +371,11 @@ pub async fn authenticate_with_session_cache(
                     // Store in session cache for future use during this session
                     session_cache.store_tokens(url.as_str(), &jwt_tokens).await;
 
-                    // Register node in config so FileTokenStorage can persist tokens across sessions
-                    let mut config = crate::config::Config::load().await?;
-                    if !config.nodes.contains_key(node_name) {
-                        config.nodes.insert(
-                            node_name.to_owned(),
-                            crate::config::NodeConnection::Remote {
-                                url: url.clone(),
-                                jwt_tokens: Some(crate::storage::JwtToken {
-                                    access_token: jwt_tokens.access_token.clone(),
-                                    refresh_token: jwt_tokens.refresh_token.clone(),
-                                }),
-                            },
-                        );
-                        config.save().await?;
-                    }
+                    // Persist the node in config so FileTokenStorage can use tokens across
+                    // sessions.  Reload config immediately before writing to shrink the TOCTOU
+                    // window; only insert when the key is absent so an explicit `node add` entry
+                    // is never overwritten.
+                    persist_node_in_config(node_name, url, local_node_path, &jwt_tokens).await?;
 
                     Ok(ConnectionInfo::new(
                         url.clone(),
@@ -402,6 +398,57 @@ pub async fn authenticate_with_session_cache(
             FileTokenStorage::new(),
         ))
     }
+}
+
+/// Persist a node entry and its fresh tokens in the meroctl config file.
+///
+/// * If the node is not yet in config it is inserted as `Local` (when `local_node_path` is
+///   `Some`) or `Remote` (otherwise).
+/// * If the node already exists its tokens are **always updated** so that
+///   `FileTokenStorage::load_tokens` finds the fresh credentials and does not trigger a
+///   redundant browser-auth prompt on the next request.
+///
+/// Config is reloaded immediately before the write to reduce the TOCTOU race window.
+async fn persist_node_in_config(
+    node_name: &str,
+    url: &Url,
+    local_node_path: Option<&Utf8PathBuf>,
+    jwt_tokens: &JwtToken,
+) -> Result<()> {
+    // Reload config just before mutating to reduce the TOCTOU window.
+    let mut config = crate::config::Config::load().await?;
+
+    let stored_tokens = Some(crate::storage::JwtToken {
+        access_token: jwt_tokens.access_token.clone(),
+        refresh_token: jwt_tokens.refresh_token.clone(),
+    });
+
+    if let Some(conn) = config.nodes.get_mut(node_name) {
+        // Node already registered — update tokens so FileTokenStorage sees fresh credentials.
+        match conn {
+            crate::config::NodeConnection::Local { jwt_tokens: t, .. }
+            | crate::config::NodeConnection::Remote { jwt_tokens: t, .. } => {
+                *t = stored_tokens;
+            }
+        }
+    } else {
+        // New node — register with the correct connection type.
+        let conn = if let Some(path) = local_node_path {
+            crate::config::NodeConnection::Local {
+                path: path.clone(),
+                jwt_tokens: stored_tokens,
+            }
+        } else {
+            crate::config::NodeConnection::Remote {
+                url: url.clone(),
+                jwt_tokens: stored_tokens,
+            }
+        };
+        config.nodes.insert(node_name.to_owned(), conn);
+    }
+
+    config.save().await?;
+    Ok(())
 }
 
 /// Meroctl-specific implementation of ClientAuthenticator

@@ -191,10 +191,12 @@ where
     /// Load a fresh auth header from storage, or authenticate proactively if no tokens exist.
     /// Returns `None` if auth is not required or node_name is unset.
     async fn load_auth_header(&self, requires_auth: bool) -> Result<Option<String>> {
-        if !requires_auth || self.node_name.is_none() {
+        if !requires_auth {
             return Ok(None);
         }
-        let node_name = self.node_name.as_ref().unwrap();
+        let Some(node_name) = &self.node_name else {
+            return Ok(None);
+        };
 
         if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
             return Ok(Some(format!("Bearer {}", tokens.access_token)));
@@ -371,8 +373,10 @@ where
                 if response.status() == 401 {
                     // 401 Unauthorized means authentication is required
                     Ok(AuthMode::Required)
-                } else if response.status().is_success() || response.status() == 404 {
-                    // 200/404 without auth challenge means no authentication required
+                } else if response.status().is_success() {
+                    // 2xx without auth challenge means no authentication required.
+                    // Note: 404 is intentionally excluded — a protected endpoint can return 404
+                    // (e.g., empty contexts list) while still requiring auth for mutations.
                     Ok(AuthMode::None)
                 } else {
                     // Other status codes, assume authentication is required for safety
@@ -390,8 +394,10 @@ where
 
 /// Extract a human-readable error message from an HTTP error response body.
 ///
-/// Tries to parse JSON and look for common error envelope shapes used by the node.
-/// Falls back to the raw body text, then to just the status code.
+/// Only extracts from known-safe structured fields (`error.message`, `error`, `message`).
+/// Falls back to "HTTP {status}" rather than including raw body text to avoid
+/// leaking sensitive server-internal details.  All extracted strings are capped at
+/// 300 characters for consistency.
 fn extract_error_message(body: &str, status: reqwest::StatusCode) -> String {
     let trimmed = body.trim();
 
@@ -399,7 +405,9 @@ fn extract_error_message(body: &str, status: reqwest::StatusCode) -> String {
         return format!("HTTP {}", status.as_u16());
     }
 
-    // Try to parse as JSON and extract a meaningful message
+    const MAX_LEN: usize = 300;
+
+    // Try to parse as JSON and extract a meaningful message from known-safe fields.
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) {
         // { "error": { "message": "..." } }
         if let Some(msg) = json
@@ -407,21 +415,73 @@ fn extract_error_message(body: &str, status: reqwest::StatusCode) -> String {
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
         {
-            return msg.to_owned();
+            return msg.chars().take(MAX_LEN).collect();
         }
         // { "error": "..." }
         if let Some(msg) = json.get("error").and_then(|m| m.as_str()) {
-            return msg.to_owned();
+            return msg.chars().take(MAX_LEN).collect();
         }
         // { "message": "..." }
         if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
-            return msg.to_owned();
+            return msg.chars().take(MAX_LEN).collect();
         }
-        // { "data": null, "error": { ... } } — already handled above;
-        // fall through to raw body
     }
 
-    // Not JSON or no message field — return raw body, truncated to 300 chars
-    let text: String = trimmed.chars().take(300).collect();
-    text
+    // Non-JSON or no known error field — return just the status code to avoid body leakage.
+    format!("HTTP {}", status.as_u16())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_body() {
+        let s = reqwest::StatusCode::INTERNAL_SERVER_ERROR;
+        assert_eq!(extract_error_message("", s), "HTTP 500");
+        assert_eq!(extract_error_message("   ", s), "HTTP 500");
+    }
+
+    #[test]
+    fn test_json_nested_error_message() {
+        let s = reqwest::StatusCode::BAD_REQUEST;
+        let body = r#"{"error":{"message":"invalid request"}}"#;
+        assert_eq!(extract_error_message(body, s), "invalid request");
+    }
+
+    #[test]
+    fn test_json_flat_error_string() {
+        let s = reqwest::StatusCode::UNAUTHORIZED;
+        let body = r#"{"error":"unauthorized"}"#;
+        assert_eq!(extract_error_message(body, s), "unauthorized");
+    }
+
+    #[test]
+    fn test_json_message_field() {
+        let s = reqwest::StatusCode::NOT_FOUND;
+        let body = r#"{"message":"not found"}"#;
+        assert_eq!(extract_error_message(body, s), "not found");
+    }
+
+    #[test]
+    fn test_invalid_json_returns_status() {
+        let s = reqwest::StatusCode::INTERNAL_SERVER_ERROR;
+        assert_eq!(extract_error_message("not valid json {", s), "HTTP 500");
+    }
+
+    #[test]
+    fn test_json_no_known_fields_returns_status() {
+        let s = reqwest::StatusCode::BAD_REQUEST;
+        let body = r#"{"data":null,"code":42}"#;
+        assert_eq!(extract_error_message(body, s), "HTTP 400");
+    }
+
+    #[test]
+    fn test_long_json_message_truncated() {
+        let s = reqwest::StatusCode::BAD_REQUEST;
+        let long_msg = "x".repeat(400);
+        let body = format!(r#"{{"message":"{}"}}"#, long_msg);
+        let result = extract_error_message(&body, s);
+        assert_eq!(result.chars().count(), 300);
+    }
 }
