@@ -113,9 +113,7 @@ async fn list_groups() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/admin-api/groups"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
         .expect(1)
         .mount(&server)
         .await;
@@ -131,11 +129,9 @@ async fn create_group() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/admin-api/groups"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {"groupId": GID}
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {"groupId": GID}
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -160,21 +156,19 @@ async fn get_group_info() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(format!("/admin-api/groups/{GID}")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {
-                    "groupId": GID,
-                    "appKey": "testkey",
-                    "targetApplicationId": ZERO_BS58,
-                    "upgradePolicy": "Automatic",
-                    "memberCount": 0,
-                    "contextCount": 0,
-                    "activeUpgrade": null,
-                    "defaultCapabilities": 0,
-                    "defaultVisibility": "open"
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "groupId": GID,
+                "appKey": "testkey",
+                "targetApplicationId": ZERO_BS58,
+                "upgradePolicy": "Automatic",
+                "memberCount": 0,
+                "contextCount": 0,
+                "activeUpgrade": null,
+                "defaultCapabilities": 0,
+                "defaultVisibility": "open"
+            }
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -190,11 +184,9 @@ async fn delete_group() {
     let server = MockServer::start().await;
     Mock::given(method("DELETE"))
         .and(path(format!("/admin-api/groups/{GID}")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {"isDeleted": true}
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {"isDeleted": true}
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -238,9 +230,7 @@ async fn list_group_members() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(format!("/admin-api/groups/{GID}/members")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
         .expect(1)
         .mount(&server)
         .await;
@@ -333,9 +323,7 @@ async fn list_group_contexts() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(format!("/admin-api/groups/{GID}/contexts")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
         .expect(1)
         .mount(&server)
         .await;
@@ -374,14 +362,12 @@ async fn join_group_context() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/join-context")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {
-                    "contextId": ZERO_BS58,
-                    "memberPublicKey": ZERO_BS58
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "contextId": ZERO_BS58,
+                "memberPublicKey": ZERO_BS58
+            }
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -410,24 +396,22 @@ async fn create_group_invitation() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/invite")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "invitation": {
                     "invitation": {
-                        "invitation": {
-                            "inviter_identity": zeros,
-                            "group_id": zeros,
-                            "expiration_height": 0u64,
-                            "secret_salt": zeros,
-                            "protocol": "near",
-                            "network": "testnet",
-                            "contract_id": "contract.testnet"
-                        },
-                        "inviter_signature": "testsig"
-                    }
+                        "inviter_identity": zeros,
+                        "group_id": zeros,
+                        "expiration_height": 0u64,
+                        "secret_salt": zeros,
+                        "protocol": "near",
+                        "network": "testnet",
+                        "contract_id": "contract.testnet"
+                    },
+                    "inviter_signature": "testsig"
                 }
-            })),
-        )
+            }
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -469,14 +453,12 @@ async fn join_group() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/admin-api/groups/join"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {
-                    "groupId": GID,
-                    "memberIdentity": ZERO_BS58
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "groupId": GID,
+                "memberIdentity": ZERO_BS58
+            }
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -500,17 +482,15 @@ async fn upgrade_group() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/upgrade")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {
-                    "groupId": GID,
-                    "status": "pending",
-                    "total": null,
-                    "completed": null,
-                    "failed": null
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "groupId": GID,
+                "status": "pending",
+                "total": null,
+                "completed": null,
+                "failed": null
+            }
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -536,9 +516,7 @@ async fn get_group_upgrade_status() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(format!("/admin-api/groups/{GID}/upgrade/status")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": null})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": null})))
         .expect(1)
         .mount(&server)
         .await;
@@ -554,17 +532,15 @@ async fn retry_group_upgrade() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/upgrade/retry")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {
-                    "groupId": GID,
-                    "status": "pending",
-                    "total": null,
-                    "completed": null,
-                    "failed": null
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "groupId": GID,
+                "status": "pending",
+                "total": null,
+                "completed": null,
+                "failed": null
+            }
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -585,17 +561,15 @@ async fn sync_group() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/sync")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {
-                    "groupId": GID,
-                    "appKey": "testkey",
-                    "targetApplicationId": ZERO_BS58,
-                    "memberCount": 0,
-                    "contextCount": 0
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "groupId": GID,
+                "appKey": "testkey",
+                "targetApplicationId": ZERO_BS58,
+                "memberCount": 0,
+                "contextCount": 0
+            }
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -622,11 +596,9 @@ async fn register_group_signing_key() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/signing-key")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {"publicKey": ZERO_BS58}
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {"publicKey": ZERO_BS58}
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -680,11 +652,9 @@ async fn get_member_capabilities() {
         .and(path(format!(
             "/admin-api/groups/{GID}/members/{IDENT}/capabilities"
         )))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {"capabilities": 42}
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {"capabilities": 42}
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -728,14 +698,12 @@ async fn get_context_visibility() {
         .and(path(format!(
             "/admin-api/groups/{GID}/contexts/{CID}/visibility"
         )))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {
-                    "mode": "open",
-                    "creator": ZERO_BS58
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "mode": "open",
+                "creator": ZERO_BS58
+            }
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -782,9 +750,7 @@ async fn get_context_allowlist() {
         .and(path(format!(
             "/admin-api/groups/{GID}/contexts/{CID}/allowlist"
         )))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
         .expect(1)
         .mount(&server)
         .await;
