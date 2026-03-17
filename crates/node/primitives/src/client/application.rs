@@ -385,12 +385,7 @@ impl NodeClient {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<unreadable body>".to_owned());
-            eyre::bail!(
-                "Registry returned HTTP {} for {}: {}",
-                status,
-                url,
-                body
-            );
+            eyre::bail!("Registry returned HTTP {} for {}: {}", status, url, body);
         }
 
         let expected_size = response.content_length();

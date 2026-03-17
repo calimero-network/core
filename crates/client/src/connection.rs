@@ -249,20 +249,18 @@ where
                                 .await?;
                         }
                     }
-                    Err(_) => {
-                        match self.authenticator.authenticate(&self.api_url).await {
-                            Ok(new_tokens) => {
-                                if let Some(ref node_name) = self.node_name {
-                                    self.client_storage
-                                        .update_tokens(node_name, &new_tokens)
-                                        .await?;
-                                }
-                            }
-                            Err(auth_err) => {
-                                bail!("Authentication failed: {}", auth_err);
+                    Err(_) => match self.authenticator.authenticate(&self.api_url).await {
+                        Ok(new_tokens) => {
+                            if let Some(ref node_name) = self.node_name {
+                                self.client_storage
+                                    .update_tokens(node_name, &new_tokens)
+                                    .await?;
                             }
                         }
-                    }
+                        Err(auth_err) => {
+                            bail!("Authentication failed: {}", auth_err);
+                        }
+                    },
                 }
                 // Loop back — next iteration loads fresh tokens.
                 continue;

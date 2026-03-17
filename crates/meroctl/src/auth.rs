@@ -42,7 +42,9 @@ pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
 
     let auth_url = build_auth_url(api_url, callback_port)?;
 
-    output.write(&InfoLine("Opening browser for authentication — you have 2 minutes to complete sign-in."));
+    output.write(&InfoLine(
+        "Opening browser for authentication — you have 2 minutes to complete sign-in.",
+    ));
 
     if let Err(e) = webbrowser::open(&auth_url.to_string()) {
         let warning_msg = format!(
@@ -428,7 +430,10 @@ impl Clone for MeroctlAuthenticator {
 }
 
 impl MeroctlAuthenticator {
-    pub fn new(output: Box<dyn calimero_client::MeroctlOutputHandler + Send + Sync>, raw_output: Output) -> Self {
+    pub fn new(
+        output: Box<dyn calimero_client::MeroctlOutputHandler + Send + Sync>,
+        raw_output: Output,
+    ) -> Self {
         Self { output, raw_output }
     }
 }
@@ -437,8 +442,9 @@ impl MeroctlAuthenticator {
 impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
     async fn authenticate(&self, api_url: &Url) -> Result<JwtToken> {
         // Use the proper OAuth authentication flow
-        self.output
-            .display_message("Opening browser for authentication — you have 2 minutes to complete sign-in.");
+        self.output.display_message(
+            "Opening browser for authentication — you have 2 minutes to complete sign-in.",
+        );
 
         // Set up callback server
         let (callback_port, callback_rx) = start_callback_server().await?;

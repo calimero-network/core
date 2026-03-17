@@ -178,12 +178,7 @@ pub async fn create_context(
         .map(String::into_bytes)
         .unwrap_or_else(|| b"{}".to_vec());
 
-    let request = CreateContextRequest::new(
-        protocol,
-        application_id,
-        context_seed,
-        init_params,
-    );
+    let request = CreateContextRequest::new(protocol, application_id, context_seed, init_params);
 
     let response: CreateContextResponse = client.create_context(request).await?;
 
