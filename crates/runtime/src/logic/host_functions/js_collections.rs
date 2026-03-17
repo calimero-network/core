@@ -10,8 +10,8 @@ use calimero_storage::{
     index::Index,
     interface::{Interface, StorageError},
     js::{
-        JsCounter, JsFrozenStorage, JsLwwRegister, JsUnorderedMap, JsUnorderedSet, JsUserStorage,
-        JsVector,
+        JsCounter, JsFrozenStorage, JsLwwRegister, JsPnCounter, JsRga, JsUnorderedMap,
+        JsUnorderedSet, JsUserStorage, JsVector,
     },
     store::MainStorage,
 };
@@ -242,6 +242,248 @@ impl VMHostFunctions<'_> {
                 dest_register_id,
             )
         })
+    }
+
+    // ── new_with_id variants ──────────────────────────────────────────
+
+    pub fn js_crdt_map_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_map_new_with_id(id_ptr, dest_register_id))
+    }
+
+    pub fn js_crdt_vector_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_vector_new_with_id(id_ptr, dest_register_id))
+    }
+
+    pub fn js_crdt_set_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_set_new_with_id(id_ptr, dest_register_id))
+    }
+
+    pub fn js_crdt_lww_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_lww_new_with_id(id_ptr, dest_register_id))
+    }
+
+    // ── GCounter aliases ──────────────────────────────────────────────
+
+    pub fn js_crdt_g_counter_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        self.js_crdt_counter_new(dest_register_id)
+    }
+
+    pub fn js_crdt_g_counter_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_counter_new_with_id(id_ptr, dest_register_id))
+    }
+
+    pub fn js_crdt_g_counter_increment(&mut self, counter_id_ptr: u64) -> VMLogicResult<i32> {
+        self.js_crdt_counter_increment(counter_id_ptr)
+    }
+
+    pub fn js_crdt_g_counter_value(
+        &mut self,
+        counter_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.js_crdt_counter_value(counter_id_ptr, dest_register_id)
+    }
+
+    pub fn js_crdt_g_counter_get_executor_count(
+        &mut self,
+        counter_id_ptr: u64,
+        executor_ptr: u64,
+        has_executor: u32,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.js_crdt_counter_get_executor_count(
+            counter_id_ptr,
+            executor_ptr,
+            has_executor,
+            dest_register_id,
+        )
+    }
+
+    pub fn js_crdt_g_counter_serialize(
+        &mut self,
+        counter_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_counter_serialize(counter_id_ptr, dest_register_id)
+        })
+    }
+
+    pub fn js_crdt_g_counter_deserialize(
+        &mut self,
+        data_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_counter_deserialize(data_ptr, dest_register_id)
+        })
+    }
+
+    // ── PNCounter ─────────────────────────────────────────────────────
+
+    pub fn js_crdt_pn_counter_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_pn_counter_new(dest_register_id))
+    }
+
+    pub fn js_crdt_pn_counter_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_pn_counter_new_with_id(id_ptr, dest_register_id)
+        })
+    }
+
+    pub fn js_crdt_pn_counter_increment(&mut self, counter_id_ptr: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_pn_counter_increment(counter_id_ptr))
+    }
+
+    pub fn js_crdt_pn_counter_decrement(&mut self, counter_id_ptr: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_pn_counter_decrement(counter_id_ptr))
+    }
+
+    pub fn js_crdt_pn_counter_value(
+        &mut self,
+        counter_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_pn_counter_value(counter_id_ptr, dest_register_id)
+        })
+    }
+
+    pub fn js_crdt_pn_counter_get_positive_count(
+        &mut self,
+        counter_id_ptr: u64,
+        executor_ptr: u64,
+        has_executor: u32,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_pn_counter_get_positive_count(
+                counter_id_ptr,
+                executor_ptr,
+                has_executor,
+                dest_register_id,
+            )
+        })
+    }
+
+    pub fn js_crdt_pn_counter_get_negative_count(
+        &mut self,
+        counter_id_ptr: u64,
+        executor_ptr: u64,
+        has_executor: u32,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_pn_counter_get_negative_count(
+                counter_id_ptr,
+                executor_ptr,
+                has_executor,
+                dest_register_id,
+            )
+        })
+    }
+
+    pub fn js_crdt_pn_counter_serialize(
+        &mut self,
+        counter_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_pn_counter_serialize(counter_id_ptr, dest_register_id)
+        })
+    }
+
+    pub fn js_crdt_pn_counter_deserialize(
+        &mut self,
+        data_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_pn_counter_deserialize(data_ptr, dest_register_id)
+        })
+    }
+
+    // ── RGA ───────────────────────────────────────────────────────────
+
+    pub fn js_crdt_rga_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_new(dest_register_id))
+    }
+
+    pub fn js_crdt_rga_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_new_with_id(id_ptr, dest_register_id))
+    }
+
+    pub fn js_crdt_rga_insert(
+        &mut self,
+        rga_id_ptr: u64,
+        pos: u64,
+        text_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_insert(rga_id_ptr, pos, text_ptr))
+    }
+
+    pub fn js_crdt_rga_delete(&mut self, rga_id_ptr: u64, pos: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_delete(rga_id_ptr, pos))
+    }
+
+    pub fn js_crdt_rga_get_text(
+        &mut self,
+        rga_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_get_text(rga_id_ptr, dest_register_id))
+    }
+
+    pub fn js_crdt_rga_len(
+        &mut self,
+        rga_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_len(rga_id_ptr, dest_register_id))
+    }
+
+    pub fn js_crdt_rga_serialize(
+        &mut self,
+        rga_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_serialize(rga_id_ptr, dest_register_id))
+    }
+
+    pub fn js_crdt_rga_deserialize(
+        &mut self,
+        data_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_deserialize(data_ptr, dest_register_id))
     }
 
     /// Creates a new UserStorage and returns its identifier.
@@ -1062,6 +1304,622 @@ impl VMHostFunctions<'_> {
         }
     }
 
+    // ── new_with_id private implementations ─────────────────────────
+
+    fn crdt_map_new_with_id(&mut self, id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome =
+            panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsUnorderedMap, String> {
+                let mut map = JsUnorderedMap::new_with_id(id);
+                save_js_map_instance(&mut map)?;
+                Ok(map)
+            }));
+
+        match outcome {
+            Ok(Ok(map)) => {
+                self.write_register_bytes(dest_register_id, map.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_vector_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsVector, String> {
+            let mut vector = JsVector::new_with_id(id);
+            save_js_vector_instance(&mut vector)?;
+            Ok(vector)
+        }));
+
+        match outcome {
+            Ok(Ok(vector)) => {
+                self.write_register_bytes(dest_register_id, vector.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_set_new_with_id(&mut self, id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome =
+            panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsUnorderedSet, String> {
+                let mut set = JsUnorderedSet::new_with_id(id);
+                save_js_set_instance(&mut set)?;
+                Ok(set)
+            }));
+
+        match outcome {
+            Ok(Ok(set)) => {
+                self.write_register_bytes(dest_register_id, set.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_lww_new_with_id(&mut self, id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsLwwRegister, String> {
+            let mut register = JsLwwRegister::new_with_id(id);
+            save_js_lww_instance(&mut register)?;
+            Ok(register)
+        }));
+
+        match outcome {
+            Ok(Ok(register)) => {
+                self.write_register_bytes(dest_register_id, register.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_counter_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsCounter, String> {
+            let mut counter = JsCounter::new_with_id(id);
+            save_js_counter_instance(&mut counter)?;
+            Ok(counter)
+        }));
+
+        match outcome {
+            Ok(Ok(counter)) => {
+                self.write_register_bytes(dest_register_id, counter.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    // ── GCounter serialize/deserialize ────────────────────────────────
+
+    fn crdt_counter_serialize(
+        &mut self,
+        counter_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let counter_id = match self.read_map_id(counter_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let counter = match load_js_counter_instance(counter_id) {
+            Ok(counter) => counter,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match borsh::to_vec(&counter) {
+            Ok(bytes) => {
+                self.write_register_bytes(dest_register_id, &bytes)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_counter_deserialize(
+        &mut self,
+        data_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let data = self.read_buffer(data_ptr)?;
+
+        let counter: JsCounter = match borsh::from_slice(&data) {
+            Ok(c) => c,
+            Err(err) => return self.write_error_message(dest_register_id, err),
+        };
+
+        let mut counter = counter;
+        match save_js_counter_instance(&mut counter) {
+            Ok(()) => {
+                self.write_register_bytes(dest_register_id, counter.id().as_bytes())?;
+                Ok(0)
+            }
+            Err(message) => self.write_error_message(dest_register_id, message),
+        }
+    }
+
+    // ── PNCounter private implementations ─────────────────────────────
+
+    fn crdt_pn_counter_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsPnCounter, String> {
+            let mut counter = JsPnCounter::new();
+            save_js_pn_counter_instance(&mut counter)?;
+            Ok(counter)
+        }));
+
+        match outcome {
+            Ok(Ok(counter)) => {
+                self.write_register_bytes(dest_register_id, counter.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_pn_counter_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsPnCounter, String> {
+            let mut counter = JsPnCounter::new_with_id(id);
+            save_js_pn_counter_instance(&mut counter)?;
+            Ok(counter)
+        }));
+
+        match outcome {
+            Ok(Ok(counter)) => {
+                self.write_register_bytes(dest_register_id, counter.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_pn_counter_increment(&mut self, counter_id_ptr: u64) -> VMLogicResult<i32> {
+        let counter_id = match self.read_map_id(counter_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let mut counter = match load_js_pn_counter_instance(counter_id) {
+            Ok(counter) => counter,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match counter.increment() {
+            Ok(()) => match save_js_pn_counter_instance(&mut counter) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(0, message),
+            },
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_pn_counter_decrement(&mut self, counter_id_ptr: u64) -> VMLogicResult<i32> {
+        let counter_id = match self.read_map_id(counter_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let mut counter = match load_js_pn_counter_instance(counter_id) {
+            Ok(counter) => counter,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match counter.decrement() {
+            Ok(()) => match save_js_pn_counter_instance(&mut counter) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(0, message),
+            },
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_pn_counter_value(
+        &mut self,
+        counter_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let counter_id = match self.read_map_id(counter_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let counter = match load_js_pn_counter_instance(counter_id) {
+            Ok(counter) => counter,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match counter.value() {
+            Ok(value) => {
+                self.write_register_bytes(dest_register_id, &value.to_le_bytes())?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_pn_counter_get_positive_count(
+        &mut self,
+        counter_id_ptr: u64,
+        executor_ptr: u64,
+        has_executor: u32,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let counter_id = match self.read_map_id(counter_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let executor_bytes: [u8; 32] = if has_executor != 0 {
+            let bytes = self.read_buffer(executor_ptr)?;
+            match <[u8; 32]>::try_from(bytes.as_slice()) {
+                Ok(array) => array,
+                Err(_) => {
+                    return self.write_error_message(
+                        dest_register_id,
+                        "executor id must be exactly 32 bytes",
+                    )
+                }
+            }
+        } else {
+            self.borrow_logic().context.executor_public_key
+        };
+
+        let counter = match load_js_pn_counter_instance(counter_id) {
+            Ok(counter) => counter,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match counter.get_positive_count(&executor_bytes) {
+            Ok(value) => {
+                self.write_register_bytes(dest_register_id, &value.to_le_bytes())?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_pn_counter_get_negative_count(
+        &mut self,
+        counter_id_ptr: u64,
+        executor_ptr: u64,
+        has_executor: u32,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let counter_id = match self.read_map_id(counter_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let executor_bytes: [u8; 32] = if has_executor != 0 {
+            let bytes = self.read_buffer(executor_ptr)?;
+            match <[u8; 32]>::try_from(bytes.as_slice()) {
+                Ok(array) => array,
+                Err(_) => {
+                    return self.write_error_message(
+                        dest_register_id,
+                        "executor id must be exactly 32 bytes",
+                    )
+                }
+            }
+        } else {
+            self.borrow_logic().context.executor_public_key
+        };
+
+        let counter = match load_js_pn_counter_instance(counter_id) {
+            Ok(counter) => counter,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match counter.get_negative_count(&executor_bytes) {
+            Ok(value) => {
+                self.write_register_bytes(dest_register_id, &value.to_le_bytes())?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_pn_counter_serialize(
+        &mut self,
+        counter_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let counter_id = match self.read_map_id(counter_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let counter = match load_js_pn_counter_instance(counter_id) {
+            Ok(counter) => counter,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match borsh::to_vec(&counter) {
+            Ok(bytes) => {
+                self.write_register_bytes(dest_register_id, &bytes)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_pn_counter_deserialize(
+        &mut self,
+        data_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let data = self.read_buffer(data_ptr)?;
+
+        let counter: JsPnCounter = match borsh::from_slice(&data) {
+            Ok(c) => c,
+            Err(err) => return self.write_error_message(dest_register_id, err),
+        };
+
+        let mut counter = counter;
+        match save_js_pn_counter_instance(&mut counter) {
+            Ok(()) => {
+                self.write_register_bytes(dest_register_id, counter.id().as_bytes())?;
+                Ok(0)
+            }
+            Err(message) => self.write_error_message(dest_register_id, message),
+        }
+    }
+
+    // ── RGA private implementations ───────────────────────────────────
+
+    fn crdt_rga_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsRga, String> {
+            let mut rga = JsRga::new();
+            save_js_rga_instance(&mut rga)?;
+            Ok(rga)
+        }));
+
+        match outcome {
+            Ok(Ok(rga)) => {
+                self.write_register_bytes(dest_register_id, rga.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_rga_new_with_id(&mut self, id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsRga, String> {
+            let mut rga = JsRga::new_with_id(id);
+            save_js_rga_instance(&mut rga)?;
+            Ok(rga)
+        }));
+
+        match outcome {
+            Ok(Ok(rga)) => {
+                self.write_register_bytes(dest_register_id, rga.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_rga_insert(&mut self, rga_id_ptr: u64, pos: u64, text_ptr: u64) -> VMLogicResult<i32> {
+        let rga_id = match self.read_map_id(rga_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let idx = match usize::try_from(pos) {
+            Ok(v) => v,
+            Err(_) => {
+                return self
+                    .write_error_message(0, format!("position {pos} does not fit into usize"))
+            }
+        };
+
+        let text_bytes = self.read_buffer(text_ptr)?;
+        let text = match std::str::from_utf8(&text_bytes) {
+            Ok(s) => s,
+            Err(err) => return self.write_error_message(0, err),
+        };
+
+        let mut rga = match load_js_rga_instance(rga_id) {
+            Ok(rga) => rga,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match rga.insert(idx, text) {
+            Ok(()) => match save_js_rga_instance(&mut rga) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(0, message),
+            },
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_rga_delete(&mut self, rga_id_ptr: u64, pos: u64) -> VMLogicResult<i32> {
+        let rga_id = match self.read_map_id(rga_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let idx = match usize::try_from(pos) {
+            Ok(v) => v,
+            Err(_) => {
+                return self
+                    .write_error_message(0, format!("position {pos} does not fit into usize"))
+            }
+        };
+
+        let mut rga = match load_js_rga_instance(rga_id) {
+            Ok(rga) => rga,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match rga.delete(idx) {
+            Ok(()) => match save_js_rga_instance(&mut rga) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(0, message),
+            },
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_rga_get_text(&mut self, rga_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let rga_id = match self.read_map_id(rga_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let rga = match load_js_rga_instance(rga_id) {
+            Ok(rga) => rga,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match rga.get_text() {
+            Ok(text) => {
+                self.write_register_bytes(dest_register_id, text.as_bytes())?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_rga_len(&mut self, rga_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let rga_id = match self.read_map_id(rga_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let rga = match load_js_rga_instance(rga_id) {
+            Ok(rga) => rga,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match rga.len() {
+            Ok(len) => {
+                let len_u64 = u64::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
+                self.write_register_bytes(dest_register_id, &len_u64.to_le_bytes())?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_rga_serialize(&mut self, rga_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let rga_id = match self.read_map_id(rga_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let rga = match load_js_rga_instance(rga_id) {
+            Ok(rga) => rga,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match borsh::to_vec(&rga) {
+            Ok(bytes) => {
+                self.write_register_bytes(dest_register_id, &bytes)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_rga_deserialize(&mut self, data_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let data = self.read_buffer(data_ptr)?;
+
+        let rga: JsRga = match borsh::from_slice(&data) {
+            Ok(r) => r,
+            Err(err) => return self.write_error_message(dest_register_id, err),
+        };
+
+        let mut rga = rga;
+        match save_js_rga_instance(&mut rga) {
+            Ok(()) => {
+                self.write_register_bytes(dest_register_id, rga.id().as_bytes())?;
+                Ok(0)
+            }
+            Err(message) => self.write_error_message(dest_register_id, message),
+        }
+    }
+
     fn user_storage_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
         let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsUserStorage, String> {
             let mut storage = JsUserStorage::new();
@@ -1794,6 +2652,132 @@ fn save_js_frozen_storage_instance(storage: &mut JsFrozenStorage) -> Result<(), 
             ensure_root_index_internal().map_err(|err| err.to_string())?;
             match Interface::<MainStorage>::add_child_to(Id::root(), storage) {
                 Ok(_) => Ok(()),
+                Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
+                Err(err) => Err(err.to_string()),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn load_js_pn_counter_instance(id: Id) -> Result<JsPnCounter, String> {
+    match JsPnCounter::load(id) {
+        Ok(Some(counter)) => {
+            debug!(
+                target: "runtime::pn_counter",
+                counter_id = %id.to_string(),
+                "loaded JsPnCounter from storage"
+            );
+            Ok(counter)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::pn_counter",
+                counter_id = %missing_id,
+                "JsPnCounter not found in storage"
+            );
+            let mut counter = JsPnCounter::new_with_id(id);
+            match save_js_pn_counter_instance(&mut counter) {
+                Ok(()) => {
+                    debug!(
+                        target: "runtime::pn_counter",
+                        counter_id = %missing_id,
+                        "recreated missing JsPnCounter"
+                    );
+                    Ok(counter)
+                }
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn save_js_pn_counter_instance(counter: &mut JsPnCounter) -> Result<(), String> {
+    match counter.save() {
+        Ok(_) => {
+            debug!(
+                target: "runtime::pn_counter",
+                counter_id = %counter.id().to_string(),
+                "saved JsPnCounter to storage"
+            );
+            Ok(())
+        }
+        Err(StorageError::CannotCreateOrphan(_)) => {
+            ensure_root_index_internal().map_err(|err| err.to_string())?;
+            match Interface::<MainStorage>::add_child_to(Id::root(), counter) {
+                Ok(_) => {
+                    debug!(
+                        target: "runtime::pn_counter",
+                        counter_id = %counter.id().to_string(),
+                        "attached JsPnCounter to root index"
+                    );
+                    Ok(())
+                }
+                Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
+                Err(err) => Err(err.to_string()),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn load_js_rga_instance(id: Id) -> Result<JsRga, String> {
+    match JsRga::load(id) {
+        Ok(Some(rga)) => {
+            debug!(
+                target: "runtime::rga",
+                rga_id = %id.to_string(),
+                "loaded JsRga from storage"
+            );
+            Ok(rga)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::rga",
+                rga_id = %missing_id,
+                "JsRga not found in storage"
+            );
+            let mut rga = JsRga::new_with_id(id);
+            match save_js_rga_instance(&mut rga) {
+                Ok(()) => {
+                    debug!(
+                        target: "runtime::rga",
+                        rga_id = %missing_id,
+                        "recreated missing JsRga"
+                    );
+                    Ok(rga)
+                }
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn save_js_rga_instance(rga: &mut JsRga) -> Result<(), String> {
+    match rga.save() {
+        Ok(_) => {
+            debug!(
+                target: "runtime::rga",
+                rga_id = %rga.id().to_string(),
+                "saved JsRga to storage"
+            );
+            Ok(())
+        }
+        Err(StorageError::CannotCreateOrphan(_)) => {
+            ensure_root_index_internal().map_err(|err| err.to_string())?;
+            match Interface::<MainStorage>::add_child_to(Id::root(), rga) {
+                Ok(_) => {
+                    debug!(
+                        target: "runtime::rga",
+                        rga_id = %rga.id().to_string(),
+                        "attached JsRga to root index"
+                    );
+                    Ok(())
+                }
                 Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
                 Err(err) => Err(err.to_string()),
             }

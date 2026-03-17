@@ -1047,6 +1047,40 @@ impl VMHostFunctions<'_> {
             }
         })
     }
+
+    /// Registers the JS SDK root merge strategy.
+    ///
+    /// JS SDK CRDTs are stored as separate entities with crdt_type in metadata
+    /// and are merged via `try_merge_non_root`. The root document only holds
+    /// collection IDs (deterministic) and timestamps, so root-level merge is
+    /// effectively a no-op — the real merging happens at the individual CRDT
+    /// entity level.
+    pub fn register_js_sdk_root_merge(&mut self) -> VMLogicResult<()> {
+        debug!(target: "runtime::host::system", "register_js_sdk_root_merge: registering LWW root merge for JS SDK");
+        calimero_storage::merge::registry::register_js_sdk_root_merge_fn();
+        Ok(())
+    }
+
+    /// Initializes application state by creating CRDT collections with
+    /// deterministic IDs based on the provided schema.
+    ///
+    /// The JS SDK calls this once during `@Init` to bootstrap all state fields.
+    /// The schema is Borsh-encoded; the result (field name → collection ID
+    /// mapping) is written to `register_id`.
+    ///
+    /// For now this is a pass-through: the JS SDK's `@State` decorator handles
+    /// collection creation via individual `*_new` / `*_new_with_id` host calls,
+    /// so this function acknowledges the schema and returns an empty success
+    /// result.
+    pub fn init_state(&mut self, _schema_ptr: u64, register_id: u64) -> VMLogicResult<i32> {
+        self.with_logic_mut(|logic| {
+            debug!(target: "runtime::host::system", "init_state called");
+
+            let result: [u8; 4] = [0, 0, 0, 0]; // u32 LE count = 0
+            logic.registers.set(logic.limits, register_id, result)?;
+            Ok(0)
+        })
+    }
 }
 
 #[cfg(test)]

@@ -84,7 +84,7 @@ const DEFAULT_MAX_REGISTERS: u64 = 100;
 /// Default maximum register size in MiB (100 MiB).
 const DEFAULT_MAX_REGISTER_SIZE_MIB: u64 = 100;
 /// Default maximum number of log entries.
-const DEFAULT_MAX_LOGS: u64 = 100;
+const DEFAULT_MAX_LOGS: u64 = 500;
 /// Default maximum log message size in KiB (16 KiB).
 const DEFAULT_MAX_LOG_SIZE_KIB: u64 = 16;
 /// Default maximum number of events.

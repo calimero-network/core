@@ -9,7 +9,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use crate as calimero_storage;
 use crate::collections::{
     error::StoreError, Counter as StorageCounter, FrozenStorage, LwwRegister as StorageLwwRegister,
-    UnorderedMap, UnorderedSet, UserStorage, Vector,
+    ReplicatedGrowableArray, UnorderedMap, UnorderedSet, UserStorage, Vector,
 };
 use crate::entities::{Element, Metadata};
 use crate::store::MainStorage;
@@ -562,6 +562,220 @@ impl JsCounter {
 }
 
 impl Default for JsCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Positive-negative counter wrapper exposed to JavaScript.
+///
+/// Unlike [`JsCounter`] (grow-only), this counter supports both increment and
+/// decrement operations.  The underlying storage uses `StorageCounter<true>`.
+#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
+pub struct JsPnCounter {
+    counter: StorageCounter<true>,
+
+    #[storage]
+    storage: Element,
+}
+
+impl JsPnCounter {
+    /// Creates a new PN-counter backed by the main storage backend.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            counter: StorageCounter::new(),
+            storage: Element::new(None),
+        }
+    }
+
+    /// Rehydrates a PN-counter using a known identifier.
+    #[must_use]
+    pub fn new_with_id(id: Id) -> Self {
+        Self {
+            counter: StorageCounter::new(),
+            storage: Element::new(Some(id)),
+        }
+    }
+
+    /// Returns the unique identifier of this counter.
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.storage.id()
+    }
+
+    /// Increments the counter for the current executor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the increment operation fails.
+    pub fn increment(&mut self) -> Result<(), StoreError> {
+        self.counter.increment()
+    }
+
+    /// Decrements the counter for the current executor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the decrement operation fails.
+    pub fn decrement(&mut self) -> Result<(), StoreError> {
+        self.counter.decrement()
+    }
+
+    /// Returns the total counter value (positive minus negative).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] from the underlying counter.
+    pub fn value(&self) -> Result<i64, StoreError> {
+        self.counter.value()
+    }
+
+    /// Returns the positive count for a specific executor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the read operation fails.
+    pub fn get_positive_count(&self, executor_id: &[u8; 32]) -> Result<u64, StoreError> {
+        self.counter.get_positive_count(executor_id)
+    }
+
+    /// Returns the negative count for a specific executor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the read operation fails.
+    pub fn get_negative_count(&self, executor_id: &[u8; 32]) -> Result<u64, StoreError> {
+        self.counter.get_negative_count(executor_id)
+    }
+
+    /// Persists the counter to storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when persistence fails.
+    pub fn save(&mut self) -> Result<bool, StorageError> {
+        Interface::<MainStorage>::save(self)
+    }
+
+    /// Loads a counter instance by identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the counter cannot be retrieved.
+    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
+        Interface::<MainStorage>::find_by_id::<Self>(id)
+    }
+}
+
+impl Default for JsPnCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Replicated Growable Array wrapper exposed to JavaScript.
+///
+/// Wraps [`ReplicatedGrowableArray`] for byte-level text operations from the
+/// WASM host environment.
+#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
+pub struct JsRga {
+    rga: ReplicatedGrowableArray,
+
+    #[storage]
+    storage: Element,
+}
+
+impl JsRga {
+    /// Creates a new RGA backed by the main storage backend.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            rga: ReplicatedGrowableArray::new(),
+            storage: Element::new(None),
+        }
+    }
+
+    /// Rehydrates an RGA using a known identifier.
+    #[must_use]
+    pub fn new_with_id(id: Id) -> Self {
+        Self {
+            rga: ReplicatedGrowableArray::new(),
+            storage: Element::new(Some(id)),
+        }
+    }
+
+    /// Returns the unique identifier of this RGA.
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.storage.id()
+    }
+
+    /// Inserts a string at the given visible character position.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if position is out of bounds or storage fails.
+    pub fn insert(&mut self, pos: usize, text: &str) -> Result<(), StoreError> {
+        self.rga.insert_str(pos, text)
+    }
+
+    /// Deletes the character at the given visible position.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if position is out of bounds or storage fails.
+    pub fn delete(&mut self, pos: usize) -> Result<(), StoreError> {
+        self.rga.delete(pos)
+    }
+
+    /// Returns the current text content.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if reading storage fails.
+    pub fn get_text(&self) -> Result<String, StoreError> {
+        self.rga.get_text()
+    }
+
+    /// Returns the length of the visible text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the storage read fails.
+    pub fn len(&self) -> Result<usize, StoreError> {
+        self.rga.len()
+    }
+
+    /// Returns `true` if the RGA contains no visible characters.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] through the underlying [`len`](Self::len) call.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        self.rga.is_empty()
+    }
+
+    /// Persists the RGA to storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] raised by the persistence layer.
+    pub fn save(&mut self) -> Result<bool, StorageError> {
+        Interface::<MainStorage>::save(self)
+    }
+
+    /// Loads an RGA instance by identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the RGA cannot be located in storage.
+    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
+        Interface::<MainStorage>::find_by_id::<Self>(id)
+    }
+}
+
+impl Default for JsRga {
     fn default() -> Self {
         Self::new()
     }
