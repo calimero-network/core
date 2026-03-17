@@ -3,6 +3,11 @@
 //! These wrappers provide byte-oriented APIs and automatically implement the
 //! [`Data`](crate::entities::Data) trait so they can be persisted through the
 //! existing storage interface while being convenient to expose via FFI.
+//!
+//! All nine wrapper types share identical `new`, `new_with_id`, `id`, `save`,
+//! and `load` implementations via the [`JsCollection`] trait and the
+//! [`js_collection_wrapper!`] macro.  Only the type-specific operations
+//! (insert, get, increment, …) are hand-written.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -16,115 +21,257 @@ use crate::store::MainStorage;
 use crate::{address::Id, Interface, StorageError};
 use calimero_primitives::identity::PublicKey;
 
-/// Macro support for deriving storage traits on the wrapper types.
 use calimero_storage_macros::AtomicUnit;
 
-/// A byte-oriented unordered map that integrates with Calimero storage.
-///
-/// The map stores both keys and values as raw byte arrays (`Vec<u8>`). When
-/// combined with the [`Interface`](crate::Interface) API, this enables foreign
-/// runtimes (QuickJS, etc.) to leverage the full CRDT semantics without
-/// reimplementing collection logic.
-#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
-pub struct JsUnorderedMap {
-    map: UnorderedMap<Vec<u8>, Vec<u8>>,
+// ---------------------------------------------------------------------------
+// JsCollection trait
+// ---------------------------------------------------------------------------
 
-    #[storage]
-    storage: Element,
+/// Shared lifecycle operations for all JS collection wrappers.
+///
+/// The default `save` and `load` methods handle the orphan-attach dance and
+/// the "recreate on missing" pattern that every wrapper type needs.
+pub trait JsCollection: crate::entities::Data + Sized {
+    /// Creates a new, empty instance with a fresh id.
+    fn collection_new() -> Self;
+
+    /// Creates a new, empty instance reusing an existing id.
+    fn collection_new_with_id(id: Id) -> Self;
+
+    /// Returns the unique storage identifier.
+    fn collection_id(&self) -> Id;
+
+    /// Persists the collection, attaching it to the root index if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `String` if the storage write or root-index attachment fails.
+    fn js_save(&mut self) -> Result<(), String> {
+        match Interface::<MainStorage>::save(self) {
+            Ok(_) => Ok(()),
+            Err(StorageError::CannotCreateOrphan(_)) => {
+                ensure_root_index()?;
+                Interface::<MainStorage>::add_child_to(Id::root(), self)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Loads an instance by id, recreating it if missing from storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `String` if the underlying storage read or recreation fails.
+    fn js_load(id: Id) -> Result<Self, String> {
+        match Interface::<MainStorage>::find_by_id::<Self>(id) {
+            Ok(Some(instance)) => {
+                tracing::trace!(
+                    target: "calimero_storage::js",
+                    id = %id,
+                    "loaded from storage"
+                );
+                Ok(instance)
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    target: "calimero_storage::js",
+                    id = %id,
+                    "not found in storage, recreating"
+                );
+                let mut instance = Self::collection_new_with_id(id);
+                instance.js_save()?;
+                Ok(instance)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// Ensures the root index exists so that child collections can be attached.
+fn ensure_root_index() -> Result<(), String> {
+    use crate::entities::ChildInfo;
+    use crate::env::time_now;
+    use crate::index::Index;
+
+    match Index::<MainStorage>::get_hashes_for(Id::root()) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => {
+            let timestamp = time_now();
+            let metadata = Metadata::new(timestamp, timestamp);
+            Index::<MainStorage>::add_root(ChildInfo::new(Id::root(), [0; 32], metadata))
+                .map_err(|e| e.to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// js_collection_wrapper! macro
+// ---------------------------------------------------------------------------
+
+/// Generates a JS collection wrapper struct with the `JsCollection` trait impl.
+///
+/// The caller provides:
+/// - `$name`: the wrapper struct name (e.g. `JsUnorderedMap`)
+/// - `$inner_ty`: the inner collection type
+/// - `$field`: the field name for the inner collection
+/// - `$init`: expression to create a default inner value
+macro_rules! js_collection_wrapper {
+    (
+        $(#[$attr:meta])*
+        $name:ident {
+            $field:ident : $inner_ty:ty = $init:expr
+        }
+    ) => {
+        $(#[$attr])*
+        #[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
+        pub struct $name {
+            $field: $inner_ty,
+            #[storage]
+            storage: Element,
+        }
+
+        impl JsCollection for $name {
+            fn collection_new() -> Self {
+                Self {
+                    $field: $init,
+                    storage: Element::new(None),
+                }
+            }
+
+            fn collection_new_with_id(id: Id) -> Self {
+                Self {
+                    $field: $init,
+                    storage: Element::new(Some(id)),
+                }
+            }
+
+            fn collection_id(&self) -> Id {
+                self.storage.id()
+            }
+        }
+
+        impl $name {
+            /// Creates a new, empty instance with a fresh id.
+            #[must_use]
+            pub fn new() -> Self {
+                <Self as JsCollection>::collection_new()
+            }
+
+            /// Rehydrates an instance using a known identifier.
+            #[must_use]
+            pub fn new_with_id(id: Id) -> Self {
+                <Self as JsCollection>::collection_new_with_id(id)
+            }
+
+            /// Returns the unique identifier of this collection.
+            #[must_use]
+            pub fn id(&self) -> Id {
+                <Self as JsCollection>::collection_id(self)
+            }
+
+            /// Persists the collection to storage.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`StorageError`] if the save operation fails.
+            pub fn save(&mut self) -> Result<bool, StorageError> {
+                Interface::<MainStorage>::save(self)
+            }
+
+            /// Loads a collection instance by identifier.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`StorageError`] if the instance cannot be fetched.
+            pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
+                Interface::<MainStorage>::find_by_id::<Self>(id)
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Wrapper type definitions
+// ---------------------------------------------------------------------------
+
+js_collection_wrapper! {
+    /// A byte-oriented unordered map that integrates with Calimero storage.
+    ///
+    /// The map stores both keys and values as raw byte arrays (`Vec<u8>`). When
+    /// combined with the [`Interface`](crate::Interface) API, this enables foreign
+    /// runtimes (QuickJS, etc.) to leverage the full CRDT semantics without
+    /// reimplementing collection logic.
+    JsUnorderedMap {
+        map: UnorderedMap<Vec<u8>, Vec<u8>> = UnorderedMap::default()
+    }
 }
 
 impl JsUnorderedMap {
-    /// Creates a new JS map backed by the main storage backend.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            map: UnorderedMap::default(),
-            storage: Element::new(None),
-        }
-    }
-
-    /// Rehydrates a map using a known identifier.
-    ///
-    /// This is primarily used when deserialising contract state: the wasm side
-    /// only stores the map id, so when the state is reconstructed we need a
-    /// `JsUnorderedMap` that shares the same identifier. Merely allocating the
-    /// wrapper is not enough – the collection still has to be attached to the
-    /// storage index so subsequent reads do not fail with "map not found".  
-    /// Callers are expected to invoke [`save`](Self::save) after creating the
-    /// wrapper (the runtime loaders already do this).
-    #[must_use]
-    pub fn new_with_id(id: Id) -> Self {
-        Self {
-            map: UnorderedMap::default(),
-            storage: Element::new(Some(id)),
-        }
-    }
-
-    /// Returns the unique identifier of this collection.
-    #[must_use]
-    pub fn id(&self) -> Id {
-        self.storage.id()
-    }
-
-    /// Returns metadata associated with the collection.
     #[must_use]
     pub fn metadata(&self) -> Metadata {
         self.storage.metadata().clone()
     }
 
-    /// Grants immutable access to the underlying element.
     #[must_use]
     pub fn element(&self) -> &Element {
         &self.storage
     }
 
-    /// Grants mutable access to the underlying element.
     #[must_use]
     pub fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
     }
 
-    /// Inserts a key/value pair into the map.
+    /// Inserts a key-value pair into the map.
     ///
     /// # Errors
     ///
-    /// Returns any [`StoreError`] surfaced by the underlying map insertion.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         self.map.insert(key.to_vec(), value.to_vec())
     }
 
-    /// Retrieves the value for `key`, if present.
+    /// Gets the value for a key.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] when the underlying map read fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         self.map.get(key)
     }
 
-    /// Removes the value for `key`, returning the previous value if it existed.
+    /// Removes a key from the map.
     ///
     /// # Errors
     ///
-    /// Returns any [`StoreError`] emitted by the storage layer.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn remove(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         self.map.remove(key)
     }
 
-    /// Checks whether `key` exists within the map.
+    /// Checks if the map contains a key.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] if the existence check fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn contains(&self, key: &[u8]) -> Result<bool, StoreError> {
         self.map.contains(key)
     }
 
-    /// Returns all key/value pairs currently stored in the map.
+    /// Returns all key-value pairs.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] if reading from storage fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
         let iter = self.map.entries()?;
         Ok(iter.collect::<Vec<_>>())
@@ -134,85 +281,36 @@ impl JsUnorderedMap {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] if the length query cannot be satisfied.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn len(&self) -> Result<usize, StoreError> {
         self.map.len()
     }
 
-    /// Returns `true` if the map is empty.
+    /// Returns whether the map is empty.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] through the underlying [`len`](Self::len) call.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn is_empty(&self) -> Result<bool, StoreError> {
         Ok(self.len()? == 0)
     }
-
-    /// Persists the map using the provided interface.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] produced by the storage interface.
-    pub fn save(&mut self) -> Result<bool, StorageError> {
-        Interface::<MainStorage>::save(self)
-    }
-
-    /// Loads a map by identifier using the provided interface.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] if the map cannot be fetched from storage.
-    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
-        Interface::<MainStorage>::find_by_id::<Self>(id)
-    }
 }
 
-impl Default for JsUnorderedMap {
-    fn default() -> Self {
-        Self::new()
+// ---------------------------------------------------------------------------
+
+js_collection_wrapper! {
+    /// Byte-oriented ordered list wrapper for exposure over JS host functions.
+    JsVector {
+        vector: Vector<Vec<u8>> = Vector::default()
     }
-}
-
-/// Byte-oriented ordered list wrapper for exposure over JS host functions.
-#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
-pub struct JsVector {
-    vector: Vector<Vec<u8>>,
-
-    #[storage]
-    storage: Element,
 }
 
 impl JsVector {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            vector: Vector::default(),
-            storage: Element::new(None),
-        }
-    }
-
-    /// Equivalent to [`new`](Self::new) but ensures the wrapper reports the
-    /// provided identifier.  The runtime persists the freshly created instance
-    /// immediately so that subsequent loads succeed even if the original vector
-    /// was missing from storage.
-    #[must_use]
-    pub fn new_with_id(id: Id) -> Self {
-        Self {
-            vector: Vector::default(),
-            storage: Element::new(Some(id)),
-        }
-    }
-
-    #[must_use]
-    pub fn id(&self) -> Id {
-        self.storage.id()
-    }
-
-    /// Returns the number of elements stored in the vector.
+    /// Returns the number of elements in the vector.
     ///
     /// # Errors
     ///
-    /// Returns any [`StoreError`] emitted by the underlying vector.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn len(&self) -> Result<usize, StoreError> {
         self.vector.len()
     }
@@ -221,25 +319,25 @@ impl JsVector {
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] if the storage write fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn push(&mut self, value: &[u8]) -> Result<(), StoreError> {
         self.vector.push(value.to_vec())
     }
 
-    /// Retrieves a value at `index`, if it exists.
+    /// Gets the element at the given index.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the underlying vector read fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn get(&self, index: usize) -> Result<Option<Vec<u8>>, StoreError> {
         self.vector.get(index)
     }
 
-    /// Updates the value at `index`, returning the old value if it existed.
+    /// Updates the element at the given index.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] from the storage backend.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn update(&mut self, index: usize, value: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         self.vector.update(index, value.to_vec())
     }
@@ -248,195 +346,115 @@ impl JsVector {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] emitted by the vector pop operation.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn pop(&mut self) -> Result<Option<Vec<u8>>, StoreError> {
         self.vector.pop()
     }
 
-    /// Removes every element from the vector.
+    /// Removes all elements from the vector.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] if clearing the vector fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn clear(&mut self) -> Result<(), StoreError> {
         self.vector.clear()
     }
 
-    /// Persists the vector to storage.
+    /// Returns `true` if the vector is empty.
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError`] raised by the persistence layer.
-    pub fn save(&mut self) -> Result<bool, StorageError> {
-        Interface::<MainStorage>::save(self)
-    }
-
-    /// Loads a vector instance by identifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] if the vector cannot be located in storage.
-    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
-        Interface::<MainStorage>::find_by_id::<Self>(id)
+    /// Propagates [`StoreError`] through the underlying [`len`](Self::len) call.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.len()? == 0)
     }
 }
 
-impl Default for JsVector {
-    fn default() -> Self {
-        Self::new()
+// ---------------------------------------------------------------------------
+
+js_collection_wrapper! {
+    /// Byte-oriented set wrapper exposed to JavaScript environments.
+    JsUnorderedSet {
+        set: UnorderedSet<Vec<u8>> = UnorderedSet::default()
     }
-}
-
-/// Byte-oriented set wrapper exposed to JavaScript environments.
-#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
-pub struct JsUnorderedSet {
-    set: UnorderedSet<Vec<u8>>,
-
-    #[storage]
-    storage: Element,
 }
 
 impl JsUnorderedSet {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            set: UnorderedSet::default(),
-            storage: Element::new(None),
-        }
-    }
-
-    /// Creates a set wrapper that reuses an existing identifier.  Just like the
-    /// map/vector variants this is paired with an eager `save` on the runtime
-    /// side to guarantee that the collection is registered in the storage
-    /// index before it is accessed.
-    #[must_use]
-    pub fn new_with_id(id: Id) -> Self {
-        Self {
-            set: UnorderedSet::default(),
-            storage: Element::new(Some(id)),
-        }
-    }
-
-    #[must_use]
-    pub fn id(&self) -> Id {
-        self.storage.id()
-    }
-
-    /// Returns the number of elements stored in the set.
+    /// Returns the number of elements in the set.
     ///
     /// # Errors
     ///
-    /// Returns any [`StoreError`] produced by the set implementation.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn len(&self) -> Result<usize, StoreError> {
         self.set.len()
     }
 
-    /// Inserts `value` into the set, returning whether it was newly added.
+    /// Inserts a value into the set.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] if insertion fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn insert(&mut self, value: &[u8]) -> Result<bool, StoreError> {
         self.set.insert(value.to_vec())
     }
 
-    /// Checks whether `value` exists in the set.
+    /// Checks if the set contains a value.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] if the membership check fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn contains(&self, value: &[u8]) -> Result<bool, StoreError> {
         self.set.contains(value)
     }
 
-    /// Removes `value` from the set, returning `true` if it was present.
+    /// Removes a value from the set.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] emitted by the removal.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn remove(&mut self, value: &[u8]) -> Result<bool, StoreError> {
         self.set.remove(value)
     }
 
-    /// Clears all values from the set.
+    /// Removes all elements from the set.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the clear operation fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn clear(&mut self) -> Result<(), StoreError> {
         self.set.clear()
     }
 
-    /// Returns all values contained within the set.
+    /// Returns all values in the set.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] if reading the underlying storage fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn values(&self) -> Result<Vec<Vec<u8>>, StoreError> {
         let iter = self.set.iter()?;
         Ok(iter.collect::<Vec<_>>())
     }
 
-    /// Persists the set to storage.
+    /// Returns `true` if the set is empty.
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError`] raised while saving.
-    pub fn save(&mut self) -> Result<bool, StorageError> {
-        Interface::<MainStorage>::save(self)
-    }
-
-    /// Loads a set instance by identifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] if the set cannot be fetched from storage.
-    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
-        Interface::<MainStorage>::find_by_id::<Self>(id)
+    /// Propagates [`StoreError`] through the underlying [`len`](Self::len) call.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.len()? == 0)
     }
 }
 
-impl Default for JsUnorderedSet {
-    fn default() -> Self {
-        Self::new()
+// ---------------------------------------------------------------------------
+
+js_collection_wrapper! {
+    /// Last-write-wins register wrapper for JavaScript consumers.
+    JsLwwRegister {
+        register: StorageLwwRegister<Option<Vec<u8>>> = StorageLwwRegister::new(None)
     }
-}
-
-/// Last-write-wins register wrapper for JavaScript consumers.
-#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
-pub struct JsLwwRegister {
-    register: StorageLwwRegister<Option<Vec<u8>>>,
-
-    #[storage]
-    storage: Element,
 }
 
 impl JsLwwRegister {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            register: StorageLwwRegister::new(None),
-            storage: Element::new(None),
-        }
-    }
-
-    /// Recreates a register wrapper for an existing identifier.  Used when state
-    /// is deserialised and we only have the register id; the runtime will
-    /// persist the newly constructed wrapper before it is accessed to avoid
-    /// "register not found" errors.
-    #[must_use]
-    pub fn new_with_id(id: Id) -> Self {
-        Self {
-            register: StorageLwwRegister::new(None),
-            storage: Element::new(Some(id)),
-        }
-    }
-
-    #[must_use]
-    pub fn id(&self) -> Id {
-        self.storage.id()
-    }
-
     pub fn set(&mut self, value: Option<&[u8]>) {
         self.storage.update();
         match value {
@@ -457,583 +475,311 @@ impl JsLwwRegister {
     pub fn timestamp(&self) -> crate::logical_clock::HybridTimestamp {
         self.register.timestamp()
     }
-
-    /// Persists the register to storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] if the save operation fails.
-    pub fn save(&mut self) -> Result<bool, StorageError> {
-        Interface::<MainStorage>::save(self)
-    }
-
-    /// Loads a register instance by identifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] when the register cannot be fetched from storage.
-    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
-        Interface::<MainStorage>::find_by_id::<Self>(id)
-    }
 }
 
-impl Default for JsLwwRegister {
-    fn default() -> Self {
-        Self::new()
+// ---------------------------------------------------------------------------
+
+js_collection_wrapper! {
+    /// Grow-only counter wrapper exposed to JavaScript.
+    JsCounter {
+        counter: StorageCounter<false> = StorageCounter::new()
     }
-}
-
-/// Grow-only counter wrapper exposed to JavaScript.
-#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
-pub struct JsCounter {
-    counter: StorageCounter<false>,
-
-    #[storage]
-    storage: Element,
 }
 
 impl JsCounter {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            counter: StorageCounter::new(),
-            storage: Element::new(None),
-        }
-    }
-
-    /// Rehydrates a counter using a known identifier.
-    #[must_use]
-    pub fn new_with_id(id: Id) -> Self {
-        Self {
-            counter: StorageCounter::new(),
-            storage: Element::new(Some(id)),
-        }
-    }
-
-    #[must_use]
-    pub fn id(&self) -> Id {
-        self.storage.id()
-    }
-
-    /// Increments the counter for the current executor.
+    /// Increments the counter by one.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] if the increment operation fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn increment(&mut self) -> Result<(), StoreError> {
         self.counter.increment()
     }
 
-    /// Returns the total counter value.
+    /// Returns the current counter value.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] from the underlying counter.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn value(&self) -> Result<u64, StoreError> {
         self.counter.value()
     }
 
-    /// Returns the contribution for a specific executor.
+    /// Returns the positive count for the given executor.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] if the read operation fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn get_executor_count(&self, executor_id: &[u8; 32]) -> Result<u64, StoreError> {
         self.counter.get_positive_count(executor_id)
     }
-
-    /// Persists the counter to storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] when persistence fails.
-    pub fn save(&mut self) -> Result<bool, StorageError> {
-        Interface::<MainStorage>::save(self)
-    }
-
-    /// Loads a counter instance by identifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] if the counter cannot be retrieved.
-    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
-        Interface::<MainStorage>::find_by_id::<Self>(id)
-    }
 }
 
-impl Default for JsCounter {
-    fn default() -> Self {
-        Self::new()
+// ---------------------------------------------------------------------------
+
+js_collection_wrapper! {
+    /// Positive-negative counter wrapper exposed to JavaScript.
+    ///
+    /// Unlike [`JsCounter`] (grow-only), this counter supports both increment and
+    /// decrement operations.
+    JsPnCounter {
+        counter: StorageCounter<true> = StorageCounter::new()
     }
-}
-
-/// Positive-negative counter wrapper exposed to JavaScript.
-///
-/// Unlike [`JsCounter`] (grow-only), this counter supports both increment and
-/// decrement operations.  The underlying storage uses `StorageCounter<true>`.
-#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
-pub struct JsPnCounter {
-    counter: StorageCounter<true>,
-
-    #[storage]
-    storage: Element,
 }
 
 impl JsPnCounter {
-    /// Creates a new PN-counter backed by the main storage backend.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            counter: StorageCounter::new(),
-            storage: Element::new(None),
-        }
-    }
-
-    /// Rehydrates a PN-counter using a known identifier.
-    #[must_use]
-    pub fn new_with_id(id: Id) -> Self {
-        Self {
-            counter: StorageCounter::new(),
-            storage: Element::new(Some(id)),
-        }
-    }
-
-    /// Returns the unique identifier of this counter.
-    #[must_use]
-    pub fn id(&self) -> Id {
-        self.storage.id()
-    }
-
-    /// Increments the counter for the current executor.
+    /// Increments the counter by one.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] if the increment operation fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn increment(&mut self) -> Result<(), StoreError> {
         self.counter.increment()
     }
 
-    /// Decrements the counter for the current executor.
+    /// Decrements the counter by one.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] if the decrement operation fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn decrement(&mut self) -> Result<(), StoreError> {
         self.counter.decrement()
     }
 
-    /// Returns the total counter value (positive minus negative).
+    /// Returns the current counter value.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] from the underlying counter.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn value(&self) -> Result<i64, StoreError> {
         self.counter.value()
     }
 
-    /// Returns the positive count for a specific executor.
+    /// Returns the positive count for the given executor.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] if the read operation fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn get_positive_count(&self, executor_id: &[u8; 32]) -> Result<u64, StoreError> {
         self.counter.get_positive_count(executor_id)
     }
 
-    /// Returns the negative count for a specific executor.
+    /// Returns the negative count for the given executor.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] if the read operation fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn get_negative_count(&self, executor_id: &[u8; 32]) -> Result<u64, StoreError> {
         self.counter.get_negative_count(executor_id)
     }
-
-    /// Persists the counter to storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] when persistence fails.
-    pub fn save(&mut self) -> Result<bool, StorageError> {
-        Interface::<MainStorage>::save(self)
-    }
-
-    /// Loads a counter instance by identifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] if the counter cannot be retrieved.
-    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
-        Interface::<MainStorage>::find_by_id::<Self>(id)
-    }
 }
 
-impl Default for JsPnCounter {
-    fn default() -> Self {
-        Self::new()
+// ---------------------------------------------------------------------------
+
+js_collection_wrapper! {
+    /// Replicated Growable Array wrapper exposed to JavaScript.
+    ///
+    /// Wraps [`ReplicatedGrowableArray`] for byte-level text operations from the
+    /// WASM host environment.
+    JsRga {
+        rga: ReplicatedGrowableArray = ReplicatedGrowableArray::new()
     }
-}
-
-/// Replicated Growable Array wrapper exposed to JavaScript.
-///
-/// Wraps [`ReplicatedGrowableArray`] for byte-level text operations from the
-/// WASM host environment.
-#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
-pub struct JsRga {
-    rga: ReplicatedGrowableArray,
-
-    #[storage]
-    storage: Element,
 }
 
 impl JsRga {
-    /// Creates a new RGA backed by the main storage backend.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            rga: ReplicatedGrowableArray::new(),
-            storage: Element::new(None),
-        }
-    }
-
-    /// Rehydrates an RGA using a known identifier.
-    #[must_use]
-    pub fn new_with_id(id: Id) -> Self {
-        Self {
-            rga: ReplicatedGrowableArray::new(),
-            storage: Element::new(Some(id)),
-        }
-    }
-
-    /// Returns the unique identifier of this RGA.
-    #[must_use]
-    pub fn id(&self) -> Id {
-        self.storage.id()
-    }
-
-    /// Inserts a string at the given visible character position.
+    /// Inserts text at the given position.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] if position is out of bounds or storage fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn insert(&mut self, pos: usize, text: &str) -> Result<(), StoreError> {
         self.rga.insert_str(pos, text)
     }
 
-    /// Deletes the character at the given visible position.
+    /// Deletes the character at the given position.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] if position is out of bounds or storage fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn delete(&mut self, pos: usize) -> Result<(), StoreError> {
         self.rga.delete(pos)
     }
 
-    /// Returns the current text content.
+    /// Returns the full text content.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] if reading storage fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn get_text(&self) -> Result<String, StoreError> {
         self.rga.get_text()
     }
 
-    /// Returns the length of the visible text.
+    /// Returns the length of the text.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] if the storage read fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn len(&self) -> Result<usize, StoreError> {
         self.rga.len()
     }
 
-    /// Returns `true` if the RGA contains no visible characters.
+    /// Returns whether the array is empty.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] through the underlying [`len`](Self::len) call.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn is_empty(&self) -> Result<bool, StoreError> {
         self.rga.is_empty()
     }
-
-    /// Persists the RGA to storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] raised by the persistence layer.
-    pub fn save(&mut self) -> Result<bool, StorageError> {
-        Interface::<MainStorage>::save(self)
-    }
-
-    /// Loads an RGA instance by identifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] if the RGA cannot be located in storage.
-    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
-        Interface::<MainStorage>::find_by_id::<Self>(id)
-    }
 }
 
-impl Default for JsRga {
-    fn default() -> Self {
-        Self::new()
+// ---------------------------------------------------------------------------
+
+js_collection_wrapper! {
+    /// A byte-oriented user storage wrapper that integrates with Calimero storage.
+    ///
+    /// The storage maps PublicKeys (32 bytes) to raw byte arrays (`Vec<u8>`).
+    JsUserStorage {
+        user_storage: UserStorage<Vec<u8>> = UserStorage::new()
     }
-}
-
-/// A byte-oriented user storage wrapper that integrates with Calimero storage.
-///
-/// The storage maps PublicKeys (32 bytes) to raw byte arrays (`Vec<u8>`).
-/// This enables JavaScript runtimes to use UserStorage with proper StorageType::User
-/// metadata for security checks.
-#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
-pub struct JsUserStorage {
-    user_storage: UserStorage<Vec<u8>>,
-
-    #[storage]
-    storage: Element,
 }
 
 impl JsUserStorage {
-    /// Creates a new JS user storage backed by the main storage backend.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            user_storage: UserStorage::new(),
-            storage: Element::new(None),
-        }
-    }
-
-    /// Rehydrates a user storage using a known identifier.
-    #[must_use]
-    pub fn new_with_id(id: Id) -> Self {
-        Self {
-            user_storage: UserStorage::new(),
-            storage: Element::new(Some(id)),
-        }
-    }
-
-    /// Returns the unique identifier of this collection.
-    #[must_use]
-    pub fn id(&self) -> Id {
-        self.storage.id()
-    }
-
-    /// Returns metadata associated with the collection.
     #[must_use]
     pub fn metadata(&self) -> Metadata {
         self.storage.metadata().clone()
     }
 
-    /// Grants immutable access to the underlying element.
     #[must_use]
     pub fn element(&self) -> &Element {
         &self.storage
     }
 
-    /// Grants mutable access to the underlying element.
     #[must_use]
     pub fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
     }
 
-    /// Inserts a value for the current executor (user).
+    /// Inserts a value for the current user.
     ///
     /// # Errors
     ///
-    /// Returns any [`StoreError`] surfaced by the underlying storage insertion.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn insert(&mut self, value: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         self.user_storage.insert(value.to_vec())
     }
 
-    /// Retrieves the value for the current executor, if present.
+    /// Gets the value for the current user.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] when the underlying storage read fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn get(&self) -> Result<Option<Vec<u8>>, StoreError> {
         self.user_storage.get()
     }
 
-    /// Retrieves the value for a specific user's PublicKey, if present.
+    /// Gets the value for the given user.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] when the underlying storage read fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn get_for_user(&self, user_key: &[u8; 32]) -> Result<Option<Vec<u8>>, StoreError> {
         let public_key: PublicKey = (*user_key).into();
         self.user_storage.get_for_user(&public_key)
     }
 
-    /// Checks whether data exists for the current executor.
+    /// Checks if the current user has a value.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] if the existence check fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn contains_current_user(&self) -> Result<bool, StoreError> {
         self.user_storage.contains_current_user()
     }
 
-    /// Checks whether data exists for a specific user.
+    /// Checks if the given user has a value.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] if the existence check fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn contains_user(&self, user_key: &[u8; 32]) -> Result<bool, StoreError> {
         let public_key: PublicKey = (*user_key).into();
         self.user_storage.contains_user(&public_key)
     }
 
-    /// Removes the value for the current executor, returning the previous value if it existed.
+    /// Removes the value for the current user.
     ///
     /// # Errors
     ///
-    /// Returns any [`StoreError`] emitted by the storage layer.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn remove(&mut self) -> Result<Option<Vec<u8>>, StoreError> {
         self.user_storage.remove()
     }
 
-    /// Returns all user/value pairs currently stored.
+    /// Returns all user-value pairs.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] if reading from storage fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn entries(&self) -> Result<Vec<([u8; 32], Vec<u8>)>, StoreError> {
         let iter = self.user_storage.inner.entries()?;
         Ok(iter
             .map(|(public_key, value)| (*public_key, value))
             .collect())
     }
-
-    /// Persists the user storage using the provided interface.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] produced by the storage interface.
-    pub fn save(&mut self) -> Result<bool, StorageError> {
-        Interface::<MainStorage>::save(self)
-    }
-
-    /// Loads a user storage by identifier using the provided interface.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] if the user storage cannot be fetched from storage.
-    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
-        Interface::<MainStorage>::find_by_id::<Self>(id)
-    }
 }
 
-impl Default for JsUserStorage {
-    fn default() -> Self {
-        Self::new()
+// ---------------------------------------------------------------------------
+
+js_collection_wrapper! {
+    /// A byte-oriented frozen storage wrapper that integrates with Calimero storage.
+    ///
+    /// The storage maps hashes (32 bytes) to raw byte arrays (`Vec<u8>`).
+    JsFrozenStorage {
+        frozen_storage: FrozenStorage<Vec<u8>> = FrozenStorage::new()
     }
-}
-
-/// A byte-oriented frozen storage wrapper that integrates with Calimero storage.
-///
-/// The storage maps hashes (32 bytes) to raw byte arrays (`Vec<u8>`).
-/// This enables JavaScript runtimes to use FrozenStorage with proper StorageType::Frozen
-/// metadata for immutability checks.
-#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
-pub struct JsFrozenStorage {
-    frozen_storage: FrozenStorage<Vec<u8>>,
-
-    #[storage]
-    storage: Element,
 }
 
 impl JsFrozenStorage {
-    /// Creates a new JS frozen storage backed by the main storage backend.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            frozen_storage: FrozenStorage::new(),
-            storage: Element::new(None),
-        }
-    }
-
-    /// Rehydrates a frozen storage using a known identifier.
-    #[must_use]
-    pub fn new_with_id(id: Id) -> Self {
-        Self {
-            frozen_storage: FrozenStorage::new(),
-            storage: Element::new(Some(id)),
-        }
-    }
-
-    /// Returns the unique identifier of this collection.
-    #[must_use]
-    pub fn id(&self) -> Id {
-        self.storage.id()
-    }
-
-    /// Returns metadata associated with the collection.
     #[must_use]
     pub fn metadata(&self) -> Metadata {
         self.storage.metadata().clone()
     }
 
-    /// Grants immutable access to the underlying element.
     #[must_use]
     pub fn element(&self) -> &Element {
         &self.storage
     }
 
-    /// Grants mutable access to the underlying element.
     #[must_use]
     pub fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
     }
 
-    /// Inserts a value into frozen storage and returns its hash.
+    /// Inserts a value and returns its hash.
     ///
     /// # Errors
     ///
-    /// Returns any [`StoreError`] surfaced by the underlying storage insertion.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn insert(&mut self, value: &[u8]) -> Result<[u8; 32], StoreError> {
         self.frozen_storage.insert(value.to_vec())
     }
 
-    /// Retrieves the value for `hash`, if present.
+    /// Gets the value for the given hash.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] when the underlying storage read fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn get(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, StoreError> {
         self.frozen_storage.get(hash)
     }
 
-    /// Checks whether `hash` exists within the frozen storage.
+    /// Checks if the storage contains a value for the given hash.
     ///
     /// # Errors
     ///
-    /// Propagates [`StoreError`] if the existence check fails.
+    /// Propagates [`StoreError`] from the underlying collection.
     pub fn contains(&self, hash: &[u8; 32]) -> Result<bool, StoreError> {
         self.frozen_storage.contains(hash)
-    }
-
-    /// Persists the frozen storage using the provided interface.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] produced by the storage interface.
-    pub fn save(&mut self) -> Result<bool, StorageError> {
-        Interface::<MainStorage>::save(self)
-    }
-
-    /// Loads a frozen storage by identifier using the provided interface.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] if the frozen storage cannot be fetched from storage.
-    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
-        Interface::<MainStorage>::find_by_id::<Self>(id)
-    }
-}
-
-impl Default for JsFrozenStorage {
-    fn default() -> Self {
-        Self::new()
     }
 }

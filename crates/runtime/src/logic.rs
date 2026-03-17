@@ -84,6 +84,10 @@ const DEFAULT_MAX_REGISTERS: u64 = 100;
 /// Default maximum register size in MiB (100 MiB).
 const DEFAULT_MAX_REGISTER_SIZE_MIB: u64 = 100;
 /// Default maximum number of log entries.
+///
+/// 500 is needed because the JS SDK logs each of its ~26 CRDT state fields
+/// × ~4 log lines during `@Init` (= ~104 minimum), plus method dispatch and
+/// debug logging that can easily push past 200 in normal operation.
 const DEFAULT_MAX_LOGS: u64 = 500;
 /// Default maximum log message size in KiB (16 KiB).
 const DEFAULT_MAX_LOG_SIZE_KIB: u64 = 16;

@@ -1072,9 +1072,20 @@ impl VMHostFunctions<'_> {
     /// collection creation via individual `*_new` / `*_new_with_id` host calls,
     /// so this function acknowledges the schema and returns an empty success
     /// result.
-    pub fn init_state(&mut self, _schema_ptr: u64, register_id: u64) -> VMLogicResult<i32> {
+    pub fn init_state(&mut self, schema_ptr: u64, register_id: u64) -> VMLogicResult<i32> {
+        // Validate the schema pointer is readable even though we don't use the
+        // content yet.  This catches OOB pointers from malicious modules and
+        // ensures the WASM-allocated buffer is properly accessed (preventing a
+        // leak of the guest allocation).
+        let schema_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(schema_ptr)? };
+        let schema_len = self.read_guest_memory_slice(&schema_buf)?.len();
+
         self.with_logic_mut(|logic| {
-            debug!(target: "runtime::host::system", "init_state called");
+            debug!(
+                target: "runtime::host::system",
+                schema_len,
+                "init_state called"
+            );
 
             let result: [u8; 4] = [0, 0, 0, 0]; // u32 LE count = 0
             logic.registers.set(logic.limits, register_id, result)?;
