@@ -18,15 +18,30 @@ mod blobs;
 mod component;
 mod context;
 mod generic;
+mod group;
 
 pub use alias::{Alias, Aliasable, StoreScopeCompat};
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
+pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
     ContextConfig, ContextDagDelta, ContextIdentity, ContextMeta, ContextPrivateState, ContextState,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
+pub use group::{
+    ContextGroupRef, GroupAlias, GroupContextAlias, GroupContextAllowlist, GroupContextIndex,
+    GroupContextLastMigration, GroupContextLastMigrationValue, GroupContextVisibility,
+    GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
+    GroupDefaultVisValue, GroupMember, GroupMemberAlias, GroupMemberCapability,
+    GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue,
+    GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_ALIAS_PREFIX,
+    GROUP_CONTEXT_ALIAS_PREFIX, GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
+    GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
+    GROUP_DEFAULT_CAPS_PREFIX, GROUP_DEFAULT_VIS_PREFIX, GROUP_MEMBER_ALIAS_PREFIX,
+    GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX,
+    GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
+};
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 

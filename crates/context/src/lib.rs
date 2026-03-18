@@ -1,16 +1,19 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
-use std::collections::{btree_map, BTreeMap};
+use std::collections::{btree_map, BTreeMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
-use actix::Actor;
+use actix::{Actor, ActorFutureExt, AsyncContext, WrapFuture};
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
+use calimero_context_config::types::ContextGroupId;
+use calimero_context_primitives::client::external::group::ExternalGroupClient;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::context::{Context, ContextId, UpgradePolicy};
+use calimero_store::key::GroupUpgradeStatus;
 use calimero_store::Store;
 use either::Either;
 use prometheus_client::registry::Registry;
@@ -20,6 +23,7 @@ use crate::metrics::Metrics;
 
 pub mod config;
 pub mod error;
+pub mod group_store;
 pub mod handlers;
 mod metrics;
 
@@ -53,6 +57,9 @@ pub struct ContextManager {
     /// Configuration for interacting with external blockchain contracts (e.g., NEAR).
     external_config: ExternalClientConfig,
 
+    /// Dedicated group identity keypair, decoupled from the NEAR signer key.
+    group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
+
     /// An in-memory cache of active contexts (`ContextId` -> `ContextMeta`).
     /// This serves as a hot cache to avoid expensive disk I/O for frequently accessed contexts.
     // todo! potentially make this a dashmap::DashMap
@@ -71,6 +78,11 @@ pub struct ContextManager {
     /// Prometheus metrics for monitoring the health and performance of the manager,
     /// such as number of active contexts, message processing latency, etc.
     metrics: Option<Metrics>,
+
+    /// Groups that currently have a running upgrade propagator. Prevents the
+    /// manual retry handler from spawning a second propagator while an
+    /// existing one is still active (e.g. sleeping in its backoff delay).
+    active_propagators: HashSet<ContextGroupId>,
     //
     // todo! when runtime let's us compile blobs separate from its
     // todo! execution, we can introduce a cached::TimedSizedCache
@@ -94,6 +106,7 @@ impl ContextManager {
         node_client: NodeClient,
         context_client: ContextClient,
         external_config: ExternalClientConfig,
+        group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
         Self {
@@ -101,12 +114,75 @@ impl ContextManager {
             node_client,
             context_client,
             external_config,
+            group_identity,
 
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
 
             metrics: prometheus_registry.map(Metrics::new),
+            active_propagators: HashSet::new(),
         }
+    }
+
+    pub fn node_group_identity(
+        &self,
+    ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
+        let gi = self.group_identity.as_ref()?;
+
+        let pk_str = gi.public_key.strip_prefix("ed25519:").or_else(|| {
+            tracing::warn!("node group identity: public_key missing 'ed25519:' prefix");
+            None
+        })?;
+        let sk_str = gi.secret_key.strip_prefix("ed25519:").or_else(|| {
+            tracing::warn!("node group identity: secret_key missing 'ed25519:' prefix");
+            None
+        })?;
+
+        let pk_bytes: [u8; 32] = bs58::decode(pk_str)
+            .into_vec()
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .or_else(|| {
+                tracing::warn!(
+                    "node group identity: failed to decode public_key (bad base58 or wrong length)"
+                );
+                None
+            })?;
+        let sk_bytes: [u8; 32] = bs58::decode(sk_str)
+            .into_vec()
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .or_else(|| {
+                tracing::warn!(
+                    "node group identity: failed to decode secret_key (bad base58 or wrong length)"
+                );
+                None
+            })?;
+
+        Some((
+            calimero_primitives::identity::PublicKey::from(pk_bytes),
+            sk_bytes,
+        ))
+    }
+
+    fn group_client(
+        &self,
+        group_id: ContextGroupId,
+        signing_key: [u8; 32],
+    ) -> eyre::Result<ExternalGroupClient> {
+        let params = self
+            .external_config
+            .params
+            .get("near")
+            .ok_or_else(|| eyre::eyre!("no 'near' protocol config"))?;
+
+        Ok(self.context_client.group_client(
+            group_id,
+            signing_key,
+            "near".to_owned(),
+            params.network.clone(),
+            params.contract_id.clone(),
+        ))
     }
 }
 
@@ -117,6 +193,96 @@ impl ContextManager {
 /// they are received, which is the core of the actor model's safety guarantee for its internal state.
 impl Actor for ContextManager {
     type Context = actix::Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.recover_in_progress_upgrades(ctx);
+    }
+}
+
+impl ContextManager {
+    /// Scans the store for in-progress group upgrades and re-spawns
+    /// propagators for each. Called during actor startup for crash recovery.
+    fn recover_in_progress_upgrades(&mut self, ctx: &mut actix::Context<Self>) {
+        let upgrades = match group_store::enumerate_in_progress_upgrades(&self.datastore) {
+            Ok(u) => u,
+            Err(err) => {
+                tracing::error!(
+                    ?err,
+                    "failed to scan for in-progress upgrades during recovery"
+                );
+                return;
+            }
+        };
+
+        if upgrades.is_empty() {
+            return;
+        }
+
+        tracing::info!(
+            count = upgrades.len(),
+            "recovering in-progress group upgrades"
+        );
+
+        for (group_id, upgrade) in upgrades {
+            let (total, completed, failed) = match upgrade.status {
+                GroupUpgradeStatus::InProgress {
+                    total,
+                    completed,
+                    failed,
+                } => (total, completed, failed),
+                _ => continue, // shouldn't happen given our filter
+            };
+
+            tracing::info!(
+                ?group_id,
+                total,
+                completed,
+                failed,
+                "re-spawning propagator for in-progress upgrade"
+            );
+
+            // Extract migration method from stored bytes
+            let migration = upgrade
+                .migration
+                .as_ref()
+                .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
+                .map(|method| calimero_context_primitives::messages::MigrationParams { method });
+
+            let meta = match group_store::load_group_meta(&self.datastore, &group_id) {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    tracing::warn!(?group_id, "group not found during recovery, skipping");
+                    continue;
+                }
+                Err(err) => {
+                    tracing::error!(?group_id, ?err, "failed to load group meta during recovery");
+                    continue;
+                }
+            };
+
+            // Skip LazyOnAccess groups — they upgrade contexts on-demand, not via propagator
+            if matches!(meta.upgrade_policy, UpgradePolicy::LazyOnAccess) {
+                tracing::debug!(?group_id, "skipping crash recovery for LazyOnAccess group");
+                continue;
+            }
+
+            self.active_propagators.insert(group_id);
+
+            let propagator = handlers::upgrade_group::propagate_upgrade(
+                self.context_client.clone(),
+                self.datastore.clone(),
+                group_id,
+                meta.target_application_id,
+                migration,
+                None, // no canary skip on recovery — propagator's idempotency handles already-upgraded contexts
+                0,    // recovery: no canary assumption
+            );
+
+            ctx.spawn(propagator.into_actor(self).map(move |_, act, _| {
+                act.active_propagators.remove(&group_id);
+            }));
+        }
+    }
 }
 
 impl ContextMeta {

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use axum::{Extension, Router};
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
@@ -24,17 +24,18 @@ use super::handlers::proposals::{
     get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler,
     get_proxy_contract_handler,
 };
-use super::handlers::{alias, blob, tee};
+use super::handlers::{alias, blob, groups, tee};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
     get_application, install_application, install_dev_application, list_applications,
     uninstall_application,
 };
 use crate::admin::handlers::context::{
-    create_context, delete_context, get_context, get_context_identities, get_context_ids,
-    get_context_storage, get_contexts_for_application, get_contexts_with_executors_for_application,
-    invite_specialized_node, invite_to_context, invite_to_context_open_invitation, join_context,
-    join_context_open_invitation, sync, update_context_application,
+    create_context, delete_context, get_context, get_context_group, get_context_identities,
+    get_context_ids, get_context_storage, get_contexts_for_application,
+    get_contexts_with_executors_for_application, invite_specialized_node, invite_to_context,
+    invite_to_context_open_invitation, join_context, join_context_open_invitation, sync,
+    update_context_application,
 };
 use crate::admin::handlers::identity::generate_context_identity;
 use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
@@ -148,6 +149,10 @@ pub(crate) fn setup(
             get(get_context_identities::handler),
         )
         .route(
+            "/contexts/:context_id/group",
+            get(get_context_group::handler),
+        )
+        .route(
             "/contexts/:context_id/capabilities/grant",
             post(grant_capabilities::handler),
         )
@@ -216,6 +221,100 @@ pub(crate) fn setup(
             get(blob::download_handler)
                 .head(blob::info_handler)
                 .delete(blob::delete_handler),
+        )
+        // Group management
+        .route(
+            "/groups",
+            get(groups::list_all_groups::handler).post(groups::create_group::handler),
+        )
+        .route(
+            "/groups/:group_id",
+            get(groups::get_group_info::handler)
+                .patch(groups::update_group_settings::handler)
+                .delete(groups::delete_group::handler),
+        )
+        .route(
+            "/groups/:group_id/contexts",
+            get(groups::list_group_contexts::handler),
+        )
+        .route(
+            "/groups/:group_id/members",
+            get(groups::list_group_members::handler).post(groups::add_group_members::handler),
+        )
+        .route(
+            "/groups/:group_id/members/remove",
+            post(groups::remove_group_members::handler),
+        )
+        .route(
+            "/groups/:group_id/members/:identity/role",
+            put(groups::update_member_role::handler),
+        )
+        .route(
+            "/groups/:group_id/alias",
+            put(groups::set_group_alias::handler),
+        )
+        .route(
+            "/groups/:group_id/members/:identity/alias",
+            put(groups::set_member_alias::handler),
+        )
+        .route(
+            "/groups/:group_id/contexts/:context_id/remove",
+            post(groups::detach_context_from_group::handler),
+        )
+        .route(
+            "/groups/:group_id/upgrade",
+            post(groups::upgrade_group::handler),
+        )
+        .route(
+            "/groups/:group_id/upgrade/status",
+            get(groups::get_group_upgrade_status::handler),
+        )
+        .route(
+            "/groups/:group_id/upgrade/retry",
+            post(groups::retry_group_upgrade::handler),
+        )
+        .route(
+            "/groups/:group_id/signing-key",
+            post(groups::register_signing_key::handler),
+        )
+        .route(
+            "/groups/:group_id/sync",
+            post(groups::sync_group::handler),
+        )
+        .route(
+            "/groups/:group_id/invite",
+            post(groups::create_group_invitation::handler),
+        )
+        .route(
+            "/groups/:group_id/join-context",
+            post(groups::join_group_context::handler),
+        )
+        .route(
+            "/groups/:group_id/members/:identity/capabilities",
+            get(groups::get_member_capabilities::handler)
+                .put(groups::set_member_capabilities::handler),
+        )
+        .route(
+            "/groups/:group_id/settings/default-capabilities",
+            put(groups::set_default_capabilities::handler),
+        )
+        .route(
+            "/groups/:group_id/settings/default-visibility",
+            put(groups::set_default_visibility::handler),
+        )
+        .route(
+            "/groups/:group_id/contexts/:context_id/visibility",
+            get(groups::get_context_visibility::handler)
+                .put(groups::set_context_visibility::handler),
+        )
+        .route(
+            "/groups/:group_id/contexts/:context_id/allowlist",
+            get(groups::get_context_allowlist::handler)
+                .post(groups::manage_context_allowlist::handler),
+        )
+        .route(
+            "/groups/join",
+            post(groups::join_group::handler),
         )
         // Alias management
         .nest("/alias", alias::service())

@@ -2,12 +2,15 @@ use std::collections::BTreeMap;
 
 use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{
-    BlockHeight, Capability, ContextIdentity, ContextStorageEntry, SignedOpenInvitation,
+    BlockHeight, Capability, ContextIdentity, ContextStorageEntry, SignedGroupOpenInvitation,
+    SignedOpenInvitation,
 };
 use calimero_context_config::{Proposal, ProposalWithApprovals};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
+use calimero_primitives::context::{
+    Context, ContextId, ContextInvitationPayload, GroupMemberRole, UpgradePolicy,
+};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey, WalletType};
 use camino::Utf8PathBuf;
@@ -221,6 +224,10 @@ pub struct CreateContextRequest {
     pub application_id: ApplicationId,
     pub context_seed: Option<Hash>,
     pub initialization_params: Vec<u8>,
+    pub group_id: Option<String>,
+    pub identity_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 impl CreateContextRequest {
@@ -229,12 +236,17 @@ impl CreateContextRequest {
         application_id: ApplicationId,
         context_seed: Option<Hash>,
         initialization_params: Vec<u8>,
+        group_id: Option<String>,
+        identity_secret: Option<String>,
     ) -> Self {
         Self {
             protocol,
             application_id,
             context_seed,
             initialization_params,
+            group_id,
+            identity_secret,
+            alias: None,
         }
     }
 }
@@ -261,6 +273,14 @@ impl CreateContextResponse {
             },
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteContextApiRequest {
+    /// Identity of the caller. Required when deleting a group-attached context;
+    /// the caller must be a group admin.
+    pub requester: Option<PublicKey>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -1781,3 +1801,701 @@ impl Validate for JwtRefreshRequest {
         errors
     }
 }
+
+// -------------------------------------------- Group API --------------------------------------------
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupApiRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_key: Option<String>,
+    pub application_id: ApplicationId,
+    pub upgrade_policy: UpgradePolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+impl Validate for CreateGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if let Some(ref app_key) = self.app_key {
+            if app_key.is_empty() {
+                errors.push(ValidationError::EmptyField { field: "app_key" });
+            }
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupApiResponse {
+    pub data: CreateGroupApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupApiResponseData {
+    pub group_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteGroupApiRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for DeleteGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteGroupApiResponse {
+    pub data: DeleteGroupApiResponseData,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteGroupApiResponseData {
+    pub is_deleted: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupInfoApiResponse {
+    pub data: GroupInfoApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupInfoApiResponseData {
+    pub group_id: String,
+    pub app_key: String,
+    pub target_application_id: ApplicationId,
+    pub upgrade_policy: UpgradePolicy,
+    pub member_count: u64,
+    pub context_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_upgrade: Option<GroupUpgradeStatusApiData>,
+    pub default_capabilities: u32,
+    pub default_visibility: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddGroupMembersApiRequest {
+    pub members: Vec<GroupMemberApiInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for AddGroupMembersApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.members.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "members" });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMemberApiInput {
+    pub identity: PublicKey,
+    pub role: GroupMemberRole,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveGroupMembersApiRequest {
+    pub members: Vec<PublicKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for RemoveGroupMembersApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.members.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "members" });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListGroupMembersApiResponse {
+    pub data: Vec<GroupMemberApiEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMemberApiEntry {
+    pub identity: PublicKey,
+    pub role: GroupMemberRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ListGroupMembersQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupContextEntryResponse {
+    pub context_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListGroupContextsApiResponse {
+    pub data: Vec<GroupContextEntryResponse>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ListGroupContextsQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeGroupApiRequest {
+    pub target_application_id: ApplicationId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub migrate_method: Option<String>,
+}
+
+impl Validate for UpgradeGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if let Some(ref method) = self.migrate_method {
+            if let Some(e) =
+                validate_string_length(method, "migrate_method", MAX_METHOD_NAME_LENGTH)
+            {
+                errors.push(e);
+            }
+            if method.is_empty() {
+                errors.push(ValidationError::EmptyField {
+                    field: "migrate_method",
+                });
+            }
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeGroupApiResponse {
+    pub data: UpgradeGroupApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeGroupApiResponseData {
+    pub group_id: String,
+    pub status: String,
+    pub total: Option<u32>,
+    pub completed: Option<u32>,
+    pub failed: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetGroupUpgradeStatusApiResponse {
+    pub data: Option<GroupUpgradeStatusApiData>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupUpgradeStatusApiData {
+    pub from_version: String,
+    pub to_version: String,
+    pub initiated_at: u64,
+    pub initiated_by: PublicKey,
+    pub status: String,
+    pub total: Option<u32>,
+    pub completed: Option<u32>,
+    pub failed: Option<u32>,
+    pub completed_at: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryGroupUpgradeApiRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for RetryGroupUpgradeApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupInvitationApiRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+    /// On-chain block height after which the invitation commitment expires.
+    /// Defaults to 999_999_999 when not provided (backward-compatible).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiration_block_height: Option<u64>,
+}
+
+impl Validate for CreateGroupInvitationApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupInvitationApiResponse {
+    pub data: CreateGroupInvitationApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupInvitationApiResponseData {
+    pub invitation: SignedGroupOpenInvitation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_alias: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGroupApiRequest {
+    pub invitation: SignedGroupOpenInvitation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_alias: Option<String>,
+}
+
+impl Validate for JoinGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGroupApiResponse {
+    pub data: JoinGroupApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGroupApiResponseData {
+    pub group_id: String,
+    pub member_identity: PublicKey,
+}
+
+// ---- List All Groups ----
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ListAllGroupsQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAllGroupsApiResponse {
+    pub data: Vec<GroupSummaryApiData>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSummaryApiData {
+    pub group_id: String,
+    pub app_key: String,
+    pub target_application_id: ApplicationId,
+    pub upgrade_policy: UpgradePolicy,
+    pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+// ---- Update Group Settings ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateGroupSettingsApiRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+    pub upgrade_policy: UpgradePolicy,
+}
+
+impl Validate for UpdateGroupSettingsApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+// ---- Update Group Settings ----
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct UpdateGroupSettingsApiResponse;
+
+// ---- Update Member Role ----
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct UpdateMemberRoleApiResponse;
+
+// ---- Add Group Members (empty response) ----
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct AddGroupMembersApiResponse;
+
+// ---- Remove Group Members (empty response) ----
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct RemoveGroupMembersApiResponse;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMemberRoleApiRequest {
+    pub role: GroupMemberRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for UpdateMemberRoleApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+// ---- Detach Context From Group ----
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct DetachContextFromGroupApiResponse;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetachContextFromGroupApiRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for DetachContextFromGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+// ---- Register Group Signing Key ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterGroupSigningKeyApiRequest {
+    pub signing_key: String,
+}
+
+impl Validate for RegisterGroupSigningKeyApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.signing_key.is_empty() {
+            errors.push(ValidationError::EmptyField {
+                field: "signing_key",
+            });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterGroupSigningKeyApiResponse {
+    pub data: RegisterGroupSigningKeyApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterGroupSigningKeyApiResponseData {
+    pub public_key: PublicKey,
+}
+
+// ---- Sync Group ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncGroupApiRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_id: Option<String>,
+}
+
+impl Validate for SyncGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncGroupApiResponse {
+    pub data: SyncGroupApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncGroupApiResponseData {
+    pub group_id: String,
+    pub app_key: String,
+    pub target_application_id: ApplicationId,
+    pub member_count: u64,
+    pub context_count: u64,
+}
+
+// ---- Join Group Context ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGroupContextApiRequest {
+    pub context_id: ContextId,
+}
+
+impl Validate for JoinGroupContextApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGroupContextApiResponse {
+    pub data: JoinGroupContextApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinGroupContextApiResponseData {
+    pub context_id: ContextId,
+    pub member_public_key: PublicKey,
+}
+
+// ---- Get Context Group ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextGroupApiResponse {
+    pub data: Option<String>,
+}
+
+// ---- Group Permissions API ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMemberCapabilitiesApiRequest {
+    pub capabilities: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetMemberCapabilitiesApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetMemberCapabilitiesApiResponse;
+
+// ---- Set Member Alias ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMemberAliasApiRequest {
+    pub alias: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetMemberAliasApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.alias.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "alias" });
+        }
+        if let Some(e) = validate_string_length(&self.alias, "alias", 64) {
+            errors.push(e);
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetMemberAliasApiResponse;
+
+// ---- Set Group Alias ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetGroupAliasApiRequest {
+    pub alias: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetGroupAliasApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.alias.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "alias" });
+        }
+        if let Some(e) = validate_string_length(&self.alias, "alias", 64) {
+            errors.push(e);
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetGroupAliasApiResponse;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetMemberCapabilitiesApiResponse {
+    pub data: GetMemberCapabilitiesApiData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetMemberCapabilitiesApiData {
+    pub capabilities: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetContextVisibilityApiRequest {
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetContextVisibilityApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.mode != "open" && self.mode != "restricted" {
+            errors.push(ValidationError::InvalidFormat {
+                field: "mode",
+                reason: "must be 'open' or 'restricted'".into(),
+            });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetContextVisibilityApiResponse;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextVisibilityApiResponse {
+    pub data: GetContextVisibilityApiData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextVisibilityApiData {
+    pub mode: String,
+    pub creator: PublicKey,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManageContextAllowlistApiRequest {
+    #[serde(default)]
+    pub add: Vec<PublicKey>,
+    #[serde(default)]
+    pub remove: Vec<PublicKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for ManageContextAllowlistApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.add.is_empty() && self.remove.is_empty() {
+            errors.push(ValidationError::EmptyField {
+                field: "add/remove",
+            });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct ManageContextAllowlistApiResponse;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextAllowlistApiResponse {
+    pub data: Vec<PublicKey>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetDefaultCapabilitiesApiRequest {
+    pub default_capabilities: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetDefaultCapabilitiesApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetDefaultCapabilitiesApiResponse;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetDefaultVisibilityApiRequest {
+    pub default_visibility: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetDefaultVisibilityApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.default_visibility != "open" && self.default_visibility != "restricted" {
+            errors.push(ValidationError::InvalidFormat {
+                field: "default_visibility",
+                reason: "must be 'open' or 'restricted'".into(),
+            });
+        }
+        errors
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetDefaultVisibilityApiResponse;

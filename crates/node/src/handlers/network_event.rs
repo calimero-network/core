@@ -30,7 +30,87 @@ impl Handler<NetworkEvent> for NodeManager {
             }
 
             NetworkEvent::Subscribed { peer_id, topic } => {
-                let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
+                let topic_str = topic.as_str();
+
+                // Check for group topic: "group/<hex32>"
+                if let Some(hex) = topic_str.strip_prefix("group/") {
+                    let mut bytes = [0u8; 32];
+                    if hex::decode_to_slice(hex, &mut bytes).is_ok() {
+                        info!(%peer_id, group_id=%hex, "Peer subscribed to group topic, triggering sync");
+                        let context_client = self.clients.context.clone();
+                        let _ignored = ctx.spawn(
+                            async move {
+                                use calimero_context_config::types::ContextGroupId;
+                                use calimero_context_primitives::group::SyncGroupRequest;
+
+                                let group_id = ContextGroupId::from(bytes);
+                                if let Err(err) = context_client
+                                    .sync_group(SyncGroupRequest {
+                                        group_id,
+                                        requester: None,
+                                        protocol: None,
+                                        network_id: None,
+                                        contract_id: None,
+                                    })
+                                    .await
+                                {
+                                    warn!(
+                                        ?err,
+                                        "Failed to auto-sync group after peer subscription"
+                                    );
+                                }
+                            }
+                            .into_actor(self),
+                        );
+
+                        let context_client_alias = self.clients.context.clone();
+                        let _ignored_alias = ctx.spawn(
+                            async move {
+                                use calimero_context_config::types::ContextGroupId;
+                                use calimero_context_primitives::group::BroadcastGroupAliasesRequest;
+
+                                let group_id = ContextGroupId::from(bytes);
+                                if let Err(err) = context_client_alias
+                                    .broadcast_group_aliases(BroadcastGroupAliasesRequest {
+                                        group_id,
+                                    })
+                                    .await
+                                {
+                                    warn!(
+                                        ?err,
+                                        "Failed to re-broadcast group aliases after peer subscription"
+                                    );
+                                }
+                            }
+                            .into_actor(self),
+                        );
+
+                        let context_client_local_state = self.clients.context.clone();
+                        let _ignored_local_state = ctx.spawn(
+                            async move {
+                                use calimero_context_config::types::ContextGroupId;
+                                use calimero_context_primitives::group::BroadcastGroupLocalStateRequest;
+
+                                let group_id = ContextGroupId::from(bytes);
+                                if let Err(err) = context_client_local_state
+                                    .broadcast_group_local_state(BroadcastGroupLocalStateRequest {
+                                        group_id,
+                                    })
+                                    .await
+                                {
+                                    warn!(
+                                        ?err,
+                                        "Failed to re-broadcast group local state after peer subscription"
+                                    );
+                                }
+                            }
+                            .into_actor(self),
+                        );
+                    }
+                    return;
+                }
+
+                let Ok(context_id): Result<ContextId, _> = topic_str.parse() else {
                     return;
                 };
 
@@ -283,6 +363,303 @@ impl Handler<NetworkEvent> for NodeManager {
                         // Handle the confirmation to remove the pending invite
                         let pending_invites = self.state.pending_specialized_node_invites.clone();
                         specialized_node_invite::handle_join_confirmation(&pending_invites, nonce);
+                    }
+                    BroadcastMessage::GroupMutationNotification {
+                        group_id,
+                        mutation_kind,
+                    } => {
+                        info!(
+                            ?group_id,
+                            ?mutation_kind,
+                            %source,
+                            "Received group mutation notification"
+                        );
+
+                        let context_client = self.clients.context.clone();
+
+                        match mutation_kind {
+                            calimero_node_primitives::sync::GroupMutationKind::ContextAliasSet {
+                                context_id,
+                                alias,
+                            } => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::StoreContextAliasRequest;
+                                        use calimero_primitives::context::ContextId;
+
+                                        let group_id = ContextGroupId::from(group_id);
+                                        let context_id = ContextId::from(context_id);
+                                        if let Err(err) = context_client
+                                            .store_context_alias(StoreContextAliasRequest {
+                                                group_id,
+                                                context_id,
+                                                alias,
+                                            })
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to store context alias from gossip"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
+                            calimero_node_primitives::sync::GroupMutationKind::MemberCapabilitySet {
+                                member,
+                                capabilities,
+                            } => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::StoreMemberCapabilityRequest;
+                                        use calimero_primitives::identity::PublicKey;
+
+                                        let group_id = ContextGroupId::from(group_id);
+                                        if let Err(err) = context_client
+                                            .store_member_capability(StoreMemberCapabilityRequest {
+                                                group_id,
+                                                member: PublicKey::from(member),
+                                                capabilities,
+                                            })
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to store member capability from gossip"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
+                            calimero_node_primitives::sync::GroupMutationKind::DefaultCapabilitiesSet {
+                                capabilities,
+                            } => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::StoreDefaultCapabilitiesRequest;
+
+                                        let group_id = ContextGroupId::from(group_id);
+                                        if let Err(err) = context_client
+                                            .store_default_capabilities(
+                                                StoreDefaultCapabilitiesRequest {
+                                                    group_id,
+                                                    capabilities,
+                                                },
+                                            )
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to store default capabilities from gossip"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
+                            calimero_node_primitives::sync::GroupMutationKind::ContextVisibilitySet {
+                                context_id,
+                                mode,
+                                creator,
+                            } => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::StoreContextVisibilityRequest;
+                                        use calimero_primitives::context::ContextId;
+                                        use calimero_primitives::identity::PublicKey;
+
+                                        let group_id = ContextGroupId::from(group_id);
+                                        let context_id = ContextId::from(context_id);
+                                        if let Err(err) = context_client
+                                            .store_context_visibility(
+                                                StoreContextVisibilityRequest {
+                                                    group_id,
+                                                    context_id,
+                                                    mode,
+                                                    creator: PublicKey::from(creator),
+                                                },
+                                            )
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to store context visibility from gossip"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
+                            calimero_node_primitives::sync::GroupMutationKind::DefaultVisibilitySet {
+                                mode,
+                            } => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::StoreDefaultVisibilityRequest;
+
+                                        let group_id = ContextGroupId::from(group_id);
+                                        if let Err(err) = context_client
+                                            .store_default_visibility(
+                                                StoreDefaultVisibilityRequest { group_id, mode },
+                                            )
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to store default visibility from gossip"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
+                            calimero_node_primitives::sync::GroupMutationKind::ContextAllowlistSet {
+                                context_id,
+                                members,
+                            } => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::StoreContextAllowlistRequest;
+                                        use calimero_primitives::context::ContextId;
+                                        use calimero_primitives::identity::PublicKey;
+
+                                        let group_id = ContextGroupId::from(group_id);
+                                        let context_id = ContextId::from(context_id);
+                                        let members: Vec<PublicKey> =
+                                            members.into_iter().map(PublicKey::from).collect();
+                                        if let Err(err) = context_client
+                                            .store_context_allowlist(StoreContextAllowlistRequest {
+                                                group_id,
+                                                context_id,
+                                                members,
+                                            })
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to store context allowlist from gossip"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
+                            calimero_node_primitives::sync::GroupMutationKind::MemberAliasSet {
+                                member,
+                                alias,
+                            } => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::StoreMemberAliasRequest;
+                                        use calimero_primitives::identity::PublicKey;
+
+                                        let group_id = ContextGroupId::from(group_id);
+                                        if let Err(err) = context_client
+                                            .store_member_alias(StoreMemberAliasRequest {
+                                                group_id,
+                                                member: PublicKey::from(member),
+                                                alias,
+                                            })
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to store member alias from gossip"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
+                            calimero_node_primitives::sync::GroupMutationKind::GroupAliasSet {
+                                alias,
+                            } => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::StoreGroupAliasRequest;
+
+                                        let group_id = ContextGroupId::from(group_id);
+                                        if let Err(err) = context_client
+                                            .store_group_alias(StoreGroupAliasRequest {
+                                                group_id,
+                                                alias,
+                                            })
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to store group alias from gossip"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
+                            calimero_node_primitives::sync::GroupMutationKind::ContextRegistered {
+                                context_id,
+                            } => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::StoreGroupContextRequest;
+                                        use calimero_primitives::context::ContextId;
+
+                                        let group_id = ContextGroupId::from(group_id);
+                                        let context_id = ContextId::from(context_id);
+                                        if let Err(err) = context_client
+                                            .store_group_context(StoreGroupContextRequest {
+                                                group_id,
+                                                context_id,
+                                            })
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to store group context from gossip"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
+                            _ => {
+                                let _ignored = ctx.spawn(
+                                    async move {
+                                        use calimero_context_config::types::ContextGroupId;
+                                        use calimero_context_primitives::group::SyncGroupRequest;
+
+                                        let group_id = ContextGroupId::from(group_id);
+
+                                        if let Err(err) = context_client
+                                            .sync_group(SyncGroupRequest {
+                                                group_id,
+                                                requester: None,
+                                                protocol: None,
+                                                network_id: None,
+                                                contract_id: None,
+                                            })
+                                            .await
+                                        {
+                                            warn!(
+                                                ?err,
+                                                "Failed to auto-sync group after mutation notification"
+                                            );
+                                        }
+                                    }
+                                    .into_actor(self),
+                                );
+                            }
+                        }
                     }
                     _ => {
                         // Future message types - log and ignore
