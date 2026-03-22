@@ -136,19 +136,23 @@ async fn delete_context(
 
     if let Some(group_id) = group_store::get_group_for_context(&datastore, &context_id)? {
         if let Some((protocol, network_id, contract_id)) = near_params {
-            let sk = requester.and_then(|r| {
-                group_store::get_group_signing_key(&datastore, &group_id, &r)
-                    .ok()
-                    .flatten()
-            });
+            let requester = requester.ok_or_else(|| {
+                eyre::eyre!("requester required for on-chain group context deletion")
+            })?;
 
-            if let Some(sk) = sk {
-                let mut group_client =
-                    context_client.group_client(group_id, sk, protocol, network_id, contract_id);
-                group_client
-                    .unregister_context_from_group(context_id)
-                    .await?;
-            }
+            let sk = group_store::get_group_signing_key(&datastore, &group_id, &requester)?
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "signing key not found for requester in group '{group_id:?}'; \
+                         cannot unregister context on-chain"
+                    )
+                })?;
+
+            let mut group_client =
+                context_client.group_client(group_id, sk, protocol, network_id, contract_id);
+            group_client
+                .unregister_context_from_group(context_id)
+                .await?;
         }
 
         group_store::unregister_context_from_group(&datastore, &group_id, &context_id)?;
