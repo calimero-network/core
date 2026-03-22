@@ -1359,10 +1359,7 @@ pub fn delete_default_visibility(store: &Store, group_id: &ContextGroupId) -> Ey
     Ok(())
 }
 
-pub fn delete_all_member_capabilities(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<()> {
+pub fn delete_all_member_capabilities(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     let handle = store.handle();
     let group_id_bytes: [u8; 32] = group_id.to_bytes();
     let start_key = GroupMemberCapability::new(group_id_bytes, PublicKey::from([0u8; 32]));
