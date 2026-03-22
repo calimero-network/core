@@ -39,9 +39,10 @@ pub async fn handler(
         .map_err(parse_api_error);
 
     match result {
-        Ok(members) => {
-            info!(group_id=%group_id_str, count=%members.len(), "Group members retrieved successfully");
-            let entries = members
+        Ok(resp) => {
+            info!(group_id=%group_id_str, count=%resp.members.len(), "Group members retrieved successfully");
+            let entries = resp
+                .members
                 .into_iter()
                 .map(|m| GroupMemberApiEntry {
                     identity: m.identity,
@@ -50,7 +51,10 @@ pub async fn handler(
                 })
                 .collect();
             ApiResponse {
-                payload: ListGroupMembersApiResponse { data: entries },
+                payload: ListGroupMembersApiResponse {
+                    data: entries,
+                    self_identity: Some(resp.self_identity),
+                },
             }
             .into_response()
         }

@@ -1,5 +1,7 @@
 use actix::{ActorResponse, Handler, Message};
-use calimero_context_primitives::group::{GroupMemberEntry, ListGroupMembersRequest};
+use calimero_context_primitives::group::{
+    GroupMemberEntry, ListGroupMembersRequest, ListGroupMembersResponse,
+};
 use eyre::bail;
 
 use crate::group_store;
@@ -42,7 +44,11 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
                     }
                 })
                 .collect();
-            Ok(entries)
+
+            Ok(ListGroupMembersResponse {
+                members: entries,
+                self_identity: node_identity,
+            })
         })();
 
         ActorResponse::reply(result)

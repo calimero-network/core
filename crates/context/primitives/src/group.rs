@@ -116,7 +116,15 @@ pub struct ListGroupMembersRequest {
 }
 
 impl Message for ListGroupMembersRequest {
-    type Result = eyre::Result<Vec<GroupMemberEntry>>;
+    type Result = eyre::Result<ListGroupMembersResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct ListGroupMembersResponse {
+    pub members: Vec<GroupMemberEntry>,
+    /// The node's own group-level identity (SignerId) so the client knows
+    /// which member in the list represents the current node.
+    pub self_identity: PublicKey,
 }
 
 #[derive(Clone, Debug)]

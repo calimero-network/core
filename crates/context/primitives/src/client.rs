@@ -33,14 +33,15 @@ use crate::group::{
     GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse, GroupContextEntry,
     GroupInfoResponse, GroupMemberEntry, GroupSummary, GroupUpgradeInfo, JoinGroupContextRequest,
     JoinGroupContextResponse, JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, ManageContextAllowlistRequest,
-    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextVisibilityRequest,
-    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetGroupAliasRequest,
-    SetMemberAliasRequest, SetMemberCapabilitiesRequest, StoreContextAliasRequest,
-    StoreContextAllowlistRequest, StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest,
-    StoreDefaultVisibilityRequest, StoreGroupAliasRequest, StoreGroupContextRequest,
-    StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse,
-    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
+    ManageContextAllowlistRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
+    SetContextVisibilityRequest, SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest,
+    SetGroupAliasRequest, SetMemberAliasRequest, SetMemberCapabilitiesRequest,
+    StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
+    StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
+    StoreGroupContextRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest,
+    SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
+    UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
@@ -1127,7 +1128,7 @@ impl ContextClient {
     pub async fn list_group_members(
         &self,
         request: ListGroupMembersRequest,
-    ) -> eyre::Result<Vec<GroupMemberEntry>> {
+    ) -> eyre::Result<ListGroupMembersResponse> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
