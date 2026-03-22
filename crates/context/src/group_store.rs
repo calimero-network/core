@@ -713,13 +713,20 @@ pub async fn sync_group_state_from_contract(
         .as_secs();
 
     let existing = load_group_meta(datastore, group_id)?;
+    let upgrade_policy = existing
+        .as_ref()
+        .map(|m| m.upgrade_policy.clone())
+        .unwrap_or_else(|| {
+            warn!(
+                ?group_id,
+                "upgrade_policy not available on-chain; using default (LazyOnAccess) for newly joined group"
+            );
+            Default::default()
+        });
     let meta = GroupMetaValue {
         app_key,
         target_application_id,
-        upgrade_policy: existing
-            .as_ref()
-            .map(|m| m.upgrade_policy.clone())
-            .unwrap_or_default(),
+        upgrade_policy,
         created_at: existing.as_ref().map(|m| m.created_at).unwrap_or(now),
         admin_identity: existing
             .as_ref()
