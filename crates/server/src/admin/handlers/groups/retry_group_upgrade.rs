@@ -13,11 +13,13 @@ use super::parse_group_id;
 use super::upgrade_group::format_status;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
+use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<RetryGroupUpgradeApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
@@ -31,7 +33,7 @@ pub async fn handler(
         .ctx_client
         .retry_group_upgrade(RetryGroupUpgradeRequest {
             group_id,
-            requester: req.requester,
+            requester: auth_key.map(|Extension(k)| k.0).or(req.requester),
         })
         .await
         .map_err(parse_api_error);

@@ -10,11 +10,13 @@ use tracing::{error, info};
 use super::{parse_context_id, parse_group_id};
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse, Empty};
+use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path((group_id_str, context_id_str)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<ManageContextAllowlistApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
@@ -42,7 +44,7 @@ pub async fn handler(
             context_id,
             add: req.add,
             remove: req.remove,
-            requester: req.requester,
+            requester: auth_key.map(|Extension(k)| k.0).or(req.requester),
         })
         .await
         .map_err(parse_api_error);

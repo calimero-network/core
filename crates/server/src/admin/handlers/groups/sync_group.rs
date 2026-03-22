@@ -12,11 +12,13 @@ use tracing::{error, info};
 use super::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
+use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<SyncGroupApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
@@ -30,7 +32,7 @@ pub async fn handler(
         .ctx_client
         .sync_group(SyncGroupRequest {
             group_id,
-            requester: req.requester,
+            requester: auth_key.map(|Extension(k)| k.0).or(req.requester),
             protocol: req.protocol,
             network_id: req.network_id,
             contract_id: req.contract_id,
