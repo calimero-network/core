@@ -14,7 +14,8 @@ use calimero_store::key::{
     GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis, GroupDefaultVisValue, GroupMember,
     GroupMemberAlias, GroupMemberCapability, GroupMemberCapabilityValue, GroupMeta, GroupMetaValue,
     GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
-    GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
+    GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
+    GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
     GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_PREFIX,
     GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
@@ -1337,6 +1338,112 @@ pub fn set_context_last_migration(
             method: method.to_owned(),
         },
     )?;
+    Ok(())
+}
+
+pub fn delete_group_alias(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
+    let mut handle = store.handle();
+    handle.delete(&GroupAlias::new(group_id.to_bytes()))?;
+    Ok(())
+}
+
+pub fn delete_default_capabilities(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
+    let mut handle = store.handle();
+    handle.delete(&GroupDefaultCaps::new(group_id.to_bytes()))?;
+    Ok(())
+}
+
+pub fn delete_default_visibility(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
+    let mut handle = store.handle();
+    handle.delete(&GroupDefaultVis::new(group_id.to_bytes()))?;
+    Ok(())
+}
+
+pub fn delete_all_member_capabilities(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<()> {
+    let handle = store.handle();
+    let group_id_bytes: [u8; 32] = group_id.to_bytes();
+    let start_key = GroupMemberCapability::new(group_id_bytes, PublicKey::from([0u8; 32]));
+    let mut iter = handle.iter::<GroupMemberCapability>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut keys_to_delete = Vec::new();
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+        if key.as_key().as_bytes()[0] != GROUP_MEMBER_CAPABILITY_PREFIX {
+            break;
+        }
+        if key.group_id() != group_id_bytes {
+            break;
+        }
+        keys_to_delete.push(key);
+    }
+    drop(iter);
+
+    let mut handle = store.handle();
+    for key in keys_to_delete {
+        handle.delete(&key)?;
+    }
+    Ok(())
+}
+
+pub fn delete_all_member_aliases(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
+    let handle = store.handle();
+    let group_id_bytes: [u8; 32] = group_id.to_bytes();
+    let start_key = GroupMemberAlias::new(group_id_bytes, PublicKey::from([0u8; 32]));
+    let mut iter = handle.iter::<GroupMemberAlias>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut keys_to_delete = Vec::new();
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+        if key.as_key().as_bytes()[0] != GROUP_MEMBER_ALIAS_PREFIX {
+            break;
+        }
+        if key.group_id() != group_id_bytes {
+            break;
+        }
+        keys_to_delete.push(key);
+    }
+    drop(iter);
+
+    let mut handle = store.handle();
+    for key in keys_to_delete {
+        handle.delete(&key)?;
+    }
+    Ok(())
+}
+
+pub fn delete_all_context_last_migrations(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<()> {
+    let handle = store.handle();
+    let group_id_bytes: [u8; 32] = group_id.to_bytes();
+    let start_key =
+        GroupContextLastMigration::new(group_id_bytes, ContextId::from([0u8; 32]).into());
+    let mut iter = handle.iter::<GroupContextLastMigration>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut keys_to_delete = Vec::new();
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+        if key.as_key().as_bytes()[0] != GROUP_CONTEXT_LAST_MIGRATION_PREFIX {
+            break;
+        }
+        if key.group_id() != group_id_bytes {
+            break;
+        }
+        keys_to_delete.push(key);
+    }
+    drop(iter);
+
+    let mut handle = store.handle();
+    for key in keys_to_delete {
+        handle.delete(&key)?;
+    }
     Ok(())
 }
 

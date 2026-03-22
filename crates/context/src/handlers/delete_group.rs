@@ -91,6 +91,19 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                     }
                 }
 
+                // Clean up member capability and alias entries that are not
+                // removed by the member-deletion loop above.
+                group_store::delete_all_member_capabilities(&datastore, &group_id)?;
+                group_store::delete_all_member_aliases(&datastore, &group_id)?;
+
+                // Clean up group-level settings and alias.
+                group_store::delete_default_capabilities(&datastore, &group_id)?;
+                group_store::delete_default_visibility(&datastore, &group_id)?;
+                group_store::delete_group_alias(&datastore, &group_id)?;
+
+                // Clean up per-context migration records for this group.
+                group_store::delete_all_context_last_migrations(&datastore, &group_id)?;
+
                 // Clean up any in-progress or completed upgrade record so crash
                 // recovery does not find orphaned entries for deleted groups.
                 group_store::delete_group_upgrade(&datastore, &group_id)?;
