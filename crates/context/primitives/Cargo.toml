@@ -12,6 +12,7 @@ publish = true
 actix.workspace = true
 async-stream.workspace = true
 borsh = { workspace = true, features = ["derive"] }
+ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true

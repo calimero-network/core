@@ -68,8 +68,8 @@ impl KmsProbeCommand {
             "Failed to resolve tee.kms.phala.attestation policy (including external policy_json_path)",
         )?;
 
-        let peer_id = config.identity.public().to_peer_id().to_base58();
-        let result = kms::probe_storage_key(&kms_config, &peer_id, &config.identity).await;
+        let peer_id = config.identity.keypair.public().to_peer_id().to_base58();
+        let result = kms::probe_storage_key(&kms_config, &peer_id, &config.identity.keypair).await;
         print_result(json, &result)?;
 
         if result.ok {

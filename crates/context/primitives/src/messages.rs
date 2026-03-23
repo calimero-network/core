@@ -1,5 +1,5 @@
 use actix::Message;
-use calimero_context_config::types::SignedRevealPayload;
+use calimero_context_config::types::{ContextGroupId, SignedRevealPayload};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
@@ -9,6 +9,21 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 
+use crate::group::{
+    AddGroupMembersRequest, BroadcastGroupAliasesRequest, BroadcastGroupLocalStateRequest,
+    CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest,
+    DetachContextFromGroupRequest, GetContextAllowlistRequest, GetContextVisibilityRequest,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
+    GetMemberCapabilitiesRequest, JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, ManageContextAllowlistRequest,
+    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextVisibilityRequest,
+    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetGroupAliasRequest,
+    SetMemberAliasRequest, SetMemberCapabilitiesRequest, StoreContextAliasRequest,
+    StoreContextAllowlistRequest, StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest,
+    StoreDefaultVisibilityRequest, StoreGroupAliasRequest, StoreGroupContextRequest,
+    StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+};
 use crate::{ContextAtomic, ContextAtomicKey};
 
 #[derive(Debug)]
@@ -18,6 +33,8 @@ pub struct CreateContextRequest {
     pub application_id: ApplicationId,
     pub identity_secret: Option<PrivateKey>,
     pub init_params: Vec<u8>,
+    pub group_id: Option<ContextGroupId>,
+    pub alias: Option<String>,
 }
 
 impl Message for CreateContextRequest {
@@ -33,6 +50,7 @@ pub struct CreateContextResponse {
 #[derive(Copy, Clone, Debug)]
 pub struct DeleteContextRequest {
     pub context_id: ContextId,
+    pub requester: Option<PublicKey>,
 }
 
 impl Message for DeleteContextRequest {
@@ -185,5 +203,165 @@ pub enum ContextMessage {
     Sync {
         request: SyncRequest,
         outcome: oneshot::Sender<<SyncRequest as Message>::Result>,
+    },
+    CreateGroup {
+        request: CreateGroupRequest,
+        outcome: oneshot::Sender<<CreateGroupRequest as Message>::Result>,
+    },
+    DeleteGroup {
+        request: DeleteGroupRequest,
+        outcome: oneshot::Sender<<DeleteGroupRequest as Message>::Result>,
+    },
+    AddGroupMembers {
+        request: AddGroupMembersRequest,
+        outcome: oneshot::Sender<<AddGroupMembersRequest as Message>::Result>,
+    },
+    RemoveGroupMembers {
+        request: RemoveGroupMembersRequest,
+        outcome: oneshot::Sender<<RemoveGroupMembersRequest as Message>::Result>,
+    },
+    GetGroupInfo {
+        request: GetGroupInfoRequest,
+        outcome: oneshot::Sender<<GetGroupInfoRequest as Message>::Result>,
+    },
+    ListGroupMembers {
+        request: ListGroupMembersRequest,
+        outcome: oneshot::Sender<<ListGroupMembersRequest as Message>::Result>,
+    },
+    ListGroupContexts {
+        request: ListGroupContextsRequest,
+        outcome: oneshot::Sender<<ListGroupContextsRequest as Message>::Result>,
+    },
+    UpgradeGroup {
+        request: UpgradeGroupRequest,
+        outcome: oneshot::Sender<<UpgradeGroupRequest as Message>::Result>,
+    },
+    GetGroupUpgradeStatus {
+        request: GetGroupUpgradeStatusRequest,
+        outcome: oneshot::Sender<<GetGroupUpgradeStatusRequest as Message>::Result>,
+    },
+    RetryGroupUpgrade {
+        request: RetryGroupUpgradeRequest,
+        outcome: oneshot::Sender<<RetryGroupUpgradeRequest as Message>::Result>,
+    },
+    CreateGroupInvitation {
+        request: CreateGroupInvitationRequest,
+        outcome: oneshot::Sender<<CreateGroupInvitationRequest as Message>::Result>,
+    },
+    JoinGroup {
+        request: JoinGroupRequest,
+        outcome: oneshot::Sender<<JoinGroupRequest as Message>::Result>,
+    },
+    ListAllGroups {
+        request: ListAllGroupsRequest,
+        outcome: oneshot::Sender<<ListAllGroupsRequest as Message>::Result>,
+    },
+    UpdateGroupSettings {
+        request: UpdateGroupSettingsRequest,
+        outcome: oneshot::Sender<<UpdateGroupSettingsRequest as Message>::Result>,
+    },
+    UpdateMemberRole {
+        request: UpdateMemberRoleRequest,
+        outcome: oneshot::Sender<<UpdateMemberRoleRequest as Message>::Result>,
+    },
+    DetachContextFromGroup {
+        request: DetachContextFromGroupRequest,
+        outcome: oneshot::Sender<<DetachContextFromGroupRequest as Message>::Result>,
+    },
+    GetGroupForContext {
+        request: GetGroupForContextRequest,
+        outcome: oneshot::Sender<<GetGroupForContextRequest as Message>::Result>,
+    },
+    SyncGroup {
+        request: SyncGroupRequest,
+        outcome: oneshot::Sender<<SyncGroupRequest as Message>::Result>,
+    },
+    JoinGroupContext {
+        request: JoinGroupContextRequest,
+        outcome: oneshot::Sender<<JoinGroupContextRequest as Message>::Result>,
+    },
+    SetMemberCapabilities {
+        request: SetMemberCapabilitiesRequest,
+        outcome: oneshot::Sender<<SetMemberCapabilitiesRequest as Message>::Result>,
+    },
+    GetMemberCapabilities {
+        request: GetMemberCapabilitiesRequest,
+        outcome: oneshot::Sender<<GetMemberCapabilitiesRequest as Message>::Result>,
+    },
+    SetContextVisibility {
+        request: SetContextVisibilityRequest,
+        outcome: oneshot::Sender<<SetContextVisibilityRequest as Message>::Result>,
+    },
+    GetContextVisibility {
+        request: GetContextVisibilityRequest,
+        outcome: oneshot::Sender<<GetContextVisibilityRequest as Message>::Result>,
+    },
+    ManageContextAllowlist {
+        request: ManageContextAllowlistRequest,
+        outcome: oneshot::Sender<<ManageContextAllowlistRequest as Message>::Result>,
+    },
+    GetContextAllowlist {
+        request: GetContextAllowlistRequest,
+        outcome: oneshot::Sender<<GetContextAllowlistRequest as Message>::Result>,
+    },
+    SetDefaultCapabilities {
+        request: SetDefaultCapabilitiesRequest,
+        outcome: oneshot::Sender<<SetDefaultCapabilitiesRequest as Message>::Result>,
+    },
+    SetDefaultVisibility {
+        request: SetDefaultVisibilityRequest,
+        outcome: oneshot::Sender<<SetDefaultVisibilityRequest as Message>::Result>,
+    },
+    StoreContextAlias {
+        request: StoreContextAliasRequest,
+        outcome: oneshot::Sender<<StoreContextAliasRequest as Message>::Result>,
+    },
+    BroadcastGroupAliases {
+        request: BroadcastGroupAliasesRequest,
+        outcome: oneshot::Sender<<BroadcastGroupAliasesRequest as Message>::Result>,
+    },
+    BroadcastGroupLocalState {
+        request: BroadcastGroupLocalStateRequest,
+        outcome: oneshot::Sender<<BroadcastGroupLocalStateRequest as Message>::Result>,
+    },
+    StoreMemberCapability {
+        request: StoreMemberCapabilityRequest,
+        outcome: oneshot::Sender<<StoreMemberCapabilityRequest as Message>::Result>,
+    },
+    StoreDefaultCapabilities {
+        request: StoreDefaultCapabilitiesRequest,
+        outcome: oneshot::Sender<<StoreDefaultCapabilitiesRequest as Message>::Result>,
+    },
+    StoreContextVisibility {
+        request: StoreContextVisibilityRequest,
+        outcome: oneshot::Sender<<StoreContextVisibilityRequest as Message>::Result>,
+    },
+    StoreDefaultVisibility {
+        request: StoreDefaultVisibilityRequest,
+        outcome: oneshot::Sender<<StoreDefaultVisibilityRequest as Message>::Result>,
+    },
+    StoreContextAllowlist {
+        request: StoreContextAllowlistRequest,
+        outcome: oneshot::Sender<<StoreContextAllowlistRequest as Message>::Result>,
+    },
+    SetMemberAlias {
+        request: SetMemberAliasRequest,
+        outcome: oneshot::Sender<<SetMemberAliasRequest as Message>::Result>,
+    },
+    StoreMemberAlias {
+        request: StoreMemberAliasRequest,
+        outcome: oneshot::Sender<<StoreMemberAliasRequest as Message>::Result>,
+    },
+    SetGroupAlias {
+        request: SetGroupAliasRequest,
+        outcome: oneshot::Sender<<SetGroupAliasRequest as Message>::Result>,
+    },
+    StoreGroupAlias {
+        request: StoreGroupAliasRequest,
+        outcome: oneshot::Sender<<StoreGroupAliasRequest as Message>::Result>,
+    },
+    StoreGroupContext {
+        request: StoreGroupContextRequest,
+        outcome: oneshot::Sender<<StoreGroupContextRequest as Message>::Result>,
     },
 }

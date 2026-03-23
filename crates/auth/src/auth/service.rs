@@ -59,6 +59,19 @@ impl AuthService {
         self.token_manager.verify_token_from_headers(headers).await
     }
 
+    /// Return the `public_key` field stored for `key_id`, if any.
+    ///
+    /// **Security note:** `key_id` MUST come from a previously verified JWT token
+    /// (i.e. returned by `verify_token_from_headers`). Callers must not pass
+    /// untrusted or user-supplied values — doing so would allow arbitrary
+    /// identity lookups.
+    ///
+    /// Used by the server auth guard to inject the authenticated identity into
+    /// request extensions so handlers can use it as the effective requester.
+    pub async fn get_key_public_key(&self, key_id: &str) -> Result<Option<String>, AuthError> {
+        self.token_manager.get_public_key_for_key_id(key_id).await
+    }
+
     /// Authenticate a token request
     ///
     /// This method authenticates the user using the provided token request

@@ -18,7 +18,7 @@ use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::PeerId;
 use rand::Rng;
 use tokio::sync::{broadcast, mpsc};
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 
@@ -81,6 +81,20 @@ impl NodeClient {
 
         info!(%context_id, "Unsubscribed from context");
 
+        Ok(())
+    }
+
+    pub async fn subscribe_group(&self, group_id: [u8; 32]) -> eyre::Result<()> {
+        let topic = IdentTopic::new(format!("group/{}", hex::encode(group_id)));
+        let _ignored = self.network_client.subscribe(topic).await?;
+        info!(?group_id, "Subscribed to group topic");
+        Ok(())
+    }
+
+    pub async fn unsubscribe_group(&self, group_id: [u8; 32]) -> eyre::Result<()> {
+        let topic = IdentTopic::new(format!("group/{}", hex::encode(group_id)));
+        let _ignored = self.network_client.unsubscribe(topic).await?;
+        info!(?group_id, "Unsubscribed from group topic");
         Ok(())
     }
 
@@ -166,6 +180,36 @@ impl NodeClient {
         let topic = TopicHash::from_raw(*context_id);
 
         let _ignored = self.network_client.publish(topic, payload).await?;
+
+        Ok(())
+    }
+
+    pub async fn broadcast_group_mutation(
+        &self,
+        group_id: [u8; 32],
+        mutation_kind: crate::sync::GroupMutationKind,
+    ) -> eyre::Result<()> {
+        let topic_str = format!("group/{}", hex::encode(group_id));
+        let topic = TopicHash::from_raw(topic_str);
+
+        let peers = self.network_client.mesh_peer_count(topic.clone()).await;
+        if peers == 0 {
+            debug!(
+                ?mutation_kind,
+                "no peers on group topic, skipping broadcast"
+            );
+            return Ok(());
+        }
+
+        let payload = BroadcastMessage::GroupMutationNotification {
+            group_id,
+            mutation_kind,
+        };
+        let payload_bytes = borsh::to_vec(&payload)?;
+
+        if let Err(err) = self.network_client.publish(topic, payload_bytes).await {
+            warn!(?group_id, %err, "failed to publish group mutation notification");
+        }
 
         Ok(())
     }

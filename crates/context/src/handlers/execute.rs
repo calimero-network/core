@@ -10,13 +10,13 @@ use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::{
-    ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse,
+    ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse, MigrationParams,
 };
 use calimero_context_primitives::{ContextAtomic, ContextAtomicKey};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::context::{Context, ContextId, UpgradePolicy};
 use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, NodeEvent, StateMutationPayload,
 };
@@ -39,6 +39,9 @@ use tokio::sync::OwnedMutexGuard;
 use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
+use crate::handlers::update_application::{
+    update_application_id, update_application_with_migration,
+};
 use crate::handlers::utils::{process_context_mutations, StoreContextHost};
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
@@ -91,6 +94,8 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
         };
 
+        let current_application_id = context.meta.application_id;
+
         let is_state_op = "__calimero_sync_next" == method;
 
         if !is_state_op && *context.meta.root_hash == [0; 32] {
@@ -101,6 +106,18 @@ impl Handler<ExecuteRequest> for ContextManager {
             None => (context.lock(), false),
             Some(ContextAtomic::Lock) => (context.lock(), true),
             Some(ContextAtomic::Held(ContextAtomicKey(guard))) => (Either::Left(guard), true),
+        };
+
+        // Lazy upgrade: if context belongs to a LazyOnAccess group and is stale,
+        // trigger an upgrade before executing the method.
+        // Note: placed after context.lock() so that `context` borrow is released
+        // before we access self.datastore.
+        // Skip for sync operations — the state payload was produced by the old app
+        // version and must be applied as-is, not against a newly upgraded WASM.
+        let lazy_upgrade_params = if is_state_op {
+            None
+        } else {
+            maybe_lazy_upgrade(&self.datastore, &context_id, &current_application_id)
         };
 
         let external_config = match self.context_client.context_config(&context_id) {
@@ -176,13 +193,165 @@ impl Handler<ExecuteRequest> for ContextManager {
         }
         .into_actor(self);
 
-        let context_task = guard_task.map(move |guard, act, _ctx| {
-            let Some(context) = act.get_or_fetch_context(&context_id)? else {
-                bail!(ContextError::ContextDeleted { context_id });
-            };
-
-            Ok((guard, context.meta.clone()))
+        // Extract actor-owned values for the lazy upgrade path synchronously so the
+        // context_task future can call update_application_id / update_application_with_migration
+        // directly without routing through the actor mailbox (which would deadlock while an
+        // ActorFuture is in flight on the same actor).
+        let lazy_upgrade_task = guard_task.map(move |guard, act, _ctx| {
+            if let Some((target_app_id, migrate_method, group_id)) = lazy_upgrade_params {
+                info!(
+                    %context_id,
+                    %target_app_id,
+                    %executor,
+                    "performing lazy upgrade before execution"
+                );
+                let datastore = act.datastore.clone();
+                let node_client = act.node_client.clone();
+                let context_client = act.context_client.clone();
+                let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
+                let application = act.applications.get(&target_app_id).cloned();
+                return Ok(Either::Right((
+                    guard,
+                    datastore,
+                    node_client,
+                    context_client,
+                    context_id,
+                    target_app_id,
+                    context_meta,
+                    application,
+                    migrate_method,
+                    group_id,
+                )));
+            }
+            Ok(Either::Left(guard))
         });
+
+        let context_task = lazy_upgrade_task.and_then(move |either, act, _ctx| {
+            match either {
+                Either::Left(guard) => async move { Ok(guard) }.into_actor(act).boxed_local(),
+                Either::Right((
+                    guard,
+                    datastore,
+                    node_client,
+                    context_client,
+                    cid,
+                    target_app,
+                    context_meta,
+                    application,
+                    migrate,
+                    group_id,
+                )) => {
+                    if let Some(method) = migrate {
+                        let migration_params = MigrationParams { method: method.clone() };
+                        // Migration: load the WASM module via get_module (actor-aware cache),
+                        // then call update_application_with_migration directly — no mailbox.
+                        act.get_module(target_app)
+                            .then(move |module_result, act, _ctx| {
+                                // Re-read cached values; they may have been refreshed during load
+                                let context_meta =
+                                    act.contexts.get(&cid).map(|c| c.meta.clone());
+                                let application = act.applications.get(&target_app).cloned();
+                                async move {
+                                    match module_result {
+                                        Ok(module) => {
+                                            match update_application_with_migration(
+                                                datastore.clone(),
+                                                node_client,
+                                                context_client,
+                                                cid,
+                                                context_meta,
+                                                target_app,
+                                                application,
+                                                executor,
+                                                Some(migration_params),
+                                                module,
+                                            )
+                                            .await
+                                            {
+                                                Ok(_) => {
+                                                    // Record that this migration was applied so
+                                                    // maybe_lazy_upgrade skips it on future accesses.
+                                                    if let Err(err) =
+                                                        crate::group_store::set_context_last_migration(
+                                                            &datastore,
+                                                            &group_id,
+                                                            &cid,
+                                                            &method,
+                                                        )
+                                                    {
+                                                        warn!(
+                                                            %cid,
+                                                            %err,
+                                                            "failed to record migration marker"
+                                                        );
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    warn!(
+                                                        %cid,
+                                                        %target_app,
+                                                        %err,
+                                                        "lazy upgrade (migration) failed, proceeding with current application"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        Err(err) => {
+                                            warn!(
+                                                %cid,
+                                                %target_app,
+                                                %err,
+                                                "failed to load module for lazy upgrade migration"
+                                            );
+                                        }
+                                    }
+                                    Ok(guard)
+                                }
+                                .into_actor(act)
+                            })
+                            .boxed_local()
+                    } else {
+                        // No migration: call update_application_id directly — no mailbox.
+                        async move {
+                            if let Err(err) = update_application_id(
+                                datastore,
+                                node_client,
+                                context_client,
+                                cid,
+                                context_meta,
+                                target_app,
+                                application,
+                                executor,
+                            )
+                            .await
+                            {
+                                warn!(
+                                    %cid,
+                                    %target_app,
+                                    %err,
+                                    "lazy upgrade failed, proceeding with current application"
+                                );
+                            }
+                            Ok(guard)
+                        }
+                        .into_actor(act)
+                        .boxed_local()
+                    }
+                }
+            }
+        });
+
+        // Re-fetch context after possible lazy upgrade (application_id may have changed)
+        let context_task = context_task.map(
+            move |guard_result: eyre::Result<OwnedMutexGuard<ContextId>>, act, _ctx| {
+                let guard = guard_result?;
+                let Some(context) = act.get_or_fetch_context(&context_id)? else {
+                    bail!(ContextError::ContextDeleted { context_id });
+                };
+
+                Ok((guard, context.meta.clone()))
+            },
+        );
 
         let module_task = context_task.and_then(move |(guard, context), act, _ctx| {
             act.get_module(context.application_id)
@@ -1127,4 +1296,85 @@ fn sign_user_actions(
         }
     }
     Ok(())
+}
+
+/// Checks if a context belongs to a group with LazyOnAccess policy and
+/// needs an upgrade or migration.
+///
+/// Returns `(target_application_id, migrate_method, group_id)` when an
+/// upgrade should be performed.  The `group_id` is included so the caller
+/// can record a per-context migration marker after a successful run.
+fn maybe_lazy_upgrade(
+    datastore: &Store,
+    context_id: &ContextId,
+    current_application_id: &ApplicationId,
+) -> Option<(
+    ApplicationId,
+    Option<String>,
+    calimero_context_config::types::ContextGroupId,
+)> {
+    use crate::group_store;
+
+    // 1. Check if context belongs to a group
+    let group_id = match group_store::get_group_for_context(datastore, context_id) {
+        Ok(Some(gid)) => gid,
+        Ok(None) => return None, // not in a group
+        Err(err) => {
+            debug!(%err, %context_id, "failed to check group for context during lazy upgrade");
+            return None;
+        }
+    };
+
+    // 2. Load group metadata
+    let meta = match group_store::load_group_meta(datastore, &group_id) {
+        Ok(Some(m)) => m,
+        Ok(None) => return None, // group deleted?
+        Err(err) => {
+            debug!(%err, ?group_id, "failed to load group meta during lazy upgrade");
+            return None;
+        }
+    };
+
+    // 3. Check policy is LazyOnAccess
+    if !matches!(meta.upgrade_policy, UpgradePolicy::LazyOnAccess) {
+        return None;
+    }
+
+    // 4. Extract migration method from group meta (set during upgrade)
+    let migrate_method = meta
+        .migration
+        .as_ref()
+        .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
+
+    // 5. Compare current vs target application
+    if *current_application_id == meta.target_application_id {
+        // IDs match — only proceed if there is a pending migration that
+        // hasn't been applied to this context yet.
+        let Some(ref method) = migrate_method else {
+            return None; // no migration, context is already up to date
+        };
+
+        // Check per-context marker set after a successful migration run.
+        let already_applied =
+            group_store::get_context_last_migration(datastore, &group_id, context_id)
+                .ok()
+                .flatten()
+                .map(|last| last == *method)
+                .unwrap_or(false);
+
+        if already_applied {
+            return None; // migration was already applied to this context
+        }
+        // Fall through: migration is pending.
+    }
+
+    info!(
+        %context_id,
+        ?group_id,
+        %current_application_id,
+        target_app=%meta.target_application_id,
+        "lazy upgrade triggered for context"
+    );
+
+    Some((meta.target_application_id, migrate_method, group_id))
 }

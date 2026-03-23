@@ -8,6 +8,8 @@
 //! - Action merging
 //! - Edge cases
 
+use serial_test::serial;
+
 use super::common::{Page, Paragraph};
 use crate::action::Action;
 use crate::address::Id;
@@ -28,6 +30,7 @@ const ONE_SEC_NANOS: u64 = 1_000_000_000;
 // ============================================================
 
 #[test]
+#[serial]
 fn lww_newer_update_wins() {
     super::common::register_test_merge_functions();
     let mut page = Page::new_from_element("Version 1", Element::root());
@@ -49,6 +52,7 @@ fn lww_newer_update_wins() {
 }
 
 #[test]
+#[serial]
 fn lww_newer_overwrites_older() {
     super::common::register_test_merge_functions();
     let mut page = Page::new_from_element("Version 1", Element::root());
@@ -69,6 +73,7 @@ fn lww_newer_overwrites_older() {
 }
 
 #[test]
+#[serial]
 fn lww_concurrent_updates_deterministic() {
     super::common::register_test_merge_functions();
     let mut page = Page::new_from_element("Initial", Element::root());
@@ -224,6 +229,7 @@ fn delete_vs_update_conflict() {
 }
 
 #[test]
+#[serial]
 fn update_vs_delete_conflict() {
     super::common::register_test_merge_functions();
     let mut page = Page::new_from_element("Test Page", Element::root());
@@ -265,6 +271,7 @@ fn update_vs_delete_conflict() {
 // ============================================================
 
 #[test]
+#[serial]
 fn concurrent_updates_different_entities() {
     super::common::register_test_merge_functions();
     // Test that concurrent updates to different entities both succeed
@@ -298,6 +305,7 @@ fn concurrent_adds_to_collection() {
 }
 
 #[test]
+#[serial]
 fn concurrent_update_same_entity_different_fields() {
     super::common::register_test_merge_functions();
     // Create entity with multiple fields
@@ -344,6 +352,7 @@ fn concurrent_update_same_entity_different_fields() {
 // ============================================================
 
 #[test]
+#[serial]
 fn actions_idempotent() {
     super::common::register_test_merge_functions();
     let page = Page::new_from_element("Test", Element::root());
@@ -420,6 +429,7 @@ fn delete_prevents_old_add() {
 // ============================================================
 
 #[test]
+#[serial]
 fn same_timestamp_lww_behavior() {
     super::common::register_test_merge_functions();
     // With actual API, timestamps are always increasing
@@ -520,6 +530,7 @@ fn multiple_deletes_idempotent() {
 // ============================================================
 
 #[test]
+#[serial]
 fn many_sequential_updates() {
     super::common::register_test_merge_functions();
     let mut page = Page::new_from_element("Version 0", Element::root());
@@ -549,6 +560,7 @@ fn many_sequential_updates() {
 }
 
 #[test]
+#[serial]
 fn rapid_add_delete_cycles() {
     super::common::register_test_merge_functions();
     // Test rapid add/delete cycles work correctly

@@ -12,9 +12,17 @@ use futures_util::FutureExt;
 use mero_auth::embedded::{build_app, default_config, EmbeddedAuthApp};
 use mero_auth::AuthService;
 use tower::{Layer, Service};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::ServerConfig;
+
+/// The authenticated requester's public key, injected into request extensions
+/// by [`AuthGuardService`] after token verification.
+///
+/// Handlers extract this via `Extension(AuthenticatedKey(pk))` and use it as
+/// the effective requester instead of trusting the value from the request body.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedKey(pub calimero_primitives::identity::PublicKey);
 
 /// Wrapper around the embedded authentication application, keeping the router and shared state.
 pub struct BundledAuth {
@@ -101,15 +109,38 @@ where
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         let mut inner = self.inner.clone();
         let service = Arc::clone(&self.service);
-        let (parts, body) = req.into_parts();
+        let (mut parts, body) = req.into_parts();
         let method = parts.method.clone();
         let headers = parts.headers.clone();
 
         async move {
             if method != Method::OPTIONS {
-                if service.verify_token_from_headers(&headers).await.is_err() {
-                    let resp = StatusCode::UNAUTHORIZED.into_response();
-                    return Ok(resp);
+                let auth_response = match service.verify_token_from_headers(&headers).await {
+                    Ok(resp) => resp,
+                    Err(_) => {
+                        return Ok(StatusCode::UNAUTHORIZED.into_response());
+                    }
+                };
+
+                // Attempt to resolve the authenticated public key and inject it so
+                // handlers can use it as the effective requester without trusting the
+                // caller-supplied value.
+                match service.get_key_public_key(&auth_response.key_id).await {
+                    Ok(Some(pk_hex)) => {
+                        use std::str::FromStr as _;
+                        match calimero_primitives::identity::PublicKey::from_str(&pk_hex) {
+                            Ok(pk) => {
+                                parts.extensions.insert(AuthenticatedKey(pk));
+                            }
+                            Err(err) => {
+                                warn!(key_id=%auth_response.key_id, %err, "auth key_id public_key is not a valid PublicKey; skipping extension injection");
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        warn!(key_id=%auth_response.key_id, %err, "failed to look up public key for auth key_id");
+                    }
                 }
             }
 
