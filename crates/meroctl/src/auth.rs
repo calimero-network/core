@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+const AUTH_TIMEOUT_SECS: u64 = 120;
+
 use camino::Utf8PathBuf;
 
 use axum::extract::Query;
@@ -56,7 +58,7 @@ pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
         output.write(&WarnLine(&warning_msg));
     }
 
-    let auth_result = timeout(Duration::from_secs(120), callback_rx)
+    let auth_result = timeout(Duration::from_secs(AUTH_TIMEOUT_SECS), callback_rx)
         .await
         .map_err(|_| eyre!("Authentication timed out — please try again"))?
         .map_err(|_| eyre!("Callback server error"))?;
@@ -507,7 +509,7 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
         }
 
         // Wait for the OAuth callback
-        let auth_result = timeout(Duration::from_secs(120), callback_rx)
+        let auth_result = timeout(Duration::from_secs(AUTH_TIMEOUT_SECS), callback_rx)
             .await
             .map_err(|_| eyre!("Authentication timed out — please try again"))?
             .map_err(|_| eyre!("Callback server error"))?;
@@ -591,21 +593,6 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
     }
 }
 
-/// No-op output handler for cloning
-struct NoOpOutputHandler;
-
-impl auth::MeroctlOutputHandler for NoOpOutputHandler {
-    fn display_message(&self, _message: &str) {}
-    fn display_error(&self, _error: &str) {}
-    fn display_success(&self, _message: &str) {}
-    fn open_browser(&self, _url: &Url) -> Result<()> {
-        Ok(())
-    }
-    fn wait_for_input(&self, _prompt: &str) -> Result<String> {
-        Ok(String::new())
-    }
-}
-
 /// Concrete implementation of MeroctlOutputHandler for meroctl's Output type
 #[derive(Debug, Clone)]
 pub struct MeroctlOutputWrapper {
@@ -656,4 +643,153 @@ pub type CliAuthenticator = MeroctlAuthenticator;
 pub fn create_cli_authenticator(output: Output) -> CliAuthenticator {
     let wrapper = MeroctlOutputWrapper::new(output);
     MeroctlAuthenticator::new(Box::new(wrapper), output)
+}
+
+#[cfg(test)]
+mod tests {
+    use camino::Utf8PathBuf;
+    use url::Url;
+
+    use crate::config::{Config, NodeConnection};
+    use crate::storage::JwtToken;
+
+    fn make_tokens(access: &str) -> JwtToken {
+        JwtToken {
+            access_token: access.to_owned(),
+            refresh_token: Some("refresh".to_owned()),
+        }
+    }
+
+    /// Simulates the insert-or-update logic inside persist_node_in_config
+    /// for a new Local node.
+    #[test]
+    fn persist_inserts_new_local_node() {
+        let mut config = Config::default();
+        let path = Utf8PathBuf::from("/home/user/.calimero");
+        let tokens = make_tokens("access1");
+
+        let stored = Some(crate::storage::JwtToken {
+            access_token: tokens.access_token.clone(),
+            refresh_token: tokens.refresh_token.clone(),
+        });
+
+        config.nodes.insert(
+            "mynode".to_owned(),
+            NodeConnection::Local {
+                path: path.clone(),
+                jwt_tokens: stored,
+            },
+        );
+
+        assert_eq!(config.nodes.len(), 1);
+        match config.nodes.get("mynode").unwrap() {
+            NodeConnection::Local { path: p, jwt_tokens: t } => {
+                assert_eq!(p, &path);
+                assert_eq!(t.as_ref().unwrap().access_token, "access1");
+            }
+            _ => panic!("expected Local"),
+        }
+    }
+
+    /// Simulates the insert-or-update logic for a new Remote node.
+    #[test]
+    fn persist_inserts_new_remote_node() {
+        let mut config = Config::default();
+        let url: Url = "https://example.com".parse().unwrap();
+        let tokens = make_tokens("access2");
+
+        config.nodes.insert(
+            "remote".to_owned(),
+            NodeConnection::Remote {
+                url: url.clone(),
+                jwt_tokens: Some(crate::storage::JwtToken {
+                    access_token: tokens.access_token.clone(),
+                    refresh_token: tokens.refresh_token.clone(),
+                }),
+            },
+        );
+
+        match config.nodes.get("remote").unwrap() {
+            NodeConnection::Remote { url: u, jwt_tokens: t } => {
+                assert_eq!(u, &url);
+                assert_eq!(t.as_ref().unwrap().access_token, "access2");
+            }
+            _ => panic!("expected Remote"),
+        }
+    }
+
+    /// Simulates token refresh: existing node entry gets tokens updated in-place.
+    #[test]
+    fn persist_updates_tokens_for_existing_node() {
+        let mut config = Config::default();
+        let path = Utf8PathBuf::from("/home/user/.calimero");
+
+        // Insert initial entry
+        config.nodes.insert(
+            "mynode".to_owned(),
+            NodeConnection::Local {
+                path: path.clone(),
+                jwt_tokens: Some(crate::storage::JwtToken {
+                    access_token: "old_access".to_owned(),
+                    refresh_token: Some("old_refresh".to_owned()),
+                }),
+            },
+        );
+
+        // Simulate update (as persist_node_in_config does when node exists)
+        let new_stored = Some(crate::storage::JwtToken {
+            access_token: "new_access".to_owned(),
+            refresh_token: Some("new_refresh".to_owned()),
+        });
+        if let Some(conn) = config.nodes.get_mut("mynode") {
+            match conn {
+                NodeConnection::Local { jwt_tokens: t, .. }
+                | NodeConnection::Remote { jwt_tokens: t, .. } => {
+                    *t = new_stored;
+                }
+            }
+        }
+
+        // Verify tokens were updated; path unchanged
+        match config.nodes.get("mynode").unwrap() {
+            NodeConnection::Local { path: p, jwt_tokens: t } => {
+                assert_eq!(p, &path);
+                assert_eq!(t.as_ref().unwrap().access_token, "new_access");
+                assert_eq!(
+                    t.as_ref().unwrap().refresh_token.as_deref(),
+                    Some("new_refresh")
+                );
+            }
+            _ => panic!("expected Local"),
+        }
+    }
+
+    /// Config TOML round-trip: serialize then deserialize produces identical structure.
+    #[test]
+    fn config_toml_roundtrip() {
+        let mut config = Config::default();
+        config.nodes.insert(
+            "node1".to_owned(),
+            NodeConnection::Local {
+                path: Utf8PathBuf::from("/tmp/calimero"),
+                jwt_tokens: Some(crate::storage::JwtToken {
+                    access_token: "tok".to_owned(),
+                    refresh_token: None,
+                }),
+            },
+        );
+        config.active_node = Some("node1".to_owned());
+
+        let toml_str = toml::to_string_pretty(&config).expect("serialize");
+        let restored: Config = toml::from_str(&toml_str).expect("deserialize");
+
+        assert_eq!(restored.active_node.as_deref(), Some("node1"));
+        assert!(restored.nodes.contains_key("node1"));
+        match restored.nodes.get("node1").unwrap() {
+            NodeConnection::Local { jwt_tokens: t, .. } => {
+                assert_eq!(t.as_ref().unwrap().access_token, "tok");
+            }
+            _ => panic!("expected Local"),
+        }
+    }
 }

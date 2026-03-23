@@ -219,8 +219,12 @@ where
         response.json::<O>().await.map_err(Into::into)
     }
 
-    /// Load a fresh auth header from storage, or authenticate proactively if no tokens exist.
-    /// Returns `None` if auth is not required or node_name is unset.
+    /// Ensure a valid auth header is available and return it.
+    ///
+    /// Returns `None` immediately if `requires_auth` is false or `node_name` is unset.
+    /// If stored tokens exist they are returned directly.  If no tokens are found,
+    /// **this method triggers a full browser-based authentication flow** to obtain fresh
+    /// tokens — callers should be aware of this side effect (it may open a browser window).
     async fn load_auth_header(&self, requires_auth: bool) -> Result<Option<String>> {
         if !requires_auth {
             return Ok(None);
@@ -229,8 +233,14 @@ where
             return Ok(None);
         };
 
-        if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
-            return Ok(Some(format!("Bearer {}", tokens.access_token)));
+        match self.client_storage.load_tokens(node_name).await {
+            Ok(Some(tokens)) => return Ok(Some(format!("Bearer {}", tokens.access_token))),
+            Ok(None) => {} // No stored tokens — fall through to proactive auth
+            Err(e) => {
+                // Surface storage failures so the user can diagnose disk/permission issues
+                // rather than silently falling through to a re-authentication prompt.
+                bail!("Failed to load stored tokens for '{}': {}", node_name, e);
+            }
         }
 
         // No tokens — authenticate proactively
@@ -273,7 +283,10 @@ where
             if response.status() == 401 && retry_count < MAX_RETRIES {
                 retry_count += 1;
 
-                // Try to refresh first; fall back to full re-auth on any failure.
+                // Try to refresh first; fall back to full re-auth on any failure
+                // (including missing refresh token). Previously, missing refresh token
+                // caused an immediate bail; now any refresh failure triggers full
+                // re-authentication so the user gets a working session regardless.
                 match self.refresh_token().await {
                     Ok(new_token) => {
                         if let Some(ref node_name) = self.node_name {
@@ -396,8 +409,17 @@ where
         }
     }
 
-    /// Detect the authentication mode for this connection
-
+    /// Detect the authentication mode for this connection.
+    ///
+    /// Probes `admin-api/contexts` (a protected endpoint) and inspects the response:
+    /// - `401` → `AuthMode::Required`
+    /// - `2xx` → `AuthMode::None` (server responded without demanding auth)
+    /// - anything else (including `404`) → `AuthMode::Required` (safe default)
+    /// - network error → `AuthMode::None` (node unreachable / no admin API)
+    ///
+    /// Note: unlike the previous implementation, **localhost / 127.0.0.1 no longer
+    /// bypasses the probe**. Local nodes now go through the same detection so that
+    /// locally-deployed nodes with auth enabled are handled correctly.
     pub async fn detect_auth_mode(&self) -> Result<AuthMode> {
         // Probe a protected endpoint — if it returns 401, auth is required.
         // admin-api/health is intentionally public, so we probe a protected endpoint instead.
