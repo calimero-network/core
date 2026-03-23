@@ -442,6 +442,14 @@ fn extract_error_message(body: &str, status: reqwest::StatusCode) -> String {
 
     const MAX_LEN: usize = 300;
 
+    let truncate = |s: &str| -> String {
+        if s.chars().count() > MAX_LEN {
+            format!("{}…", s.chars().take(MAX_LEN).collect::<String>())
+        } else {
+            s.to_owned()
+        }
+    };
+
     // Try to parse as JSON and extract a meaningful message from known-safe fields.
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) {
         // { "error": { "message": "..." } }
@@ -450,15 +458,15 @@ fn extract_error_message(body: &str, status: reqwest::StatusCode) -> String {
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
         {
-            return msg.chars().take(MAX_LEN).collect();
+            return format!("HTTP {}: {}", status.as_u16(), truncate(msg));
         }
         // { "error": "..." }
         if let Some(msg) = json.get("error").and_then(|m| m.as_str()) {
-            return msg.chars().take(MAX_LEN).collect();
+            return format!("HTTP {}: {}", status.as_u16(), truncate(msg));
         }
         // { "message": "..." }
         if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
-            return msg.chars().take(MAX_LEN).collect();
+            return format!("HTTP {}: {}", status.as_u16(), truncate(msg));
         }
     }
 
@@ -481,21 +489,21 @@ mod tests {
     fn test_json_nested_error_message() {
         let s = reqwest::StatusCode::BAD_REQUEST;
         let body = r#"{"error":{"message":"invalid request"}}"#;
-        assert_eq!(extract_error_message(body, s), "invalid request");
+        assert_eq!(extract_error_message(body, s), "HTTP 400: invalid request");
     }
 
     #[test]
     fn test_json_flat_error_string() {
         let s = reqwest::StatusCode::UNAUTHORIZED;
         let body = r#"{"error":"unauthorized"}"#;
-        assert_eq!(extract_error_message(body, s), "unauthorized");
+        assert_eq!(extract_error_message(body, s), "HTTP 401: unauthorized");
     }
 
     #[test]
     fn test_json_message_field() {
         let s = reqwest::StatusCode::NOT_FOUND;
         let body = r#"{"message":"not found"}"#;
-        assert_eq!(extract_error_message(body, s), "not found");
+        assert_eq!(extract_error_message(body, s), "HTTP 404: not found");
     }
 
     #[test]
@@ -517,6 +525,11 @@ mod tests {
         let long_msg = "x".repeat(400);
         let body = format!(r#"{{"message":"{}"}}"#, long_msg);
         let result = extract_error_message(&body, s);
-        assert_eq!(result.chars().count(), 300);
+        // "HTTP 400: " (10 chars) + 300 x's + "…" (1 char) = 312 chars
+        assert!(result.starts_with("HTTP 400: "));
+        assert!(result.ends_with('…'));
+        // The message portion should be truncated to 300 chars + ellipsis
+        let msg_part = result.strip_prefix("HTTP 400: ").unwrap();
+        assert_eq!(msg_part.chars().filter(|&c| c == 'x').count(), 300);
     }
 }

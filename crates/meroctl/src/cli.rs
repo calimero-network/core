@@ -191,10 +191,12 @@ impl RootCommand {
             let multiaddr = fetch_multiaddr(&config)?;
             let url = multiaddr_to_url(&multiaddr, "")?;
 
-            // Pass the local path so the node is registered as NodeConnection::Local,
-            // preserving dynamic URL resolution on future invocations.
+            // Pass the home directory (not home/node) so persist_node_in_config stores it as
+            // NodeConnection::Local { path: home }.  get_connection later calls
+            // load_config(path, node) which does path.join(node) — passing home/node here
+            // would double-join to home/node/node and break every subsequent invocation.
             let connection =
-                authenticate_with_session_cache(&url, node, Some(&node_path), output).await?;
+                authenticate_with_session_cache(&url, node, Some(&self.args.home), output).await?;
             Ok(connection)
         } else if let Some(api_url) = &self.args.api {
             // Use specific API URL - check session cache first, then authenticate if needed
