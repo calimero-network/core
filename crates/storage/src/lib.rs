@@ -64,6 +64,7 @@ pub mod delta;
 pub mod entities;
 pub mod env;
 pub mod error;
+pub mod governance;
 pub mod index;
 pub mod integration;
 pub mod interface;
