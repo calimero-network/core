@@ -6,6 +6,7 @@ mod application;
 mod blobs;
 mod context;
 mod generic;
+mod group;
 
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;

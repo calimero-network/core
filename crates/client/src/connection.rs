@@ -29,6 +29,9 @@ enum RequestType {
     Get,
     Post,
     Delete,
+    Patch,
+    Put,
+    DeleteWithBody,
 }
 
 #[derive(Debug)]
@@ -95,6 +98,31 @@ where
 
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.request(RequestType::Delete, path, None::<()>).await
+    }
+
+    pub async fn delete_with_body<I, O>(&self, path: &str, body: I) -> Result<O>
+    where
+        I: Serialize,
+        O: DeserializeOwned,
+    {
+        self.request(RequestType::DeleteWithBody, path, Some(body))
+            .await
+    }
+
+    pub async fn patch<I, O>(&self, path: &str, body: I) -> Result<O>
+    where
+        I: Serialize,
+        O: DeserializeOwned,
+    {
+        self.request(RequestType::Patch, path, Some(body)).await
+    }
+
+    pub async fn put_json<I, O>(&self, path: &str, body: I) -> Result<O>
+    where
+        I: Serialize,
+        O: DeserializeOwned,
+    {
+        self.request(RequestType::Put, path, Some(body)).await
     }
 
     pub async fn put_binary(&self, path: &str, data: Vec<u8>) -> Result<reqwest::Response> {
@@ -296,6 +324,9 @@ where
                     RequestType::Get => self.client.get(url.clone()),
                     RequestType::Post => self.client.post(url.clone()).json(&body),
                     RequestType::Delete => self.client.delete(url.clone()),
+                    RequestType::Patch => self.client.patch(url.clone()).json(&body),
+                    RequestType::Put => self.client.put(url.clone()).json(&body),
+                    RequestType::DeleteWithBody => self.client.delete(url.clone()).json(&body),
                 };
 
                 if let Some(ref auth_header) = auth_header {
@@ -366,7 +397,13 @@ where
             }
 
             if !response.status().is_success() {
-                bail!("Request failed with status: {}", response.status());
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                let msg = serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| v["error"].as_str().map(str::to_owned))
+                    .unwrap_or_else(|| format!("Request failed with status: {status}"));
+                bail!("{}", msg);
             }
 
             return Ok(response);

@@ -1,0 +1,43 @@
+use calimero_primitives::identity::PublicKey;
+use calimero_server_primitives::admin::CreateGroupInvitationApiRequest;
+use clap::Parser;
+use eyre::Result;
+
+use crate::cli::Environment;
+
+#[derive(Clone, Debug, Parser)]
+#[command(about = "Create a group invitation")]
+pub struct InviteCommand {
+    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    pub group_id: String,
+
+    #[clap(
+        long,
+        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
+    )]
+    pub requester: Option<PublicKey>,
+
+    #[clap(
+        long,
+        help = "On-chain block height after which the invitation expires (defaults to 999_999_999)"
+    )]
+    pub expiration_block_height: Option<u64>,
+}
+
+impl InviteCommand {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let request = CreateGroupInvitationApiRequest {
+            requester: self.requester,
+            expiration_block_height: self.expiration_block_height,
+        };
+
+        let client = environment.client()?;
+        let response = client
+            .create_group_invitation(&self.group_id, request)
+            .await?;
+
+        environment.output.write(&response);
+
+        Ok(())
+    }
+}

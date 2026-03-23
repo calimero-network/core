@@ -54,6 +54,7 @@ pub struct SpecializedNodeConfig {
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
+    pub group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
     pub network: NetworkConfig,
     pub sync: SyncConfig,
     pub datastore: StoreConfig,
@@ -157,6 +158,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_client.clone(),
         context_client.clone(),
         config.context.client.clone(),
+        config.group_identity.clone(),
         Some(&mut registry),
     );
 

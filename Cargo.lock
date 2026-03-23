@@ -1218,6 +1218,7 @@ dependencies = [
  "tokio-test",
  "url",
  "webbrowser",
+ "wiremock",
 ]
 
 [[package]]
@@ -1246,6 +1247,7 @@ version = "0.0.0"
 dependencies = [
  "actix",
  "borsh",
+ "bs58 0.5.1",
  "calimero-context-config",
  "calimero-context-primitives",
  "calimero-node-primitives",
@@ -1258,12 +1260,14 @@ dependencies = [
  "either",
  "eyre",
  "futures-util",
+ "hex",
  "memchr",
  "ouroboros",
  "prometheus-client",
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -1303,6 +1307,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-store",
  "calimero-utils-actix",
+ "ed25519-dalek",
  "eyre",
  "futures-util",
  "hex",
@@ -2700,6 +2705,24 @@ dependencies = [
  "signature",
  "untrusted 0.9.0",
 ]
+
+[[package]]
+name = "deadpool"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0be2b1d1d6ec8d846f05e137292d0b89133caf95ef33695424c09568bdd39b1b"
+dependencies = [
+ "deadpool-runtime",
+ "lazy_static",
+ "num_cpus",
+ "tokio",
+]
+
+[[package]]
+name = "deadpool-runtime"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
 
 [[package]]
 name = "decoded-char"
@@ -5961,6 +5984,7 @@ version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
  "base64 0.22.1",
+ "bs58 0.5.1",
  "calimero-blobstore",
  "calimero-build-utils",
  "calimero-config",
@@ -6817,6 +6841,16 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
+]
+
+[[package]]
+name = "num_cpus"
+version = "1.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
+dependencies = [
+ "hermit-abi",
+ "libc",
 ]
 
 [[package]]
@@ -11794,6 +11828,29 @@ name = "winsafe"
 version = "0.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
+
+[[package]]
+name = "wiremock"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08db1edfb05d9b3c1542e521aea074442088292f00b5f28e435c714a98f85031"
+dependencies = [
+ "assert-json-diff",
+ "base64 0.22.1",
+ "deadpool",
+ "futures",
+ "http 1.4.0",
+ "http-body-util",
+ "hyper 1.8.1",
+ "hyper-util",
+ "log",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+]
 
 [[package]]
 name = "wit-bindgen"

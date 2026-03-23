@@ -2,14 +2,19 @@
 use std::collections::BTreeMap;
 
 use super::requests::{
-    ApplicationRequest, ApplicationRevisionRequest, FetchNonceRequest, HasMemberRequest,
+    ApplicationRequest, ApplicationRevisionRequest, ContextAllowlistRequest, ContextGroupRequest,
+    ContextVisibilityQueryResponse, ContextVisibilityRequest, FetchGroupNonceRequest,
+    FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse, GroupInfoRequest,
+    GroupMemberQueryEntry, GroupMembersRequest, HasMemberRequest, IsGroupAdminRequest,
     MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
 };
 use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::repr::Repr;
-use crate::types::{Application, Capability, ContextId, ContextIdentity, Revision, SignerId};
+use crate::types::{
+    Application, Capability, ContextGroupId, ContextId, ContextIdentity, Revision, SignerId,
+};
 
 #[derive(Debug)]
 pub struct ContextConfigQuery<'a, T> {
@@ -105,6 +110,114 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         member_id: ContextIdentity,
     ) -> Result<Option<u64>, ClientError<T>> {
         let params = FetchNonceRequest::new(context_id, member_id);
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn group_info(
+        &self,
+        group_id: ContextGroupId,
+    ) -> Result<Option<GroupInfoQueryResponse>, ClientError<T>> {
+        let params = GroupInfoRequest {
+            group_id: Repr::new(group_id),
+        };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn is_group_admin(
+        &self,
+        group_id: ContextGroupId,
+        identity: SignerId,
+    ) -> Result<bool, ClientError<T>> {
+        let params = IsGroupAdminRequest {
+            group_id: Repr::new(group_id),
+            identity: Repr::new(identity),
+        };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn group_contexts(
+        &self,
+        group_id: ContextGroupId,
+        offset: usize,
+        length: usize,
+    ) -> Result<Vec<ContextId>, ClientError<T>> {
+        let params = GroupContextsRequest {
+            group_id: Repr::new(group_id),
+            offset,
+            length,
+        };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn group_members(
+        &self,
+        group_id: ContextGroupId,
+        offset: usize,
+        length: usize,
+    ) -> Result<Vec<GroupMemberQueryEntry>, ClientError<T>> {
+        let params = GroupMembersRequest {
+            group_id: Repr::new(group_id),
+            offset,
+            length,
+        };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn context_group(
+        &self,
+        context_id: ContextId,
+    ) -> Result<Option<ContextGroupId>, ClientError<T>> {
+        let params = ContextGroupRequest {
+            context_id: Repr::new(context_id),
+        };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn fetch_group_nonce(
+        &self,
+        group_id: ContextGroupId,
+        admin_id: SignerId,
+    ) -> Result<Option<u64>, ClientError<T>> {
+        let params = FetchGroupNonceRequest {
+            group_id: Repr::new(group_id),
+            admin_id: Repr::new(admin_id),
+        };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn context_visibility(
+        &self,
+        group_id: ContextGroupId,
+        context_id: ContextId,
+    ) -> Result<Option<ContextVisibilityQueryResponse>, ClientError<T>> {
+        let params = ContextVisibilityRequest {
+            group_id: Repr::new(group_id),
+            context_id: Repr::new(context_id),
+        };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn context_allowlist(
+        &self,
+        group_id: ContextGroupId,
+        context_id: ContextId,
+        offset: usize,
+        length: usize,
+    ) -> Result<Vec<SignerId>, ClientError<T>> {
+        let params = ContextAllowlistRequest {
+            group_id: Repr::new(group_id),
+            context_id: Repr::new(context_id),
+            offset,
+            length,
+        };
 
         utils::send(&self.client, Operation::Read(params)).await
     }

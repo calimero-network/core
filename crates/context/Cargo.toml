@@ -11,14 +11,17 @@ publish = true
 [dependencies]
 actix.workspace = true
 borsh.workspace = true
+bs58.workspace = true
 either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+hex.workspace = true
 memchr.workspace = true
 ouroboros.workspace = true
 prometheus-client.workspace = true
 rand.workspace = true
 serde.workspace = true
+sha2.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
