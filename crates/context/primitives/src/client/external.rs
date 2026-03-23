@@ -7,6 +7,7 @@ use calimero_store::key;
 use super::ContextClient;
 
 mod config;
+pub mod group;
 mod proxy;
 
 impl ContextClient {

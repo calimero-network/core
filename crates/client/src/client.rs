@@ -16,10 +16,11 @@ use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     AliasKind, CreateAliasRequest, CreateAliasResponse, CreateApplicationIdAlias,
     CreateContextIdAlias, CreateContextIdentityAlias, CreateContextRequest, CreateContextResponse,
-    DeleteAliasResponse, DeleteContextResponse, GenerateContextIdentityResponse,
-    GetApplicationResponse, GetContextClientKeysResponse, GetContextIdentitiesResponse,
-    GetContextResponse, GetContextStorageResponse, GetContextsResponse, GetLatestVersionResponse,
-    GetPeersCountResponse, GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
+    DeleteAliasResponse, DeleteContextApiRequest, DeleteContextResponse,
+    GenerateContextIdentityResponse, GetApplicationResponse, GetContextClientKeysResponse,
+    GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
+    GetContextsResponse, GetLatestVersionResponse, GetPeersCountResponse,
+    GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
     GrantPermissionResponse, InstallApplicationRequest, InstallApplicationResponse,
     InstallDevApplicationRequest, InviteSpecializedNodeRequest, InviteSpecializedNodeResponse,
     InviteToContextOpenInvitationRequest, InviteToContextOpenInvitationResponse,
@@ -39,6 +40,8 @@ use url::Url;
 // Local crate
 use crate::connection::ConnectionInfo;
 use crate::traits::{ClientAuthenticator, ClientStorage};
+
+mod group;
 
 pub trait UrlFragment: ScopedAlias + AliasKind {
     const KIND: &'static str;
@@ -487,10 +490,17 @@ where
         Ok(response)
     }
 
-    pub async fn delete_context(&self, context_id: &ContextId) -> Result<DeleteContextResponse> {
+    pub async fn delete_context(
+        &self,
+        context_id: &ContextId,
+        requester: Option<PublicKey>,
+    ) -> Result<DeleteContextResponse> {
         let response = self
             .connection
-            .delete(&format!("admin-api/contexts/{context_id}"))
+            .delete_with_body(
+                &format!("admin-api/contexts/{context_id}"),
+                DeleteContextApiRequest { requester },
+            )
             .await?;
         Ok(response)
     }

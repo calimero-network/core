@@ -1,14 +1,18 @@
-use core::mem;
 use std::collections::BTreeMap;
 
 use crate::client::env::config::requests::{
-    ApplicationRequest, ApplicationRevisionRequest, FetchNonceRequest, HasMemberRequest,
+    ApplicationRequest, ApplicationRevisionRequest, ContextAllowlistRequest, ContextGroupRequest,
+    ContextVisibilityQueryResponse, ContextVisibilityRequest, FetchGroupNonceRequest,
+    FetchNonceRequest, GroupContextsRequest, GroupInfoQueryResponse, GroupInfoRequest,
+    GroupMemberQueryEntry, GroupMembersRequest, HasMemberRequest, IsGroupAdminRequest,
     MembersRequest, MembersRevisionRequest, PrivilegesRequest, ProxyContractRequest,
 };
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::repr::Repr;
-use crate::types::{Application, Capability, ContextIdentity, Revision, SignerId};
+use crate::types::{
+    Application, Capability, ContextGroupId, ContextId, ContextIdentity, Revision, SignerId,
+};
 
 impl Method<Near> for ApplicationRequest {
     const METHOD: &'static str = "application";
@@ -60,13 +64,7 @@ impl Method<Near> for MembersRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let members: Vec<Repr<ContextIdentity>> = serde_json::from_slice(&response)?;
 
-        // safety: `Repr<T>` is a transparent wrapper around `T`
-        #[expect(
-            clippy::transmute_undefined_repr,
-            reason = "Repr<T> is a transparent wrapper around T"
-        )]
-        let members =
-            unsafe { mem::transmute::<Vec<Repr<ContextIdentity>>, Vec<ContextIdentity>>(members) };
+        let members: Vec<ContextIdentity> = members.into_iter().map(|r| r.into_inner()).collect();
 
         Ok(members)
     }
@@ -113,17 +111,10 @@ impl<'a> Method<Near> for PrivilegesRequest<'a> {
         let privileges: BTreeMap<Repr<SignerId>, Vec<Capability>> =
             serde_json::from_slice(&response)?;
 
-        // safety: `Repr<T>` is a transparent wrapper around `T`
-        let privileges = unsafe {
-            #[expect(
-                clippy::transmute_undefined_repr,
-                reason = "Repr<T> is a transparent wrapper around T"
-            )]
-            mem::transmute::<
-                BTreeMap<Repr<SignerId>, Vec<Capability>>,
-                BTreeMap<SignerId, Vec<Capability>>,
-            >(privileges)
-        };
+        let privileges: BTreeMap<SignerId, Vec<Capability>> = privileges
+            .into_iter()
+            .map(|(k, v)| (k.into_inner(), v))
+            .collect();
 
         Ok(privileges)
     }
@@ -154,5 +145,129 @@ impl Method<Near> for FetchNonceRequest {
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         serde_json::from_slice(&response).map_err(Into::into)
+    }
+}
+
+impl Method<Near> for GroupInfoRequest {
+    const METHOD: &'static str = "group";
+
+    type Returns = Option<GroupInfoQueryResponse>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        serde_json::from_slice(&response).map_err(Into::into)
+    }
+}
+
+impl Method<Near> for IsGroupAdminRequest {
+    const METHOD: &'static str = "is_group_admin";
+
+    type Returns = bool;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        serde_json::from_slice(&response).map_err(Into::into)
+    }
+}
+
+impl Method<Near> for GroupContextsRequest {
+    const METHOD: &'static str = "group_contexts";
+
+    type Returns = Vec<ContextId>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let contexts: Vec<Repr<ContextId>> = serde_json::from_slice(&response)?;
+
+        let contexts: Vec<ContextId> = contexts.into_iter().map(|r| r.into_inner()).collect();
+
+        Ok(contexts)
+    }
+}
+
+impl Method<Near> for GroupMembersRequest {
+    const METHOD: &'static str = "group_members";
+
+    type Returns = Vec<GroupMemberQueryEntry>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        serde_json::from_slice(&response).map_err(Into::into)
+    }
+}
+
+impl Method<Near> for ContextGroupRequest {
+    const METHOD: &'static str = "context_group";
+
+    type Returns = Option<ContextGroupId>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let group_id: Option<Repr<ContextGroupId>> = serde_json::from_slice(&response)?;
+
+        let group_id: Option<ContextGroupId> = group_id.map(|r| r.into_inner());
+
+        Ok(group_id)
+    }
+}
+
+impl Method<Near> for FetchGroupNonceRequest {
+    const METHOD: &'static str = "fetch_group_nonce";
+
+    type Returns = Option<u64>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        serde_json::from_slice(&response).map_err(Into::into)
+    }
+}
+
+impl Method<Near> for ContextVisibilityRequest {
+    const METHOD: &'static str = "context_visibility";
+
+    type Returns = Option<ContextVisibilityQueryResponse>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        serde_json::from_slice(&response).map_err(Into::into)
+    }
+}
+
+impl Method<Near> for ContextAllowlistRequest {
+    const METHOD: &'static str = "context_allowlist";
+
+    type Returns = Vec<SignerId>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let members: Vec<Repr<SignerId>> = serde_json::from_slice(&response)?;
+
+        let members: Vec<SignerId> = members.into_iter().map(|r| r.into_inner()).collect();
+
+        Ok(members)
     }
 }

@@ -115,19 +115,37 @@ where
     Report: From<IterError<K::Error>>,
 {
     pub fn seek(&mut self, key: K) -> EyreResult<Option<K>> {
-        let Some(key) = self.inner.seek(key.as_key().as_slice())? else {
+        let Some(mut raw_key) = self.inner.seek(key.as_key().as_slice())? else {
             return Ok(None);
         };
 
-        Ok(Some(Structured::<K>::try_into_key(key)?))
+        // Advance past keys with mismatched sizes (different key type in same column)
+        loop {
+            match Structured::<K>::try_into_key(raw_key) {
+                Ok(key) => return Ok(Some(key)),
+                Err(e) if Structured::<K>::is_size_mismatch(&e) => {
+                    let Some(next_key) = self.inner.next()? else {
+                        return Ok(None);
+                    };
+                    raw_key = next_key;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
 
     pub fn next(&mut self) -> EyreResult<Option<K>> {
-        let Some(key) = self.inner.next()? else {
-            return Ok(None);
-        };
+        loop {
+            let Some(key) = self.inner.next()? else {
+                return Ok(None);
+            };
 
-        Ok(Some(Structured::<K>::try_into_key(key)?))
+            match Structured::<K>::try_into_key(key) {
+                Ok(key) => return Ok(Some(key)),
+                Err(e) if Structured::<K>::is_size_mismatch(&e) => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
 }
 
@@ -242,12 +260,17 @@ where
     type Item = EyreResult<K::Key>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.iter.done {
+        while !self.iter.done {
             match self.iter.inner.next() {
                 Ok(Some(key)) => {
                     // safety: key only needs to live as long as the iterator, not it's reference
                     let key = unsafe { transmute::<Slice<'_>, Slice<'_>>(key) };
-                    return Some(K::try_into_key(key).map_err(Into::into));
+                    match K::try_into_key(key) {
+                        Ok(key) => return Some(Ok(key)),
+                        // Skip keys with mismatched sizes (different key type in same column)
+                        Err(e) if K::is_size_mismatch(&e) => continue,
+                        Err(e) => return Some(Err(e.into())),
+                    }
                 }
                 Err(e) => {
                     // Fuse iterator on error to prevent continued iteration after failure
@@ -295,28 +318,34 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = 'key: {
-            let key = 'found: {
-                if !self.iter.done {
-                    match self.iter.inner.next() {
-                        Ok(Some(key)) => break 'found key,
-                        Err(e) => {
-                            // Fuse iterator on error to prevent continued iteration after failure
-                            self.iter.done = true;
-                            break 'key Err(e);
-                        }
-                        _ => {}
-                    }
-
-                    self.iter.done = true;
+            let key = loop {
+                if self.iter.done {
+                    return None;
                 }
 
-                return None;
+                match self.iter.inner.next() {
+                    Ok(Some(raw_key)) => {
+                        // safety: key only needs to live as long as the iterator, not it's reference
+                        let raw_key = unsafe { transmute::<Slice<'_>, Slice<'_>>(raw_key) };
+                        match K::try_into_key(raw_key) {
+                            Ok(key) => break key,
+                            // Skip keys with mismatched sizes (different key type in same column)
+                            Err(e) if K::is_size_mismatch(&e) => continue,
+                            Err(e) => break 'key Err(e.into()),
+                        }
+                    }
+                    Err(e) => {
+                        self.iter.done = true;
+                        break 'key Err(e);
+                    }
+                    Ok(None) => {
+                        self.iter.done = true;
+                        return None;
+                    }
+                }
             };
 
-            // safety: key only needs to live as long as the iterator, not it's reference
-            let key = unsafe { transmute::<Slice<'_>, Slice<'_>>(key) };
-
-            K::try_into_key(key).map_err(Into::into)
+            Ok(key)
         };
 
         let value = 'value: {
@@ -360,6 +389,10 @@ pub trait TryIntoKey<'a>: Sealed {
     type Error;
 
     fn try_into_key(key: Key<'a>) -> Result<Self::Key, Self::Error>;
+
+    /// Returns true if the error is a size mismatch, meaning the key belongs to
+    /// a different type in the same column and should be skipped during iteration.
+    fn is_size_mismatch(error: &Self::Error) -> bool;
 }
 
 pub trait TryIntoValue<'a>: Sealed {
@@ -388,6 +421,10 @@ impl<'a, K: FromKeyParts> TryIntoKey<'a> for Structured<K> {
 
         K::try_from_parts(key).map_err(IterError::Structured)
     }
+
+    fn is_size_mismatch(error: &Self::Error) -> bool {
+        matches!(error, IterError::SizeMismatch)
+    }
 }
 
 impl<'a, V, C: Codec<'a, V>> TryIntoValue<'a> for Structured<(V, C)> {
@@ -406,6 +443,10 @@ impl<'a> TryIntoKey<'a> for Unstructured {
 
     fn try_into_key(key: Key<'a>) -> Result<Self::Key, Self::Error> {
         Ok(key)
+    }
+
+    fn is_size_mismatch(_error: &Self::Error) -> bool {
+        match *_error {}
     }
 }
 

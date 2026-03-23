@@ -85,9 +85,9 @@ pub use wire::{InitPayload, MessagePayload, StreamMessage, MAX_TREE_REQUEST_DEPT
 
 // Snapshot types
 pub use snapshot::{
-    check_snapshot_safety, BroadcastMessage, SnapshotBoundaryRequest, SnapshotBoundaryResponse,
-    SnapshotComplete, SnapshotCursor, SnapshotEntity, SnapshotEntityPage, SnapshotError,
-    SnapshotPage, SnapshotRequest, SnapshotStreamRequest, SnapshotVerifyResult,
+    check_snapshot_safety, BroadcastMessage, GroupMutationKind, SnapshotBoundaryRequest,
+    SnapshotBoundaryResponse, SnapshotComplete, SnapshotCursor, SnapshotEntity, SnapshotEntityPage,
+    SnapshotError, SnapshotPage, SnapshotRequest, SnapshotStreamRequest, SnapshotVerifyResult,
     DEFAULT_SNAPSHOT_PAGE_SIZE, MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS, MAX_ENTITIES_PER_PAGE,
     MAX_ENTITY_DATA_SIZE, MAX_SNAPSHOT_PAGES, MAX_SNAPSHOT_PAGE_SIZE,
 };

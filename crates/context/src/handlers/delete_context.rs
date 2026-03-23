@@ -4,20 +4,24 @@ use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use calimero_context_primitives::messages::{DeleteContextRequest, DeleteContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use calimero_store::key::Key;
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::{key, Store};
 use either::Either;
 use eyre::bail;
 
-use crate::ContextManager;
+use crate::{group_store, ContextManager};
 
 impl Handler<DeleteContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <DeleteContextRequest as Message>::Result>;
 
     fn handle(
         &mut self,
-        DeleteContextRequest { context_id }: DeleteContextRequest,
+        DeleteContextRequest {
+            context_id,
+            requester,
+        }: DeleteContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let context = self.contexts.get(&context_id);
@@ -38,6 +42,36 @@ impl Handler<DeleteContextRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let context_client = self.context_client.clone();
+        let near_params = self.external_config.params.get("near").map(|params| {
+            (
+                "near".to_owned(),
+                params.network.clone(),
+                params.contract_id.clone(),
+            )
+        });
+
+        let group_id_for_context =
+            match group_store::get_group_for_context(&self.datastore, &context_id) {
+                Ok(g) => g,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
+
+        if let Some(group_id) = group_id_for_context {
+            let requester = match requester {
+                Some(r) => r,
+                None => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "requester required to delete a group context"
+                    )))
+                }
+            };
+            if let Err(err) =
+                group_store::require_group_admin(&self.datastore, &group_id, &requester)
+            {
+                return ActorResponse::reply(Err(err));
+            }
+        }
 
         let task = async move {
             let _guard = match guard {
@@ -46,7 +80,15 @@ impl Handler<DeleteContextRequest> for ContextManager {
                 None => None,
             };
 
-            delete_context(datastore, node_client, context_id).await?;
+            delete_context(
+                datastore,
+                node_client,
+                context_client,
+                context_id,
+                requester,
+                near_params,
+            )
+            .await?;
 
             Ok(DeleteContextResponse { deleted: true })
         };
@@ -62,7 +104,10 @@ impl Handler<DeleteContextRequest> for ContextManager {
 async fn delete_context(
     datastore: Store,
     node_client: NodeClient,
+    context_client: calimero_context_primitives::client::ContextClient,
     context_id: ContextId,
+    requester: Option<PublicKey>,
+    near_params: Option<(String, String, String)>,
 ) -> eyre::Result<()> {
     node_client.unsubscribe(&context_id).await?;
 
@@ -88,6 +133,37 @@ async fn delete_context(
     //
     // Context "deletion" should be a soft delete (marking as inactive/left)
     // rather than actually removing DAG history. See issue for details.
+
+    if let Some(group_id) = group_store::get_group_for_context(&datastore, &context_id)? {
+        if let Some((protocol, network_id, contract_id)) = near_params {
+            let requester = requester.ok_or_else(|| {
+                eyre::eyre!("requester required for on-chain group context deletion")
+            })?;
+
+            let sk = group_store::get_group_signing_key(&datastore, &group_id, &requester)?
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "signing key not found for requester in group '{group_id:?}'; \
+                         cannot unregister context on-chain"
+                    )
+                })?;
+
+            let mut group_client =
+                context_client.group_client(group_id, sk, protocol, network_id, contract_id);
+            group_client
+                .unregister_context_from_group(context_id)
+                .await?;
+        }
+
+        group_store::unregister_context_from_group(&datastore, &group_id, &context_id)?;
+
+        let _ = node_client
+            .broadcast_group_mutation(
+                group_id.to_bytes(),
+                calimero_node_primitives::sync::GroupMutationKind::ContextDetached,
+            )
+            .await;
+    }
 
     Ok(())
 }
