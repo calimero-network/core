@@ -1802,7 +1802,10 @@ mod tests {
             GroupOp::Noop,
         )
         .unwrap();
-        assert!(apply_local_signed_group_op(&store, &op_dup_nonce).is_err());
+        assert!(
+            apply_local_signed_group_op(&store, &op_dup_nonce).is_ok(),
+            "duplicate nonce should be silently accepted (idempotent)"
+        );
 
         let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).unwrap();
         apply_local_signed_group_op(&store, &op2).unwrap();
