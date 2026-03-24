@@ -110,7 +110,6 @@ impl<'a, T> ContextProxyMutate<'a, T> {
 
 // Protocol-specific implementations
 // These modules contain the actual Method trait implementations for each blockchain protocol
-#[cfg(feature = "near_client")]
 mod near;
 
 impl<'a, T: Transport> ContextProxyMutateRequest<'a, T> {

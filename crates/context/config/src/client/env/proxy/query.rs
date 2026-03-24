@@ -210,5 +210,4 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
 
 // Protocol-specific implementations
 // These modules contain the actual Method trait implementations for each blockchain protocol
-#[cfg(feature = "near_client")]
 mod near;

@@ -177,3 +177,23 @@ impl<T: AssociatedTransport> Transport for T {
         Ok(self.send(args.request, args.payload).await)
     }
 }
+
+/// Placeholder local transport when `near_client` is disabled (relayer-only `client-base` builds).
+#[cfg(not(feature = "near_client"))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EmptyNearSlot;
+
+#[cfg(not(feature = "near_client"))]
+impl Transport for EmptyNearSlot {
+    type Error = std::convert::Infallible;
+
+    async fn try_send<'a>(
+        &self,
+        args: TransportArguments<'a>,
+    ) -> Result<Result<Vec<u8>, Self::Error>, UnsupportedProtocol<'a>> {
+        Err(UnsupportedProtocol {
+            args,
+            expected: Cow::Borrowed(&[]),
+        })
+    }
+}

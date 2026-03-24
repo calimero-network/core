@@ -12,13 +12,22 @@ pub mod relayer;
 pub mod transport;
 pub mod utils;
 
-use config::{ClientConfig, ClientSelectedSigner, Credentials};
+use config::ClientConfig;
+#[cfg(feature = "near_client")]
+use config::{ClientSelectedSigner, Credentials};
 use env::Method;
 use macros::transport;
-use protocol::{near, Protocol};
+#[cfg(feature = "near_client")]
+use protocol::near;
+use protocol::Protocol;
+#[cfg(not(feature = "near_client"))]
+use transport::EmptyNearSlot;
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
+#[cfg(feature = "near_client")]
 type MaybeNear = Option<near::NearTransport<'static>>;
+#[cfg(not(feature = "near_client"))]
+type MaybeNear = crate::client::transport::EmptyNearSlot;
 
 transport! {
     pub type LocalTransports = (
@@ -48,9 +57,7 @@ impl Client<AnyTransport> {
     #[must_use]
     pub fn from_config(config: &ClientConfig) -> Self {
         let relayer = config.signer.relayer.as_ref().map(|r| {
-            relayer::RelayerTransport::new(&relayer::RelayerConfig {
-                url: r.url.clone(),
-            })
+            relayer::RelayerTransport::new(&relayer::RelayerConfig { url: r.url.clone() })
         });
 
         let local = Self::from_local_config(&config).expect("validation error");
@@ -61,42 +68,59 @@ impl Client<AnyTransport> {
     }
 
     pub fn from_local_config(config: &ClientConfig) -> eyre::Result<Client<LocalTransports>> {
-        let mut near_transport = None;
+        #[cfg(feature = "near_client")]
+        {
+            let mut near_transport = None;
 
-        'skipped: {
-            if let Some(near_config) = config.signer.local.protocols.get("near") {
-                let Some(e) = config.params.get("near") else {
-                    eyre::bail!("missing config specification for `{}` signer", "near");
-                };
+            'skipped: {
+                if let Some(near_config) = config.signer.local.protocols.get("near") {
+                    let Some(e) = config.params.get("near") else {
+                        eyre::bail!("missing config specification for `{}` signer", "near");
+                    };
 
-                if !matches!(e.signer, ClientSelectedSigner::Local) {
-                    break 'skipped;
+                    if !matches!(e.signer, ClientSelectedSigner::Local) {
+                        break 'skipped;
+                    }
+
+                    let mut near_cfg = near::NearConfig {
+                        networks: Default::default(),
+                    };
+
+                    for (network, signer) in &near_config.signers {
+                        let Credentials::Near(credentials) = &signer.credentials;
+
+                        let _ignored = near_cfg.networks.insert(
+                            network.clone().into(),
+                            near::NetworkConfig {
+                                rpc_url: signer.rpc_url.clone(),
+                                account_id: credentials.account_id.clone(),
+                                access_key: credentials.secret_key.clone(),
+                            },
+                        );
+                    }
+
+                    near_transport = Some(near::NearTransport::new(&near_cfg));
                 }
-
-                let mut config = near::NearConfig {
-                    networks: Default::default(),
-                };
-
-                for (network, signer) in &near_config.signers {
-                    let Credentials::Near(credentials) = &signer.credentials;
-
-                    let _ignored = config.networks.insert(
-                        network.clone().into(),
-                        near::NetworkConfig {
-                            rpc_url: signer.rpc_url.clone(),
-                            account_id: credentials.account_id.clone(),
-                            access_key: credentials.secret_key.clone(),
-                        },
-                    );
-                }
-
-                near_transport = Some(near::NearTransport::new(&config));
             }
+
+            let all_transports = transport!(near_transport);
+
+            return Ok(Client::new(all_transports));
         }
 
-        let all_transports = transport!(near_transport);
+        #[cfg(not(feature = "near_client"))]
+        {
+            if !config.signer.local.protocols.is_empty() {
+                eyre::bail!(
+                    "NEAR protocol blocks in context client config require the `near_client` \
+                     Cargo feature on `calimero-context-config` (e.g. enable the `client` feature)"
+                );
+            }
 
-        Ok(Client::new(all_transports))
+            let all_transports = transport!(EmptyNearSlot::default());
+
+            return Ok(Client::new(all_transports));
+        }
     }
 }
 
@@ -238,8 +262,8 @@ pub trait Environment<'a, T> {
     fn mutate(client: CallClient<'a, T>) -> Self::Mutate;
 }
 
-// `client` is behind the `client` feature; run: `cargo test -p calimero-context-config --features client`
-#[cfg(all(test, feature = "client"))]
+// `client-base` / `client`: `cargo test -p calimero-context-config --features client-base`
+#[cfg(all(test, feature = "client-base"))]
 mod from_config_tests {
     use super::Client;
     use crate::client::config::{ClientConfig, ClientSigner, LocalConfig};

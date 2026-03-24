@@ -27,12 +27,22 @@ url = { workspace = true, optional = true }
 [features]
 default = []
 
-client = [
-  "near_client",
+# HTTP relayer + context client wiring without NEAR JSON-RPC (no `near-*` crates).
+client-base = [
   "dep:either",
   "dep:eyre",
   "reqwest/json",
   "url/serde",
 ]
 
-near_client = ["dep:near-crypto", "dep:near-jsonrpc-client", "dep:near-jsonrpc-primitives", "dep:near-primitives"]
+# NEAR local signer transport + JSON-RPC stack.
+near_client = [
+  "client-base",
+  "dep:near-crypto",
+  "dep:near-jsonrpc-client",
+  "dep:near-jsonrpc-primitives",
+  "dep:near-primitives",
+]
+
+# Backward-compatible alias: full client (same as pre-split `client`).
+client = ["near_client"]
