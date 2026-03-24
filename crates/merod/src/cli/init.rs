@@ -4,9 +4,13 @@ use calimero_config::{
 };
 use calimero_context::config::{ContextConfig, GroupGovernanceMode};
 use calimero_context_config::client::config::{
-    ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
-    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
+    ClientConfig, ClientRelayerSigner, ClientSigner, LocalConfig,
 };
+#[cfg(feature = "near_init")]
+use calimero_context_config::client::config::{
+    ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientSelectedSigner, Credentials,
+};
+#[cfg(feature = "near_init")]
 use calimero_context_config::client::protocol::near as near_protocol;
 use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
@@ -24,10 +28,12 @@ use clap::{Parser, ValueEnum};
 use core::net::IpAddr;
 use core::time::Duration;
 use eyre::{bail, Result as EyreResult, WrapErr};
+#[cfg(feature = "near_init")]
 use hex::encode;
 use libp2p::identity::Keypair;
 use mero_auth::config::{AuthConfig as EmbeddedAuthConfig, StorageConfig as AuthStorageConfig};
 use multiaddr::{Multiaddr, Protocol};
+#[cfg(feature = "near_init")]
 use near_crypto::{KeyType, SecretKey};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -44,6 +50,7 @@ const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(10);
 
 /// Helper struct to define protocol configuration
+#[cfg(feature = "near_init")]
 #[derive(Debug)]
 struct ProtocolConfig<'a> {
     name: &'a str,
@@ -55,6 +62,7 @@ struct ProtocolConfig<'a> {
 }
 
 /// Protocol configurations for all supported protocols
+#[cfg(feature = "near_init")]
 const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[ProtocolConfig {
     name: "near",
     default_network: "testnet",
@@ -294,17 +302,34 @@ impl InitCommand {
             }
         }
 
+        #[cfg(feature = "near_init")]
         let mut local_signers = LocalConfig {
             protocols: BTreeMap::default(),
         };
+        #[cfg(not(feature = "near_init"))]
+        let local_signers = LocalConfig {
+            protocols: BTreeMap::default(),
+        };
 
+        #[cfg(feature = "near_init")]
         let mut client_params = BTreeMap::default();
+        #[cfg(not(feature = "near_init"))]
+        let client_params = BTreeMap::default();
 
         let group_governance_mode: GroupGovernanceMode = self.group_governance.into();
+
+        #[cfg(not(feature = "near_init"))]
+        if group_governance_mode != GroupGovernanceMode::Local {
+            bail!(
+                "this merod binary was built without NEAR init support (`near_init` Cargo feature disabled); \
+                 use `merod init --group-governance local` or rebuild with default features"
+            );
+        }
 
         // NEAR protocol blocks: only for external governance (or mixed deployments). Local-only
         // nodes omit them so `config.toml` does not require chain coordinates; see
         // `docs/context-management/LOCAL-GROUP-GOVERNANCE.md`.
+        #[cfg(feature = "near_init")]
         if group_governance_mode != GroupGovernanceMode::Local {
             for config in PROTOCOL_CONFIGS {
                 let _ignored = client_params.insert(
@@ -444,6 +469,7 @@ impl InitCommand {
     }
 }
 
+#[cfg(feature = "near_init")]
 fn generate_local_signer(
     rpc_url: Url,
     config_protocol: ConfigProtocol,

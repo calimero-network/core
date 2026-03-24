@@ -13,6 +13,11 @@ cd core/crates/merod
 cargo build --release
 ```
 
+### Cargo features
+
+- **`near_init`** (enabled by default) — NEAR protocol blocks and local signer key generation during `merod init` for **`external`** governance (pulls in `near-crypto` on the `merod` crate).
+- Build with **`cargo build --no-default-features`** to drop that dependency; then only **`merod init --group-governance local`** is supported at init time (external / default init exits with an error directing you to rebuild with default features).
+
 ## Quick Start
 
 ```bash

@@ -326,7 +326,7 @@ Add one row per surface; set **Decision** when triaged. **N/A** is fine for area
 
 ### 11.9 Minimal build sketch (R3)
 
-**Purpose:** Track how to reach a **`merod`** binary (or test surface) that does **not** link `near-*` for **`local`**-only SKUs. **`calimero-context-config`** now has a **`client-base`** split (see table); **`merod`** still pulls **`near-crypto`** directly until that is gated separately.
+**Purpose:** Track how to reach a **`merod`** binary (or test surface) that does **not** link `near-*` for **`local`**-only SKUs. **`calimero-context-config`** has **`client-base`**; **`merod`** can omit direct **`near-crypto`** with **`cargo build -p merod --no-default-features`** (feature **`near_init`**).
 
 #### Dependency audit (how to refresh)
 
@@ -339,7 +339,7 @@ Run from the workspace root:
 **Typical edges into `near-*` from `merod` today** (inverse tree; always re-run the script before acting):
 
 - **`calimero-context-config`**, feature **`client-base`** → HTTP relayer + env helpers **without** `near-*` crates. Feature **`near_client`** (included in **`client`**) adds NEAR JSON-RPC transport and typed local signers.
-- **`merod`** depends on **`near-crypto`** directly (init / signer helpers).
+- **`merod`** depends on **`near-crypto`** directly when built with default features (**`near_init`**); **`--no-default-features`** drops that edge (local-only **`merod init`**).
 - **`mero-auth`** pulls **`near-primitives`** / JSON-RPC for chain-adjacent auth paths.
 - Other workspace crates (`calimero-node`, `calimero-server`, …) transitively depend on the same stacks.
 
@@ -347,8 +347,8 @@ Run from the workspace root:
 
 | Crate / area | Today | Direction for `minimal` / `no-chain` |
 |--------------|-------|--------------------------------------|
-| `calimero-context-config` | **`client-base`** = relayer + `EmptyNearSlot`; **`near_client`** adds JSON-RPC + `Credentials` / `NearTransport`; **`client`** = **`near_client`** (alias) | Next: gate **`merod`**’s direct **`near-crypto`** |
-| `merod` | Always **`near-crypto`** | Gate init/signing paths behind a **`merod`** feature or split binary (TBD) |
+| `calimero-context-config` | **`client-base`** = relayer + `EmptyNearSlot`; **`near_client`** adds JSON-RPC + `Credentials` / `NearTransport`; **`client`** = **`near_client`** (alias) | Optional **`client-base`** on **`merod`** for smaller graph (TBD) |
+| `merod` | Feature **`near_init`** (default) pulls **`near-crypto`** for **`init`** with **`external`** | **`--no-default-features`**: no direct **`near-crypto`**; only **`init --group-governance local`** |
 | `mero-auth` | NEAR types in tree | Feature-gate chain-backed providers vs embedded-only |
 | `calimero-node` / `calimero-server` | Transitive | After config + auth, trim imports or use trait objects where feasible |
 
@@ -363,9 +363,10 @@ Update this table as spikes land; link PRs in your tracker.
 ```bash
 cargo check -p calimero-context-config --features client-base
 cargo test -p calimero-context-config --features client
+cargo check -p merod --no-default-features
 ```
 
-**Still TBD:** a **`merod`** (or workspace) `cargo check` that omits **`near-crypto`** on the `merod` crate itself — track in §11.9 **`merod`** row.
+**`merod` guardrail:** **`cargo check -p merod --no-default-features`** in CI (drops direct **`near-crypto`** on **`merod`**). Transitive **`near-*`** from other workspace crates may still appear until those are gated.
 
 ---
 
