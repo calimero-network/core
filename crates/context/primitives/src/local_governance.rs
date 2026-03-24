@@ -1,0 +1,279 @@
+//! Signed group operations for **local** governance (no chain).
+//!
+//! See `docs/context-management/LOCAL-GROUP-GOVERNANCE.md`.
+
+use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
+use ed25519_dalek::SignatureError;
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+/// Wire/schema version for [`SignedGroupOp`].
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 1;
+
+/// Domain separation prefix for Ed25519 signatures over group ops.
+pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
+
+/// Minimal group mutation for local governance (extend as needed).
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+#[non_exhaustive]
+pub enum GroupOp {
+    /// Reserved for tests / padding.
+    Noop,
+    /// Add a member with a role.
+    MemberAdded {
+        member: PublicKey,
+        role: GroupMemberRole,
+    },
+    /// Remove a member.
+    MemberRemoved { member: PublicKey },
+}
+
+/// Payload that is actually signed (everything except the signature bytes).
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SignableGroupOp {
+    pub version: u8,
+    pub group_id: [u8; 32],
+    pub parent_op_hash: Option<[u8; 32]>,
+    pub signer: PublicKey,
+    pub nonce: u64,
+    pub op: GroupOp,
+}
+
+/// A signed group operation ready for gossip or storage.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SignedGroupOp {
+    pub version: u8,
+    pub group_id: [u8; 32],
+    pub parent_op_hash: Option<[u8; 32]>,
+    pub signer: PublicKey,
+    pub nonce: u64,
+    pub op: GroupOp,
+    pub signature: [u8; 64],
+}
+
+#[derive(Debug, Error)]
+pub enum GovernanceError {
+    #[error("schema version mismatch: expected {expected}, got {got}")]
+    SchemaVersion { expected: u8, got: u8 },
+    #[error("signature verification failed: {0}")]
+    Signature(#[from] SignatureError),
+    #[error("borsh serialization failed: {0}")]
+    BorshSerialize(String),
+}
+
+/// Bytes that are hashed/signed: `GROUP_GOVERNANCE_SIGN_DOMAIN` || `borsh(SignableGroupOp)`.
+pub fn signable_bytes(signable: &SignableGroupOp) -> Result<Vec<u8>, GovernanceError> {
+    let mut body = borsh::to_vec(signable).map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
+    let mut out = Vec::with_capacity(GROUP_GOVERNANCE_SIGN_DOMAIN.len() + body.len());
+    out.extend_from_slice(GROUP_GOVERNANCE_SIGN_DOMAIN);
+    out.append(&mut body);
+    Ok(out)
+}
+
+/// Stable content id for idempotency: SHA-256 of [`signable_bytes`].
+#[must_use]
+pub fn op_content_hash(signable: &SignableGroupOp) -> Result<[u8; 32], GovernanceError> {
+    let bytes = signable_bytes(signable)?;
+    Ok(Sha256::digest(&bytes).into())
+}
+
+impl SignedGroupOp {
+    /// Build and sign a new operation with [`SIGNED_GROUP_OP_SCHEMA_VERSION`].
+    pub fn sign(
+        sk: &PrivateKey,
+        group_id: [u8; 32],
+        parent_op_hash: Option<[u8; 32]>,
+        nonce: u64,
+        op: GroupOp,
+    ) -> Result<Self, GovernanceError> {
+        let signer = sk.public_key();
+        let signable = SignableGroupOp {
+            version: SIGNED_GROUP_OP_SCHEMA_VERSION,
+            group_id,
+            parent_op_hash,
+            signer,
+            nonce,
+            op,
+        };
+        let msg = signable_bytes(&signable)?;
+        let sig = sk.sign(&msg)?;
+        Ok(Self {
+            version: signable.version,
+            group_id: signable.group_id,
+            parent_op_hash: signable.parent_op_hash,
+            signer: signable.signer,
+            nonce: signable.nonce,
+            op: signable.op,
+            signature: sig.to_bytes(),
+        })
+    }
+
+    /// Verify schema version and Ed25519 signature.
+    pub fn verify_signature(&self) -> Result<(), GovernanceError> {
+        if self.version != SIGNED_GROUP_OP_SCHEMA_VERSION {
+            return Err(GovernanceError::SchemaVersion {
+                expected: SIGNED_GROUP_OP_SCHEMA_VERSION,
+                got: self.version,
+            });
+        }
+        let signable = self.to_signable();
+        let msg = signable_bytes(&signable)?;
+        self.signer.verify_raw_signature(&msg, &self.signature)?;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn to_signable(&self) -> SignableGroupOp {
+        SignableGroupOp {
+            version: self.version,
+            group_id: self.group_id,
+            parent_op_hash: self.parent_op_hash,
+            signer: self.signer,
+            nonce: self.nonce,
+            op: self.op.clone(),
+        }
+    }
+
+    /// Content hash for this op’s signable payload (for dedup / parent links).
+    pub fn content_hash(&self) -> Result<[u8; 32], GovernanceError> {
+        op_content_hash(&self.to_signable())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    fn sample_group_id() -> [u8; 32] {
+        let mut g = [0u8; 32];
+        g[0] = 7;
+        g[31] = 3;
+        g
+    }
+
+    #[test]
+    fn sign_and_verify_round_trip() {
+        let mut rng = OsRng;
+        let sk = PrivateKey::random(&mut rng);
+        let member = PrivateKey::random(&mut rng).public_key();
+
+        let op = SignedGroupOp::sign(
+            &sk,
+            sample_group_id(),
+            None,
+            1,
+            GroupOp::MemberAdded {
+                member,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .expect("sign");
+
+        op.verify_signature().expect("verify");
+    }
+
+    #[test]
+    fn wrong_key_fails() {
+        let mut rng = OsRng;
+        let sk = PrivateKey::random(&mut rng);
+        let other = PrivateKey::random(&mut rng);
+        let member = PrivateKey::random(&mut rng).public_key();
+
+        let mut op = SignedGroupOp::sign(
+            &sk,
+            sample_group_id(),
+            None,
+            1,
+            GroupOp::MemberAdded {
+                member,
+                role: GroupMemberRole::Admin,
+            },
+        )
+        .expect("sign");
+
+        // Swap signer to another key without re-signing
+        op.signer = other.public_key();
+
+        assert!(op.verify_signature().is_err());
+    }
+
+    #[test]
+    fn tampered_op_fails() {
+        let mut rng = OsRng;
+        let sk = PrivateKey::random(&mut rng);
+        let member = PrivateKey::random(&mut rng).public_key();
+
+        let mut op = SignedGroupOp::sign(
+            &sk,
+            sample_group_id(),
+            None,
+            1,
+            GroupOp::MemberAdded {
+                member,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .expect("sign");
+
+        op.nonce = 2;
+        assert!(op.verify_signature().is_err());
+    }
+
+    #[test]
+    fn replay_distinct_content_hash() {
+        let mut rng = OsRng;
+        let sk = PrivateKey::random(&mut rng);
+        let member = PrivateKey::random(&mut rng).public_key();
+
+        let op1 = SignedGroupOp::sign(
+            &sk,
+            sample_group_id(),
+            None,
+            1,
+            GroupOp::MemberAdded {
+                member,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .expect("sign");
+
+        let op2 = SignedGroupOp::sign(
+            &sk,
+            sample_group_id(),
+            None,
+            2,
+            GroupOp::MemberAdded {
+                member,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .expect("sign");
+
+        let h1 = op1.content_hash().expect("hash");
+        let h2 = op2.content_hash().expect("hash");
+        assert_ne!(h1, h2, "different nonces must yield different content hashes");
+    }
+
+    #[test]
+    fn signable_bytes_deterministic() {
+        let mut rng = OsRng;
+        let sk = PrivateKey::random(&mut rng);
+        let pk = sk.public_key();
+        let s = SignableGroupOp {
+            version: SIGNED_GROUP_OP_SCHEMA_VERSION,
+            group_id: [1u8; 32],
+            parent_op_hash: None,
+            signer: pk,
+            nonce: 42,
+            op: GroupOp::Noop,
+        };
+        let a = signable_bytes(&s).expect("bytes");
+        let b = signable_bytes(&s).expect("bytes");
+        assert_eq!(a, b);
+        assert!(a.starts_with(GROUP_GOVERNANCE_SIGN_DOMAIN));
+    }
+}

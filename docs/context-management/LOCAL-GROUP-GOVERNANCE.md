@@ -131,7 +131,7 @@ After a valid `SignedGroupOp` is applied, update **`group_store`** (and related 
 
 ## 10. Next steps (Phase 1+)
 
-1. Implement **types + signing/verification** in crates (context primitives / crypto).
+1. ~~Implement **types + signing/verification** in crates (context primitives / crypto).~~ **Done:** `calimero_context_primitives::local_governance` (`GroupOp`, `SignedGroupOp`, `signable_bytes`, `op_content_hash`, tests).
 2. Add **network** variant and **publish/subscribe** handling for `SignedGroupOp`.
 3. **Apply** to `group_store` behind **`local`** mode flag.
 4. Tests: two nodes, one group, convergent state.
