@@ -683,7 +683,10 @@ mod tests {
 
         assert_eq!(config.nodes.len(), 1);
         match config.nodes.get("mynode").unwrap() {
-            NodeConnection::Local { path: p, jwt_tokens: t } => {
+            NodeConnection::Local {
+                path: p,
+                jwt_tokens: t,
+            } => {
                 assert_eq!(p, &path);
                 assert_eq!(t.as_ref().unwrap().access_token, "access1");
             }
@@ -710,7 +713,10 @@ mod tests {
         );
 
         match config.nodes.get("remote").unwrap() {
-            NodeConnection::Remote { url: u, jwt_tokens: t } => {
+            NodeConnection::Remote {
+                url: u,
+                jwt_tokens: t,
+            } => {
                 assert_eq!(u, &url);
                 assert_eq!(t.as_ref().unwrap().access_token, "access2");
             }
@@ -752,7 +758,10 @@ mod tests {
 
         // Verify tokens were updated; path unchanged
         match config.nodes.get("mynode").unwrap() {
-            NodeConnection::Local { path: p, jwt_tokens: t } => {
+            NodeConnection::Local {
+                path: p,
+                jwt_tokens: t,
+            } => {
                 assert_eq!(p, &path);
                 assert_eq!(t.as_ref().unwrap().access_token, "new_access");
                 assert_eq!(
