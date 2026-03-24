@@ -6,9 +6,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use actix::{Actor, ActorFutureExt, AsyncContext, WrapFuture};
-use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_primitives::client::external::group::ExternalGroupClient;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
@@ -19,7 +17,7 @@ use either::Either;
 use prometheus_client::registry::Registry;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-use crate::config::GroupGovernanceMode;
+use crate::config::ClientConfig;
 use crate::metrics::Metrics;
 
 pub mod config;
@@ -55,14 +53,11 @@ pub struct ContextManager {
     /// for interacting with the datastore.
     context_client: ContextClient,
 
-    /// Configuration for interacting with external blockchain contracts (e.g., NEAR).
-    external_config: ExternalClientConfig,
+    /// Context client section from node config (protocol coordinates for stored metadata).
+    external_config: ClientConfig,
 
-    /// Dedicated group identity keypair, decoupled from the NEAR signer key.
+    /// Dedicated group identity keypair for signed P2P group operations.
     group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
-
-    /// Whether signed P2P group ops are applied locally (`Local`) or chain is authoritative (`External`).
-    group_governance: GroupGovernanceMode,
 
     /// An in-memory cache of active contexts (`ContextId` -> `ContextMeta`).
     /// This serves as a hot cache to avoid expensive disk I/O for frequently accessed contexts.
@@ -101,17 +96,15 @@ pub struct ContextManager {
 /// * `datastore` - The persistent storage backend.
 /// * `node_client` - Client for interacting with the underlying Calimero node.
 /// * `context_client` - The context client facade.
-/// * `external_config` - Configuration for interacting with external blockchain contracts (e.g.,
-/// NEAR).
+/// * `external_config` - Serialized context client section from node config.
 /// * `prometheus_registry` - A mutable reference to a Prometheus registry for registering metrics.
 impl ContextManager {
     pub fn new(
         datastore: Store,
         node_client: NodeClient,
         context_client: ContextClient,
-        external_config: ExternalClientConfig,
+        external_config: ClientConfig,
         group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
-        group_governance: GroupGovernanceMode,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
         Self {
@@ -120,7 +113,6 @@ impl ContextManager {
             context_client,
             external_config,
             group_identity,
-            group_governance,
 
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
@@ -168,26 +160,6 @@ impl ContextManager {
         Some((
             calimero_primitives::identity::PublicKey::from(pk_bytes),
             sk_bytes,
-        ))
-    }
-
-    fn group_client(
-        &self,
-        group_id: ContextGroupId,
-        signing_key: [u8; 32],
-    ) -> eyre::Result<ExternalGroupClient> {
-        let params = self
-            .external_config
-            .params
-            .get("near")
-            .ok_or_else(|| eyre::eyre!("no 'near' protocol config"))?;
-
-        Ok(self.context_client.group_client(
-            group_id,
-            signing_key,
-            "near".to_owned(),
-            params.network.clone(),
-            params.contract_id.clone(),
         ))
     }
 }

@@ -5,7 +5,7 @@ use core::mem::MaybeUninit;
 use core::num::NonZeroU64;
 use core::{fmt, slice};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::vec;
 
 use tracing::{debug, trace};
@@ -241,10 +241,6 @@ pub struct VMLogic<'a> {
     artifact: Vec<u8>,
     /// Tracks whether the guest has explicitly called `env.commit`.
     commit_called: bool,
-    /// A map of proposals created during execution, having proposal ID as a key.
-    proposals: BTreeMap<[u8; DIGEST_SIZE], Vec<u8>>,
-    /// A list of approvals submitted during execution.
-    approvals: Vec<[u8; DIGEST_SIZE]>,
 
     /// A list of context configuration mutations requested by the guest.
     context_mutations: Vec<ContextMutation>,
@@ -301,8 +297,6 @@ impl<'a> VMLogic<'a> {
             root_hash: None,
             artifact: vec![],
             commit_called: false,
-            proposals: BTreeMap::new(),
-            approvals: vec![],
             context_mutations: vec![],
             context_host,
 
@@ -397,10 +391,6 @@ pub struct Outcome {
     /// The binary artifact produced if there were commits during the execution.
     //TODO: why the artifact is not an Option?
     pub artifact: Vec<u8>,
-    /// A map of proposals created during execution, having proposal ID as a key.
-    pub proposals: BTreeMap<[u8; DIGEST_SIZE], Vec<u8>>,
-    /// A list of approvals submitted during execution.
-    pub approvals: Vec<[u8; DIGEST_SIZE]>,
     /// A list of context mutations submitted during execution.
     pub context_mutations: Vec<ContextMutation>,
     //TODO: execution runtime (???).
@@ -423,8 +413,6 @@ impl VMLogic<'_> {
         let log_count = self.logs.len();
         let event_count = self.events.len();
         let xcall_count = self.xcalls.len();
-        let proposal_count = self.proposals.len();
-        let approval_count = self.approvals.len();
         let has_root_hash = self.root_hash.is_some();
         let has_artifact = !self.artifact.is_empty();
 
@@ -447,8 +435,6 @@ impl VMLogic<'_> {
             log_count,
             event_count,
             xcall_count,
-            proposal_count,
-            approval_count,
             has_root_hash,
             has_artifact,
             "VMLogic::finish"
@@ -488,8 +474,6 @@ impl VMLogic<'_> {
             xcalls: self.xcalls,
             root_hash: self.root_hash,
             artifact: self.artifact,
-            proposals: self.proposals,
-            approvals: self.approvals,
             context_mutations: self.context_mutations,
         }
     }

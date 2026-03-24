@@ -5,14 +5,11 @@ pub mod blobs;
 pub mod common;
 pub mod contexts;
 pub mod groups;
-pub mod proposals;
 
 // Re-export common types
 pub use blobs::{BlobDownloadResponse, BlobUploadResponse};
 use clap::ValueEnum;
 pub use common::{ErrorLine, InfoLine, WarnLine};
-// Re-export types from other modules
-pub use proposals::ProposalDetailsResponse;
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]

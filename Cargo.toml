@@ -30,7 +30,6 @@ exclude = [
     "./apps/private_data",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
-    "./apps/demo-blockchain-integrations",
     "./apps/e2e-kv-store",
     "./crates/merod",
     "./crates/meroctl",
@@ -52,7 +51,6 @@ members = [
     "./crates/meroctl",
     "./crates/client",
     "./crates/merod",
-    "./crates/relayer",
     "./crates/network",
     "./crates/network/primitives",
     "./crates/node",
@@ -61,7 +59,6 @@ members = [
     "./crates/primitives",
     "./crates/runtime",
     "./crates/sdk",
-    "./crates/sdk/libs/near",
     "./crates/sdk/macros",
     "./crates/server",
     "./crates/server/primitives",
@@ -97,8 +94,6 @@ members = [
     "./apps/abi_conformance",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
-    "./apps/demo-blockchain-integrations",
-
     "./tools/calimero-abi",
     "./tools/merodb",
     "./tools/mero-sign",
@@ -233,7 +228,7 @@ calimero-blobstore = { path = "./crates/store/blobs" }
 calimero-client = { path = "./crates/client" }
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
-calimero-context-config = { path = "./crates/context/config" }
+calimero-context-config = { path = "./crates/context/config", default-features = false }
 calimero-context-primitives = { path = "./crates/context/primitives" }
 calimero-crypto = { path = "./crates/crypto" }
 calimero-dag = { path = "./crates/dag" }
@@ -246,7 +241,6 @@ calimero-primitives = { path = "./crates/primitives" }
 calimero-runtime = { path = "./crates/runtime" }
 calimero-sdk = { path = "./crates/sdk" }
 calimero-sdk-macros = { path = "./crates/sdk/macros" }
-calimero-sdk-near = { path = "./crates/sdk/libs/near" }
 calimero-server = { path = "./crates/server" }
 calimero-server-primitives = { path = "./crates/server/primitives" }
 calimero-storage = { path = "./crates/storage" }

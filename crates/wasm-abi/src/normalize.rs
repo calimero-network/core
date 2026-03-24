@@ -478,11 +478,6 @@ fn normalize_scalar_type(
             // PublicKey is [u8; 32], so it's bytes with a fixed size
             Ok(TypeRef::bytes_with_size(32, None))
         }
-        // Handle ProposalId (calimero_sdk::env::ext)
-        "ProposalId" => {
-            // ProposalId is [u8; 32]
-            Ok(TypeRef::bytes_with_size(32, None))
-        }
         // Storage CRDT wrappers – treat as opaque blobs until ABI definitions exist.
         "Counter" => Ok(TypeRef::Collection {
             collection: CollectionType::Record {

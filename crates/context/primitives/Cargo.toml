@@ -24,7 +24,7 @@ tokio = { workspace = true, features = ["sync", "macros"] }
 tracing.workspace = true
 url.workspace = true
 
-calimero-context-config = { workspace = true, features = ["client"] }
+calimero-context-config.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-node-primitives.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }

@@ -9,6 +9,5 @@ pub mod list_packages;
 pub mod list_versions;
 pub mod packages;
 pub mod peers;
-pub mod proposals;
 pub mod tee;
 pub mod validation;

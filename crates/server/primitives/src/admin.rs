@@ -1,11 +1,8 @@
 use std::collections::BTreeMap;
 
-use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{
-    BlockHeight, Capability, ContextIdentity, ContextStorageEntry, SignedGroupOpenInvitation,
-    SignedOpenInvitation,
+    BlockHeight, Capability, SignedGroupOpenInvitation, SignedOpenInvitation,
 };
-use calimero_context_config::{Proposal, ProposalWithApprovals};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{
@@ -931,76 +928,6 @@ impl NodeChallengeMessage {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GetProposalsResponse {
-    pub data: Vec<Proposal>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProposalResponse {
-    pub data: Proposal,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProxyContractResponse {
-    pub data: String,
-}
-
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProposalsRequest {
-    pub offset: usize,
-    pub limit: usize,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextValueRequest {
-    pub key: String,
-}
-
-#[derive(Debug, Deserialize, Serialize, Copy, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextStorageEntriesRequest {
-    pub offset: usize,
-    pub limit: usize,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextValueResponse {
-    pub data: Vec<u8>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextStorageEntriesResponse {
-    pub data: Vec<ContextStorageEntry>,
-}
-
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetNumberOfActiveProposalsResponse {
-    pub data: u16,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProposalApproversResponse {
-    // fixme! this is wrong, ContextIdentity is an implementation
-    // fixme! detail it should be PublicKey instead
-    pub data: Vec<Repr<ContextIdentity>>,
-}
-
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetNumberOfProposalApprovalsResponse {
-    pub data: ProposalWithApprovals,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct GrantPermissionRequest {
     pub context_id: ContextId,
     pub granter_id: PublicKey,
@@ -1070,44 +997,6 @@ pub struct RevokePermissionResponse {
 impl RevokePermissionResponse {
     pub const fn new() -> Self {
         Self { data: Empty {} }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAndApproveProposalRequest {
-    pub signer_id: PublicKey,
-    pub proposal: Proposal,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAndApproveProposalResponse {
-    pub data: Option<ProposalWithApprovals>,
-}
-
-impl CreateAndApproveProposalResponse {
-    pub const fn new(data: Option<ProposalWithApprovals>) -> Self {
-        Self { data }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApproveProposalRequest {
-    pub signer_id: PublicKey,
-    pub proposal_id: calimero_context_config::types::ProposalId,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApproveProposalResponse {
-    pub data: Option<ProposalWithApprovals>,
-}
-
-impl ApproveProposalResponse {
-    pub const fn new(data: Option<ProposalWithApprovals>) -> Self {
-        Self { data }
     }
 }
 
@@ -1442,7 +1331,7 @@ impl TeeVerifyQuoteResponse {
 // ====================
 // These implementations focus on validating user-controlled string fields and size limits.
 //
-// Types like `ContextId`, `PublicKey`, `ApplicationId`, and `ProposalId` are validated during
+// Types like `ContextId`, `PublicKey`, and `ApplicationId` are validated during
 // serde deserialization - they implement `FromStr` which performs format validation (e.g.,
 // base58 decoding, length checks). If deserialization succeeds, the type is guaranteed valid.
 //
@@ -1456,11 +1345,10 @@ impl TeeVerifyQuoteResponse {
 
 use crate::validation::{
     helpers::{
-        validate_bytes_size, validate_hex_string, validate_limit, validate_offset,
-        validate_optional_hex_string, validate_optional_string_length, validate_string_length,
-        validate_url,
+        validate_bytes_size, validate_hex_string, validate_optional_hex_string,
+        validate_optional_string_length, validate_string_length, validate_url,
     },
-    Validate, ValidationError, MAX_CONTEXT_KEY_LENGTH, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE,
+    Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE,
     MAX_METHOD_NAME_LENGTH, MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH,
     MAX_PROTOCOL_LENGTH, MAX_QUOTE_B64_LENGTH, MAX_VALID_FOR_BLOCKS, MAX_VERSION_LENGTH,
 };
@@ -1629,68 +1517,6 @@ impl Validate for GrantPermissionRequest {
 impl Validate for RevokePermissionRequest {
     fn validate(&self) -> Vec<ValidationError> {
         // All fields are typed which have their own validation
-        Vec::new()
-    }
-}
-
-impl Validate for GetProposalsRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        if let Some(e) = validate_offset(self.offset, "offset") {
-            errors.push(e);
-        }
-
-        if let Some(e) = validate_limit(self.limit, "limit") {
-            errors.push(e);
-        }
-
-        errors
-    }
-}
-
-impl Validate for GetContextValueRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        if let Some(e) = validate_string_length(&self.key, "key", MAX_CONTEXT_KEY_LENGTH) {
-            errors.push(e);
-        }
-
-        if self.key.is_empty() {
-            errors.push(ValidationError::EmptyField { field: "key" });
-        }
-
-        errors
-    }
-}
-
-impl Validate for GetContextStorageEntriesRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        if let Some(e) = validate_offset(self.offset, "offset") {
-            errors.push(e);
-        }
-
-        if let Some(e) = validate_limit(self.limit, "limit") {
-            errors.push(e);
-        }
-
-        errors
-    }
-}
-
-impl Validate for CreateAndApproveProposalRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed (PublicKey, Proposal) which have their own validation
-        Vec::new()
-    }
-}
-
-impl Validate for ApproveProposalRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed (PublicKey, ProposalId) which have their own validation
         Vec::new()
     }
 }

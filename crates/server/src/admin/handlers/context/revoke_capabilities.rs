@@ -45,17 +45,13 @@ pub async fn handler(
     info!(context_id=%context_id, signer_id=%request.signer_id, count=%request.capabilities.len(), "Revoking capabilities");
 
     let res = async {
-        let Some(config_client) = state.ctx_client.context_config(&context_id)? else {
+        let Some(_) = state.ctx_client.context_config(&context_id)? else {
             bail!("context '{}' does not exist", context_id);
         };
 
-        let external_client = state
+        state
             .ctx_client
-            .external_client(&context_id, &config_client)?;
-
-        external_client
-            .config()
-            .revoke(&request.signer_id, &request.capabilities)
+            .noop_config_revoke(&request.signer_id, &request.capabilities)
             .await
     };
     match res.await {

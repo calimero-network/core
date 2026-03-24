@@ -7,7 +7,6 @@ use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
-use crate::config::GroupGovernanceMode;
 use crate::{group_store, ContextManager};
 
 impl Handler<JoinGroupContextRequest> for ContextManager {
@@ -22,7 +21,7 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         // Resolve joiner identity from node group identity.
-        let (joiner_identity, effective_signing_key) = match self.node_group_identity() {
+        let (joiner_identity, _effective_signing_key) = match self.node_group_identity() {
             Some((pk, sk)) => (pk, Some(sk)),
             None => {
                 return ActorResponse::reply(Err(eyre::eyre!(
@@ -41,7 +40,6 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
             }
             match group_store::get_context_visibility(&self.datastore, &group_id, &context_id)? {
                 Some((0, _)) => {
-                    // Open context: require admin or CAN_JOIN_OPEN_CONTEXTS.
                     if !group_store::is_group_admin_or_has_capability(
                         &self.datastore,
                         &group_id,
@@ -55,7 +53,6 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                     }
                 }
                 Some((1, _)) => {
-                    // Restricted context: require admin or on allowlist.
                     let is_admin =
                         group_store::is_group_admin(&self.datastore, &group_id, &joiner_identity)?;
                     let on_allowlist = group_store::check_context_allowlist(
@@ -73,7 +70,6 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                 }
                 Some((mode, _)) => bail!("unknown context visibility mode: {mode}"),
                 None => {
-                    // No visibility record synced yet; only admins may proceed.
                     if !group_store::is_group_admin(&self.datastore, &group_id, &joiner_identity)? {
                         bail!(
                             "context visibility not found for '{context_id:?}'; \
@@ -87,67 +83,38 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
             return ActorResponse::reply(Err(err));
         }
 
-        let group_governance = self.group_governance;
-        let group_client_result = match group_governance {
-            GroupGovernanceMode::External => {
-                effective_signing_key.map(|sk| self.group_client(group_id, sk))
-            }
-            GroupGovernanceMode::Local => None,
-        };
-
         let datastore = self.datastore.clone();
         let context_client = self.context_client.clone();
         let node_client = self.node_client.clone();
 
-        let protocol = "near".to_owned();
-        let params = match self.external_config.params.get("near") {
-            Some(p) => p.clone(),
-            None => {
-                return ActorResponse::reply(Err(eyre::eyre!("no 'near' protocol config")));
-            }
-        };
+        let protocol = "local".to_owned();
 
         ActorResponse::r#async(
             async move {
-                // Generate a context identity for this context.
                 let mut rng = rand::thread_rng();
                 let identity_secret = PrivateKey::random(&mut rng);
                 let identity_pk = identity_secret.public_key();
                 let sender_key = PrivateKey::random(&mut rng);
 
-                let context_identity: calimero_context_config::types::ContextIdentity =
+                let _context_identity: calimero_context_config::types::ContextIdentity =
                     identity_pk.rt()?;
 
-                if group_governance == GroupGovernanceMode::External {
-                    if let Some(client_result) = group_client_result {
-                        let group_client = client_result?;
-                        group_client
-                            .join_context_via_group(context_id, context_identity)
-                            .await?;
-                    }
-                }
-
-                // Register the context-group mapping locally so that
-                // maybe_lazy_upgrade can find the group for this context.
                 group_store::register_context_in_group(&datastore, &group_id, &context_id)?;
 
-                // Ensure we have context config locally.
-                // If the context is unknown, build config from protocol params
-                // and fetch the proxy contract so sync_context_config can
-                // bootstrap the context from on-chain state.
                 let config = if !context_client.has_context(&context_id)? {
                     let mut external_config = ContextConfigParams {
                         protocol: protocol.clone().into(),
-                        network_id: params.network.clone().into(),
-                        contract_id: params.contract_id.clone().into(),
+                        network_id: "local".into(),
+                        contract_id: "local".into(),
                         proxy_contract: "".into(),
                         application_revision: 0,
                         members_revision: 0,
                     };
 
-                    let external_client =
-                        context_client.external_client(&context_id, &external_config)?;
-                    let proxy_contract = external_client.config().get_proxy_contract().await?;
+                    let proxy_contract = context_client
+                        .context_config(&context_id)?
+                        .map(|c| c.proxy_contract.into_owned())
+                        .unwrap_or_default();
                     external_config.proxy_contract = proxy_contract.into();
 
                     Some(external_config)
@@ -159,7 +126,6 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                     .sync_context_config(context_id, config)
                     .await?;
 
-                // Store the context identity locally.
                 context_client.update_identity(
                     &context_id,
                     &ContextIdentity {
@@ -169,7 +135,6 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                     },
                 )?;
 
-                // Subscribe to context and trigger sync.
                 node_client.subscribe(&context_id).await?;
                 node_client.sync(Some(&context_id), None).await?;
 

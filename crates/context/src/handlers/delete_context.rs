@@ -11,7 +11,8 @@ use calimero_store::{key, Store};
 use either::Either;
 use eyre::bail;
 
-use crate::config::GroupGovernanceMode;
+use calimero_primitives::identity::PrivateKey;
+
 use crate::{group_store, ContextManager};
 
 impl Handler<DeleteContextRequest> for ContextManager {
@@ -43,15 +44,6 @@ impl Handler<DeleteContextRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
-        let context_client = self.context_client.clone();
-        let group_governance = self.group_governance;
-        let near_params = self.external_config.params.get("near").map(|params| {
-            (
-                "near".to_owned(),
-                params.network.clone(),
-                params.contract_id.clone(),
-            )
-        });
 
         let group_id_for_context =
             match group_store::get_group_for_context(&self.datastore, &context_id) {
@@ -82,16 +74,8 @@ impl Handler<DeleteContextRequest> for ContextManager {
                 None => None,
             };
 
-            delete_context(
-                datastore,
-                node_client,
-                context_client,
-                context_id,
-                requester,
-                near_params,
-                group_governance,
-            )
-            .await?;
+            delete_context(datastore, node_client, context_id, requester)
+                .await?;
 
             Ok(DeleteContextResponse { deleted: true })
         };
@@ -107,11 +91,8 @@ impl Handler<DeleteContextRequest> for ContextManager {
 async fn delete_context(
     datastore: Store,
     node_client: NodeClient,
-    context_client: calimero_context_primitives::client::ContextClient,
     context_id: ContextId,
     requester: Option<PublicKey>,
-    near_params: Option<(String, String, String)>,
-    group_governance: GroupGovernanceMode,
 ) -> eyre::Result<()> {
     node_client.unsubscribe(&context_id).await?;
 
@@ -143,59 +124,30 @@ async fn delete_context(
             eyre::eyre!("requester required to delete a group context")
         })?;
 
-        match group_governance {
-            GroupGovernanceMode::Local => {
-                let sk = group_store::get_group_signing_key(&datastore, &group_id, &requester)?
-                    .ok_or_else(|| {
-                        eyre::eyre!(
-                            "signing key not found for requester in group '{group_id:?}'; \
-                             cannot publish local detach op"
-                        )
-                    })?;
-                let bytes = group_store::sign_apply_local_group_op_borsh(
-                    &datastore,
-                    &group_id,
-                    &calimero_primitives::identity::PrivateKey::from(sk),
-                    calimero_context_primitives::local_governance::GroupOp::ContextDetached {
-                        context_id,
-                    },
-                )?;
-                node_client
-                    .publish_signed_group_op(group_id.to_bytes(), bytes)
-                    .await?;
-            }
-            GroupGovernanceMode::External => {
-                if let Some((protocol, network_id, contract_id)) = near_params {
-                    let sk = group_store::get_group_signing_key(&datastore, &group_id, &requester)?
-                        .ok_or_else(|| {
-                            eyre::eyre!(
-                                "signing key not found for requester in group '{group_id:?}'; \
-                                 cannot unregister context on-chain"
-                            )
-                        })?;
-
-                    let mut group_client = context_client.group_client(
-                        group_id,
-                        sk,
-                        protocol,
-                        network_id,
-                        contract_id,
-                    );
-                    group_client
-                        .unregister_context_from_group(context_id)
-                        .await?;
-                }
-
-                group_store::unregister_context_from_group(&datastore, &group_id, &context_id)?;
-
-                let _ = node_client
-                    .broadcast_group_mutation(
-                        group_id.to_bytes(),
-                        calimero_node_primitives::sync::GroupMutationKind::ContextDetached,
-                    )
-                    .await;
-            }
-        }
+        let sk = group_store::get_group_signing_key(&datastore, &group_id, &requester)?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "signing key not found for requester in group '{group_id:?}'; \
+                     cannot publish local detach op"
+                )
+            })?;
+        let bytes = group_store::sign_apply_local_group_op_borsh(
+            &datastore,
+            &group_id,
+            &PrivateKey::from(sk),
+            calimero_context_primitives::local_governance::GroupOp::ContextDetached {
+                context_id,
+            },
+        )?;
+        node_client
+            .publish_signed_group_op(group_id.to_bytes(), bytes)
+            .await?;
+        let _ = node_client
+            .broadcast_group_mutation(
+                group_id.to_bytes(),
+                calimero_node_primitives::sync::GroupMutationKind::ContextDetached,
+            )
+            .await;
     }
 
     Ok(())

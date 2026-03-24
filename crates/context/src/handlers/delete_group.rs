@@ -6,7 +6,6 @@ use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
-use crate::config::GroupGovernanceMode;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -69,80 +68,32 @@ impl Handler<DeleteGroupRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let group_id_bytes = group_id.to_bytes();
-        let group_governance = self.group_governance;
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
                 .flatten()
         });
-        let group_client_result = match group_governance {
-            GroupGovernanceMode::External => {
-                effective_signing_key.map(|sk| self.group_client(group_id, sk))
-            }
-            GroupGovernanceMode::Local => None,
-        };
 
         ActorResponse::r#async(
             async move {
-                match group_governance {
-                    GroupGovernanceMode::Local => {
-                        let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                            eyre::eyre!(
-                                "local group governance requires a signing key for the requester"
-                            )
-                        })?);
-                        let bytes = group_store::sign_apply_local_group_op_borsh(
-                            &datastore,
-                            &group_id,
-                            &sk,
-                            GroupOp::GroupDelete,
-                        )?;
-                        node_client
-                            .publish_signed_group_op(group_id_bytes, bytes)
-                            .await?;
-                    }
-                    GroupGovernanceMode::External => {
-                        if let Some(client_result) = group_client_result {
-                            let mut group_client = client_result?;
-                            group_client.delete_group().await?;
-                        }
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!(
+                        "local group governance requires a signing key for the requester"
+                    )
+                })?);
+                let bytes = group_store::sign_apply_local_group_op_borsh(
+                    &datastore,
+                    &group_id,
+                    &sk,
+                    GroupOp::GroupDelete,
+                )?;
+                node_client
+                    .publish_signed_group_op(group_id_bytes, bytes)
+                    .await?;
 
-                        // Remove all members in bounded batches to cap peak allocation
-                        loop {
-                            let batch =
-                                group_store::list_group_members(&datastore, &group_id, 0, 500)?;
-                            if batch.is_empty() {
-                                break;
-                            }
-                            for (identity, _role) in &batch {
-                                group_store::remove_group_member(&datastore, &group_id, identity)?;
-                            }
-                        }
-
-                        // Clean up member capability and alias entries that are not
-                        // removed by the member-deletion loop above.
-                        group_store::delete_all_member_capabilities(&datastore, &group_id)?;
-                        group_store::delete_all_member_aliases(&datastore, &group_id)?;
-
-                        // Clean up group-level settings and alias.
-                        group_store::delete_default_capabilities(&datastore, &group_id)?;
-                        group_store::delete_default_visibility(&datastore, &group_id)?;
-                        group_store::delete_group_alias(&datastore, &group_id)?;
-
-                        // Clean up per-context migration records for this group.
-                        group_store::delete_all_context_last_migrations(&datastore, &group_id)?;
-
-                        // Clean up any in-progress or completed upgrade record so crash
-                        // recovery does not find orphaned entries for deleted groups.
-                        group_store::delete_group_upgrade(&datastore, &group_id)?;
-                        group_store::delete_all_group_signing_keys(&datastore, &group_id)?;
-                        group_store::delete_group_meta(&datastore, &group_id)?;
-
-                        let _ = node_client
-                            .broadcast_group_mutation(group_id_bytes, GroupMutationKind::Deleted)
-                            .await;
-                    }
-                }
+                let _ = node_client
+                    .broadcast_group_mutation(group_id_bytes, GroupMutationKind::Deleted)
+                    .await;
 
                 let _ = node_client.unsubscribe_group(group_id_bytes).await;
 

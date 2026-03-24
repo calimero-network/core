@@ -105,11 +105,10 @@ async fn join_context(
             members_revision: 0,
         };
 
-        let external_client = context_client.external_client(&context_id, &external_config)?;
-
-        let config_client = external_client.config();
-
-        let proxy_contract = config_client.get_proxy_contract().await?;
+        let proxy_contract = context_client
+            .context_config(&context_id)?
+            .map(|c| c.proxy_contract.into_owned())
+            .unwrap_or_default();
 
         external_config.proxy_contract = proxy_contract.into();
 

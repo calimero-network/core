@@ -5,7 +5,6 @@ use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 
-use crate::config::GroupGovernanceMode;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -44,20 +43,13 @@ impl Handler<UpdateGroupSettingsRequest> for ContextManager {
             );
         }
 
-        let group_governance = self.group_governance;
-
         if let Err(err) = (|| -> eyre::Result<()> {
-            let Some(mut meta) = group_store::load_group_meta(&self.datastore, &group_id)? else {
+            let Some(_meta) = group_store::load_group_meta(&self.datastore, &group_id)? else {
                 bail!("group '{group_id:?}' not found");
             };
 
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
             group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
-
-            if group_governance != GroupGovernanceMode::Local {
-                meta.upgrade_policy = upgrade_policy.clone();
-                group_store::save_group_meta(&self.datastore, &group_id, &meta)?;
-            }
 
             Ok(())
         })() {
@@ -76,34 +68,29 @@ impl Handler<UpdateGroupSettingsRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                match group_governance {
-                    GroupGovernanceMode::Local => {
-                        let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                            eyre::eyre!(
-                                "local group governance requires a signing key for the requester"
-                            )
-                        })?);
-                        let bytes = group_store::sign_apply_local_group_op_borsh(
-                            &datastore,
-                            &group_id,
-                            &sk,
-                            GroupOp::UpgradePolicySet {
-                                policy: upgrade_policy,
-                            },
-                        )?;
-                        node_client
-                            .publish_signed_group_op(group_id.to_bytes(), bytes)
-                            .await?;
-                    }
-                    GroupGovernanceMode::External => {
-                        let _ = node_client
-                            .broadcast_group_mutation(
-                                group_id.to_bytes(),
-                                GroupMutationKind::SettingsUpdated,
-                            )
-                            .await;
-                    }
-                }
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!(
+                        "local group governance requires a signing key for the requester"
+                    )
+                })?);
+                let bytes = group_store::sign_apply_local_group_op_borsh(
+                    &datastore,
+                    &group_id,
+                    &sk,
+                    GroupOp::UpgradePolicySet {
+                        policy: upgrade_policy,
+                    },
+                )?;
+                node_client
+                    .publish_signed_group_op(group_id.to_bytes(), bytes)
+                    .await?;
+
+                let _ = node_client
+                    .broadcast_group_mutation(
+                        group_id.to_bytes(),
+                        GroupMutationKind::SettingsUpdated,
+                    )
+                    .await;
                 Ok(())
             }
             .into_actor(self),
