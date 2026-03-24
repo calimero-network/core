@@ -1235,10 +1235,12 @@ name = "calimero-context"
 version = "0.0.0"
 dependencies = [
  "actix",
+ "async-trait",
  "borsh",
  "bs58 0.5.1",
  "calimero-context-config",
  "calimero-context-primitives",
+ "calimero-dag",
  "calimero-node-primitives",
  "calimero-prelude",
  "calimero-primitives",

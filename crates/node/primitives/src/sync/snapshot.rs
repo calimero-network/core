@@ -653,6 +653,31 @@ pub enum BroadcastMessage<'a> {
         /// `borsh(SignedGroupOp)`; must be ≤ [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`].
         payload: Vec<u8>,
     },
+
+    /// DAG-aware group governance delta with causal metadata.
+    ///
+    /// Replaces [`SignedGroupOpV1`] for nodes running schema v2.
+    /// Contains the same `SignedGroupOp` payload plus DAG ordering info.
+    GroupGovernanceDelta {
+        group_id: [u8; 32],
+        /// Content hash of the signed op (delta ID in the governance DAG).
+        delta_id: [u8; 32],
+        /// Parent delta IDs (content hashes of causally preceding ops).
+        parent_ids: Vec<[u8; 32]>,
+        /// `borsh(SignedGroupOp)` — must be ≤ [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`].
+        payload: Vec<u8>,
+    },
+
+    /// Periodic heartbeat for group governance DAG divergence detection.
+    ///
+    /// Peers compare `dag_heads`; if a peer has heads we lack, trigger catch-up sync.
+    GroupStateHeartbeat {
+        group_id: [u8; 32],
+        /// Current DAG tip content hashes.
+        dag_heads: Vec<[u8; 32]>,
+        /// Number of members in the group (sanity check).
+        member_count: u32,
+    },
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
