@@ -12,6 +12,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 /// Wire/schema version for [`SignedGroupOp`].
+///
+/// v1 was never persisted in any release — it existed only on the feature branch
+/// during development. No backward-compatible deserialization is needed.
 pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 2;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.

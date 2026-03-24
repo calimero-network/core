@@ -370,8 +370,19 @@ fn apply_join_with_invitation_claim(
     Ok(())
 }
 
+/// Maximum number of parent hashes allowed in a single [`SignedGroupOp`].
+/// Prevents DoS from malicious ops with unbounded parent lists.
+const MAX_PARENT_OP_HASHES: usize = 256;
+
 /// Apply a [`SignedGroupOp`] to the local group store (signature, monotonic nonce, admin rules).
 pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreResult<()> {
+    if op.parent_op_hashes.len() > MAX_PARENT_OP_HASHES {
+        bail!(
+            "too many parent_op_hashes ({}, max {})",
+            op.parent_op_hashes.len(),
+            MAX_PARENT_OP_HASHES
+        );
+    }
     op.verify_signature()
         .map_err(|e| eyre::eyre!("signed group op: {e}"))?;
     let group_id = ContextGroupId::from(op.group_id);
@@ -555,11 +566,13 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     let op_bytes = borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh: {e}"))?;
     append_op_log_entry(store, &group_id, next_seq, &op_bytes)?;
 
+    let parent_set: std::collections::HashSet<[u8; 32]> =
+        op.parent_op_hashes.iter().copied().collect();
     let mut new_heads: Vec<[u8; 32]> = head
         .map(|h| h.dag_heads)
         .unwrap_or_default()
         .into_iter()
-        .filter(|h| !op.parent_op_hashes.contains(h))
+        .filter(|h| !parent_set.contains(h))
         .collect();
     new_heads.push(content_hash);
     set_op_head(store, &group_id, next_seq, new_heads)?;

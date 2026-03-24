@@ -40,7 +40,10 @@ pub fn signed_op_to_delta(op: &SignedGroupOp) -> Result<CausalDelta<SignedGroupO
         delta_id,
         op.parent_op_hashes.clone(),
         op.clone(),
+        // HLC is not used for governance ordering (nonce + DAG parents suffice);
+        // default is acceptable since DagStore uses parents for topological sort.
         calimero_storage::logical_clock::HybridTimestamp::default(),
+        // Governance ops have no Merkle root; zero hash signals "no state hash".
         [0u8; 32],
     ))
 }
