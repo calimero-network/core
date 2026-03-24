@@ -33,14 +33,15 @@ pub use group::{
     ContextGroupRef, GroupAlias, GroupContextAlias, GroupContextAllowlist, GroupContextIndex,
     GroupContextLastMigration, GroupContextLastMigrationValue, GroupContextVisibility,
     GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
-    GroupDefaultVisValue, GroupMember, GroupMemberAlias, GroupMemberCapability,
-    GroupLocalGovNonce, GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupSigningKey,
-    GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_ALIAS_PREFIX,
-    GROUP_CONTEXT_ALIAS_PREFIX, GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
-    GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
-    GROUP_DEFAULT_CAPS_PREFIX, GROUP_DEFAULT_VIS_PREFIX, GROUP_LOCAL_GOV_NONCE_PREFIX,
-    GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_PREFIX,
-    GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
+    GroupDefaultVisValue, GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
+    GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupOpHead, GroupOpHeadValue, GroupOpLog,
+    GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
+    GROUP_ALIAS_PREFIX, GROUP_CONTEXT_ALIAS_PREFIX, GROUP_CONTEXT_ALLOWLIST_PREFIX,
+    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
+    GROUP_CONTEXT_VISIBILITY_PREFIX, GROUP_DEFAULT_CAPS_PREFIX, GROUP_DEFAULT_VIS_PREFIX,
+    GROUP_LOCAL_GOV_NONCE_PREFIX, GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
+    GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_OP_HEAD_PREFIX, GROUP_OP_LOG_PREFIX,
+    GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);

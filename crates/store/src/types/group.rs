@@ -85,3 +85,13 @@ impl PredefinedEntry for key::GroupAlias {
     type Codec = Borsh;
     type DataType<'a> = String;
 }
+
+impl PredefinedEntry for key::GroupOpLog {
+    type Codec = Borsh;
+    type DataType<'a> = Vec<u8>;
+}
+
+impl PredefinedEntry for key::GroupOpHead {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupOpHeadValue;
+}

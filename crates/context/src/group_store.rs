@@ -9,13 +9,14 @@ use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupContextAlias,
     GroupContextAllowlist, GroupContextIndex, GroupContextLastMigration,
     GroupContextLastMigrationValue, GroupContextVisibility, GroupContextVisibilityValue,
-    GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis, GroupDefaultVisValue, GroupLocalGovNonce,
-    GroupMember, GroupMemberAlias, GroupMemberCapability, GroupMemberCapabilityValue, GroupMeta,
-    GroupMetaValue, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus,
+    GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis, GroupDefaultVisValue,
+    GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
+    GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupOpHead, GroupOpHeadValue,
+    GroupOpLog, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus,
     GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
     GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
     GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_PREFIX,
-    GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
+    GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -162,6 +163,89 @@ fn delete_local_gov_nonces_for_listed_members(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Op log — persistent, ordered log of applied SignedGroupOps per group
+// ---------------------------------------------------------------------------
+
+pub fn get_op_head(store: &Store, group_id: &ContextGroupId) -> EyreResult<Option<GroupOpHeadValue>> {
+    let handle = store.handle();
+    let key = GroupOpHead::new(group_id.to_bytes());
+    handle.get(&key).map_err(Into::into)
+}
+
+fn set_op_head(
+    store: &Store,
+    group_id: &ContextGroupId,
+    sequence: u64,
+    content_hash: [u8; 32],
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupOpHead::new(group_id.to_bytes());
+    handle.put(&key, &GroupOpHeadValue { sequence, content_hash })?;
+    Ok(())
+}
+
+fn append_op_log_entry(
+    store: &Store,
+    group_id: &ContextGroupId,
+    sequence: u64,
+    op_bytes: &[u8],
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupOpLog::new(group_id.to_bytes(), sequence);
+    handle.put(&key, &op_bytes.to_vec())?;
+    Ok(())
+}
+
+pub fn read_op_log_after(
+    store: &Store,
+    group_id: &ContextGroupId,
+    after_sequence: u64,
+    limit: usize,
+) -> EyreResult<Vec<(u64, Vec<u8>)>> {
+    let handle = store.handle();
+    let start_seq = after_sequence.saturating_add(1);
+    let start_key = GroupOpLog::new(group_id.to_bytes(), start_seq);
+    let mut iter = handle.iter::<GroupOpLog>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut results = Vec::new();
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+
+        if key.as_key().as_bytes()[0] != GROUP_OP_LOG_PREFIX {
+            break;
+        }
+
+        if key.group_id() != group_id.to_bytes() {
+            break;
+        }
+
+        if results.len() >= limit {
+            break;
+        }
+
+        let Some(op_bytes) = handle.get(&key)? else {
+            continue;
+        };
+        results.push((key.sequence(), op_bytes));
+    }
+
+    Ok(results)
+}
+
+fn delete_op_log_and_head(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
+    let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
+    let mut handle = store.handle();
+    for (seq, _) in entries {
+        let key = GroupOpLog::new(group_id.to_bytes(), seq);
+        handle.delete(&key)?;
+    }
+    let head_key = GroupOpHead::new(group_id.to_bytes());
+    handle.delete(&head_key)?;
+    Ok(())
+}
+
 /// Remove all local rows for a group (metadata, members, caps, aliases, …).  
 /// Caller must enforce admin authorization and `count_group_contexts == 0`.
 pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
@@ -186,6 +270,7 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     delete_all_context_last_migrations(store, group_id)?;
     delete_group_upgrade(store, group_id)?;
     delete_all_group_signing_keys(store, group_id)?;
+    delete_op_log_and_head(store, group_id)?;
     delete_group_meta(store, group_id)?;
     Ok(())
 }
@@ -285,11 +370,7 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     let group_id = ContextGroupId::from(op.group_id);
     let last = get_local_gov_nonce(store, &group_id, &op.signer)?.unwrap_or(0);
     if op.nonce <= last {
-        bail!(
-            "signed group op nonce must be strictly increasing (got {}, last {})",
-            op.nonce,
-            last
-        );
+        return Ok(());
     }
 
     match &op.op {
@@ -454,6 +535,16 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     }
 
     set_local_gov_nonce(store, &group_id, &op.signer, op.nonce)?;
+
+    let content_hash = op
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    let head = get_op_head(store, &group_id)?;
+    let next_seq = head.map_or(1, |h| h.sequence.saturating_add(1));
+    let op_bytes = borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+    append_op_log_entry(store, &group_id, next_seq, &op_bytes)?;
+    set_op_head(store, &group_id, next_seq, content_hash)?;
+
     Ok(())
 }
 
@@ -469,7 +560,8 @@ pub fn sign_apply_local_group_op_borsh(
     let nonce = last
         .checked_add(1)
         .ok_or_else(|| eyre::eyre!("group governance nonce overflow"))?;
-    let signed = SignedGroupOp::sign(signer_sk, group_id.to_bytes(), None, nonce, op)?;
+    let parent_hash = get_op_head(store, group_id)?.map(|h| h.content_hash);
+    let signed = SignedGroupOp::sign(signer_sk, group_id.to_bytes(), parent_hash, nonce, op)?;
     apply_local_signed_group_op(store, &signed)?;
     borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))
 }

@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use borsh::to_vec as borsh_to_vec;
 use calimero_context::group_store::{
-    self, add_group_member, apply_local_signed_group_op, list_group_members, load_group_meta,
-    save_group_meta,
+    self, add_group_member, apply_local_signed_group_op, get_op_head, list_group_members,
+    load_group_meta, read_op_log_after, save_group_meta,
 };
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, GroupRevealPayloadData, SignedGroupOpenInvitation,
@@ -475,4 +475,132 @@ fn two_nodes_converge_on_context_alias_as_creator() {
             .as_deref(),
         Some("wire-alias")
     );
+}
+
+#[test]
+fn op_log_records_applied_ops_and_head_advances() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    assert!(get_op_head(&store, &gid).unwrap().is_none());
+
+    let new_member = PrivateKey::random(&mut rng).public_key();
+    let op1 = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        None,
+        1,
+        GroupOp::MemberAdded {
+            member: new_member,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .expect("sign op1");
+
+    apply_local_signed_group_op(&store, &op1).unwrap();
+
+    let head = get_op_head(&store, &gid).unwrap().expect("head after op1");
+    assert_eq!(head.sequence, 1);
+    assert_eq!(head.content_hash, op1.content_hash().unwrap());
+
+    let log = read_op_log_after(&store, &gid, 0, 100).unwrap();
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0].0, 1);
+    let decoded: SignedGroupOp = borsh::from_slice(&log[0].1).unwrap();
+    assert_eq!(decoded.nonce, op1.nonce);
+
+    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, None, 2, GroupOp::Noop).expect("sign op2");
+    apply_local_signed_group_op(&store, &op2).unwrap();
+
+    let head2 = get_op_head(&store, &gid).unwrap().expect("head after op2");
+    assert_eq!(head2.sequence, 2);
+
+    let log_after_1 = read_op_log_after(&store, &gid, 1, 100).unwrap();
+    assert_eq!(log_after_1.len(), 1);
+    assert_eq!(log_after_1[0].0, 2);
+
+    let full_log = read_op_log_after(&store, &gid, 0, 100).unwrap();
+    assert_eq!(full_log.len(), 2);
+}
+
+#[test]
+fn duplicate_op_is_idempotent() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let op = SignedGroupOp::sign(&admin_sk, gid_bytes, None, 1, GroupOp::Noop).expect("sign op");
+    let payload = borsh_to_vec(&op).expect("encode");
+
+    apply_wire_payload(&store, &payload);
+    apply_wire_payload(&store, &payload);
+    apply_wire_payload(&store, &payload);
+
+    let head = get_op_head(&store, &gid).unwrap().expect("head");
+    assert_eq!(head.sequence, 1);
+    let log = read_op_log_after(&store, &gid, 0, 100).unwrap();
+    assert_eq!(log.len(), 1);
+}
+
+#[test]
+fn offline_node_replays_missed_ops_from_log() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let store_online = empty_store();
+    let store_offline = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+
+    for store in [&store_online, &store_offline] {
+        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
+        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    }
+
+    let member1 = PrivateKey::random(&mut rng).public_key();
+    let member2 = PrivateKey::random(&mut rng).public_key();
+
+    let op1 = SignedGroupOp::sign(
+        &admin_sk, gid_bytes, None, 1,
+        GroupOp::MemberAdded { member: member1, role: GroupMemberRole::Member },
+    ).unwrap();
+    let op2 = SignedGroupOp::sign(
+        &admin_sk, gid_bytes, None, 2,
+        GroupOp::MemberAdded { member: member2, role: GroupMemberRole::Member },
+    ).unwrap();
+
+    for op in [&op1, &op2] {
+        apply_local_signed_group_op(&store_online, op).unwrap();
+    }
+
+    assert!(group_store::check_group_membership(&store_online, &gid, &member1).unwrap());
+    assert!(group_store::check_group_membership(&store_online, &gid, &member2).unwrap());
+    assert!(!group_store::check_group_membership(&store_offline, &gid, &member1).unwrap());
+
+    let missed_ops = read_op_log_after(&store_online, &gid, 0, 100).unwrap();
+    assert_eq!(missed_ops.len(), 2);
+
+    for (_seq, op_bytes) in &missed_ops {
+        let op: SignedGroupOp = borsh::from_slice(op_bytes).unwrap();
+        apply_local_signed_group_op(&store_offline, &op).unwrap();
+    }
+
+    assert_same_group_view(&store_online, &store_offline, &gid);
+    assert!(group_store::check_group_membership(&store_offline, &gid, &member1).unwrap());
+    assert!(group_store::check_group_membership(&store_offline, &gid, &member2).unwrap());
 }
