@@ -2,7 +2,7 @@ use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, GroupIdentityConfig,
     IdentityConfig, NetworkConfig, NodeMode, ServerConfig, SyncConfig,
 };
-use calimero_context::config::ContextConfig;
+use calimero_context::config::{ContextConfig, GroupGovernanceMode};
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
     ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
@@ -70,6 +70,22 @@ const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[ProtocolConfig {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ConfigProtocol {
     Near,
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum GroupGovernanceInitArg {
+    #[default]
+    External,
+    Local,
+}
+
+impl From<GroupGovernanceInitArg> for GroupGovernanceMode {
+    fn from(value: GroupGovernanceInitArg) -> Self {
+        match value {
+            GroupGovernanceInitArg::External => GroupGovernanceMode::External,
+            GroupGovernanceInitArg::Local => GroupGovernanceMode::Local,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -186,6 +202,12 @@ pub struct InitCommand {
     /// Node operation mode (standard or read-only)
     #[clap(long, value_enum, default_value_t = NodeMode::Standard)]
     pub mode: NodeMode,
+
+    /// Group policy: `external` (chain + relayer) or `local` (signed gossip only). For `local`, NEAR
+    /// protocol blocks are omitted from the generated context client config (add them later if you
+    /// need chain-backed contexts or `join_group_context` bootstrap against NEAR).
+    #[clap(long, value_enum, default_value_t = GroupGovernanceInitArg::External)]
+    pub group_governance: GroupGovernanceInitArg,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -278,42 +300,52 @@ impl InitCommand {
 
         let mut client_params = BTreeMap::default();
 
-        // Generate configurations for all protocols
-        for config in PROTOCOL_CONFIGS {
-            // Insert client params
-            let _ignored = client_params.insert(
-                config.name.to_owned(),
-                ClientConfigParams {
-                    network: config.default_network.into(),
-                    contract_id: config.default_contract.parse()?,
-                    signer: config.signer_type,
-                },
-            );
+        let group_governance_mode: GroupGovernanceMode = self.group_governance.into();
 
-            // Create local config with signers
-            let mut local_config = ClientLocalConfig {
-                signers: Default::default(),
-            };
-
-            for (network_name, rpc_url) in config.networks {
-                let _ignored = local_config.signers.insert(
-                    network_name.to_string(),
-                    generate_local_signer(rpc_url.parse()?, config.protocol)?,
+        // NEAR protocol blocks: only for external governance (or mixed deployments). Local-only
+        // nodes omit them so `config.toml` does not require chain coordinates; see
+        // `docs/context-management/LOCAL-GROUP-GOVERNANCE.md`.
+        if group_governance_mode != GroupGovernanceMode::Local {
+            for config in PROTOCOL_CONFIGS {
+                let _ignored = client_params.insert(
+                    config.name.to_owned(),
+                    ClientConfigParams {
+                        network: config.default_network.into(),
+                        contract_id: config.default_contract.parse()?,
+                        signer: config.signer_type,
+                    },
                 );
-            }
 
-            let _ignored = local_signers
-                .protocols
-                .insert(config.name.to_owned(), local_config);
+                let mut local_config = ClientLocalConfig {
+                    signers: Default::default(),
+                };
+
+                for (network_name, rpc_url) in config.networks {
+                    let _ignored = local_config.signers.insert(
+                        network_name.to_string(),
+                        generate_local_signer(rpc_url.parse()?, config.protocol)?,
+                    );
+                }
+
+                let _ignored = local_signers
+                    .protocols
+                    .insert(config.name.to_owned(), local_config);
+            }
         }
 
-        let relayer = self
-            .relayer_url
-            .unwrap_or_else(defaults::default_relayer_url);
+        let relayer_signer = if group_governance_mode == GroupGovernanceMode::Local {
+            None
+        } else {
+            Some(ClientRelayerSigner {
+                url: self
+                    .relayer_url
+                    .unwrap_or_else(defaults::default_relayer_url),
+            })
+        };
 
         let client_config = ClientConfig {
             signer: ClientSigner {
-                relayer: ClientRelayerSigner { url: relayer },
+                relayer: relayer_signer,
                 local: local_signers,
             },
             params: client_params,
@@ -389,6 +421,7 @@ impl InitCommand {
             BlobStoreConfig::new("blobs".into()),
             ContextConfig {
                 client: client_config,
+                group_governance: group_governance_mode,
             },
         );
 
@@ -398,7 +431,14 @@ impl InitCommand {
             path.join(config.datastore.path),
         ))?);
 
-        info!("Initialized a node in {:?}", path);
+        if group_governance_mode == GroupGovernanceMode::Local {
+            info!(
+                "Initialized a node in {:?} (group_governance=local; no NEAR protocol in context client config)",
+                path
+            );
+        } else {
+            info!("Initialized a node in {:?}", path);
+        }
 
         Ok(())
     }

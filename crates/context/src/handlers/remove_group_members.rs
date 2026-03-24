@@ -3,12 +3,14 @@ use std::collections::BTreeSet;
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::group::RemoveGroupMembersRequest;
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use eyre::bail;
 use tracing::info;
 
+use crate::config::GroupGovernanceMode;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -77,36 +79,72 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let context_client = self.context_client.clone();
+        let group_governance = self.group_governance;
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
                 .flatten()
         });
-        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
+        let group_client_result = match group_governance {
+            GroupGovernanceMode::External => {
+                effective_signing_key.map(|sk| self.group_client(group_id, sk))
+            }
+            GroupGovernanceMode::Local => None,
+        };
+        let members = members.clone();
 
         ActorResponse::r#async(
             async move {
-                if let Some(client_result) = group_client_result {
-                    let mut group_client = client_result?;
-                    let signer_ids: Vec<calimero_context_config::types::SignerId> = members
-                        .iter()
-                        .map(|pk| pk.rt())
-                        .collect::<Result<Vec<_>, _>>()?;
-                    group_client.remove_group_members(&signer_ids).await?;
+                match group_governance {
+                    GroupGovernanceMode::Local => {
+                        let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                            eyre::eyre!(
+                                "local group governance requires a signing key for the requester"
+                            )
+                        })?);
+                        for identity in &members {
+                            let op = GroupOp::MemberRemoved { member: *identity };
+                            let bytes = group_store::sign_apply_local_group_op_borsh(
+                                &datastore,
+                                &group_id,
+                                &sk,
+                                op,
+                            )?;
+                            node_client
+                                .publish_signed_group_op(group_id.to_bytes(), bytes)
+                                .await?;
+                        }
+                        info!(
+                            ?group_id,
+                            count = members.len(),
+                            %requester,
+                            "members removed from group (local governance signed ops)"
+                        );
+                    }
+                    GroupGovernanceMode::External => {
+                        if let Some(client_result) = group_client_result {
+                            let mut group_client = client_result?;
+                            let signer_ids: Vec<calimero_context_config::types::SignerId> = members
+                                .iter()
+                                .map(|pk| pk.rt())
+                                .collect::<Result<Vec<_>, _>>()?;
+                            group_client.remove_group_members(&signer_ids).await?;
+                        }
+
+                        for identity in &members {
+                            group_store::remove_group_member(&datastore, &group_id, identity)?;
+                        }
+
+                        info!(?group_id, count = members.len(), %requester, "members removed from group");
+
+                        let _ = node_client
+                            .broadcast_group_mutation(
+                                group_id.to_bytes(),
+                                GroupMutationKind::MembersRemoved,
+                            )
+                            .await;
+                    }
                 }
-
-                for identity in &members {
-                    group_store::remove_group_member(&datastore, &group_id, identity)?;
-                }
-
-                info!(?group_id, count = members.len(), %requester, "members removed from group");
-
-                let _ = node_client
-                    .broadcast_group_mutation(
-                        group_id.to_bytes(),
-                        GroupMutationKind::MembersRemoved,
-                    )
-                    .await;
 
                 // Unsubscribe if this node's identity was removed
                 if let Some(self_pk) = self_identity {

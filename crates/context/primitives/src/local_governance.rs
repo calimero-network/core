@@ -3,7 +3,9 @@
 //! See `docs/context-management/LOCAL-GROUP-GOVERNANCE.md`.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::context::GroupMemberRole;
+use calimero_context_config::types::SignedGroupOpenInvitation;
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use ed25519_dalek::SignatureError;
 use sha2::{Digest, Sha256};
@@ -15,8 +17,11 @@ pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 1;
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
 
-/// Minimal group mutation for local governance (extend as needed).
-#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+/// Group mutation for local governance (signed, gossip-replicated).
+///
+/// Aligns with CLI / contract surfaces where feasible; see
+/// `docs/context-management/LOCAL-GROUP-GOVERNANCE.md`.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
 pub enum GroupOp {
     /// Reserved for tests / padding.
@@ -28,10 +33,71 @@ pub enum GroupOp {
     },
     /// Remove a member.
     MemberRemoved { member: PublicKey },
+    /// Set a member’s role (same as upsert member with new role).
+    MemberRoleSet {
+        member: PublicKey,
+        role: GroupMemberRole,
+    },
+    /// Per-member capability bitmask (`GroupMemberCapability` store).
+    MemberCapabilitySet {
+        member: PublicKey,
+        capabilities: u32,
+    },
+    /// Default capability bitmask for new members.
+    DefaultCapabilitiesSet { capabilities: u32 },
+    /// Update group upgrade policy in [`GroupMetaValue`].
+    UpgradePolicySet { policy: UpgradePolicy },
+    /// Update target application and app key in group metadata.
+    TargetApplicationSet {
+        app_key: [u8; 32],
+        target_application_id: ApplicationId,
+    },
+    /// Register a context index under this group (must match `ContextGroupRef` invariants).
+    ContextRegistered { context_id: ContextId },
+    /// Unregister a context from this group.
+    ContextDetached { context_id: ContextId },
+    /// Default visibility for new contexts (`0` = Open, `1` = Restricted).
+    DefaultVisibilitySet { mode: u8 },
+    /// Per-context visibility and creator pubkey.
+    ContextVisibilitySet {
+        context_id: ContextId,
+        /// `0` = Open, `1` = Restricted.
+        mode: u8,
+        creator: PublicKey,
+    },
+    /// Replace the full allowlist for a restricted context.
+    ContextAllowlistReplaced {
+        context_id: ContextId,
+        members: Vec<PublicKey>,
+    },
+    /// Human-readable alias for a context within the group.
+    /// **Signer:** group admin, or the context creator (must match `GroupContextVisibility.creator`).
+    ContextAliasSet {
+        context_id: ContextId,
+        alias: String,
+    },
+    /// Human-readable alias for a member within the group.
+    MemberAliasSet {
+        member: PublicKey,
+        alias: String,
+    },
+    /// Human-readable alias for the group itself.
+    GroupAliasSet { alias: String },
+    /// Delete the group locally (no registered contexts; same constraints as CLI delete).
+    GroupDelete,
+    /// Update group migration bytes in [`GroupMetaValue`] (admin).
+    GroupMigrationSet {
+        migration: Option<Vec<u8>>,
+    },
+    /// Join a group using an admin-signed open invitation plus joiner proof (see `join_group`).
+    JoinWithInvitationClaim {
+        signed_invitation: SignedGroupOpenInvitation,
+        invitee_signature_hex: String,
+    },
 }
 
 /// Payload that is actually signed (everything except the signature bytes).
-#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignableGroupOp {
     pub version: u8,
     pub group_id: [u8; 32],
@@ -42,7 +108,7 @@ pub struct SignableGroupOp {
 }
 
 /// A signed group operation ready for gossip or storage.
-#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignedGroupOp {
     pub version: u8,
     pub group_id: [u8; 32],

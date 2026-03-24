@@ -148,6 +148,15 @@ impl Message for SyncRequest {
     type Result = ();
 }
 
+#[derive(Debug, Clone)]
+pub struct ApplySignedGroupOpRequest {
+    pub op: crate::local_governance::SignedGroupOp,
+}
+
+impl Message for ApplySignedGroupOpRequest {
+    type Result = eyre::Result<()>;
+}
+
 /// Parameters for executing a state migration during application update.
 ///
 /// When updating a context's application, an optional migration function can be
@@ -215,6 +224,10 @@ pub enum ContextMessage {
     AddGroupMembers {
         request: AddGroupMembersRequest,
         outcome: oneshot::Sender<<AddGroupMembersRequest as Message>::Result>,
+    },
+    ApplySignedGroupOp {
+        request: ApplySignedGroupOpRequest,
+        outcome: oneshot::Sender<<ApplySignedGroupOpRequest as Message>::Result>,
     },
     RemoveGroupMembers {
         request: RemoveGroupMembersRequest,

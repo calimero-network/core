@@ -19,6 +19,7 @@ use either::Either;
 use prometheus_client::registry::Registry;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
+use crate::config::GroupGovernanceMode;
 use crate::metrics::Metrics;
 
 pub mod config;
@@ -59,6 +60,9 @@ pub struct ContextManager {
 
     /// Dedicated group identity keypair, decoupled from the NEAR signer key.
     group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
+
+    /// Whether signed P2P group ops are applied locally (`Local`) or chain is authoritative (`External`).
+    group_governance: GroupGovernanceMode,
 
     /// An in-memory cache of active contexts (`ContextId` -> `ContextMeta`).
     /// This serves as a hot cache to avoid expensive disk I/O for frequently accessed contexts.
@@ -107,6 +111,7 @@ impl ContextManager {
         context_client: ContextClient,
         external_config: ExternalClientConfig,
         group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
+        group_governance: GroupGovernanceMode,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
         Self {
@@ -115,6 +120,7 @@ impl ContextManager {
             context_client,
             external_config,
             group_identity,
+            group_governance,
 
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),

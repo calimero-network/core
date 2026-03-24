@@ -132,11 +132,11 @@ impl RelayerService {
         let client_config = ClientConfig {
             params,
             signer: ClientSigner {
-                relayer: ClientRelayerSigner {
+                relayer: Some(ClientRelayerSigner {
                     url: DEFAULT_RELAYER_URL
                         .parse()
                         .map_err(|e| eyre::eyre!("Failed to parse relayer URL: {e}"))?, // Self-reference for relayer mode
-                },
+                }),
                 local: LocalConfig { protocols },
             },
         };

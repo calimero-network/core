@@ -9,6 +9,7 @@ use calimero_context_config::client::utils::humanize_iter;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::client::ContextClient;
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_context_primitives::messages::{CreateContextRequest, CreateContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
@@ -25,6 +26,7 @@ use tracing::{debug, warn};
 
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
+use crate::config::GroupGovernanceMode;
 use crate::{group_store, ContextManager, ContextMeta};
 
 impl Handler<CreateContextRequest> for ContextManager {
@@ -111,6 +113,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         guard,
                         group_id,
                         alias,
+                        act.group_governance,
                     )
                     .into_actor(act)
                 })
@@ -316,6 +319,7 @@ async fn create_context(
     guard: OwnedMutexGuard<ContextId>,
     group_id: Option<ContextGroupId>,
     alias: Option<String>,
+    group_governance: GroupGovernanceMode,
 ) -> eyre::Result<Hash> {
     let storage = ContextStorage::from(datastore.clone(), context.id);
     // Create private storage (node-local, NOT synchronized)
@@ -478,42 +482,77 @@ async fn create_context(
     // messages (e.g. RemoveGroupMembers), but the window is small and the
     // worst case is a single context associated with a since-removed member.
     if let Some(ref gid) = group_id {
-        // Call contract to register context in the group on-chain.
-        // Derive signing key from the creator's identity_secret.
-        let signing_key_bytes: [u8; 32] = *identity_secret;
-        let mut group_client = context_client.group_client(
-            *gid,
-            signing_key_bytes,
-            group_protocol.clone(),
-            group_network_id.clone(),
-            group_contract_id.clone(),
-        );
-        group_client
-            .register_context_in_group(context.id, None)
-            .await?;
+        match group_governance {
+            GroupGovernanceMode::Local => {
+                let sk = PrivateKey::from(*identity_secret);
+                let bytes = group_store::sign_apply_local_group_op_borsh(
+                    &datastore,
+                    gid,
+                    &sk,
+                    GroupOp::ContextRegistered {
+                        context_id: context.id,
+                    },
+                )?;
+                node_client
+                    .publish_signed_group_op(gid.to_bytes(), bytes)
+                    .await?;
 
-        group_store::register_context_in_group(&datastore, gid, &context.id)?;
+                // Replicate initial visibility so peers always converge: use the group default
+                // when configured, otherwise **Open** (`0`), matching typical UX.
+                let vis_mode = group_store::get_default_visibility(&datastore, gid)?
+                    .unwrap_or(0u8);
+                let bytes_vis = group_store::sign_apply_local_group_op_borsh(
+                    &datastore,
+                    gid,
+                    &sk,
+                    GroupOp::ContextVisibilitySet {
+                        context_id: context.id,
+                        mode: vis_mode,
+                        creator: identity,
+                    },
+                )?;
+                node_client
+                    .publish_signed_group_op(gid.to_bytes(), bytes_vis)
+                    .await?;
+            }
+            GroupGovernanceMode::External => {
+                let signing_key_bytes: [u8; 32] = *identity_secret;
+                let mut group_client = context_client.group_client(
+                    *gid,
+                    signing_key_bytes,
+                    group_protocol.clone(),
+                    group_network_id.clone(),
+                    group_contract_id.clone(),
+                );
+                group_client
+                    .register_context_in_group(context.id, None)
+                    .await?;
 
-        // Write-through: store initial visibility locally so queries work
-        // without waiting for a sync. Matches on-chain behavior where
-        // register_context_in_group creates visibility with group defaults.
-        if let Ok(Some(default_vis_mode)) = group_store::get_default_visibility(&datastore, gid) {
-            let creator_bytes: [u8; 32] = *identity;
-            let _ = group_store::set_context_visibility(
-                &datastore,
-                gid,
-                &context.id,
-                default_vis_mode,
-                creator_bytes,
-            );
-            // Auto-add creator to allowlist for Restricted contexts
-            if default_vis_mode == 1u8 {
-                let _ = group_store::add_to_context_allowlist(
+                group_store::register_context_in_group(&datastore, gid, &context.id)?;
+            }
+        }
+
+        // Write-through for `external` only. Under `local`, visibility is applied via
+        // signed `ContextVisibilitySet` above so gossip peers stay consistent.
+        if group_governance == GroupGovernanceMode::External {
+            if let Ok(Some(default_vis_mode)) = group_store::get_default_visibility(&datastore, gid)
+            {
+                let creator_bytes: [u8; 32] = *identity;
+                let _ = group_store::set_context_visibility(
                     &datastore,
                     gid,
                     &context.id,
-                    &PublicKey::from(creator_bytes),
+                    default_vis_mode,
+                    creator_bytes,
                 );
+                if default_vis_mode == 1u8 {
+                    let _ = group_store::add_to_context_allowlist(
+                        &datastore,
+                        gid,
+                        &context.id,
+                        &PublicKey::from(creator_bytes),
+                    );
+                }
             }
         }
     }
@@ -521,25 +560,41 @@ async fn create_context(
     node_client.subscribe(&context.id).await?;
 
     if let Some(ref gid) = group_id {
-        let _ = node_client
-            .broadcast_group_mutation(
-                gid.to_bytes(),
-                calimero_node_primitives::sync::GroupMutationKind::ContextAttached,
-            )
-            .await;
-
-        if let Some(ref alias_str) = alias {
-            let _ = group_store::set_context_alias(&datastore, gid, &context.id, alias_str);
-
+        if group_governance == GroupGovernanceMode::External {
             let _ = node_client
                 .broadcast_group_mutation(
                     gid.to_bytes(),
-                    calimero_node_primitives::sync::GroupMutationKind::ContextAliasSet {
-                        context_id: *context.id,
-                        alias: alias_str.clone(),
-                    },
+                    calimero_node_primitives::sync::GroupMutationKind::ContextAttached,
                 )
                 .await;
+
+            if let Some(ref alias_str) = alias {
+                let _ = group_store::set_context_alias(&datastore, gid, &context.id, alias_str);
+
+                let _ = node_client
+                    .broadcast_group_mutation(
+                        gid.to_bytes(),
+                        calimero_node_primitives::sync::GroupMutationKind::ContextAliasSet {
+                            context_id: *context.id,
+                            alias: alias_str.clone(),
+                        },
+                    )
+                    .await;
+            }
+        } else if let Some(ref alias_str) = alias {
+            let sk = PrivateKey::from(*identity_secret);
+            let bytes = group_store::sign_apply_local_group_op_borsh(
+                &datastore,
+                gid,
+                &sk,
+                GroupOp::ContextAliasSet {
+                    context_id: context.id,
+                    alias: alias_str.clone(),
+                },
+            )?;
+            node_client
+                .publish_signed_group_op(gid.to_bytes(), bytes)
+                .await?;
         }
     }
 

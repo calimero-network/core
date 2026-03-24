@@ -29,7 +29,7 @@ transport! {
 transport! {
     pub type AnyTransport = (
         LocalTransports,
-        relayer::RelayerTransport
+        Option<relayer::RelayerTransport>
     );
 }
 
@@ -47,8 +47,10 @@ impl<T: Transport> Client<T> {
 impl Client<AnyTransport> {
     #[must_use]
     pub fn from_config(config: &ClientConfig) -> Self {
-        let relayer = relayer::RelayerTransport::new(&relayer::RelayerConfig {
-            url: config.signer.relayer.url.clone(),
+        let relayer = config.signer.relayer.as_ref().map(|r| {
+            relayer::RelayerTransport::new(&relayer::RelayerConfig {
+                url: r.url.clone(),
+            })
         });
 
         let local = Self::from_local_config(&config).expect("validation error");
@@ -234,4 +236,26 @@ pub trait Environment<'a, T> {
 
     fn query(client: CallClient<'a, T>) -> Self::Query;
     fn mutate(client: CallClient<'a, T>) -> Self::Mutate;
+}
+
+// `client` is behind the `client` feature; run: `cargo test -p calimero-context-config --features client`
+#[cfg(all(test, feature = "client"))]
+mod from_config_tests {
+    use super::Client;
+    use crate::client::config::{ClientConfig, ClientSigner, LocalConfig};
+
+    #[test]
+    fn from_config_accepts_missing_relayer_signer() {
+        let config = ClientConfig {
+            params: Default::default(),
+            signer: ClientSigner {
+                relayer: None,
+                local: LocalConfig {
+                    protocols: Default::default(),
+                },
+            },
+        };
+
+        let _ = Client::from_config(&config);
+    }
 }

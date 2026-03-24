@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`merod init --group-governance local`** no longer writes a **relayer** URL in the context client signer config (the field is optional in serde). Existing nodes and configs are unchanged; only new **`local`** inits omit it.
+
 ### Added
 
 - **Automatic nested CRDT support** - Applications can now use natural nested structures without state divergence
