@@ -92,14 +92,14 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                 })?);
                 for identity in &members {
                     let op = GroupOp::MemberRemoved { member: *identity };
-                    let bytes = group_store::sign_apply_local_group_op_borsh(
+                    let (bytes, delta_id, parent_ids) = group_store::sign_apply_local_group_op_borsh(
                         &datastore,
                         &group_id,
                         &sk,
                         op,
                     )?;
                     node_client
-                        .publish_signed_group_op(group_id.to_bytes(), bytes)
+                        .publish_signed_group_op(group_id.to_bytes(), delta_id, parent_ids, bytes)
                         .await?;
                 }
                 info!(

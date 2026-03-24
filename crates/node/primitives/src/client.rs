@@ -224,6 +224,8 @@ impl NodeClient {
     pub async fn publish_signed_group_op(
         &self,
         group_id: [u8; 32],
+        delta_id: [u8; 32],
+        parent_ids: Vec<[u8; 32]>,
         signed_op_borsh: Vec<u8>,
     ) -> eyre::Result<()> {
         if signed_op_borsh.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
@@ -246,7 +248,10 @@ impl NodeClient {
             return Ok(());
         }
 
-        let payload = BroadcastMessage::SignedGroupOpV1 {
+        let payload = BroadcastMessage::GroupGovernanceDelta {
+            group_id,
+            delta_id,
+            parent_ids,
             payload: signed_op_borsh,
         };
         let payload_bytes = borsh::to_vec(&payload)?;

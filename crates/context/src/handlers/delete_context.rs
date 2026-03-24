@@ -131,7 +131,7 @@ async fn delete_context(
                      cannot publish local detach op"
                 )
             })?;
-        let bytes = group_store::sign_apply_local_group_op_borsh(
+        let (bytes, delta_id, parent_ids) = group_store::sign_apply_local_group_op_borsh(
             &datastore,
             &group_id,
             &PrivateKey::from(sk),
@@ -140,7 +140,7 @@ async fn delete_context(
             },
         )?;
         node_client
-            .publish_signed_group_op(group_id.to_bytes(), bytes)
+            .publish_signed_group_op(group_id.to_bytes(), delta_id, parent_ids, bytes)
             .await?;
         let _ = node_client
             .broadcast_group_mutation(

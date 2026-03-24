@@ -465,7 +465,7 @@ async fn create_context(
     // worst case is a single context associated with a since-removed member.
     if let Some(ref gid) = group_id {
         let sk = PrivateKey::from(*identity_secret);
-        let bytes = group_store::sign_apply_local_group_op_borsh(
+        let (bytes, delta_id, parent_ids) = group_store::sign_apply_local_group_op_borsh(
             &datastore,
             gid,
             &sk,
@@ -474,11 +474,11 @@ async fn create_context(
             },
         )?;
         node_client
-            .publish_signed_group_op(gid.to_bytes(), bytes)
+            .publish_signed_group_op(gid.to_bytes(), delta_id, parent_ids, bytes)
             .await?;
 
         let vis_mode = group_store::get_default_visibility(&datastore, gid)?.unwrap_or(0u8);
-        let bytes_vis = group_store::sign_apply_local_group_op_borsh(
+        let (bytes_vis, delta_id_vis, parent_ids_vis) = group_store::sign_apply_local_group_op_borsh(
             &datastore,
             gid,
             &sk,
@@ -489,7 +489,7 @@ async fn create_context(
             },
         )?;
         node_client
-            .publish_signed_group_op(gid.to_bytes(), bytes_vis)
+            .publish_signed_group_op(gid.to_bytes(), delta_id_vis, parent_ids_vis, bytes_vis)
             .await?;
     }
 
@@ -498,7 +498,7 @@ async fn create_context(
     if let Some(ref gid) = group_id {
         if let Some(ref alias_str) = alias {
             let sk = PrivateKey::from(*identity_secret);
-            let bytes = group_store::sign_apply_local_group_op_borsh(
+            let (bytes, delta_id, parent_ids) = group_store::sign_apply_local_group_op_borsh(
                 &datastore,
                 gid,
                 &sk,
@@ -508,7 +508,7 @@ async fn create_context(
                 },
             )?;
             node_client
-                .publish_signed_group_op(gid.to_bytes(), bytes)
+                .publish_signed_group_op(gid.to_bytes(), delta_id, parent_ids, bytes)
                 .await?;
         }
     }

@@ -81,14 +81,14 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                         "local group governance requires a signing key for the requester"
                     )
                 })?);
-                let bytes = group_store::sign_apply_local_group_op_borsh(
+                let (bytes, delta_id, parent_ids) = group_store::sign_apply_local_group_op_borsh(
                     &datastore,
                     &group_id,
                     &sk,
                     GroupOp::GroupDelete,
                 )?;
                 node_client
-                    .publish_signed_group_op(group_id_bytes, bytes)
+                    .publish_signed_group_op(group_id_bytes, delta_id, parent_ids, bytes)
                     .await?;
 
                 let _ = node_client

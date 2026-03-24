@@ -105,7 +105,7 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
                     )
                 })?);
                 let members = merged_allowlist.clone();
-                let bytes = group_store::sign_apply_local_group_op_borsh(
+                let (bytes, delta_id, parent_ids) = group_store::sign_apply_local_group_op_borsh(
                     &datastore,
                     &group_id,
                     &sk,
@@ -115,7 +115,7 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
                     },
                 )?;
                 node_client
-                    .publish_signed_group_op(group_id.to_bytes(), bytes)
+                    .publish_signed_group_op(group_id.to_bytes(), delta_id, parent_ids, bytes)
                     .await?;
 
                 let members_raw: Vec<[u8; 32]> = merged_allowlist.iter().map(|pk| **pk).collect();

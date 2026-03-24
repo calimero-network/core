@@ -2192,6 +2192,13 @@ impl SyncManager {
                 // HashComparison session. Log and ignore.
                 warn!("Received EntityPush outside of HashComparison session, ignoring");
             }
+            InitPayload::GroupDeltaRequest { group_id, delta_id } => {
+                debug!(
+                    group_id = %hex::encode(group_id),
+                    delta_id = %hex::encode(delta_id),
+                    "Received GroupDeltaRequest — not yet implemented"
+                );
+            }
         };
 
         Ok(Some(()))

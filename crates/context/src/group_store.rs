@@ -557,13 +557,14 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
 }
 
 /// Sign the next monotonic [`SignedGroupOp`] for `signer_sk`, apply via [`apply_local_signed_group_op`],
-/// and return `borsh` bytes for [`calimero_node_primitives::client::NodeClient::publish_signed_group_op`].
+/// and return `(borsh_bytes, delta_id, parent_ids)` for
+/// [`calimero_node_primitives::client::NodeClient::publish_signed_group_op`].
 pub fn sign_apply_local_group_op_borsh(
     store: &Store,
     group_id: &ContextGroupId,
     signer_sk: &PrivateKey,
     op: GroupOp,
-) -> EyreResult<Vec<u8>> {
+) -> EyreResult<(Vec<u8>, [u8; 32], Vec<[u8; 32]>)> {
     let last = get_local_gov_nonce(store, group_id, &signer_sk.public_key())?.unwrap_or(0);
     let nonce = last
         .checked_add(1)
@@ -572,8 +573,13 @@ pub fn sign_apply_local_group_op_borsh(
         .map(|h| h.dag_heads.clone())
         .unwrap_or_default();
     let signed = SignedGroupOp::sign(signer_sk, group_id.to_bytes(), parent_hashes, nonce, op)?;
+    let delta_id = signed
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    let parent_ids = signed.parent_op_hashes.clone();
     apply_local_signed_group_op(store, &signed)?;
-    borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))
+    let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+    Ok((bytes, delta_id, parent_ids))
 }
 
 pub fn get_group_member_role(

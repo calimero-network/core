@@ -714,6 +714,62 @@ impl Handler<NetworkEvent> for NodeManager {
                             .into_actor(self),
                         );
                     }
+                    BroadcastMessage::GroupGovernanceDelta {
+                        group_id,
+                        delta_id: _,
+                        parent_ids: _,
+                        payload,
+                    } => {
+                        use calimero_context_primitives::local_governance::SignedGroupOp;
+                        use calimero_node_primitives::sync::MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES;
+
+                        if payload.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
+                            warn!(len = payload.len(), "oversized GroupGovernanceDelta payload");
+                            return;
+                        }
+
+                        let op: SignedGroupOp = match borsh::from_slice(&payload) {
+                            Ok(op) => op,
+                            Err(err) => {
+                                warn!(%err, "failed to decode GroupGovernanceDelta payload");
+                                return;
+                            }
+                        };
+
+                        if op.group_id != group_id {
+                            warn!("GroupGovernanceDelta group_id mismatch with topic");
+                            return;
+                        }
+
+                        if let Err(err) = op.verify_signature() {
+                            warn!(%err, "GroupGovernanceDelta signature verification failed");
+                            return;
+                        }
+
+                        let context_client = self.clients.context.clone();
+                        let _ignored = ctx.spawn(
+                            async move {
+                                if let Err(err) =
+                                    context_client.apply_signed_group_op(op.clone()).await
+                                {
+                                    warn!(?err, %source, "failed to apply governance delta");
+                                }
+                            }
+                            .into_actor(self),
+                        );
+                    }
+                    BroadcastMessage::GroupStateHeartbeat {
+                        group_id,
+                        dag_heads,
+                        member_count: _,
+                    } => {
+                        debug!(
+                            group_id = hex::encode(group_id),
+                            heads = dag_heads.len(),
+                            %source,
+                            "received group state heartbeat"
+                        );
+                    }
                     _ => {
                         // Future message types - log and ignore
                         debug!(?message, "Received unknown broadcast message type");
