@@ -156,7 +156,7 @@ async fn network_message_signed_group_op_applies_via_node_manager() {
     let op = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes,
-        None,
+        vec![],
         1,
         GroupOp::MemberAdded {
             member: new_member,

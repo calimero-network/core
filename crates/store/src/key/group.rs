@@ -1117,7 +1117,7 @@ impl Debug for GroupOpHead {
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupOpHeadValue {
     pub sequence: u64,
-    pub content_hash: [u8; 32],
+    pub dag_heads: Vec<[u8; 32]>,
 }
 
 /// Stored against [`GroupMeta`]. Captures the immutable + mutable metadata of a

@@ -87,7 +87,7 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
     let op1 = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes,
-        None,
+        vec![],
         1,
         GroupOp::MemberAdded {
             member: new_member,
@@ -105,7 +105,7 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
     assert!(group_store::check_group_membership(&store_a, &gid, &new_member).unwrap());
     assert!(group_store::check_group_membership(&store_b, &gid, &new_member).unwrap());
 
-    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, None, 2, GroupOp::Noop).expect("sign op2");
+    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).expect("sign op2");
     let payload2 = borsh_to_vec(&op2).expect("borsh encode op2");
 
     apply_wire_payload(&store_a, &payload2);
@@ -149,7 +149,7 @@ fn two_nodes_converge_on_target_application_and_migration() {
     let op1 = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes,
-        None,
+        vec![],
         1,
         GroupOp::TargetApplicationSet {
             app_key: [0x11; 32],
@@ -161,7 +161,7 @@ fn two_nodes_converge_on_target_application_and_migration() {
     let op2 = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes,
-        None,
+        vec![],
         2,
         GroupOp::GroupMigrationSet {
             migration: Some(b"v1-migration".to_vec()),
@@ -238,7 +238,7 @@ fn two_nodes_converge_on_join_with_invitation_claim() {
     let op = SignedGroupOp::sign(
         &joiner_sk,
         gid_bytes,
-        None,
+        vec![],
         1,
         GroupOp::JoinWithInvitationClaim {
             signed_invitation,
@@ -291,7 +291,7 @@ fn two_nodes_converge_on_context_visibility_after_create() {
     let op1 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
         1,
         GroupOp::ContextRegistered { context_id },
     )
@@ -299,7 +299,7 @@ fn two_nodes_converge_on_context_visibility_after_create() {
     let op2 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
         2,
         GroupOp::ContextVisibilitySet {
             context_id,
@@ -358,7 +358,7 @@ fn two_nodes_converge_on_context_visibility_without_group_default() {
     let op1 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
         1,
         GroupOp::ContextRegistered { context_id },
     )
@@ -366,7 +366,7 @@ fn two_nodes_converge_on_context_visibility_without_group_default() {
     let op2 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
         2,
         GroupOp::ContextVisibilitySet {
             context_id,
@@ -425,7 +425,7 @@ fn two_nodes_converge_on_context_alias_as_creator() {
     let op1 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
         1,
         GroupOp::ContextRegistered { context_id },
     )
@@ -433,7 +433,7 @@ fn two_nodes_converge_on_context_alias_as_creator() {
     let op2 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
         2,
         GroupOp::ContextVisibilitySet {
             context_id,
@@ -445,7 +445,7 @@ fn two_nodes_converge_on_context_alias_as_creator() {
     let op3 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
         3,
         GroupOp::ContextAliasSet {
             context_id,
@@ -495,7 +495,7 @@ fn op_log_records_applied_ops_and_head_advances() {
     let op1 = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes,
-        None,
+        vec![],
         1,
         GroupOp::MemberAdded {
             member: new_member,
@@ -508,7 +508,7 @@ fn op_log_records_applied_ops_and_head_advances() {
 
     let head = get_op_head(&store, &gid).unwrap().expect("head after op1");
     assert_eq!(head.sequence, 1);
-    assert_eq!(head.content_hash, op1.content_hash().unwrap());
+    assert!(head.dag_heads.contains(&op1.content_hash().unwrap()));
 
     let log = read_op_log_after(&store, &gid, 0, 100).unwrap();
     assert_eq!(log.len(), 1);
@@ -516,7 +516,7 @@ fn op_log_records_applied_ops_and_head_advances() {
     let decoded: SignedGroupOp = borsh::from_slice(&log[0].1).unwrap();
     assert_eq!(decoded.nonce, op1.nonce);
 
-    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, None, 2, GroupOp::Noop).expect("sign op2");
+    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).expect("sign op2");
     apply_local_signed_group_op(&store, &op2).unwrap();
 
     let head2 = get_op_head(&store, &gid).unwrap().expect("head after op2");
@@ -542,7 +542,7 @@ fn duplicate_op_is_idempotent() {
     save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
     add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
 
-    let op = SignedGroupOp::sign(&admin_sk, gid_bytes, None, 1, GroupOp::Noop).expect("sign op");
+    let op = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 1, GroupOp::Noop).expect("sign op");
     let payload = borsh_to_vec(&op).expect("encode");
 
     apply_wire_payload(&store, &payload);
@@ -576,11 +576,11 @@ fn offline_node_replays_missed_ops_from_log() {
     let member2 = PrivateKey::random(&mut rng).public_key();
 
     let op1 = SignedGroupOp::sign(
-        &admin_sk, gid_bytes, None, 1,
+        &admin_sk, gid_bytes, vec![], 1,
         GroupOp::MemberAdded { member: member1, role: GroupMemberRole::Member },
     ).unwrap();
     let op2 = SignedGroupOp::sign(
-        &admin_sk, gid_bytes, None, 2,
+        &admin_sk, gid_bytes, vec![], 2,
         GroupOp::MemberAdded { member: member2, role: GroupMemberRole::Member },
     ).unwrap();
 

@@ -177,11 +177,11 @@ fn set_op_head(
     store: &Store,
     group_id: &ContextGroupId,
     sequence: u64,
-    content_hash: [u8; 32],
+    dag_heads: Vec<[u8; 32]>,
 ) -> EyreResult<()> {
     let mut handle = store.handle();
     let key = GroupOpHead::new(group_id.to_bytes());
-    handle.put(&key, &GroupOpHeadValue { sequence, content_hash })?;
+    handle.put(&key, &GroupOpHeadValue { sequence, dag_heads })?;
     Ok(())
 }
 
@@ -540,10 +540,18 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         .content_hash()
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
     let head = get_op_head(store, &group_id)?;
-    let next_seq = head.map_or(1, |h| h.sequence.saturating_add(1));
+    let next_seq = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
     let op_bytes = borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh: {e}"))?;
     append_op_log_entry(store, &group_id, next_seq, &op_bytes)?;
-    set_op_head(store, &group_id, next_seq, content_hash)?;
+
+    let mut new_heads: Vec<[u8; 32]> = head
+        .map(|h| h.dag_heads)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|h| !op.parent_op_hashes.contains(h))
+        .collect();
+    new_heads.push(content_hash);
+    set_op_head(store, &group_id, next_seq, new_heads)?;
 
     Ok(())
 }
@@ -560,8 +568,10 @@ pub fn sign_apply_local_group_op_borsh(
     let nonce = last
         .checked_add(1)
         .ok_or_else(|| eyre::eyre!("group governance nonce overflow"))?;
-    let parent_hash = get_op_head(store, group_id)?.map(|h| h.content_hash);
-    let signed = SignedGroupOp::sign(signer_sk, group_id.to_bytes(), parent_hash, nonce, op)?;
+    let parent_hashes = get_op_head(store, group_id)?
+        .map(|h| h.dag_heads.clone())
+        .unwrap_or_default();
+    let signed = SignedGroupOp::sign(signer_sk, group_id.to_bytes(), parent_hashes, nonce, op)?;
     apply_local_signed_group_op(store, &signed)?;
     borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))
 }
@@ -1713,7 +1723,7 @@ mod tests {
         let op1 = SignedGroupOp::sign(
             &admin_sk,
             gid_bytes,
-            None,
+            vec![],
             1,
             GroupOp::MemberAdded {
                 member: member_pk,
@@ -1727,14 +1737,14 @@ mod tests {
         let op_dup_nonce = SignedGroupOp::sign(
             &admin_sk,
             gid_bytes,
-            None,
+            vec![],
             1,
             GroupOp::Noop,
         )
         .unwrap();
         assert!(apply_local_signed_group_op(&store, &op_dup_nonce).is_err());
 
-        let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, None, 2, GroupOp::Noop).unwrap();
+        let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).unwrap();
         apply_local_signed_group_op(&store, &op2).unwrap();
 
         let non_admin_sk = PrivateKey::random(&mut rng);
@@ -1748,7 +1758,7 @@ mod tests {
         let op_bad = SignedGroupOp::sign(
             &non_admin_sk,
             gid_bytes,
-            None,
+            vec![],
             1,
             GroupOp::MemberAdded {
                 member: PrivateKey::random(&mut rng).public_key(),
@@ -1781,7 +1791,7 @@ mod tests {
         let op = SignedGroupOp::sign(
             &member_sk,
             gid_bytes,
-            None,
+            vec![],
             1,
             GroupOp::MemberAliasSet {
                 member: member_pk,
@@ -1799,7 +1809,7 @@ mod tests {
         let op_bad = SignedGroupOp::sign(
             &other_sk,
             gid_bytes,
-            None,
+            vec![],
             1,
             GroupOp::MemberAliasSet {
                 member: member_pk,
@@ -1812,7 +1822,7 @@ mod tests {
         let admin_op = SignedGroupOp::sign(
             &admin_sk,
             gid_bytes,
-            None,
+            vec![],
             1,
             GroupOp::MemberAliasSet {
                 member: member_pk,
@@ -1859,7 +1869,7 @@ mod tests {
         let op_reg = SignedGroupOp::sign(
             &creator_sk,
             gid_bytes,
-            None,
+            vec![],
             1,
             GroupOp::ContextRegistered {
                 context_id,
@@ -1873,7 +1883,7 @@ mod tests {
         let op_alias = SignedGroupOp::sign(
             &creator_sk,
             gid_bytes,
-            None,
+            vec![],
             2,
             GroupOp::ContextAliasSet {
                 context_id,
@@ -1898,7 +1908,7 @@ mod tests {
         let op_bad = SignedGroupOp::sign(
             &stranger_sk,
             gid_bytes,
-            None,
+            vec![],
             1,
             GroupOp::ContextAliasSet {
                 context_id,
@@ -1911,7 +1921,7 @@ mod tests {
         let op_admin = SignedGroupOp::sign(
             &admin_sk,
             gid_bytes,
-            None,
+            vec![],
             1,
             GroupOp::ContextAliasSet {
                 context_id,
@@ -1948,7 +1958,7 @@ mod tests {
         let op_caps = SignedGroupOp::sign(
             &admin_sk,
             gid_bytes,
-            None,
+            vec![],
             1,
             GroupOp::MemberCapabilitySet {
                 member: member_m,
@@ -1965,7 +1975,7 @@ mod tests {
         let op_policy = SignedGroupOp::sign(
             &admin_sk,
             gid_bytes,
-            None,
+            vec![],
             2,
             GroupOp::UpgradePolicySet {
                 policy: UpgradePolicy::Automatic,
@@ -1981,7 +1991,7 @@ mod tests {
         let op_del = SignedGroupOp::sign(
             &admin_sk,
             gid_bytes,
-            None,
+            vec![],
             3,
             GroupOp::GroupDelete,
         )
@@ -2009,7 +2019,7 @@ mod tests {
         let op_bad = SignedGroupOp::sign(
             &admin_sk,
             gid_bytes,
-            None,
+            vec![],
             1,
             GroupOp::MemberRemoved { member: admin_pk },
         )
