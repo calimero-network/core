@@ -5,6 +5,7 @@ shared membership, and propagate application upgrades across all contexts at onc
 
 **If you're looking for:**
 - [Local group governance (no chain)](./LOCAL-GROUP-GOVERNANCE.md) · [Migration](./LOCAL-GROUP-GOVERNANCE-MIGRATION.md) · `merod init --group-governance local` (no NEAR protocol block or relayer signer in generated context client config)
+- [R3 roadmap](./LOCAL-GROUP-GOVERNANCE.md#11-removing-blockchain-code-from-the-node-full-removal) — staging parity (§11.7), downstream inventory (§11.8), minimal build sketch (§11.9), CI guardrail (§11.10); **§11 quick links** at top of that section
 - [What groups are and why they exist](#what-are-context-groups)
 - [Creating and managing groups (CLI)](#cli-reference)
 - [HTTP API reference](#http-api)

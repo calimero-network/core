@@ -190,6 +190,8 @@ After a valid `SignedGroupOp` is applied, update **`group_store`** (and related 
 
 This is a **separate track** from implementing **`local`** governance: first **parity** (groups + any remaining context-config flows that still hit NEAR), then **delete** dead paths and **trim** dependencies. Do **not** remove chain code until **`local`** is validated for the product surfaces you support.
 
+**§11 quick links:** [11.4 Preconditions](#114-preconditions-before-r3-delete) · [11.7 Staging parity](#117-staging-parity-pass-product) · [11.8 Downstream](#118-downstream-inventory-r3) · [11.9 Minimal build](#119-minimal-build-sketch-r3) · [11.10 CI guardrail](#1110-ci-guardrail-placeholder)
+
 ### 11.1 Target state
 
 - **No** NEAR JSON-RPC / relayer calls from **`merod`** for normal operation in the supported deployment profile.
