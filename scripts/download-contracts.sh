@@ -1,6 +1,6 @@
 set -e
 
-TAG=${CALIMERO_CONTRACTS_VERSION:-0.5.0}
+TAG=${CALIMERO_CONTRACTS_VERSION:-latest}
 OUTPUT_DIR=${CALIMERO_CONTRACTS_DIR:-contracts}
 
 REPO_OWNER="calimero-network"
@@ -28,6 +28,7 @@ mkdir -p "$OUTPUT_DIR"
 
 echo "$ASSET_URLS" | while read -r ASSET_URL; do
   ARTIFACT_NAME=$(basename "$ASSET_URL" .tar.gz)
+  ARTIFACT_NAME="${ARTIFACT_NAME%-contracts}"
 
   ARTIFACT_DIR="$OUTPUT_DIR/$ARTIFACT_NAME"
 
