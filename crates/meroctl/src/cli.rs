@@ -186,7 +186,6 @@ impl RootCommand {
             }
 
             // Check if it's a local node at <home>/<node>
-            let node_path = self.args.home.join(node);
             let config = load_config(&self.args.home, node).await?;
             let multiaddr = fetch_multiaddr(&config)?;
             let url = multiaddr_to_url(&multiaddr, "")?;

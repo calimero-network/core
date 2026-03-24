@@ -24,6 +24,8 @@ use tracing::{debug, trace, warn};
 
 use super::NodeClient;
 
+const MAX_ERROR_BODY_LEN: usize = 256;
+
 impl NodeClient {
     pub fn get_application(
         &self,
@@ -386,7 +388,7 @@ impl NodeClient {
                 .await
                 .unwrap_or_else(|_| "<unreadable body>".to_owned());
             // Truncate to avoid leaking sensitive data that may appear in error responses.
-            let truncated: String = body.chars().take(256).collect();
+            let truncated: String = body.chars().take(MAX_ERROR_BODY_LEN).collect();
             eyre::bail!(
                 "Registry returned HTTP {} for {}: {}",
                 status,

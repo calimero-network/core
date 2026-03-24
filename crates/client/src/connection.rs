@@ -225,7 +225,7 @@ where
     /// If stored tokens exist they are returned directly.  If no tokens are found,
     /// **this method triggers a full browser-based authentication flow** to obtain fresh
     /// tokens — callers should be aware of this side effect (it may open a browser window).
-    async fn load_auth_header(&self, requires_auth: bool) -> Result<Option<String>> {
+    async fn ensure_auth_header(&self, requires_auth: bool) -> Result<Option<String>> {
         if !requires_auth {
             return Ok(None);
         }
@@ -276,7 +276,7 @@ where
 
         loop {
             // Load a fresh auth header on EVERY iteration so retries use up-to-date tokens.
-            let auth_header = self.load_auth_header(requires_auth).await?;
+            let auth_header = self.ensure_auth_header(requires_auth).await?;
 
             let response = request_builder(auth_header).await?;
 
@@ -532,6 +532,12 @@ mod tests {
     fn test_invalid_json_returns_status() {
         let s = reqwest::StatusCode::INTERNAL_SERVER_ERROR;
         assert_eq!(extract_error_message("not valid json {", s), "HTTP 500");
+    }
+
+    #[test]
+    fn test_plain_text_body_returns_status() {
+        let s = reqwest::StatusCode::SERVICE_UNAVAILABLE;
+        assert_eq!(extract_error_message("Service unavailable", s), "HTTP 503");
     }
 
     #[test]
