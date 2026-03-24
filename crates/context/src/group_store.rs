@@ -15,13 +15,13 @@ use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupContextAlias,
     GroupContextAllowlist, GroupContextIndex, GroupContextLastMigration,
     GroupContextLastMigrationValue, GroupContextVisibility, GroupContextVisibilityValue,
-    GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis, GroupDefaultVisValue, GroupLocalGovNonce,
-    GroupMember, GroupMemberAlias, GroupMemberCapability, GroupMemberCapabilityValue, GroupMeta,
-    GroupMetaValue, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus,
-    GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
-    GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
-    GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_PREFIX,
-    GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
+    GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis, GroupDefaultVisValue,
+    GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
+    GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupSigningKey, GroupSigningKeyValue,
+    GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
+    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
+    GROUP_CONTEXT_VISIBILITY_PREFIX, GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
+    GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -255,7 +255,8 @@ fn apply_join_with_invitation_claim(
     let inv_bytes = borsh::to_vec(inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;
     let inv_hash = Sha256::digest(&inv_bytes);
     let inv_sig_hex = signed_invitation.inviter_signature.trim_start_matches("0x");
-    let inv_sig = hex::decode(inv_sig_hex).map_err(|e| eyre::eyre!("inviter signature hex: {e}"))?;
+    let inv_sig =
+        hex::decode(inv_sig_hex).map_err(|e| eyre::eyre!("inviter signature hex: {e}"))?;
     let inv_sig_bytes: [u8; 64] = inv_sig
         .try_into()
         .map_err(|_| eyre::eyre!("inviter signature must be 64 bytes"))?;
@@ -290,6 +291,14 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     op.verify_signature()
         .map_err(|e| eyre::eyre!("signed group op: {e}"))?;
     let group_id = ContextGroupId::from(op.group_id);
+
+    // Reject ops for deleted/unknown groups to prevent replay attacks after deletion.
+    // After a group is deleted, nonce records are cleared, so without this check an
+    // old op with nonce=1 would pass since unwrap_or(0) makes last=0 and 1 > 0.
+    if load_group_meta(store, &group_id)?.is_none() {
+        bail!("group '{group_id:?}' does not exist or was deleted");
+    }
+
     let last = get_local_gov_nonce(store, &group_id, &op.signer)?.unwrap_or(0);
     if op.nonce <= last {
         bail!(
@@ -315,7 +324,10 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             ensure_not_last_admin_demotion(store, &group_id, member, role)?;
             add_group_member(store, &group_id, member, role.clone())?;
         }
-        GroupOp::MemberCapabilitySet { member, capabilities } => {
+        GroupOp::MemberCapabilitySet {
+            member,
+            capabilities,
+        } => {
             require_group_admin(store, &group_id, &op.signer)?;
             set_member_capability(store, &group_id, member, *capabilities)?;
         }
@@ -348,9 +360,7 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 &op.signer,
                 MemberCapabilities::CAN_CREATE_CONTEXT,
             )? {
-                bail!(
-                    "only group admin or members with CAN_CREATE_CONTEXT can register a context"
-                );
+                bail!("only group admin or members with CAN_CREATE_CONTEXT can register a context");
             }
             register_context_in_group(store, &group_id, context_id)?;
         }
@@ -386,7 +396,10 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 }
             }
         }
-        GroupOp::ContextAllowlistReplaced { context_id, members } => {
+        GroupOp::ContextAllowlistReplaced {
+            context_id,
+            members,
+        } => {
             let is_admin = is_group_admin(store, &group_id, &op.signer)?;
             if !is_admin {
                 if let Some((_, creator_bytes)) =
@@ -1933,6 +1946,7 @@ mod tests {
         let gid_bytes = gid.to_bytes();
         let admin_sk = PrivateKey::random(&mut rng);
         let admin_pk = admin_sk.public_key();
+        save_group_meta(&store, &gid, &test_meta()).unwrap();
         add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
 
         let member_pk = PrivateKey::random(&mut rng).public_key();
@@ -1951,14 +1965,8 @@ mod tests {
         apply_local_signed_group_op(&store, &op1).unwrap();
         assert!(check_group_membership(&store, &gid, &member_pk).unwrap());
 
-        let op_dup_nonce = SignedGroupOp::sign(
-            &admin_sk,
-            gid_bytes,
-            None,
-            1,
-            GroupOp::Noop,
-        )
-        .unwrap();
+        let op_dup_nonce =
+            SignedGroupOp::sign(&admin_sk, gid_bytes, None, 1, GroupOp::Noop).unwrap();
         assert!(apply_local_signed_group_op(&store, &op_dup_nonce).is_err());
 
         let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, None, 2, GroupOp::Noop).unwrap();
@@ -2018,7 +2026,9 @@ mod tests {
         .unwrap();
         apply_local_signed_group_op(&store, &op).unwrap();
         assert_eq!(
-            get_member_alias(&store, &gid, &member_pk).unwrap().as_deref(),
+            get_member_alias(&store, &gid, &member_pk)
+                .unwrap()
+                .as_deref(),
             Some("alice")
         );
 
@@ -2049,7 +2059,9 @@ mod tests {
         .unwrap();
         apply_local_signed_group_op(&store, &admin_op).unwrap();
         assert_eq!(
-            get_member_alias(&store, &gid, &member_pk).unwrap().as_deref(),
+            get_member_alias(&store, &gid, &member_pk)
+                .unwrap()
+                .as_deref(),
             Some("carol")
         );
     }
@@ -2088,9 +2100,7 @@ mod tests {
             gid_bytes,
             None,
             1,
-            GroupOp::ContextRegistered {
-                context_id,
-            },
+            GroupOp::ContextRegistered { context_id },
         )
         .unwrap();
         apply_local_signed_group_op(&store, &op_reg).unwrap();
@@ -2110,7 +2120,9 @@ mod tests {
         .unwrap();
         apply_local_signed_group_op(&store, &op_alias).unwrap();
         assert_eq!(
-            get_context_alias(&store, &gid, &context_id).unwrap().as_deref(),
+            get_context_alias(&store, &gid, &context_id)
+                .unwrap()
+                .as_deref(),
             Some("from-creator")
         );
 
@@ -2148,7 +2160,9 @@ mod tests {
         .unwrap();
         apply_local_signed_group_op(&store, &op_admin).unwrap();
         assert_eq!(
-            get_context_alias(&store, &gid, &context_id).unwrap().as_deref(),
+            get_context_alias(&store, &gid, &context_id)
+                .unwrap()
+                .as_deref(),
             Some("from-admin")
         );
     }
@@ -2185,7 +2199,9 @@ mod tests {
         .unwrap();
         apply_local_signed_group_op(&store, &op_caps).unwrap();
         assert_eq!(
-            get_member_capability(&store, &gid, &member_m).unwrap().unwrap(),
+            get_member_capability(&store, &gid, &member_m)
+                .unwrap()
+                .unwrap(),
             0x7
         );
 
@@ -2201,18 +2217,15 @@ mod tests {
         .unwrap();
         apply_local_signed_group_op(&store, &op_policy).unwrap();
         assert_eq!(
-            load_group_meta(&store, &gid).unwrap().unwrap().upgrade_policy,
+            load_group_meta(&store, &gid)
+                .unwrap()
+                .unwrap()
+                .upgrade_policy,
             UpgradePolicy::Automatic
         );
 
-        let op_del = SignedGroupOp::sign(
-            &admin_sk,
-            gid_bytes,
-            None,
-            3,
-            GroupOp::GroupDelete,
-        )
-        .unwrap();
+        let op_del =
+            SignedGroupOp::sign(&admin_sk, gid_bytes, None, 3, GroupOp::GroupDelete).unwrap();
         apply_local_signed_group_op(&store, &op_del).unwrap();
         assert!(load_group_meta(&store, &gid).unwrap().is_none());
     }

@@ -99,12 +99,14 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
         let context_client = self.context_client.clone();
         let node_client = self.node_client.clone();
 
-        let protocol = "near".to_owned();
-        let params = match self.external_config.params.get("near") {
-            Some(p) => p.clone(),
-            None => {
-                return ActorResponse::reply(Err(eyre::eyre!("no 'near' protocol config")));
-            }
+        let near_params = match group_governance {
+            GroupGovernanceMode::External => match self.external_config.params.get("near") {
+                Some(p) => Some(p.clone()),
+                None => {
+                    return ActorResponse::reply(Err(eyre::eyre!("no 'near' protocol config")));
+                }
+            },
+            GroupGovernanceMode::Local => None,
         };
 
         ActorResponse::r#async(
@@ -132,27 +134,45 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                 group_store::register_context_in_group(&datastore, &group_id, &context_id)?;
 
                 // Ensure we have context config locally.
-                // If the context is unknown, build config from protocol params
-                // and fetch the proxy contract so sync_context_config can
-                // bootstrap the context from on-chain state.
-                let config = if !context_client.has_context(&context_id)? {
-                    let mut external_config = ContextConfigParams {
-                        protocol: protocol.clone().into(),
-                        network_id: params.network.clone().into(),
-                        contract_id: params.contract_id.clone().into(),
-                        proxy_contract: "".into(),
-                        application_revision: 0,
-                        members_revision: 0,
-                    };
+                // For External governance: if the context is unknown, build config from protocol
+                // params and fetch the proxy contract so sync_context_config can bootstrap the
+                // context from on-chain state.
+                // For Local governance: the context must already exist (replicated from peers).
+                let config = match group_governance {
+                    GroupGovernanceMode::External => {
+                        if !context_client.has_context(&context_id)? {
+                            let params = near_params.as_ref().ok_or_else(|| {
+                                eyre::eyre!("near params required for external governance")
+                            })?;
+                            let mut external_config = ContextConfigParams {
+                                protocol: "near".into(),
+                                network_id: params.network.clone().into(),
+                                contract_id: params.contract_id.clone().into(),
+                                proxy_contract: "".into(),
+                                application_revision: 0,
+                                members_revision: 0,
+                            };
 
-                    let external_client =
-                        context_client.external_client(&context_id, &external_config)?;
-                    let proxy_contract = external_client.config().get_proxy_contract().await?;
-                    external_config.proxy_contract = proxy_contract.into();
+                            let external_client =
+                                context_client.external_client(&context_id, &external_config)?;
+                            let proxy_contract =
+                                external_client.config().get_proxy_contract().await?;
+                            external_config.proxy_contract = proxy_contract.into();
 
-                    Some(external_config)
-                } else {
-                    None
+                            Some(external_config)
+                        } else {
+                            None
+                        }
+                    }
+                    GroupGovernanceMode::Local => {
+                        if !context_client.has_context(&context_id)? {
+                            bail!(
+                                "context not found locally; wait for context state to replicate \
+                                 before joining (local governance)"
+                            );
+                        }
+                        None
+                    }
                 };
 
                 let _ignored = context_client
