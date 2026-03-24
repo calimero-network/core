@@ -93,7 +93,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     .map_err(|e| eyre::eyre!("signing reveal payload failed: {e}"))?;
                 let invitee_signature_hex = hex::encode(signature.to_bytes());
 
-                let (bytes, delta_id, parent_ids) = group_store::sign_apply_local_group_op_borsh(
+                let output = group_store::sign_apply_local_group_op_borsh(
                     &datastore,
                     &group_id,
                     &sk,
@@ -103,7 +103,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     },
                 )?;
                 node_client
-                    .publish_signed_group_op(group_id.to_bytes(), delta_id, parent_ids, bytes)
+                    .publish_signed_group_op(group_id.to_bytes(), output.delta_id, output.parent_ids, output.bytes)
                     .await?;
 
                 if let Some(ref alias_str) = group_alias {

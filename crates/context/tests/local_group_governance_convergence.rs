@@ -578,11 +578,12 @@ fn offline_node_replays_missed_ops_from_log() {
     let member2 = PrivateKey::random(&mut rng).public_key();
 
     let op1 = SignedGroupOp::sign(
-        &admin_sk, gid_bytes, vec![], 1,
+        &admin_sk, gid_bytes, vec![[0u8; 32]], 1,
         GroupOp::MemberAdded { member: member1, role: GroupMemberRole::Member },
     ).unwrap();
+    let op1_hash = op1.content_hash().unwrap();
     let op2 = SignedGroupOp::sign(
-        &admin_sk, gid_bytes, vec![], 2,
+        &admin_sk, gid_bytes, vec![op1_hash], 2,
         GroupOp::MemberAdded { member: member2, role: GroupMemberRole::Member },
     ).unwrap();
 

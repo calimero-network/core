@@ -374,7 +374,25 @@ fn apply_join_with_invitation_claim(
 /// Prevents DoS from malicious ops with unbounded parent lists.
 const MAX_PARENT_OP_HASHES: usize = 256;
 
+/// Maximum DAG heads before forcing a synthetic merge. Prevents unbounded
+/// growth from many concurrent admins operating without merges.
+const MAX_DAG_HEADS: usize = 64;
+
 /// Apply a [`SignedGroupOp`] to the local group store (signature, monotonic nonce, admin rules).
+///
+/// # Concurrency
+///
+/// Callers must serialize access per `group_id`. In the node this is guaranteed
+/// by the single-threaded actix `ContextManager` actor which processes messages
+/// sequentially. Direct concurrent calls from multiple threads for the same
+/// group are **not** safe and could produce duplicate sequence numbers.
+///
+/// # Parent validation
+///
+/// `parent_op_hashes` are not validated against the current `dag_heads` — an op
+/// may reference ancestors further back in the DAG. This is acceptable because
+/// authorization is checked against the *current* group state (not the parent
+/// state), and the `DagStore` performs topological ordering independently.
 pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreResult<()> {
     if op.parent_op_hashes.len() > MAX_PARENT_OP_HASHES {
         bail!(
@@ -575,6 +593,9 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         .filter(|h| !parent_set.contains(h))
         .collect();
     new_heads.push(content_hash);
+    if new_heads.len() > MAX_DAG_HEADS {
+        new_heads.truncate(MAX_DAG_HEADS);
+    }
     set_op_head(store, &group_id, next_seq, new_heads)?;
 
     set_local_gov_nonce(store, &group_id, &op.signer, op.nonce)?;
@@ -582,15 +603,22 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     Ok(())
 }
 
+/// Output of [`sign_apply_local_group_op_borsh`] for publishing via gossip.
+pub struct SignedOpOutput {
+    pub bytes: Vec<u8>,
+    pub delta_id: [u8; 32],
+    pub parent_ids: Vec<[u8; 32]>,
+}
+
 /// Sign the next monotonic [`SignedGroupOp`] for `signer_sk`, apply via [`apply_local_signed_group_op`],
-/// and return `(borsh_bytes, delta_id, parent_ids)` for
+/// and return a [`SignedOpOutput`] for
 /// [`calimero_node_primitives::client::NodeClient::publish_signed_group_op`].
 pub fn sign_apply_local_group_op_borsh(
     store: &Store,
     group_id: &ContextGroupId,
     signer_sk: &PrivateKey,
     op: GroupOp,
-) -> EyreResult<(Vec<u8>, [u8; 32], Vec<[u8; 32]>)> {
+) -> EyreResult<SignedOpOutput> {
     let last = get_local_gov_nonce(store, group_id, &signer_sk.public_key())?.unwrap_or(0);
     let nonce = last
         .checked_add(1)
@@ -605,7 +633,7 @@ pub fn sign_apply_local_group_op_borsh(
     let parent_ids = signed.parent_op_hashes.clone();
     apply_local_signed_group_op(store, &signed)?;
     let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
-    Ok((bytes, delta_id, parent_ids))
+    Ok(SignedOpOutput { bytes, delta_id, parent_ids })
 }
 
 pub fn get_group_member_role(

@@ -126,7 +126,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             eyre::eyre!("target application not found")
                         })?;
                         let app_key = *app_meta.bytecode.blob_id().as_ref();
-                        let (bytes, delta_id, parent_ids) = group_store::sign_apply_local_group_op_borsh(
+                        let output = group_store::sign_apply_local_group_op_borsh(
                             &datastore,
                             &group_id,
                             &sk,
@@ -136,10 +136,10 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             },
                         )?;
                         node_client
-                            .publish_signed_group_op(group_id.to_bytes(), delta_id, parent_ids, bytes)
+                            .publish_signed_group_op(group_id.to_bytes(), output.delta_id, output.parent_ids, output.bytes)
                             .await?;
                         if migration_bytes.is_some() {
-                            let (bytes2, delta_id2, parent_ids2) = group_store::sign_apply_local_group_op_borsh(
+                            let output2 = group_store::sign_apply_local_group_op_borsh(
                                 &datastore,
                                 &group_id,
                                 &sk,
@@ -148,7 +148,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                                 },
                             )?;
                             node_client
-                                .publish_signed_group_op(group_id.to_bytes(), delta_id2, parent_ids2, bytes2)
+                                .publish_signed_group_op(group_id.to_bytes(), output2.delta_id, output2.parent_ids, output2.bytes)
                                 .await?;
                         }
                     }
@@ -269,7 +269,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     eyre::eyre!("target application not found")
                 })?;
                 let app_key = *app_meta.bytecode.blob_id().as_ref();
-                let (bytes, delta_id, parent_ids) = group_store::sign_apply_local_group_op_borsh(
+                let output = group_store::sign_apply_local_group_op_borsh(
                     &datastore_for_canary,
                     &group_id,
                     &sk,
@@ -279,10 +279,10 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     },
                 )?;
                 node_client
-                    .publish_signed_group_op(group_id.to_bytes(), delta_id, parent_ids, bytes)
+                    .publish_signed_group_op(group_id.to_bytes(), output.delta_id, output.parent_ids, output.bytes)
                     .await?;
                 if migration_bytes.is_some() {
-                    let (bytes2, delta_id2, parent_ids2) = group_store::sign_apply_local_group_op_borsh(
+                    let output2 = group_store::sign_apply_local_group_op_borsh(
                         &datastore_for_canary,
                         &group_id,
                         &sk,
@@ -291,7 +291,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         },
                     )?;
                     node_client
-                        .publish_signed_group_op(group_id.to_bytes(), delta_id2, parent_ids2, bytes2)
+                        .publish_signed_group_op(group_id.to_bytes(), output2.delta_id, output2.parent_ids, output2.bytes)
                         .await?;
                 }
             }

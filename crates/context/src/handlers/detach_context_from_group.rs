@@ -76,14 +76,14 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
                         "local group governance requires a signing key for the requester"
                     )
                 })?);
-                let (bytes, delta_id, parent_ids) = group_store::sign_apply_local_group_op_borsh(
+                let output = group_store::sign_apply_local_group_op_borsh(
                     &datastore,
                     &group_id,
                     &sk,
                     GroupOp::ContextDetached { context_id },
                 )?;
                 node_client
-                    .publish_signed_group_op(group_id.to_bytes(), delta_id, parent_ids, bytes)
+                    .publish_signed_group_op(group_id.to_bytes(), output.delta_id, output.parent_ids, output.bytes)
                     .await?;
 
                 if let Err(err) =
