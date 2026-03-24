@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.1-rc.8] - 2026-03-24
+
 ### Added
 
 - **Automatic nested CRDT support** - Applications can now use natural nested structures without state divergence
