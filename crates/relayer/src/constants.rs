@@ -19,7 +19,7 @@ pub mod protocols {
         pub const NAME: &str = "near";
         pub const DEFAULT_NETWORK: &str = "testnet";
         pub const DEFAULT_RPC_URL: &str = "https://rpc.testnet.near.org";
-        pub const DEFAULT_CONTRACT_ID: &str = "v0-7.config.calimero-context.testnet";
+        pub const DEFAULT_CONTRACT_ID: &str = "v7.calimero-context-config.testnet";
         // Note: All credentials must be provided via environment variables
     }
 }
