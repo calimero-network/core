@@ -655,7 +655,7 @@ impl SyncManager {
         super::stream::recv(stream, shared_key, budget).await
     }
 
-    /// Get blob ID and application config from application or context config
+    /// Get blob ID and application config from local application state.
     async fn get_blob_info(
         &self,
         context_id: &ContextId,
@@ -667,21 +667,14 @@ impl SyncManager {
         if let Some(ref app) = application {
             Ok((app.blob.bytecode, None))
         } else {
-            // Application not found - get blob_id from context config
-            let context_config = self
-                .context_client
-                .context_config(context_id)?
-                .ok_or_else(|| eyre::eyre!("context config not found"))?;
-            let external_client = self
-                .context_client
-                .external_client(context_id, &context_config)?;
-            let config_client = external_client.config();
-            let app_config = config_client.application().await?;
-            Ok((app_config.blob.bytecode, Some(app_config)))
+            bail!(
+                "application is not installed locally for context {}; off-chain sync requires local application metadata",
+                context_id
+            );
         }
     }
 
-    /// Get application size from application, cached config, or context config
+    /// Get application size from local application metadata.
     async fn get_application_size(
         &self,
         context_id: &ContextId,
@@ -693,20 +686,14 @@ impl SyncManager {
         } else if let Some(ref app_config) = app_config_opt {
             Ok(app_config.size)
         } else {
-            let context_config = self
-                .context_client
-                .context_config(context_id)?
-                .ok_or_else(|| eyre::eyre!("context config not found"))?;
-            let external_client = self
-                .context_client
-                .external_client(context_id, &context_config)?;
-            let config_client = external_client.config();
-            let app_config = config_client.application().await?;
-            Ok(app_config.size)
+            bail!(
+                "application size is unavailable for context {}; install application locally before sync",
+                context_id
+            );
         }
     }
 
-    /// Get application source from cached config or context config
+    /// Get application source from local application metadata.
     async fn get_application_source(
         &self,
         context_id: &ContextId,
@@ -715,16 +702,10 @@ impl SyncManager {
         if let Some(ref app_config) = app_config_opt {
             Ok(app_config.source.clone())
         } else {
-            let context_config = self
-                .context_client
-                .context_config(context_id)?
-                .ok_or_else(|| eyre::eyre!("context config not found"))?;
-            let external_client = self
-                .context_client
-                .external_client(context_id, &context_config)?;
-            let config_client = external_client.config();
-            let app_config = config_client.application().await?;
-            Ok(app_config.source.clone())
+            bail!(
+                "application source is unavailable for context {}; install application locally before sync",
+                context_id
+            );
         }
     }
 
@@ -761,7 +742,7 @@ impl SyncManager {
             return Ok(());
         }
 
-        // Get source from context config (use cached if available, otherwise fetch)
+        // Get source from local application metadata.
         let source = self
             .get_application_source(context_id, app_config_opt)
             .await?;
