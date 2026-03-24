@@ -343,6 +343,12 @@ impl TokenManager {
     /// query-param authentication. It verifies the JWT signature, checks
     /// the node URL claim (if present and headers are provided), and
     /// confirms the key exists and has not been revoked.
+    ///
+    /// # Note
+    ///
+    /// When `headers` is `None`, the `node_url` claim validation is skipped.
+    /// All current call sites pass `Some(headers)` — `None` is reserved for
+    /// future internal use where no HTTP request headers are available.
     pub async fn verify_token_string(
         &self,
         token: &str,

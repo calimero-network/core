@@ -12,7 +12,7 @@ use futures_util::FutureExt;
 use mero_auth::embedded::{build_app, default_config, EmbeddedAuthApp};
 use mero_auth::AuthService;
 use tower::{Layer, Service};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::ServerConfig;
 
@@ -116,12 +116,26 @@ where
 
         async move {
             if method != Method::OPTIONS {
-                let auth_response = match service.verify_token_from_headers(&headers).await {
-                    Ok(resp) => resp,
-                    Err(_) => {
-                        // Fallback: extract token from ?token= query parameter.
+                let auth_response =
+                    if headers.contains_key(axum::http::header::AUTHORIZATION) {
+                        // Authorization header is present — validate it exclusively.
+                        // Never fall through to the query param path: if the client
+                        // explicitly sent a header (even an invalid/revoked one), honour
+                        // that choice and reject rather than silently retrying with a
+                        // query param token, which would bypass revocation.
+                        match service.verify_token_from_headers(&headers).await {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                debug!(error = ?e, "Bearer token validation failed");
+                                return Ok(StatusCode::UNAUTHORIZED.into_response());
+                            }
+                        }
+                    } else {
+                        // No Authorization header — try the ?token= query parameter.
                         // Browser WebSocket and EventSource APIs cannot set custom
                         // headers, so the JS client passes the JWT as a query param.
+                        // JWT tokens are base64url-encoded (A-Za-z0-9._-) so no
+                        // URL-decoding is required.
                         let token = uri.query().and_then(|q| {
                             q.split('&').find_map(|pair| {
                                 let (key, value) = pair.split_once('=')?;
@@ -132,17 +146,18 @@ where
                             Some(ref t) => {
                                 match service.verify_token_string(t, Some(&headers)).await {
                                     Ok(resp) => resp,
-                                    Err(_) => {
+                                    Err(e) => {
+                                        debug!(error = ?e, "Query param token validation failed");
                                         return Ok(StatusCode::UNAUTHORIZED.into_response());
                                     }
                                 }
                             }
                             None => {
+                                debug!("No Authorization header and no ?token= query parameter");
                                 return Ok(StatusCode::UNAUTHORIZED.into_response());
                             }
                         }
-                    }
-                };
+                    };
 
                 // Attempt to resolve the authenticated public key and inject it so
                 // handlers can use it as the effective requester without trusting the
