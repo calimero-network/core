@@ -28,7 +28,8 @@ mkdir -p "$OUTPUT_DIR"
 
 echo "$ASSET_URLS" | while read -r ASSET_URL; do
   ARTIFACT_NAME=$(basename "$ASSET_URL" .tar.gz)
-  ARTIFACT_NAME="${ARTIFACT_NAME%.tar.gz}"
+  # Release archives use names like near-contracts.tar.gz; workflows expect contracts/near/ (merobox, CI).
+  ARTIFACT_NAME="${ARTIFACT_NAME%-contracts}"
   ARTIFACT_DIR="$OUTPUT_DIR/$ARTIFACT_NAME"
 
   mkdir -p "$ARTIFACT_DIR"

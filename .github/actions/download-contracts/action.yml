@@ -39,8 +39,9 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ inputs.output-dir }}
-        key: contracts-${{ steps.version.outputs.version }}
+        key: contracts-near-dir-${{ steps.version.outputs.version }}
         restore-keys: |
+          contracts-near-dir-
           contracts-
 
     - name: Download contracts
