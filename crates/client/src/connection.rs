@@ -331,20 +331,21 @@ where
     }
 
     async fn refresh_token(&self) -> Result<JwtToken> {
-        if let Some(ref node_name) = self.node_name {
-            if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
-                let refresh_token = tokens
-                    .refresh_token
-                    .clone()
-                    .ok_or_else(|| eyre!("No refresh token available"))?;
+        let Some(node_name) = &self.node_name else {
+            return Err(eyre!("No tokens available to refresh"));
+        };
 
-                return self
-                    .try_refresh_token(&tokens.access_token, &refresh_token)
-                    .await;
-            }
-        }
+        let Some(tokens) = self.client_storage.load_tokens(node_name).await? else {
+            return Err(eyre!("No tokens available to refresh"));
+        };
 
-        Err(eyre!("No tokens available to refresh"))
+        let refresh_token = tokens
+            .refresh_token
+            .clone()
+            .ok_or_else(|| eyre!("No refresh token available"))?;
+
+        self.try_refresh_token(&tokens.access_token, &refresh_token)
+            .await
     }
 
     async fn try_refresh_token(&self, access_token: &str, refresh_token: &str) -> Result<JwtToken> {
