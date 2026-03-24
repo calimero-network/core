@@ -2328,8 +2328,7 @@ mod tests {
     /// "Invalid character 'g' at position 1" errors at runtime.
     #[test]
     fn extract_application_id_decodes_base58() {
-        // Repr<[u8; 32]> serialises as base58, matching what the NEAR contract
-        // returns for Repr<ConfigApplicationId> with the same underlying bytes.
+        // Repr<[u8; 32]> serialises as base58 (canonical `Repr` serialization for the id field).
         use calimero_context_config::repr::Repr;
 
         let raw: [u8; 32] = [0xDE; 32];

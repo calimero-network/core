@@ -218,6 +218,9 @@ impl NodeClient {
     /// on the group gossip topic `group/<hex(group_id)>`.
     ///
     /// Enforces [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`] on `signed_op_borsh`.
+    ///
+    /// If there are no mesh peers on the group topic, the publish is skipped and a **warn** is
+    /// logged (silent skips make ops easy to miss in production).
     pub async fn publish_signed_group_op(
         &self,
         group_id: [u8; 32],
@@ -236,7 +239,10 @@ impl NodeClient {
 
         let peers = self.network_client.mesh_peer_count(topic.clone()).await;
         if peers == 0 {
-            debug!(?group_id, "no peers on group topic, skipping signed group op broadcast");
+            warn!(
+                ?group_id,
+                "no peers on group topic, skipping signed group op broadcast"
+            );
             return Ok(());
         }
 

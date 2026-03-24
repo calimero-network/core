@@ -266,9 +266,7 @@ impl ContextClient {
             );
         }
 
-        let application_revision = self
-            .get_context_application_revision(&context_id)
-            .await?;
+        let application_revision = self.get_context_application_revision(&context_id).await?;
 
         let mut application_id = None;
 
@@ -458,12 +456,12 @@ impl ContextClient {
         // Execute deletions of members that exist in the local DB, but don't exist remotely anymore
         for member in members_to_remove {
             let member_public_key = member.into();
-            debug!(%context_id, %member_public_key, "Trying to prune member from local store (it was removed from the contract)");
+            debug!(%context_id, %member_public_key, "Trying to prune member from local store (removed from authoritative member list)");
 
             let key = key::ContextIdentity::new(context_id, member_public_key);
             handle.delete(&key)?;
 
-            info!(%context_id, %member_public_key, "Pruned member from local store (it was removed from the contract)");
+            info!(%context_id, %member_public_key, "Pruned member from local store (removed from authoritative member list)");
         }
 
         Ok(())

@@ -49,8 +49,8 @@ use crate::messages::{
 };
 use crate::ContextAtomic;
 
-pub mod crypto;
 mod context_api;
+pub mod crypto;
 mod sync;
 
 /// A client for interacting with the context management system.
@@ -142,7 +142,7 @@ impl ContextClient {
 
     /// Invites a new member to an existing context.
     ///
-    /// This involves an external call to the on-chain contract to register the new member.
+    /// This updates local membership records for local group governance (no chain submission).
     ///
     /// # Arguments
     ///
@@ -215,8 +215,8 @@ impl ContextClient {
             return Ok(None);
         };
 
-        // TODO: query the current block height from the NEAR client and use it to calculate the
-        // real expiration block height.
+        // Placeholder: `current_block_height` is not tied to a chain; it anchors a monotonic
+        // expiration height for invitation validity until timestamp-based expiry is wired through.
         let current_block_height: BlockHeight = 999_999_999;
         let expiration_block_height = current_block_height + valid_for_blocks;
 

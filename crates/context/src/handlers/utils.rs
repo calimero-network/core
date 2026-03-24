@@ -56,7 +56,7 @@ impl ContextHost for StoreContextHost {
 /// Processes context configuration mutations requested by the WASM runtime.
 ///
 /// This iterates over the `context_mutations` returned in the execution outcome
-/// and performs the necessary external calls (e.g., on-chain transactions) via
+/// and performs the necessary external calls (e.g., governance operations) via
 /// the `ContextClient`.
 pub async fn process_context_mutations(
     context_client: &ContextClient,
@@ -194,9 +194,8 @@ pub async fn process_context_mutations(
                         {
                             Ok(_) => {
                                 debug!(%context_id, %member, "Member removed successfully, syncing config...");
-                                if let Err(e) = context_client
-                                    .sync_context_config(context_id, None)
-                                    .await
+                                if let Err(e) =
+                                    context_client.sync_context_config(context_id, None).await
                                 {
                                     warn!(%context_id, error = ?e, "Failed to sync context config after removing member");
                                 }

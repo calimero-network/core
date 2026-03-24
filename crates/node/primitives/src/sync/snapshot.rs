@@ -639,7 +639,7 @@ pub enum BroadcastMessage<'a> {
     },
 
     /// Notification that a group mutation occurred.
-    /// Receiving nodes should re-sync the group state from the contract.
+    /// Receiving nodes should re-sync the group state from the local store or peers.
     GroupMutationNotification {
         group_id: [u8; 32],
         mutation_kind: GroupMutationKind,
@@ -1600,7 +1600,9 @@ mod tests {
     #[test]
     fn broadcast_message_signed_group_op_v1_roundtrip() {
         let inner = vec![1u8, 2, 3];
-        let msg = BroadcastMessage::SignedGroupOpV1 { payload: inner.clone() };
+        let msg = BroadcastMessage::SignedGroupOpV1 {
+            payload: inner.clone(),
+        };
         let bytes = borsh::to_vec(&msg).expect("serialize");
         let decoded: BroadcastMessage<'static> = borsh::from_slice(&bytes).expect("deserialize");
         match decoded {

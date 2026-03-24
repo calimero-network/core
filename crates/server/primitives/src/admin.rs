@@ -1195,7 +1195,7 @@ impl TryFrom<tdx_quote::Quote> for Quote {
                         _ => {
                             return Err(
                                 "Unknown CertificationDataInner variant encountered".to_string()
-                            )
+                            );
                         }
                     };
 
@@ -1348,9 +1348,9 @@ use crate::validation::{
         validate_bytes_size, validate_hex_string, validate_optional_hex_string,
         validate_optional_string_length, validate_string_length, validate_url,
     },
-    Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE,
-    MAX_METHOD_NAME_LENGTH, MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH,
-    MAX_PROTOCOL_LENGTH, MAX_QUOTE_B64_LENGTH, MAX_VALID_FOR_BLOCKS, MAX_VERSION_LENGTH,
+    Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_METHOD_NAME_LENGTH,
+    MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH, MAX_PROTOCOL_LENGTH,
+    MAX_QUOTE_B64_LENGTH, MAX_VALID_FOR_BLOCKS, MAX_VERSION_LENGTH,
 };
 
 impl Validate for InstallApplicationRequest {
@@ -1886,7 +1886,7 @@ impl Validate for RetryGroupUpgradeApiRequest {
 pub struct CreateGroupInvitationApiRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
-    /// On-chain block height after which the invitation commitment expires.
+    /// Expiration height (placeholder for timestamp-based expiry).
     /// Defaults to 999_999_999 when not provided (backward-compatible).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expiration_block_height: Option<u64>,
