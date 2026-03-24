@@ -15,7 +15,7 @@ Today, group metadata and permissions are **synchronized from on-chain** contrac
 - **Replication** uses **gossip** on the **group topic** (same channel already used for `GroupMutationNotification`).
 - **Local state** remains compatible with existing **storage keys** and **admin / meroctl** flows where possible.
 
-**Non-goals (Phase 0):** Remove NEAR from the codebase; change context **application** `StateDelta` encryption; implement full invitation commit/reveal off-chain.
+**Non-goals (Phase 0):** Delete blockchain integration from the tree (that is a **later phase** — see §11); change context **application** `StateDelta` encryption; implement full invitation commit/reveal off-chain.
 
 ---
 
@@ -125,6 +125,7 @@ After a valid `SignedGroupOp` is applied, update **`group_store`** (and related 
 - [x] Replay and fork rules for MVP explicitly stated (linear chain / single admin).
 - [x] Privacy limitations of gossip documented.
 - [x] Relationship to existing notifications documented.
+- [x] Phased plan to **remove blockchain integration from the node** documented (§11).
 
 ---
 
@@ -134,6 +135,54 @@ After a valid `SignedGroupOp` is applied, update **`group_store`** (and related 
 2. Add **network** variant and **publish/subscribe** handling for `SignedGroupOp`.
 3. **Apply** to `group_store` behind **`local`** mode flag.
 4. Tests: two nodes, one group, convergent state.
+5. Track **§11** for **full removal** of chain code once **`local`** paths cover all required behavior.
+
+---
+
+## 11. Removing blockchain code from the node (full removal)
+
+This is a **separate track** from implementing **`local`** governance: first **parity** (groups + any remaining context-config flows that still hit NEAR), then **delete** dead paths and **trim** dependencies. Do **not** remove chain code until **`local`** is validated for the product surfaces you support.
+
+### 11.1 Target state
+
+- **No** NEAR JSON-RPC / relayer calls from **`merod`** for normal operation in the supported deployment profile.
+- **No** mandatory **`[signer]` / `near` / `contract_id`** blocks in config for that profile.
+- **Optional:** A **`minimal`** or **`no-chain`** Cargo feature set that builds **without** `near-*` crates where feasible (see `calimero-context-config` features today).
+
+### 11.2 What counts as “blockchain code” in `core` (checklist)
+
+Audit and remove or gate:
+
+| Area | Examples |
+|------|----------|
+| **Context config client** | `calimero-context-config` **NEAR** transport, relayer transport, `Client::from_config` wiring in `crates/context/config`. |
+| **Init / CLI** | `merod init` NEAR defaults, relayer URL, contract id prompts (`crates/merod/src/cli/init.rs`). |
+| **Context manager** | Handlers that require `external_config.params["near"]` for group/context flows (`sync_group`, `join_group_context`, invitations, upgrades touching chain). |
+| **Relayer** | `mero-relayer` usage assumptions; constants defaulting to NEAR RPC (`crates/relayer`). |
+| **Dependencies** | `near-jsonrpc-*`, `near-primitives`, etc., on code paths only used for chain — drop after refactors. |
+
+**Note:** **Application** WASM state and **context** `StateDelta` are **not** “blockchain”; keep them. This removal is about **L1/L2 config contracts** and **group/context membership** backed by chain.
+
+### 11.3 Phased removal strategy
+
+| Phase | Goal |
+|-------|------|
+| **R1 — Gate** | All group (and agreed context-config) flows work under **`group.governance = local`** without calling external clients. **`external`** still compiles and works for legacy. |
+| **R2 — Default** | New installs / docs default to **no chain** for supported SKU; **`external`** opt-in. |
+| **R3 — Delete** | Remove **`external`** code paths, NEAR/relayer modules, and unused deps; shrink **`Cargo.toml`** / features; update CI matrices. |
+| **R4 — Verify** | `cargo tree` / `cargo check` with **`--no-default-features`** or **`minimal`** feature; integration tests with **no** RPC endpoints. |
+
+### 11.4 Preconditions before R3 (delete)
+
+- [ ] **Feature parity** checklist signed off (groups, invites, upgrades, visibility — whatever you ship) on **`local`** only.
+- [ ] **Migration guide** for deployments that still use NEAR (export state, re-bootstrap, or stay on old release).
+- [ ] **Downstream** repos (`contracts`, infra, SDKs) updated or explicitly decoupled.
+
+### 11.5 Success criteria for “blockchain removed”
+
+- [ ] No `near` / `relayer` **required** in default `config.toml` for the no-chain profile.
+- [ ] CI passes with **chain stubs** disabled or features off.
+- [ ] Docs state **single** governance story for that profile (signed gossip ops + local store).
 
 ---
 
