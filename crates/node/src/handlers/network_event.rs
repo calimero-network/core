@@ -143,16 +143,17 @@ impl Handler<NetworkEvent> for NodeManager {
             }
 
             // BroadcastMessage handling - delegate to state_delta module
-            NetworkEvent::Message { message, .. } => {
-                let Some(source) = message.source else {
-                    warn!(?message, "Received message without source");
+            NetworkEvent::Message { message: gossip_message, .. } => {
+                let topic = gossip_message.topic.clone();
+                let Some(source) = gossip_message.source else {
+                    warn!(?gossip_message, "Received message without source");
                     return;
                 };
 
-                let message = match borsh::from_slice::<BroadcastMessage<'_>>(&message.data) {
+                let message = match borsh::from_slice::<BroadcastMessage<'_>>(&gossip_message.data) {
                     Ok(message) => message,
                     Err(err) => {
-                        debug!(?err, ?message, "Failed to deserialize message");
+                        debug!(?err, ?gossip_message, "Failed to deserialize message");
                         return;
                     }
                 };
@@ -660,6 +661,59 @@ impl Handler<NetworkEvent> for NodeManager {
                                 );
                             }
                         }
+                    }
+                    BroadcastMessage::SignedGroupOpV1 { payload } => {
+                        use calimero_context_primitives::local_governance::SignedGroupOp;
+                        use calimero_node_primitives::sync::MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES;
+
+                        if payload.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
+                            warn!(
+                                %source,
+                                len = payload.len(),
+                                "signed group op payload too large"
+                            );
+                            return;
+                        }
+
+                        let op: SignedGroupOp = match borsh::from_slice(&payload) {
+                            Ok(o) => o,
+                            Err(err) => {
+                                warn!(?err, %source, "failed to decode SignedGroupOp");
+                                return;
+                            }
+                        };
+
+                        let topic_str = topic.as_str();
+                        let topic_matches = topic_str
+                            .strip_prefix("group/")
+                            .and_then(|hex| {
+                                let mut bytes = [0u8; 32];
+                                hex::decode_to_slice(hex, &mut bytes).ok()?;
+                                Some(bytes == op.group_id)
+                            })
+                            .unwrap_or(false);
+
+                        if !topic_matches {
+                            warn!(
+                                %source,
+                                topic = %topic_str,
+                                op_group_id = %hex::encode(op.group_id),
+                                "signed group op gossip topic does not match group_id"
+                            );
+                            return;
+                        }
+
+                        if let Err(err) = op.verify_signature() {
+                            warn!(?err, %source, "signed group op signature invalid");
+                            return;
+                        }
+
+                        info!(
+                            %source,
+                            group_id = %hex::encode(op.group_id),
+                            nonce = op.nonce,
+                            "received valid signed group op (local apply deferred to governance rollout)"
+                        );
                     }
                     _ => {
                         // Future message types - log and ignore

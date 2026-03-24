@@ -573,6 +573,9 @@ pub fn check_snapshot_safety(has_local_state: bool) -> Result<(), SnapshotError>
 // Wire Protocol Messages
 // =============================================================================
 
+/// Maximum byte length for [`BroadcastMessage::SignedGroupOpV1::payload`].
+pub const MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES: usize = 64 * 1024;
+
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
 #[expect(clippy::large_enum_variant, reason = "Of no consequence here")]
@@ -640,6 +643,15 @@ pub enum BroadcastMessage<'a> {
     GroupMutationNotification {
         group_id: [u8; 32],
         mutation_kind: GroupMutationKind,
+    },
+
+    /// Signed local group governance operation (`calimero_context_primitives::local_governance::SignedGroupOp`).
+    ///
+    /// Payload is opaque here to keep `calimero-node-primitives` independent of `calimero-context-primitives`.
+    /// See `docs/context-management/LOCAL-GROUP-GOVERNANCE.md`.
+    SignedGroupOpV1 {
+        /// `borsh(SignedGroupOp)`; must be ≤ [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`].
+        payload: Vec<u8>,
     },
 }
 
@@ -1583,5 +1595,17 @@ mod tests {
         let decoded: SnapshotBoundaryRequest = borsh::from_slice(&encoded).expect("deserialize");
         assert_eq!(request_none, decoded);
         assert!(decoded.requested_cutoff_timestamp.is_none());
+    }
+
+    #[test]
+    fn broadcast_message_signed_group_op_v1_roundtrip() {
+        let inner = vec![1u8, 2, 3];
+        let msg = BroadcastMessage::SignedGroupOpV1 { payload: inner.clone() };
+        let bytes = borsh::to_vec(&msg).expect("serialize");
+        let decoded: BroadcastMessage<'static> = borsh::from_slice(&bytes).expect("deserialize");
+        match decoded {
+            BroadcastMessage::SignedGroupOpV1 { payload } => assert_eq!(payload, inner),
+            _ => panic!("expected SignedGroupOpV1 variant"),
+        }
     }
 }
