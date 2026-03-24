@@ -10,6 +10,7 @@ use calimero_primitives::identity::PrivateKey;
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
+use crate::config::GroupGovernanceMode;
 use crate::{group_store, ContextManager};
 
 impl Handler<CreateGroupInvitationRequest> for ContextManager {
@@ -68,14 +69,29 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             // 3. Verify node holds the requester's signing key
             group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
 
-            // 4. Extract contract coordinates
-            let params = self
-                .external_config
-                .params
-                .get("near")
-                .ok_or_else(|| eyre::eyre!("no 'near' protocol config"))?;
+            // 4. Contract coordinates: NEAR-backed groups need `[protocols.near]`; local
+            // governance uses fixed synthetic strings so invitations work without chain config.
+            let (protocol, network, contract_id) = match self.group_governance {
+                GroupGovernanceMode::Local => (
+                    "local".to_owned(),
+                    "local".to_owned(),
+                    "local".to_owned(),
+                ),
+                GroupGovernanceMode::External => {
+                    let params = self
+                        .external_config
+                        .params
+                        .get("near")
+                        .ok_or_else(|| eyre::eyre!("no 'near' protocol config"))?;
+                    (
+                        "near".to_owned(),
+                        params.network.clone(),
+                        params.contract_id.clone(),
+                    )
+                }
+            };
 
-            // 6. Fetch admin signing key and construct + sign the invitation
+            // 5. Fetch admin signing key and construct + sign the invitation
             let signing_key_bytes =
                 group_store::get_group_signing_key(&self.datastore, &group_id, &requester)?
                     .ok_or_else(|| eyre::eyre!("signing key not found for requester"))?;
@@ -93,9 +109,9 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 group_id,
                 expiration_height: expiration_block_height,
                 secret_salt,
-                protocol: "near".to_string(),
-                network: params.network.clone(),
-                contract_id: params.contract_id.clone(),
+                protocol,
+                network,
+                contract_id,
             };
 
             // Sign: borsh-serialize → SHA256 → ed25519_sign

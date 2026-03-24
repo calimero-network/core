@@ -22,6 +22,7 @@ use crate::specialized_node_invite_state::{
 };
 use actix::{Actor, AsyncContext, WrapFuture};
 use calimero_blobstore::BlobManager;
+use calimero_context::config::GroupGovernanceMode;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::{blobs::BlobId, context::ContextId};
@@ -121,18 +122,25 @@ pub(crate) struct NodeState {
     pub(crate) accept_mock_tee: bool,
     /// Node operation mode (Standard or ReadOnly)
     pub(crate) node_mode: NodeMode,
+    /// Whether signed P2P group ops are applied locally (`Local`) or chain is authoritative (`External`).
+    pub(crate) group_governance: GroupGovernanceMode,
     /// Active sync sessions (for delta buffering during snapshot sync).
     pub(crate) sync_sessions: Arc<DashMap<ContextId, SyncSession>>,
 }
 
 impl NodeState {
-    fn new(accept_mock_tee: bool, node_mode: NodeMode) -> Self {
+    fn new(
+        accept_mock_tee: bool,
+        node_mode: NodeMode,
+        group_governance: GroupGovernanceMode,
+    ) -> Self {
         Self {
             blob_cache: Arc::new(DashMap::new()),
             delta_stores: Arc::new(DashMap::new()),
             pending_specialized_node_invites: new_pending_specialized_node_invites(),
             accept_mock_tee,
             node_mode,
+            group_governance,
             sync_sessions: Arc::new(DashMap::new()),
         }
     }
@@ -613,3 +621,6 @@ impl Actor for NodeManager {
         );
     }
 }
+
+#[cfg(test)]
+mod local_governance_node_e2e;

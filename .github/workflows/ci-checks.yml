@@ -59,6 +59,10 @@ jobs:
 
           cargo test -- --nocapture
 
+      - name: Cargo test (calimero-context-config, client feature)
+        if: ${{ !cancelled() }}
+        run: cargo test -p calimero-context-config --features client
+
       - name: Cargo deny
         if: ${{ !cancelled() }}
         run: |

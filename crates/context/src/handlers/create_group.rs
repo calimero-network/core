@@ -9,6 +9,7 @@ use calimero_store::Store;
 use rand::Rng;
 use tracing::info;
 
+use crate::config::GroupGovernanceMode;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -78,13 +79,18 @@ impl Handler<CreateGroupRequest> for ContextManager {
             );
         }
 
-        // Build group_client if signing_key available, falling back to stored key
+        // Build group_client if signing_key available, falling back to stored key (external only)
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &admin_identity)
                 .ok()
                 .flatten()
         });
-        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
+        let group_client_result = match self.group_governance {
+            GroupGovernanceMode::External => {
+                effective_signing_key.map(|sk| self.group_client(group_id, sk))
+            }
+            GroupGovernanceMode::Local => None,
+        };
 
         ActorResponse::r#async(
             async move {

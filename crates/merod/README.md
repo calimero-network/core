@@ -51,6 +51,9 @@ merod --node node1 init \
   --protocol near \
   --relayer-url https://relayer.near.org
 
+# Local group governance (no NEAR protocol block or relayer in context client config)
+merod --node node1 init --group-governance local
+
 # Authentication mode
 merod --node node1 init \
   --auth-mode embedded \
@@ -69,7 +72,8 @@ merod --node node1 init --force
 - `--boot-nodes <ADDR>...` - Bootstrap nodes for P2P discovery
 - `--boot-network <NETWORK>` - Use nodes from known network (`calimero-dev`, `ipfs`)
 - `--protocol <PROTOCOL>` - Blockchain protocol (`near`)
-- `--relayer-url <URL>` - Relayer URL for blockchain transactions
+- `--group-governance <external|local>` - Group policy: `external` (default, NEAR blocks in context client config) or `local` (omit NEAR protocol params; signed gossip governance)
+- `--relayer-url <URL>` - Relayer URL for blockchain transactions (written into context client config when applicable; not emitted for `--group-governance local`)
 - `--auth-mode <MODE>` - Authentication mode (`none`, `embedded`, `remote`)
 - `--auth-storage <STORAGE>` - Auth storage type (`persistent`, `memory`)
 - `--auth-storage-path <PATH>` - Path for persistent auth storage

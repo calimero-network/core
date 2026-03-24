@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`merod init --group-governance local`** no longer writes a **relayer** URL in the context client signer config (the field is optional in serde). Existing nodes and configs are unchanged; only new **`local`** inits omit it.
+
 ## [0.10.1-rc.8] - 2026-03-24
 
 ### Added

@@ -52,3 +52,4 @@ calimero-utils-actix.workspace = true
 async-trait.workspace = true
 calimero-dag = { workspace = true, features = ["testing"] }
 rand_chacha = "0.3"
+tempfile.workspace = true

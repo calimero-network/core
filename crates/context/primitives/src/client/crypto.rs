@@ -230,9 +230,9 @@ mod tests {
         let client_config = ClientConfig {
             params: BTreeMap::new(),
             signer: ClientSigner {
-                relayer: ClientRelayerSigner {
+                relayer: Some(ClientRelayerSigner {
                     url: "http://127.0.0.1:3030".parse().unwrap(),
-                },
+                }),
                 local: LocalConfig {
                     protocols: BTreeMap::new(),
                 },

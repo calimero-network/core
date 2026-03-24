@@ -7,6 +7,7 @@ use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
+use crate::config::GroupGovernanceMode;
 use crate::{group_store, ContextManager};
 
 impl Handler<JoinGroupContextRequest> for ContextManager {
@@ -86,7 +87,13 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
             return ActorResponse::reply(Err(err));
         }
 
-        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
+        let group_governance = self.group_governance;
+        let group_client_result = match group_governance {
+            GroupGovernanceMode::External => {
+                effective_signing_key.map(|sk| self.group_client(group_id, sk))
+            }
+            GroupGovernanceMode::Local => None,
+        };
 
         let datastore = self.datastore.clone();
         let context_client = self.context_client.clone();
@@ -111,12 +118,13 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                 let context_identity: calimero_context_config::types::ContextIdentity =
                     identity_pk.rt()?;
 
-                // Call contract to add the new member to the context via group.
-                if let Some(client_result) = group_client_result {
-                    let group_client = client_result?;
-                    group_client
-                        .join_context_via_group(context_id, context_identity)
-                        .await?;
+                if group_governance == GroupGovernanceMode::External {
+                    if let Some(client_result) = group_client_result {
+                        let group_client = client_result?;
+                        group_client
+                            .join_context_via_group(context_id, context_identity)
+                            .await?;
+                    }
                 }
 
                 // Register the context-group mapping locally so that

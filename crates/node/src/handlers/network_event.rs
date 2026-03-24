@@ -708,12 +708,28 @@ impl Handler<NetworkEvent> for NodeManager {
                             return;
                         }
 
-                        info!(
-                            %source,
-                            group_id = %hex::encode(op.group_id),
-                            nonce = op.nonce,
-                            "received valid signed group op (local apply deferred to governance rollout)"
-                        );
+                        use calimero_context::config::GroupGovernanceMode;
+
+                        if self.state.group_governance == GroupGovernanceMode::Local {
+                            let context_client = self.clients.context.clone();
+                            let _ignored = ctx.spawn(
+                                async move {
+                                    if let Err(err) =
+                                        context_client.apply_signed_group_op(op.clone()).await
+                                    {
+                                        warn!(?err, %source, "failed to apply signed group op");
+                                    }
+                                }
+                                .into_actor(self),
+                            );
+                        } else {
+                            info!(
+                                %source,
+                                group_id = %hex::encode(op.group_id),
+                                nonce = op.nonce,
+                                "received valid signed group op (external governance; not applied locally)"
+                            );
+                        }
                     }
                     _ => {
                         // Future message types - log and ignore

@@ -312,7 +312,7 @@ pub struct ContextConfigParams<'a> {
 }
 
 /// Controls how application upgrades propagate across contexts in a group.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum UpgradePolicy {
     /// Upgrade all contexts immediately when the group target changes.

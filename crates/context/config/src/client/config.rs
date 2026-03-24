@@ -31,7 +31,10 @@ pub enum ClientSelectedSigner {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientSigner {
-    pub relayer: ClientRelayerSigner,
+    /// Relayer HTTP endpoint for chain-backed context operations. Omitted for pure **local**
+    /// group governance (`merod init --group-governance local`); deserialization defaults to `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relayer: Option<ClientRelayerSigner>,
     #[serde(rename = "self")]
     pub local: LocalConfig,
 }

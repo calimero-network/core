@@ -134,3 +134,21 @@ impl Transport for RelayerTransport {
             .map_or_else(|e| Ok(Err(e)), |v| v.map(Ok))
     }
 }
+
+impl Transport for Option<RelayerTransport> {
+    type Error = RelayerError;
+
+    async fn try_send<'a>(
+        &self,
+        args: TransportArguments<'a>,
+    ) -> Result<Result<Vec<u8>, Self::Error>, UnsupportedProtocol<'a>> {
+        let Some(inner) = self else {
+            return Err(UnsupportedProtocol {
+                args,
+                expected: Cow::Borrowed(&[]),
+            });
+        };
+
+        inner.try_send(args).await
+    }
+}

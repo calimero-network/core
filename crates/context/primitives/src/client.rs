@@ -44,9 +44,9 @@ use crate::group::{
     UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
-    ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
-    DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, JoinContextRequest,
-    JoinContextResponse, MigrationParams, UpdateApplicationRequest,
+    ApplySignedGroupOpRequest, ContextMessage, CreateContextRequest, CreateContextResponse,
+    DeleteContextRequest, DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse,
+    JoinContextRequest, JoinContextResponse, MigrationParams, UpdateApplicationRequest,
 };
 use crate::ContextAtomic;
 
@@ -1532,6 +1532,23 @@ impl ContextClient {
         self.context_manager
             .send(ContextMessage::SyncGroup {
                 request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn apply_signed_group_op(
+        &self,
+        op: crate::local_governance::SignedGroupOp,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::ApplySignedGroupOp {
+                request: ApplySignedGroupOpRequest { op },
                 outcome: sender,
             })
             .await

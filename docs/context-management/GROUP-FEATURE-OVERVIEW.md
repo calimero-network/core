@@ -4,6 +4,7 @@ Context Groups let you organize multiple contexts under a single workspace, mana
 shared membership, and propagate application upgrades across all contexts at once.
 
 **If you're looking for:**
+- [Local group governance (no chain)](./LOCAL-GROUP-GOVERNANCE.md) · [Migration](./LOCAL-GROUP-GOVERNANCE-MIGRATION.md) · `merod init --group-governance local` (no NEAR protocol block or relayer signer in generated context client config)
 - [What groups are and why they exist](#what-are-context-groups)
 - [Creating and managing groups (CLI)](#cli-reference)
 - [HTTP API reference](#http-api)

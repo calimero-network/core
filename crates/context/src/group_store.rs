@@ -2,25 +2,30 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use calimero_context_config::repr::ReprBytes;
-use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::types::{
+    ContextGroupId, GroupRevealPayloadData, SignedGroupOpenInvitation, SignerId,
+};
+use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::client::ContextClient;
+use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupContextAlias,
     GroupContextAllowlist, GroupContextIndex, GroupContextLastMigration,
     GroupContextLastMigrationValue, GroupContextVisibility, GroupContextVisibilityValue,
-    GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis, GroupDefaultVisValue, GroupMember,
-    GroupMemberAlias, GroupMemberCapability, GroupMemberCapabilityValue, GroupMeta, GroupMetaValue,
-    GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
-    GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
+    GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis, GroupDefaultVisValue, GroupLocalGovNonce,
+    GroupMember, GroupMemberAlias, GroupMemberCapability, GroupMemberCapabilityValue, GroupMeta,
+    GroupMetaValue, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus,
+    GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
     GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
     GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_PREFIX,
     GROUP_META_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
+use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
 // ---------------------------------------------------------------------------
@@ -117,6 +122,363 @@ pub fn remove_group_member(
     let key = GroupMember::new(group_id.to_bytes(), *identity);
     handle.delete(&key)?;
     Ok(())
+}
+
+pub fn get_local_gov_nonce(
+    store: &Store,
+    group_id: &ContextGroupId,
+    signer: &PublicKey,
+) -> EyreResult<Option<u64>> {
+    let handle = store.handle();
+    let key = GroupLocalGovNonce::new(group_id.to_bytes(), *signer);
+    Ok(handle.get(&key)?)
+}
+
+pub fn set_local_gov_nonce(
+    store: &Store,
+    group_id: &ContextGroupId,
+    signer: &PublicKey,
+    nonce: u64,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupLocalGovNonce::new(group_id.to_bytes(), *signer);
+    handle.put(&key, &nonce)?;
+    Ok(())
+}
+
+fn delete_local_gov_nonce_for_signer(
+    store: &Store,
+    group_id: &ContextGroupId,
+    signer: &PublicKey,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupLocalGovNonce::new(group_id.to_bytes(), *signer);
+    handle.delete(&key)?;
+    Ok(())
+}
+
+/// Delete all [`GroupLocalGovNonce`] rows for current group members (best-effort; ignores missing).
+fn delete_local_gov_nonces_for_listed_members(
+    store: &Store,
+    group_id: &ContextGroupId,
+    members: &[(PublicKey, GroupMemberRole)],
+) -> EyreResult<()> {
+    for (pk, _) in members {
+        let _ = delete_local_gov_nonce_for_signer(store, group_id, pk);
+    }
+    Ok(())
+}
+
+/// Remove all local rows for a group (metadata, members, caps, aliases, …).  
+/// Caller must enforce admin authorization and `count_group_contexts == 0`.
+pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
+    let members_snapshot = list_group_members(store, group_id, 0, usize::MAX)?;
+    delete_local_gov_nonces_for_listed_members(store, group_id, &members_snapshot)?;
+
+    loop {
+        let batch = list_group_members(store, group_id, 0, 500)?;
+        if batch.is_empty() {
+            break;
+        }
+        for (identity, _role) in &batch {
+            remove_group_member(store, group_id, identity)?;
+        }
+    }
+
+    delete_all_member_capabilities(store, group_id)?;
+    delete_all_member_aliases(store, group_id)?;
+    delete_default_capabilities(store, group_id)?;
+    delete_default_visibility(store, group_id)?;
+    delete_group_alias(store, group_id)?;
+    delete_all_context_last_migrations(store, group_id)?;
+    delete_group_upgrade(store, group_id)?;
+    delete_all_group_signing_keys(store, group_id)?;
+    delete_group_meta(store, group_id)?;
+    Ok(())
+}
+
+fn validate_visibility_mode(mode: u8) -> EyreResult<()> {
+    if mode > 1 {
+        bail!("visibility mode must be 0 (Open) or 1 (Restricted), got {mode}");
+    }
+    Ok(())
+}
+
+fn ensure_not_last_admin_removal(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+) -> EyreResult<()> {
+    if !is_group_admin(store, group_id, member)? {
+        return Ok(());
+    }
+    if count_group_admins(store, group_id)? > 1 {
+        return Ok(());
+    }
+    bail!("cannot remove the last admin of the group");
+}
+
+fn ensure_not_last_admin_demotion(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+    new_role: &GroupMemberRole,
+) -> EyreResult<()> {
+    if *new_role == GroupMemberRole::Admin {
+        return Ok(());
+    }
+    if !is_group_admin(store, group_id, member)? {
+        return Ok(());
+    }
+    if count_group_admins(store, group_id)? > 1 {
+        return Ok(());
+    }
+    bail!("cannot demote the last admin of the group");
+}
+
+fn apply_join_with_invitation_claim(
+    store: &Store,
+    group_id: &ContextGroupId,
+    joiner: &PublicKey,
+    signed_invitation: &SignedGroupOpenInvitation,
+    invitee_signature_hex: &str,
+) -> EyreResult<()> {
+    let inv = &signed_invitation.invitation;
+    if inv.group_id != *group_id {
+        bail!("invitation group_id does not match operation");
+    }
+    let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
+    if !is_group_admin(store, group_id, &inviter_pk)? {
+        bail!("inviter is not a group admin");
+    }
+
+    let inv_bytes = borsh::to_vec(inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+    let inv_hash = Sha256::digest(&inv_bytes);
+    let inv_sig_hex = signed_invitation.inviter_signature.trim_start_matches("0x");
+    let inv_sig = hex::decode(inv_sig_hex).map_err(|e| eyre::eyre!("inviter signature hex: {e}"))?;
+    let inv_sig_bytes: [u8; 64] = inv_sig
+        .try_into()
+        .map_err(|_| eyre::eyre!("inviter signature must be 64 bytes"))?;
+    inviter_pk
+        .verify_raw_signature(&inv_hash, &inv_sig_bytes)
+        .map_err(|e| eyre::eyre!("inviter signature verification failed: {e}"))?;
+
+    let reveal = GroupRevealPayloadData {
+        signed_open_invitation: signed_invitation.clone(),
+        new_member_identity: SignerId::from(*joiner.digest()),
+    };
+    let reveal_bytes = borsh::to_vec(&reveal).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+    let reveal_hash = Sha256::digest(&reveal_bytes);
+    let join_hex = invitee_signature_hex.trim_start_matches("0x");
+    let join_sig = hex::decode(join_hex).map_err(|e| eyre::eyre!("invitee signature hex: {e}"))?;
+    let join_sig_bytes: [u8; 64] = join_sig
+        .try_into()
+        .map_err(|_| eyre::eyre!("invitee signature must be 64 bytes"))?;
+    joiner
+        .verify_raw_signature(&reveal_hash, &join_sig_bytes)
+        .map_err(|e| eyre::eyre!("invitee signature verification failed: {e}"))?;
+
+    if check_group_membership(store, group_id, joiner)? {
+        bail!("identity is already a member of this group");
+    }
+    add_group_member(store, group_id, joiner, GroupMemberRole::Member)?;
+    Ok(())
+}
+
+/// Apply a [`SignedGroupOp`] to the local group store (signature, monotonic nonce, admin rules).
+pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreResult<()> {
+    op.verify_signature()
+        .map_err(|e| eyre::eyre!("signed group op: {e}"))?;
+    let group_id = ContextGroupId::from(op.group_id);
+    let last = get_local_gov_nonce(store, &group_id, &op.signer)?.unwrap_or(0);
+    if op.nonce <= last {
+        bail!(
+            "signed group op nonce must be strictly increasing (got {}, last {})",
+            op.nonce,
+            last
+        );
+    }
+
+    match &op.op {
+        GroupOp::Noop => {}
+        GroupOp::MemberAdded { member, role } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            add_group_member(store, &group_id, member, role.clone())?;
+        }
+        GroupOp::MemberRemoved { member } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            ensure_not_last_admin_removal(store, &group_id, member)?;
+            remove_group_member(store, &group_id, member)?;
+        }
+        GroupOp::MemberRoleSet { member, role } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            ensure_not_last_admin_demotion(store, &group_id, member, role)?;
+            add_group_member(store, &group_id, member, role.clone())?;
+        }
+        GroupOp::MemberCapabilitySet { member, capabilities } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            set_member_capability(store, &group_id, member, *capabilities)?;
+        }
+        GroupOp::DefaultCapabilitiesSet { capabilities } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            set_default_capabilities(store, &group_id, *capabilities)?;
+        }
+        GroupOp::UpgradePolicySet { policy } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            let mut meta = load_group_meta(store, &group_id)?
+                .ok_or_else(|| eyre::eyre!("group metadata not found"))?;
+            meta.upgrade_policy = policy.clone();
+            save_group_meta(store, &group_id, &meta)?;
+        }
+        GroupOp::TargetApplicationSet {
+            app_key,
+            target_application_id,
+        } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            let mut meta = load_group_meta(store, &group_id)?
+                .ok_or_else(|| eyre::eyre!("group metadata not found"))?;
+            meta.app_key = *app_key;
+            meta.target_application_id = *target_application_id;
+            save_group_meta(store, &group_id, &meta)?;
+        }
+        GroupOp::ContextRegistered { context_id } => {
+            if !is_group_admin_or_has_capability(
+                store,
+                &group_id,
+                &op.signer,
+                MemberCapabilities::CAN_CREATE_CONTEXT,
+            )? {
+                bail!(
+                    "only group admin or members with CAN_CREATE_CONTEXT can register a context"
+                );
+            }
+            register_context_in_group(store, &group_id, context_id)?;
+        }
+        GroupOp::ContextDetached { context_id } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            match get_group_for_context(store, context_id)? {
+                Some(g) if g == group_id => {
+                    unregister_context_from_group(store, &group_id, context_id)?;
+                }
+                Some(_) => bail!("context is registered to a different group"),
+                None => bail!("context is not registered in any group"),
+            }
+        }
+        GroupOp::DefaultVisibilitySet { mode } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            validate_visibility_mode(*mode)?;
+            set_default_visibility(store, &group_id, *mode)?;
+        }
+        GroupOp::ContextVisibilitySet {
+            context_id,
+            mode,
+            creator,
+        } => {
+            let is_admin = is_group_admin(store, &group_id, &op.signer)?;
+            if !is_admin && op.signer != *creator {
+                bail!("only group admin or context creator can set context visibility");
+            }
+            validate_visibility_mode(*mode)?;
+            set_context_visibility(store, &group_id, context_id, *mode, *creator.as_ref())?;
+            if *mode == 1 {
+                if !check_context_allowlist(store, &group_id, context_id, creator)? {
+                    add_to_context_allowlist(store, &group_id, context_id, creator)?;
+                }
+            }
+        }
+        GroupOp::ContextAllowlistReplaced { context_id, members } => {
+            let is_admin = is_group_admin(store, &group_id, &op.signer)?;
+            if !is_admin {
+                if let Some((_, creator_bytes)) =
+                    get_context_visibility(store, &group_id, context_id)?
+                {
+                    if creator_bytes != *op.signer {
+                        bail!("only admin or context creator can replace the allowlist");
+                    }
+                } else {
+                    bail!("context visibility not found for context in group");
+                }
+            }
+            clear_context_allowlist(store, &group_id, context_id)?;
+            for m in members {
+                add_to_context_allowlist(store, &group_id, context_id, m)?;
+            }
+        }
+        GroupOp::ContextAliasSet { context_id, alias } => {
+            let is_admin = is_group_admin(store, &group_id, &op.signer)?;
+            if !is_admin {
+                if let Some((_, creator_bytes)) =
+                    get_context_visibility(store, &group_id, context_id)?
+                {
+                    if creator_bytes != *op.signer {
+                        bail!("only admin or context creator can set context alias");
+                    }
+                } else {
+                    bail!("context visibility not found for context in group");
+                }
+            }
+            set_context_alias(store, &group_id, context_id, alias)?;
+        }
+        GroupOp::MemberAliasSet { member, alias } => {
+            let is_admin = is_group_admin(store, &group_id, &op.signer)?;
+            if !is_admin && op.signer != *member {
+                bail!("only group admin or the member can set member alias");
+            }
+            set_member_alias(store, &group_id, member, alias)?;
+        }
+        GroupOp::GroupAliasSet { alias } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            set_group_alias(store, &group_id, alias)?;
+        }
+        GroupOp::GroupDelete => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            if count_group_contexts(store, &group_id)? > 0 {
+                bail!("cannot delete group: one or more contexts are still registered");
+            }
+            delete_group_local_rows(store, &group_id)?;
+        }
+        GroupOp::GroupMigrationSet { migration } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            let mut meta = load_group_meta(store, &group_id)?
+                .ok_or_else(|| eyre::eyre!("group metadata not found"))?;
+            meta.migration = migration.clone();
+            save_group_meta(store, &group_id, &meta)?;
+        }
+        GroupOp::JoinWithInvitationClaim {
+            signed_invitation,
+            invitee_signature_hex,
+        } => {
+            apply_join_with_invitation_claim(
+                store,
+                &group_id,
+                &op.signer,
+                signed_invitation,
+                invitee_signature_hex,
+            )?;
+        }
+        #[allow(unreachable_patterns)]
+        _ => bail!("unsupported group op variant for local apply"),
+    }
+
+    set_local_gov_nonce(store, &group_id, &op.signer, op.nonce)?;
+    Ok(())
+}
+
+/// Sign the next monotonic [`SignedGroupOp`] for `signer_sk`, apply via [`apply_local_signed_group_op`],
+/// and return `borsh` bytes for [`calimero_node_primitives::client::NodeClient::publish_signed_group_op`].
+pub fn sign_apply_local_group_op_borsh(
+    store: &Store,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    op: GroupOp,
+) -> EyreResult<Vec<u8>> {
+    let last = get_local_gov_nonce(store, group_id, &signer_sk.public_key())?.unwrap_or(0);
+    let nonce = last
+        .checked_add(1)
+        .ok_or_else(|| eyre::eyre!("group governance nonce overflow"))?;
+    let signed = SignedGroupOp::sign(signer_sk, group_id.to_bytes(), None, nonce, op)?;
+    apply_local_signed_group_op(store, &signed)?;
+    borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))
 }
 
 pub fn get_group_member_role(
@@ -1557,6 +1919,329 @@ mod tests {
 
         add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
         assert!(require_group_admin(&store, &gid, &member).is_err());
+    }
+
+    #[test]
+    fn apply_local_signed_group_op_nonce_and_admin() {
+        use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+        use calimero_primitives::identity::PrivateKey;
+        use rand::rngs::OsRng;
+
+        let mut rng = OsRng;
+        let store = test_store();
+        let gid = test_group_id();
+        let gid_bytes = gid.to_bytes();
+        let admin_sk = PrivateKey::random(&mut rng);
+        let admin_pk = admin_sk.public_key();
+        add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+        let member_pk = PrivateKey::random(&mut rng).public_key();
+
+        let op1 = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            None,
+            1,
+            GroupOp::MemberAdded {
+                member: member_pk,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op1).unwrap();
+        assert!(check_group_membership(&store, &gid, &member_pk).unwrap());
+
+        let op_dup_nonce = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            None,
+            1,
+            GroupOp::Noop,
+        )
+        .unwrap();
+        assert!(apply_local_signed_group_op(&store, &op_dup_nonce).is_err());
+
+        let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, None, 2, GroupOp::Noop).unwrap();
+        apply_local_signed_group_op(&store, &op2).unwrap();
+
+        let non_admin_sk = PrivateKey::random(&mut rng);
+        add_group_member(
+            &store,
+            &gid,
+            &non_admin_sk.public_key(),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
+        let op_bad = SignedGroupOp::sign(
+            &non_admin_sk,
+            gid_bytes,
+            None,
+            1,
+            GroupOp::MemberAdded {
+                member: PrivateKey::random(&mut rng).public_key(),
+                role: GroupMemberRole::Member,
+            },
+        )
+        .unwrap();
+        assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
+    }
+
+    #[test]
+    fn apply_local_member_alias_member_signer_or_admin() {
+        use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+        use calimero_primitives::identity::PrivateKey;
+        use rand::rngs::OsRng;
+
+        let mut rng = OsRng;
+        let store = test_store();
+        let gid = test_group_id();
+        let gid_bytes = gid.to_bytes();
+        let admin_sk = PrivateKey::random(&mut rng);
+        let admin_pk = admin_sk.public_key();
+        save_group_meta(&store, &gid, &test_meta()).unwrap();
+        add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+        let member_sk = PrivateKey::random(&mut rng);
+        let member_pk = member_sk.public_key();
+        add_group_member(&store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+
+        let op = SignedGroupOp::sign(
+            &member_sk,
+            gid_bytes,
+            None,
+            1,
+            GroupOp::MemberAliasSet {
+                member: member_pk,
+                alias: "alice".to_owned(),
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op).unwrap();
+        assert_eq!(
+            get_member_alias(&store, &gid, &member_pk).unwrap().as_deref(),
+            Some("alice")
+        );
+
+        let other_sk = PrivateKey::random(&mut rng);
+        let op_bad = SignedGroupOp::sign(
+            &other_sk,
+            gid_bytes,
+            None,
+            1,
+            GroupOp::MemberAliasSet {
+                member: member_pk,
+                alias: "bob".to_owned(),
+            },
+        )
+        .unwrap();
+        assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
+
+        let admin_op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            None,
+            1,
+            GroupOp::MemberAliasSet {
+                member: member_pk,
+                alias: "carol".to_owned(),
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &admin_op).unwrap();
+        assert_eq!(
+            get_member_alias(&store, &gid, &member_pk).unwrap().as_deref(),
+            Some("carol")
+        );
+    }
+
+    #[test]
+    fn apply_local_context_alias_admin_or_creator() {
+        use calimero_context_config::MemberCapabilities;
+        use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+        use calimero_primitives::identity::PrivateKey;
+        use rand::rngs::OsRng;
+
+        let mut rng = OsRng;
+        let store = test_store();
+        let gid = test_group_id();
+        let gid_bytes = gid.to_bytes();
+        let admin_sk = PrivateKey::random(&mut rng);
+        let admin_pk = admin_sk.public_key();
+        save_group_meta(&store, &gid, &test_meta()).unwrap();
+        add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+        let creator_sk = PrivateKey::random(&mut rng);
+        let creator_pk = creator_sk.public_key();
+        add_group_member(&store, &gid, &creator_pk, GroupMemberRole::Member).unwrap();
+        set_member_capability(
+            &store,
+            &gid,
+            &creator_pk,
+            MemberCapabilities::CAN_CREATE_CONTEXT,
+        )
+        .unwrap();
+
+        let context_id = ContextId::from([0x33; 32]);
+
+        let op_reg = SignedGroupOp::sign(
+            &creator_sk,
+            gid_bytes,
+            None,
+            1,
+            GroupOp::ContextRegistered {
+                context_id,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op_reg).unwrap();
+
+        set_context_visibility(&store, &gid, &context_id, 0, *creator_pk).unwrap();
+
+        let op_alias = SignedGroupOp::sign(
+            &creator_sk,
+            gid_bytes,
+            None,
+            2,
+            GroupOp::ContextAliasSet {
+                context_id,
+                alias: "from-creator".to_owned(),
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op_alias).unwrap();
+        assert_eq!(
+            get_context_alias(&store, &gid, &context_id).unwrap().as_deref(),
+            Some("from-creator")
+        );
+
+        let stranger_sk = PrivateKey::random(&mut rng);
+        add_group_member(
+            &store,
+            &gid,
+            &stranger_sk.public_key(),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
+        let op_bad = SignedGroupOp::sign(
+            &stranger_sk,
+            gid_bytes,
+            None,
+            1,
+            GroupOp::ContextAliasSet {
+                context_id,
+                alias: "hijack".to_owned(),
+            },
+        )
+        .unwrap();
+        assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
+
+        let op_admin = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            None,
+            1,
+            GroupOp::ContextAliasSet {
+                context_id,
+                alias: "from-admin".to_owned(),
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op_admin).unwrap();
+        assert_eq!(
+            get_context_alias(&store, &gid, &context_id).unwrap().as_deref(),
+            Some("from-admin")
+        );
+    }
+
+    #[test]
+    fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
+        use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+        use calimero_primitives::identity::PrivateKey;
+        use rand::rngs::OsRng;
+
+        let mut rng = OsRng;
+        let store = test_store();
+        let gid = test_group_id();
+        let gid_bytes = gid.to_bytes();
+        let admin_sk = PrivateKey::random(&mut rng);
+        let admin_pk = admin_sk.public_key();
+
+        save_group_meta(&store, &gid, &test_meta()).unwrap();
+        add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+        let member_m = PrivateKey::random(&mut rng).public_key();
+        add_group_member(&store, &gid, &member_m, GroupMemberRole::Member).unwrap();
+
+        let op_caps = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            None,
+            1,
+            GroupOp::MemberCapabilitySet {
+                member: member_m,
+                capabilities: 0x7,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op_caps).unwrap();
+        assert_eq!(
+            get_member_capability(&store, &gid, &member_m).unwrap().unwrap(),
+            0x7
+        );
+
+        let op_policy = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            None,
+            2,
+            GroupOp::UpgradePolicySet {
+                policy: UpgradePolicy::Automatic,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op_policy).unwrap();
+        assert_eq!(
+            load_group_meta(&store, &gid).unwrap().unwrap().upgrade_policy,
+            UpgradePolicy::Automatic
+        );
+
+        let op_del = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            None,
+            3,
+            GroupOp::GroupDelete,
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op_del).unwrap();
+        assert!(load_group_meta(&store, &gid).unwrap().is_none());
+    }
+
+    #[test]
+    fn apply_local_signed_group_op_rejects_last_admin_removal() {
+        use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+        use calimero_primitives::identity::PrivateKey;
+        use rand::rngs::OsRng;
+
+        let mut rng = OsRng;
+        let store = test_store();
+        let gid = test_group_id();
+        let gid_bytes = gid.to_bytes();
+        let admin_sk = PrivateKey::random(&mut rng);
+        let admin_pk = admin_sk.public_key();
+
+        save_group_meta(&store, &gid, &test_meta()).unwrap();
+        add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+        let op_bad = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            None,
+            1,
+            GroupOp::MemberRemoved { member: admin_pk },
+        )
+        .unwrap();
+        assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
     }
 
     #[test]
