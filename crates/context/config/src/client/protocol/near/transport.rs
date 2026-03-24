@@ -1,3 +1,5 @@
+#![cfg(feature = "near_client")]
+
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::{env, time, vec};
@@ -27,21 +29,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-use super::Protocol;
+use super::marker::Near;
 use crate::client::transport::{
     AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
-
-#[derive(Copy, Clone, Debug)]
-pub enum Near {}
-
-impl Protocol for Near {
-    const PROTOCOL: &'static str = "near";
-}
-
-impl AssociatedTransport for NearTransport<'_> {
-    type Protocol = Near;
-}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]
@@ -166,6 +157,10 @@ impl<'a> NearTransport<'a> {
 
         Self { networks }
     }
+}
+
+impl AssociatedTransport for NearTransport<'_> {
+    type Protocol = Near;
 }
 
 #[derive(Debug, Error)]

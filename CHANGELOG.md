@@ -5,6 +5,7 @@
 ### Changed
 
 - **`merod init --group-governance local`** no longer writes a **relayer** URL in the context client signer config (the field is optional in serde). Existing nodes and configs are unchanged; only new **`local`** inits omit it.
+- **`calimero-context-config`** Cargo features: **`client-base`** (relayer + client stack without `near-*` crates), **`near_client`** (NEAR JSON-RPC + local signer types), **`client`** = **`near_client`** for backward compatibility. CI checks **`client-base`** and tests **`client`**.
 
 ### Added
 

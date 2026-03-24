@@ -1,5 +1,3 @@
-#![cfg(feature = "near_client")]
-
 //! NEAR-specific implementations for context config mutations.
 
 use ed25519_dalek::{Signer, SigningKey};

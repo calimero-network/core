@@ -1,5 +1,3 @@
-#![cfg(feature = "near_client")]
-
 //! NEAR Protocol specific implementations for context proxy queries.
 
 use super::super::requests::{

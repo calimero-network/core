@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+#[cfg(feature = "near_client")]
 use crate::client::protocol::near::Credentials as NearCredentials;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -39,12 +40,22 @@ pub struct ClientSigner {
     pub local: LocalConfig,
 }
 
+#[cfg(feature = "near_client")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LocalConfig {
     #[serde(flatten)]
     pub protocols: BTreeMap<String, ClientLocalConfig>,
 }
 
+/// When `near_client` is disabled, only empty `protocols` are accepted (relayer-only stack).
+#[cfg(not(feature = "near_client"))]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct LocalConfig {
+    #[serde(default)]
+    pub protocols: BTreeMap<String, serde_json::Value>,
+}
+
+#[cfg(feature = "near_client")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientLocalConfig {
     #[serde(flatten)]
@@ -56,6 +67,7 @@ pub struct ClientRelayerSigner {
     pub url: Url,
 }
 
+#[cfg(feature = "near_client")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientLocalSigner {
     pub rpc_url: Url,
@@ -63,6 +75,7 @@ pub struct ClientLocalSigner {
     pub credentials: Credentials,
 }
 
+#[cfg(feature = "near_client")]
 #[non_exhaustive]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]

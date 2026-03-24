@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "client")]
+#[cfg(feature = "client-base")]
 pub mod client;
 pub mod repr;
 pub mod types;
