@@ -371,7 +371,8 @@ fn apply_join_with_invitation_claim(
 }
 
 /// Maximum number of parent hashes allowed in a single [`SignedGroupOp`].
-/// Prevents DoS from malicious ops with unbounded parent lists.
+/// Chosen to allow realistic merge breadth (multi-admin concurrent ops) while
+/// bounding memory/CPU cost during signature verification and storage.
 const MAX_PARENT_OP_HASHES: usize = 256;
 
 /// Maximum DAG heads before forcing a synthetic merge. Prevents unbounded
@@ -594,7 +595,14 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         .collect();
     new_heads.push(content_hash);
     if new_heads.len() > MAX_DAG_HEADS {
-        new_heads.truncate(MAX_DAG_HEADS);
+        let excess = new_heads.len() - MAX_DAG_HEADS;
+        tracing::warn!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            dropped = excess,
+            remaining = MAX_DAG_HEADS,
+            "DAG heads exceeded cap, dropping oldest heads"
+        );
+        new_heads.drain(..excess);
     }
     set_op_head(store, &group_id, next_seq, new_heads)?;
 

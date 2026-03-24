@@ -13,8 +13,11 @@ use thiserror::Error;
 
 /// Wire/schema version for [`SignedGroupOp`].
 ///
-/// v1 was never persisted in any release — it existed only on the feature branch
-/// during development. No backward-compatible deserialization is needed.
+/// v2: `parent_op_hash: Option` changed to `parent_op_hashes: Vec` for
+/// multi-parent DAG support. See `DAG-BASED-GOVERNANCE.md`.
+///
+/// v1 was internal to feature branch development and never deployed to any
+/// persistent network. No backward-compatible deserialization is needed.
 pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 2;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
