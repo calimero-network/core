@@ -112,13 +112,35 @@ where
         let (mut parts, body) = req.into_parts();
         let method = parts.method.clone();
         let headers = parts.headers.clone();
+        let uri = parts.uri.clone();
 
         async move {
             if method != Method::OPTIONS {
                 let auth_response = match service.verify_token_from_headers(&headers).await {
                     Ok(resp) => resp,
                     Err(_) => {
-                        return Ok(StatusCode::UNAUTHORIZED.into_response());
+                        // Fallback: extract token from ?token= query parameter.
+                        // Browser WebSocket and EventSource APIs cannot set custom
+                        // headers, so the JS client passes the JWT as a query param.
+                        let token = uri.query().and_then(|q| {
+                            q.split('&').find_map(|pair| {
+                                let (key, value) = pair.split_once('=')?;
+                                (key == "token").then(|| value.to_owned())
+                            })
+                        });
+                        match token {
+                            Some(ref t) => {
+                                match service.verify_token_string(t, Some(&headers)).await {
+                                    Ok(resp) => resp,
+                                    Err(_) => {
+                                        return Ok(StatusCode::UNAUTHORIZED.into_response());
+                                    }
+                                }
+                            }
+                            None => {
+                                return Ok(StatusCode::UNAUTHORIZED.into_response());
+                            }
+                        }
                     }
                 };
 
