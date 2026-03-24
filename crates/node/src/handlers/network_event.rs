@@ -48,9 +48,6 @@ impl Handler<NetworkEvent> for NodeManager {
                                     .sync_group(SyncGroupRequest {
                                         group_id,
                                         requester: None,
-                                        protocol: None,
-                                        network_id: None,
-                                        contract_id: None,
                                     })
                                     .await
                                 {
@@ -645,9 +642,6 @@ impl Handler<NetworkEvent> for NodeManager {
                                             .sync_group(SyncGroupRequest {
                                                 group_id,
                                                 requester: None,
-                                                protocol: None,
-                                                network_id: None,
-                                                contract_id: None,
                                             })
                                             .await
                                         {

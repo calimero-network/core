@@ -2072,12 +2072,6 @@ pub struct RegisterGroupSigningKeyApiResponseData {
 pub struct SyncGroupApiRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub protocol: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub network_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub contract_id: Option<String>,
 }
 
 impl Validate for SyncGroupApiRequest {

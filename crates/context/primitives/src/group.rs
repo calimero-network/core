@@ -301,11 +301,6 @@ impl Message for GetGroupForContextRequest {
 pub struct SyncGroupRequest {
     pub group_id: ContextGroupId,
     pub requester: Option<PublicKey>,
-    /// Optional contract coordinates. If not provided, uses the node's
-    /// configured "near" protocol params.
-    pub protocol: Option<String>,
-    pub network_id: Option<String>,
-    pub contract_id: Option<String>,
 }
 
 impl Message for SyncGroupRequest {
