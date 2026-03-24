@@ -281,6 +281,12 @@ where
             let response = request_builder(auth_header).await?;
 
             if response.status() == 401 && retry_count < MAX_RETRIES {
+                if self.node_name.is_none() {
+                    bail!(
+                        "Authentication required but no node name is available to load or persist tokens"
+                    );
+                }
+
                 retry_count += 1;
 
                 // Try to refresh first; fall back to full re-auth on any failure
