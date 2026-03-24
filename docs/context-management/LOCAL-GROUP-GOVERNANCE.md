@@ -230,7 +230,7 @@ Audit and remove or gate:
 ### 11.5 Success criteria for “blockchain removed”
 
 - [x] **No NEAR protocol params** in generated **`[context.config]`** for **`merod init --group-governance local`** (R1 gate). **`relayer`** is optional in the context client signer config and omitted for **`local`** init.
-- [ ] CI passes with **chain stubs** disabled or features off *(workspace **`cargo test`** already includes **`calimero-context`**; a build **without** NEAR crates on the link line is **R3+**)*.
+- [ ] CI passes with **chain stubs** disabled or features off *(see **[§11.10](#1110-ci-guardrail-placeholder)**; workspace **`cargo test`** already includes **`calimero-context`**; a build **without** NEAR crates on the link line is **R3+**)*.
 - [x] Docs state **single** governance story for **`local`** (this file + §2 / §7).
 
 ### 11.6 R3+ kickoff (next engineering passes)
@@ -238,10 +238,10 @@ Audit and remove or gate:
 Use this as a **starting order**; adjust with product priority.
 
 1. **Parity sign-off (§11.4)** — Schedule and run **[§11.7](#117-staging-parity-pass-product)** on staging; file gaps before deleting **`external`** code.
-2. **Dependency audit** — Run `scripts/audit-near-deps-for-r3.sh` from the workspace root (wraps `cargo tree -p merod -i …` for key `near-*` crates). Map each edge to “required for **`external`** only” vs removable.
-3. **Feature sketch for `no-chain` / `minimal`** — Extend `calimero-context-config` (and dependents) with features that stub or omit NEAR transports first; only then drop `near-*` from default `merod` builds.
+2. **Dependency audit** — Run `scripts/audit-near-deps-for-r3.sh`; read **§11.9** (“Typical edges”) for the current summary. Map each edge to “required for **`external`** only” vs removable.
+3. **Feature sketch for `no-chain` / `minimal`** — See **[§11.9](#119-minimal-build-sketch-r3)**; extend `calimero-context-config` (and dependents) with features that stub or omit NEAR transports first; only then drop `near-*` from default `merod` builds.
 4. **Downstream inventory** — Fill in **[§11.8](#118-downstream-inventory-r3)** (`contracts`, infra, SDKs, `mero-tee`, automation); decide migrate vs document vs out-of-scope.
-5. **CI guardrail** — After (3), add a job that runs `cargo check -p merod --no-default-features …` (exact flags TBD) so the minimal graph does not regress.
+5. **CI guardrail** — After (3), follow **[§11.10](#1110-ci-guardrail-placeholder)** (exact `cargo check` flags TBD once features land).
 
 ### 11.7 Staging parity pass (product)
 
@@ -321,6 +321,53 @@ Add one row per surface; set **Decision** when triaged. **N/A** is fine for area
 
 - **`local`**-only operators may still add **`[protocols.near]`** later for chain-backed apps; inventory should capture **defaults** and **automation** that still inject **`external`** or relayer URLs without an explicit choice.
 - When every row has a **Decision** and owners agree, check **§11.4 — Downstream** and link the filled table (or ticket) from your release plan.
+
+### 11.9 Minimal build sketch (R3)
+
+**Purpose:** Track how to reach a **`merod`** binary (or test surface) that does **not** link `near-*` for **`local`**-only SKUs. Nothing here is implemented yet; it informs §11.6 step 3.
+
+#### Dependency audit (how to refresh)
+
+Run from the workspace root:
+
+```bash
+./scripts/audit-near-deps-for-r3.sh
+```
+
+**Typical edges into `near-*` from `merod` today** (inverse tree; always re-run the script before acting):
+
+- **`calimero-context-config`** with features **`client`** + **`near_client`** → JSON-RPC stack and **`near-primitives`** (see `crates/context/config/Cargo.toml` `[features]`).
+- **`merod`** depends on **`near-crypto`** directly (init / signer helpers).
+- **`mero-auth`** pulls **`near-primitives`** / JSON-RPC for chain-adjacent auth paths.
+- Other workspace crates (`calimero-node`, `calimero-server`, …) transitively depend on the same stacks.
+
+#### Proposed layering (working table)
+
+| Crate / area | Today | Direction for `minimal` / `no-chain` |
+|--------------|-------|--------------------------------------|
+| `calimero-context-config` | `default = []`; **`client`** enables HTTP + **`near_client`** | Split “HTTP relayer only” vs “NEAR JSON-RPC”; optional stub types when **`near_client`** is off |
+| `merod` | Always **`near-crypto`** | Gate init/signing paths behind a **`merod`** feature or split binary (TBD) |
+| `mero-auth` | NEAR types in tree | Feature-gate chain-backed providers vs embedded-only |
+| `calimero-node` / `calimero-server` | Transitive | After config + auth, trim imports or use trait objects where feasible |
+
+Update this table as spikes land; link PRs in your tracker.
+
+### 11.10 CI guardrail (placeholder)
+
+**Purpose:** Satisfy §11.5 (“CI passes with chain stubs disabled or features off”) once §11.9 features exist.
+
+**Planned shape (not wired yet):**
+
+1. Add workspace / `merod` features per §11.9.
+2. In CI (e.g. `.github/workflows/ci-checks.yml`), add a job or step:
+
+   ```bash
+   cargo check -p merod --no-default-features -F <minimal-flags-tbd>
+   ```
+
+3. Document the exact flags here when the first **`minimal`** build is green.
+
+Until then, the extra **`cargo test -p calimero-context-config --features client`** step remains the guardrail for the context **client** stack.
 
 ---
 
