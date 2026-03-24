@@ -2,8 +2,8 @@
 
 use std::process::Command;
 
-use camino::Utf8PathBuf;
 use calimero_context::config::GroupGovernanceMode;
+use camino::Utf8PathBuf;
 
 #[tokio::test]
 async fn local_init_omits_relayer_signer_in_config() {

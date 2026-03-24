@@ -67,6 +67,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test -p calimero-context-config --features client
 
+      - name: Cargo check (merod, local-only init binary)
+        if: ${{ !cancelled() }}
+        run: cargo check -p merod --no-default-features
+
       - name: Cargo deny
         if: ${{ !cancelled() }}
         run: |
