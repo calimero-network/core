@@ -238,7 +238,7 @@ Audit and remove or gate:
 Use this as a **starting order**; adjust with product priority.
 
 1. **Parity sign-off (§11.4)** — Run through the shipped **`local`** surfaces (groups, invites, upgrades, visibility, join flows) on a staging matrix; file gaps before deleting **`external`** code.
-2. **Dependency audit** — From the node binary path, run `cargo tree -p merod -i near-primitives` (and related `near-*`) to list what still pulls NEAR; map each to “required for **`external`** only” vs removable.
+2. **Dependency audit** — Run `scripts/audit-near-deps-for-r3.sh` from the workspace root (wraps `cargo tree -p merod -i …` for key `near-*` crates). Map each edge to “required for **`external`** only” vs removable.
 3. **Feature sketch for `no-chain` / `minimal`** — Extend `calimero-context-config` (and dependents) with features that stub or omit NEAR transports first; only then drop `near-*` from default `merod` builds.
 4. **Downstream inventory** — List `contracts`, infra templates, SDKs, and `mero-tee` image init that assume **`external`** or relayer-in-config; decide migrate vs document.
 5. **CI guardrail** — After (3), add a job that runs `cargo check -p merod --no-default-features …` (exact flags TBD) so the minimal graph does not regress.
