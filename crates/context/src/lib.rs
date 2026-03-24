@@ -22,6 +22,7 @@ use crate::metrics::Metrics;
 
 pub mod config;
 pub mod error;
+pub mod governance_dag;
 pub mod group_store;
 pub mod handlers;
 mod metrics;
