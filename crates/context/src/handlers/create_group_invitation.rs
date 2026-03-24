@@ -69,11 +69,8 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
 
             // 4. Synthetic contract coordinates for local-only group governance.
-            let (protocol, network, contract_id) = (
-                "local".to_owned(),
-                "local".to_owned(),
-                "local".to_owned(),
-            );
+            let (protocol, network, contract_id) =
+                ("local".to_owned(), "local".to_owned(), "local".to_owned());
 
             // 5. Fetch admin signing key and construct + sign the invitation
             let signing_key_bytes =

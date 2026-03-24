@@ -7,7 +7,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId as PrimitiveContextId, UpgradePolicy};
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 use generic_array::sequence::Concat;
-use generic_array::typenum::{U1, U8, U32};
+use generic_array::typenum::{U1, U32, U8};
 use generic_array::GenericArray;
 
 use crate::db::Column;

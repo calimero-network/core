@@ -58,20 +58,16 @@ impl Handler<UpdateGroupSettingsRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
-        let effective_signing_key = node_identity
-            .map(|(_, sk)| sk)
-            .or_else(|| {
-                group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
-                    .ok()
-                    .flatten()
-            });
+        let effective_signing_key = node_identity.map(|(_, sk)| sk).or_else(|| {
+            group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
+                .ok()
+                .flatten()
+        });
 
         ActorResponse::r#async(
             async move {
                 let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                    eyre::eyre!(
-                        "local group governance requires a signing key for the requester"
-                    )
+                    eyre::eyre!("local group governance requires a signing key for the requester")
                 })?);
                 let output = group_store::sign_apply_local_group_op_borsh(
                     &datastore,
@@ -82,7 +78,12 @@ impl Handler<UpdateGroupSettingsRequest> for ContextManager {
                     },
                 )?;
                 node_client
-                    .publish_signed_group_op(group_id.to_bytes(), output.delta_id, output.parent_ids, output.bytes)
+                    .publish_signed_group_op(
+                        group_id.to_bytes(),
+                        output.delta_id,
+                        output.parent_ids,
+                        output.bytes,
+                    )
                     .await?;
 
                 let _ = node_client

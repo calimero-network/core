@@ -83,18 +83,13 @@ pub enum GroupOp {
         alias: String,
     },
     /// Human-readable alias for a member within the group.
-    MemberAliasSet {
-        member: PublicKey,
-        alias: String,
-    },
+    MemberAliasSet { member: PublicKey, alias: String },
     /// Human-readable alias for the group itself.
     GroupAliasSet { alias: String },
     /// Delete the group locally (no registered contexts; same constraints as CLI delete).
     GroupDelete,
     /// Update group migration bytes in [`GroupMetaValue`] (admin).
-    GroupMigrationSet {
-        migration: Option<Vec<u8>>,
-    },
+    GroupMigrationSet { migration: Option<Vec<u8>> },
     /// Join a group using an admin-signed open invitation plus joiner proof (see `join_group`).
     JoinWithInvitationClaim {
         signed_invitation: SignedGroupOpenInvitation,
@@ -141,7 +136,8 @@ pub enum GovernanceError {
 
 /// Bytes that are hashed/signed: `GROUP_GOVERNANCE_SIGN_DOMAIN` || `borsh(SignableGroupOp)`.
 pub fn signable_bytes(signable: &SignableGroupOp) -> Result<Vec<u8>, GovernanceError> {
-    let mut body = borsh::to_vec(signable).map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
+    let mut body =
+        borsh::to_vec(signable).map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
     let mut out = Vec::with_capacity(GROUP_GOVERNANCE_SIGN_DOMAIN.len() + body.len());
     out.extend_from_slice(GROUP_GOVERNANCE_SIGN_DOMAIN);
     out.append(&mut body);
@@ -334,7 +330,10 @@ mod tests {
 
         let h1 = op1.content_hash().expect("hash");
         let h2 = op2.content_hash().expect("hash");
-        assert_ne!(h1, h2, "different nonces must yield different content hashes");
+        assert_ne!(
+            h1, h2,
+            "different nonces must yield different content hashes"
+        );
     }
 
     #[test]

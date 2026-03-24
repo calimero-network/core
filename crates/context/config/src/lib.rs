@@ -218,4 +218,3 @@ pub enum SystemRequest {
     #[serde(rename_all = "camelCase")]
     SetValidityThreshold { threshold_ms: Timestamp },
 }
-

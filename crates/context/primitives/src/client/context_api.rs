@@ -37,7 +37,10 @@ impl ContextClient {
         Ok(Some(context_config))
     }
 
-    pub async fn get_context_application(&self, context_id: &ContextId) -> eyre::Result<Application> {
+    pub async fn get_context_application(
+        &self,
+        context_id: &ContextId,
+    ) -> eyre::Result<Application> {
         let handle = self.datastore.handle();
         let meta = handle
             .get(&key::ContextMeta::new(*context_id))?

@@ -474,7 +474,12 @@ async fn create_context(
             },
         )?;
         node_client
-            .publish_signed_group_op(gid.to_bytes(), output.delta_id, output.parent_ids, output.bytes)
+            .publish_signed_group_op(
+                gid.to_bytes(),
+                output.delta_id,
+                output.parent_ids,
+                output.bytes,
+            )
             .await?;
 
         let vis_mode = group_store::get_default_visibility(&datastore, gid)?.unwrap_or(0u8);
@@ -489,7 +494,12 @@ async fn create_context(
             },
         )?;
         node_client
-            .publish_signed_group_op(gid.to_bytes(), output_vis.delta_id, output_vis.parent_ids, output_vis.bytes)
+            .publish_signed_group_op(
+                gid.to_bytes(),
+                output_vis.delta_id,
+                output_vis.parent_ids,
+                output_vis.bytes,
+            )
             .await?;
     }
 
@@ -508,7 +518,12 @@ async fn create_context(
                 },
             )?;
             node_client
-                .publish_signed_group_op(gid.to_bytes(), output.delta_id, output.parent_ids, output.bytes)
+                .publish_signed_group_op(
+                    gid.to_bytes(),
+                    output.delta_id,
+                    output.parent_ids,
+                    output.bytes,
+                )
                 .await?;
         }
     }

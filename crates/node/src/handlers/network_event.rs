@@ -140,14 +140,18 @@ impl Handler<NetworkEvent> for NodeManager {
             }
 
             // BroadcastMessage handling - delegate to state_delta module
-            NetworkEvent::Message { message: gossip_message, .. } => {
+            NetworkEvent::Message {
+                message: gossip_message,
+                ..
+            } => {
                 let topic = gossip_message.topic.clone();
                 let Some(source) = gossip_message.source else {
                     warn!(?gossip_message, "Received message without source");
                     return;
                 };
 
-                let message = match borsh::from_slice::<BroadcastMessage<'_>>(&gossip_message.data) {
+                let message = match borsh::from_slice::<BroadcastMessage<'_>>(&gossip_message.data)
+                {
                     Ok(message) => message,
                     Err(err) => {
                         debug!(?err, ?gossip_message, "Failed to deserialize message");
@@ -724,7 +728,10 @@ impl Handler<NetworkEvent> for NodeManager {
                         use calimero_node_primitives::sync::MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES;
 
                         if payload.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
-                            warn!(len = payload.len(), "oversized GroupGovernanceDelta payload");
+                            warn!(
+                                len = payload.len(),
+                                "oversized GroupGovernanceDelta payload"
+                            );
                             return;
                         }
 

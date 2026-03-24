@@ -14,7 +14,8 @@ impl Handler<ApplySignedGroupOpRequest> for ContextManager {
     ) -> Self::Result {
         let datastore = self.datastore.clone();
         ActorResponse::r#async(
-            async move { group_store::apply_local_signed_group_op(&datastore, &op) }.into_actor(self),
+            async move { group_store::apply_local_signed_group_op(&datastore, &op) }
+                .into_actor(self),
         )
     }
 }

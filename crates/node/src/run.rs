@@ -163,10 +163,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         context_manager
     });
 
-    let node_state = crate::NodeState::new(
-        config.specialized_node.accept_mock_tee,
-        config.mode,
-    );
+    let node_state = crate::NodeState::new(config.specialized_node.accept_mock_tee, config.mode);
 
     let sync_manager = SyncManager::new(
         config.sync,

@@ -73,9 +73,7 @@ impl Handler<SetMemberAliasRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                    eyre::eyre!(
-                        "local group governance requires a signing key for the requester"
-                    )
+                    eyre::eyre!("local group governance requires a signing key for the requester")
                 })?);
                 let output = group_store::sign_apply_local_group_op_borsh(
                     &datastore,
@@ -87,7 +85,12 @@ impl Handler<SetMemberAliasRequest> for ContextManager {
                     },
                 )?;
                 node_client
-                    .publish_signed_group_op(group_id.to_bytes(), output.delta_id, output.parent_ids, output.bytes)
+                    .publish_signed_group_op(
+                        group_id.to_bytes(),
+                        output.delta_id,
+                        output.parent_ids,
+                        output.bytes,
+                    )
                     .await?;
 
                 let _ = node_client

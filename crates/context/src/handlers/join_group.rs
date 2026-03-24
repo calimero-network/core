@@ -103,7 +103,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     },
                 )?;
                 node_client
-                    .publish_signed_group_op(group_id.to_bytes(), output.delta_id, output.parent_ids, output.bytes)
+                    .publish_signed_group_op(
+                        group_id.to_bytes(),
+                        output.delta_id,
+                        output.parent_ids,
+                        output.bytes,
+                    )
                     .await?;
 
                 if let Some(ref alias_str) = group_alias {

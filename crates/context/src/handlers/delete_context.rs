@@ -74,8 +74,7 @@ impl Handler<DeleteContextRequest> for ContextManager {
                 None => None,
             };
 
-            delete_context(datastore, node_client, context_id, requester)
-                .await?;
+            delete_context(datastore, node_client, context_id, requester).await?;
 
             Ok(DeleteContextResponse { deleted: true })
         };
@@ -120,9 +119,8 @@ async fn delete_context(
     // rather than actually removing DAG history. See issue for details.
 
     if let Some(group_id) = group_store::get_group_for_context(&datastore, &context_id)? {
-        let requester = requester.ok_or_else(|| {
-            eyre::eyre!("requester required to delete a group context")
-        })?;
+        let requester =
+            requester.ok_or_else(|| eyre::eyre!("requester required to delete a group context"))?;
 
         let sk = group_store::get_group_signing_key(&datastore, &group_id, &requester)?
             .ok_or_else(|| {
@@ -135,12 +133,15 @@ async fn delete_context(
             &datastore,
             &group_id,
             &PrivateKey::from(sk),
-            calimero_context_primitives::local_governance::GroupOp::ContextDetached {
-                context_id,
-            },
+            calimero_context_primitives::local_governance::GroupOp::ContextDetached { context_id },
         )?;
         node_client
-            .publish_signed_group_op(group_id.to_bytes(), output.delta_id, output.parent_ids, output.bytes)
+            .publish_signed_group_op(
+                group_id.to_bytes(),
+                output.delta_id,
+                output.parent_ids,
+                output.bytes,
+            )
             .await?;
         let _ = node_client
             .broadcast_group_mutation(

@@ -12,13 +12,13 @@ use calimero_context::group_store::{
     self, add_group_member, apply_local_signed_group_op, get_op_head, list_group_members,
     load_group_meta, read_op_log_after, save_group_meta,
 };
-use calimero_dag::DagStore;
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, GroupRevealPayloadData, SignedGroupOpenInvitation,
     SignerId,
 };
-use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::MemberCapabilities;
+use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+use calimero_dag::DagStore;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -107,7 +107,8 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
     assert!(group_store::check_group_membership(&store_a, &gid, &new_member).unwrap());
     assert!(group_store::check_group_membership(&store_b, &gid, &new_member).unwrap());
 
-    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).expect("sign op2");
+    let op2 =
+        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).expect("sign op2");
     let payload2 = borsh_to_vec(&op2).expect("borsh encode op2");
 
     apply_wire_payload(&store_a, &payload2);
@@ -311,8 +312,10 @@ fn two_nodes_converge_on_context_visibility_after_create() {
     )
     .expect("sign ContextVisibilitySet");
 
-    for payload in [borsh_to_vec(&op1).expect("encode op1"), borsh_to_vec(&op2).expect("encode op2")]
-    {
+    for payload in [
+        borsh_to_vec(&op1).expect("encode op1"),
+        borsh_to_vec(&op2).expect("encode op2"),
+    ] {
         apply_wire_payload(&store_a, &payload);
         apply_wire_payload(&store_b, &payload);
     }
@@ -378,8 +381,10 @@ fn two_nodes_converge_on_context_visibility_without_group_default() {
     )
     .expect("sign ContextVisibilitySet");
 
-    for payload in [borsh_to_vec(&op1).expect("encode op1"), borsh_to_vec(&op2).expect("encode op2")]
-    {
+    for payload in [
+        borsh_to_vec(&op1).expect("encode op1"),
+        borsh_to_vec(&op2).expect("encode op2"),
+    ] {
         apply_wire_payload(&store_a, &payload);
         apply_wire_payload(&store_b, &payload);
     }
@@ -518,7 +523,8 @@ fn op_log_records_applied_ops_and_head_advances() {
     let decoded: SignedGroupOp = borsh::from_slice(&log[0].1).unwrap();
     assert_eq!(decoded.nonce, op1.nonce);
 
-    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).expect("sign op2");
+    let op2 =
+        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).expect("sign op2");
     apply_local_signed_group_op(&store, &op2).unwrap();
 
     let head2 = get_op_head(&store, &gid).unwrap().expect("head after op2");
@@ -578,14 +584,28 @@ fn offline_node_replays_missed_ops_from_log() {
     let member2 = PrivateKey::random(&mut rng).public_key();
 
     let op1 = SignedGroupOp::sign(
-        &admin_sk, gid_bytes, vec![[0u8; 32]], 1,
-        GroupOp::MemberAdded { member: member1, role: GroupMemberRole::Member },
-    ).unwrap();
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        1,
+        GroupOp::MemberAdded {
+            member: member1,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
     let op1_hash = op1.content_hash().unwrap();
     let op2 = SignedGroupOp::sign(
-        &admin_sk, gid_bytes, vec![op1_hash], 2,
-        GroupOp::MemberAdded { member: member2, role: GroupMemberRole::Member },
-    ).unwrap();
+        &admin_sk,
+        gid_bytes,
+        vec![op1_hash],
+        2,
+        GroupOp::MemberAdded {
+            member: member2,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
 
     for op in [&op1, &op2] {
         apply_local_signed_group_op(&store_online, op).unwrap();
@@ -733,14 +753,8 @@ async fn dag_concurrent_ops_create_two_heads() {
     // Merge op referencing both heads
     let hash_a = op_a.content_hash().unwrap();
     let hash_b = op_b.content_hash().unwrap();
-    let merge_op = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        vec![hash_a, hash_b],
-        3,
-        GroupOp::Noop,
-    )
-    .unwrap();
+    let merge_op =
+        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![hash_a, hash_b], 3, GroupOp::Noop).unwrap();
     dag.add_delta(signed_op_to_delta(&merge_op).unwrap(), &applier)
         .await
         .unwrap();
@@ -763,8 +777,7 @@ async fn dag_duplicate_delta_is_idempotent() {
     save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
     add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
 
-    let op =
-        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![[0u8; 32]], 1, GroupOp::Noop).unwrap();
+    let op = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![[0u8; 32]], 1, GroupOp::Noop).unwrap();
     let delta = signed_op_to_delta(&op).unwrap();
 
     let applier = GroupGovernanceApplier::new(store.clone());

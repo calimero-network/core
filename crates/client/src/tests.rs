@@ -576,12 +576,7 @@ async fn sync_group() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client
-        .sync_group(
-            GID,
-            SyncGroupApiRequest {
-                requester: None,
-            },
-        )
+        .sync_group(GID, SyncGroupApiRequest { requester: None })
         .await
         .unwrap();
 
