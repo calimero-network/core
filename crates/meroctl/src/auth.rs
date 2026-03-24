@@ -374,9 +374,9 @@ pub async fn authenticate_with_session_cache(
                     session_cache.store_tokens(url.as_str(), &jwt_tokens).await;
 
                     // Persist the node in config so FileTokenStorage can use tokens across
-                    // sessions.  Reload config immediately before writing to shrink the TOCTOU
-                    // window; only insert when the key is absent so an explicit `node add` entry
-                    // is never overwritten.
+                    // sessions. Reload config immediately before writing to reduce (but not
+                    // eliminate) the TOCTOU window; only insert when the key is absent so an
+                    // explicit `node add` entry is never overwritten.
                     persist_node_in_config(node_name, url, local_node_path, &jwt_tokens).await?;
 
                     Ok(ConnectionInfo::new(
@@ -410,14 +410,15 @@ pub async fn authenticate_with_session_cache(
 ///   `FileTokenStorage::load_tokens` finds the fresh credentials and does not trigger a
 ///   redundant browser-auth prompt on the next request.
 ///
-/// Config is reloaded immediately before the write to reduce the TOCTOU race window.
+/// Config is reloaded immediately before the write to reduce (but not eliminate) the
+/// TOCTOU race window.
 async fn persist_node_in_config(
     node_name: &str,
     url: &Url,
     local_node_path: Option<&Utf8PathBuf>,
     jwt_tokens: &JwtToken,
 ) -> Result<()> {
-    // Reload config just before mutating to reduce the TOCTOU window.
+    // Reload config just before mutating to reduce (but not eliminate) the TOCTOU window.
     let mut config = crate::config::Config::load().await?;
 
     let stored_tokens = Some(crate::storage::JwtToken {
