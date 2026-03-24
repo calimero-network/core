@@ -223,7 +223,7 @@ Audit and remove or gate:
 
 - [ ] **Feature parity** checklist signed off (groups, invites, upgrades, visibility — whatever you ship) on **`local`** only — use **[§11.7](#117-staging-parity-pass-product)**.
 - [x] **Migration guide:** [LOCAL-GROUP-GOVERNANCE-MIGRATION.md](./LOCAL-GROUP-GOVERNANCE-MIGRATION.md) (new installs, `external` → `local`, rollback, automation pointers).
-- [ ] **Downstream** repos (`contracts`, infra, SDKs) updated or explicitly decoupled.
+- [ ] **Downstream** repos (`contracts`, infra, SDKs) updated or explicitly decoupled — track in **[§11.8](#118-downstream-inventory-r3)**.
 
 **Scope:** Optional **`relayer`** in the context client signer and omitting it for **`merod init --group-governance local`** is an **R1** configuration item (see §11.5). It does **not** check off R3: parity sign-off, downstream decoupling, and **CI / builds without NEAR crates on the link line** remain separate workstreams.
 
@@ -240,7 +240,7 @@ Use this as a **starting order**; adjust with product priority.
 1. **Parity sign-off (§11.4)** — Schedule and run **[§11.7](#117-staging-parity-pass-product)** on staging; file gaps before deleting **`external`** code.
 2. **Dependency audit** — Run `scripts/audit-near-deps-for-r3.sh` from the workspace root (wraps `cargo tree -p merod -i …` for key `near-*` crates). Map each edge to “required for **`external`** only” vs removable.
 3. **Feature sketch for `no-chain` / `minimal`** — Extend `calimero-context-config` (and dependents) with features that stub or omit NEAR transports first; only then drop `near-*` from default `merod` builds.
-4. **Downstream inventory** — List `contracts`, infra templates, SDKs, and `mero-tee` image init that assume **`external`** or relayer-in-config; decide migrate vs document.
+4. **Downstream inventory** — Fill in **[§11.8](#118-downstream-inventory-r3)** (`contracts`, infra, SDKs, `mero-tee`, automation); decide migrate vs document vs out-of-scope.
 5. **CI guardrail** — After (3), add a job that runs `cargo check -p merod --no-default-features …` (exact flags TBD) so the minimal graph does not regress.
 
 ### 11.7 Staging parity pass (product)
@@ -300,6 +300,27 @@ Use this as the **§11.4 parity** record; add rows if your SKU exposes more APIs
 | Engineering | | | |
 
 When this table is complete, check **§11.4 — Feature parity** and archive a link to the staging ticket or runbook in your tracker.
+
+### 11.8 Downstream inventory (R3)
+
+**Purpose:** Before removing **`external`** code paths, know which **other repos and pipelines** still assume chain-backed group policy or a relayer line in node config. This table is the working record for **§11.4 — Downstream**.
+
+#### How to use
+
+Add one row per surface; set **Decision** when triaged. **N/A** is fine for areas that never touched group governance.
+
+| Area | Repo / path / doc | Assumption today (`external` / relayer / NEAR block) | Decision (migrate · document · N/A) | Owner | Status |
+|------|---------------------|------------------------------------------------------|---------------------------------------|-------|--------|
+| On-chain contracts | | | | | |
+| K8s / Helm / infra templates | | | | | |
+| `merod` / node image init (`mero-tee`, MDMA, etc.) | | | | | |
+| Client SDKs (JS, Rust, etc.) | | | | | |
+| Internal runbooks & dashboards | | | | | |
+
+#### Notes
+
+- **`local`**-only operators may still add **`[protocols.near]`** later for chain-backed apps; inventory should capture **defaults** and **automation** that still inject **`external`** or relayer URLs without an explicit choice.
+- When every row has a **Decision** and owners agree, check **§11.4 — Downstream** and link the filled table (or ticket) from your release plan.
 
 ---
 
