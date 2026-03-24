@@ -25,7 +25,7 @@ use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use crate::messages::{
     NodeMessage, RegisterPendingSpecializedNodeInvite, RemovePendingSpecializedNodeInvite,
 };
-use crate::sync::BroadcastMessage;
+use crate::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 
 mod alias;
 mod application;
@@ -209,6 +209,44 @@ impl NodeClient {
 
         if let Err(err) = self.network_client.publish(topic, payload_bytes).await {
             warn!(?group_id, %err, "failed to publish group mutation notification");
+        }
+
+        Ok(())
+    }
+
+    /// Publish a borsh-encoded `SignedGroupOp` (`calimero_context_primitives::local_governance`)
+    /// on the group gossip topic `group/<hex(group_id)>`.
+    ///
+    /// Enforces [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`] on `signed_op_borsh`.
+    pub async fn publish_signed_group_op(
+        &self,
+        group_id: [u8; 32],
+        signed_op_borsh: Vec<u8>,
+    ) -> eyre::Result<()> {
+        if signed_op_borsh.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
+            eyre::bail!(
+                "signed group op payload exceeds max ({} > {})",
+                signed_op_borsh.len(),
+                MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES
+            );
+        }
+
+        let topic_str = format!("group/{}", hex::encode(group_id));
+        let topic = TopicHash::from_raw(topic_str);
+
+        let peers = self.network_client.mesh_peer_count(topic.clone()).await;
+        if peers == 0 {
+            debug!(?group_id, "no peers on group topic, skipping signed group op broadcast");
+            return Ok(());
+        }
+
+        let payload = BroadcastMessage::SignedGroupOpV1 {
+            payload: signed_op_borsh,
+        };
+        let payload_bytes = borsh::to_vec(&payload)?;
+
+        if let Err(err) = self.network_client.publish(topic, payload_bytes).await {
+            warn!(?group_id, %err, "failed to publish signed group op");
         }
 
         Ok(())

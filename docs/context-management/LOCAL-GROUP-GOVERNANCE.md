@@ -132,7 +132,7 @@ After a valid `SignedGroupOp` is applied, update **`group_store`** (and related 
 ## 10. Next steps (Phase 1+)
 
 1. ~~Implement **types + signing/verification** in crates (context primitives / crypto).~~ **Done:** `calimero_context_primitives::local_governance` (`GroupOp`, `SignedGroupOp`, `signable_bytes`, `op_content_hash`, tests).
-2. Add **network** variant and **publish/subscribe** handling for `SignedGroupOp`.
+2. ~~Add **network** variant and **publish/subscribe** handling for `SignedGroupOp`.~~ **Done:** `BroadcastMessage::SignedGroupOpV1 { payload }` in `calimero-node-primitives` (opaque `borsh(SignedGroupOp)` bytes), `MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`, `NodeClient::publish_signed_group_op`, and inbound handling in `node/src/handlers/network_event.rs` (decode, topic vs `group_id`, `verify_signature`; apply to `group_store` deferred to Phase 3).
 3. **Apply** to `group_store` behind **`local`** mode flag.
 4. Tests: two nodes, one group, convergent state.
 5. Track **§11** for **full removal** of chain code once **`local`** paths cover all required behavior.
