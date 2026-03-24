@@ -337,24 +337,23 @@ impl TokenManager {
         }
     }
 
-    /// Verify a JWT token from request headers
-    pub async fn verify_token_from_headers(
+    /// Verify a raw JWT token string and return an AuthResponse.
+    ///
+    /// This is the shared validation path used by both header-based and
+    /// query-param authentication. It verifies the JWT signature, checks
+    /// the node URL claim (if present and headers are provided), and
+    /// confirms the key exists and has not been revoked.
+    ///
+    /// # Note
+    ///
+    /// When `headers` is `None`, the `node_url` claim validation is skipped.
+    /// All current call sites pass `Some(headers)` — `None` is reserved for
+    /// future internal use where no HTTP request headers are available.
+    pub async fn verify_token_string(
         &self,
-        headers: &HeaderMap,
+        token: &str,
+        headers: Option<&HeaderMap>,
     ) -> Result<AuthResponse, AuthError> {
-        let auth_header = headers
-            .get("Authorization")
-            .ok_or_else(|| AuthError::InvalidRequest("Missing Authorization header".to_string()))?
-            .to_str()
-            .map_err(|e| AuthError::InvalidRequest(format!("Invalid Authorization header: {e}")))?;
-
-        if !auth_header.starts_with("Bearer ") {
-            return Err(AuthError::InvalidRequest(
-                "Invalid Authorization header format. Expected 'Bearer <token>'".to_string(),
-            ));
-        }
-
-        let token = auth_header.trim_start_matches("Bearer ").trim();
         if token.is_empty() {
             return Err(AuthError::InvalidRequest(
                 "Empty token provided".to_string(),
@@ -365,8 +364,10 @@ impl TokenManager {
 
         // Check node URL if token has node information
         if let Some(token_node_url) = &claims.node_url {
-            if let Err(error_msg) = self.validate_node_host(token_node_url, headers) {
-                return Err(AuthError::InvalidToken(error_msg));
+            if let Some(headers) = headers {
+                if let Err(error_msg) = self.validate_node_host(token_node_url, headers) {
+                    return Err(AuthError::InvalidToken(error_msg));
+                }
             }
         }
 
@@ -387,6 +388,28 @@ impl TokenManager {
             key_id: claims.sub,
             permissions: claims.permissions,
         })
+    }
+
+    /// Verify a JWT token from request headers
+    pub async fn verify_token_from_headers(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<AuthResponse, AuthError> {
+        let auth_header = headers
+            .get("Authorization")
+            .ok_or_else(|| AuthError::InvalidRequest("Missing Authorization header".to_string()))?
+            .to_str()
+            .map_err(|e| AuthError::InvalidRequest(format!("Invalid Authorization header: {e}")))?;
+
+        if !auth_header.starts_with("Bearer ") {
+            return Err(AuthError::InvalidRequest(
+                "Invalid Authorization header format. Expected 'Bearer <token>'".to_string(),
+            ));
+        }
+
+        let token = auth_header.trim_start_matches("Bearer ").trim();
+
+        self.verify_token_string(token, Some(headers)).await
     }
 
     /// Revoke a key's tokens

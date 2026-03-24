@@ -59,6 +59,18 @@ impl AuthService {
         self.token_manager.verify_token_from_headers(headers).await
     }
 
+    /// Verify a raw JWT token string directly.
+    ///
+    /// Used as a fallback for WebSocket and SSE connections where the browser
+    /// API cannot set custom headers, so the token is passed as a query parameter.
+    pub async fn verify_token_string(
+        &self,
+        token: &str,
+        headers: Option<&HeaderMap>,
+    ) -> Result<AuthResponse, AuthError> {
+        self.token_manager.verify_token_string(token, headers).await
+    }
+
     /// Return the `public_key` field stored for `key_id`, if any.
     ///
     /// **Security note:** `key_id` MUST come from a previously verified JWT token
