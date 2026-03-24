@@ -580,9 +580,6 @@ async fn sync_group() {
             GID,
             SyncGroupApiRequest {
                 requester: None,
-                protocol: None,
-                network_id: None,
-                contract_id: None,
             },
         )
         .await

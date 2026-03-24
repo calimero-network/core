@@ -235,12 +235,19 @@ pub fn read_op_log_after(
 }
 
 fn delete_op_log_and_head(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
-    let mut handle = store.handle();
-    for (seq, _) in entries {
-        let key = GroupOpLog::new(group_id.to_bytes(), seq);
-        handle.delete(&key)?;
+    const BATCH_SIZE: usize = 1000;
+    loop {
+        let batch = read_op_log_after(store, group_id, 0, BATCH_SIZE)?;
+        if batch.is_empty() {
+            break;
+        }
+        let mut handle = store.handle();
+        for (seq, _) in &batch {
+            let key = GroupOpLog::new(group_id.to_bytes(), *seq);
+            handle.delete(&key)?;
+        }
     }
+    let mut handle = store.handle();
     let head_key = GroupOpHead::new(group_id.to_bytes());
     handle.delete(&head_key)?;
     Ok(())
@@ -370,6 +377,12 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     let group_id = ContextGroupId::from(op.group_id);
     let last = get_local_gov_nonce(store, &group_id, &op.signer)?.unwrap_or(0);
     if op.nonce <= last {
+        tracing::debug!(
+            nonce = op.nonce,
+            last_nonce = last,
+            signer = %op.signer,
+            "ignoring op with already-processed nonce"
+        );
         return Ok(());
     }
 
@@ -534,8 +547,6 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         _ => bail!("unsupported group op variant for local apply"),
     }
 
-    set_local_gov_nonce(store, &group_id, &op.signer, op.nonce)?;
-
     let content_hash = op
         .content_hash()
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
@@ -552,6 +563,8 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         .collect();
     new_heads.push(content_hash);
     set_op_head(store, &group_id, next_seq, new_heads)?;
+
+    set_local_gov_nonce(store, &group_id, &op.signer, op.nonce)?;
 
     Ok(())
 }
