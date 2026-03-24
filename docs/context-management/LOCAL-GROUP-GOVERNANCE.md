@@ -221,7 +221,7 @@ Audit and remove or gate:
 
 ### 11.4 Preconditions before R3 (delete)
 
-- [ ] **Feature parity** checklist signed off (groups, invites, upgrades, visibility — whatever you ship) on **`local`** only.
+- [ ] **Feature parity** checklist signed off (groups, invites, upgrades, visibility — whatever you ship) on **`local`** only — use **[§11.7](#117-staging-parity-pass-product)**.
 - [x] **Migration guide:** [LOCAL-GROUP-GOVERNANCE-MIGRATION.md](./LOCAL-GROUP-GOVERNANCE-MIGRATION.md) (new installs, `external` → `local`, rollback, automation pointers).
 - [ ] **Downstream** repos (`contracts`, infra, SDKs) updated or explicitly decoupled.
 
@@ -237,11 +237,69 @@ Audit and remove or gate:
 
 Use this as a **starting order**; adjust with product priority.
 
-1. **Parity sign-off (§11.4)** — Run through the shipped **`local`** surfaces (groups, invites, upgrades, visibility, join flows) on a staging matrix; file gaps before deleting **`external`** code.
+1. **Parity sign-off (§11.4)** — Schedule and run **[§11.7](#117-staging-parity-pass-product)** on staging; file gaps before deleting **`external`** code.
 2. **Dependency audit** — Run `scripts/audit-near-deps-for-r3.sh` from the workspace root (wraps `cargo tree -p merod -i …` for key `near-*` crates). Map each edge to “required for **`external`** only” vs removable.
 3. **Feature sketch for `no-chain` / `minimal`** — Extend `calimero-context-config` (and dependents) with features that stub or omit NEAR transports first; only then drop `near-*` from default `merod` builds.
 4. **Downstream inventory** — List `contracts`, infra templates, SDKs, and `mero-tee` image init that assume **`external`** or relayer-in-config; decide migrate vs document.
 5. **CI guardrail** — After (3), add a job that runs `cargo check -p merod --no-default-features …` (exact flags TBD) so the minimal graph does not regress.
+
+### 11.7 Staging parity pass (product)
+
+**Purpose:** Prove **`group_governance = local`** is acceptable for the surfaces you ship **before** R3 deletes **`external`** paths. This is a **scheduled staging exercise**, not a substitute for automated tests.
+
+#### Schedule (fill in)
+
+| Field | Value |
+|-------|--------|
+| **Owner** | *(product or engineering DRI)* |
+| **Target window** | *(e.g. sprint / date range)* |
+| **Build** | *(image tag, `merod` commit, or release candidate)* |
+| **Staging environment** | *(cluster name, namespace, or runbook link)* |
+| **Participants** | *(QA, SRE, app team)* |
+
+#### Topology (minimum)
+
+- **Two or more** peered nodes with **`[context].group_governance = "local"`** and **no** NEAR protocol block / relayer signer in context client config (e.g. `merod init --group-governance local` per [migration](./LOCAL-GROUP-GOVERNANCE-MIGRATION.md)).
+- Connectivity: nodes reach each other on the **group** gossip path (same expectations as production P2P).
+
+#### Checklist — `local` only
+
+Use this as the **§11.4 parity** record; add rows if your SKU exposes more APIs.
+
+**Groups & membership**
+
+- [ ] Create group; second node learns group metadata via gossip (or defined bootstrap path).
+- [ ] Add / remove members; both nodes agree on membership.
+- [ ] Delete group (if supported for your deployment).
+
+**Invitations & join**
+
+- [ ] Create group invitation (commit / reveal path your product uses).
+- [ ] Join group via invitation on a node that was not the creator.
+- [ ] Join context within group (`join_group_context` / equivalent) without NEAR bootstrap for **known** group state.
+
+**Contexts**
+
+- [ ] Create context in group; register / unregister as applicable.
+- [ ] **Visibility** and **allowlist** changes propagate (restricted / open as you ship).
+- [ ] **Aliases** (group / member / context) as applicable.
+
+**Upgrades**
+
+- [ ] **Target application** / **migration** set (signed ops path under `local`); no spurious **`Upgraded`** hint requirement if your doc says it is skipped under `local`.
+
+**Multi-node convergence**
+
+- [ ] Two-node scenario: operations on node A appear in group state on node B within expected time (ordering / nonce expectations per §5–§7).
+
+#### Sign-off
+
+| Role | Name | Date | Notes |
+|------|------|------|--------|
+| Product | | | |
+| Engineering | | | |
+
+When this table is complete, check **§11.4 — Feature parity** and archive a link to the staging ticket or runbook in your tracker.
 
 ---
 
