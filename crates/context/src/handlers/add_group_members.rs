@@ -1,13 +1,10 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::group::AddGroupMembersRequest;
 use calimero_context_primitives::local_governance::GroupOp;
-use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
-use crate::config::GroupGovernanceMode;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -64,80 +61,41 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
-        let group_governance = self.group_governance;
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
                 .flatten()
         });
-        let group_client_result = match group_governance {
-            GroupGovernanceMode::External => {
-                effective_signing_key.map(|sk| self.group_client(group_id, sk))
-            }
-            GroupGovernanceMode::Local => None,
-        };
         let members = members.clone();
 
         ActorResponse::r#async(
             async move {
-                match group_governance {
-                    GroupGovernanceMode::Local => {
-                        let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                            eyre::eyre!(
-                                "local group governance requires a signing key for the requester"
-                            )
-                        })?);
-                        for (identity, role) in &members {
-                            let op = GroupOp::MemberAdded {
-                                member: *identity,
-                                role: role.clone(),
-                            };
-                            let bytes = group_store::sign_apply_local_group_op_borsh(
-                                &datastore,
-                                &group_id,
-                                &sk,
-                                op,
-                            )?;
-                            node_client
-                                .publish_signed_group_op(group_id.to_bytes(), bytes)
-                                .await?;
-                        }
-                        info!(
-                            ?group_id,
-                            count = members.len(),
-                            %requester,
-                            "members added to group (local governance signed ops)"
-                        );
-                    }
-                    GroupGovernanceMode::External => {
-                        if let Some(client_result) = group_client_result {
-                            let mut group_client = client_result?;
-                            let signer_ids: Vec<calimero_context_config::types::SignerId> = members
-                                .iter()
-                                .map(|(pk, _)| pk.rt())
-                                .collect::<Result<Vec<_>, _>>()?;
-                            group_client.add_group_members(&signer_ids).await?;
-                        }
-
-                        for (identity, role) in &members {
-                            group_store::add_group_member(
-                                &datastore,
-                                &group_id,
-                                identity,
-                                role.clone(),
-                            )?;
-                        }
-
-                        info!(?group_id, count = members.len(), %requester, "members added to group");
-
-                        let _ = node_client
-                            .broadcast_group_mutation(
-                                group_id.to_bytes(),
-                                GroupMutationKind::MembersAdded,
-                            )
-                            .await;
-                    }
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!(
+                        "local group governance requires a signing key for the requester"
+                    )
+                })?);
+                for (identity, role) in &members {
+                    let op = GroupOp::MemberAdded {
+                        member: *identity,
+                        role: role.clone(),
+                    };
+                    let bytes = group_store::sign_apply_local_group_op_borsh(
+                        &datastore,
+                        &group_id,
+                        &sk,
+                        op,
+                    )?;
+                    node_client
+                        .publish_signed_group_op(group_id.to_bytes(), bytes)
+                        .await?;
                 }
+                info!(
+                    ?group_id,
+                    count = members.len(),
+                    %requester,
+                    "members added to group (local governance signed ops)"
+                );
                 Ok(())
             }
             .into_actor(self),

@@ -1,12 +1,10 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::UpdateMemberRoleRequest;
 use calimero_context_primitives::local_governance::GroupOp;
-use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 
-use crate::config::GroupGovernanceMode;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -96,7 +94,6 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
-        let group_governance = self.group_governance;
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
@@ -105,36 +102,23 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                match group_governance {
-                    GroupGovernanceMode::Local => {
-                        let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                            eyre::eyre!(
-                                "local group governance requires a signing key for the requester"
-                            )
-                        })?);
-                        let bytes = group_store::sign_apply_local_group_op_borsh(
-                            &datastore,
-                            &group_id,
-                            &sk,
-                            GroupOp::MemberRoleSet {
-                                member: identity,
-                                role: new_role,
-                            },
-                        )?;
-                        node_client
-                            .publish_signed_group_op(group_id.to_bytes(), bytes)
-                            .await?;
-                    }
-                    GroupGovernanceMode::External => {
-                        group_store::add_group_member(&datastore, &group_id, &identity, new_role)?;
-                        let _ = node_client
-                            .broadcast_group_mutation(
-                                group_id.to_bytes(),
-                                GroupMutationKind::MemberRoleUpdated,
-                            )
-                            .await;
-                    }
-                }
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!(
+                        "local group governance requires a signing key for the requester"
+                    )
+                })?);
+                let bytes = group_store::sign_apply_local_group_op_borsh(
+                    &datastore,
+                    &group_id,
+                    &sk,
+                    GroupOp::MemberRoleSet {
+                        member: identity,
+                        role: new_role,
+                    },
+                )?;
+                node_client
+                    .publish_signed_group_op(group_id.to_bytes(), bytes)
+                    .await?;
                 Ok(())
             }
             .into_actor(self),

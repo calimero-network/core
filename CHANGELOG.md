@@ -6,7 +6,7 @@
 
 - **`merod init --group-governance local`** no longer writes a **relayer** URL in the context client signer config (the field is optional in serde). Existing nodes and configs are unchanged; only new **`local`** inits omit it.
 - **`calimero-context-config`** Cargo features: **`client-base`** (relayer + client stack without `near-*` crates), **`near_client`** (NEAR JSON-RPC + local signer types), **`client`** = **`near_client`** for backward compatibility. CI checks **`client-base`** and tests **`client`**.
-- **`merod`** Cargo feature **`near_init`** (default): NEAR init keygen / protocol blocks in **`merod init`**. **`cargo build -p merod --no-default-features`** omits the direct **`near-crypto`** dependency; only **`merod init --group-governance local`** is supported without rebuilding.
+- **`merod`** Cargo feature **`near_init`** (default): NEAR init keygen / protocol blocks in **`merod init`**, and enables **`calimero-context-config/client`** on top of **`client-base`**. **`merod`** depends on **`calimero-context-config`** with **`client-base`** only; **`cargo build -p merod --no-default-features`** omits the direct **`near-crypto`** dependency; only **`merod init --group-governance local`** is supported without rebuilding. Transitive workspace crates may still enable the full context-config **`client`** feature.
 
 ### Added
 

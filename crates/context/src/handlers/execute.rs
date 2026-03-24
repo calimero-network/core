@@ -6,7 +6,6 @@ use std::time::Instant;
 use actix::{
     ActorFuture, ActorFutureExt, ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture,
 };
-use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::{
@@ -120,8 +119,8 @@ impl Handler<ExecuteRequest> for ContextManager {
             maybe_lazy_upgrade(&self.datastore, &context_id, &current_application_id)
         };
 
-        let external_config = match self.context_client.context_config(&context_id) {
-            Ok(Some(external_config)) => external_config,
+        match self.context_client.context_config(&context_id) {
+            Ok(Some(_)) => {}
             Ok(None) => {
                 error!(%context_id, "missing context config for context");
 
@@ -132,7 +131,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 return ActorResponse::reply(Err(ExecuteError::InternalError));
             }
-        };
+        }
 
         // Fetch the full identity, not just the sender_key
         let identity = match self.context_client.get_identity(&context_id, &executor) {
@@ -651,27 +650,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 )
                                 .await?;
                         }
-                    }
-
-                    let external_client =
-                        context_client.external_client(&context_id, &external_config)?;
-
-                    let proxy_client = external_client.proxy();
-
-                    for (proposal_id, actions) in &outcome.proposals {
-                        let actions = borsh::from_slice(actions)?;
-
-                        let proposal_id = proposal_id.rt().expect("infallible conversion");
-
-                        proxy_client
-                            .propose(&executor, &proposal_id, actions)
-                            .await?;
-                    }
-
-                    for proposal_id in &outcome.approvals {
-                        let proposal_id = proposal_id.rt().expect("infallible conversion");
-
-                        proxy_client.approve(&executor, &proposal_id).await?;
                     }
 
                     process_context_mutations(&context_client, &node_client, context_id, executor, &outcome.context_mutations).await;

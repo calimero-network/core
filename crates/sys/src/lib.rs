@@ -48,9 +48,6 @@ wasm_imports! {
         // Crypto functions
         fn ed25519_verify(signature_ptr: Ref<Buffer<'_>>, public_key_ptr: Ref<Buffer<'_>>, message_ptr: Ref<Buffer<'_>>) -> Bool;
         // --
-        fn send_proposal(value: Ref<Buffer<'_>>, buf: Ref<BufferMut<'_>>);
-        fn approve_proposal(value: Ref<Buffer<'_>>);
-        // --
         // Context Management functions
         fn context_create(
             protocol_ptr: Ref<Buffer<'_>>,

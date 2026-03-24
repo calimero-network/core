@@ -952,17 +952,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blockchain"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "calimero-wasm-abi",
- "hex",
- "serde_json",
-]
-
-[[package]]
 name = "borsh"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1280,17 +1269,9 @@ dependencies = [
  "borsh",
  "bs58 0.5.1",
  "ed25519-dalek",
- "either",
- "eyre",
- "near-crypto",
- "near-jsonrpc-client",
- "near-jsonrpc-primitives",
- "near-primitives",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
- "url",
 ]
 
 [[package]]
@@ -1556,7 +1537,6 @@ name = "calimero-sdk"
 version = "0.0.0"
 dependencies = [
  "borsh",
- "bs58 0.5.1",
  "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk-macros",
@@ -1577,19 +1557,6 @@ dependencies = [
  "quote",
  "sha2 0.10.9",
  "syn 2.0.117",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "calimero-sdk-near"
-version = "0.0.0"
-dependencies = [
- "calimero-primitives",
- "calimero-sdk",
- "near-account-id",
- "serde",
- "serde_json",
- "serde_with",
  "thiserror 1.0.69",
 ]
 
@@ -5911,30 +5878,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mero-relayer"
-version = "0.1.0"
-dependencies = [
- "axum 0.7.9",
- "borsh",
- "bs58 0.5.1",
- "calimero-context-config",
- "chrono",
- "clap",
- "color-eyre",
- "eyre",
- "futures-util",
- "prometheus-client",
- "serde",
- "serde_json",
- "tokio",
- "toml 0.8.23",
- "tower 0.4.13",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
 name = "mero-sign"
 version = "0.1.0"
 dependencies = [
@@ -6021,7 +5964,6 @@ dependencies = [
  "libp2p",
  "mero-auth",
  "multiaddr",
- "near-crypto",
  "rand 0.8.5",
  "reqwest 0.12.28",
  "semver",

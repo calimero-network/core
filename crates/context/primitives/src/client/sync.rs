@@ -17,7 +17,6 @@ use tokio::time::{sleep, Duration};
 use tracing::{debug, info, warn};
 use url::Url;
 
-use super::external::ExternalClient;
 use super::ContextClient;
 use crate::messages::{ContextMessage, SyncRequest};
 
@@ -243,11 +242,7 @@ impl ContextClient {
             |config| Ok((config, true)),
         )?;
 
-        // Fetch the LATEST revision from the blockchain
-        let remote_members_revision = {
-            let external_client = self.external_client(&context_id, &config)?;
-            external_client.config().members_revision().await?
-        };
+        let remote_members_revision = self.get_context_members_revision(&context_id).await?;
 
         // Check members revision and sync members, if needed
         if context.is_none() || remote_members_revision != config.members_revision {
@@ -261,9 +256,7 @@ impl ContextClient {
             should_save_config = true;
             config.members_revision = remote_members_revision;
 
-            // Perform the sync of the members.
-            let external_client = self.external_client(&context_id, &config)?;
-            self.sync_members(context_id, &external_client).await?;
+            self.sync_members(context_id).await?;
         } else {
             debug!(
                 %context_id,
@@ -273,11 +266,9 @@ impl ContextClient {
             );
         }
 
-        let application_revision = {
-            let external_client = self.external_client(&context_id, &config)?;
-            let config_client = external_client.config();
-            config_client.application_revision().await?
-        };
+        let application_revision = self
+            .get_context_application_revision(&context_id)
+            .await?;
 
         let mut application_id = None;
 
@@ -285,9 +276,7 @@ impl ContextClient {
             should_save_config = true;
             config.application_revision = application_revision;
 
-            let external_client = self.external_client(&context_id, &config)?;
-            let config_client = external_client.config();
-            let application = config_client.application().await?;
+            let application = self.get_context_application(&context_id).await?;
 
             application_id = Some(application.id);
 
@@ -402,30 +391,22 @@ impl ContextClient {
         Ok(context)
     }
 
-    /// Synchronizes the local member list with the authoritative state from the blockchain.
-    ///
-    /// These actions are performed:
-    /// 1. Fetch the complete list of members from the external contract.
-    /// 2. Adds any missing members to the local `datastore`.
-    /// 3. Prunes (deletes) any local members that are no longer present in the external contract.
-    async fn sync_members(
-        &self,
-        context_id: ContextId,
-        external_client: &ExternalClient<'_>,
-    ) -> eyre::Result<()> {
+    /// Synchronizes the local member list with the store-backed member list for this context.
+    async fn sync_members(&self, context_id: ContextId) -> eyre::Result<()> {
         let mut handle = self.datastore.handle();
-        let config_client = external_client.config();
 
         let mut external_members = BTreeSet::new();
 
-        // Fetch ALL remote members
+        // Fetch ALL members from local authoritative records
         for (offset, length) in (0..).map(|i| {
             (
                 Self::MEMBERS_PAGE_SIZE.saturating_mul(i),
                 Self::MEMBERS_PAGE_SIZE,
             )
         }) {
-            let members = config_client.members(offset, length).await?;
+            let members = self
+                .get_context_member_page(&context_id, offset, length)
+                .await?;
             if members.is_empty() {
                 break;
             }

@@ -6,7 +6,6 @@ use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
-use crate::config::GroupGovernanceMode;
 use crate::{group_store, ContextManager};
 
 impl Handler<SetMemberAliasRequest> for ContextManager {
@@ -38,7 +37,6 @@ impl Handler<SetMemberAliasRequest> for ContextManager {
 
         let node_sk = node_identity.map(|(_, sk)| sk);
         let signing_key = node_sk;
-        let group_governance = self.group_governance;
 
         if let Err(err) = (|| -> eyre::Result<()> {
             if group_store::load_group_meta(&self.datastore, &group_id)?.is_none() {
@@ -51,10 +49,6 @@ impl Handler<SetMemberAliasRequest> for ContextManager {
 
             if signing_key.is_none() {
                 group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
-            }
-
-            if group_governance != GroupGovernanceMode::Local {
-                group_store::set_member_alias(&self.datastore, &group_id, &member, &alias)?;
             }
 
             Ok(())
@@ -78,38 +72,33 @@ impl Handler<SetMemberAliasRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                match group_governance {
-                    GroupGovernanceMode::Local => {
-                        let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                            eyre::eyre!(
-                                "local group governance requires a signing key for the requester"
-                            )
-                        })?);
-                        let bytes = group_store::sign_apply_local_group_op_borsh(
-                            &datastore,
-                            &group_id,
-                            &sk,
-                            GroupOp::MemberAliasSet {
-                                member,
-                                alias: alias.clone(),
-                            },
-                        )?;
-                        node_client
-                            .publish_signed_group_op(group_id.to_bytes(), bytes)
-                            .await?;
-                    }
-                    GroupGovernanceMode::External => {
-                        let _ = node_client
-                            .broadcast_group_mutation(
-                                group_id.to_bytes(),
-                                GroupMutationKind::MemberAliasSet {
-                                    member: *member,
-                                    alias,
-                                },
-                            )
-                            .await;
-                    }
-                }
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!(
+                        "local group governance requires a signing key for the requester"
+                    )
+                })?);
+                let bytes = group_store::sign_apply_local_group_op_borsh(
+                    &datastore,
+                    &group_id,
+                    &sk,
+                    GroupOp::MemberAliasSet {
+                        member,
+                        alias: alias.clone(),
+                    },
+                )?;
+                node_client
+                    .publish_signed_group_op(group_id.to_bytes(), bytes)
+                    .await?;
+
+                let _ = node_client
+                    .broadcast_group_mutation(
+                        group_id.to_bytes(),
+                        GroupMutationKind::MemberAliasSet {
+                            member: *member,
+                            alias,
+                        },
+                    )
+                    .await;
 
                 info!(
                     ?group_id,

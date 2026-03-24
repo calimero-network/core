@@ -266,20 +266,21 @@ async fn is_blob_access_authorized(
 ) -> eyre::Result<bool> {
     // Fetch Context Config
     // If we don't have the context config, we can't verify anything. Deny access.
-    let context_config = match context_client.context_config(&request.context_id) {
-        Ok(Some(cfg)) => cfg,
+    match context_client.context_config(&request.context_id) {
+        Ok(Some(_)) => {}
         Ok(None) => {
             warn!(context_id=%request.context_id, "Context config not found locally. Denying blob access.");
             return Ok(false);
         }
         Err(e) => return Err(e),
-    };
+    }
 
     // Check if the Blob is Public (The Application Bundle)
     // New nodes need this to join, so they cannot sign yet.
     // We identify if the requested blob is the app bundle using the authoritative config.
-    let external_client = context_client.external_client(&request.context_id, &context_config)?;
-    let app_config = external_client.config().application().await;
+    let app_config = context_client
+        .get_context_application(&request.context_id)
+        .await;
 
     if let Ok(app) = app_config {
         let requested_blob = BlobId::from(request.blob_id);

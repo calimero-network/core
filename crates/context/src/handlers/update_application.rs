@@ -223,18 +223,15 @@ async fn finalize_application_update(
 ) -> eyre::Result<()> {
     let context_id = context.id;
 
-    let Some(config_client) = context_client.context_config(&context_id)? else {
+    if context_client.context_config(&context_id)?.is_none() {
         bail!(
             "missing context config parameters for context '{}'",
             context_id
         );
-    };
+    }
 
-    let external_client = context_client.external_client(&context_id, &config_client)?;
-
-    external_client
-        .config()
-        .update_application(&public_key, application)
+    context_client
+        .noop_config_update_application(&public_key, application)
         .await?;
 
     let mut handle = datastore.handle();

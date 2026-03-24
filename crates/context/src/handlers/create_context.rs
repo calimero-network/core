@@ -4,8 +4,6 @@ use std::mem;
 use std::sync::Arc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
-use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
-use calimero_context_config::client::utils::humanize_iter;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::client::ContextClient;
@@ -26,7 +24,7 @@ use tracing::{debug, warn};
 
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
-use crate::config::GroupGovernanceMode;
+use crate::config::ClientConfig;
 use crate::{group_store, ContextManager, ContextMeta};
 
 impl Handler<CreateContextRequest> for ContextManager {
@@ -113,7 +111,6 @@ impl Handler<CreateContextRequest> for ContextManager {
                         guard,
                         group_id,
                         alias,
-                        act.group_governance,
                     )
                     .into_actor(act)
                 })
@@ -156,7 +153,7 @@ impl Prepared<'_> {
     fn new(
         node_client: &NodeClient,
         context_client: &ContextClient,
-        external_config: &ExternalClientConfig,
+        external_config: &ClientConfig,
         contexts: &mut BTreeMap<ContextId, ContextMeta>,
         applications: &mut BTreeMap<ApplicationId, Application>,
         protocol: String,
@@ -167,23 +164,19 @@ impl Prepared<'_> {
         alias: Option<String>,
         datastore: &Store,
     ) -> eyre::Result<Self> {
-        let Some(external_config) = external_config.params.get(&protocol) else {
-            bail!(
-                "unsupported protocol: {}, expected one of `{}`",
-                protocol,
-                humanize_iter(external_config.params.keys())
-            );
-        };
+        let (network, contract) = external_config
+            .params
+            .get(&protocol)
+            .map(|p| (p.network.clone(), p.contract_id.clone()))
+            .unwrap_or_else(|| ("local".to_owned(), "local".to_owned()));
 
         let external_config = ContextConfigParams {
             protocol: protocol.into(),
-            network_id: external_config.network.clone().into(),
-            contract_id: external_config.contract_id.clone().into(),
-            // vv not used for context creation --
+            network_id: network.into(),
+            contract_id: contract.into(),
             proxy_contract: "".into(),
             application_revision: 0,
             members_revision: 0,
-            // ^^ not used for context creation --
         };
 
         let mut effective_app_id = *application_id;
@@ -319,7 +312,6 @@ async fn create_context(
     guard: OwnedMutexGuard<ContextId>,
     group_id: Option<ContextGroupId>,
     alias: Option<String>,
-    group_governance: GroupGovernanceMode,
 ) -> eyre::Result<Hash> {
     let storage = ContextStorage::from(datastore.clone(), context.id);
     // Create private storage (node-local, NOT synchronized)
@@ -406,27 +398,17 @@ async fn create_context(
         None
     };
 
-    let external_client = context_client.external_client(&context.id, &external_config)?;
-
-    let config_client = external_client.config();
-
-    config_client
-        .add_context(&context_secret, &identity, &application)
+    context_client
+        .noop_config_add_context(&context_secret, &identity, &application)
         .await?;
 
-    let proxy_contract = config_client.get_proxy_contract().await?;
+    let proxy_contract = external_config.proxy_contract.clone();
 
     let datastore = storage.commit()?;
     // Commit private storage (node-local, NOT synchronized)
     let _private_datastore = private_storage.commit()?;
 
     // Height-based delta tracking removed - now using DAG-based approach
-
-    // Capture config strings before they are consumed by into_owned() below,
-    // so we can pass them to group_client for on-chain registration if needed.
-    let group_protocol = external_config.protocol.to_string();
-    let group_network_id = external_config.network_id.to_string();
-    let group_contract_id = external_config.contract_id.to_string();
 
     let mut handle = datastore.handle();
 
@@ -436,7 +418,7 @@ async fn create_context(
             external_config.protocol.into_owned().into_boxed_str(),
             external_config.network_id.into_owned().into_boxed_str(),
             external_config.contract_id.into_owned().into_boxed_str(),
-            proxy_contract.into_boxed_str(),
+            proxy_contract.into_owned().into_boxed_str(),
             external_config.application_revision,
             external_config.members_revision,
         ),
@@ -482,106 +464,39 @@ async fn create_context(
     // messages (e.g. RemoveGroupMembers), but the window is small and the
     // worst case is a single context associated with a since-removed member.
     if let Some(ref gid) = group_id {
-        match group_governance {
-            GroupGovernanceMode::Local => {
-                let sk = PrivateKey::from(*identity_secret);
-                let bytes = group_store::sign_apply_local_group_op_borsh(
-                    &datastore,
-                    gid,
-                    &sk,
-                    GroupOp::ContextRegistered {
-                        context_id: context.id,
-                    },
-                )?;
-                node_client
-                    .publish_signed_group_op(gid.to_bytes(), bytes)
-                    .await?;
+        let sk = PrivateKey::from(*identity_secret);
+        let bytes = group_store::sign_apply_local_group_op_borsh(
+            &datastore,
+            gid,
+            &sk,
+            GroupOp::ContextRegistered {
+                context_id: context.id,
+            },
+        )?;
+        node_client
+            .publish_signed_group_op(gid.to_bytes(), bytes)
+            .await?;
 
-                // Replicate initial visibility so peers always converge: use the group default
-                // when configured, otherwise **Open** (`0`), matching typical UX.
-                let vis_mode = group_store::get_default_visibility(&datastore, gid)?
-                    .unwrap_or(0u8);
-                let bytes_vis = group_store::sign_apply_local_group_op_borsh(
-                    &datastore,
-                    gid,
-                    &sk,
-                    GroupOp::ContextVisibilitySet {
-                        context_id: context.id,
-                        mode: vis_mode,
-                        creator: identity,
-                    },
-                )?;
-                node_client
-                    .publish_signed_group_op(gid.to_bytes(), bytes_vis)
-                    .await?;
-            }
-            GroupGovernanceMode::External => {
-                let signing_key_bytes: [u8; 32] = *identity_secret;
-                let mut group_client = context_client.group_client(
-                    *gid,
-                    signing_key_bytes,
-                    group_protocol.clone(),
-                    group_network_id.clone(),
-                    group_contract_id.clone(),
-                );
-                group_client
-                    .register_context_in_group(context.id, None)
-                    .await?;
-
-                group_store::register_context_in_group(&datastore, gid, &context.id)?;
-            }
-        }
-
-        // Write-through for `external` only. Under `local`, visibility is applied via
-        // signed `ContextVisibilitySet` above so gossip peers stay consistent.
-        if group_governance == GroupGovernanceMode::External {
-            if let Ok(Some(default_vis_mode)) = group_store::get_default_visibility(&datastore, gid)
-            {
-                let creator_bytes: [u8; 32] = *identity;
-                let _ = group_store::set_context_visibility(
-                    &datastore,
-                    gid,
-                    &context.id,
-                    default_vis_mode,
-                    creator_bytes,
-                );
-                if default_vis_mode == 1u8 {
-                    let _ = group_store::add_to_context_allowlist(
-                        &datastore,
-                        gid,
-                        &context.id,
-                        &PublicKey::from(creator_bytes),
-                    );
-                }
-            }
-        }
+        let vis_mode = group_store::get_default_visibility(&datastore, gid)?.unwrap_or(0u8);
+        let bytes_vis = group_store::sign_apply_local_group_op_borsh(
+            &datastore,
+            gid,
+            &sk,
+            GroupOp::ContextVisibilitySet {
+                context_id: context.id,
+                mode: vis_mode,
+                creator: identity,
+            },
+        )?;
+        node_client
+            .publish_signed_group_op(gid.to_bytes(), bytes_vis)
+            .await?;
     }
 
     node_client.subscribe(&context.id).await?;
 
     if let Some(ref gid) = group_id {
-        if group_governance == GroupGovernanceMode::External {
-            let _ = node_client
-                .broadcast_group_mutation(
-                    gid.to_bytes(),
-                    calimero_node_primitives::sync::GroupMutationKind::ContextAttached,
-                )
-                .await;
-
-            if let Some(ref alias_str) = alias {
-                let _ = group_store::set_context_alias(&datastore, gid, &context.id, alias_str);
-
-                let _ = node_client
-                    .broadcast_group_mutation(
-                        gid.to_bytes(),
-                        calimero_node_primitives::sync::GroupMutationKind::ContextAliasSet {
-                            context_id: *context.id,
-                            alias: alias_str.clone(),
-                        },
-                    )
-                    .await;
-            }
-        } else if let Some(ref alias_str) = alias {
+        if let Some(ref alias_str) = alias {
             let sk = PrivateKey::from(*identity_secret);
             let bytes = group_store::sign_apply_local_group_op_borsh(
                 &datastore,

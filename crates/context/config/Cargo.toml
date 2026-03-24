@@ -12,37 +12,6 @@ publish = true
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 ed25519-dalek.workspace = true
-either = { workspace = true, optional = true }
-eyre = { workspace = true, optional = true }
-near-crypto = { workspace = true, optional = true }
-near-jsonrpc-client = { workspace = true, optional = true }
-near-jsonrpc-primitives = { workspace = true, optional = true }
-near-primitives = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-url = { workspace = true, optional = true }
-
-[features]
-default = []
-
-# HTTP relayer + context client wiring without NEAR JSON-RPC (no `near-*` crates).
-client-base = [
-  "dep:either",
-  "dep:eyre",
-  "reqwest/json",
-  "url/serde",
-]
-
-# NEAR local signer transport + JSON-RPC stack.
-near_client = [
-  "client-base",
-  "dep:near-crypto",
-  "dep:near-jsonrpc-client",
-  "dep:near-jsonrpc-primitives",
-  "dep:near-primitives",
-]
-
-# Backward-compatible alias: full client (same as pre-split `client`).
-client = ["near_client"]

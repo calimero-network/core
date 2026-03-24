@@ -187,27 +187,22 @@ pub async fn process_context_mutations(
 
                 // We need to fetch the config to get the external client
                 match context_client.context_config(&context_id) {
-                    Ok(Some(config)) => {
-                        match context_client.external_client(&context_id, &config) {
-                            Ok(ext) => {
-                                match ext.config().remove_members(&executor, &[member]).await {
-                                    Ok(_) => {
-                                        debug!(%context_id, %member, "Member removed successfully, syncing config...");
-                                        // Sync local state after the deletion is complete
-                                        if let Err(e) = context_client
-                                            .sync_context_config(context_id, None)
-                                            .await
-                                        {
-                                            warn!(%context_id, error = ?e, "Failed to sync context config after removing member");
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!(%context_id, %member, error = ?e, "Failed to execute RemoveMember")
-                                    }
+                    Ok(Some(_)) => {
+                        match context_client
+                            .noop_config_remove_members(&executor, &[member])
+                            .await
+                        {
+                            Ok(_) => {
+                                debug!(%context_id, %member, "Member removed successfully, syncing config...");
+                                if let Err(e) = context_client
+                                    .sync_context_config(context_id, None)
+                                    .await
+                                {
+                                    warn!(%context_id, error = ?e, "Failed to sync context config after removing member");
                                 }
                             }
                             Err(e) => {
-                                error!(%context_id, error = ?e, "Failed to create external client")
+                                error!(%context_id, %member, error = ?e, "Failed to execute RemoveMember")
                             }
                         }
                     }

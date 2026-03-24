@@ -15,7 +15,6 @@ pub mod invite_specialized_node;
 pub mod join;
 pub mod join_by_open_invitation;
 pub mod list;
-pub mod proposals;
 pub mod sync;
 pub mod update;
 pub mod watch;
@@ -69,7 +68,6 @@ pub enum ContextSubCommands {
     Identity(identity::ContextIdentityCommand),
     Alias(alias::ContextAliasCommand),
     Use(alias::UseCommand),
-    Proposals(proposals::ProposalsCommand),
     Sync(sync::SyncCommand),
 }
 
@@ -92,7 +90,6 @@ impl ContextCommand {
             ContextSubCommands::Identity(identity) => identity.run(environment).await,
             ContextSubCommands::Alias(alias) => alias.run(environment).await,
             ContextSubCommands::Use(use_cmd) => use_cmd.run(environment).await,
-            ContextSubCommands::Proposals(proposals) => proposals.run(environment).await,
             ContextSubCommands::Sync(sync) => sync.run(environment).await,
         }
     }

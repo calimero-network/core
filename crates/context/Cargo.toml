@@ -27,7 +27,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 tracing.workspace = true
 
-calimero-context-config = { workspace = true, features = ["client"] }
+calimero-context-config.workspace = true
 calimero-context-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-prelude.workspace = true

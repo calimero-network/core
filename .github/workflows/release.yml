@@ -27,7 +27,6 @@ env:
   BINARIES: |-
     merod
     meroctl
-    mero-relayer
     mero-abi
   AUTH_BINARIES: |-
     mero-auth
@@ -35,7 +34,6 @@ env:
   HOMEBREW_BINARIES: |-
     merod
     meroctl
-    mero-relayer
     mero-abi
   DOCKER_PLATFORMS: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
   INCLUDE_AARCH64: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
@@ -317,37 +315,6 @@ jobs:
           binaries: ${{ env.AUTH_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth
-          platforms: ${{ env.DOCKER_PLATFORMS }}
-          include_aarch64: ${{ env.INCLUDE_AARCH64 }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-  release-mero-relayer-container:
-    name: Release Mero Relayer container
-    needs: [prepare, build-binaries]
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-mero-relayer-${{ needs.prepare.outputs.version }}
-      cancel-in-progress: true
-    permissions:
-      contents: read
-      packages: write
-    runs-on: big-machine
-    timeout-minutes: 120
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Release
-        uses: ./.github/actions/container-release
-        with:
-          version: ${{ needs.prepare.outputs.version }}
-          release: ${{ needs.prepare.outputs.docker_release }}
-          prerelease: ${{ needs.prepare.outputs.prerelease }}
-          push: ${{ needs.prepare.outputs.docker_push }}
-          binaries: mero-relayer
-          dockerfile: .github/workflows/deps/prebuilt.relayer.Dockerfile
-          container_name: mero-relayer
           platforms: ${{ env.DOCKER_PLATFORMS }}
           include_aarch64: ${{ env.INCLUDE_AARCH64 }}
           github-token: ${{ secrets.GITHUB_TOKEN }}

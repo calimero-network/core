@@ -6,7 +6,6 @@ use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::warn;
 
-use crate::config::GroupGovernanceMode;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -38,7 +37,6 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
 
         let node_sk = node_identity.map(|(_, sk)| sk);
         let signing_key = node_sk;
-        let group_governance = self.group_governance;
 
         if let Err(err) = (|| -> eyre::Result<()> {
             if group_store::load_group_meta(&self.datastore, &group_id)?.is_none() {
@@ -70,43 +68,23 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
                 .ok()
                 .flatten()
         });
-        let group_client_result = match group_governance {
-            GroupGovernanceMode::External => {
-                effective_signing_key.map(|sk| self.group_client(group_id, sk))
-            }
-            GroupGovernanceMode::Local => None,
-        };
 
         ActorResponse::r#async(
             async move {
-                match group_governance {
-                    GroupGovernanceMode::Local => {
-                        let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                            eyre::eyre!(
-                                "local group governance requires a signing key for the requester"
-                            )
-                        })?);
-                        let bytes = group_store::sign_apply_local_group_op_borsh(
-                            &datastore,
-                            &group_id,
-                            &sk,
-                            GroupOp::ContextDetached { context_id },
-                        )?;
-                        node_client
-                            .publish_signed_group_op(group_id.to_bytes(), bytes)
-                            .await?;
-                    }
-                    GroupGovernanceMode::External => {
-                        if let Some(client_result) = group_client_result {
-                            let mut group_client = client_result?;
-                            group_client
-                                .unregister_context_from_group(context_id)
-                                .await?;
-                        }
-
-                        group_store::unregister_context_from_group(&datastore, &group_id, &context_id)?;
-                    }
-                }
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!(
+                        "local group governance requires a signing key for the requester"
+                    )
+                })?);
+                let bytes = group_store::sign_apply_local_group_op_borsh(
+                    &datastore,
+                    &group_id,
+                    &sk,
+                    GroupOp::ContextDetached { context_id },
+                )?;
+                node_client
+                    .publish_signed_group_op(group_id.to_bytes(), bytes)
+                    .await?;
 
                 if let Err(err) =
                     group_store::delete_context_visibility(&datastore, &group_id, &context_id)
@@ -125,14 +103,12 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
                     );
                 }
 
-                if group_governance == GroupGovernanceMode::External {
-                    let _ = node_client
-                        .broadcast_group_mutation(
-                            group_id.to_bytes(),
-                            GroupMutationKind::ContextDetached,
-                        )
-                        .await;
-                }
+                let _ = node_client
+                    .broadcast_group_mutation(
+                        group_id.to_bytes(),
+                        GroupMutationKind::ContextDetached,
+                    )
+                    .await;
 
                 Ok(())
             }

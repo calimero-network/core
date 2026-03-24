@@ -2,7 +2,6 @@
 
 use async_stream::try_stream;
 use borsh::BorshDeserialize;
-use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::types::{
     BlockHeight, ContextGroupId, InvitationFromMember, RevealPayloadData, SignedOpenInvitation,
     SignedRevealPayload,
@@ -18,7 +17,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
-use eyre::{bail, ContextCompat, WrapErr};
+use eyre::{ContextCompat, WrapErr};
 use futures_util::Stream;
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -31,7 +30,7 @@ use crate::group::{
     GetContextAllowlistRequest, GetContextVisibilityRequest, GetContextVisibilityResponse,
     GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse, GroupContextEntry,
-    GroupInfoResponse, GroupMemberEntry, GroupSummary, GroupUpgradeInfo, JoinGroupContextRequest,
+    GroupInfoResponse, GroupSummary, GroupUpgradeInfo, JoinGroupContextRequest,
     JoinGroupContextResponse, JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest,
     ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
     ManageContextAllowlistRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
@@ -51,7 +50,7 @@ use crate::messages::{
 use crate::ContextAtomic;
 
 pub mod crypto;
-pub mod external;
+mod context_api;
 mod sync;
 
 /// A client for interacting with the context management system.
@@ -65,8 +64,6 @@ pub struct ContextClient {
     datastore: Store,
     /// A client for communicating with the underlying Calimero node.
     node_client: NodeClient,
-    /// A client for interacting with external services, such as on-chain smart contracts.
-    external_client: ExternalClient<AnyTransport>,
     /// A lazy-initialized sender handle to the `ContextManager` actor. This is used
     /// to send asynchronous messages for processing.
     context_manager: LazyRecipient<ContextMessage>,
@@ -77,13 +74,11 @@ impl ContextClient {
     pub const fn new(
         datastore: Store,
         node_client: NodeClient,
-        external_client: ExternalClient<AnyTransport>,
         context_manager: LazyRecipient<ContextMessage>,
     ) -> Self {
         Self {
             datastore,
             node_client,
-            external_client,
             context_manager,
         }
     }
@@ -92,6 +87,10 @@ impl ContextClient {
     /// Used by node components that need to read stored data.
     pub fn datastore_handle(&self) -> calimero_store::Handle<Store> {
         self.datastore.handle()
+    }
+
+    pub(crate) const fn node_client(&self) -> &NodeClient {
+        &self.node_client
     }
 
     /// Sends a request to create a new context.
@@ -165,11 +164,7 @@ impl ContextClient {
             return Ok(None);
         };
 
-        let external_client = self.external_client(context_id, &external_config)?;
-
-        external_client
-            .config()
-            .add_members(inviter_id, &[*invitee_id])
+        self.noop_config_add_members(inviter_id, &[*invitee_id])
             .await?;
 
         let invitation_payload = ContextInvitationPayload::new(
@@ -220,11 +215,6 @@ impl ContextClient {
             return Ok(None);
         };
 
-        if external_config.protocol != "near" {
-            bail!("Failed to create an open invitaiton: only NEAR Protocol currently supports this feature");
-        }
-
-        //let external_client = self.external_client(context_id, &external_config)?;
         // TODO: query the current block height from the NEAR client and use it to calculate the
         // real expiration block height.
         let current_block_height: BlockHeight = 999_999_999;
@@ -341,7 +331,6 @@ impl ContextClient {
         let commitment_hash = hex::encode(Sha256::digest(&reveal_payload_data_bytes));
         println!("New member commitment hash: {commitment_hash:?}");
 
-        // Create a config for the external client.
         // We don't have a config for that context ID yet, as we are about to join it.
         let mut external_config_params = None;
         if !self.has_context(&context_id)? {
@@ -354,29 +343,28 @@ impl ContextClient {
                 members_revision: 0,
             };
 
-            let external_client = self.external_client(&context_id, &external_config)?;
-            let config_client = external_client.config();
-            let proxy_contract = config_client.get_proxy_contract().await?;
-            external_config.proxy_contract = proxy_contract.into();
+            if let Some(cfg) = self
+                .datastore_handle()
+                .get(&key::ContextConfig::new(context_id))?
+            {
+                external_config.proxy_contract = cfg.proxy_contract.into_string().into();
+            }
 
             external_config_params = Some(external_config);
         }
 
         let external_config_params =
-            external_config_params.context("External config is None while it should be set")?;
-        let external_client = self.external_client(&context_id, &external_config_params)?;
+            external_config_params.context("join config is None while it should be set")?;
 
-        external_client
-            .config()
-            .join_context_commit_invitation(
-                &new_member_identity.public_key,
-                commitment_hash,
-                reveal_payload_data
-                    .signed_open_invitation
-                    .invitation
-                    .expiration_height,
-            )
-            .await?;
+        self.noop_join_context_commit_invitation(
+            &new_member_identity.public_key,
+            commitment_hash,
+            reveal_payload_data
+                .signed_open_invitation
+                .invitation
+                .expiration_height,
+        )
+        .await?;
         println!("Successfully committed the invitation payload");
 
         // The new member that is going to join the context by open invitation, signs the payload
@@ -395,9 +383,7 @@ impl ContextClient {
             invitee_signature: new_member_signature,
         };
 
-        external_client
-            .config()
-            .join_context_reveal_invitation(&new_member_identity.public_key, signed_payload)
+        self.noop_join_context_reveal_invitation(&new_member_identity.public_key, signed_payload)
             .await?;
         println!("Successfully submitted the revealed invitation payload");
 

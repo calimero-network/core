@@ -2,18 +2,16 @@
 
 use std::borrow::Cow;
 
-use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "client-base")]
-pub mod client;
+pub mod client_config;
 pub mod repr;
 pub mod types;
 
 use repr::Repr;
 use types::{
     AppKey, Application, BlockHeight, Capability, ContextGroupId, ContextId, ContextIdentity,
-    ProposalId, SignedGroupRevealPayload, SignedRevealPayload, SignerId,
+    SignedGroupRevealPayload, SignedRevealPayload, SignerId,
 };
 
 pub type Timestamp = u64;
@@ -102,7 +100,6 @@ pub enum ContextRequestKind<'a> {
     Revoke {
         capabilities: Cow<'a, [(Repr<ContextIdentity>, Capability)]>,
     },
-    UpdateProxyContract,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -222,104 +219,3 @@ pub enum SystemRequest {
     SetValidityThreshold { threshold_ms: Timestamp },
 }
 
-/// Proxy contract
-/// TODO: move these to a separate cratexs
-pub type Gas = u64;
-pub type NativeToken = u128;
-
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    BorshDeserialize,
-    BorshSerialize,
-    Ord,
-    PartialOrd,
-    Eq,
-)]
-#[serde(tag = "scope", content = "params")]
-#[serde(deny_unknown_fields)]
-#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
-pub enum ProposalAction {
-    ExternalFunctionCall {
-        receiver_id: String,
-        method_name: String,
-        args: String,
-        deposit: NativeToken,
-    },
-    Transfer {
-        receiver_id: String,
-        amount: NativeToken,
-    },
-    SetNumApprovals {
-        num_approvals: u32,
-    },
-    SetActiveProposalsLimit {
-        active_proposals_limit: u32,
-    },
-    SetContextValue {
-        key: Box<[u8]>,
-        value: Box<[u8]>,
-    },
-    DeleteProposal {
-        proposal_id: Repr<ProposalId>,
-    },
-    RegisterInGroup {
-        group_id: Repr<ContextGroupId>,
-    },
-    UnregisterFromGroup {
-        group_id: Repr<ContextGroupId>,
-    },
-}
-
-// The proposal the user makes specifying the receiving account and actions they want to execute (1 tx)
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    BorshDeserialize,
-    BorshSerialize,
-    Ord,
-    PartialOrd,
-    Eq,
-)]
-#[serde(deny_unknown_fields)]
-#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
-pub struct Proposal {
-    pub id: Repr<ProposalId>,
-    pub author_id: Repr<SignerId>,
-    pub actions: Vec<ProposalAction>,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProposalApprovalWithSigner {
-    pub proposal_id: Repr<ProposalId>,
-    pub signer_id: Repr<SignerId>,
-    pub added_timestamp: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "scope", content = "params")]
-#[serde(deny_unknown_fields)]
-#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
-pub enum ProxyMutateRequest {
-    Propose {
-        proposal: Proposal,
-    },
-    Approve {
-        approval: ProposalApprovalWithSigner,
-    },
-}
-
-#[derive(PartialEq, Serialize, Deserialize, Copy, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
-pub struct ProposalWithApprovals {
-    pub proposal_id: Repr<ProposalId>,
-    pub num_approvals: usize,
-}

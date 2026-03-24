@@ -31,7 +31,7 @@ permissions:
 
 env:
   PERSIST: ^edge|latest|(\d+\.\d+\.\d+(-[a-z]+(\.\d+)?)?)$
-  PACKAGES: merod,mero-relayer
+  PACKAGES: merod
   # ^~~ comma separated list of packages to clean
 
 jobs:

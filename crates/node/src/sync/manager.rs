@@ -668,15 +668,10 @@ impl SyncManager {
             Ok((app.blob.bytecode, None))
         } else {
             // Application not found - get blob_id from context config
-            let context_config = self
+            let app_config = self
                 .context_client
-                .context_config(context_id)?
-                .ok_or_else(|| eyre::eyre!("context config not found"))?;
-            let external_client = self
-                .context_client
-                .external_client(context_id, &context_config)?;
-            let config_client = external_client.config();
-            let app_config = config_client.application().await?;
+                .get_context_application(context_id)
+                .await?;
             Ok((app_config.blob.bytecode, Some(app_config)))
         }
     }
@@ -693,15 +688,10 @@ impl SyncManager {
         } else if let Some(ref app_config) = app_config_opt {
             Ok(app_config.size)
         } else {
-            let context_config = self
+            let app_config = self
                 .context_client
-                .context_config(context_id)?
-                .ok_or_else(|| eyre::eyre!("context config not found"))?;
-            let external_client = self
-                .context_client
-                .external_client(context_id, &context_config)?;
-            let config_client = external_client.config();
-            let app_config = config_client.application().await?;
+                .get_context_application(context_id)
+                .await?;
             Ok(app_config.size)
         }
     }
@@ -715,15 +705,10 @@ impl SyncManager {
         if let Some(ref app_config) = app_config_opt {
             Ok(app_config.source.clone())
         } else {
-            let context_config = self
+            let app_config = self
                 .context_client
-                .context_config(context_id)?
-                .ok_or_else(|| eyre::eyre!("context config not found"))?;
-            let external_client = self
-                .context_client
-                .external_client(context_id, &context_config)?;
-            let config_client = external_client.config();
-            let app_config = config_client.application().await?;
+                .get_context_application(context_id)
+                .await?;
             Ok(app_config.source.clone())
         }
     }

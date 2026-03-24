@@ -447,64 +447,6 @@ impl ReprBytes for Signature {
     }
 }
 
-#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
-pub struct ProposalId(Identity);
-
-impl ReprBytes for ProposalId {
-    type EncodeBytes<'a> = [u8; 32];
-    type DecodeBytes = [u8; 32];
-
-    type Error = LengthMismatch;
-
-    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0.as_bytes()
-    }
-
-    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
-    where
-        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
-    {
-        ReprBytes::from_bytes(f).map(Self)
-    }
-}
-
-impl Serialize for ProposalId {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let encoded = bs58::encode(self.as_bytes()).into_string();
-        serializer.serialize_str(&encoded)
-    }
-}
-
-impl<'de> Deserialize<'de> for ProposalId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct ProposalIdVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for ProposalIdVisitor {
-            type Value = ProposalId;
-
-            fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a base58-encoded ProposalId string")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                ProposalId::from_bytes(|bytes| bs58::decode(value).onto(bytes))
-                    .map_err(|e| E::custom(format!("invalid ProposalId: {}", e)))
-            }
-        }
-
-        deserializer.deserialize_str(ProposalIdVisitor)
-    }
-}
-
 #[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum VerificationKeyParseError {

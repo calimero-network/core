@@ -1,5 +1,4 @@
-//! `NetworkEvent::Message` → [`crate::NodeManager`] → `ContextClient::apply_signed_group_op` → `group_store` when
-//! [`calimero_context::config::GroupGovernanceMode`] is `Local`.
+//! `NetworkEvent::Message` → [`crate::NodeManager`] → `ContextClient::apply_signed_group_op` → `group_store`.
 //!
 //! Complements `calimero-context` store-only tests and `calimero-network` gossipsub tests.
 
@@ -11,15 +10,11 @@ use actix::Actor;
 use borsh::to_vec as borsh_to_vec;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
-use calimero_context::config::GroupGovernanceMode;
 use calimero_context::group_store::{
     add_group_member, check_group_membership, get_local_gov_nonce, save_group_meta,
 };
 use calimero_context::ContextManager;
-use calimero_context_config::client::config::{
-    ClientConfig, ClientRelayerSigner, ClientSigner, LocalConfig,
-};
-use calimero_context_config::client::Client as ExternalClient;
+use calimero_context_config::client_config::{ClientConfig, ClientSigner, LocalConfig};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
@@ -92,19 +87,14 @@ async fn network_message_signed_group_op_applies_via_node_manager() {
     let client_config = ClientConfig {
         params: BTreeMap::new(),
         signer: ClientSigner {
-            relayer: Some(ClientRelayerSigner {
-                url: "http://127.0.0.1:3030".parse().expect("relayer url"),
-            }),
             local: LocalConfig {
                 protocols: BTreeMap::new(),
             },
         },
     };
-    let external_client = ExternalClient::from_config(&client_config);
     let context_client = ContextClient::new(
         store.clone(),
         node_client.clone(),
-        external_client,
         context_recipient.clone(),
     );
 
@@ -115,11 +105,10 @@ async fn network_message_signed_group_op_applies_via_node_manager() {
         context_client.clone(),
         client_config,
         None,
-        GroupGovernanceMode::Local,
         Some(&mut registry),
     );
 
-    let node_state = NodeState::new(false, NodeMode::Standard, GroupGovernanceMode::Local);
+    let node_state = NodeState::new(false, NodeMode::Standard);
 
     let sync_manager = SyncManager::new(
         SyncConfig::default(),
