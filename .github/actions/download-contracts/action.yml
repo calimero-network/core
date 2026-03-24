@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
 name: Download Contracts
 description: "Download Calimero contracts with caching based on version"
 
@@ -42,7 +43,6 @@ runs:
         key: contracts-near-dir-${{ steps.version.outputs.version }}
         restore-keys: |
           contracts-near-dir-
-          contracts-
 
     - name: Download contracts
       if: steps.cache-contracts.outputs.cache-hit != 'true'

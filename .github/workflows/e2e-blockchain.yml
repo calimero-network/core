@@ -158,7 +158,9 @@ jobs:
           merobox bootstrap run \
               near-proposals.yml \
               --image merod:local \
-              --e2e-mode
+              --e2e-mode \
+              --near-devnet \
+              --contracts-dir "$GITHUB_WORKSPACE/contracts/near"
 
       - name: Collect Docker Logs
         if: always()

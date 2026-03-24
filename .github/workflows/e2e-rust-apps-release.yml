@@ -117,7 +117,9 @@ jobs:
               if merobox bootstrap run \
                   "workflows/e2e.yml" \
                   --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                  --e2e-mode; then
+                  --e2e-mode \
+                  --near-devnet \
+                  --contracts-dir "$GITHUB_WORKSPACE/contracts/near"; then
                   success=true
                   break
               else
@@ -159,7 +161,9 @@ jobs:
               if merobox bootstrap run \
                   "workflows/xcall.yml" \
                   --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                  --e2e-mode; then
+                  --e2e-mode \
+                  --near-devnet \
+                  --contracts-dir "$GITHUB_WORKSPACE/contracts/near"; then
                   success=true
                   break
               else
