@@ -2029,6 +2029,15 @@ impl SyncManager {
             }
         };
 
+        // Group delta requests are group-scoped, not context-scoped; bypass
+        // context membership checks since the initiator sends a zero
+        // context_id placeholder.
+        if let InitPayload::GroupDeltaRequest { group_id, delta_id } = &payload {
+            self.handle_group_delta_request(*group_id, *delta_id, stream, nonce)
+                .await?;
+            return Ok(Some(()));
+        }
+
         let Some(context) = self.context_client.get_context(&context_id)? else {
             bail!("context not found: {}", context_id);
         };
@@ -2192,9 +2201,8 @@ impl SyncManager {
                 // HashComparison session. Log and ignore.
                 warn!("Received EntityPush outside of HashComparison session, ignoring");
             }
-            InitPayload::GroupDeltaRequest { group_id, delta_id } => {
-                self.handle_group_delta_request(group_id, delta_id, stream, nonce)
-                    .await?;
+            InitPayload::GroupDeltaRequest { .. } => {
+                unreachable!("handled by early return above")
             }
         };
 
