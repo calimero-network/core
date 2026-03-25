@@ -487,14 +487,6 @@ pub enum Capability {
     Proxy,
 }
 
-/// Bitfield constants for context-level member capabilities.
-pub struct ContextMemberCapabilities;
-
-impl ContextMemberCapabilities {
-    pub const MANAGE_APPLICATION: u8 = 1 << 0;
-    pub const MANAGE_MEMBERS: u8 = 1 << 1;
-}
-
 #[derive(Eq, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Signed<T> {
     payload: Repr<Box<[u8]>>,
