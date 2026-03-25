@@ -263,6 +263,27 @@ impl NodeClient {
         Ok(())
     }
 
+    pub async fn publish_group_heartbeat(
+        &self,
+        group_id: [u8; 32],
+        dag_heads: Vec<[u8; 32]>,
+        member_count: u32,
+    ) -> eyre::Result<()> {
+        let topic_str = format!("group/{}", hex::encode(group_id));
+        let topic = TopicHash::from_raw(topic_str);
+
+        let payload = BroadcastMessage::GroupStateHeartbeat {
+            group_id,
+            dag_heads,
+            member_count,
+        };
+        let payload_bytes = borsh::to_vec(&payload)?;
+        if let Err(err) = self.network_client.publish(topic, payload_bytes).await {
+            debug!(?group_id, %err, "failed to publish group heartbeat");
+        }
+        Ok(())
+    }
+
     /// Broadcast a specialized node invite discovery to the global invite topic.
     ///
     /// This broadcasts a discovery message and registers a pending invite so that

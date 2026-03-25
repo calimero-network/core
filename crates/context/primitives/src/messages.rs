@@ -154,7 +154,7 @@ pub struct ApplySignedGroupOpRequest {
 }
 
 impl Message for ApplySignedGroupOpRequest {
-    type Result = eyre::Result<()>;
+    type Result = eyre::Result<bool>;
 }
 
 /// Parameters for executing a state migration during application update.

@@ -2193,15 +2193,59 @@ impl SyncManager {
                 warn!("Received EntityPush outside of HashComparison session, ignoring");
             }
             InitPayload::GroupDeltaRequest { group_id, delta_id } => {
-                debug!(
-                    group_id = %hex::encode(group_id),
-                    delta_id = %hex::encode(delta_id),
-                    "Received GroupDeltaRequest — not yet implemented"
-                );
+                self.handle_group_delta_request(group_id, delta_id, stream, nonce)
+                    .await?;
             }
         };
 
         Ok(Some(()))
+    }
+}
+
+impl SyncManager {
+    async fn handle_group_delta_request(
+        &self,
+        group_id: [u8; 32],
+        delta_id: [u8; 32],
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use calimero_context::group_store;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_context_primitives::local_governance::SignedGroupOp;
+
+        let gid = ContextGroupId::from(group_id);
+        let store = self.context_client.datastore_handle().into_inner();
+        let entries =
+            group_store::read_op_log_after(&store, &gid, 0, usize::MAX).unwrap_or_default();
+
+        for (_seq, op_bytes) in &entries {
+            if let Ok(op) = borsh::from_slice::<SignedGroupOp>(op_bytes) {
+                if let Ok(hash) = op.content_hash() {
+                    if hash == delta_id {
+                        let msg = StreamMessage::Message {
+                            sequence_id: 0,
+                            payload: MessagePayload::GroupDeltaResponse {
+                                delta_id,
+                                parent_ids: op.parent_op_hashes.clone(),
+                                payload: op_bytes.clone(),
+                            },
+                            next_nonce: nonce,
+                        };
+                        super::stream::send(stream, &msg, None).await?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::GroupDeltaNotFound,
+            next_nonce: nonce,
+        };
+        super::stream::send(stream, &msg, None).await?;
+        Ok(())
     }
 }
 

@@ -709,10 +709,18 @@ impl Handler<NetworkEvent> for NodeManager {
                         let context_client = self.clients.context.clone();
                         let _ignored = ctx.spawn(
                             async move {
-                                if let Err(err) =
-                                    context_client.apply_signed_group_op(op.clone()).await
-                                {
-                                    warn!(?err, %source, "failed to apply signed group op");
+                                match context_client.apply_signed_group_op(op.clone()).await {
+                                    Ok(true) => {}
+                                    Ok(false) => {
+                                        debug!(
+                                            group_id = %hex::encode(op.group_id),
+                                            parents = op.parent_op_hashes.len(),
+                                            "signed group op pending, waiting for parent ops"
+                                        );
+                                    }
+                                    Err(err) => {
+                                        warn!(?err, %source, "failed to apply signed group op");
+                                    }
                                 }
                             }
                             .into_actor(self),
@@ -756,10 +764,18 @@ impl Handler<NetworkEvent> for NodeManager {
                         let context_client = self.clients.context.clone();
                         let _ignored = ctx.spawn(
                             async move {
-                                if let Err(err) =
-                                    context_client.apply_signed_group_op(op.clone()).await
-                                {
-                                    warn!(?err, %source, "failed to apply governance delta");
+                                match context_client.apply_signed_group_op(op.clone()).await {
+                                    Ok(true) => {}
+                                    Ok(false) => {
+                                        debug!(
+                                            group_id = %hex::encode(op.group_id),
+                                            parents = op.parent_op_hashes.len(),
+                                            "governance delta pending, waiting for parent ops"
+                                        );
+                                    }
+                                    Err(err) => {
+                                        warn!(?err, %source, "failed to apply governance delta");
+                                    }
                                 }
                             }
                             .into_actor(self),

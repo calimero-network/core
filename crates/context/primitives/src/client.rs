@@ -1529,7 +1529,7 @@ impl ContextClient {
     pub async fn apply_signed_group_op(
         &self,
         op: crate::local_governance::SignedGroupOp,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<bool> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager

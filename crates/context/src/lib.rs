@@ -195,6 +195,7 @@ impl Actor for ContextManager {
     fn started(&mut self, ctx: &mut Self::Context) {
         self.recover_in_progress_upgrades(ctx);
         self.reload_group_dags();
+        self.start_group_heartbeat(ctx);
     }
 }
 
@@ -344,6 +345,35 @@ impl ContextManager {
                 "reloaded group governance DAG"
             );
         }
+    }
+
+    fn start_group_heartbeat(&self, ctx: &mut actix::Context<Self>) {
+        let datastore = self.datastore.clone();
+        let node_client = self.node_client.clone();
+
+        ctx.run_interval(std::time::Duration::from_secs(30), move |_act, _ctx| {
+            let datastore = datastore.clone();
+            let node_client = node_client.clone();
+
+            actix::spawn(async move {
+                let groups = match group_store::enumerate_all_groups(&datastore, 0, usize::MAX) {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+
+                for (group_id_bytes, _meta) in groups {
+                    let gid = ContextGroupId::from(group_id_bytes);
+                    let head = match group_store::get_op_head(&datastore, &gid) {
+                        Ok(Some(h)) => h,
+                        _ => continue,
+                    };
+
+                    let _ = node_client
+                        .publish_group_heartbeat(group_id_bytes, head.dag_heads, 0)
+                        .await;
+                }
+            });
+        });
     }
 }
 

@@ -28,10 +28,10 @@ impl Handler<ApplySignedGroupOpRequest> for ContextManager {
             async move {
                 let mut dag = dag.lock().await;
                 match dag.add_delta(delta, &applier).await {
-                    Ok(true) => Ok(()),
+                    Ok(true) => Ok(true),
                     Ok(false) => {
                         tracing::debug!("group op queued as pending (waiting for parents)");
-                        Ok(())
+                        Ok(false)
                     }
                     Err(e) => Err(eyre::eyre!("DAG apply error: {e}")),
                 }
