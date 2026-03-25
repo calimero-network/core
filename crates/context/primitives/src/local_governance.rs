@@ -106,6 +106,11 @@ pub enum GroupOp {
         context_id: ContextId,
         context_identity: [u8; 32],
     },
+    /// Record that a member left (or was removed from) a context in this group.
+    MemberLeftContext {
+        member: PublicKey,
+        context_id: ContextId,
+    },
 }
 
 /// Payload that is actually signed (everything except the signature bytes).

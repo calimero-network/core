@@ -1086,8 +1086,7 @@ fn cascade_removal_on_member_kick() {
 
     group_store::register_context_in_group(&store, &gid, &context_id).unwrap();
 
-    track_member_context_join(&store, &gid, &member_pk, &context_id, *member_pk.as_ref())
-        .unwrap();
+    track_member_context_join(&store, &gid, &member_pk, &context_id, *member_pk.as_ref()).unwrap();
 
     {
         use calimero_store::key::ContextIdentity;

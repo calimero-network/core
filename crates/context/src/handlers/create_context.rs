@@ -1,6 +1,5 @@
 use std::collections::{btree_map, BTreeMap};
 use std::mem;
-// Removed: NonZeroUsize (DAG-based approach)
 use std::sync::Arc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
@@ -11,10 +10,13 @@ use calimero_context_primitives::local_governance::GroupOp;
 use calimero_context_primitives::messages::{CreateContextRequest, CreateContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
+use calimero_primitives::context::{
+    Context, ContextConfigParams, ContextId, GroupMemberRole, UpgradePolicy,
+};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::delta::{CausalDelta, StorageDelta};
+use calimero_store::key::GroupMetaValue;
 use calimero_store::{key, types, Store};
 use eyre::{bail, OptionExt};
 use rand::rngs::StdRng;
@@ -142,7 +144,7 @@ struct Prepared<'a> {
     identity: PublicKey,
     identity_secret: PrivateKey,
     sender_key: PrivateKey,
-    group_id: Option<ContextGroupId>,
+    group_id: ContextGroupId,
     alias: Option<String>,
 }
 
@@ -245,6 +247,37 @@ impl Prepared<'_> {
             .flatten()
             .ok_or_eyre("failed to derive a context id after 5 tries")?;
 
+        let identity = identity_secret.public_key();
+
+        // Auto-create a single-member group when no explicit group_id was provided.
+        let group_id = if let Some(gid) = group_id {
+            gid
+        } else {
+            let auto_group_id = ContextGroupId::from(*context_id.as_ref());
+            group_store::save_group_meta(
+                datastore,
+                &auto_group_id,
+                &GroupMetaValue {
+                    app_key: [0u8; 32],
+                    target_application_id: effective_app_id,
+                    upgrade_policy: UpgradePolicy::Automatic,
+                    created_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    admin_identity: identity,
+                    migration: None,
+                },
+            )?;
+            group_store::add_group_member(
+                datastore,
+                &auto_group_id,
+                &identity,
+                GroupMemberRole::Admin,
+            )?;
+            auto_group_id
+        };
+
         let application = match applications.entry(effective_app_id) {
             btree_map::Entry::Vacant(vacant) => {
                 let application = node_client
@@ -255,8 +288,6 @@ impl Prepared<'_> {
             }
             btree_map::Entry::Occupied(occupied) => occupied.into_mut(),
         };
-
-        let identity = identity_secret.public_key();
 
         let meta = Context::new(context_id, effective_app_id, Hash::default());
 
@@ -295,7 +326,7 @@ async fn create_context(
     sender_key: PrivateKey,
     init_params: Vec<u8>,
     guard: OwnedMutexGuard<ContextId>,
-    group_id: Option<ContextGroupId>,
+    group_id: ContextGroupId,
     alias: Option<String>,
 ) -> eyre::Result<Hash> {
     let storage = ContextStorage::from(datastore.clone(), context.id);
@@ -423,14 +454,6 @@ async fn create_context(
         );
     }
 
-    handle.put(
-        &key::ContextIdentity::new(context.id, identity),
-        &types::ContextIdentity {
-            private_key: Some(*identity_secret),
-            sender_key: Some(*sender_key),
-        },
-    )?;
-
     drop(handle);
 
     // Register context in group BEFORE subscribing so that a registration
@@ -439,12 +462,12 @@ async fn create_context(
     // because the async create_context future may interleave with other actor
     // messages (e.g. RemoveGroupMembers), but the window is small and the
     // worst case is a single context associated with a since-removed member.
-    if let Some(ref gid) = group_id {
+    {
         let sk = PrivateKey::from(*identity_secret);
         group_store::sign_apply_and_publish(
             &datastore,
             &node_client,
-            gid,
+            &group_id,
             &sk,
             GroupOp::ContextRegistered {
                 context_id: context.id,
@@ -452,11 +475,11 @@ async fn create_context(
         )
         .await?;
 
-        let vis_mode = group_store::get_default_visibility(&datastore, gid)?.unwrap_or(0u8);
+        let vis_mode = group_store::get_default_visibility(&datastore, &group_id)?.unwrap_or(0u8);
         group_store::sign_apply_and_publish(
             &datastore,
             &node_client,
-            gid,
+            &group_id,
             &sk,
             GroupOp::ContextVisibilitySet {
                 context_id: context.id,
@@ -465,25 +488,50 @@ async fn create_context(
             },
         )
         .await?;
+
+        // Creator membership via governance op: creates ContextIdentity with
+        // None keys that replicates to other nodes.
+        group_store::sign_apply_and_publish(
+            &datastore,
+            &node_client,
+            &group_id,
+            &sk,
+            GroupOp::MemberJoinedContext {
+                member: identity,
+                context_id: context.id,
+                context_identity: *identity.as_ref(),
+            },
+        )
+        .await?;
     }
+
+    // Store local private key + sender key on top of the identity the governance
+    // op created (governance records only the public side).
+    let mut handle = datastore.handle();
+    handle.put(
+        &key::ContextIdentity::new(context.id, identity),
+        &types::ContextIdentity {
+            private_key: Some(*identity_secret),
+            sender_key: Some(*sender_key),
+        },
+    )?;
+    drop(handle);
 
     node_client.subscribe(&context.id).await?;
 
-    if let Some(ref gid) = group_id {
-        if let Some(ref alias_str) = alias {
-            let sk = PrivateKey::from(*identity_secret);
-            group_store::sign_apply_and_publish(
-                &datastore,
-                &node_client,
-                gid,
-                &sk,
-                GroupOp::ContextAliasSet {
-                    context_id: context.id,
-                    alias: alias_str.clone(),
-                },
-            )
-            .await?;
-        }
+    if let Some(ref alias_str) = alias {
+        let sk = PrivateKey::from(*identity_secret);
+        group_store::sign_apply_and_publish(
+            &datastore,
+            &node_client,
+            &group_id,
+            &sk,
+            GroupOp::ContextAliasSet {
+                context_id: context.id,
+                alias: alias_str.clone(),
+            },
+        )
+        .await?;
     }
 
     Ok(context.root_hash)

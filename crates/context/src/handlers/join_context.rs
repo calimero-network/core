@@ -1,13 +1,15 @@
 use actix::{Handler, Message, ResponseFuture};
 use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::client::ContextClient;
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_context_primitives::messages::{JoinContextRequest, JoinContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::{ContextConfigParams, ContextId};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_store::Store;
 use eyre::eyre;
 
-use crate::ContextManager;
+use crate::{group_store, ContextManager};
 
 impl Handler<JoinContextRequest> for ContextManager {
     type Result = ResponseFuture<<JoinContextRequest as Message>::Result>;
@@ -19,10 +21,20 @@ impl Handler<JoinContextRequest> for ContextManager {
     ) -> Self::Result {
         let node_client = self.node_client.clone();
         let context_client = self.context_client.clone();
+        let datastore = self.datastore.clone();
+        let group_signing_identity = self
+            .node_group_identity()
+            .map(|(pk, sk)| (pk, PrivateKey::from(sk)));
 
         let task = async move {
-            let (context_id, invitee_id) =
-                join_context(node_client, context_client, invitation_payload).await?;
+            let (context_id, invitee_id) = join_context(
+                node_client,
+                context_client,
+                datastore,
+                group_signing_identity,
+                invitation_payload,
+            )
+            .await?;
 
             Ok(JoinContextResponse {
                 context_id,
@@ -37,13 +49,14 @@ impl Handler<JoinContextRequest> for ContextManager {
 async fn join_context(
     node_client: NodeClient,
     context_client: ContextClient,
+    datastore: Store,
+    group_signing_identity: Option<(PublicKey, PrivateKey)>,
     invitation_payload: calimero_primitives::context::ContextInvitationPayload,
 ) -> eyre::Result<(ContextId, PublicKey)> {
     let (context_id, invitee_id) = invitation_payload.parts()?;
 
     tracing::info!(%context_id, %invitee_id, "join_context: starting join flow");
 
-    // Check if we already have a fully setup identity for this context
     let already_joined = context_client
         .get_identity(&context_id, &invitee_id)?
         .and_then(|i| i.private_key)
@@ -52,9 +65,6 @@ async fn join_context(
     tracing::info!(%context_id, %invitee_id, already_joined, "join_context: checked if already joined");
 
     if already_joined {
-        // Identity exists, but check if state is initialized
-        // DAG heads being empty means no state has been synced yet
-        // (even if root_hash != [0;32] from external config sync)
         let context = context_client.get_context(&context_id)?;
         let needs_sync = context
             .map(|ctx| {
@@ -69,11 +79,10 @@ async fn join_context(
                 );
                 empty
             })
-            .unwrap_or(true); // If context doesn't exist, we definitely need sync
+            .unwrap_or(true);
 
         if needs_sync {
             tracing::info!(%context_id, %invitee_id, "join_context: triggering sync for already-joined context with empty DAG heads");
-            // State is uninitialized - subscribe and trigger sync
             node_client.subscribe(&context_id).await?;
             node_client.sync(Some(&context_id), None).await?;
         }
@@ -125,9 +134,34 @@ async fn join_context(
         },
     )?;
 
-    // Delete the identity from the zero context (a.k.a. identity pool),
-    // because we just assigned that identity to the new context.
     context_client.delete_identity(&ContextId::zero(), &invitee_id)?;
+
+    // Publish MemberJoinedContext governance op so other nodes learn about this join.
+    // Signed by the node's group admin identity if available.
+    if let Ok(Some(group_id)) = group_store::get_group_for_context(&datastore, &context_id) {
+        if let Some((_admin_pk, admin_sk)) = group_signing_identity {
+            if let Err(e) = group_store::sign_apply_and_publish(
+                &datastore,
+                &node_client,
+                &group_id,
+                &admin_sk,
+                GroupOp::MemberJoinedContext {
+                    member: invitee_id,
+                    context_id,
+                    context_identity: *invitee_id.as_ref(),
+                },
+            )
+            .await
+            {
+                tracing::warn!(
+                    %context_id,
+                    %invitee_id,
+                    ?e,
+                    "failed to publish MemberJoinedContext governance op during join"
+                );
+            }
+        }
+    }
 
     tracing::info!(%context_id, %invitee_id, "join_context: NEW join - calling subscribe and sync");
     node_client.subscribe(&context_id).await?;

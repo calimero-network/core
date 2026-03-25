@@ -746,6 +746,16 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 },
             )?;
         }
+        GroupOp::MemberLeftContext { member, context_id } => {
+            if !is_group_admin(store, &group_id, &op.signer)? && op.signer != *member {
+                bail!("only admin or the member themselves can remove from context");
+            }
+            let mut handle = store.handle();
+            let identity_key = ContextIdentity::new(*context_id, (*member).into());
+            handle.delete(&identity_key)?;
+            let track_key = GroupMemberContext::new(group_id.to_bytes(), *member, *context_id);
+            handle.delete(&track_key)?;
+        }
         #[allow(unreachable_patterns)]
         _ => bail!("unsupported group op variant for local apply"),
     }

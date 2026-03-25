@@ -89,6 +89,12 @@ impl ContextClient {
         self.datastore.handle()
     }
 
+    /// Returns a clone of the underlying `Store`.
+    /// Used by governance operations that need direct store access.
+    pub fn datastore(&self) -> &Store {
+        &self.datastore
+    }
+
     pub(crate) const fn node_client(&self) -> &NodeClient {
         &self.node_client
     }
