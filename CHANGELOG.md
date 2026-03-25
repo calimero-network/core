@@ -4,9 +4,9 @@
 
 ### Changed
 
-- **`merod init --group-governance local`** no longer writes a **relayer** URL in the context client signer config (the field is optional in serde). Existing nodes and configs are unchanged; only new **`local`** inits omit it.
-- **`calimero-context-config`** Cargo features: **`client-base`** (relayer + client stack without `near-*` crates), **`near_client`** (NEAR JSON-RPC + local signer types), **`client`** = **`near_client`** for backward compatibility. CI checks **`client-base`** and tests **`client`**.
-- **`merod`** Cargo feature **`near_init`** (default): NEAR init keygen / protocol blocks in **`merod init`**, and enables **`calimero-context-config/client`** on top of **`client-base`**. **`merod`** depends on **`calimero-context-config`** with **`client-base`** only; **`cargo build -p merod --no-default-features`** omits the direct **`near-crypto`** dependency; only **`merod init --group-governance local`** is supported without rebuilding. Transitive workspace crates may still enable the full context-config **`client`** feature.
+- **Local group governance** replaces all blockchain/NEAR/relayer infrastructure for context management. Group membership, context registration, and member capabilities are now managed via signed gossip ops and a local `group_store`. The external client, proxy client, proposal system, relayer crate, and all NEAR protocol dependencies have been removed from core.
+- **`merod init`** now produces a local-only config; the `--group-governance` flag and relayer signer are no longer applicable.
+- **`calimero-context-config`** has been simplified — the `client`, `client-base`, and `near_client` Cargo features and associated NEAR/relayer transport code have been removed.
 
 ## [0.10.1-rc.8] - 2026-03-24
 
