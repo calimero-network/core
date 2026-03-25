@@ -53,9 +53,9 @@ async fn join_context(
     group_signing_identity: Option<(PublicKey, PrivateKey)>,
     invitation_payload: calimero_primitives::context::ContextInvitationPayload,
 ) -> eyre::Result<(ContextId, PublicKey)> {
-    let (context_id, invitee_id) = invitation_payload.parts()?;
+    let (context_id, invitee_id, invitation_app_id) = invitation_payload.parts()?;
 
-    tracing::info!(%context_id, %invitee_id, "join_context: starting join flow");
+    tracing::info!(%context_id, %invitee_id, %invitation_app_id, "join_context: starting join flow");
 
     let already_joined = context_client
         .get_identity(&context_id, &invitee_id)?
@@ -105,9 +105,14 @@ async fn join_context(
     let mut config = None;
 
     if !context_client.has_context(&context_id)? {
-        let app_id = group_store::get_group_for_context(&datastore, &context_id)?
-            .and_then(|gid| group_store::load_group_meta(&datastore, &gid).ok()?)
-            .map(|meta| meta.target_application_id);
+        let zero_app_id = calimero_primitives::application::ApplicationId::from([0u8; 32]);
+        let app_id = if invitation_app_id != zero_app_id {
+            Some(invitation_app_id)
+        } else {
+            group_store::get_group_for_context(&datastore, &context_id)?
+                .and_then(|gid| group_store::load_group_meta(&datastore, &gid).ok()?)
+                .map(|meta| meta.target_application_id)
+        };
 
         config = Some(ContextConfigParams {
             application_id: app_id,

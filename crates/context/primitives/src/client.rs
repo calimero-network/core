@@ -169,7 +169,14 @@ impl ContextClient {
             return Ok(None);
         };
 
-        let invitation_payload = ContextInvitationPayload::new(*context_id, *invitee_id)?;
+        let application_id = self
+            .get_context_application(context_id)
+            .await
+            .map(|app| app.id)
+            .unwrap_or_else(|_| ApplicationId::from([0u8; DIGEST_SIZE]));
+
+        let invitation_payload =
+            ContextInvitationPayload::new(*context_id, *invitee_id, application_id)?;
 
         Ok(Some(invitation_payload))
     }
@@ -302,8 +309,14 @@ impl ContextClient {
             return Ok(None);
         }
 
+        let application_id = self
+            .get_context_application(&context_id)
+            .await
+            .map(|app| app.id)
+            .unwrap_or_else(|_| ApplicationId::from([0u8; DIGEST_SIZE]));
+
         let invitation_payload =
-            ContextInvitationPayload::new(context_id, new_member_identity.public_key)?;
+            ContextInvitationPayload::new(context_id, new_member_identity.public_key, application_id)?;
 
         let (sender, receiver) = oneshot::channel();
 
