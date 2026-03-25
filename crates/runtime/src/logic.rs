@@ -49,6 +49,9 @@ pub struct VMContext<'a> {
     pub context_id: [u8; DIGEST_SIZE],
     /// The public key of the entity executing the function call/transaction.
     pub executor_public_key: [u8; DIGEST_SIZE],
+    /// Group governance DAG heads at execution time.
+    /// Embedded in the state delta for authorization provenance.
+    pub governance_epoch: Vec<[u8; 32]>,
 }
 
 impl<'a> VMContext<'a> {
@@ -60,7 +63,7 @@ impl<'a> VMContext<'a> {
     /// * `context_id` - The unique ID for the execution context.
     /// * `executor_public_key` - The public key of the executor.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         input: Cow<'a, [u8]>,
         context_id: [u8; DIGEST_SIZE],
         executor_public_key: [u8; DIGEST_SIZE],
@@ -69,6 +72,7 @@ impl<'a> VMContext<'a> {
             input,
             context_id,
             executor_public_key,
+            governance_epoch: Vec::new(),
         }
     }
 }

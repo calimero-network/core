@@ -118,6 +118,7 @@ impl NodeClient {
         parent_ids: Vec<[u8; 32]>,
         hlc: calimero_storage::logical_clock::HybridTimestamp,
         events: Option<Vec<u8>>,
+        governance_epoch: Vec<[u8; 32]>,
     ) -> eyre::Result<()> {
         info!(
             context_id=%context.id,
@@ -125,6 +126,7 @@ impl NodeClient {
             root_hash=%context.root_hash,
             delta_id=?delta_id,
             parent_count=parent_ids.len(),
+            governance_epoch_len=governance_epoch.len(),
             "Sending state delta"
         );
 
@@ -149,6 +151,7 @@ impl NodeClient {
             artifact: encrypted.into(),
             nonce,
             events: events.map(Cow::from),
+            governance_epoch,
         };
 
         let payload = borsh::to_vec(&payload)?;

@@ -171,6 +171,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         artifact,
                         nonce,
                         events,
+                        governance_epoch,
                     } => {
                         info!(
                             %context_id,
@@ -178,6 +179,7 @@ impl Handler<NetworkEvent> for NodeManager {
                             delta_id = ?delta_id,
                             parent_count = parent_ids.len(),
                             has_events = events.is_some(),
+                            governance_epoch_len = governance_epoch.len(),
                             "Matched StateDelta message"
                         );
 
@@ -204,6 +206,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                     artifact.into_owned(),
                                     nonce,
                                     events.map(|e| e.into_owned()),
+                                    governance_epoch,
                                 )
                                 .await
                                 {

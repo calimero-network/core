@@ -600,6 +600,11 @@ pub enum BroadcastMessage<'a> {
         /// Execution events that were emitted during the state change.
         /// This field is encrypted along with the artifact.
         events: Option<Cow<'a, [u8]>>,
+
+        /// The group governance DAG head(s) when this delta was produced.
+        /// Allows receiving nodes to determine if the author was authorized
+        /// at the governance state the delta was created against.
+        governance_epoch: Vec<[u8; 32]>,
     },
 
     /// Hash heartbeat for divergence detection
