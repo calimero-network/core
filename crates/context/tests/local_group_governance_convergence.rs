@@ -865,8 +865,7 @@ fn rejects_op_with_too_many_parents() {
             h
         })
         .collect();
-    let op_ok =
-        SignedGroupOp::sign(&admin_sk, gid_bytes, parents_256, 1, GroupOp::Noop).unwrap();
+    let op_ok = SignedGroupOp::sign(&admin_sk, gid_bytes, parents_256, 1, GroupOp::Noop).unwrap();
     assert!(apply_local_signed_group_op(&store, &op_ok).is_ok());
 
     // 257 parents should be rejected
@@ -878,8 +877,7 @@ fn rejects_op_with_too_many_parents() {
             h
         })
         .collect();
-    let op_bad =
-        SignedGroupOp::sign(&admin_sk, gid_bytes, parents_257, 2, GroupOp::Noop).unwrap();
+    let op_bad = SignedGroupOp::sign(&admin_sk, gid_bytes, parents_257, 2, GroupOp::Noop).unwrap();
     assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
 }
 
