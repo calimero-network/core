@@ -13,12 +13,16 @@ use thiserror::Error;
 
 /// Wire/schema version for [`SignedGroupOp`].
 ///
+/// v3: Added `state_hash: [u8; 32]` — each op commits to the group's
+/// authorization-relevant state at signing time. On apply, a non-zero
+/// state hash is verified against the current state to reject stale ops.
+///
 /// v2: `parent_op_hash: Option` changed to `parent_op_hashes: Vec` for
 /// multi-parent DAG support. See `DAG-BASED-GOVERNANCE.md`.
 ///
 /// v1 was internal to feature branch development and never deployed to any
 /// persistent network. No backward-compatible deserialization is needed.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 2;
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 3;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
@@ -103,6 +107,7 @@ pub struct SignableGroupOp {
     pub version: u8,
     pub group_id: [u8; 32],
     pub parent_op_hashes: Vec<[u8; 32]>,
+    pub state_hash: [u8; 32],
     pub signer: PublicKey,
     pub nonce: u64,
     pub op: GroupOp,
@@ -118,6 +123,7 @@ pub struct SignedGroupOp {
     pub version: u8,
     pub group_id: [u8; 32],
     pub parent_op_hashes: Vec<[u8; 32]>,
+    pub state_hash: [u8; 32],
     pub signer: PublicKey,
     pub nonce: u64,
     pub op: GroupOp,
@@ -160,6 +166,7 @@ impl SignedGroupOp {
         sk: &PrivateKey,
         group_id: [u8; 32],
         parent_op_hashes: Vec<[u8; 32]>,
+        state_hash: [u8; 32],
         nonce: u64,
         op: GroupOp,
     ) -> Result<Self, GovernanceError> {
@@ -168,6 +175,7 @@ impl SignedGroupOp {
             version: SIGNED_GROUP_OP_SCHEMA_VERSION,
             group_id,
             parent_op_hashes,
+            state_hash,
             signer,
             nonce,
             op,
@@ -178,6 +186,7 @@ impl SignedGroupOp {
             version: signable.version,
             group_id: signable.group_id,
             parent_op_hashes: signable.parent_op_hashes,
+            state_hash: signable.state_hash,
             signer: signable.signer,
             nonce: signable.nonce,
             op: signable.op,
@@ -205,6 +214,7 @@ impl SignedGroupOp {
             version: self.version,
             group_id: self.group_id,
             parent_op_hashes: self.parent_op_hashes.clone(),
+            state_hash: self.state_hash,
             signer: self.signer,
             nonce: self.nonce,
             op: self.op.clone(),
@@ -240,6 +250,7 @@ mod tests {
             &sk,
             sample_group_id(),
             vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member,
@@ -262,6 +273,7 @@ mod tests {
             &sk,
             sample_group_id(),
             vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member,
@@ -286,6 +298,7 @@ mod tests {
             &sk,
             sample_group_id(),
             vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member,
@@ -308,6 +321,7 @@ mod tests {
             &sk,
             sample_group_id(),
             vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member,
@@ -320,6 +334,7 @@ mod tests {
             &sk,
             sample_group_id(),
             vec![],
+            [0u8; 32],
             2,
             GroupOp::MemberAdded {
                 member,
@@ -345,6 +360,7 @@ mod tests {
             version: SIGNED_GROUP_OP_SCHEMA_VERSION,
             group_id: [1u8; 32],
             parent_op_hashes: vec![],
+            state_hash: [0u8; 32],
             signer: pk,
             nonce: 42,
             op: GroupOp::Noop,

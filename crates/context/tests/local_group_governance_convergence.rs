@@ -90,6 +90,7 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
         &admin_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: new_member,
@@ -107,8 +108,8 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
     assert!(group_store::check_group_membership(&store_a, &gid, &new_member).unwrap());
     assert!(group_store::check_group_membership(&store_b, &gid, &new_member).unwrap());
 
-    let op2 =
-        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).expect("sign op2");
+    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 2, GroupOp::Noop)
+        .expect("sign op2");
     let payload2 = borsh_to_vec(&op2).expect("borsh encode op2");
 
     apply_wire_payload(&store_a, &payload2);
@@ -153,6 +154,7 @@ fn two_nodes_converge_on_target_application_and_migration() {
         &admin_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         1,
         GroupOp::TargetApplicationSet {
             app_key: [0x11; 32],
@@ -165,6 +167,7 @@ fn two_nodes_converge_on_target_application_and_migration() {
         &admin_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         2,
         GroupOp::GroupMigrationSet {
             migration: Some(b"v1-migration".to_vec()),
@@ -238,6 +241,7 @@ fn two_nodes_converge_on_join_with_invitation_claim() {
         &joiner_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         1,
         GroupOp::JoinWithInvitationClaim {
             signed_invitation,
@@ -291,6 +295,7 @@ fn two_nodes_converge_on_context_visibility_after_create() {
         &creator_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         1,
         GroupOp::ContextRegistered { context_id },
     )
@@ -299,6 +304,7 @@ fn two_nodes_converge_on_context_visibility_after_create() {
         &creator_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         2,
         GroupOp::ContextVisibilitySet {
             context_id,
@@ -360,6 +366,7 @@ fn two_nodes_converge_on_context_visibility_without_group_default() {
         &creator_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         1,
         GroupOp::ContextRegistered { context_id },
     )
@@ -368,6 +375,7 @@ fn two_nodes_converge_on_context_visibility_without_group_default() {
         &creator_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         2,
         GroupOp::ContextVisibilitySet {
             context_id,
@@ -429,6 +437,7 @@ fn two_nodes_converge_on_context_alias_as_creator() {
         &creator_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         1,
         GroupOp::ContextRegistered { context_id },
     )
@@ -437,6 +446,7 @@ fn two_nodes_converge_on_context_alias_as_creator() {
         &creator_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         2,
         GroupOp::ContextVisibilitySet {
             context_id,
@@ -449,6 +459,7 @@ fn two_nodes_converge_on_context_alias_as_creator() {
         &creator_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         3,
         GroupOp::ContextAliasSet {
             context_id,
@@ -499,6 +510,7 @@ fn op_log_records_applied_ops_and_head_advances() {
         &admin_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: new_member,
@@ -519,8 +531,8 @@ fn op_log_records_applied_ops_and_head_advances() {
     let decoded: SignedGroupOp = borsh::from_slice(&log[0].1).unwrap();
     assert_eq!(decoded.nonce, op1.nonce);
 
-    let op2 =
-        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).expect("sign op2");
+    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 2, GroupOp::Noop)
+        .expect("sign op2");
     apply_local_signed_group_op(&store, &op2).unwrap();
 
     let head2 = get_op_head(&store, &gid).unwrap().expect("head after op2");
@@ -546,7 +558,8 @@ fn duplicate_op_is_idempotent() {
     save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
     add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
 
-    let op = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 1, GroupOp::Noop).expect("sign op");
+    let op = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 1, GroupOp::Noop)
+        .expect("sign op");
     let payload = borsh_to_vec(&op).expect("encode");
 
     apply_wire_payload(&store, &payload);
@@ -583,6 +596,7 @@ fn offline_node_replays_missed_ops_from_log() {
         &admin_sk,
         gid_bytes,
         vec![[0u8; 32]],
+        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: member1,
@@ -595,6 +609,7 @@ fn offline_node_replays_missed_ops_from_log() {
         &admin_sk,
         gid_bytes,
         vec![op1_hash],
+        [0u8; 32],
         2,
         GroupOp::MemberAdded {
             member: member2,
@@ -644,6 +659,7 @@ async fn dag_applies_ops_in_causal_order() {
         &admin_sk,
         gid_bytes,
         vec![[0u8; 32]],
+        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: member1,
@@ -659,6 +675,7 @@ async fn dag_applies_ops_in_causal_order() {
         &admin_sk,
         gid_bytes,
         vec![op1_hash],
+        [0u8; 32],
         2,
         GroupOp::MemberAdded {
             member: member2,
@@ -710,6 +727,7 @@ async fn dag_concurrent_ops_create_two_heads() {
         &admin_sk,
         gid_bytes,
         vec![[0u8; 32]],
+        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: member1,
@@ -721,6 +739,7 @@ async fn dag_concurrent_ops_create_two_heads() {
         &admin_sk,
         gid_bytes,
         vec![[0u8; 32]],
+        [0u8; 32],
         2,
         GroupOp::MemberAdded {
             member: member2,
@@ -749,8 +768,15 @@ async fn dag_concurrent_ops_create_two_heads() {
     // Merge op referencing both heads
     let hash_a = op_a.content_hash().unwrap();
     let hash_b = op_b.content_hash().unwrap();
-    let merge_op =
-        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![hash_a, hash_b], 3, GroupOp::Noop).unwrap();
+    let merge_op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![hash_a, hash_b],
+        [0u8; 32],
+        3,
+        GroupOp::Noop,
+    )
+    .unwrap();
     dag.add_delta(signed_op_to_delta(&merge_op).unwrap(), &applier)
         .await
         .unwrap();
@@ -773,7 +799,15 @@ async fn dag_duplicate_delta_is_idempotent() {
     save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
     add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
 
-    let op = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![[0u8; 32]], 1, GroupOp::Noop).unwrap();
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::Noop,
+    )
+    .unwrap();
     let delta = signed_op_to_delta(&op).unwrap();
 
     let applier = GroupGovernanceApplier::new(store.clone());
@@ -801,8 +835,15 @@ async fn dag_deep_chain_with_out_of_order_delivery() {
     let mut ops = Vec::new();
     let mut prev_hash: Vec<[u8; 32]> = vec![[0u8; 32]];
     for i in 1..=5u64 {
-        let op =
-            SignedGroupOp::sign(&admin_sk, gid_bytes, prev_hash.clone(), i, GroupOp::Noop).unwrap();
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            prev_hash.clone(),
+            [0u8; 32],
+            i,
+            GroupOp::Noop,
+        )
+        .unwrap();
         prev_hash = vec![op.content_hash().unwrap()];
         ops.push(op);
     }
@@ -861,7 +902,15 @@ fn rejects_op_with_too_many_parents() {
             h
         })
         .collect();
-    let op_ok = SignedGroupOp::sign(&admin_sk, gid_bytes, parents_256, 1, GroupOp::Noop).unwrap();
+    let op_ok = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        parents_256,
+        [0u8; 32],
+        1,
+        GroupOp::Noop,
+    )
+    .unwrap();
     assert!(apply_local_signed_group_op(&store, &op_ok).is_ok());
 
     // 257 parents should be rejected
@@ -873,7 +922,15 @@ fn rejects_op_with_too_many_parents() {
             h
         })
         .collect();
-    let op_bad = SignedGroupOp::sign(&admin_sk, gid_bytes, parents_257, 2, GroupOp::Noop).unwrap();
+    let op_bad = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        parents_257,
+        [0u8; 32],
+        2,
+        GroupOp::Noop,
+    )
+    .unwrap();
     assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
 }
 
@@ -891,8 +948,15 @@ fn dag_heads_are_capped_at_max() {
 
     // Create 70 concurrent ops (all with genesis parent) to exceed MAX_DAG_HEADS (64)
     for i in 1..=70u64 {
-        let op =
-            SignedGroupOp::sign(&admin_sk, gid_bytes, vec![[0u8; 32]], i, GroupOp::Noop).unwrap();
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![[0u8; 32]],
+            [0u8; 32],
+            i,
+            GroupOp::Noop,
+        )
+        .unwrap();
         apply_local_signed_group_op(&store, &op).unwrap();
     }
 
@@ -903,8 +967,15 @@ fn dag_heads_are_capped_at_max() {
         head.dag_heads.len()
     );
     // The last op's hash should be present (not truncated)
-    let last_op =
-        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![[0u8; 32]], 70, GroupOp::Noop).unwrap();
+    let last_op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        70,
+        GroupOp::Noop,
+    )
+    .unwrap();
     let last_hash = last_op.content_hash().unwrap();
     assert!(
         head.dag_heads.contains(&last_hash),

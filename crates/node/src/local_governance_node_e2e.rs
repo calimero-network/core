@@ -146,6 +146,7 @@ async fn network_message_signed_group_op_applies_via_node_manager() {
         &admin_sk,
         gid_bytes,
         vec![],
+        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: new_member,

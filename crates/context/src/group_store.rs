@@ -91,6 +91,29 @@ pub fn enumerate_all_groups(
     Ok(results)
 }
 
+/// Compute a deterministic SHA-256 hash of the group's authorization-relevant state.
+///
+/// Covers members (sorted by public key) + roles + admin identity + target application.
+/// This hash is embedded in each [`SignedGroupOp`] to ensure ops can only apply against
+/// the exact state they were signed against, preventing divergence from concurrent ops.
+pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> EyreResult<[u8; 32]> {
+    let meta = load_group_meta(store, group_id)?
+        .ok_or_else(|| eyre::eyre!("group not found for state hash computation"))?;
+
+    let mut members = list_group_members(store, group_id, 0, usize::MAX)?;
+    members.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut hasher = Sha256::new();
+    hasher.update(group_id.to_bytes());
+    hasher.update(AsRef::<[u8]>::as_ref(&meta.admin_identity));
+    hasher.update(meta.target_application_id.as_ref());
+    for (pk, role) in &members {
+        hasher.update(AsRef::<[u8]>::as_ref(pk));
+        hasher.update(&borsh::to_vec(role).unwrap_or_default());
+    }
+    Ok(hasher.finalize().into())
+}
+
 // ---------------------------------------------------------------------------
 // Group member helpers
 // ---------------------------------------------------------------------------
@@ -415,6 +438,27 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     op.verify_signature()
         .map_err(|e| eyre::eyre!("signed group op: {e}"))?;
     let group_id = ContextGroupId::from(op.group_id);
+
+    let zero_hash = [0u8; 32];
+    if op.state_hash != zero_hash {
+        let current_state_hash = compute_group_state_hash(store, &group_id)?;
+        if op.state_hash != current_state_hash {
+            tracing::debug!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                expected = %hex::encode(op.state_hash),
+                actual = %hex::encode(current_state_hash),
+                nonce = op.nonce,
+                signer = %op.signer,
+                "rejecting op: state_hash mismatch (signed against stale state)"
+            );
+            bail!(
+                "state_hash mismatch: op was signed against {}, current state is {}",
+                hex::encode(op.state_hash),
+                hex::encode(current_state_hash)
+            );
+        }
+    }
+
     let last = get_local_gov_nonce(store, &group_id, &op.signer)?.unwrap_or(0);
     if op.nonce <= last {
         tracing::debug!(
@@ -648,7 +692,15 @@ pub fn sign_apply_local_group_op_borsh(
     let parent_hashes = get_op_head(store, group_id)?
         .map(|h| h.dag_heads.clone())
         .unwrap_or_default();
-    let signed = SignedGroupOp::sign(signer_sk, group_id.to_bytes(), parent_hashes, nonce, op)?;
+    let state_hash = compute_group_state_hash(store, group_id)?;
+    let signed = SignedGroupOp::sign(
+        signer_sk,
+        group_id.to_bytes(),
+        parent_hashes,
+        state_hash,
+        nonce,
+        op,
+    )?;
     let delta_id = signed
         .content_hash()
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
@@ -1833,6 +1885,7 @@ mod tests {
             &admin_sk,
             gid_bytes,
             vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member: member_pk,
@@ -1844,13 +1897,14 @@ mod tests {
         assert!(check_group_membership(&store, &gid, &member_pk).unwrap());
 
         let op_dup_nonce =
-            SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 1, GroupOp::Noop).unwrap();
+            SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 1, GroupOp::Noop).unwrap();
         assert!(
             apply_local_signed_group_op(&store, &op_dup_nonce).is_ok(),
             "duplicate nonce should be silently accepted (idempotent)"
         );
 
-        let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).unwrap();
+        let op2 =
+            SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 2, GroupOp::Noop).unwrap();
         apply_local_signed_group_op(&store, &op2).unwrap();
 
         let non_admin_sk = PrivateKey::random(&mut rng);
@@ -1865,6 +1919,7 @@ mod tests {
             &non_admin_sk,
             gid_bytes,
             vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member: PrivateKey::random(&mut rng).public_key(),
@@ -1898,6 +1953,7 @@ mod tests {
             &member_sk,
             gid_bytes,
             vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAliasSet {
                 member: member_pk,
@@ -1918,6 +1974,7 @@ mod tests {
             &other_sk,
             gid_bytes,
             vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAliasSet {
                 member: member_pk,
@@ -1931,6 +1988,7 @@ mod tests {
             &admin_sk,
             gid_bytes,
             vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAliasSet {
                 member: member_pk,
@@ -1980,6 +2038,7 @@ mod tests {
             &creator_sk,
             gid_bytes,
             vec![],
+            [0u8; 32],
             1,
             GroupOp::ContextRegistered { context_id },
         )
@@ -1992,6 +2051,7 @@ mod tests {
             &creator_sk,
             gid_bytes,
             vec![],
+            [0u8; 32],
             2,
             GroupOp::ContextAliasSet {
                 context_id,
@@ -2019,6 +2079,7 @@ mod tests {
             &stranger_sk,
             gid_bytes,
             vec![],
+            [0u8; 32],
             1,
             GroupOp::ContextAliasSet {
                 context_id,
@@ -2032,6 +2093,7 @@ mod tests {
             &admin_sk,
             gid_bytes,
             vec![],
+            [0u8; 32],
             1,
             GroupOp::ContextAliasSet {
                 context_id,
@@ -2071,6 +2133,7 @@ mod tests {
             &admin_sk,
             gid_bytes,
             vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberCapabilitySet {
                 member: member_m,
@@ -2090,6 +2153,7 @@ mod tests {
             &admin_sk,
             gid_bytes,
             vec![],
+            [0u8; 32],
             2,
             GroupOp::UpgradePolicySet {
                 policy: UpgradePolicy::Automatic,
@@ -2105,8 +2169,15 @@ mod tests {
             UpgradePolicy::Automatic
         );
 
-        let op_del =
-            SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 3, GroupOp::GroupDelete).unwrap();
+        let op_del = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            3,
+            GroupOp::GroupDelete,
+        )
+        .unwrap();
         apply_local_signed_group_op(&store, &op_del).unwrap();
         assert!(load_group_meta(&store, &gid).unwrap().is_none());
     }
@@ -2131,6 +2202,7 @@ mod tests {
             &admin_sk,
             gid_bytes,
             vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberRemoved { member: admin_pk },
         )
