@@ -2,16 +2,12 @@
 
 use async_stream::try_stream;
 use borsh::BorshDeserialize;
-use calimero_context_config::types::{
-    ContextGroupId, InvitationFromMember, SignedOpenInvitation,
-};
+use calimero_context_config::types::{ContextGroupId, InvitationFromMember, SignedOpenInvitation};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::common::DIGEST_SIZE;
-use calimero_primitives::context::{
-    Context, ContextId, ContextInvitationPayload,
-};
+use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::{key, Store};
@@ -315,8 +311,11 @@ impl ContextClient {
             .map(|app| app.id)
             .unwrap_or_else(|_| ApplicationId::from([0u8; DIGEST_SIZE]));
 
-        let invitation_payload =
-            ContextInvitationPayload::new(context_id, new_member_identity.public_key, application_id)?;
+        let invitation_payload = ContextInvitationPayload::new(
+            context_id,
+            new_member_identity.public_key,
+            application_id,
+        )?;
 
         let (sender, receiver) = oneshot::channel();
 

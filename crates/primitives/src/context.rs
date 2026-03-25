@@ -110,8 +110,7 @@ impl fmt::Debug for ContextInvitationPayload {
         {
             let is_alternate = f.alternate();
             let mut d = f.debug_struct("ContextInvitationPayload");
-            let (context_id, invitee_id, application_id) =
-                self.parts().map_err(|_| fmt::Error)?;
+            let (context_id, invitee_id, application_id) = self.parts().map_err(|_| fmt::Error)?;
 
             _ = d
                 .field("context_id", &context_id)
