@@ -158,7 +158,7 @@ impl ContextClient {
     pub async fn invite_member(
         &self,
         context_id: &ContextId,
-        _inviter_id: &PublicKey,
+        inviter_id: &PublicKey,
         invitee_id: &PublicKey,
     ) -> eyre::Result<Option<ContextInvitationPayload>> {
         let Some(_external_config) = self.context_config(context_id)? else {
@@ -171,8 +171,36 @@ impl ContextClient {
             .map(|app| app.id)
             .unwrap_or_else(|_| ApplicationId::from([0u8; DIGEST_SIZE]));
 
-        let invitation_payload =
-            ContextInvitationPayload::new(*context_id, *invitee_id, application_id)?;
+        let group_id = {
+            let handle = self.datastore.handle();
+            let ref_key = key::ContextGroupRef::new(*context_id);
+            handle.get(&ref_key)?.unwrap_or([0u8; DIGEST_SIZE])
+        };
+
+        // Pre-seed the invitee as a context member (None keys) so the
+        // inviter's node recognises the invitee when they start syncing,
+        // without waiting for group gossip to propagate.
+        {
+            let identity_key = key::ContextIdentity::new(*context_id, *invitee_id);
+            if !self.datastore.handle().has(&identity_key)? {
+                let mut handle = self.datastore.handle();
+                handle.put(
+                    &identity_key,
+                    &calimero_store::types::ContextIdentity {
+                        private_key: None,
+                        sender_key: None,
+                    },
+                )?;
+            }
+        }
+
+        let invitation_payload = ContextInvitationPayload::new(
+            *context_id,
+            *invitee_id,
+            application_id,
+            *inviter_id,
+            group_id,
+        )?;
 
         Ok(Some(invitation_payload))
     }
@@ -311,10 +339,23 @@ impl ContextClient {
             .map(|app| app.id)
             .unwrap_or_else(|_| ApplicationId::from([0u8; DIGEST_SIZE]));
 
+        let inviter_id: PublicKey = {
+            use calimero_context_config::repr::ReprBytes;
+            let bytes: [u8; DIGEST_SIZE] = invitation.inviter_identity.as_bytes();
+            bytes.into()
+        };
+        let group_id = {
+            let handle = self.datastore.handle();
+            let ref_key = key::ContextGroupRef::new(context_id);
+            handle.get(&ref_key)?.unwrap_or([0u8; DIGEST_SIZE])
+        };
+
         let invitation_payload = ContextInvitationPayload::new(
             context_id,
             new_member_identity.public_key,
             application_id,
+            inviter_id,
+            group_id,
         )?;
 
         let (sender, receiver) = oneshot::channel();

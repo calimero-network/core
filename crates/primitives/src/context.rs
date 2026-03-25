@@ -110,12 +110,14 @@ impl fmt::Debug for ContextInvitationPayload {
         {
             let is_alternate = f.alternate();
             let mut d = f.debug_struct("ContextInvitationPayload");
-            let (context_id, invitee_id, application_id) = self.parts().map_err(|_| fmt::Error)?;
+            let (context_id, invitee_id, application_id, inviter_id, _group_id) =
+                self.parts().map_err(|_| fmt::Error)?;
 
             _ = d
                 .field("context_id", &context_id)
                 .field("invitee_id", &invitee_id)
-                .field("application_id", &application_id);
+                .field("application_id", &application_id)
+                .field("inviter_id", &inviter_id);
 
             if !is_alternate {
                 return d.finish();
@@ -176,6 +178,12 @@ const _: () = {
         context_id: [u8; DIGEST_SIZE],
         invitee_id: [u8; DIGEST_SIZE],
         application_id: [u8; DIGEST_SIZE],
+        /// The inviter's context-level identity so the joiner can recognise
+        /// the inviter as a context member before gossip propagates.
+        inviter_id: [u8; DIGEST_SIZE],
+        /// The group that owns this context, so the joiner can publish a
+        /// `MemberJoinedContext` governance op without waiting for gossip.
+        group_id: [u8; DIGEST_SIZE],
     }
 
     impl ContextInvitationPayload {
@@ -183,24 +191,38 @@ const _: () = {
             context_id: ContextId,
             invitee_id: PublicKey,
             application_id: ApplicationId,
+            inviter_id: PublicKey,
+            group_id: [u8; DIGEST_SIZE],
         ) -> io::Result<Self> {
             let payload = InvitationPayload {
                 context_id: *context_id,
                 invitee_id: *invitee_id,
                 application_id: *application_id,
+                inviter_id: *inviter_id,
+                group_id,
             };
 
             borsh::to_vec(&payload).map(Self)
         }
 
         /// Deserializes the payload and extracts its constituent parts.
-        pub fn parts(&self) -> io::Result<(ContextId, PublicKey, ApplicationId)> {
+        pub fn parts(
+            &self,
+        ) -> io::Result<(
+            ContextId,
+            PublicKey,
+            ApplicationId,
+            PublicKey,
+            [u8; DIGEST_SIZE],
+        )> {
             let payload: InvitationPayload = borsh::from_slice(&self.0)?;
 
             Ok((
                 payload.context_id.into(),
                 payload.invitee_id.into(),
                 payload.application_id.into(),
+                payload.inviter_id.into(),
+                payload.group_id,
             ))
         }
     }
@@ -481,10 +503,17 @@ mod tests {
         let context_id = ContextId::from([1; DIGEST_SIZE]);
         let invitee_id = PublicKey::from([2; DIGEST_SIZE]);
         let application_id = ApplicationId::from([3; DIGEST_SIZE]);
+        let inviter_id = PublicKey::from([4; DIGEST_SIZE]);
+        let group_id = [5; DIGEST_SIZE];
 
-        let invitation_payload =
-            ContextInvitationPayload::new(context_id, invitee_id, application_id)
-                .expect("Payload creation should succeed");
+        let invitation_payload = ContextInvitationPayload::new(
+            context_id,
+            invitee_id,
+            application_id,
+            inviter_id,
+            group_id,
+        )
+        .expect("Payload creation should succeed");
 
         let encoded_string = invitation_payload.to_string();
         assert!(!encoded_string.is_empty());
@@ -492,13 +521,15 @@ mod tests {
         let decoded_invitation_payload = ContextInvitationPayload::from_str(&encoded_string)
             .expect("Payload decoding should succeed");
 
-        let (decoded_context_id, decoded_invitee_id, decoded_app_id) = decoded_invitation_payload
+        let (dec_ctx, dec_invitee, dec_app, dec_inviter, dec_group) = decoded_invitation_payload
             .parts()
             .expect("Extracting parts should succeed");
 
-        assert_eq!(context_id, decoded_context_id);
-        assert_eq!(invitee_id, decoded_invitee_id);
-        assert_eq!(application_id, decoded_app_id);
+        assert_eq!(context_id, dec_ctx);
+        assert_eq!(invitee_id, dec_invitee);
+        assert_eq!(application_id, dec_app);
+        assert_eq!(inviter_id, dec_inviter);
+        assert_eq!(group_id, dec_group);
     }
 
     #[test]

@@ -52,9 +52,10 @@ async fn join_context(
     group_signing_identity: Option<(PublicKey, PrivateKey)>,
     invitation_payload: calimero_primitives::context::ContextInvitationPayload,
 ) -> eyre::Result<(ContextId, PublicKey)> {
-    let (context_id, invitee_id, invitation_app_id) = invitation_payload.parts()?;
+    let (context_id, invitee_id, invitation_app_id, inviter_id, invitation_group_id) =
+        invitation_payload.parts()?;
 
-    tracing::info!(%context_id, %invitee_id, %invitation_app_id, "join_context: starting join flow");
+    tracing::info!(%context_id, %invitee_id, %invitation_app_id, %inviter_id, "join_context: starting join flow");
 
     let already_joined = context_client
         .get_identity(&context_id, &invitee_id)?
@@ -124,10 +125,22 @@ async fn join_context(
         .sync_context_config(context_id, config)
         .await?;
 
-    // Write the member's ContextIdentity directly — the invitation payload
-    // is the authorisation proof.  In local governance there is no on-chain
-    // member list to verify against; the governance op (MemberJoinedContext)
-    // that replicates this to other nodes is published below.
+    // Seed the inviter as a context member (None keys) so this node
+    // recognises the inviter's gossip / sync messages immediately,
+    // without waiting for group gossip to propagate.
+    let inviter_key = key::ContextIdentity::new(context_id, inviter_id);
+    if !datastore.handle().has(&inviter_key)? {
+        let mut handle = datastore.handle();
+        handle.put(
+            &inviter_key,
+            &types::ContextIdentity {
+                private_key: None,
+                sender_key: None,
+            },
+        )?;
+    }
+
+    // Write the joiner's own ContextIdentity with private + sender keys.
     let mut rng = rand::thread_rng();
     let sender_key = PrivateKey::random(&mut rng);
 
@@ -144,9 +157,19 @@ async fn join_context(
 
     context_client.delete_identity(&ContextId::zero(), &invitee_id)?;
 
-    // Publish MemberJoinedContext governance op so other nodes learn about this join.
-    // Signed by the node's group admin identity if available.
-    if let Ok(Some(group_id)) = group_store::get_group_for_context(&datastore, &context_id) {
+    // Publish MemberJoinedContext governance op so other nodes learn about
+    // this join.  Prefer the group_id from the invitation (available even
+    // when gossip hasn't propagated) over the local group-context mapping.
+    let zero_group = [0u8; 32];
+    let group_id = if invitation_group_id != zero_group {
+        Some(calimero_context_config::types::ContextGroupId::from(
+            invitation_group_id,
+        ))
+    } else {
+        group_store::get_group_for_context(&datastore, &context_id)?
+    };
+
+    if let Some(group_id) = group_id {
         if let Some((_admin_pk, admin_sk)) = group_signing_identity {
             if let Err(e) = group_store::sign_apply_and_publish(
                 &datastore,
