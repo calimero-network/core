@@ -402,11 +402,8 @@ async fn create_group_invitation() {
                     "invitation": {
                         "inviter_identity": zeros,
                         "group_id": zeros,
-                        "expiration_height": 0u64,
-                        "secret_salt": zeros,
-                        "protocol": "near",
-                        "network": "testnet",
-                        "contract_id": "contract.testnet"
+                        "expiration_timestamp": 0u64,
+                        "secret_salt": zeros
                     },
                     "inviter_signature": "testsig"
                 }
@@ -422,7 +419,7 @@ async fn create_group_invitation() {
             GID,
             CreateGroupInvitationApiRequest {
                 requester: None,
-                expiration_block_height: None,
+                expiration_timestamp: None,
             },
         )
         .await
@@ -440,11 +437,8 @@ async fn join_group() {
         "invitation": {
             "inviter_identity": zeros,
             "group_id": zeros,
-            "expiration_height": 0u64,
-            "secret_salt": zeros,
-            "protocol": "near",
-            "network": "testnet",
-            "contract_id": "contract.testnet"
+            "expiration_timestamp": 0u64,
+            "secret_salt": zeros
         },
         "inviter_signature": "testsig"
     }))

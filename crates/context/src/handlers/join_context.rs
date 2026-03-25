@@ -3,7 +3,7 @@ use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::{JoinContextRequest, JoinContextResponse};
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::context::{ContextConfigParams, ContextId, ContextInvitationPayload};
+use calimero_primitives::context::{ContextConfigParams, ContextId};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use eyre::eyre;
 
@@ -37,9 +37,9 @@ impl Handler<JoinContextRequest> for ContextManager {
 async fn join_context(
     node_client: NodeClient,
     context_client: ContextClient,
-    invitation_payload: ContextInvitationPayload,
+    invitation_payload: calimero_primitives::context::ContextInvitationPayload,
 ) -> eyre::Result<(ContextId, PublicKey)> {
-    let (context_id, invitee_id, protocol, network_id, contract_id) = invitation_payload.parts()?;
+    let (context_id, invitee_id) = invitation_payload.parts()?;
 
     tracing::info!(%context_id, %invitee_id, "join_context: starting join flow");
 
@@ -96,21 +96,10 @@ async fn join_context(
     let mut config = None;
 
     if !context_client.has_context(&context_id)? {
-        let mut external_config = ContextConfigParams {
-            protocol: protocol.into(),
-            network_id: network_id.into(),
-            contract_id: contract_id.into(),
-            proxy_contract: "".into(),
+        let external_config = ContextConfigParams {
             application_revision: 0,
             members_revision: 0,
         };
-
-        let proxy_contract = context_client
-            .context_config(&context_id)?
-            .map(|c| c.proxy_contract.into_owned())
-            .unwrap_or_default();
-
-        external_config.proxy_contract = proxy_contract.into();
 
         config = Some(external_config);
     };

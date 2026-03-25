@@ -19,7 +19,6 @@ use either::Either;
 use prometheus_client::registry::Registry;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-use crate::config::ClientConfig;
 use crate::metrics::Metrics;
 
 pub mod config;
@@ -55,9 +54,6 @@ pub struct ContextManager {
     /// The public-facing client API, also used internally to access convenience methods
     /// for interacting with the datastore.
     context_client: ContextClient,
-
-    /// Context client section from node config (protocol coordinates for stored metadata).
-    external_config: ClientConfig,
 
     /// Dedicated group identity keypair for signed P2P group operations.
     group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
@@ -103,14 +99,12 @@ pub struct ContextManager {
 /// * `datastore` - The persistent storage backend.
 /// * `node_client` - Client for interacting with the underlying Calimero node.
 /// * `context_client` - The context client facade.
-/// * `external_config` - Serialized context client section from node config.
 /// * `prometheus_registry` - A mutable reference to a Prometheus registry for registering metrics.
 impl ContextManager {
     pub fn new(
         datastore: Store,
         node_client: NodeClient,
         context_client: ContextClient,
-        external_config: ClientConfig,
         group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
@@ -118,7 +112,6 @@ impl ContextManager {
             datastore,
             node_client,
             context_client,
-            external_config,
             group_identity,
 
             contexts: BTreeMap::new(),

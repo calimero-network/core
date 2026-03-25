@@ -87,8 +87,6 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
         let context_client = self.context_client.clone();
         let node_client = self.node_client.clone();
 
-        let protocol = "local".to_owned();
-
         ActorResponse::r#async(
             async move {
                 let mut rng = rand::thread_rng();
@@ -102,22 +100,10 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                 group_store::register_context_in_group(&datastore, &group_id, &context_id)?;
 
                 let config = if !context_client.has_context(&context_id)? {
-                    let mut external_config = ContextConfigParams {
-                        protocol: protocol.clone().into(),
-                        network_id: "local".into(),
-                        contract_id: "local".into(),
-                        proxy_contract: "".into(),
+                    Some(ContextConfigParams {
                         application_revision: 0,
                         members_revision: 0,
-                    };
-
-                    let proxy_contract = context_client
-                        .context_config(&context_id)?
-                        .map(|c| c.proxy_contract.into_owned())
-                        .unwrap_or_default();
-                    external_config.proxy_contract = proxy_contract.into();
-
-                    Some(external_config)
+                    })
                 } else {
                     None
                 };

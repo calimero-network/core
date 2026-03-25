@@ -3,7 +3,7 @@
 use async_stream::try_stream;
 use borsh::BorshDeserialize;
 use calimero_context_config::types::{
-    BlockHeight, ContextGroupId, InvitationFromMember, RevealPayloadData, SignedOpenInvitation,
+    ContextGroupId, InvitationFromMember, RevealPayloadData, SignedOpenInvitation,
     SignedRevealPayload,
 };
 use calimero_node_primitives::client::NodeClient;
@@ -160,20 +160,14 @@ impl ContextClient {
         inviter_id: &PublicKey,
         invitee_id: &PublicKey,
     ) -> eyre::Result<Option<ContextInvitationPayload>> {
-        let Some(external_config) = self.context_config(context_id)? else {
+        let Some(_external_config) = self.context_config(context_id)? else {
             return Ok(None);
         };
 
         self.noop_config_add_members(inviter_id, &[*invitee_id])
             .await?;
 
-        let invitation_payload = ContextInvitationPayload::new(
-            *context_id,
-            *invitee_id,
-            external_config.protocol,
-            external_config.network_id,
-            external_config.contract_id,
-        )?;
+        let invitation_payload = ContextInvitationPayload::new(*context_id, *invitee_id)?;
 
         Ok(Some(invitation_payload))
     }
@@ -201,26 +195,23 @@ impl ContextClient {
         &self,
         context_id: &ContextId,
         inviter_id: &PublicKey,
-        valid_for_blocks: BlockHeight,
+        valid_for_seconds: u64,
         _secret_salt: [u8; DIGEST_SIZE],
     ) -> eyre::Result<Option<SignedOpenInvitation>> {
-        // TODO(identity): figure out the best place to generate salt.
-        // We temporarily ignore the passed `secret_salt` as we can't generate it in admin
-        // `invite_to_context_open_invitation::handler` as `Rng` is not thread-safe.
         let mut rng = rand::thread_rng();
         let salt: [u8; DIGEST_SIZE] = rng.gen::<[_; DIGEST_SIZE]>();
         let secret_salt = salt;
 
-        let Some(external_config) = self.context_config(context_id)? else {
+        if self.context_config(context_id)?.is_none() {
             return Ok(None);
         };
 
-        // Placeholder: `current_block_height` is not tied to a chain; it anchors a monotonic
-        // expiration height for invitation validity until timestamp-based expiry is wired through.
-        let current_block_height: BlockHeight = 999_999_999;
-        let expiration_block_height = current_block_height + valid_for_blocks;
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .as_secs();
+        let expiration_timestamp = now_secs + valid_for_seconds;
 
-        // 1. Fetch the inviter's identity to get their private key for signing.
         let inviter_identity = self
             .get_identity(context_id, inviter_id)?
             .with_context(|| format!("Inviter identity {inviter_id} not found"))?;
@@ -230,25 +221,18 @@ impl ContextClient {
         let inviter_identity_context_type = inviter_identity.into();
         let context_id = **context_id;
 
-        // 2. Construct the invitation payload.
         let invitation = InvitationFromMember {
             inviter_identity: inviter_identity_context_type,
             context_id: context_id.into(),
-            expiration_height: expiration_block_height,
+            expiration_timestamp,
             secret_salt,
-            protocol: external_config.protocol.to_string(),
-            network: external_config.network_id.to_string(),
-            contract_id: external_config.contract_id.to_string(),
         };
 
-        // 3. Sign the invitation payload.
-        // The process is: borsh-serialize -> sha256-hash -> sign the hash.
         let invitation_bytes =
             borsh::to_vec(&invitation).context("Failed to serialize invitation")?;
         let hash = Sha256::digest(&invitation_bytes);
         let signature = inviter_private_key.sign(&hash).context("Signing failed")?;
 
-        // 4. Hex-encode the signature and return the complete package.
         Ok(Some(SignedOpenInvitation {
             invitation,
             inviter_signature: hex::encode(signature.to_bytes()),
@@ -331,29 +315,17 @@ impl ContextClient {
         let commitment_hash = hex::encode(Sha256::digest(&reveal_payload_data_bytes));
         println!("New member commitment hash: {commitment_hash:?}");
 
-        // We don't have a config for that context ID yet, as we are about to join it.
         let mut external_config_params = None;
         if !self.has_context(&context_id)? {
-            let mut external_config = ContextConfigParams {
-                protocol: invitation.protocol.into(),
-                network_id: invitation.network.into(),
-                contract_id: invitation.contract_id.into(),
-                proxy_contract: "".into(),
+            let external_config = ContextConfigParams {
                 application_revision: 0,
                 members_revision: 0,
             };
 
-            if let Some(cfg) = self
-                .datastore_handle()
-                .get(&key::ContextConfig::new(context_id))?
-            {
-                external_config.proxy_contract = cfg.proxy_contract.into_string().into();
-            }
-
             external_config_params = Some(external_config);
         }
 
-        let external_config_params =
+        let _external_config_params =
             external_config_params.context("join config is None while it should be set")?;
 
         self.noop_join_context_commit_invitation(
@@ -362,7 +334,7 @@ impl ContextClient {
             reveal_payload_data
                 .signed_open_invitation
                 .invitation
-                .expiration_height,
+                .expiration_timestamp,
         )
         .await?;
         println!("Successfully committed the invitation payload");
@@ -387,14 +359,8 @@ impl ContextClient {
             .await?;
         println!("Successfully submitted the revealed invitation payload");
 
-        // Create the ContextInvitationPayload
-        let invitation_payload = ContextInvitationPayload::new(
-            context_id,
-            new_member_identity.public_key,
-            external_config_params.protocol,
-            external_config_params.network_id,
-            external_config_params.contract_id,
-        )?;
+        let invitation_payload =
+            ContextInvitationPayload::new(context_id, new_member_identity.public_key)?;
 
         // Join the context in the node
         let (sender, receiver) = oneshot::channel();

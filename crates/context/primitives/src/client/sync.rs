@@ -216,7 +216,7 @@ impl ContextClient {
     pub async fn sync_context_config(
         &self,
         context_id: ContextId,
-        config: Option<ContextConfigParams<'_>>,
+        config: Option<ContextConfigParams>,
     ) -> eyre::Result<Context> {
         let mut handle = self.datastore.handle();
 
@@ -229,10 +229,6 @@ impl ContextClient {
                 };
 
                 let config = ContextConfigParams {
-                    protocol: config.protocol.into_string().into(),
-                    network_id: config.network.into_string().into(),
-                    contract_id: config.contract.into_string().into(),
-                    proxy_contract: config.proxy_contract.into_string().into(),
                     application_revision: config.application_revision,
                     members_revision: config.members_revision,
                 };
@@ -322,20 +318,9 @@ impl ContextClient {
         }
 
         if should_save_config {
-            // todo! we shouldn't be reallocating here
-            // todo! but store requires ContextConfig: 'static
-            let config = config.clone();
-
             handle.put(
                 &key::ContextConfig::new(context_id),
-                &types::ContextConfig::new(
-                    config.protocol.into_owned().into_boxed_str(),
-                    config.network_id.into_owned().into_boxed_str(),
-                    config.contract_id.into_owned().into_boxed_str(),
-                    config.proxy_contract.into_owned().into_boxed_str(),
-                    config.application_revision,
-                    config.members_revision,
-                ),
+                &types::ContextConfig::new(config.application_revision, config.members_revision),
             )?;
         }
 

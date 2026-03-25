@@ -24,7 +24,6 @@ use tracing::{debug, warn};
 
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
-use crate::config::ClientConfig;
 use crate::{group_store, ContextManager, ContextMeta};
 
 impl Handler<CreateContextRequest> for ContextManager {
@@ -33,13 +32,13 @@ impl Handler<CreateContextRequest> for ContextManager {
     fn handle(
         &mut self,
         CreateContextRequest {
-            protocol,
             seed,
             application_id,
             identity_secret,
             init_params,
             group_id,
             alias,
+            ..
         }: CreateContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -52,10 +51,8 @@ impl Handler<CreateContextRequest> for ContextManager {
         let prepared = match Prepared::new(
             &self.node_client,
             &self.context_client,
-            &self.external_config,
             &mut self.contexts,
             &mut self.applications,
-            protocol,
             seed,
             &application_id,
             identity_secret,
@@ -138,7 +135,7 @@ impl Handler<CreateContextRequest> for ContextManager {
 }
 
 struct Prepared<'a> {
-    external_config: ContextConfigParams<'static>,
+    external_config: ContextConfigParams,
     application: Application,
     context: &'a ContextMeta,
     context_secret: PrivateKey,
@@ -153,10 +150,8 @@ impl Prepared<'_> {
     fn new(
         node_client: &NodeClient,
         context_client: &ContextClient,
-        external_config: &ClientConfig,
         contexts: &mut BTreeMap<ContextId, ContextMeta>,
         applications: &mut BTreeMap<ApplicationId, Application>,
-        protocol: String,
         seed: Option<[u8; 32]>,
         application_id: &ApplicationId,
         identity_secret: Option<PrivateKey>,
@@ -164,17 +159,7 @@ impl Prepared<'_> {
         alias: Option<String>,
         datastore: &Store,
     ) -> eyre::Result<Self> {
-        let (network, contract) = external_config
-            .params
-            .get(&protocol)
-            .map(|p| (p.network.clone(), p.contract_id.clone()))
-            .unwrap_or_else(|| ("local".to_owned(), "local".to_owned()));
-
         let external_config = ContextConfigParams {
-            protocol: protocol.into(),
-            network_id: network.into(),
-            contract_id: contract.into(),
-            proxy_contract: "".into(),
             application_revision: 0,
             members_revision: 0,
         };
@@ -301,7 +286,7 @@ async fn create_context(
     node_client: NodeClient,
     context_client: ContextClient,
     module: calimero_runtime::Module,
-    external_config: ContextConfigParams<'_>,
+    external_config: ContextConfigParams,
     mut context: Context,
     context_secret: PrivateKey,
     application: Application,
@@ -402,23 +387,14 @@ async fn create_context(
         .noop_config_add_context(&context_secret, &identity, &application)
         .await?;
 
-    let proxy_contract = external_config.proxy_contract.clone();
-
     let datastore = storage.commit()?;
-    // Commit private storage (node-local, NOT synchronized)
     let _private_datastore = private_storage.commit()?;
-
-    // Height-based delta tracking removed - now using DAG-based approach
 
     let mut handle = datastore.handle();
 
     handle.put(
         &key::ContextConfig::new(context.id),
         &types::ContextConfig::new(
-            external_config.protocol.into_owned().into_boxed_str(),
-            external_config.network_id.into_owned().into_boxed_str(),
-            external_config.contract_id.into_owned().into_boxed_str(),
-            proxy_contract.into_owned().into_boxed_str(),
             external_config.application_revision,
             external_config.members_revision,
         ),

@@ -28,7 +28,7 @@ pub async fn handler(
         .invite_member_by_open_invitation(
             &req.context_id,
             &req.inviter_id,
-            req.valid_for_blocks,
+            req.valid_for_seconds,
             salt,
         )
         .await;

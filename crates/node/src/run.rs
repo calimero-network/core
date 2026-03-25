@@ -153,7 +153,6 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         datastore.clone(),
         node_client.clone(),
         context_client.clone(),
-        config.context.client.clone(),
         config.group_identity.clone(),
         Some(&mut registry),
     );

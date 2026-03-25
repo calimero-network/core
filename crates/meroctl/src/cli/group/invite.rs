@@ -19,16 +19,16 @@ pub struct InviteCommand {
 
     #[clap(
         long,
-        help = "On-chain block height after which the invitation expires (defaults to 999_999_999)"
+        help = "Duration in seconds for the invitation validity (defaults to 1 year)"
     )]
-    pub expiration_block_height: Option<u64>,
+    pub expiration_timestamp: Option<u64>,
 }
 
 impl InviteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let request = CreateGroupInvitationApiRequest {
             requester: self.requester,
-            expiration_block_height: self.expiration_block_height,
+            expiration_timestamp: self.expiration_timestamp,
         };
 
         let client = environment.client()?;

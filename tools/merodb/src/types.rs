@@ -308,10 +308,6 @@ fn parse_context_meta(data: &[u8]) -> Result<Value> {
 fn parse_context_config(data: &[u8]) -> Result<Value> {
     match StoreContextConfig::try_from_slice(data) {
         Ok(config) => Ok(json!({
-            "protocol": config.protocol.as_ref(),
-            "network": config.network.as_ref(),
-            "contract": config.contract.as_ref(),
-            "proxy_contract": config.proxy_contract.as_ref(),
             "application_revision": config.application_revision,
             "members_revision": config.members_revision
         })),

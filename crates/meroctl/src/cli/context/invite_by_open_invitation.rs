@@ -1,4 +1,4 @@
-use calimero_context_config::types::{BlockHeight, SignedOpenInvitation};
+use calimero_context_config::types::SignedOpenInvitation;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -28,12 +28,12 @@ pub struct InviteByOpenInvitationCommand {
     pub inviter: Alias<PublicKey>,
 
     #[clap(
-        long = "valid-for-blocks",
-        value_name = "VALID_FOR_BLOCKS",
-        help = "The number of blocks for which the invitation is valid",
-        default_value = "1000"
+        long = "valid-for-seconds",
+        value_name = "VALID_FOR_SECONDS",
+        help = "The number of seconds for which the invitation is valid",
+        default_value = "3600"
     )]
-    pub valid_for_blocks: BlockHeight,
+    pub valid_for_seconds: u64,
 }
 
 impl InviteByOpenInvitationCommand {
@@ -65,7 +65,7 @@ impl InviteByOpenInvitationCommand {
         let request = InviteToContextOpenInvitationRequest {
             context_id,
             inviter_id,
-            valid_for_blocks: self.valid_for_blocks,
+            valid_for_seconds: self.valid_for_seconds,
         };
 
         let response = client.invite_to_context_by_open_invitation(request).await?;

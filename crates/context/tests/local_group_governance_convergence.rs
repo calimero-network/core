@@ -210,15 +210,11 @@ fn two_nodes_converge_on_join_with_invitation_claim() {
         add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
     }
 
-    // Matches `create_group_invitation` when `group_governance = local` (synthetic coordinates).
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_pk.digest()),
         group_id: gid,
-        expiration_height: 9_999_999,
+        expiration_timestamp: 9_999_999,
         secret_salt: [0x42; 32],
-        protocol: "local".to_owned(),
-        network: "local".to_owned(),
-        contract_id: "local".to_owned(),
     };
 
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
