@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.10.1-rc.9] - 2026-03-25
+
+### Added
+
+- **JWT authentication via query parameters** - Server now accepts JWT tokens passed as `?token=` query parameter in addition to the `Authorization` header ([#2079])
+  - Enables WebSocket and EventSource connections from browser clients (which cannot set custom headers)
+  - Header takes precedence — if `Authorization` is present it is validated exclusively, never falling back to the query param
+  - Applies to both embedded auth service and server-level auth middleware
+
+### Fixed
+
+- **meroctl auth flow** - Improved reliability and UX of the browser-based authentication flow ([#2068])
+  - Reduced auth timeout from 300s to 120s
+  - Clearer messaging: informs users they have 2 minutes to complete sign-in in the browser
+
 ## [0.10.1-rc.8] - 2026-03-24
 
 ### Added
