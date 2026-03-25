@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
-use calimero_context_config::client_config::{ClientConfig, ClientSigner, LocalConfig};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::messages::NodeMessage;
@@ -19,7 +18,6 @@ use calimero_store::key;
 use calimero_store::types::ContextMeta;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
-use std::collections::BTreeMap;
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
 
@@ -54,15 +52,6 @@ async fn setup_test_context_client() -> (ContextClient, TempDir) {
         ctx_sync_tx,
         String::new(), // Not used in tests
     );
-
-    let _client_config = ClientConfig {
-        params: BTreeMap::new(),
-        signer: ClientSigner {
-            local: LocalConfig {
-                protocols: BTreeMap::new(),
-            },
-        },
-    };
 
     let context_manager = LazyRecipient::new();
     let context_client = ContextClient::new(store, node_client, context_manager);
