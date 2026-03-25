@@ -61,9 +61,34 @@ impl Config {
         let contents =
             toml::to_string_pretty(self).wrap_err("Failed to serialize config to TOML")?;
 
-        fs::write(&path, contents)
+        // Write with owner-only permissions (0600) from the start to avoid the
+        // TOCTOU window that exists when writing first and then chmod-ing after.
+        // On non-Unix platforms we fall back to a plain async write.
+        #[cfg(unix)]
+        {
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt;
+            let path2 = path.clone();
+            let bytes = contents.into_bytes();
+            tokio::task::spawn_blocking(move || {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&path2)
+                    .and_then(|mut f| f.write_all(&bytes))
+            })
             .await
+            .wrap_err("thread panicked while writing config file")?
             .wrap_err_with(|| format!("Failed to write config file: {}", path.display()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(&path, contents)
+                .await
+                .wrap_err_with(|| format!("Failed to write config file: {}", path.display()))?;
+        }
 
         Ok(())
     }
