@@ -8,7 +8,7 @@ use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::{ContextHost, ContextMutation};
-use calimero_store::{key, Store};
+use calimero_store::{key, types, Store};
 
 use crate::group_store;
 
@@ -65,7 +65,7 @@ pub async fn process_context_mutations(
     context_client: &ContextClient,
     node_client: &NodeClient,
     context_id: ContextId,
-    executor: PublicKey,
+    _executor: PublicKey,
     mutations: &[ContextMutation],
 ) {
     if mutations.is_empty() {
@@ -203,16 +203,18 @@ pub async fn process_context_mutations(
                         }
                     }
                 } else {
-                    match context_client
-                        .invite_member(&context_id, &executor, &new_member)
-                        .await
-                    {
-                        Ok(_) => {
-                            debug!(%context_id, %new_member, "Member invited (no group)");
-                        }
-                        Err(e) => {
-                            error!(%context_id, %new_member, error = ?e, "Failed to process AddMember request")
-                        }
+                    let mut handle = datastore.handle();
+                    let identity_key = key::ContextIdentity::new(context_id, new_member);
+                    if let Err(e) = handle.put(
+                        &identity_key,
+                        &types::ContextIdentity {
+                            private_key: None,
+                            sender_key: None,
+                        },
+                    ) {
+                        error!(%context_id, %new_member, error = ?e, "Failed to write member identity");
+                    } else {
+                        debug!(%context_id, %new_member, "Member added directly (no group)");
                     }
                 }
             }
