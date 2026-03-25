@@ -1062,6 +1062,8 @@ impl Debug for GroupOpLog {
 /// Prefix byte for per-group head pointer (last op sequence + content hash).
 pub const GROUP_OP_HEAD_PREFIX: u8 = 0x31;
 
+pub const GROUP_MEMBER_CONTEXT_PREFIX: u8 = 0x32;
+
 /// Stores the latest applied op sequence and content hash for a group.
 /// Key: `prefix(1) + group_id(32)` → `GroupOpHeadValue`.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -1108,6 +1110,90 @@ impl Debug for GroupOpHead {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupOpHead")
             .field("group_id", &self.group_id())
+            .finish()
+    }
+}
+
+/// Tracks which context memberships were granted through a group join.
+/// Key: prefix + group_id + member_pk + context_id → context_identity bytes [u8; 32]
+/// Used for cascade removal when a member is kicked from the group.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupMemberContext(
+    Key<(
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    )>,
+);
+
+impl GroupMemberContext {
+    #[must_use]
+    pub fn new(
+        group_id: [u8; 32],
+        member: PrimitivePublicKey,
+        context_id: PrimitiveContextId,
+    ) -> Self {
+        Self(Key(GenericArray::from([GROUP_MEMBER_CONTEXT_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(*member))
+            .concat(GenericArray::from(*context_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn member(&self) -> PrimitivePublicKey {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
+        pk.into()
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..97]);
+        id.into()
+    }
+}
+
+impl AsKeyParts for GroupMemberContext {
+    type Components = (
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    );
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupMemberContext {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupMemberContext {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupMemberContext")
+            .field("group_id", &self.group_id())
+            .field("member", &self.member())
+            .field("context_id", &self.context_id())
             .finish()
     }
 }
@@ -1255,6 +1341,7 @@ mod tests {
             GROUP_CONTEXT_ALIAS_PREFIX,
             GROUP_OP_LOG_PREFIX,
             GROUP_OP_HEAD_PREFIX,
+            GROUP_MEMBER_CONTEXT_PREFIX,
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {

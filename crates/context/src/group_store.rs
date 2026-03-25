@@ -11,12 +11,13 @@ use calimero_store::key::{
     GroupContextLastMigrationValue, GroupContextVisibility, GroupContextVisibilityValue,
     GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis, GroupDefaultVisValue,
     GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
-    GroupMemberCapabilityValue, GroupMeta, GroupMetaValue, GroupOpHead, GroupOpHeadValue,
-    GroupOpLog, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus,
-    GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
-    GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
-    GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_PREFIX,
-    GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
+    GroupMemberCapabilityValue, GroupMemberContext, GroupMeta, GroupMetaValue, GroupOpHead,
+    GroupOpHeadValue, GroupOpLog, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey,
+    GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
+    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
+    GROUP_CONTEXT_VISIBILITY_PREFIX, GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
+    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX,
+    GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -285,11 +286,80 @@ fn delete_op_log_and_head(store: &Store, group_id: &ContextGroupId) -> EyreResul
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Member-context join tracking (for cascade removal)
+// ---------------------------------------------------------------------------
+
+pub fn track_member_context_join(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+    context_id: &ContextId,
+    context_identity: [u8; 32],
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupMemberContext::new(group_id.to_bytes(), *member, *context_id);
+    handle.put(&key, &context_identity)?;
+    Ok(())
+}
+
+pub fn get_member_context_joins(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
+    let handle = store.handle();
+    let start_key =
+        GroupMemberContext::new(group_id.to_bytes(), *member, ContextId::from([0u8; 32]));
+    let mut iter = handle.iter::<GroupMemberContext>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut results = Vec::new();
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+
+        if key.as_key().as_bytes()[0] != GROUP_MEMBER_CONTEXT_PREFIX {
+            break;
+        }
+        if key.group_id() != group_id.to_bytes() {
+            break;
+        }
+        if key.member() != *member {
+            break;
+        }
+
+        let Some(ctx_identity) = handle.get(&key)? else {
+            continue;
+        };
+        results.push((key.context_id(), ctx_identity));
+    }
+
+    Ok(results)
+}
+
+pub fn remove_all_member_context_joins(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
+    let joins = get_member_context_joins(store, group_id, member)?;
+    let mut handle = store.handle();
+    for (context_id, _) in &joins {
+        let key = GroupMemberContext::new(group_id.to_bytes(), *member, *context_id);
+        handle.delete(&key)?;
+    }
+    Ok(joins)
+}
+
 /// Remove all local rows for a group (metadata, members, caps, aliases, …).  
 /// Caller must enforce admin authorization and `count_group_contexts == 0`.
 pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     let members_snapshot = list_group_members(store, group_id, 0, usize::MAX)?;
     delete_local_gov_nonces_for_listed_members(store, group_id, &members_snapshot)?;
+
+    for (pk, _) in &members_snapshot {
+        let _ = remove_all_member_context_joins(store, group_id, pk);
+    }
 
     loop {
         let batch = list_group_members(store, group_id, 0, 500)?;
@@ -479,6 +549,20 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         GroupOp::MemberRemoved { member } => {
             require_group_admin(store, &group_id, &op.signer)?;
             ensure_not_last_admin_removal(store, &group_id, member)?;
+
+            let joins = remove_all_member_context_joins(store, &group_id, member)?;
+            for (context_id, _ctx_identity) in &joins {
+                let mut handle = store.handle();
+                let identity_key = ContextIdentity::new(*context_id, (*member).into());
+                handle.delete(&identity_key)?;
+                tracing::info!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    context_id = %hex::encode(context_id.as_ref()),
+                    member = %member,
+                    "cascade-removed member from context"
+                );
+            }
+
             remove_group_member(store, &group_id, member)?;
         }
         GroupOp::MemberRoleSet { member, role } => {
@@ -629,6 +713,37 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 &op.signer,
                 signed_invitation,
                 invitee_signature_hex,
+            )?;
+        }
+        GroupOp::MemberJoinedContext {
+            member,
+            context_id,
+            context_identity,
+        } => {
+            if !check_group_membership(store, &group_id, &op.signer)?
+                && !is_group_admin(store, &group_id, &op.signer)?
+            {
+                bail!("signer must be a group member or admin to record context join");
+            }
+            if !check_group_membership(store, &group_id, member)?
+                && !is_group_admin(store, &group_id, member)?
+            {
+                bail!("member must be in the group to join a context");
+            }
+            let ctx_group = get_group_for_context(store, context_id)?;
+            if ctx_group.as_ref() != Some(&group_id) {
+                bail!("context is not registered in this group");
+            }
+            track_member_context_join(store, &group_id, member, context_id, *context_identity)?;
+
+            let mut handle = store.handle();
+            let identity_key = ContextIdentity::new(*context_id, (*member).into());
+            handle.put(
+                &identity_key,
+                &calimero_store::types::ContextIdentity {
+                    private_key: None,
+                    sender_key: None,
+                },
             )?;
         }
         #[allow(unreachable_patterns)]

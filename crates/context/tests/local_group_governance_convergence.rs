@@ -9,8 +9,9 @@ use std::sync::Arc;
 use borsh::to_vec as borsh_to_vec;
 use calimero_context::governance_dag::{signed_op_to_delta, GroupGovernanceApplier};
 use calimero_context::group_store::{
-    self, add_group_member, apply_local_signed_group_op, compute_group_state_hash, get_op_head,
-    list_group_members, load_group_meta, read_op_log_after, save_group_meta,
+    self, add_group_member, apply_local_signed_group_op, compute_group_state_hash,
+    get_member_context_joins, get_op_head, list_group_members, load_group_meta, read_op_log_after,
+    save_group_meta, track_member_context_join,
 };
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, GroupRevealPayloadData, SignedGroupOpenInvitation,
@@ -1032,9 +1033,7 @@ fn state_hash_prevents_concurrent_op_divergence() {
         vec![[0u8; 32]],
         state_hash_c,
         1,
-        GroupOp::MemberRemoved {
-            member: admin_a_pk,
-        },
+        GroupOp::MemberRemoved { member: admin_a_pk },
     )
     .unwrap();
 
@@ -1065,6 +1064,199 @@ fn state_hash_prevents_concurrent_op_divergence() {
     // Node C: A was removed by C, D was NOT added
     assert!(!group_store::check_group_membership(&node_c, &gid, &admin_a_pk).unwrap());
     assert!(!group_store::check_group_membership(&node_c, &gid, &new_member_d).unwrap());
+}
+
+#[test]
+fn cascade_removal_on_member_kick() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+
+    let context_id = ContextId::from([0xCC; 32]);
+
+    group_store::register_context_in_group(&store, &gid, &context_id).unwrap();
+
+    track_member_context_join(&store, &gid, &member_pk, &context_id, *member_pk.as_ref())
+        .unwrap();
+
+    {
+        use calimero_store::key::ContextIdentity;
+        let mut handle = store.handle();
+        let key = ContextIdentity::new(context_id, member_pk.into());
+        handle
+            .put(
+                &key,
+                &calimero_store::types::ContextIdentity {
+                    private_key: None,
+                    sender_key: None,
+                },
+            )
+            .unwrap();
+    }
+
+    {
+        use calimero_store::key::ContextIdentity;
+        let handle = store.handle();
+        let key = ContextIdentity::new(context_id, member_pk.into());
+        assert!(
+            handle.has(&key).unwrap(),
+            "member should be in context before kick"
+        );
+    }
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::MemberRemoved { member: member_pk },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op).unwrap();
+
+    assert!(!group_store::check_group_membership(&store, &gid, &member_pk).unwrap());
+
+    {
+        use calimero_store::key::ContextIdentity;
+        let handle = store.handle();
+        let key = ContextIdentity::new(context_id, member_pk.into());
+        assert!(
+            !handle.has(&key).unwrap(),
+            "member should be cascade-removed from context"
+        );
+    }
+
+    let joins = get_member_context_joins(&store, &gid, &member_pk).unwrap();
+    assert!(joins.is_empty(), "tracking records should be cleaned up");
+}
+
+#[test]
+fn cascade_removal_deterministic_across_nodes() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let node_a = empty_store();
+    let node_b = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let member_pk = PrivateKey::random(&mut rng).public_key();
+
+    let ctx1 = ContextId::from([0xC1; 32]);
+    let ctx2 = ContextId::from([0xC2; 32]);
+
+    for store in [&node_a, &node_b] {
+        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
+        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+        add_group_member(store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+        group_store::register_context_in_group(store, &gid, &ctx1).unwrap();
+        group_store::register_context_in_group(store, &gid, &ctx2).unwrap();
+
+        track_member_context_join(store, &gid, &member_pk, &ctx1, *member_pk.as_ref()).unwrap();
+        track_member_context_join(store, &gid, &member_pk, &ctx2, *member_pk.as_ref()).unwrap();
+
+        use calimero_store::key::ContextIdentity;
+        let mut handle = store.handle();
+        for ctx in [ctx1, ctx2] {
+            let key = ContextIdentity::new(ctx, member_pk.into());
+            handle
+                .put(
+                    &key,
+                    &calimero_store::types::ContextIdentity {
+                        private_key: None,
+                        sender_key: None,
+                    },
+                )
+                .unwrap();
+        }
+    }
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::MemberRemoved { member: member_pk },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&node_a, &op).unwrap();
+    apply_local_signed_group_op(&node_b, &op).unwrap();
+
+    for (label, store) in [("node_a", &node_a), ("node_b", &node_b)] {
+        use calimero_store::key::ContextIdentity;
+        let handle = store.handle();
+        for ctx in [ctx1, ctx2] {
+            let key = ContextIdentity::new(ctx, member_pk.into());
+            assert!(
+                !handle.has(&key).unwrap(),
+                "{label}: member should be cascade-removed from context {}",
+                hex::encode(ctx.as_ref())
+            );
+        }
+        assert!(
+            !group_store::check_group_membership(store, &gid, &member_pk).unwrap(),
+            "{label}: member should be removed from group"
+        );
+    }
+}
+
+#[test]
+fn member_joined_context_op_propagates() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let node_a = empty_store();
+    let node_b = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let member_pk = PrivateKey::random(&mut rng).public_key();
+    let context_id = ContextId::from([0xDD; 32]);
+
+    for store in [&node_a, &node_b] {
+        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
+        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+        add_group_member(store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+        group_store::register_context_in_group(store, &gid, &context_id).unwrap();
+    }
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::MemberJoinedContext {
+            member: member_pk,
+            context_id,
+            context_identity: *member_pk.as_ref(),
+        },
+    )
+    .unwrap();
+    let payload = borsh_to_vec(&op).unwrap();
+
+    apply_wire_payload(&node_a, &payload);
+    apply_wire_payload(&node_b, &payload);
+
+    for store in [&node_a, &node_b] {
+        let joins = get_member_context_joins(store, &gid, &member_pk).unwrap();
+        assert_eq!(joins.len(), 1, "tracking record should exist");
+        assert_eq!(joins[0].0, context_id);
+    }
 }
 
 #[test]
