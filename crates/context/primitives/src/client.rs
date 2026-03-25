@@ -165,11 +165,15 @@ impl ContextClient {
             return Ok(None);
         };
 
-        let application_id = self
-            .get_context_application(context_id)
-            .await
-            .map(|app| app.id)
-            .unwrap_or_else(|_| ApplicationId::from([0u8; DIGEST_SIZE]));
+        let app = self.get_context_application(context_id).await.ok();
+        let application_id = app
+            .as_ref()
+            .map(|a| a.id)
+            .unwrap_or_else(|| ApplicationId::from([0u8; DIGEST_SIZE]));
+        let blob_id = app
+            .as_ref()
+            .map(|a| a.blob.bytecode)
+            .unwrap_or_else(|| calimero_primitives::blobs::BlobId::from([0u8; DIGEST_SIZE]));
 
         let group_id = {
             let handle = self.datastore.handle();
@@ -200,6 +204,7 @@ impl ContextClient {
             application_id,
             *inviter_id,
             group_id,
+            blob_id,
         )?;
 
         Ok(Some(invitation_payload))
@@ -333,11 +338,15 @@ impl ContextClient {
             return Ok(None);
         }
 
-        let application_id = self
-            .get_context_application(&context_id)
-            .await
-            .map(|app| app.id)
-            .unwrap_or_else(|_| ApplicationId::from([0u8; DIGEST_SIZE]));
+        let app = self.get_context_application(&context_id).await.ok();
+        let application_id = app
+            .as_ref()
+            .map(|a| a.id)
+            .unwrap_or_else(|| ApplicationId::from([0u8; DIGEST_SIZE]));
+        let blob_id = app
+            .as_ref()
+            .map(|a| a.blob.bytecode)
+            .unwrap_or_else(|| calimero_primitives::blobs::BlobId::from([0u8; DIGEST_SIZE]));
 
         let inviter_id: PublicKey = {
             use calimero_context_config::repr::ReprBytes;
@@ -356,6 +365,7 @@ impl ContextClient {
             application_id,
             inviter_id,
             group_id,
+            blob_id,
         )?;
 
         let (sender, receiver) = oneshot::channel();

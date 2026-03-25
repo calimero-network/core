@@ -110,7 +110,7 @@ impl fmt::Debug for ContextInvitationPayload {
         {
             let is_alternate = f.alternate();
             let mut d = f.debug_struct("ContextInvitationPayload");
-            let (context_id, invitee_id, application_id, inviter_id, _group_id) =
+            let (context_id, invitee_id, application_id, inviter_id, _group_id, _blob_id) =
                 self.parts().map_err(|_| fmt::Error)?;
 
             _ = d
@@ -173,17 +173,18 @@ const _: () = {
 
     use crate::application::ApplicationId;
 
+    use crate::blobs::BlobId;
+
     #[derive(BorshSerialize, BorshDeserialize)]
     struct InvitationPayload {
         context_id: [u8; DIGEST_SIZE],
         invitee_id: [u8; DIGEST_SIZE],
         application_id: [u8; DIGEST_SIZE],
-        /// The inviter's context-level identity so the joiner can recognise
-        /// the inviter as a context member before gossip propagates.
         inviter_id: [u8; DIGEST_SIZE],
-        /// The group that owns this context, so the joiner can publish a
-        /// `MemberJoinedContext` governance op without waiting for gossip.
         group_id: [u8; DIGEST_SIZE],
+        /// Application blob so the joiner can create a stub `ApplicationMeta`
+        /// and proceed with blob sharing during sync.
+        blob_id: [u8; DIGEST_SIZE],
     }
 
     impl ContextInvitationPayload {
@@ -193,6 +194,7 @@ const _: () = {
             application_id: ApplicationId,
             inviter_id: PublicKey,
             group_id: [u8; DIGEST_SIZE],
+            blob_id: BlobId,
         ) -> io::Result<Self> {
             let payload = InvitationPayload {
                 context_id: *context_id,
@@ -200,12 +202,14 @@ const _: () = {
                 application_id: *application_id,
                 inviter_id: *inviter_id,
                 group_id,
+                blob_id: *blob_id,
             };
 
             borsh::to_vec(&payload).map(Self)
         }
 
         /// Deserializes the payload and extracts its constituent parts.
+        #[allow(clippy::type_complexity)]
         pub fn parts(
             &self,
         ) -> io::Result<(
@@ -214,6 +218,7 @@ const _: () = {
             ApplicationId,
             PublicKey,
             [u8; DIGEST_SIZE],
+            BlobId,
         )> {
             let payload: InvitationPayload = borsh::from_slice(&self.0)?;
 
@@ -223,6 +228,7 @@ const _: () = {
                 payload.application_id.into(),
                 payload.inviter_id.into(),
                 payload.group_id,
+                payload.blob_id.into(),
             ))
         }
     }
@@ -505,6 +511,7 @@ mod tests {
         let application_id = ApplicationId::from([3; DIGEST_SIZE]);
         let inviter_id = PublicKey::from([4; DIGEST_SIZE]);
         let group_id = [5; DIGEST_SIZE];
+        let blob_id = calimero_primitives::blobs::BlobId::from([6; DIGEST_SIZE]);
 
         let invitation_payload = ContextInvitationPayload::new(
             context_id,
@@ -512,6 +519,7 @@ mod tests {
             application_id,
             inviter_id,
             group_id,
+            blob_id,
         )
         .expect("Payload creation should succeed");
 
@@ -521,15 +529,17 @@ mod tests {
         let decoded_invitation_payload = ContextInvitationPayload::from_str(&encoded_string)
             .expect("Payload decoding should succeed");
 
-        let (dec_ctx, dec_invitee, dec_app, dec_inviter, dec_group) = decoded_invitation_payload
-            .parts()
-            .expect("Extracting parts should succeed");
+        let (dec_ctx, dec_invitee, dec_app, dec_inviter, dec_group, dec_blob) =
+            decoded_invitation_payload
+                .parts()
+                .expect("Extracting parts should succeed");
 
         assert_eq!(context_id, dec_ctx);
         assert_eq!(invitee_id, dec_invitee);
         assert_eq!(application_id, dec_app);
         assert_eq!(inviter_id, dec_inviter);
         assert_eq!(group_id, dec_group);
+        assert_eq!(blob_id, dec_blob);
     }
 
     #[test]

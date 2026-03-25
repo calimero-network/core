@@ -52,8 +52,14 @@ async fn join_context(
     group_signing_identity: Option<(PublicKey, PrivateKey)>,
     invitation_payload: calimero_primitives::context::ContextInvitationPayload,
 ) -> eyre::Result<(ContextId, PublicKey)> {
-    let (context_id, invitee_id, invitation_app_id, inviter_id, invitation_group_id) =
-        invitation_payload.parts()?;
+    let (
+        context_id,
+        invitee_id,
+        invitation_app_id,
+        inviter_id,
+        invitation_group_id,
+        invitation_blob_id,
+    ) = invitation_payload.parts()?;
 
     tracing::info!(%context_id, %invitee_id, %invitation_app_id, %inviter_id, "join_context: starting join flow");
 
@@ -156,6 +162,32 @@ async fn join_context(
     }
 
     context_client.delete_identity(&ContextId::zero(), &invitee_id)?;
+
+    // Create a stub ApplicationMeta so the sync manager can look up the
+    // blob_id and proceed with blob sharing.  The full application will be
+    // installed after the blob arrives from the peer.
+    let zero_blob = calimero_primitives::blobs::BlobId::from([0u8; 32]);
+    if invitation_blob_id != zero_blob && !node_client.has_application(&invitation_app_id)? {
+        let stub_source: calimero_primitives::application::ApplicationSource =
+            format!("calimero://context/{context_id}")
+                .parse()
+                .expect("valid URL");
+        node_client.install_application(
+            &invitation_blob_id,
+            0,
+            &stub_source,
+            vec![],
+            "unknown",
+            "0.0.0",
+            None,
+            false,
+        )?;
+        tracing::info!(
+            %context_id,
+            %invitation_app_id,
+            "installed stub ApplicationMeta from invitation for blob sharing"
+        );
+    }
 
     // Publish MemberJoinedContext governance op so other nodes learn about
     // this join.  Prefer the group_id from the invitation (available even

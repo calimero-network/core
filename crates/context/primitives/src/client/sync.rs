@@ -264,12 +264,12 @@ impl ContextClient {
         let application_id = if let Some(ctx) = &context {
             ctx.application.application_id()
         } else {
-            config
-                .application_id
-                .ok_or_else(|| eyre::eyre!(
+            config.application_id.ok_or_else(|| {
+                eyre::eyre!(
                     "bootstrap requires application_id in ContextConfigParams \
                      (context {context_id} has no local metadata yet)"
-                ))?
+                )
+            })?
         };
 
         if let Some(application) = self.node_client().get_application(&application_id)? {
@@ -279,9 +279,7 @@ impl ContextClient {
                 let blob_id = application.blob.bytecode;
 
                 let derived_application_id = {
-                    if let Some(app_id) =
-                        self.try_install_from_url(&source, &metadata).await?
-                    {
+                    if let Some(app_id) = self.try_install_from_url(&source, &metadata).await? {
                         app_id
                     } else if self.node_client.has_blob(&blob_id)? {
                         self.install_from_existing_blob(
