@@ -27,7 +27,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
             None => {
                 return ActorResponse::reply(Err(eyre::eyre!(
                     "joiner_identity not provided and node has no configured group identity"
-                )))
+                )));
             }
         };
 
@@ -39,7 +39,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
         let inviter_identity = PublicKey::from(inv.inviter_identity.to_bytes());
 
-        let needs_chain_sync = group_store::load_group_meta(&self.datastore, &group_id)
+        let group_not_found_locally = group_store::load_group_meta(&self.datastore, &group_id)
             .map(|opt| opt.is_none())
             .unwrap_or(true);
 
@@ -64,7 +64,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                if needs_chain_sync {
+                if group_not_found_locally {
                     bail!(
                         "group metadata is missing locally; wait for group state to replicate \
                          before joining (local governance)"
@@ -93,18 +93,17 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     .map_err(|e| eyre::eyre!("signing reveal payload failed: {e}"))?;
                 let invitee_signature_hex = hex::encode(signature.to_bytes());
 
-                let bytes = group_store::sign_apply_local_group_op_borsh(
+                group_store::sign_apply_and_publish(
                     &datastore,
+                    &node_client,
                     &group_id,
                     &sk,
                     GroupOp::JoinWithInvitationClaim {
                         signed_invitation: invitation,
                         invitee_signature_hex,
                     },
-                )?;
-                node_client
-                    .publish_signed_group_op(group_id.to_bytes(), bytes)
-                    .await?;
+                )
+                .await?;
 
                 if let Some(ref alias_str) = group_alias {
                     group_store::set_group_alias(&datastore, &group_id, alias_str)?;

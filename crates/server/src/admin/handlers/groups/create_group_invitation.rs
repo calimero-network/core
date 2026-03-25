@@ -38,7 +38,7 @@ pub async fn handler(
         .create_group_invitation(CreateGroupInvitationRequest {
             group_id,
             requester,
-            expiration_block_height: req.expiration_block_height,
+            expiration_timestamp: req.expiration_timestamp,
         })
         .await
         .map_err(parse_api_error);

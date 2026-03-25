@@ -12,7 +12,7 @@ use thiserror::Error as ThisError;
 
 use crate::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
 
-pub type BlockHeight = u64;
+pub type ExpirationTimestamp = u64;
 pub type Revision = u64;
 
 #[derive(
@@ -487,6 +487,14 @@ pub enum Capability {
     Proxy,
 }
 
+/// Bitfield constants for context-level member capabilities.
+pub struct ContextMemberCapabilities;
+
+impl ContextMemberCapabilities {
+    pub const MANAGE_APPLICATION: u8 = 1 << 0;
+    pub const MANAGE_MEMBERS: u8 = 1 << 1;
+}
+
 #[derive(Eq, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Signed<T> {
     payload: Repr<Box<[u8]>>,
@@ -586,18 +594,10 @@ pub struct InvitationFromMember {
     pub inviter_identity: ContextIdentity,
     /// Context ID for the invitation.
     pub context_id: ContextId,
-    /// The height at which the invitation becomes expired.
-    pub expiration_height: BlockHeight,
+    /// Unix timestamp (seconds) at which the invitation expires.
+    pub expiration_timestamp: ExpirationTimestamp,
     /// Secret salt.
     pub secret_salt: [u8; 32],
-    // The protocol ID to prevent reusing the same invitation on different blockchains.
-    // TODO(opt): utilize the integer for the protocol, and possibly a compressed integer
-    // representation of protocol+network.
-    pub protocol: String,
-    // The protocol network (e.g. "mainnet", "testnet", etc.)
-    pub network: String,
-    // The contract ID for the config context contract on the target protocol.
-    pub contract_id: String,
 }
 
 /// A container for an open invitation and the inviter's signature over it.
@@ -639,16 +639,10 @@ pub struct GroupInvitationFromAdmin {
     pub inviter_identity: SignerId,
     /// The group being invited to.
     pub group_id: ContextGroupId,
-    /// The block height at which the invitation expires.
-    pub expiration_height: BlockHeight,
+    /// Unix timestamp (seconds) at which the invitation expires.
+    pub expiration_timestamp: ExpirationTimestamp,
     /// Secret salt for MEV protection.
     pub secret_salt: [u8; 32],
-    /// The protocol ID (e.g. "near").
-    pub protocol: String,
-    /// The protocol network (e.g. "testnet").
-    pub network: String,
-    /// The contract ID on the target protocol.
-    pub contract_id: String,
 }
 
 /// A container for a group invitation and the admin's signature over it.
@@ -691,11 +685,8 @@ mod tests {
         let invitation = InvitationFromMember {
             inviter_identity: inviter_identity_bytes.into(),
             context_id: context_id_bytes.into(),
-            expiration_height: 1000,
+            expiration_timestamp: 1000,
             secret_salt: salt,
-            protocol: "near".to_string(),
-            network: "devnet".to_string(),
-            contract_id: "".to_string(),
         };
         let invitation_borsh =
             borsh::to_vec(&invitation).expect("Failed to Borsh serialize the invitation");
@@ -708,12 +699,9 @@ mod tests {
         );
         assert_eq!(invitation.context_id, invitation_deserialized.context_id);
         assert_eq!(
-            invitation.expiration_height,
-            invitation_deserialized.expiration_height
+            invitation.expiration_timestamp,
+            invitation_deserialized.expiration_timestamp
         );
         assert_eq!(invitation.secret_salt, invitation_deserialized.secret_salt);
-        assert_eq!(invitation.protocol, invitation_deserialized.protocol);
-        assert_eq!(invitation.network, invitation_deserialized.network);
-        assert_eq!(invitation.contract_id, invitation_deserialized.contract_id);
     }
 }

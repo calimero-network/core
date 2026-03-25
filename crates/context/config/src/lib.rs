@@ -10,8 +10,8 @@ pub mod types;
 
 use repr::Repr;
 use types::{
-    AppKey, Application, BlockHeight, Capability, ContextGroupId, ContextId, ContextIdentity,
-    SignedGroupRevealPayload, SignedRevealPayload, SignerId,
+    AppKey, Application, Capability, ContextGroupId, ContextId, ContextIdentity,
+    ExpirationTimestamp, SignedGroupRevealPayload, SignedRevealPayload, SignerId,
 };
 
 pub type Timestamp = u64;
@@ -89,7 +89,7 @@ pub enum ContextRequestKind<'a> {
     },
     CommitOpenInvitation {
         commitment_hash: String,
-        expiration_block_height: BlockHeight,
+        expiration_timestamp: ExpirationTimestamp,
     },
     RevealOpenInvitation {
         payload: SignedRevealPayload,
@@ -173,7 +173,7 @@ pub enum GroupRequestKind<'a> {
     },
     CommitGroupInvitation {
         commitment_hash: String,
-        expiration_block_height: BlockHeight,
+        expiration_timestamp: ExpirationTimestamp,
     },
     RevealGroupInvitation {
         payload: SignedGroupRevealPayload,
@@ -218,4 +218,3 @@ pub enum SystemRequest {
     #[serde(rename_all = "camelCase")]
     SetValidityThreshold { threshold_ms: Timestamp },
 }
-

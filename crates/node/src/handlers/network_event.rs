@@ -48,9 +48,6 @@ impl Handler<NetworkEvent> for NodeManager {
                                     .sync_group(SyncGroupRequest {
                                         group_id,
                                         requester: None,
-                                        protocol: None,
-                                        network_id: None,
-                                        contract_id: None,
                                     })
                                     .await
                                 {
@@ -143,14 +140,18 @@ impl Handler<NetworkEvent> for NodeManager {
             }
 
             // BroadcastMessage handling - delegate to state_delta module
-            NetworkEvent::Message { message: gossip_message, .. } => {
+            NetworkEvent::Message {
+                message: gossip_message,
+                ..
+            } => {
                 let topic = gossip_message.topic.clone();
                 let Some(source) = gossip_message.source else {
                     warn!(?gossip_message, "Received message without source");
                     return;
                 };
 
-                let message = match borsh::from_slice::<BroadcastMessage<'_>>(&gossip_message.data) {
+                let message = match borsh::from_slice::<BroadcastMessage<'_>>(&gossip_message.data)
+                {
                     Ok(message) => message,
                     Err(err) => {
                         debug!(?err, ?gossip_message, "Failed to deserialize message");
@@ -170,6 +171,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         artifact,
                         nonce,
                         events,
+                        governance_epoch,
                     } => {
                         info!(
                             %context_id,
@@ -177,6 +179,7 @@ impl Handler<NetworkEvent> for NodeManager {
                             delta_id = ?delta_id,
                             parent_count = parent_ids.len(),
                             has_events = events.is_some(),
+                            governance_epoch_len = governance_epoch.len(),
                             "Matched StateDelta message"
                         );
 
@@ -203,6 +206,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                     artifact.into_owned(),
                                     nonce,
                                     events.map(|e| e.into_owned()),
+                                    governance_epoch,
                                 )
                                 .await
                                 {
@@ -645,9 +649,6 @@ impl Handler<NetworkEvent> for NodeManager {
                                             .sync_group(SyncGroupRequest {
                                                 group_id,
                                                 requester: None,
-                                                protocol: None,
-                                                network_id: None,
-                                                contract_id: None,
                                             })
                                             .await
                                         {
@@ -711,10 +712,203 @@ impl Handler<NetworkEvent> for NodeManager {
                         let context_client = self.clients.context.clone();
                         let _ignored = ctx.spawn(
                             async move {
-                                if let Err(err) =
-                                    context_client.apply_signed_group_op(op.clone()).await
-                                {
-                                    warn!(?err, %source, "failed to apply signed group op");
+                                match context_client.apply_signed_group_op(op.clone()).await {
+                                    Ok(true) => {}
+                                    Ok(false) => {
+                                        debug!(
+                                            group_id = %hex::encode(op.group_id),
+                                            parents = op.parent_op_hashes.len(),
+                                            "signed group op pending, waiting for parent ops"
+                                        );
+                                    }
+                                    Err(err) => {
+                                        warn!(?err, %source, "failed to apply signed group op");
+                                    }
+                                }
+                            }
+                            .into_actor(self),
+                        );
+                    }
+                    BroadcastMessage::GroupGovernanceDelta {
+                        group_id,
+                        delta_id: _,
+                        parent_ids: _,
+                        payload,
+                    } => {
+                        use calimero_context_primitives::local_governance::SignedGroupOp;
+                        use calimero_node_primitives::sync::MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES;
+
+                        if payload.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
+                            warn!(
+                                len = payload.len(),
+                                "oversized GroupGovernanceDelta payload"
+                            );
+                            return;
+                        }
+
+                        let op: SignedGroupOp = match borsh::from_slice(&payload) {
+                            Ok(op) => op,
+                            Err(err) => {
+                                warn!(%err, "failed to decode GroupGovernanceDelta payload");
+                                return;
+                            }
+                        };
+
+                        if op.group_id != group_id {
+                            warn!("GroupGovernanceDelta group_id mismatch with topic");
+                            return;
+                        }
+
+                        if let Err(err) = op.verify_signature() {
+                            warn!(%err, "GroupGovernanceDelta signature verification failed");
+                            return;
+                        }
+
+                        let context_client = self.clients.context.clone();
+                        let _ignored = ctx.spawn(
+                            async move {
+                                match context_client.apply_signed_group_op(op.clone()).await {
+                                    Ok(true) => {}
+                                    Ok(false) => {
+                                        debug!(
+                                            group_id = %hex::encode(op.group_id),
+                                            parents = op.parent_op_hashes.len(),
+                                            "governance delta pending, waiting for parent ops"
+                                        );
+                                    }
+                                    Err(err) => {
+                                        warn!(?err, %source, "failed to apply governance delta");
+                                    }
+                                }
+                            }
+                            .into_actor(self),
+                        );
+                    }
+                    BroadcastMessage::GroupStateHeartbeat {
+                        group_id,
+                        dag_heads: peer_heads,
+                        member_count: _,
+                    } => {
+                        let context_client = self.clients.context.clone();
+                        let network_client = self.managers.sync.network_client.clone();
+                        let sync_timeout = self.managers.sync.sync_config.timeout;
+
+                        let _ignored = ctx.spawn(
+                            async move {
+                                use calimero_context::group_store;
+                                use calimero_context_config::types::ContextGroupId;
+
+                                let gid = ContextGroupId::from(group_id);
+                                let local_heads: std::collections::HashSet<[u8; 32]> =
+                                    match group_store::get_op_head(
+                                        &context_client.datastore_handle().into_inner(),
+                                        &gid,
+                                    ) {
+                                        Ok(Some(h)) => h.dag_heads.into_iter().collect(),
+                                        _ => std::collections::HashSet::new(),
+                                    };
+
+                                let missing: Vec<[u8; 32]> = peer_heads
+                                    .iter()
+                                    .filter(|h| !local_heads.contains(*h))
+                                    .copied()
+                                    .collect();
+
+                                if missing.is_empty() {
+                                    return;
+                                }
+
+                                info!(
+                                    group_id = %hex::encode(group_id),
+                                    missing = missing.len(),
+                                    %source,
+                                    "heartbeat divergence: requesting missing group deltas"
+                                );
+
+                                let Ok(mut stream) =
+                                    network_client.open_stream(source).await
+                                else {
+                                    debug!(
+                                        %source,
+                                        "failed to open stream for group delta catch-up"
+                                    );
+                                    return;
+                                };
+
+                                for delta_id in missing {
+                                    let msg =
+                                        calimero_node_primitives::sync::StreamMessage::Init {
+                                            context_id:
+                                                calimero_primitives::context::ContextId::from(
+                                                    [0u8; 32],
+                                                ),
+                                            party_id:
+                                                calimero_primitives::identity::PublicKey::from(
+                                                    [0u8; 32],
+                                                ),
+                                            payload: calimero_node_primitives::sync::InitPayload::GroupDeltaRequest {
+                                                group_id,
+                                                delta_id,
+                                            },
+                                            next_nonce: {
+                                                use rand::Rng;
+                                                rand::thread_rng().gen()
+                                            },
+                                        };
+
+                                    if let Err(err) =
+                                        crate::sync::stream::send(&mut stream, &msg, None).await
+                                    {
+                                        debug!(%err, "failed to send GroupDeltaRequest");
+                                        break;
+                                    }
+
+                                    match crate::sync::stream::recv(
+                                        &mut stream,
+                                        None,
+                                        sync_timeout,
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some(
+                                            calimero_node_primitives::sync::StreamMessage::Message {
+                                                payload:
+                                                    calimero_node_primitives::sync::MessagePayload::GroupDeltaResponse {
+                                                        delta_id: _,
+                                                        parent_ids: _,
+                                                        payload: op_bytes,
+                                                    },
+                                                ..
+                                            },
+                                        )) => {
+                                            if let Ok(op) = borsh::from_slice::<
+                                                calimero_context_primitives::local_governance::SignedGroupOp,
+                                            >(
+                                                &op_bytes
+                                            ) {
+                                                let _ =
+                                                    context_client.apply_signed_group_op(op).await;
+                                            }
+                                        }
+                                        Ok(Some(
+                                            calimero_node_primitives::sync::StreamMessage::Message {
+                                                payload:
+                                                    calimero_node_primitives::sync::MessagePayload::GroupDeltaNotFound,
+                                                ..
+                                            },
+                                        )) => {
+                                            debug!(
+                                                delta = %hex::encode(delta_id),
+                                                "peer does not have requested group delta"
+                                            );
+                                        }
+                                        _ => {
+                                            debug!(
+                                                "unexpected response to GroupDeltaRequest"
+                                            );
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                             .into_actor(self),

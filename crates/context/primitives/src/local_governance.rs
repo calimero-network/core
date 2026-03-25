@@ -12,7 +12,17 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 /// Wire/schema version for [`SignedGroupOp`].
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 1;
+///
+/// v3: Added `state_hash: [u8; 32]` — each op commits to the group's
+/// authorization-relevant state at signing time. On apply, a non-zero
+/// state hash is verified against the current state to reject stale ops.
+///
+/// v2: `parent_op_hash: Option` changed to `parent_op_hashes: Vec` for
+/// multi-parent DAG support. See `DAG-BASED-GOVERNANCE.md`.
+///
+/// v1 was internal to feature branch development and never deployed to any
+/// persistent network. No backward-compatible deserialization is needed.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 3;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
@@ -77,22 +87,41 @@ pub enum GroupOp {
         alias: String,
     },
     /// Human-readable alias for a member within the group.
-    MemberAliasSet {
-        member: PublicKey,
-        alias: String,
-    },
+    MemberAliasSet { member: PublicKey, alias: String },
     /// Human-readable alias for the group itself.
     GroupAliasSet { alias: String },
     /// Delete the group locally (no registered contexts; same constraints as CLI delete).
     GroupDelete,
     /// Update group migration bytes in [`GroupMetaValue`] (admin).
-    GroupMigrationSet {
-        migration: Option<Vec<u8>>,
-    },
+    GroupMigrationSet { migration: Option<Vec<u8>> },
     /// Join a group using an admin-signed open invitation plus joiner proof (see `join_group`).
     JoinWithInvitationClaim {
         signed_invitation: SignedGroupOpenInvitation,
         invitee_signature_hex: String,
+    },
+    /// Record that a member joined a context through this group.
+    /// Enables cascade removal when the member is kicked from the group.
+    MemberJoinedContext {
+        member: PublicKey,
+        context_id: ContextId,
+        context_identity: [u8; 32],
+    },
+    /// Record that a member left (or was removed from) a context in this group.
+    MemberLeftContext {
+        member: PublicKey,
+        context_id: ContextId,
+    },
+    /// Grant a capability to a member for a specific context.
+    ContextCapabilityGranted {
+        context_id: ContextId,
+        member: PublicKey,
+        capability: u8,
+    },
+    /// Revoke a capability from a member for a specific context.
+    ContextCapabilityRevoked {
+        context_id: ContextId,
+        member: PublicKey,
+        capability: u8,
     },
 }
 
@@ -101,18 +130,24 @@ pub enum GroupOp {
 pub struct SignableGroupOp {
     pub version: u8,
     pub group_id: [u8; 32],
-    pub parent_op_hash: Option<[u8; 32]>,
+    pub parent_op_hashes: Vec<[u8; 32]>,
+    pub state_hash: [u8; 32],
     pub signer: PublicKey,
     pub nonce: u64,
     pub op: GroupOp,
 }
 
 /// A signed group operation ready for gossip or storage.
+///
+/// Embeds DAG parent references for causal ordering: `parent_op_hashes`
+/// contains the content hashes of all current DAG heads at signing time.
+/// Single parent = linear chain; multiple parents = merge after concurrent ops.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignedGroupOp {
     pub version: u8,
     pub group_id: [u8; 32],
-    pub parent_op_hash: Option<[u8; 32]>,
+    pub parent_op_hashes: Vec<[u8; 32]>,
+    pub state_hash: [u8; 32],
     pub signer: PublicKey,
     pub nonce: u64,
     pub op: GroupOp,
@@ -131,7 +166,8 @@ pub enum GovernanceError {
 
 /// Bytes that are hashed/signed: `GROUP_GOVERNANCE_SIGN_DOMAIN` || `borsh(SignableGroupOp)`.
 pub fn signable_bytes(signable: &SignableGroupOp) -> Result<Vec<u8>, GovernanceError> {
-    let mut body = borsh::to_vec(signable).map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
+    let mut body =
+        borsh::to_vec(signable).map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
     let mut out = Vec::with_capacity(GROUP_GOVERNANCE_SIGN_DOMAIN.len() + body.len());
     out.extend_from_slice(GROUP_GOVERNANCE_SIGN_DOMAIN);
     out.append(&mut body);
@@ -147,10 +183,14 @@ pub fn op_content_hash(signable: &SignableGroupOp) -> Result<[u8; 32], Governanc
 
 impl SignedGroupOp {
     /// Build and sign a new operation with [`SIGNED_GROUP_OP_SCHEMA_VERSION`].
+    ///
+    /// `parent_op_hashes` should be the current DAG heads (content hashes of the
+    /// latest applied ops). Empty vec for the first op in a group (genesis).
     pub fn sign(
         sk: &PrivateKey,
         group_id: [u8; 32],
-        parent_op_hash: Option<[u8; 32]>,
+        parent_op_hashes: Vec<[u8; 32]>,
+        state_hash: [u8; 32],
         nonce: u64,
         op: GroupOp,
     ) -> Result<Self, GovernanceError> {
@@ -158,7 +198,8 @@ impl SignedGroupOp {
         let signable = SignableGroupOp {
             version: SIGNED_GROUP_OP_SCHEMA_VERSION,
             group_id,
-            parent_op_hash,
+            parent_op_hashes,
+            state_hash,
             signer,
             nonce,
             op,
@@ -168,7 +209,8 @@ impl SignedGroupOp {
         Ok(Self {
             version: signable.version,
             group_id: signable.group_id,
-            parent_op_hash: signable.parent_op_hash,
+            parent_op_hashes: signable.parent_op_hashes,
+            state_hash: signable.state_hash,
             signer: signable.signer,
             nonce: signable.nonce,
             op: signable.op,
@@ -195,7 +237,8 @@ impl SignedGroupOp {
         SignableGroupOp {
             version: self.version,
             group_id: self.group_id,
-            parent_op_hash: self.parent_op_hash,
+            parent_op_hashes: self.parent_op_hashes.clone(),
+            state_hash: self.state_hash,
             signer: self.signer,
             nonce: self.nonce,
             op: self.op.clone(),
@@ -230,7 +273,8 @@ mod tests {
         let op = SignedGroupOp::sign(
             &sk,
             sample_group_id(),
-            None,
+            vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member,
@@ -252,7 +296,8 @@ mod tests {
         let mut op = SignedGroupOp::sign(
             &sk,
             sample_group_id(),
-            None,
+            vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member,
@@ -276,7 +321,8 @@ mod tests {
         let mut op = SignedGroupOp::sign(
             &sk,
             sample_group_id(),
-            None,
+            vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member,
@@ -298,7 +344,8 @@ mod tests {
         let op1 = SignedGroupOp::sign(
             &sk,
             sample_group_id(),
-            None,
+            vec![],
+            [0u8; 32],
             1,
             GroupOp::MemberAdded {
                 member,
@@ -310,7 +357,8 @@ mod tests {
         let op2 = SignedGroupOp::sign(
             &sk,
             sample_group_id(),
-            None,
+            vec![],
+            [0u8; 32],
             2,
             GroupOp::MemberAdded {
                 member,
@@ -321,7 +369,10 @@ mod tests {
 
         let h1 = op1.content_hash().expect("hash");
         let h2 = op2.content_hash().expect("hash");
-        assert_ne!(h1, h2, "different nonces must yield different content hashes");
+        assert_ne!(
+            h1, h2,
+            "different nonces must yield different content hashes"
+        );
     }
 
     #[test]
@@ -332,7 +383,8 @@ mod tests {
         let s = SignableGroupOp {
             version: SIGNED_GROUP_OP_SCHEMA_VERSION,
             group_id: [1u8; 32],
-            parent_op_hash: None,
+            parent_op_hashes: vec![],
+            state_hash: [0u8; 32],
             signer: pk,
             nonce: 42,
             op: GroupOp::Noop,
