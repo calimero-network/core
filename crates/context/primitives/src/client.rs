@@ -3,14 +3,14 @@
 use async_stream::try_stream;
 use borsh::BorshDeserialize;
 use calimero_context_config::types::{
-    ContextGroupId, InvitationFromMember, RevealPayloadData, SignedOpenInvitation,
+    ContextGroupId, InvitationFromMember, SignedOpenInvitation,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::{
-    Context, ContextConfigParams, ContextId, ContextInvitationPayload,
+    Context, ContextId, ContextInvitationPayload,
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -271,8 +271,7 @@ impl ContextClient {
         receiver.await.expect("Mailbox not to be dropped")
     }
 
-    // TODO(invitation): implement
-    /// Sends a request to join a context using the new commit-reveal open invitation flow.
+    /// Sends a request to join a context using a signed open invitation.
     ///
     /// This is an asynchronous operation handled by the `ContextManager` actor. The actor
     /// will parse the payload, validate the information, and configure the local node
@@ -280,75 +279,32 @@ impl ContextClient {
     ///
     /// # Arguments
     ///
-    /// * `invitation_payload` - The opaque `ContextInvitationPayload` received from an inviter.
+    /// * `signed_invitation` - The `SignedOpenInvitation` received from an inviter.
+    /// * `new_member_public_key` - The public key of the identity that will join.
     ///
     /// # Returns
     ///
     /// * A `Result` containing the `JoinContextResponse` from the actor upon completion.
-    /// * Returns `Ok(None)` if the context configuration cannot be found locally.
+    /// * Returns `Ok(None)` if the context already exists locally.
     pub async fn join_context_by_open_invitation(
         &self,
         signed_invitation: SignedOpenInvitation,
         new_member_public_key: &PublicKey,
     ) -> eyre::Result<Option<JoinContextResponse>> {
-        let invitation = signed_invitation.invitation.clone();
-        // Convert `config::types::ContextId` to `crypto::ContextId`
+        let invitation = signed_invitation.invitation;
         let context_id = invitation.context_id.to_bytes().into();
-        println!("Try to join by open invitation the Context ID: {context_id}");
 
-        // At this step the identity should be at the zeroth context:
-        // it should exist on the node, but available to be assigned for a new context.
         let new_member_identity = self
             .get_identity(&ContextId::zero(), new_member_public_key)?
             .with_context(|| format!("New member's identity {new_member_public_key} not found"))?;
-        let new_member_private_key = new_member_identity.private_key()?;
 
-        // Convert `crypto::ContextIdentity` to `calimero_contex_config::types::ContextId`
-        let new_member_identity_bytes: [u8; DIGEST_SIZE] = *new_member_identity.public_key;
-        let new_member_identity_context_type = new_member_identity_bytes.into();
-
-        let reveal_payload_data = RevealPayloadData {
-            signed_open_invitation: signed_invitation,
-            new_member_identity: new_member_identity_context_type,
-        };
-
-        let reveal_payload_data_bytes =
-            borsh::to_vec(&reveal_payload_data).context("Failed to serialize invitation")?;
-        let commitment_hash = hex::encode(Sha256::digest(&reveal_payload_data_bytes));
-        println!("New member commitment hash: {commitment_hash:?}");
-
-        let mut external_config_params = None;
-        if !self.has_context(&context_id)? {
-            let external_config = ContextConfigParams {
-                application_revision: 0,
-                members_revision: 0,
-            };
-
-            external_config_params = Some(external_config);
+        if self.has_context(&context_id)? {
+            return Ok(None);
         }
-
-        let _external_config_params =
-            external_config_params.context("join config is None while it should be set")?;
-
-        println!("Successfully committed the invitation payload");
-
-        // The new member that is going to join the context by open invitation, signs the payload
-        // that will be committed and revealed later
-        let new_member_signature = {
-            let hash = Sha256::digest(&reveal_payload_data_bytes);
-            let signature = new_member_private_key
-                .sign(&hash)
-                .context("Signing reveal payload data failed")?;
-            hex::encode(signature.to_bytes())
-        };
-        println!("New member signature: {new_member_signature:?}");
-
-        println!("Successfully submitted the revealed invitation payload");
 
         let invitation_payload =
             ContextInvitationPayload::new(context_id, new_member_identity.public_key)?;
 
-        // Join the context in the node
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager

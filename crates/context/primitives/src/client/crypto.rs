@@ -182,13 +182,11 @@ mod tests {
     use super::*;
     use crate::client::ContextClient;
     use calimero_blobstore::{config::BlobStoreConfig, BlobManager, FileSystem};
-    use calimero_context_config::client_config::{ClientConfig, ClientSigner, LocalConfig};
     use calimero_network_primitives::client::NetworkClient;
     use calimero_node_primitives::{client::NodeClient, messages::NodeMessage};
     use calimero_primitives::common::DIGEST_SIZE;
     use calimero_store::{db::InMemoryDB, key, types, Store};
     use calimero_utils_actix::LazyRecipient;
-    use std::collections::BTreeMap;
     use std::sync::Arc;
     use tokio;
     use tokio::sync::{broadcast, mpsc};
@@ -223,19 +221,7 @@ mod tests {
             String::new(), // Not used in tests
         );
 
-        // 5. Create a minimal, valid ClientConfig.
-        let client_config = ClientConfig {
-            params: BTreeMap::new(),
-            signer: ClientSigner {
-                local: LocalConfig {
-                    protocols: BTreeMap::new(),
-                },
-            },
-        };
-
-        let _ = client_config;
-
-        // 6. Construct the final ContextClient.
+        // 5. Construct the final ContextClient.
         let context_manager = LazyRecipient::new();
         ContextClient::new(store, node_client, context_manager)
     }

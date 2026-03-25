@@ -209,6 +209,18 @@ impl ContextClient {
         }
     }
 
+    /// Synchronize context configuration and ensure context metadata is present.
+    ///
+    /// Two modes:
+    ///
+    /// * **Bootstrap** (`config: Some(...)`): The context does not exist locally
+    ///   yet. The caller supplies initial revision hints. The function installs
+    ///   the application (if not already present), writes `ContextMeta` and
+    ///   `ContextConfig`, and sends a `Sync` message to the context manager.
+    ///
+    /// * **Refresh** (`config: None`): The context already exists locally.
+    ///   Returns the stored context. Membership and application state are kept
+    ///   up-to-date through the governance DAG, so no revision polling is needed.
     pub async fn sync_context_config(
         &self,
         context_id: ContextId,
@@ -218,165 +230,110 @@ impl ContextClient {
 
         let context = handle.get(&key::ContextMeta::new(context_id))?;
 
-        let (mut config, mut should_save_config) = config.map_or_else(
-            || {
-                let Some(config) = handle.get(&key::ContextConfig::new(context_id))? else {
-                    eyre::bail!("context config not found")
-                };
+        // Refresh path: context already exists, return stored metadata.
+        // Membership and application updates propagate through the governance
+        // DAG, so there is no external source to poll for revision changes.
+        let Some(config) = config else {
+            let meta = context.ok_or_else(|| {
+                eyre::eyre!("sync_context_config called with config: None but context {context_id} not found")
+            })?;
 
-                let config = ContextConfigParams {
-                    application_revision: config.application_revision,
-                    members_revision: config.members_revision,
-                };
-
-                Ok((config, false))
-            },
-            |config| Ok((config, true)),
-        )?;
-
-        let remote_members_revision = self.get_context_members_revision(&context_id).await?;
-
-        // Check members revision and sync members, if needed
-        if context.is_none() || remote_members_revision != config.members_revision {
-            tracing::info!(
-                %context_id,
-                local_members_revision = config.members_revision,
-                remote_members_revision,
-                "Members revision changed, synchronizing member list...",
-            );
-
-            should_save_config = true;
-            config.members_revision = remote_members_revision;
-
-            self.sync_members(context_id).await?;
-        } else {
             debug!(
                 %context_id,
-                local_members_revision = config.members_revision,
-                remote_members_revision,
-                "Members revision was not changed, skipping sync",
+                application_id = %meta.application.application_id(),
+                dag_heads_count = meta.dag_heads.len(),
+                "context already exists, returning stored metadata"
             );
-        }
 
-        let application_revision = self.get_context_application_revision(&context_id).await?;
+            return Ok(Context::with_dag_heads(
+                context_id,
+                meta.application.application_id(),
+                meta.root_hash.into(),
+                meta.dag_heads.clone(),
+            ));
+        };
 
-        let mut application_id = None;
+        // Bootstrap path: install application and create store entries.
 
-        if context.is_none() || application_revision != config.application_revision {
-            should_save_config = true;
-            config.application_revision = application_revision;
+        let application = self.get_context_application(&context_id).await?;
+        let application_id = application.id;
 
-            let application = self.get_context_application(&context_id).await?;
+        if !self.node_client.has_application(&application_id)? {
+            let source: Url = application.source.into();
+            let metadata = application.metadata.clone();
+            let blob_id = application.blob.bytecode;
 
-            application_id = Some(application.id);
-
-            if !self.node_client.has_application(&application.id)? {
-                let source: Url = application.source.into();
-                let metadata = application.metadata.clone();
-                let blob_id = application.blob.bytecode;
-
-                let derived_application_id = {
-                    // Try URL installation first (for HTTP/HTTPS sources)
-                    if let Some(app_id) = self.try_install_from_url(&source, &metadata).await? {
-                        app_id
-                    } else {
-                        // URL installation failed or not applicable
-                        // Check if blob exists locally (might have been received via blob sharing)
-                        if self.node_client.has_blob(&blob_id)? {
-                            self.install_from_existing_blob(
-                                &blob_id,
-                                &source,
-                                application.size,
-                                &metadata,
-                            )
-                            .await?
-                        } else {
-                            self.install_when_blob_missing(
-                                &blob_id,
-                                &source,
-                                application.size,
-                                &metadata,
-                                application.id,
-                            )
-                            .await?
-                        }
-                    }
-                };
-
-                if application.id != derived_application_id {
-                    eyre::bail!(
-                        "application mismatch: expected {}, got {}",
-                        application.id,
-                        derived_application_id
+            let derived_application_id = {
+                if let Some(app_id) = self.try_install_from_url(&source, &metadata).await? {
+                    app_id
+                } else if self.node_client.has_blob(&blob_id)? {
+                    self.install_from_existing_blob(
+                        &blob_id,
+                        &source,
+                        application.size,
+                        &metadata,
                     )
+                    .await?
+                } else {
+                    self.install_when_blob_missing(
+                        &blob_id,
+                        &source,
+                        application.size,
+                        &metadata,
+                        application_id,
+                    )
+                    .await?
                 }
+            };
+
+            if application_id != derived_application_id {
+                eyre::bail!(
+                    "application mismatch: expected {}, got {}",
+                    application_id,
+                    derived_application_id
+                )
             }
         }
 
-        if should_save_config {
-            handle.put(
-                &key::ContextConfig::new(context_id),
-                &types::ContextConfig::new(config.application_revision, config.members_revision),
-            )?;
-        }
+        handle.put(
+            &key::ContextConfig::new(context_id),
+            &types::ContextConfig::new(config.application_revision, config.members_revision),
+        )?;
 
-        let (should_save, application_id, root_hash, dag_heads) = context.map_or_else(
-            || {
-                (
-                    true,
-                    application_id.expect("must've been defined if context doesn't exist"),
-                    Hash::default(),
-                    vec![],
-                )
-            },
-            |meta| {
-                (
-                    application_id.is_some(),
-                    application_id.unwrap_or_else(|| meta.application.application_id()),
-                    meta.root_hash.into(),
-                    meta.dag_heads.clone(),
-                )
-            },
+        let (root_hash, dag_heads) = context.map_or_else(
+            || (Hash::default(), vec![]),
+            |meta| (meta.root_hash.into(), meta.dag_heads.clone()),
         );
 
-        if should_save {
-            handle.put(
-                &key::ContextMeta::new(context_id),
-                &types::ContextMeta::new(
-                    key::ApplicationMeta::new(application_id),
-                    *root_hash,
-                    dag_heads.clone(),
-                ),
-            )?;
+        handle.put(
+            &key::ContextMeta::new(context_id),
+            &types::ContextMeta::new(
+                key::ApplicationMeta::new(application_id),
+                *root_hash,
+                dag_heads.clone(),
+            ),
+        )?;
 
-            let (sender, receiver) = oneshot::channel();
+        let (sender, receiver) = oneshot::channel();
 
-            self.context_manager
-                .send(ContextMessage::Sync {
-                    request: SyncRequest {
-                        context_id,
-                        application_id,
-                    },
-                    outcome: sender,
-                })
-                .await
-                .expect("Mailbox not to be dropped");
+        self.context_manager
+            .send(ContextMessage::Sync {
+                request: SyncRequest {
+                    context_id,
+                    application_id,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
 
-            receiver.await.expect("Mailbox not to be dropped");
-        }
+        receiver.await.expect("Mailbox not to be dropped");
 
-        let context = Context::with_dag_heads(context_id, application_id, root_hash, dag_heads);
-
-        Ok(context)
-    }
-
-    /// No-op: membership is now replicated through the governance DAG.
-    ///
-    /// `MemberJoinedContext` / `MemberLeftContext` governance ops populate
-    /// `ContextIdentity` records identically on every node, so there is nothing
-    /// extra to reconcile here. When a new node joins a context it catches up
-    /// on the governance op log first, which populates the records.
-    async fn sync_members(&self, _context_id: ContextId) -> eyre::Result<()> {
-        Ok(())
+        Ok(Context::with_dag_heads(
+            context_id,
+            application_id,
+            root_hash,
+            dag_heads,
+        ))
     }
 }

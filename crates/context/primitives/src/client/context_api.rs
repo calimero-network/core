@@ -45,17 +45,6 @@ impl ContextClient {
             .ok_or_eyre("application not found")
     }
 
-    pub async fn get_context_application_revision(
-        &self,
-        context_id: &ContextId,
-    ) -> eyre::Result<u64> {
-        let handle = self.datastore.handle();
-        let cfg = handle
-            .get(&key::ContextConfig::new(*context_id))?
-            .ok_or_eyre("context config not found")?;
-        Ok(cfg.application_revision)
-    }
-
     pub async fn get_context_member_page(
         &self,
         context_id: &ContextId,
@@ -78,13 +67,5 @@ impl ContextClient {
             out.push(pk);
         }
         Ok(out)
-    }
-
-    pub async fn get_context_members_revision(&self, context_id: &ContextId) -> eyre::Result<u64> {
-        let handle = self.datastore.handle();
-        let cfg = handle
-            .get(&key::ContextConfig::new(*context_id))?
-            .ok_or_eyre("context config not found")?;
-        Ok(cfg.members_revision)
     }
 }
