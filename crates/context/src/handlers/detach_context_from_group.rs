@@ -72,19 +72,16 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                    eyre::eyre!(
-                        "local group governance requires a signing key for the requester"
-                    )
+                    eyre::eyre!("local group governance requires a signing key for the requester")
                 })?);
-                let bytes = group_store::sign_apply_local_group_op_borsh(
+                group_store::sign_apply_and_publish(
                     &datastore,
+                    &node_client,
                     &group_id,
                     &sk,
                     GroupOp::ContextDetached { context_id },
-                )?;
-                node_client
-                    .publish_signed_group_op(group_id.to_bytes(), bytes)
-                    .await?;
+                )
+                .await?;
 
                 if let Err(err) =
                     group_store::delete_context_visibility(&datastore, &group_id, &context_id)

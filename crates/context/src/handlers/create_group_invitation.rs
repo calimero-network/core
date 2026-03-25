@@ -20,7 +20,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         CreateGroupInvitationRequest {
             group_id,
             requester,
-            expiration_block_height,
+            expiration_timestamp,
         }: CreateGroupInvitationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -68,14 +68,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             // 3. Verify node holds the requester's signing key
             group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
 
-            // 4. Synthetic contract coordinates for local-only group governance.
-            let (protocol, network, contract_id) = (
-                "local".to_owned(),
-                "local".to_owned(),
-                "local".to_owned(),
-            );
-
-            // 5. Fetch admin signing key and construct + sign the invitation
+            // 4. Fetch admin signing key and construct + sign the invitation
             let signing_key_bytes =
                 group_store::get_group_signing_key(&self.datastore, &group_id, &requester)?
                     .ok_or_else(|| eyre::eyre!("signing key not found for requester"))?;
@@ -84,18 +77,20 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             let mut rng = rand::thread_rng();
             let secret_salt: [u8; 32] = rng.gen();
 
-            let expiration_block_height: u64 = expiration_block_height.unwrap_or(999_999_999);
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before epoch")
+                .as_secs();
+            let expiration_timestamp: u64 =
+                now_secs + expiration_timestamp.unwrap_or(365 * 24 * 3600);
 
             let inviter_signer_id = SignerId::from(*requester);
 
             let invitation = GroupInvitationFromAdmin {
                 inviter_identity: inviter_signer_id,
                 group_id,
-                expiration_height: expiration_block_height,
+                expiration_timestamp,
                 secret_salt,
-                protocol,
-                network,
-                contract_id,
             };
 
             // Sign: borsh-serialize → SHA256 → ed25519_sign

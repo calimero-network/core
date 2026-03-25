@@ -33,9 +33,6 @@ pub async fn handler(
         .sync_group(SyncGroupRequest {
             group_id,
             requester: auth_key.map(|Extension(k)| k.0).or(req.requester),
-            protocol: req.protocol,
-            network_id: req.network_id,
-            contract_id: req.contract_id,
         })
         .await
         .map_err(parse_api_error);

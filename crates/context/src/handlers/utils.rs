@@ -1,6 +1,7 @@
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use calimero_context_primitives::client::ContextClient;
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::common::DIGEST_SIZE;
@@ -8,6 +9,8 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::{ContextHost, ContextMutation};
 use calimero_store::{key, Store};
+
+use crate::group_store;
 
 // A bridge implementation that exposes context information from the `calimero-store`
 /// to the runtime via the `ContextHost` trait.
@@ -56,7 +59,7 @@ impl ContextHost for StoreContextHost {
 /// Processes context configuration mutations requested by the WASM runtime.
 ///
 /// This iterates over the `context_mutations` returned in the execution outcome
-/// and performs the necessary external calls (e.g., on-chain transactions) via
+/// and performs the necessary external calls (e.g., governance operations) via
 /// the `ContextClient`.
 pub async fn process_context_mutations(
     context_client: &ContextClient,
@@ -165,19 +168,51 @@ pub async fn process_context_mutations(
                 let new_member = PublicKey::from(*public_key);
                 info!(%context_id, member = %new_member, "WASM requested AddMember");
 
-                match context_client
-                    .invite_member(&context_id, &executor, &new_member)
-                    .await
+                let datastore = context_client.datastore();
+                if let Ok(Some(group_id)) =
+                    group_store::get_group_for_context(datastore, &context_id)
                 {
-                    Ok(_) => {
-                        debug!(%context_id, %new_member, "Member invited successfully, syncing config...");
-                        // Sync local state so `is_member` returns true immediately
-                        if let Err(e) = context_client.sync_context_config(context_id, None).await {
-                            warn!(%context_id, error = ?e, "Failed to sync context config after adding member");
+                    if let Ok(Some(signer_pk)) =
+                        group_store::find_local_signing_identity(datastore, &context_id)
+                    {
+                        if let Ok(Some(id_val)) =
+                            context_client.get_identity(&context_id, &signer_pk)
+                        {
+                            if let Some(sk) = id_val.private_key {
+                                match group_store::sign_apply_and_publish(
+                                    datastore,
+                                    node_client,
+                                    &group_id,
+                                    &sk,
+                                    GroupOp::MemberJoinedContext {
+                                        member: new_member,
+                                        context_id,
+                                        context_identity: *new_member.as_ref(),
+                                    },
+                                )
+                                .await
+                                {
+                                    Ok(()) => {
+                                        debug!(%context_id, %new_member, "MemberJoinedContext governance op published")
+                                    }
+                                    Err(e) => {
+                                        error!(%context_id, %new_member, error = ?e, "Failed to publish MemberJoinedContext")
+                                    }
+                                }
+                            }
                         }
                     }
-                    Err(e) => {
-                        error!(%context_id, %new_member, error = ?e, "Failed to process AddMember request")
+                } else {
+                    match context_client
+                        .invite_member(&context_id, &executor, &new_member)
+                        .await
+                    {
+                        Ok(_) => {
+                            debug!(%context_id, %new_member, "Member invited (no group)");
+                        }
+                        Err(e) => {
+                            error!(%context_id, %new_member, error = ?e, "Failed to process AddMember request")
+                        }
                     }
                 }
             }
@@ -185,29 +220,38 @@ pub async fn process_context_mutations(
                 let member = PublicKey::from(*public_key);
                 info!(%context_id, member = %member, "WASM requested RemoveMember");
 
-                // We need to fetch the config to get the external client
-                match context_client.context_config(&context_id) {
-                    Ok(Some(_)) => {
-                        match context_client
-                            .noop_config_remove_members(&executor, &[member])
-                            .await
+                let datastore = context_client.datastore();
+                if let Ok(Some(group_id)) =
+                    group_store::get_group_for_context(datastore, &context_id)
+                {
+                    if let Ok(Some(signer_pk)) =
+                        group_store::find_local_signing_identity(datastore, &context_id)
+                    {
+                        if let Ok(Some(id_val)) =
+                            context_client.get_identity(&context_id, &signer_pk)
                         {
-                            Ok(_) => {
-                                debug!(%context_id, %member, "Member removed successfully, syncing config...");
-                                if let Err(e) = context_client
-                                    .sync_context_config(context_id, None)
-                                    .await
+                            if let Some(sk) = id_val.private_key {
+                                match group_store::sign_apply_and_publish(
+                                    datastore,
+                                    node_client,
+                                    &group_id,
+                                    &sk,
+                                    GroupOp::MemberLeftContext { member, context_id },
+                                )
+                                .await
                                 {
-                                    warn!(%context_id, error = ?e, "Failed to sync context config after removing member");
+                                    Ok(()) => {
+                                        debug!(%context_id, %member, "MemberLeftContext governance op published")
+                                    }
+                                    Err(e) => {
+                                        error!(%context_id, %member, error = ?e, "Failed to publish MemberLeftContext")
+                                    }
                                 }
-                            }
-                            Err(e) => {
-                                error!(%context_id, %member, error = ?e, "Failed to execute RemoveMember")
                             }
                         }
                     }
-                    Ok(None) => error!(%context_id, "Context config not found for RemoveMember"),
-                    Err(e) => error!(%context_id, error = ?e, "Failed to fetch context config"),
+                } else {
+                    debug!(%context_id, %member, "RemoveMember skipped: context is not in a group");
                 }
             }
         }

@@ -47,8 +47,8 @@ pub const MAX_PAGINATION_LIMIT: usize = 1000;
 /// Maximum length for context value keys
 pub const MAX_CONTEXT_KEY_LENGTH: usize = 1024;
 
-/// Maximum valid_for_blocks value (roughly 1 year at 1 block/second)
-pub const MAX_VALID_FOR_BLOCKS: u64 = 31_536_000;
+/// Maximum valid_for_seconds value (roughly 1 year)
+pub const MAX_VALID_FOR_SECONDS: u64 = 31_536_000;
 
 /// Maximum length for method names in execution requests
 pub const MAX_METHOD_NAME_LENGTH: usize = 256;

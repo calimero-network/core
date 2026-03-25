@@ -153,7 +153,6 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         datastore.clone(),
         node_client.clone(),
         context_client.clone(),
-        config.context.client.clone(),
         config.group_identity.clone(),
         Some(&mut registry),
     );
@@ -163,10 +162,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         context_manager
     });
 
-    let node_state = crate::NodeState::new(
-        config.specialized_node.accept_mock_tee,
-        config.mode,
-    );
+    let node_state = crate::NodeState::new(config.specialized_node.accept_mock_tee, config.mode);
 
     let sync_manager = SyncManager::new(
         config.sync,

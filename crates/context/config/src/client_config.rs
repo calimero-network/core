@@ -9,15 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Top-level context client section in node configuration.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientConfig {
-    #[serde(default)]
-    pub params: BTreeMap<String, ClientConfigParams>,
     pub signer: ClientSigner,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ClientConfigParams {
-    pub network: String,
-    pub contract_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

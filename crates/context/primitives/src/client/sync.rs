@@ -7,14 +7,12 @@
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
-use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
-use std::collections::BTreeSet;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use url::Url;
 
 use super::ContextClient;
@@ -26,8 +24,6 @@ impl ContextClient {
     const DEFAULT_VERSION: &str = "0.0.0";
     const MAX_BLOB_RETRIES: u32 = 20;
     const BLOB_RETRY_DELAY_MS: u64 = 1000;
-    const MEMBERS_PAGE_SIZE: usize = 100;
-
     /// Try to install application from URL (for HTTP/HTTPS sources)
     async fn try_install_from_url(
         &self,
@@ -216,7 +212,7 @@ impl ContextClient {
     pub async fn sync_context_config(
         &self,
         context_id: ContextId,
-        config: Option<ContextConfigParams<'_>>,
+        config: Option<ContextConfigParams>,
     ) -> eyre::Result<Context> {
         let mut handle = self.datastore.handle();
 
@@ -229,10 +225,6 @@ impl ContextClient {
                 };
 
                 let config = ContextConfigParams {
-                    protocol: config.protocol.into_string().into(),
-                    network_id: config.network.into_string().into(),
-                    contract_id: config.contract.into_string().into(),
-                    proxy_contract: config.proxy_contract.into_string().into(),
                     application_revision: config.application_revision,
                     members_revision: config.members_revision,
                 };
@@ -266,9 +258,7 @@ impl ContextClient {
             );
         }
 
-        let application_revision = self
-            .get_context_application_revision(&context_id)
-            .await?;
+        let application_revision = self.get_context_application_revision(&context_id).await?;
 
         let mut application_id = None;
 
@@ -324,20 +314,9 @@ impl ContextClient {
         }
 
         if should_save_config {
-            // todo! we shouldn't be reallocating here
-            // todo! but store requires ContextConfig: 'static
-            let config = config.clone();
-
             handle.put(
                 &key::ContextConfig::new(context_id),
-                &types::ContextConfig::new(
-                    config.protocol.into_owned().into_boxed_str(),
-                    config.network_id.into_owned().into_boxed_str(),
-                    config.contract_id.into_owned().into_boxed_str(),
-                    config.proxy_contract.into_owned().into_boxed_str(),
-                    config.application_revision,
-                    config.members_revision,
-                ),
+                &types::ContextConfig::new(config.application_revision, config.members_revision),
             )?;
         }
 
@@ -391,81 +370,13 @@ impl ContextClient {
         Ok(context)
     }
 
-    /// Synchronizes the local member list with the store-backed member list for this context.
-    async fn sync_members(&self, context_id: ContextId) -> eyre::Result<()> {
-        let mut handle = self.datastore.handle();
-
-        let mut external_members = BTreeSet::new();
-
-        // Fetch ALL members from local authoritative records
-        for (offset, length) in (0..).map(|i| {
-            (
-                Self::MEMBERS_PAGE_SIZE.saturating_mul(i),
-                Self::MEMBERS_PAGE_SIZE,
-            )
-        }) {
-            let members = self
-                .get_context_member_page(&context_id, offset, length)
-                .await?;
-            if members.is_empty() {
-                break;
-            }
-
-            for member in members {
-                external_members.insert(member);
-
-                // Upsert: add to local DB if missing
-                let key = key::ContextIdentity::new(context_id, member);
-                if !handle.has(&key)? {
-                    handle.put(
-                        &key,
-                        &types::ContextIdentity {
-                            private_key: None,
-                            sender_key: None,
-                        },
-                    )?;
-                }
-            }
-        }
-
-        // PRUNING stage.
-        // Identify members that exist locally but NOT remotely.
-        let mut members_to_remove = Vec::new();
-
-        // Create a scope for the iterator to avoid borrowing issues
-        {
-            if let Ok(mut iter) = handle.iter::<key::ContextIdentity>() {
-                let start_key = key::ContextIdentity::new(context_id, [0u8; DIGEST_SIZE].into());
-
-                // Capture the first element from seek() and chain with the rest to avoid skipping the first member
-                let first = iter.seek(start_key).ok().flatten();
-
-                // Iterate over the first item + the rest of the keys
-                for k in first.into_iter().chain(iter.keys().flatten()) {
-                    // Stop if we drifted to another context
-                    if k.context_id() != context_id {
-                        break;
-                    }
-
-                    // If local member is missing from external set -> Mark for removal
-                    if !external_members.contains(&k.public_key()) {
-                        members_to_remove.push(*k.public_key());
-                    }
-                }
-            }
-        }
-
-        // Execute deletions of members that exist in the local DB, but don't exist remotely anymore
-        for member in members_to_remove {
-            let member_public_key = member.into();
-            debug!(%context_id, %member_public_key, "Trying to prune member from local store (it was removed from the contract)");
-
-            let key = key::ContextIdentity::new(context_id, member_public_key);
-            handle.delete(&key)?;
-
-            info!(%context_id, %member_public_key, "Pruned member from local store (it was removed from the contract)");
-        }
-
+    /// No-op: membership is now replicated through the governance DAG.
+    ///
+    /// `MemberJoinedContext` / `MemberLeftContext` governance ops populate
+    /// `ContextIdentity` records identically on every node, so there is nothing
+    /// extra to reconcile here. When a new node joins a context it catches up
+    /// on the governance op log first, which populates the records.
+    async fn sync_members(&self, _context_id: ContextId) -> eyre::Result<()> {
         Ok(())
     }
 }

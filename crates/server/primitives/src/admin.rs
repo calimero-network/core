@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use calimero_context_config::types::{
-    BlockHeight, Capability, SignedGroupOpenInvitation, SignedOpenInvitation,
-};
+use calimero_context_config::types::{Capability, SignedGroupOpenInvitation, SignedOpenInvitation};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{
@@ -217,7 +215,6 @@ impl GetApplicationResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextRequest {
-    pub protocol: String,
     pub application_id: ApplicationId,
     pub context_seed: Option<Hash>,
     pub initialization_params: Vec<u8>,
@@ -229,7 +226,6 @@ pub struct CreateContextRequest {
 
 impl CreateContextRequest {
     pub const fn new(
-        protocol: String,
         application_id: ApplicationId,
         context_seed: Option<Hash>,
         initialization_params: Vec<u8>,
@@ -237,7 +233,6 @@ impl CreateContextRequest {
         identity_secret: Option<String>,
     ) -> Self {
         Self {
-            protocol,
             application_id,
             context_seed,
             initialization_params,
@@ -456,19 +451,15 @@ impl InviteToContextResponse {
 pub struct InviteToContextOpenInvitationRequest {
     pub context_id: ContextId,
     pub inviter_id: PublicKey,
-    pub valid_for_blocks: BlockHeight,
+    pub valid_for_seconds: u64,
 }
 
 impl InviteToContextOpenInvitationRequest {
-    pub const fn new(
-        context_id: ContextId,
-        inviter_id: PublicKey,
-        valid_for_blocks: BlockHeight,
-    ) -> Self {
+    pub const fn new(context_id: ContextId, inviter_id: PublicKey, valid_for_seconds: u64) -> Self {
         Self {
             context_id,
             inviter_id,
-            valid_for_blocks,
+            valid_for_seconds,
         }
     }
 }
@@ -1195,7 +1186,7 @@ impl TryFrom<tdx_quote::Quote> for Quote {
                         _ => {
                             return Err(
                                 "Unknown CertificationDataInner variant encountered".to_string()
-                            )
+                            );
                         }
                     };
 
@@ -1348,9 +1339,9 @@ use crate::validation::{
         validate_bytes_size, validate_hex_string, validate_optional_hex_string,
         validate_optional_string_length, validate_string_length, validate_url,
     },
-    Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE,
-    MAX_METHOD_NAME_LENGTH, MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH,
-    MAX_PROTOCOL_LENGTH, MAX_QUOTE_B64_LENGTH, MAX_VALID_FOR_BLOCKS, MAX_VERSION_LENGTH,
+    Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_METHOD_NAME_LENGTH,
+    MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH, MAX_QUOTE_B64_LENGTH,
+    MAX_VALID_FOR_SECONDS, MAX_VERSION_LENGTH,
 };
 
 impl Validate for InstallApplicationRequest {
@@ -1417,14 +1408,6 @@ impl Validate for CreateContextRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
 
-        if let Some(e) = validate_string_length(&self.protocol, "protocol", MAX_PROTOCOL_LENGTH) {
-            errors.push(e);
-        }
-
-        if self.protocol.is_empty() {
-            errors.push(ValidationError::EmptyField { field: "protocol" });
-        }
-
         if let Some(e) = validate_bytes_size(
             &self.initialization_params,
             "initialization_params",
@@ -1450,11 +1433,11 @@ impl Validate for InviteToContextOpenInvitationRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
 
-        if self.valid_for_blocks > MAX_VALID_FOR_BLOCKS {
+        if self.valid_for_seconds > MAX_VALID_FOR_SECONDS {
             errors.push(ValidationError::ValueTooLarge {
-                field: "valid_for_blocks",
-                max: MAX_VALID_FOR_BLOCKS,
-                actual: self.valid_for_blocks,
+                field: "valid_for_seconds",
+                max: MAX_VALID_FOR_SECONDS,
+                actual: self.valid_for_seconds,
             });
         }
 
@@ -1886,10 +1869,10 @@ impl Validate for RetryGroupUpgradeApiRequest {
 pub struct CreateGroupInvitationApiRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
-    /// On-chain block height after which the invitation commitment expires.
-    /// Defaults to 999_999_999 when not provided (backward-compatible).
+    /// Duration in seconds for the invitation validity.
+    /// Defaults to 1 year when not provided.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expiration_block_height: Option<u64>,
+    pub expiration_timestamp: Option<u64>,
 }
 
 impl Validate for CreateGroupInvitationApiRequest {
@@ -2072,12 +2055,6 @@ pub struct RegisterGroupSigningKeyApiResponseData {
 pub struct SyncGroupApiRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub protocol: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub network_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub contract_id: Option<String>,
 }
 
 impl Validate for SyncGroupApiRequest {

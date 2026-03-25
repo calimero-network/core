@@ -133,7 +133,7 @@ steps:
     node: e2e-node-1
     context_id: "{{context_id}}"
     granter_id: "{{node1_key}}"
-    valid_for_blocks: 1000
+    valid_for_seconds: 3600
     outputs:
       open_invitation_3: invitation
 

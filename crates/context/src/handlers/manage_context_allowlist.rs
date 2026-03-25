@@ -72,14 +72,11 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
                 group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
         }
 
-        let mut merged_allowlist = match group_store::list_context_allowlist(
-            &self.datastore,
-            &group_id,
-            &context_id,
-        ) {
-            Ok(v) => v,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
+        let mut merged_allowlist =
+            match group_store::list_context_allowlist(&self.datastore, &group_id, &context_id) {
+                Ok(v) => v,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
         for r in &remove {
             merged_allowlist.retain(|x| x != r);
         }
@@ -100,23 +97,20 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                    eyre::eyre!(
-                        "local group governance requires a signing key for the requester"
-                    )
+                    eyre::eyre!("local group governance requires a signing key for the requester")
                 })?);
                 let members = merged_allowlist.clone();
-                let bytes = group_store::sign_apply_local_group_op_borsh(
+                group_store::sign_apply_and_publish(
                     &datastore,
+                    &node_client,
                     &group_id,
                     &sk,
                     GroupOp::ContextAllowlistReplaced {
                         context_id,
                         members,
                     },
-                )?;
-                node_client
-                    .publish_signed_group_op(group_id.to_bytes(), bytes)
-                    .await?;
+                )
+                .await?;
 
                 let members_raw: Vec<[u8; 32]> = merged_allowlist.iter().map(|pk| **pk).collect();
                 let _ = node_client

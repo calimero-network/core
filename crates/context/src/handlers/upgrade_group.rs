@@ -3,12 +3,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::group::{UpgradeGroupRequest, UpgradeGroupResponse};
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_context_primitives::messages::MigrationParams;
 use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_context_primitives::local_governance::GroupOp;
 use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
 use eyre::bail;
 use tracing::{debug, error, info, warn};
@@ -120,36 +120,36 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 async move {
                     {
                         let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                            eyre::eyre!("local group upgrade requires a signing key for the requester")
+                            eyre::eyre!(
+                                "local group upgrade requires a signing key for the requester"
+                            )
                         })?);
-                        let app_meta = app_meta_for_contract.as_ref().ok_or_else(|| {
-                            eyre::eyre!("target application not found")
-                        })?;
+                        let app_meta = app_meta_for_contract
+                            .as_ref()
+                            .ok_or_else(|| eyre::eyre!("target application not found"))?;
                         let app_key = *app_meta.bytecode.blob_id().as_ref();
-                        let bytes = group_store::sign_apply_local_group_op_borsh(
+                        group_store::sign_apply_and_publish(
                             &datastore,
+                            &node_client,
                             &group_id,
                             &sk,
                             GroupOp::TargetApplicationSet {
                                 app_key,
                                 target_application_id,
                             },
-                        )?;
-                        node_client
-                            .publish_signed_group_op(group_id.to_bytes(), bytes)
-                            .await?;
+                        )
+                        .await?;
                         if migration_bytes.is_some() {
-                            let bytes2 = group_store::sign_apply_local_group_op_borsh(
+                            group_store::sign_apply_and_publish(
                                 &datastore,
+                                &node_client,
                                 &group_id,
                                 &sk,
                                 GroupOp::GroupMigrationSet {
                                     migration: migration_bytes.clone(),
                                 },
-                            )?;
-                            node_client
-                                .publish_signed_group_op(group_id.to_bytes(), bytes2)
-                                .await?;
+                            )
+                            .await?;
                         }
                     }
 
@@ -187,10 +187,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         usize::MAX,
                     )?;
                     let _ = node_client
-                        .broadcast_group_mutation(
-                            group_id.to_bytes(),
-                            GroupMutationKind::Upgraded,
-                        )
+                        .broadcast_group_mutation(group_id.to_bytes(), GroupMutationKind::Upgraded)
                         .await;
 
                     // Announce target app blob on DHT for each group context so
@@ -265,34 +262,32 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
                     eyre::eyre!("local group upgrade requires a signing key for the requester")
                 })?);
-                let app_meta = app_meta_for_contract.as_ref().ok_or_else(|| {
-                    eyre::eyre!("target application not found")
-                })?;
+                let app_meta = app_meta_for_contract
+                    .as_ref()
+                    .ok_or_else(|| eyre::eyre!("target application not found"))?;
                 let app_key = *app_meta.bytecode.blob_id().as_ref();
-                let bytes = group_store::sign_apply_local_group_op_borsh(
+                group_store::sign_apply_and_publish(
                     &datastore_for_canary,
+                    &node_client,
                     &group_id,
                     &sk,
                     GroupOp::TargetApplicationSet {
                         app_key,
                         target_application_id,
                     },
-                )?;
-                node_client
-                    .publish_signed_group_op(group_id.to_bytes(), bytes)
-                    .await?;
+                )
+                .await?;
                 if migration_bytes.is_some() {
-                    let bytes2 = group_store::sign_apply_local_group_op_borsh(
+                    group_store::sign_apply_and_publish(
                         &datastore_for_canary,
+                        &node_client,
                         &group_id,
                         &sk,
                         GroupOp::GroupMigrationSet {
                             migration: migration_bytes.clone(),
                         },
-                    )?;
-                    node_client
-                        .publish_signed_group_op(group_id.to_bytes(), bytes2)
-                        .await?;
+                    )
+                    .await?;
                 }
             }
 
@@ -371,10 +366,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         ctx.spawn(
                             async move {
                                 let _ = nc
-                                    .broadcast_group_mutation(
-                                        gid,
-                                        GroupMutationKind::Upgraded,
-                                    )
+                                    .broadcast_group_mutation(gid, GroupMutationKind::Upgraded)
                                     .await;
 
                                 // Announce target app blob on DHT for peers

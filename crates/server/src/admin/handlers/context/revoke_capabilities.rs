@@ -49,10 +49,11 @@ pub async fn handler(
             bail!("context '{}' does not exist", context_id);
         };
 
-        state
-            .ctx_client
-            .noop_config_revoke(&request.signer_id, &request.capabilities)
-            .await
+        // TODO: sign a ContextCapabilityRevoked governance op and publish via
+        // sign_apply_and_publish once the handler has access to the signing key
+        // and group_id for this context.
+
+        Ok(())
     };
     match res.await {
         Ok(_) => {

@@ -2,7 +2,6 @@
 //!
 //! Complements `calimero-context` store-only tests and `calimero-network` gossipsub tests.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,7 +13,6 @@ use calimero_context::group_store::{
     add_group_member, check_group_membership, get_local_gov_nonce, save_group_meta,
 };
 use calimero_context::ContextManager;
-use calimero_context_config::client_config::{ClientConfig, ClientSigner, LocalConfig};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
@@ -84,14 +82,6 @@ async fn network_message_signed_group_op_applies_via_node_manager() {
         String::new(),
     );
 
-    let client_config = ClientConfig {
-        params: BTreeMap::new(),
-        signer: ClientSigner {
-            local: LocalConfig {
-                protocols: BTreeMap::new(),
-            },
-        },
-    };
     let context_client = ContextClient::new(
         store.clone(),
         node_client.clone(),
@@ -103,7 +93,6 @@ async fn network_message_signed_group_op_applies_via_node_manager() {
         store.clone(),
         node_client.clone(),
         context_client.clone(),
-        client_config,
         None,
         Some(&mut registry),
     );
@@ -156,7 +145,8 @@ async fn network_message_signed_group_op_applies_via_node_manager() {
     let op = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes,
-        None,
+        vec![],
+        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: new_member,

@@ -17,8 +17,10 @@ impl Handler<SyncGroupRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let meta = group_store::load_group_meta(&datastore, &group_id)?
-                    .ok_or_else(|| eyre::eyre!("group not found locally; wait for P2P replication"))?;
+                let meta =
+                    group_store::load_group_meta(&datastore, &group_id)?.ok_or_else(|| {
+                        eyre::eyre!("group not found locally; wait for P2P replication")
+                    })?;
 
                 let contexts =
                     group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;

@@ -2,6 +2,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::group::{JoinGroupContextRequest, JoinGroupContextResponse};
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_primitives::context::ContextConfigParams;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
@@ -86,8 +87,11 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let context_client = self.context_client.clone();
         let node_client = self.node_client.clone();
-
-        let protocol = "local".to_owned();
+        let effective_signing_key =
+            group_store::get_group_signing_key(&self.datastore, &group_id, &joiner_identity)
+                .ok()
+                .flatten()
+                .or_else(|| self.node_group_identity().map(|(_, sk_bytes)| sk_bytes));
 
         ActorResponse::r#async(
             async move {
@@ -99,25 +103,30 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                 let _context_identity: calimero_context_config::types::ContextIdentity =
                     identity_pk.rt()?;
 
-                group_store::register_context_in_group(&datastore, &group_id, &context_id)?;
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!("no signing key available for group governance op")
+                })?);
+
+                // Publish MemberJoinedContext governance op — propagates to all
+                // nodes via the group DAG, writing ContextIdentity + tracking record.
+                group_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &group_id,
+                    &sk,
+                    GroupOp::MemberJoinedContext {
+                        member: joiner_identity,
+                        context_id,
+                        context_identity: *identity_pk.as_ref(),
+                    },
+                )
+                .await?;
 
                 let config = if !context_client.has_context(&context_id)? {
-                    let mut external_config = ContextConfigParams {
-                        protocol: protocol.clone().into(),
-                        network_id: "local".into(),
-                        contract_id: "local".into(),
-                        proxy_contract: "".into(),
+                    Some(ContextConfigParams {
                         application_revision: 0,
                         members_revision: 0,
-                    };
-
-                    let proxy_contract = context_client
-                        .context_config(&context_id)?
-                        .map(|c| c.proxy_contract.into_owned())
-                        .unwrap_or_default();
-                    external_config.proxy_contract = proxy_contract.into();
-
-                    Some(external_config)
+                    })
                 } else {
                     None
                 };
@@ -126,6 +135,7 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                     .sync_context_config(context_id, config)
                     .await?;
 
+                // Store private key + sender key locally (node-local, not propagated)
                 context_client.update_identity(
                     &context_id,
                     &ContextIdentity {
@@ -142,7 +152,7 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                     ?group_id,
                     ?context_id,
                     %identity_pk,
-                    "joined context via group membership"
+                    "joined context via group membership (governance op published)"
                 );
 
                 Ok(JoinGroupContextResponse {

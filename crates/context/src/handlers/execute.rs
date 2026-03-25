@@ -637,6 +637,20 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 Some(serialized)
                             };
 
+                            let governance_epoch = {
+                                let ds = context_client.datastore();
+                                crate::group_store::get_group_for_context(ds, &context_id)
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|gid| {
+                                        crate::group_store::get_op_head(ds, &gid)
+                                            .ok()
+                                            .flatten()
+                                            .map(|h| h.dag_heads)
+                                    })
+                                    .unwrap_or_default()
+                            };
+
                             node_client
                                 .broadcast(
                                     &context,
@@ -647,6 +661,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     the_delta.parents.clone(),
                                     the_delta.hlc,
                                     events_data,
+                                    governance_epoch,
                                 )
                                 .await?;
                         }

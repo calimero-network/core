@@ -10,6 +10,7 @@ publish = true
 
 [dependencies]
 actix.workspace = true
+async-trait.workspace = true
 borsh.workspace = true
 bs58.workspace = true
 either.workspace = true
@@ -24,11 +25,12 @@ serde.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "macros"] }
+tokio = { workspace = true, features = ["sync", "macros", "rt"] }
 tracing.workspace = true
 
 calimero-context-config.workspace = true
 calimero-context-primitives.workspace = true
+calimero-dag.workspace = true
 calimero-node-primitives.workspace = true
 calimero-prelude.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }

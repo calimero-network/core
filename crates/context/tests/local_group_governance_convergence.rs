@@ -7,16 +7,19 @@
 use std::sync::Arc;
 
 use borsh::to_vec as borsh_to_vec;
+use calimero_context::governance_dag::{signed_op_to_delta, GroupGovernanceApplier};
 use calimero_context::group_store::{
-    self, add_group_member, apply_local_signed_group_op, list_group_members, load_group_meta,
-    save_group_meta,
+    self, add_group_member, apply_local_signed_group_op, compute_group_state_hash,
+    get_member_context_joins, get_op_head, list_group_members, load_group_meta, read_op_log_after,
+    save_group_meta, track_member_context_join,
 };
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, GroupRevealPayloadData, SignedGroupOpenInvitation,
     SignerId,
 };
-use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::MemberCapabilities;
+use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+use calimero_dag::DagStore;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -87,7 +90,8 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
     let op1 = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes,
-        None,
+        vec![],
+        [0u8; 32],
         1,
         GroupOp::MemberAdded {
             member: new_member,
@@ -105,7 +109,8 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
     assert!(group_store::check_group_membership(&store_a, &gid, &new_member).unwrap());
     assert!(group_store::check_group_membership(&store_b, &gid, &new_member).unwrap());
 
-    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, None, 2, GroupOp::Noop).expect("sign op2");
+    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 2, GroupOp::Noop)
+        .expect("sign op2");
     let payload2 = borsh_to_vec(&op2).expect("borsh encode op2");
 
     apply_wire_payload(&store_a, &payload2);
@@ -149,7 +154,8 @@ fn two_nodes_converge_on_target_application_and_migration() {
     let op1 = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes,
-        None,
+        vec![],
+        [0u8; 32],
         1,
         GroupOp::TargetApplicationSet {
             app_key: [0x11; 32],
@@ -161,7 +167,8 @@ fn two_nodes_converge_on_target_application_and_migration() {
     let op2 = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes,
-        None,
+        vec![],
+        [0u8; 32],
         2,
         GroupOp::GroupMigrationSet {
             migration: Some(b"v1-migration".to_vec()),
@@ -207,15 +214,11 @@ fn two_nodes_converge_on_join_with_invitation_claim() {
         add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
     }
 
-    // Matches `create_group_invitation` when `group_governance = local` (synthetic coordinates).
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_pk.digest()),
         group_id: gid,
-        expiration_height: 9_999_999,
+        expiration_timestamp: 9_999_999,
         secret_salt: [0x42; 32],
-        protocol: "local".to_owned(),
-        network: "local".to_owned(),
-        contract_id: "local".to_owned(),
     };
 
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
@@ -238,7 +241,8 @@ fn two_nodes_converge_on_join_with_invitation_claim() {
     let op = SignedGroupOp::sign(
         &joiner_sk,
         gid_bytes,
-        None,
+        vec![],
+        [0u8; 32],
         1,
         GroupOp::JoinWithInvitationClaim {
             signed_invitation,
@@ -291,7 +295,8 @@ fn two_nodes_converge_on_context_visibility_after_create() {
     let op1 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
+        [0u8; 32],
         1,
         GroupOp::ContextRegistered { context_id },
     )
@@ -299,7 +304,8 @@ fn two_nodes_converge_on_context_visibility_after_create() {
     let op2 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
+        [0u8; 32],
         2,
         GroupOp::ContextVisibilitySet {
             context_id,
@@ -309,8 +315,10 @@ fn two_nodes_converge_on_context_visibility_after_create() {
     )
     .expect("sign ContextVisibilitySet");
 
-    for payload in [borsh_to_vec(&op1).expect("encode op1"), borsh_to_vec(&op2).expect("encode op2")]
-    {
+    for payload in [
+        borsh_to_vec(&op1).expect("encode op1"),
+        borsh_to_vec(&op2).expect("encode op2"),
+    ] {
         apply_wire_payload(&store_a, &payload);
         apply_wire_payload(&store_b, &payload);
     }
@@ -358,7 +366,8 @@ fn two_nodes_converge_on_context_visibility_without_group_default() {
     let op1 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
+        [0u8; 32],
         1,
         GroupOp::ContextRegistered { context_id },
     )
@@ -366,7 +375,8 @@ fn two_nodes_converge_on_context_visibility_without_group_default() {
     let op2 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
+        [0u8; 32],
         2,
         GroupOp::ContextVisibilitySet {
             context_id,
@@ -376,8 +386,10 @@ fn two_nodes_converge_on_context_visibility_without_group_default() {
     )
     .expect("sign ContextVisibilitySet");
 
-    for payload in [borsh_to_vec(&op1).expect("encode op1"), borsh_to_vec(&op2).expect("encode op2")]
-    {
+    for payload in [
+        borsh_to_vec(&op1).expect("encode op1"),
+        borsh_to_vec(&op2).expect("encode op2"),
+    ] {
         apply_wire_payload(&store_a, &payload);
         apply_wire_payload(&store_b, &payload);
     }
@@ -425,7 +437,8 @@ fn two_nodes_converge_on_context_alias_as_creator() {
     let op1 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
+        [0u8; 32],
         1,
         GroupOp::ContextRegistered { context_id },
     )
@@ -433,7 +446,8 @@ fn two_nodes_converge_on_context_alias_as_creator() {
     let op2 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
+        [0u8; 32],
         2,
         GroupOp::ContextVisibilitySet {
             context_id,
@@ -445,7 +459,8 @@ fn two_nodes_converge_on_context_alias_as_creator() {
     let op3 = SignedGroupOp::sign(
         &creator_sk,
         gid_bytes,
-        None,
+        vec![],
+        [0u8; 32],
         3,
         GroupOp::ContextAliasSet {
             context_id,
@@ -475,4 +490,849 @@ fn two_nodes_converge_on_context_alias_as_creator() {
             .as_deref(),
         Some("wire-alias")
     );
+}
+
+#[test]
+fn op_log_records_applied_ops_and_head_advances() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    assert!(get_op_head(&store, &gid).unwrap().is_none());
+
+    let new_member = PrivateKey::random(&mut rng).public_key();
+    let op1 = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::MemberAdded {
+            member: new_member,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .expect("sign op1");
+
+    apply_local_signed_group_op(&store, &op1).unwrap();
+
+    let head = get_op_head(&store, &gid).unwrap().expect("head after op1");
+    assert_eq!(head.sequence, 1);
+    assert!(head.dag_heads.contains(&op1.content_hash().unwrap()));
+
+    let log = read_op_log_after(&store, &gid, 0, 100).unwrap();
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0].0, 1);
+    let decoded: SignedGroupOp = borsh::from_slice(&log[0].1).unwrap();
+    assert_eq!(decoded.nonce, op1.nonce);
+
+    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 2, GroupOp::Noop)
+        .expect("sign op2");
+    apply_local_signed_group_op(&store, &op2).unwrap();
+
+    let head2 = get_op_head(&store, &gid).unwrap().expect("head after op2");
+    assert_eq!(head2.sequence, 2);
+
+    let log_after_1 = read_op_log_after(&store, &gid, 1, 100).unwrap();
+    assert_eq!(log_after_1.len(), 1);
+    assert_eq!(log_after_1[0].0, 2);
+
+    let full_log = read_op_log_after(&store, &gid, 0, 100).unwrap();
+    assert_eq!(full_log.len(), 2);
+}
+
+#[test]
+fn duplicate_op_is_idempotent() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let op = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 1, GroupOp::Noop)
+        .expect("sign op");
+    let payload = borsh_to_vec(&op).expect("encode");
+
+    apply_wire_payload(&store, &payload);
+    apply_wire_payload(&store, &payload);
+    apply_wire_payload(&store, &payload);
+
+    let head = get_op_head(&store, &gid).unwrap().expect("head");
+    assert_eq!(head.sequence, 1);
+    let log = read_op_log_after(&store, &gid, 0, 100).unwrap();
+    assert_eq!(log.len(), 1);
+}
+
+#[test]
+fn offline_node_replays_missed_ops_from_log() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let store_online = empty_store();
+    let store_offline = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+
+    for store in [&store_online, &store_offline] {
+        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
+        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    }
+
+    let member1 = PrivateKey::random(&mut rng).public_key();
+    let member2 = PrivateKey::random(&mut rng).public_key();
+
+    let op1 = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::MemberAdded {
+            member: member1,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    let op1_hash = op1.content_hash().unwrap();
+    let op2 = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![op1_hash],
+        [0u8; 32],
+        2,
+        GroupOp::MemberAdded {
+            member: member2,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+
+    for op in [&op1, &op2] {
+        apply_local_signed_group_op(&store_online, op).unwrap();
+    }
+
+    assert!(group_store::check_group_membership(&store_online, &gid, &member1).unwrap());
+    assert!(group_store::check_group_membership(&store_online, &gid, &member2).unwrap());
+    assert!(!group_store::check_group_membership(&store_offline, &gid, &member1).unwrap());
+
+    let missed_ops = read_op_log_after(&store_online, &gid, 0, 100).unwrap();
+    assert_eq!(missed_ops.len(), 2);
+
+    for (_seq, op_bytes) in &missed_ops {
+        let op: SignedGroupOp = borsh::from_slice(op_bytes).unwrap();
+        apply_local_signed_group_op(&store_offline, &op).unwrap();
+    }
+
+    assert_same_group_view(&store_online, &store_offline, &gid);
+    assert!(group_store::check_group_membership(&store_offline, &gid, &member1).unwrap());
+    assert!(group_store::check_group_membership(&store_offline, &gid, &member2).unwrap());
+}
+
+#[tokio::test]
+async fn dag_applies_ops_in_causal_order() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let member1 = PrivateKey::random(&mut rng).public_key();
+    let member2 = PrivateKey::random(&mut rng).public_key();
+
+    // op1: add member1 (genesis parent)
+    let op1 = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::MemberAdded {
+            member: member1,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    let delta1 = signed_op_to_delta(&op1).unwrap();
+
+    // op2: add member2 (parent = op1)
+    let op1_hash = op1.content_hash().unwrap();
+    let op2 = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![op1_hash],
+        [0u8; 32],
+        2,
+        GroupOp::MemberAdded {
+            member: member2,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    let delta2 = signed_op_to_delta(&op2).unwrap();
+
+    let applier = GroupGovernanceApplier::new(store.clone());
+    let mut dag = DagStore::new([0u8; 32]);
+
+    // Apply op2 first — should be pending (parent op1 not yet in DAG)
+    let applied = dag.add_delta(delta2, &applier).await.unwrap();
+    assert!(!applied, "op2 should be pending because op1 hasn't arrived");
+    assert!(!group_store::check_group_membership(&store, &gid, &member2).unwrap());
+
+    // Apply op1 — should apply immediately AND cascade to apply op2
+    let applied = dag.add_delta(delta1, &applier).await.unwrap();
+    assert!(applied, "op1 should apply immediately");
+
+    // Both members should now be present
+    assert!(group_store::check_group_membership(&store, &gid, &member1).unwrap());
+    assert!(group_store::check_group_membership(&store, &gid, &member2).unwrap());
+
+    // DAG should have 1 head (op2, since it's the tip)
+    let heads = dag.get_heads();
+    assert_eq!(heads.len(), 1);
+    assert!(heads.contains(&op2.content_hash().unwrap()));
+}
+
+#[tokio::test]
+async fn dag_concurrent_ops_create_two_heads() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let member1 = PrivateKey::random(&mut rng).public_key();
+    let member2 = PrivateKey::random(&mut rng).public_key();
+
+    // Two concurrent ops with genesis as parent
+    let op_a = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::MemberAdded {
+            member: member1,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    let op_b = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        2,
+        GroupOp::MemberAdded {
+            member: member2,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+
+    let applier = GroupGovernanceApplier::new(store.clone());
+    let mut dag = DagStore::new([0u8; 32]);
+
+    dag.add_delta(signed_op_to_delta(&op_a).unwrap(), &applier)
+        .await
+        .unwrap();
+    dag.add_delta(signed_op_to_delta(&op_b).unwrap(), &applier)
+        .await
+        .unwrap();
+
+    assert!(group_store::check_group_membership(&store, &gid, &member1).unwrap());
+    assert!(group_store::check_group_membership(&store, &gid, &member2).unwrap());
+
+    // Two heads (concurrent branches)
+    let heads = dag.get_heads();
+    assert_eq!(heads.len(), 2);
+
+    // Merge op referencing both heads
+    let hash_a = op_a.content_hash().unwrap();
+    let hash_b = op_b.content_hash().unwrap();
+    let merge_op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![hash_a, hash_b],
+        [0u8; 32],
+        3,
+        GroupOp::Noop,
+    )
+    .unwrap();
+    dag.add_delta(signed_op_to_delta(&merge_op).unwrap(), &applier)
+        .await
+        .unwrap();
+
+    // After merge: single head
+    let heads = dag.get_heads();
+    assert_eq!(heads.len(), 1);
+    assert!(heads.contains(&merge_op.content_hash().unwrap()));
+}
+
+#[tokio::test]
+async fn dag_duplicate_delta_is_idempotent() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::Noop,
+    )
+    .unwrap();
+    let delta = signed_op_to_delta(&op).unwrap();
+
+    let applier = GroupGovernanceApplier::new(store.clone());
+    let mut dag = DagStore::new([0u8; 32]);
+
+    let first = dag.add_delta(delta.clone(), &applier).await.unwrap();
+    assert!(first);
+    let second = dag.add_delta(delta, &applier).await.unwrap();
+    assert!(!second, "duplicate delta should return false");
+}
+
+#[tokio::test]
+async fn dag_deep_chain_with_out_of_order_delivery() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // Build chain: op1 → op2 → op3 → op4 → op5
+    let mut ops = Vec::new();
+    let mut prev_hash: Vec<[u8; 32]> = vec![[0u8; 32]];
+    for i in 1..=5u64 {
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            prev_hash.clone(),
+            [0u8; 32],
+            i,
+            GroupOp::Noop,
+        )
+        .unwrap();
+        prev_hash = vec![op.content_hash().unwrap()];
+        ops.push(op);
+    }
+
+    let applier = GroupGovernanceApplier::new(store.clone());
+    let mut dag = DagStore::new([0u8; 32]);
+
+    // Deliver in reverse order: op5, op4, op3, op2
+    for op in ops[1..].iter().rev() {
+        let result = dag
+            .add_delta(signed_op_to_delta(op).unwrap(), &applier)
+            .await
+            .unwrap();
+        assert!(!result, "should be pending");
+    }
+
+    // Deliver op1 — should cascade all
+    let result = dag
+        .add_delta(signed_op_to_delta(&ops[0]).unwrap(), &applier)
+        .await
+        .unwrap();
+    assert!(result, "op1 should apply and cascade");
+
+    // All 5 ops applied, single head (op5)
+    let heads = dag.get_heads();
+    assert_eq!(heads.len(), 1);
+    assert!(heads.contains(&ops[4].content_hash().unwrap()));
+
+    // Nonce should be at 5 for the admin
+    assert_eq!(
+        group_store::get_local_gov_nonce(&store, &gid, &admin_pk)
+            .unwrap()
+            .unwrap(),
+        5
+    );
+}
+
+#[test]
+fn rejects_op_with_too_many_parents() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // 256 parents should be accepted
+    let parents_256: Vec<[u8; 32]> = (0..256)
+        .map(|i| {
+            let mut h = [0u8; 32];
+            h[0] = (i & 0xFF) as u8;
+            h[1] = ((i >> 8) & 0xFF) as u8;
+            h
+        })
+        .collect();
+    let op_ok = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        parents_256,
+        [0u8; 32],
+        1,
+        GroupOp::Noop,
+    )
+    .unwrap();
+    assert!(apply_local_signed_group_op(&store, &op_ok).is_ok());
+
+    // 257 parents should be rejected
+    let parents_257: Vec<[u8; 32]> = (0..257)
+        .map(|i| {
+            let mut h = [0u8; 32];
+            h[0] = (i & 0xFF) as u8;
+            h[1] = ((i >> 8) & 0xFF) as u8;
+            h
+        })
+        .collect();
+    let op_bad = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        parents_257,
+        [0u8; 32],
+        2,
+        GroupOp::Noop,
+    )
+    .unwrap();
+    assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
+}
+
+#[test]
+fn dag_heads_are_capped_at_max() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // Create 70 concurrent ops (all with genesis parent) to exceed MAX_DAG_HEADS (64)
+    for i in 1..=70u64 {
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![[0u8; 32]],
+            [0u8; 32],
+            i,
+            GroupOp::Noop,
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op).unwrap();
+    }
+
+    let head = get_op_head(&store, &gid).unwrap().expect("head");
+    assert!(
+        head.dag_heads.len() <= 64,
+        "dag_heads should be capped at 64, got {}",
+        head.dag_heads.len()
+    );
+    // The last op's hash should be present (not truncated)
+    let last_op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        70,
+        GroupOp::Noop,
+    )
+    .unwrap();
+    let last_hash = last_op.content_hash().unwrap();
+    assert!(
+        head.dag_heads.contains(&last_hash),
+        "most recent op should still be in dag_heads"
+    );
+}
+
+#[test]
+fn state_hash_prevents_concurrent_op_divergence() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let node_b = empty_store();
+    let node_c = empty_store();
+
+    let admin_a_sk = PrivateKey::random(&mut rng);
+    let admin_a_pk = admin_a_sk.public_key();
+    let admin_c_sk = PrivateKey::random(&mut rng);
+    let admin_c_pk = admin_c_sk.public_key();
+    let new_member_d = PrivateKey::random(&mut rng).public_key();
+
+    for store in [&node_b, &node_c] {
+        save_group_meta(store, &gid, &sample_meta(admin_a_pk)).unwrap();
+        add_group_member(store, &gid, &admin_a_pk, GroupMemberRole::Admin).unwrap();
+        add_group_member(store, &gid, &admin_c_pk, GroupMemberRole::Admin).unwrap();
+    }
+
+    let state_hash_b = compute_group_state_hash(&node_b, &gid).unwrap();
+    let state_hash_c = compute_group_state_hash(&node_c, &gid).unwrap();
+    assert_eq!(
+        state_hash_b, state_hash_c,
+        "nodes start with identical state hash"
+    );
+
+    // A signs: add member D (against current state)
+    let op_a = SignedGroupOp::sign(
+        &admin_a_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        state_hash_b,
+        1,
+        GroupOp::MemberAdded {
+            member: new_member_d,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+
+    // C signs: remove A (against the SAME state — concurrent)
+    let op_c = SignedGroupOp::sign(
+        &admin_c_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        state_hash_c,
+        1,
+        GroupOp::MemberRemoved { member: admin_a_pk },
+    )
+    .unwrap();
+
+    // Node B receives op_a first, then op_c
+    let result_a_on_b = apply_local_signed_group_op(&node_b, &op_a);
+    assert!(result_a_on_b.is_ok(), "op_a should succeed on node_b");
+
+    let result_c_on_b = apply_local_signed_group_op(&node_b, &op_c);
+    assert!(
+        result_c_on_b.is_err(),
+        "op_c should FAIL on node_b (state changed after op_a)"
+    );
+
+    // Node C receives op_c first, then op_a
+    let result_c_on_c = apply_local_signed_group_op(&node_c, &op_c);
+    assert!(result_c_on_c.is_ok(), "op_c should succeed on node_c");
+
+    let result_a_on_c = apply_local_signed_group_op(&node_c, &op_a);
+    assert!(
+        result_a_on_c.is_err(),
+        "op_a should FAIL on node_c (state changed after op_c)"
+    );
+
+    // Node B: A is still admin, D was added, C's removal of A was rejected
+    assert!(group_store::check_group_membership(&node_b, &gid, &admin_a_pk).unwrap());
+    assert!(group_store::check_group_membership(&node_b, &gid, &new_member_d).unwrap());
+
+    // Node C: A was removed by C, D was NOT added
+    assert!(!group_store::check_group_membership(&node_c, &gid, &admin_a_pk).unwrap());
+    assert!(!group_store::check_group_membership(&node_c, &gid, &new_member_d).unwrap());
+}
+
+#[test]
+fn cascade_removal_on_member_kick() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+
+    let context_id = ContextId::from([0xCC; 32]);
+
+    group_store::register_context_in_group(&store, &gid, &context_id).unwrap();
+
+    track_member_context_join(&store, &gid, &member_pk, &context_id, *member_pk.as_ref()).unwrap();
+
+    {
+        use calimero_store::key::ContextIdentity;
+        let mut handle = store.handle();
+        let key = ContextIdentity::new(context_id, member_pk.into());
+        handle
+            .put(
+                &key,
+                &calimero_store::types::ContextIdentity {
+                    private_key: None,
+                    sender_key: None,
+                },
+            )
+            .unwrap();
+    }
+
+    {
+        use calimero_store::key::ContextIdentity;
+        let handle = store.handle();
+        let key = ContextIdentity::new(context_id, member_pk.into());
+        assert!(
+            handle.has(&key).unwrap(),
+            "member should be in context before kick"
+        );
+    }
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::MemberRemoved { member: member_pk },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op).unwrap();
+
+    assert!(!group_store::check_group_membership(&store, &gid, &member_pk).unwrap());
+
+    {
+        use calimero_store::key::ContextIdentity;
+        let handle = store.handle();
+        let key = ContextIdentity::new(context_id, member_pk.into());
+        assert!(
+            !handle.has(&key).unwrap(),
+            "member should be cascade-removed from context"
+        );
+    }
+
+    let joins = get_member_context_joins(&store, &gid, &member_pk).unwrap();
+    assert!(joins.is_empty(), "tracking records should be cleaned up");
+}
+
+#[test]
+fn cascade_removal_deterministic_across_nodes() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let node_a = empty_store();
+    let node_b = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let member_pk = PrivateKey::random(&mut rng).public_key();
+
+    let ctx1 = ContextId::from([0xC1; 32]);
+    let ctx2 = ContextId::from([0xC2; 32]);
+
+    for store in [&node_a, &node_b] {
+        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
+        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+        add_group_member(store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+        group_store::register_context_in_group(store, &gid, &ctx1).unwrap();
+        group_store::register_context_in_group(store, &gid, &ctx2).unwrap();
+
+        track_member_context_join(store, &gid, &member_pk, &ctx1, *member_pk.as_ref()).unwrap();
+        track_member_context_join(store, &gid, &member_pk, &ctx2, *member_pk.as_ref()).unwrap();
+
+        use calimero_store::key::ContextIdentity;
+        let mut handle = store.handle();
+        for ctx in [ctx1, ctx2] {
+            let key = ContextIdentity::new(ctx, member_pk.into());
+            handle
+                .put(
+                    &key,
+                    &calimero_store::types::ContextIdentity {
+                        private_key: None,
+                        sender_key: None,
+                    },
+                )
+                .unwrap();
+        }
+    }
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::MemberRemoved { member: member_pk },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&node_a, &op).unwrap();
+    apply_local_signed_group_op(&node_b, &op).unwrap();
+
+    for (label, store) in [("node_a", &node_a), ("node_b", &node_b)] {
+        use calimero_store::key::ContextIdentity;
+        let handle = store.handle();
+        for ctx in [ctx1, ctx2] {
+            let key = ContextIdentity::new(ctx, member_pk.into());
+            assert!(
+                !handle.has(&key).unwrap(),
+                "{label}: member should be cascade-removed from context {}",
+                hex::encode(ctx.as_ref())
+            );
+        }
+        assert!(
+            !group_store::check_group_membership(store, &gid, &member_pk).unwrap(),
+            "{label}: member should be removed from group"
+        );
+    }
+}
+
+#[test]
+fn member_joined_context_op_propagates() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let node_a = empty_store();
+    let node_b = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let member_pk = PrivateKey::random(&mut rng).public_key();
+    let context_id = ContextId::from([0xDD; 32]);
+
+    for store in [&node_a, &node_b] {
+        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
+        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+        add_group_member(store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+        group_store::register_context_in_group(store, &gid, &context_id).unwrap();
+    }
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::MemberJoinedContext {
+            member: member_pk,
+            context_id,
+            context_identity: *member_pk.as_ref(),
+        },
+    )
+    .unwrap();
+    let payload = borsh_to_vec(&op).unwrap();
+
+    apply_wire_payload(&node_a, &payload);
+    apply_wire_payload(&node_b, &payload);
+
+    for store in [&node_a, &node_b] {
+        let joins = get_member_context_joins(store, &gid, &member_pk).unwrap();
+        assert_eq!(joins.len(), 1, "tracking record should exist");
+        assert_eq!(joins[0].0, context_id);
+    }
+}
+
+#[test]
+fn state_hash_allows_sequential_ops() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let member1 = PrivateKey::random(&mut rng).public_key();
+    let member2 = PrivateKey::random(&mut rng).public_key();
+
+    // Op1: add member1, signed against initial state
+    let state1 = compute_group_state_hash(&store, &gid).unwrap();
+    let op1 = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        state1,
+        1,
+        GroupOp::MemberAdded {
+            member: member1,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op1).unwrap();
+
+    // Op2: add member2, signed against state AFTER op1
+    let state2 = compute_group_state_hash(&store, &gid).unwrap();
+    assert_ne!(
+        state1, state2,
+        "state hash should change after adding member1"
+    );
+    let op2 = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![op1.content_hash().unwrap()],
+        state2,
+        2,
+        GroupOp::MemberAdded {
+            member: member2,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op2).unwrap();
+
+    assert!(group_store::check_group_membership(&store, &gid, &member1).unwrap());
+    assert!(group_store::check_group_membership(&store, &gid, &member2).unwrap());
+}
+
+#[test]
+fn state_hash_zero_skips_validation() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::Noop,
+    )
+    .unwrap();
+    assert!(apply_local_signed_group_op(&store, &op).is_ok());
 }

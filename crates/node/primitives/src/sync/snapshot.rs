@@ -600,6 +600,11 @@ pub enum BroadcastMessage<'a> {
         /// Execution events that were emitted during the state change.
         /// This field is encrypted along with the artifact.
         events: Option<Cow<'a, [u8]>>,
+
+        /// The group governance DAG head(s) when this delta was produced.
+        /// Allows receiving nodes to determine if the author was authorized
+        /// at the governance state the delta was created against.
+        governance_epoch: Vec<[u8; 32]>,
     },
 
     /// Hash heartbeat for divergence detection
@@ -639,7 +644,7 @@ pub enum BroadcastMessage<'a> {
     },
 
     /// Notification that a group mutation occurred.
-    /// Receiving nodes should re-sync the group state from the contract.
+    /// Receiving nodes should re-sync the group state from the local store or peers.
     GroupMutationNotification {
         group_id: [u8; 32],
         mutation_kind: GroupMutationKind,
@@ -652,6 +657,31 @@ pub enum BroadcastMessage<'a> {
     SignedGroupOpV1 {
         /// `borsh(SignedGroupOp)`; must be ≤ [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`].
         payload: Vec<u8>,
+    },
+
+    /// DAG-aware group governance delta with causal metadata.
+    ///
+    /// Replaces [`SignedGroupOpV1`] for nodes running schema v2.
+    /// Contains the same `SignedGroupOp` payload plus DAG ordering info.
+    GroupGovernanceDelta {
+        group_id: [u8; 32],
+        /// Content hash of the signed op (delta ID in the governance DAG).
+        delta_id: [u8; 32],
+        /// Parent delta IDs (content hashes of causally preceding ops).
+        parent_ids: Vec<[u8; 32]>,
+        /// `borsh(SignedGroupOp)` — must be ≤ [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`].
+        payload: Vec<u8>,
+    },
+
+    /// Periodic heartbeat for group governance DAG divergence detection.
+    ///
+    /// Peers compare `dag_heads`; if a peer has heads we lack, trigger catch-up sync.
+    GroupStateHeartbeat {
+        group_id: [u8; 32],
+        /// Current DAG tip content hashes.
+        dag_heads: Vec<[u8; 32]>,
+        /// Number of members in the group (sanity check).
+        member_count: u32,
     },
 }
 
@@ -1600,7 +1630,9 @@ mod tests {
     #[test]
     fn broadcast_message_signed_group_op_v1_roundtrip() {
         let inner = vec![1u8, 2, 3];
-        let msg = BroadcastMessage::SignedGroupOpV1 { payload: inner.clone() };
+        let msg = BroadcastMessage::SignedGroupOpV1 {
+            payload: inner.clone(),
+        };
         let bytes = borsh::to_vec(&msg).expect("serialize");
         let decoded: BroadcastMessage<'static> = borsh::from_slice(&bytes).expect("deserialize");
         match decoded {

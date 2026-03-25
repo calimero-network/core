@@ -10,10 +10,10 @@ use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, NetworkConfig, RelayConfig,
     RendezvousConfig, SwarmConfig,
 };
+use futures_util::StreamExt;
 use libp2p::gossipsub::{Event as GossipsubEvent, IdentTopic, PublishError};
 use libp2p::identity::Keypair;
 use libp2p::swarm::SwarmEvent;
-use futures_util::StreamExt;
 use libp2p::{Multiaddr, Swarm};
 use libp2p_swarm_test::SwarmExt;
 use tokio::time::timeout;

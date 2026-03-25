@@ -227,7 +227,6 @@ impl InitCommand {
         }
 
         let client_config = ClientConfig {
-            params: BTreeMap::new(),
             signer: ClientSigner {
                 local: LocalConfig {
                     protocols: BTreeMap::new(),

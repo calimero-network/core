@@ -77,11 +77,12 @@ impl Handler<SetContextVisibilityRequest> for ContextManager {
         }
 
         let creator_pk = {
-            let creator_bytes = group_store::get_context_visibility(&self.datastore, &group_id, &context_id)
-                .ok()
-                .flatten()
-                .map(|(_, c)| c)
-                .unwrap_or(*requester);
+            let creator_bytes =
+                group_store::get_context_visibility(&self.datastore, &group_id, &context_id)
+                    .ok()
+                    .flatten()
+                    .map(|(_, c)| c)
+                    .unwrap_or(*requester);
             PublicKey::from(creator_bytes)
         };
 
@@ -96,12 +97,11 @@ impl Handler<SetContextVisibilityRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                    eyre::eyre!(
-                        "local group governance requires a signing key for the requester"
-                    )
+                    eyre::eyre!("local group governance requires a signing key for the requester")
                 })?);
-                let bytes = group_store::sign_apply_local_group_op_borsh(
+                group_store::sign_apply_and_publish(
                     &datastore,
+                    &node_client,
                     &group_id,
                     &sk,
                     GroupOp::ContextVisibilitySet {
@@ -109,10 +109,8 @@ impl Handler<SetContextVisibilityRequest> for ContextManager {
                         mode: mode_u8,
                         creator: creator_pk,
                     },
-                )?;
-                node_client
-                    .publish_signed_group_op(group_id.to_bytes(), bytes)
-                    .await?;
+                )
+                .await?;
 
                 let _ = node_client
                     .broadcast_group_mutation(
