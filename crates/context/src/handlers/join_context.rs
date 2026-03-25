@@ -166,26 +166,32 @@ async fn join_context(
     // Create a stub ApplicationMeta so the sync manager can look up the
     // blob_id and proceed with blob sharing.  The full application will be
     // installed after the blob arrives from the peer.
+    // Create a stub ApplicationMeta under the correct application_id so the
+    // sync manager can look up the blob_id and proceed with blob sharing.
+    // We write directly to the store (instead of install_application) because
+    // install_application derives the ApplicationId from a hash of the
+    // content — which would differ from the inviter's application_id.
     let zero_blob = calimero_primitives::blobs::BlobId::from([0u8; 32]);
     if invitation_blob_id != zero_blob && !node_client.has_application(&invitation_app_id)? {
-        let stub_source: calimero_primitives::application::ApplicationSource =
-            format!("calimero://context/{context_id}")
-                .parse()
-                .expect("valid URL");
-        node_client.install_application(
-            &invitation_blob_id,
-            0,
-            &stub_source,
-            vec![],
-            "unknown",
-            "0.0.0",
-            None,
-            false,
+        let mut handle = datastore.handle();
+        handle.put(
+            &key::ApplicationMeta::new(invitation_app_id),
+            &calimero_store::types::ApplicationMeta::new(
+                key::BlobMeta::new(invitation_blob_id),
+                0,
+                format!("calimero://context/{context_id}").into_boxed_str(),
+                Box::default(),
+                key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0u8; 32])),
+                "unknown".to_owned().into_boxed_str(),
+                "0.0.0".to_owned().into_boxed_str(),
+                String::new().into_boxed_str(),
+            ),
         )?;
         tracing::info!(
             %context_id,
             %invitation_app_id,
-            "installed stub ApplicationMeta from invitation for blob sharing"
+            %invitation_blob_id,
+            "wrote stub ApplicationMeta for blob sharing"
         );
     }
 

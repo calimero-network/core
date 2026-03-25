@@ -511,7 +511,7 @@ mod tests {
         let application_id = ApplicationId::from([3; DIGEST_SIZE]);
         let inviter_id = PublicKey::from([4; DIGEST_SIZE]);
         let group_id = [5; DIGEST_SIZE];
-        let blob_id = calimero_primitives::blobs::BlobId::from([6; DIGEST_SIZE]);
+        let blob_id = crate::blobs::BlobId::from([6; DIGEST_SIZE]);
 
         let invitation_payload = ContextInvitationPayload::new(
             context_id,
