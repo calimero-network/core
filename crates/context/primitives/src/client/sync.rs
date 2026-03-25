@@ -253,46 +253,71 @@ impl ContextClient {
             ));
         };
 
-        // Bootstrap path: install application and create store entries.
+        // Bootstrap path: resolve application and create store entries.
+        //
+        // The application_id is supplied by the caller (looked up from the
+        // group store) because `ContextMeta` has not been written yet — it is
+        // created below.  If the application is already installed locally we
+        // run the full installation checks; otherwise we write the metadata
+        // and let blob-sharing + sync retries deliver the binary later.
 
-        let application = self.get_context_application(&context_id).await?;
-        let application_id = application.id;
+        let application_id = if let Some(ctx) = &context {
+            ctx.application.application_id()
+        } else {
+            config
+                .application_id
+                .ok_or_else(|| eyre::eyre!(
+                    "bootstrap requires application_id in ContextConfigParams \
+                     (context {context_id} has no local metadata yet)"
+                ))?
+        };
 
-        if !self.node_client.has_application(&application_id)? {
-            let source: Url = application.source.into();
-            let metadata = application.metadata.clone();
-            let blob_id = application.blob.bytecode;
+        if let Some(application) = self.node_client().get_application(&application_id)? {
+            if !self.node_client.has_application(&application_id)? {
+                let source: Url = application.source.into();
+                let metadata = application.metadata.clone();
+                let blob_id = application.blob.bytecode;
 
-            let derived_application_id = {
-                if let Some(app_id) = self.try_install_from_url(&source, &metadata).await? {
-                    app_id
-                } else if self.node_client.has_blob(&blob_id)? {
-                    self.install_from_existing_blob(
-                        &blob_id,
-                        &source,
-                        application.size,
-                        &metadata,
-                    )
-                    .await?
-                } else {
-                    self.install_when_blob_missing(
-                        &blob_id,
-                        &source,
-                        application.size,
-                        &metadata,
+                let derived_application_id = {
+                    if let Some(app_id) =
+                        self.try_install_from_url(&source, &metadata).await?
+                    {
+                        app_id
+                    } else if self.node_client.has_blob(&blob_id)? {
+                        self.install_from_existing_blob(
+                            &blob_id,
+                            &source,
+                            application.size,
+                            &metadata,
+                        )
+                        .await?
+                    } else {
+                        self.install_when_blob_missing(
+                            &blob_id,
+                            &source,
+                            application.size,
+                            &metadata,
+                            application_id,
+                        )
+                        .await?
+                    }
+                };
+
+                if application_id != derived_application_id {
+                    eyre::bail!(
+                        "application mismatch: expected {}, got {}",
                         application_id,
+                        derived_application_id
                     )
-                    .await?
                 }
-            };
-
-            if application_id != derived_application_id {
-                eyre::bail!(
-                    "application mismatch: expected {}, got {}",
-                    application_id,
-                    derived_application_id
-                )
             }
+        } else {
+            debug!(
+                %context_id,
+                %application_id,
+                "application not available locally during bootstrap; \
+                 writing metadata — blob sharing will deliver it"
+            );
         }
 
         handle.put(

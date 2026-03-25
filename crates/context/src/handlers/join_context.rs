@@ -105,12 +105,15 @@ async fn join_context(
     let mut config = None;
 
     if !context_client.has_context(&context_id)? {
-        let external_config = ContextConfigParams {
+        let app_id = group_store::get_group_for_context(&datastore, &context_id)?
+            .and_then(|gid| group_store::load_group_meta(&datastore, &gid).ok()?)
+            .map(|meta| meta.target_application_id);
+
+        config = Some(ContextConfigParams {
+            application_id: app_id,
             application_revision: 0,
             members_revision: 0,
-        };
-
-        config = Some(external_config);
+        });
     };
 
     let _ignored = context_client

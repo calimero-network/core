@@ -123,7 +123,11 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                 .await?;
 
                 let config = if !context_client.has_context(&context_id)? {
+                    let app_id = group_store::load_group_meta(&datastore, &group_id)?
+                        .map(|meta| meta.target_application_id);
+
                     Some(ContextConfigParams {
+                        application_id: app_id,
                         application_revision: 0,
                         members_revision: 0,
                     })

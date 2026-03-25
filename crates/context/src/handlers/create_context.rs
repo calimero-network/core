@@ -162,6 +162,7 @@ impl Prepared<'_> {
         datastore: &Store,
     ) -> eyre::Result<Self> {
         let external_config = ContextConfigParams {
+            application_id: None,
             application_revision: 0,
             members_revision: 0,
         };

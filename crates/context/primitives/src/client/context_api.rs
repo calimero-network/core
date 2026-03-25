@@ -24,6 +24,7 @@ impl ContextClient {
         };
 
         let context_config = ContextConfigParams {
+            application_id: None,
             application_revision: config.application_revision,
             members_revision: config.members_revision,
         };

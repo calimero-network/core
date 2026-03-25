@@ -252,6 +252,10 @@ impl Context {
 /// A collection of configuration parameters for a Context.
 #[derive(Clone, Debug)]
 pub struct ContextConfigParams {
+    /// The application that this context runs, supplied by the caller during
+    /// bootstrap so `sync_context_config` does not need to read `ContextMeta`
+    /// (which has not been written yet at that point).
+    pub application_id: Option<ApplicationId>,
     /// A revision number for the application, used for tracking updates.
     pub application_revision: u64,
     /// A revision number for the members list, used for tracking membership changes.
