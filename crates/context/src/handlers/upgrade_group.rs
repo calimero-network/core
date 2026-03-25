@@ -128,40 +128,28 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             .as_ref()
                             .ok_or_else(|| eyre::eyre!("target application not found"))?;
                         let app_key = *app_meta.bytecode.blob_id().as_ref();
-                        let output = group_store::sign_apply_local_group_op_borsh(
+                        group_store::sign_apply_and_publish(
                             &datastore,
+                            &node_client,
                             &group_id,
                             &sk,
                             GroupOp::TargetApplicationSet {
                                 app_key,
                                 target_application_id,
                             },
-                        )?;
-                        node_client
-                            .publish_signed_group_op(
-                                group_id.to_bytes(),
-                                output.delta_id,
-                                output.parent_ids,
-                                output.bytes,
-                            )
-                            .await?;
+                        )
+                        .await?;
                         if migration_bytes.is_some() {
-                            let output2 = group_store::sign_apply_local_group_op_borsh(
+                            group_store::sign_apply_and_publish(
                                 &datastore,
+                                &node_client,
                                 &group_id,
                                 &sk,
                                 GroupOp::GroupMigrationSet {
                                     migration: migration_bytes.clone(),
                                 },
-                            )?;
-                            node_client
-                                .publish_signed_group_op(
-                                    group_id.to_bytes(),
-                                    output2.delta_id,
-                                    output2.parent_ids,
-                                    output2.bytes,
-                                )
-                                .await?;
+                            )
+                            .await?;
                         }
                     }
 
@@ -278,40 +266,28 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     .as_ref()
                     .ok_or_else(|| eyre::eyre!("target application not found"))?;
                 let app_key = *app_meta.bytecode.blob_id().as_ref();
-                let output = group_store::sign_apply_local_group_op_borsh(
+                group_store::sign_apply_and_publish(
                     &datastore_for_canary,
+                    &node_client,
                     &group_id,
                     &sk,
                     GroupOp::TargetApplicationSet {
                         app_key,
                         target_application_id,
                     },
-                )?;
-                node_client
-                    .publish_signed_group_op(
-                        group_id.to_bytes(),
-                        output.delta_id,
-                        output.parent_ids,
-                        output.bytes,
-                    )
-                    .await?;
+                )
+                .await?;
                 if migration_bytes.is_some() {
-                    let output2 = group_store::sign_apply_local_group_op_borsh(
+                    group_store::sign_apply_and_publish(
                         &datastore_for_canary,
+                        &node_client,
                         &group_id,
                         &sk,
                         GroupOp::GroupMigrationSet {
                             migration: migration_bytes.clone(),
                         },
-                    )?;
-                    node_client
-                        .publish_signed_group_op(
-                            group_id.to_bytes(),
-                            output2.delta_id,
-                            output2.parent_ids,
-                            output2.bytes,
-                        )
-                        .await?;
+                    )
+                    .await?;
                 }
             }
 

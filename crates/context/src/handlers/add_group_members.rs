@@ -74,21 +74,17 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                     eyre::eyre!("local group governance requires a signing key for the requester")
                 })?);
                 for (identity, role) in &members {
-                    let op = GroupOp::MemberAdded {
-                        member: *identity,
-                        role: role.clone(),
-                    };
-                    let output = group_store::sign_apply_local_group_op_borsh(
-                        &datastore, &group_id, &sk, op,
-                    )?;
-                    node_client
-                        .publish_signed_group_op(
-                            group_id.to_bytes(),
-                            output.delta_id,
-                            output.parent_ids,
-                            output.bytes,
-                        )
-                        .await?;
+                    group_store::sign_apply_and_publish(
+                        &datastore,
+                        &node_client,
+                        &group_id,
+                        &sk,
+                        GroupOp::MemberAdded {
+                            member: *identity,
+                            role: role.clone(),
+                        },
+                    )
+                    .await?;
                 }
                 info!(
                     ?group_id,

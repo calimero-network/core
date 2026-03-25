@@ -129,20 +129,14 @@ async fn delete_context(
                      cannot publish local detach op"
                 )
             })?;
-        let output = group_store::sign_apply_local_group_op_borsh(
+        group_store::sign_apply_and_publish(
             &datastore,
+            &node_client,
             &group_id,
             &PrivateKey::from(sk),
             calimero_context_primitives::local_governance::GroupOp::ContextDetached { context_id },
-        )?;
-        node_client
-            .publish_signed_group_op(
-                group_id.to_bytes(),
-                output.delta_id,
-                output.parent_ids,
-                output.bytes,
-            )
-            .await?;
+        )
+        .await?;
         let _ = node_client
             .broadcast_group_mutation(
                 group_id.to_bytes(),

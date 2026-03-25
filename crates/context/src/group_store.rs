@@ -662,6 +662,27 @@ pub fn sign_apply_local_group_op_borsh(
     })
 }
 
+/// Sign, apply locally, and publish a group op to the network in one step.
+///
+/// Combines [`sign_apply_local_group_op_borsh`] + [`calimero_node_primitives::client::NodeClient::publish_signed_group_op`].
+pub async fn sign_apply_and_publish(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    op: GroupOp,
+) -> EyreResult<()> {
+    let output = sign_apply_local_group_op_borsh(store, group_id, signer_sk, op)?;
+    node_client
+        .publish_signed_group_op(
+            group_id.to_bytes(),
+            output.delta_id,
+            output.parent_ids,
+            output.bytes,
+        )
+        .await
+}
+
 pub fn get_group_member_role(
     store: &Store,
     group_id: &ContextGroupId,

@@ -465,26 +465,21 @@ async fn create_context(
     // worst case is a single context associated with a since-removed member.
     if let Some(ref gid) = group_id {
         let sk = PrivateKey::from(*identity_secret);
-        let output = group_store::sign_apply_local_group_op_borsh(
+        group_store::sign_apply_and_publish(
             &datastore,
+            &node_client,
             gid,
             &sk,
             GroupOp::ContextRegistered {
                 context_id: context.id,
             },
-        )?;
-        node_client
-            .publish_signed_group_op(
-                gid.to_bytes(),
-                output.delta_id,
-                output.parent_ids,
-                output.bytes,
-            )
-            .await?;
+        )
+        .await?;
 
         let vis_mode = group_store::get_default_visibility(&datastore, gid)?.unwrap_or(0u8);
-        let output_vis = group_store::sign_apply_local_group_op_borsh(
+        group_store::sign_apply_and_publish(
             &datastore,
+            &node_client,
             gid,
             &sk,
             GroupOp::ContextVisibilitySet {
@@ -492,15 +487,8 @@ async fn create_context(
                 mode: vis_mode,
                 creator: identity,
             },
-        )?;
-        node_client
-            .publish_signed_group_op(
-                gid.to_bytes(),
-                output_vis.delta_id,
-                output_vis.parent_ids,
-                output_vis.bytes,
-            )
-            .await?;
+        )
+        .await?;
     }
 
     node_client.subscribe(&context.id).await?;
@@ -508,23 +496,17 @@ async fn create_context(
     if let Some(ref gid) = group_id {
         if let Some(ref alias_str) = alias {
             let sk = PrivateKey::from(*identity_secret);
-            let output = group_store::sign_apply_local_group_op_borsh(
+            group_store::sign_apply_and_publish(
                 &datastore,
+                &node_client,
                 gid,
                 &sk,
                 GroupOp::ContextAliasSet {
                     context_id: context.id,
                     alias: alias_str.clone(),
                 },
-            )?;
-            node_client
-                .publish_signed_group_op(
-                    gid.to_bytes(),
-                    output.delta_id,
-                    output.parent_ids,
-                    output.bytes,
-                )
-                .await?;
+            )
+            .await?;
         }
     }
 

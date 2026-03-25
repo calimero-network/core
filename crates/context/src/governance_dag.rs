@@ -6,6 +6,9 @@ use calimero_store::Store;
 
 use crate::group_store;
 
+/// Governance deltas have no Merkle state root; this sentinel signals "no state hash".
+const NO_STATE_HASH: [u8; 32] = [0u8; 32];
+
 /// Applies a [`SignedGroupOp`] to the persistent group store.
 ///
 /// Implements [`DeltaApplier`] so `DagStore<SignedGroupOp>` can delegate
@@ -43,7 +46,6 @@ pub fn signed_op_to_delta(op: &SignedGroupOp) -> Result<CausalDelta<SignedGroupO
         // HLC is not used for governance ordering (nonce + DAG parents suffice);
         // default is acceptable since DagStore uses parents for topological sort.
         calimero_storage::logical_clock::HybridTimestamp::default(),
-        // Governance ops have no Merkle root; zero hash signals "no state hash".
-        [0u8; 32],
+        NO_STATE_HASH,
     ))
 }

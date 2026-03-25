@@ -843,3 +843,77 @@ async fn dag_deep_chain_with_out_of_order_delivery() {
         5
     );
 }
+
+#[test]
+fn rejects_op_with_too_many_parents() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // 256 parents should be accepted
+    let parents_256: Vec<[u8; 32]> = (0..256)
+        .map(|i| {
+            let mut h = [0u8; 32];
+            h[0] = (i & 0xFF) as u8;
+            h[1] = ((i >> 8) & 0xFF) as u8;
+            h
+        })
+        .collect();
+    let op_ok =
+        SignedGroupOp::sign(&admin_sk, gid_bytes, parents_256, 1, GroupOp::Noop).unwrap();
+    assert!(apply_local_signed_group_op(&store, &op_ok).is_ok());
+
+    // 257 parents should be rejected
+    let parents_257: Vec<[u8; 32]> = (0..257)
+        .map(|i| {
+            let mut h = [0u8; 32];
+            h[0] = (i & 0xFF) as u8;
+            h[1] = ((i >> 8) & 0xFF) as u8;
+            h
+        })
+        .collect();
+    let op_bad =
+        SignedGroupOp::sign(&admin_sk, gid_bytes, parents_257, 2, GroupOp::Noop).unwrap();
+    assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
+}
+
+#[test]
+fn dag_heads_are_capped_at_max() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // Create 70 concurrent ops (all with genesis parent) to exceed MAX_DAG_HEADS (64)
+    for i in 1..=70u64 {
+        let op =
+            SignedGroupOp::sign(&admin_sk, gid_bytes, vec![[0u8; 32]], i, GroupOp::Noop).unwrap();
+        apply_local_signed_group_op(&store, &op).unwrap();
+    }
+
+    let head = get_op_head(&store, &gid).unwrap().expect("head");
+    assert!(
+        head.dag_heads.len() <= 64,
+        "dag_heads should be capped at 64, got {}",
+        head.dag_heads.len()
+    );
+    // The last op's hash should be present (not truncated)
+    let last_op =
+        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![[0u8; 32]], 70, GroupOp::Noop).unwrap();
+    let last_hash = last_op.content_hash().unwrap();
+    assert!(
+        head.dag_heads.contains(&last_hash),
+        "most recent op should still be in dag_heads"
+    );
+}

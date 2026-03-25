@@ -89,18 +89,14 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                     eyre::eyre!("local group governance requires a signing key for the requester")
                 })?);
                 for identity in &members {
-                    let op = GroupOp::MemberRemoved { member: *identity };
-                    let output = group_store::sign_apply_local_group_op_borsh(
-                        &datastore, &group_id, &sk, op,
-                    )?;
-                    node_client
-                        .publish_signed_group_op(
-                            group_id.to_bytes(),
-                            output.delta_id,
-                            output.parent_ids,
-                            output.bytes,
-                        )
-                        .await?;
+                    group_store::sign_apply_and_publish(
+                        &datastore,
+                        &node_client,
+                        &group_id,
+                        &sk,
+                        GroupOp::MemberRemoved { member: *identity },
+                    )
+                    .await?;
                 }
                 info!(
                     ?group_id,

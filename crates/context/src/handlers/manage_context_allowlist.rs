@@ -100,23 +100,17 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
                     eyre::eyre!("local group governance requires a signing key for the requester")
                 })?);
                 let members = merged_allowlist.clone();
-                let output = group_store::sign_apply_local_group_op_borsh(
+                group_store::sign_apply_and_publish(
                     &datastore,
+                    &node_client,
                     &group_id,
                     &sk,
                     GroupOp::ContextAllowlistReplaced {
                         context_id,
                         members,
                     },
-                )?;
-                node_client
-                    .publish_signed_group_op(
-                        group_id.to_bytes(),
-                        output.delta_id,
-                        output.parent_ids,
-                        output.bytes,
-                    )
-                    .await?;
+                )
+                .await?;
 
                 let members_raw: Vec<[u8; 32]> = merged_allowlist.iter().map(|pk| **pk).collect();
                 let _ = node_client
