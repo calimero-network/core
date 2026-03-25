@@ -42,6 +42,8 @@ impl VMLogic<'_> {
             fn read_root_state(register_id: u64) -> i32;
             fn apply_storage_delta(delta_ptr: u64);
             fn flush_delta() -> i32;
+            fn register_js_sdk_root_merge();
+            fn init_state(schema_ptr: u64, register_id: u64) -> i32;
 
             fn storage_write(
                 key_ptr: u64,
@@ -91,6 +93,57 @@ impl VMLogic<'_> {
                 has_executor: u32,
                 register_id: u64,
             ) -> i32;
+
+            // new_with_id variants
+            fn js_crdt_map_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_vector_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_set_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_lww_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+
+            // GCounter aliases
+            fn js_crdt_g_counter_new(register_id: u64) -> i32;
+            fn js_crdt_g_counter_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_g_counter_increment(counter_id_ptr: u64) -> i32;
+            fn js_crdt_g_counter_value(counter_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_g_counter_get_executor_count(
+                counter_id_ptr: u64,
+                executor_ptr: u64,
+                has_executor: u32,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_g_counter_serialize(counter_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_g_counter_deserialize(data_ptr: u64, register_id: u64) -> i32;
+
+            // PNCounter
+            fn js_crdt_pn_counter_new(register_id: u64) -> i32;
+            fn js_crdt_pn_counter_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_pn_counter_increment(counter_id_ptr: u64) -> i32;
+            fn js_crdt_pn_counter_decrement(counter_id_ptr: u64) -> i32;
+            fn js_crdt_pn_counter_value(counter_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_pn_counter_get_positive_count(
+                counter_id_ptr: u64,
+                executor_ptr: u64,
+                has_executor: u32,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_pn_counter_get_negative_count(
+                counter_id_ptr: u64,
+                executor_ptr: u64,
+                has_executor: u32,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_pn_counter_serialize(counter_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_pn_counter_deserialize(data_ptr: u64, register_id: u64) -> i32;
+
+            // RGA
+            fn js_crdt_rga_new(register_id: u64) -> i32;
+            fn js_crdt_rga_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_rga_insert(rga_id_ptr: u64, pos: u64, text_ptr: u64) -> i32;
+            fn js_crdt_rga_delete(rga_id_ptr: u64, pos: u64) -> i32;
+            fn js_crdt_rga_get_text(rga_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_rga_len(rga_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_rga_serialize(rga_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_rga_deserialize(data_ptr: u64, register_id: u64) -> i32;
 
             fn js_user_storage_new(register_id: u64) -> i32;
             fn js_user_storage_insert(

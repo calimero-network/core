@@ -65,4 +65,6 @@ pub struct ClientLocalSigner {
 #[serde(untagged)]
 pub enum Credentials {
     Near(NearCredentials),
+    /// Catch-all for other protocol credentials (Ethereum, ICP, etc.)
+    Other(BTreeMap<String, String>),
 }

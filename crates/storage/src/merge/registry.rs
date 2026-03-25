@@ -92,6 +92,45 @@ where
     let _ = registry.insert(type_id, merge_fn);
 }
 
+/// Register a JS SDK root merge function.
+///
+/// JS SDK CRDTs are stored as separate entities with crdt_type in metadata.
+/// They merge independently via `try_merge_non_root`. The root document only
+/// holds collection IDs and timestamps, so root merge uses LWW (newer wins).
+pub fn register_js_sdk_root_merge_fn() {
+    use std::any::TypeId;
+
+    let sentinel = TypeId::of::<JsSdkRootMerge>();
+    let merge_fn: MergeFn = |existing, incoming, existing_ts, incoming_ts| {
+        // Guard: only handle JS SDK root documents.
+        // JS SDK root format: [version: u8=1][state: u32 len + borsh][collections: u32 len + borsh]
+        // Minimum size is 5 bytes (version + u32 state length), and the version
+        // byte must be 1. Rust SDK roots are plain Borsh structs without this
+        // prefix, so they will fail this guard and fall through to their own
+        // registered merge function.
+        if incoming.len() < 5 || incoming[0] != 1 {
+            return Err("not a JS SDK root document".into());
+        }
+        // LWW: newer timestamp wins; on tie, incoming wins.
+        if incoming_ts >= existing_ts {
+            Ok(incoming.to_vec())
+        } else {
+            Ok(existing.to_vec())
+        }
+    };
+
+    let mut registry = MERGE_REGISTRY.write().unwrap_or_else(|_| {
+        tracing::error!(
+            target: "calimero_storage::merge",
+            "MERGE_REGISTRY lock poisoned during JS SDK registration, aborting."
+        );
+        std::process::abort()
+    });
+    let _ = registry.insert(sentinel, merge_fn);
+}
+
+struct JsSdkRootMerge;
+
 /// Clear the merge registry (for testing only)
 #[cfg(test)]
 pub fn clear_merge_registry() {

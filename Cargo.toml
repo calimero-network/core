@@ -98,7 +98,6 @@ members = [
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
     "./apps/demo-blockchain-integrations",
-
     "./tools/calimero-abi",
     "./tools/merodb",
     "./tools/mero-sign",
