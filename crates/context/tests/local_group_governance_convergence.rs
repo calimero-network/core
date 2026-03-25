@@ -9,8 +9,8 @@ use std::sync::Arc;
 use borsh::to_vec as borsh_to_vec;
 use calimero_context::governance_dag::{signed_op_to_delta, GroupGovernanceApplier};
 use calimero_context::group_store::{
-    self, add_group_member, apply_local_signed_group_op, get_op_head, list_group_members,
-    load_group_meta, read_op_log_after, save_group_meta,
+    self, add_group_member, apply_local_signed_group_op, compute_group_state_hash, get_op_head,
+    list_group_members, load_group_meta, read_op_log_after, save_group_meta,
 };
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, GroupRevealPayloadData, SignedGroupOpenInvitation,
@@ -981,4 +981,167 @@ fn dag_heads_are_capped_at_max() {
         head.dag_heads.contains(&last_hash),
         "most recent op should still be in dag_heads"
     );
+}
+
+#[test]
+fn state_hash_prevents_concurrent_op_divergence() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let node_b = empty_store();
+    let node_c = empty_store();
+
+    let admin_a_sk = PrivateKey::random(&mut rng);
+    let admin_a_pk = admin_a_sk.public_key();
+    let admin_c_sk = PrivateKey::random(&mut rng);
+    let admin_c_pk = admin_c_sk.public_key();
+    let new_member_d = PrivateKey::random(&mut rng).public_key();
+
+    for store in [&node_b, &node_c] {
+        save_group_meta(store, &gid, &sample_meta(admin_a_pk)).unwrap();
+        add_group_member(store, &gid, &admin_a_pk, GroupMemberRole::Admin).unwrap();
+        add_group_member(store, &gid, &admin_c_pk, GroupMemberRole::Admin).unwrap();
+    }
+
+    let state_hash_b = compute_group_state_hash(&node_b, &gid).unwrap();
+    let state_hash_c = compute_group_state_hash(&node_c, &gid).unwrap();
+    assert_eq!(
+        state_hash_b, state_hash_c,
+        "nodes start with identical state hash"
+    );
+
+    // A signs: add member D (against current state)
+    let op_a = SignedGroupOp::sign(
+        &admin_a_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        state_hash_b,
+        1,
+        GroupOp::MemberAdded {
+            member: new_member_d,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+
+    // C signs: remove A (against the SAME state — concurrent)
+    let op_c = SignedGroupOp::sign(
+        &admin_c_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        state_hash_c,
+        1,
+        GroupOp::MemberRemoved {
+            member: admin_a_pk,
+        },
+    )
+    .unwrap();
+
+    // Node B receives op_a first, then op_c
+    let result_a_on_b = apply_local_signed_group_op(&node_b, &op_a);
+    assert!(result_a_on_b.is_ok(), "op_a should succeed on node_b");
+
+    let result_c_on_b = apply_local_signed_group_op(&node_b, &op_c);
+    assert!(
+        result_c_on_b.is_err(),
+        "op_c should FAIL on node_b (state changed after op_a)"
+    );
+
+    // Node C receives op_c first, then op_a
+    let result_c_on_c = apply_local_signed_group_op(&node_c, &op_c);
+    assert!(result_c_on_c.is_ok(), "op_c should succeed on node_c");
+
+    let result_a_on_c = apply_local_signed_group_op(&node_c, &op_a);
+    assert!(
+        result_a_on_c.is_err(),
+        "op_a should FAIL on node_c (state changed after op_c)"
+    );
+
+    // Node B: A is still admin, D was added, C's removal of A was rejected
+    assert!(group_store::check_group_membership(&node_b, &gid, &admin_a_pk).unwrap());
+    assert!(group_store::check_group_membership(&node_b, &gid, &new_member_d).unwrap());
+
+    // Node C: A was removed by C, D was NOT added
+    assert!(!group_store::check_group_membership(&node_c, &gid, &admin_a_pk).unwrap());
+    assert!(!group_store::check_group_membership(&node_c, &gid, &new_member_d).unwrap());
+}
+
+#[test]
+fn state_hash_allows_sequential_ops() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let member1 = PrivateKey::random(&mut rng).public_key();
+    let member2 = PrivateKey::random(&mut rng).public_key();
+
+    // Op1: add member1, signed against initial state
+    let state1 = compute_group_state_hash(&store, &gid).unwrap();
+    let op1 = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        state1,
+        1,
+        GroupOp::MemberAdded {
+            member: member1,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op1).unwrap();
+
+    // Op2: add member2, signed against state AFTER op1
+    let state2 = compute_group_state_hash(&store, &gid).unwrap();
+    assert_ne!(
+        state1, state2,
+        "state hash should change after adding member1"
+    );
+    let op2 = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![op1.content_hash().unwrap()],
+        state2,
+        2,
+        GroupOp::MemberAdded {
+            member: member2,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op2).unwrap();
+
+    assert!(group_store::check_group_membership(&store, &gid, &member1).unwrap());
+    assert!(group_store::check_group_membership(&store, &gid, &member2).unwrap());
+}
+
+#[test]
+fn state_hash_zero_skips_validation() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let gid_bytes = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![[0u8; 32]],
+        [0u8; 32],
+        1,
+        GroupOp::Noop,
+    )
+    .unwrap();
+    assert!(apply_local_signed_group_op(&store, &op).is_ok());
 }
