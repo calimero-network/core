@@ -108,7 +108,11 @@ pub fn register_js_sdk_root_merge_fn() {
         // byte must be 1. Rust SDK roots are plain Borsh structs without this
         // prefix, so they will fail this guard and fall through to their own
         // registered merge function.
-        if incoming.len() < 5 || incoming[0] != 1 {
+        //
+        // IMPORTANT: We must check BOTH existing and incoming to avoid false positives.
+        // If only one side matches, this is not a valid JS-to-JS merge and we should
+        // reject to let the correct merge function handle it.
+        if !is_js_sdk_root_document(existing) || !is_js_sdk_root_document(incoming) {
             return Err("not a JS SDK root document".into());
         }
         // LWW: newer timestamp wins; on tie, incoming wins.
@@ -127,6 +131,40 @@ pub fn register_js_sdk_root_merge_fn() {
         std::process::abort()
     });
     let _ = registry.insert(sentinel, merge_fn);
+}
+
+/// Checks if the given bytes represent a JS SDK root document.
+///
+/// JS SDK root format: [version: u8=1][state: u32 len + borsh][collections: u32 len + borsh]
+/// Returns true if the data has the correct structure.
+fn is_js_sdk_root_document(data: &[u8]) -> bool {
+    // Minimum size: 1 (version) + 4 (state len) = 5 bytes
+    if data.len() < 5 {
+        return false;
+    }
+    // Version must be 1
+    if data[0] != 1 {
+        return false;
+    }
+    // Try to read the state length (u32 little-endian at offset 1)
+    let state_len = u32::from_le_bytes([data[1], data[2], data[3], data[4]]) as usize;
+    // After version (1) + state_len field (4) + state data, there should be collections length
+    let collections_offset = 1 + 4 + state_len;
+    // Minimum: need at least 4 more bytes for collections length
+    if data.len() < collections_offset + 4 {
+        return false;
+    }
+    // Read collections length
+    let collections_len = u32::from_le_bytes([
+        data[collections_offset],
+        data[collections_offset + 1],
+        data[collections_offset + 2],
+        data[collections_offset + 3],
+    ]) as usize;
+    // Total expected length
+    let expected_len = collections_offset + 4 + collections_len;
+    // The data should match exactly (or be at least that long for valid structure)
+    data.len() == expected_len
 }
 
 struct JsSdkRootMerge;

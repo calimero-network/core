@@ -5,13 +5,12 @@ use crate::{
 };
 use calimero_storage::{
     address::Id,
+    entities::Data,
     env::{with_runtime_env, RuntimeEnv},
-    interface::Interface,
     js::{
         JsCollection, JsCounter, JsFrozenStorage, JsLwwRegister, JsPnCounter, JsRga,
         JsUnorderedMap, JsUnorderedSet, JsUserStorage, JsVector,
     },
-    store::MainStorage,
 };
 use std::{
     convert::TryFrom,
@@ -1270,6 +1269,7 @@ impl VMHostFunctions<'_> {
             Ok(c) => c,
             Err(err) => return self.write_error_message(dest_register_id, err),
         };
+        counter.element_mut().update();
         match counter.js_save() {
             Ok(()) => {
                 self.write_register_bytes(dest_register_id, counter.id().as_bytes())?;
@@ -1449,6 +1449,7 @@ impl VMHostFunctions<'_> {
             Ok(c) => c,
             Err(err) => return self.write_error_message(dest_register_id, err),
         };
+        counter.element_mut().update();
         match counter.js_save() {
             Ok(()) => {
                 self.write_register_bytes(dest_register_id, counter.id().as_bytes())?;
@@ -1578,6 +1579,7 @@ impl VMHostFunctions<'_> {
             Ok(r) => r,
             Err(err) => return self.write_error_message(dest_register_id, err),
         };
+        rga.element_mut().update();
         match rga.js_save() {
             Ok(()) => {
                 self.write_register_bytes(dest_register_id, rga.id().as_bytes())?;
