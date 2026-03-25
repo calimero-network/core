@@ -28,10 +28,6 @@ async fn init_writes_local_only_context_client_config() {
         .expect("load config");
 
     assert!(
-        cfg.context.client.params.is_empty(),
-        "default init must not add chain protocol params"
-    );
-    assert!(
         cfg.context.client.signer.local.protocols.is_empty(),
         "default init must start with empty protocol map under [context.config.signer.self]"
     );

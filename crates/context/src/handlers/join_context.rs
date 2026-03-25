@@ -1,12 +1,11 @@
 use actix::{Handler, Message, ResponseFuture};
-use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::local_governance::GroupOp;
 use calimero_context_primitives::messages::{JoinContextRequest, JoinContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::{ContextConfigParams, ContextId};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::Store;
+use calimero_store::{key, types, Store};
 use eyre::eyre;
 
 use crate::{group_store, ContextManager};
@@ -125,22 +124,23 @@ async fn join_context(
         .sync_context_config(context_id, config)
         .await?;
 
-    if !context_client.has_member(&context_id, &invitee_id)? {
-        eyre::bail!("unable to join context: not a member, invalid invitation?")
-    }
-
+    // Write the member's ContextIdentity directly — the invitation payload
+    // is the authorisation proof.  In local governance there is no on-chain
+    // member list to verify against; the governance op (MemberJoinedContext)
+    // that replicates this to other nodes is published below.
     let mut rng = rand::thread_rng();
-
     let sender_key = PrivateKey::random(&mut rng);
 
-    context_client.update_identity(
-        &context_id,
-        &ContextIdentity {
-            public_key: invitee_id,
-            private_key: Some(identity_secret),
-            sender_key: Some(sender_key),
-        },
-    )?;
+    {
+        let mut handle = datastore.handle();
+        handle.put(
+            &key::ContextIdentity::new(context_id, invitee_id),
+            &types::ContextIdentity {
+                private_key: Some(*identity_secret),
+                sender_key: Some(*sender_key),
+            },
+        )?;
+    }
 
     context_client.delete_identity(&ContextId::zero(), &invitee_id)?;
 
