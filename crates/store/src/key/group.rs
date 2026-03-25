@@ -1063,6 +1063,7 @@ impl Debug for GroupOpLog {
 pub const GROUP_OP_HEAD_PREFIX: u8 = 0x31;
 
 pub const GROUP_MEMBER_CONTEXT_PREFIX: u8 = 0x32;
+pub const GROUP_CONTEXT_MEMBER_CAP_PREFIX: u8 = 0x33;
 
 /// Stores the latest applied op sequence and content hash for a group.
 /// Key: `prefix(1) + group_id(32)` → `GroupOpHeadValue`.
@@ -1194,6 +1195,90 @@ impl Debug for GroupMemberContext {
             .field("group_id", &self.group_id())
             .field("member", &self.member())
             .field("context_id", &self.context_id())
+            .finish()
+    }
+}
+
+/// Per-context per-member capability bitfield.
+/// Key: prefix(1) + group_id(32) + context_id(32) + member_pk(32) = 97 bytes
+/// Value: u8 (capability bitfield)
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupContextMemberCap(
+    Key<(
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    )>,
+);
+
+impl GroupContextMemberCap {
+    #[must_use]
+    pub fn new(
+        group_id: [u8; 32],
+        context_id: PrimitiveContextId,
+        member: PrimitivePublicKey,
+    ) -> Self {
+        Self(Key(GenericArray::from([GROUP_CONTEXT_MEMBER_CAP_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(*context_id))
+            .concat(GenericArray::from(*member))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
+        id.into()
+    }
+
+    #[must_use]
+    pub fn member(&self) -> PrimitivePublicKey {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..]);
+        pk.into()
+    }
+}
+
+impl AsKeyParts for GroupContextMemberCap {
+    type Components = (
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    );
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupContextMemberCap {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupContextMemberCap {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupContextMemberCap")
+            .field("group_id", &self.group_id())
+            .field("context_id", &self.context_id())
+            .field("member", &self.member())
             .finish()
     }
 }
@@ -1342,6 +1427,7 @@ mod tests {
             GROUP_OP_LOG_PREFIX,
             GROUP_OP_HEAD_PREFIX,
             GROUP_MEMBER_CONTEXT_PREFIX,
+            GROUP_CONTEXT_MEMBER_CAP_PREFIX,
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {

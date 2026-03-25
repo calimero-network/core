@@ -8,9 +8,9 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupContextAlias,
     GroupContextAllowlist, GroupContextIndex, GroupContextLastMigration,
-    GroupContextLastMigrationValue, GroupContextVisibility, GroupContextVisibilityValue,
-    GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis, GroupDefaultVisValue,
-    GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
+    GroupContextLastMigrationValue, GroupContextMemberCap, GroupContextVisibility,
+    GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
+    GroupDefaultVisValue, GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMemberContext, GroupMeta, GroupMetaValue, GroupOpHead,
     GroupOpHeadValue, GroupOpLog, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey,
     GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
@@ -757,18 +757,36 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             handle.delete(&track_key)?;
         }
         GroupOp::ContextCapabilityGranted {
-            context_id: _,
-            member: _,
-            capability: _,
+            context_id,
+            member,
+            capability,
         } => {
             require_group_admin(store, &group_id, &op.signer)?;
+            let current =
+                get_context_member_capability(store, &group_id, context_id, member)?.unwrap_or(0);
+            set_context_member_capability(
+                store,
+                &group_id,
+                context_id,
+                member,
+                current | capability,
+            )?;
         }
         GroupOp::ContextCapabilityRevoked {
-            context_id: _,
-            member: _,
-            capability: _,
+            context_id,
+            member,
+            capability,
         } => {
             require_group_admin(store, &group_id, &op.signer)?;
+            let current =
+                get_context_member_capability(store, &group_id, context_id, member)?.unwrap_or(0);
+            set_context_member_capability(
+                store,
+                &group_id,
+                context_id,
+                member,
+                current & !capability,
+            )?;
         }
         #[allow(unreachable_patterns)]
         _ => bail!("unsupported group op variant for local apply"),
@@ -1887,6 +1905,34 @@ pub fn delete_all_context_last_migrations(
         handle.delete(&key)?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Per-context per-member capability helpers
+// ---------------------------------------------------------------------------
+
+pub fn set_context_member_capability(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+    member: &PublicKey,
+    capabilities: u8,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupContextMemberCap::new(group_id.to_bytes(), *context_id, *member);
+    handle.put(&key, &capabilities)?;
+    Ok(())
+}
+
+pub fn get_context_member_capability(
+    store: &Store,
+    group_id: &ContextGroupId,
+    context_id: &ContextId,
+    member: &PublicKey,
+) -> EyreResult<Option<u8>> {
+    let handle = store.handle();
+    let key = GroupContextMemberCap::new(group_id.to_bytes(), *context_id, *member);
+    Ok(handle.get(&key)?)
 }
 
 #[cfg(test)]

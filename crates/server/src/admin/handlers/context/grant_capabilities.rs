@@ -49,6 +49,10 @@ pub async fn handler(
             bail!("context '{}' does not exist", context_id);
         };
 
+        // TODO: sign a ContextCapabilityGranted governance op and publish via
+        // sign_apply_and_publish once the handler has access to the signing key
+        // and group_id for this context.
+
         Ok(())
     };
 
