@@ -111,6 +111,18 @@ pub enum GroupOp {
         member: PublicKey,
         context_id: ContextId,
     },
+    /// Grant a capability to a member for a specific context.
+    ContextCapabilityGranted {
+        context_id: ContextId,
+        member: PublicKey,
+        capability: u8,
+    },
+    /// Revoke a capability from a member for a specific context.
+    ContextCapabilityRevoked {
+        context_id: ContextId,
+        member: PublicKey,
+        capability: u8,
+    },
 }
 
 /// Payload that is actually signed (everything except the signature bytes).

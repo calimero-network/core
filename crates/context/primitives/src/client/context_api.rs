@@ -1,10 +1,8 @@
-//! Store-backed context config access. On-chain “config” and “proxy” clients are removed;
-//! mutating methods are no-ops kept for call-site compatibility.
+//! Store-backed context config access.
 
-use calimero_context_config::types::{Capability, SignedRevealPayload};
 use calimero_primitives::application::Application;
 use calimero_primitives::context::{ContextConfigParams, ContextId};
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use calimero_store::key;
 use eyre::OptionExt;
 use futures_util::pin_mut;
@@ -88,73 +86,5 @@ impl ContextClient {
             .get(&key::ContextConfig::new(*context_id))?
             .ok_or_eyre("context config not found")?;
         Ok(cfg.members_revision)
-    }
-
-    // --- No-op config mutators (local-only; chain removed) ---
-
-    pub async fn noop_config_add_context(
-        &self,
-        _context_secret: &PrivateKey,
-        _identity: &PublicKey,
-        _application: &Application,
-    ) -> eyre::Result<()> {
-        Ok(())
-    }
-
-    pub async fn noop_config_update_application(
-        &self,
-        _public_key: &PublicKey,
-        _application: &Application,
-    ) -> eyre::Result<()> {
-        Ok(())
-    }
-
-    pub async fn noop_join_context_commit_invitation(
-        &self,
-        _public_key: &PublicKey,
-        _commitment_hash: String,
-        _expiration_timestamp: u64,
-    ) -> eyre::Result<()> {
-        Ok(())
-    }
-
-    pub async fn noop_join_context_reveal_invitation(
-        &self,
-        _public_key: &PublicKey,
-        _payload: SignedRevealPayload,
-    ) -> eyre::Result<()> {
-        Ok(())
-    }
-
-    pub async fn noop_config_add_members(
-        &self,
-        _public_key: &PublicKey,
-        _identities: &[PublicKey],
-    ) -> eyre::Result<()> {
-        Ok(())
-    }
-
-    pub async fn noop_config_remove_members(
-        &self,
-        _public_key: &PublicKey,
-        _identities: &[PublicKey],
-    ) -> eyre::Result<()> {
-        Ok(())
-    }
-
-    pub async fn noop_config_grant(
-        &self,
-        _public_key: &PublicKey,
-        _capabilities: &[(PublicKey, Capability)],
-    ) -> eyre::Result<()> {
-        Ok(())
-    }
-
-    pub async fn noop_config_revoke(
-        &self,
-        _public_key: &PublicKey,
-        _capabilities: &[(PublicKey, Capability)],
-    ) -> eyre::Result<()> {
-        Ok(())
     }
 }

@@ -49,10 +49,7 @@ pub async fn handler(
             bail!("context '{}' does not exist", context_id);
         };
 
-        state
-            .ctx_client
-            .noop_config_grant(&request.signer_id, &request.capabilities)
-            .await
+        Ok(())
     };
 
     match res.await {

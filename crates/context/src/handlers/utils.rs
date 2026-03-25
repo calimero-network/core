@@ -251,17 +251,7 @@ pub async fn process_context_mutations(
                         }
                     }
                 } else {
-                    match context_client
-                        .noop_config_remove_members(&executor, &[member])
-                        .await
-                    {
-                        Ok(_) => {
-                            debug!(%context_id, %member, "Member removed (no group)");
-                        }
-                        Err(e) => {
-                            error!(%context_id, %member, error = ?e, "Failed to execute RemoveMember")
-                        }
-                    }
+                    debug!(%context_id, %member, "RemoveMember skipped: context is not in a group");
                 }
             }
         }

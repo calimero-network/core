@@ -219,7 +219,6 @@ async fn finalize_application_update(
     context_client: &ContextClient,
     context: &mut Context,
     application: &Application,
-    public_key: PublicKey,
 ) -> eyre::Result<()> {
     let context_id = context.id;
 
@@ -229,10 +228,6 @@ async fn finalize_application_update(
             context_id
         );
     }
-
-    context_client
-        .noop_config_update_application(&public_key, application)
-        .await?;
 
     let mut handle = datastore.handle();
 
@@ -258,7 +253,7 @@ pub async fn update_application_id(
     context: Option<Context>,
     application_id: ApplicationId,
     application: Option<Application>,
-    public_key: PublicKey,
+    _public_key: PublicKey,
 ) -> eyre::Result<Application> {
     let (mut context, application) = resolve_context_and_application(
         &context_client,
@@ -278,7 +273,6 @@ pub async fn update_application_id(
         &context_client,
         &mut context,
         &application,
-        public_key,
     )
     .await?;
 
@@ -487,7 +481,6 @@ pub(crate) async fn update_application_with_migration(
         &context_client,
         &mut context,
         &application,
-        public_key,
     )
     .await?;
 

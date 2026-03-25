@@ -756,6 +756,20 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             let track_key = GroupMemberContext::new(group_id.to_bytes(), *member, *context_id);
             handle.delete(&track_key)?;
         }
+        GroupOp::ContextCapabilityGranted {
+            context_id: _,
+            member: _,
+            capability: _,
+        } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+        }
+        GroupOp::ContextCapabilityRevoked {
+            context_id: _,
+            member: _,
+            capability: _,
+        } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+        }
         #[allow(unreachable_patterns)]
         _ => bail!("unsupported group op variant for local apply"),
     }

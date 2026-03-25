@@ -4,7 +4,6 @@ use async_stream::try_stream;
 use borsh::BorshDeserialize;
 use calimero_context_config::types::{
     ContextGroupId, InvitationFromMember, RevealPayloadData, SignedOpenInvitation,
-    SignedRevealPayload,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
@@ -163,15 +162,12 @@ impl ContextClient {
     pub async fn invite_member(
         &self,
         context_id: &ContextId,
-        inviter_id: &PublicKey,
+        _inviter_id: &PublicKey,
         invitee_id: &PublicKey,
     ) -> eyre::Result<Option<ContextInvitationPayload>> {
         let Some(_external_config) = self.context_config(context_id)? else {
             return Ok(None);
         };
-
-        self.noop_config_add_members(inviter_id, &[*invitee_id])
-            .await?;
 
         let invitation_payload = ContextInvitationPayload::new(*context_id, *invitee_id)?;
 
@@ -334,15 +330,6 @@ impl ContextClient {
         let _external_config_params =
             external_config_params.context("join config is None while it should be set")?;
 
-        self.noop_join_context_commit_invitation(
-            &new_member_identity.public_key,
-            commitment_hash,
-            reveal_payload_data
-                .signed_open_invitation
-                .invitation
-                .expiration_timestamp,
-        )
-        .await?;
         println!("Successfully committed the invitation payload");
 
         // The new member that is going to join the context by open invitation, signs the payload
@@ -356,13 +343,6 @@ impl ContextClient {
         };
         println!("New member signature: {new_member_signature:?}");
 
-        let signed_payload = SignedRevealPayload {
-            data: reveal_payload_data,
-            invitee_signature: new_member_signature,
-        };
-
-        self.noop_join_context_reveal_invitation(&new_member_identity.public_key, signed_payload)
-            .await?;
         println!("Successfully submitted the revealed invitation payload");
 
         let invitation_payload =

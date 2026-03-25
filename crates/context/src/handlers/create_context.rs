@@ -315,11 +315,11 @@ impl Prepared<'_> {
 async fn create_context(
     datastore: Store,
     node_client: NodeClient,
-    context_client: ContextClient,
+    _context_client: ContextClient,
     module: calimero_runtime::Module,
     external_config: ContextConfigParams,
     mut context: Context,
-    context_secret: PrivateKey,
+    _context_secret: PrivateKey,
     application: Application,
     identity: PublicKey,
     identity_secret: PrivateKey,
@@ -413,10 +413,6 @@ async fn create_context(
     } else {
         None
     };
-
-    context_client
-        .noop_config_add_context(&context_secret, &identity, &application)
-        .await?;
 
     let datastore = storage.commit()?;
     let _private_datastore = private_storage.commit()?;
