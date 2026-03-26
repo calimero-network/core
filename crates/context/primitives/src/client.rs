@@ -161,9 +161,9 @@ impl ContextClient {
         inviter_id: &PublicKey,
         invitee_id: &PublicKey,
     ) -> eyre::Result<Option<ContextInvitationPayload>> {
-        let Some(_external_config) = self.context_config(context_id)? else {
+        if !self.has_context(context_id)? {
             return Ok(None);
-        };
+        }
 
         let app = self.get_context_application(context_id).await.ok();
         let application_id = app
@@ -240,7 +240,7 @@ impl ContextClient {
         let salt: [u8; DIGEST_SIZE] = rng.gen::<[_; DIGEST_SIZE]>();
         let secret_salt = salt;
 
-        if self.context_config(context_id)?.is_none() {
+        if !self.has_context(context_id)? {
             return Ok(None);
         };
 
