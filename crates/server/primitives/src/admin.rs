@@ -451,6 +451,10 @@ impl InviteToContextResponse {
 pub struct InviteToContextOpenInvitationRequest {
     pub context_id: ContextId,
     pub inviter_id: PublicKey,
+    /// Seconds the invitation is valid for.
+    /// Also accepts `validForBlocks` for backward compatibility with older
+    /// merobox versions — remove alias once merobox is updated.
+    #[serde(alias = "validForBlocks")]
     pub valid_for_seconds: u64,
 }
 
