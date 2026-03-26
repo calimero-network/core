@@ -85,9 +85,10 @@ impl SyncManager {
 
         let (tx, mut rx) = mpsc::channel(1);
 
+        let expected_size = if size > 0 { Some(size) } else { None };
         let add_task = self.node_client.add_blob(
             poll_fn(|cx| rx.poll_recv(cx)).into_async_read(),
-            Some(size),
+            expected_size,
             None,
         );
 

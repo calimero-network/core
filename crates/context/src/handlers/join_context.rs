@@ -178,7 +178,7 @@ async fn join_context(
             &key::ApplicationMeta::new(invitation_app_id),
             &calimero_store::types::ApplicationMeta::new(
                 key::BlobMeta::new(invitation_blob_id),
-                u64::MAX,
+                0,
                 format!("calimero://context/{context_id}").into_boxed_str(),
                 Box::default(),
                 key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0u8; 32])),
