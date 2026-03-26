@@ -372,11 +372,11 @@ pub async fn handle_specialized_node_invitation_response(
         use futures_util::StreamExt;
         let mut stream =
             std::pin::pin!(context_client.get_context_members(&ContextId::zero(), Some(true)));
-        let mut found = None;
-        while let Some(Ok((pk, _))) = stream.next().await {
-            found = Some(pk);
-            break;
-        }
+        let found = if let Some(Ok((pk, _))) = stream.next().await {
+            Some(pk)
+        } else {
+            None
+        };
         match found {
             Some(pk) => pk,
             None => {
