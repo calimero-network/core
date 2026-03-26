@@ -109,6 +109,7 @@ pub(crate) fn setup(
         // Package management
         .route("/packages", get(list_packages::handler))
         .route("/packages/:package/versions", get(list_versions::handler))
+        .route("/packages/:package/latest", get(get_latest_version::handler))
         // Context management
         .route(
             "/contexts",
@@ -322,9 +323,6 @@ pub(crate) fn setup(
 
     let public_routes = Router::new()
         .route("/health", get(health_check_handler))
-        // Package lookup is public so auth-frontend can check if an app
-        // is already installed before the user has a token (dev mode).
-        .route("/packages/:package/latest", get(get_latest_version::handler))
         // Dummy endpoint used to figure out if we are running behind auth or not
         .route("/is-authed", get(is_authed_handler))
         .route("/certificate", get(certificate_handler))

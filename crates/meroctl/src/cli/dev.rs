@@ -97,7 +97,7 @@ impl StartCommand {
         // Step 4: Print summary
         self.print_summary(environment, application_id, context_id, member_public_key)?;
 
-        // Step 5: Watch loop (blocks until ctrl-c)
+        // Step 5: Watch loop or wait for Ctrl+C
         if self.watch {
             let watch_target = if self.path.as_std_path().is_dir() {
                 self.path.canonicalize_utf8()?
@@ -115,6 +115,13 @@ impl StartCommand {
                 member_public_key,
             )
             .await?;
+        } else {
+            // Keep the sandbox alive until Ctrl+C
+            eprintln!("  Press Ctrl+C to stop the dev session");
+            eprintln!();
+            tokio::signal::ctrl_c().await?;
+            eprintln!();
+            eprintln!("  Shutting down dev session...");
         }
 
         Ok(())
