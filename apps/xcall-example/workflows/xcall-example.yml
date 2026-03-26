@@ -91,31 +91,28 @@ steps:
 
   # Step 7: Node 1 invites first identity to Context A
   - name: Invite Identity A to Context A
-    type: invite_identity
+    type: invite_open
     node: calimero-node-1
     context_id: "{{context_a_id}}"
-    grantee_id: "{{identity_a}}"
     granter_id: "{{context_a_member_key}}"
-    capability: member
+    valid_for_seconds: 3600
     outputs:
       invitation_a: invitation
 
   # Step 8: Node 1 invites second identity to Context B
   - name: Invite Identity B to Context B
-    type: invite_identity
+    type: invite_open
     node: calimero-node-1
     context_id: "{{context_b_id}}"
-    grantee_id: "{{identity_b}}"
     granter_id: "{{context_b_member_key}}"
-    capability: member
+    valid_for_seconds: 3600
     outputs:
       invitation_b: invitation
 
   # Step 9: Node 2 joins Context A with first identity
   - name: Node 2 Join Context A
-    type: join_context
+    type: join_open
     node: calimero-node-2
-    context_id: "{{context_a_id}}"
     invitee_id: "{{identity_a}}"
     invitation: "{{invitation_a}}"
 
@@ -131,9 +128,8 @@ steps:
 
   # Step 10: Node 2 joins Context B with second identity
   - name: Node 2 Join Context B
-    type: join_context
+    type: join_open
     node: calimero-node-2
-    context_id: "{{context_b_id}}"
     invitee_id: "{{identity_b}}"
     invitation: "{{invitation_b}}"
 

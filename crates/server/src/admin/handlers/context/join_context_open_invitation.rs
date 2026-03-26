@@ -17,7 +17,7 @@ pub async fn handler(
 ) -> impl IntoResponse {
     let result = state
         .ctx_client
-        .join_context_by_open_invitation(invitation, &new_member_public_key)
+        .join_context(invitation, &new_member_public_key)
         .await
         .map_err(parse_api_error);
 

@@ -68,7 +68,7 @@ impl InviteByOpenInvitationCommand {
             valid_for_seconds: self.valid_for_seconds,
         };
 
-        let response = client.invite_to_context_by_open_invitation(request).await?;
+        let response = client.invite_to_context(request).await?;
 
         //if let Some(ref signed_open_invitation) = response.data {
         //        environment.output.write(&res);

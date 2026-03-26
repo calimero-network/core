@@ -1,8 +1,9 @@
 use actix::Message;
+use calimero_context_config::types::SignedOpenInvitation;
 use calimero_context_config::types::{ContextGroupId, SignedRevealPayload};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, ContextInvitationPayload};
+use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use serde::{Deserialize, Serialize};
@@ -116,7 +117,8 @@ pub enum ExecuteError {
 
 #[derive(Debug)]
 pub struct JoinContextRequest {
-    pub invitation_payload: ContextInvitationPayload,
+    pub invitation: SignedOpenInvitation,
+    pub new_member_public_key: PublicKey,
 }
 
 impl Message for JoinContextRequest {

@@ -1,14 +1,15 @@
+use calimero_context_config::types::SignedOpenInvitation;
 use calimero_primitives::alias::Alias;
-use calimero_primitives::context::{ContextId, ContextInvitationPayload};
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::InviteToContextRequest;
+use calimero_server_primitives::admin::InviteToContextOpenInvitationRequest;
 use clap::Parser;
 use eyre::{OptionExt, Result};
 
 use crate::cli::Environment;
 
-#[derive(Copy, Clone, Debug, Parser)]
-#[command(about = "Create invitation to a context")]
+#[derive(Clone, Debug, Parser)]
+#[command(about = "Create an open invitation to a context")]
 pub struct InviteCommand {
     #[clap(long, short)]
     #[clap(
@@ -26,11 +27,13 @@ pub struct InviteCommand {
     )]
     pub inviter: Alias<PublicKey>,
 
-    #[clap(value_name = "INVITEE", help = "The identifier of the invitee")]
-    pub invitee_id: PublicKey,
-
-    #[clap(value_name = "ALIAS", help = "The alias for the invitee")]
-    pub name: Option<Alias<PublicKey>>,
+    #[clap(
+        long = "valid-for",
+        value_name = "SECONDS",
+        help = "How long (in seconds) the invitation is valid",
+        default_value = "3600"
+    )]
+    pub valid_for: u64,
 }
 
 impl InviteCommand {
@@ -39,7 +42,7 @@ impl InviteCommand {
         Ok(())
     }
 
-    pub async fn invite(&self, environment: &mut Environment) -> Result<ContextInvitationPayload> {
+    pub async fn invite(&self, environment: &mut Environment) -> Result<SignedOpenInvitation> {
         let client = environment.client()?.clone();
 
         let context_id = client
@@ -56,28 +59,20 @@ impl InviteCommand {
             .cloned()
             .ok_or_eyre("unable to resolve")?;
 
-        let request = InviteToContextRequest {
+        let request = InviteToContextOpenInvitationRequest {
             context_id,
             inviter_id,
-            invitee_id: self.invitee_id,
+            valid_for_seconds: self.valid_for,
         };
 
         let response = client.invite_to_context(request).await?;
 
         environment.output.write(&response);
 
-        let invitation_payload = response
+        let invitation = response
             .data
-            .ok_or_else(|| eyre::eyre!("No invitation payload found in the response"))?;
+            .ok_or_else(|| eyre::eyre!("No invitation found in the response"))?;
 
-        // Handle alias creation separately to avoid borrowing conflicts
-        if let Some(name) = self.name {
-            let res = client
-                .create_alias_generic(name, Some(context_id), self.invitee_id)
-                .await?;
-            environment.output.write(&res);
-        }
-
-        Ok(invitation_payload)
+        Ok(invitation)
     }
 }

@@ -3,9 +3,7 @@ use std::collections::BTreeMap;
 use calimero_context_config::types::{Capability, SignedGroupOpenInvitation, SignedOpenInvitation};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{
-    Context, ContextId, ContextInvitationPayload, GroupMemberRole, UpgradePolicy,
-};
+use calimero_primitives::context::{Context, ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey, WalletType};
 use camino::Utf8PathBuf;
@@ -414,20 +412,21 @@ impl GetContextsResponse {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Copy, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InviteToContextRequest {
     pub context_id: ContextId,
     pub inviter_id: PublicKey,
-    pub invitee_id: PublicKey,
+    #[serde(alias = "validForBlocks")]
+    pub valid_for_seconds: u64,
 }
 
 impl InviteToContextRequest {
-    pub const fn new(context_id: ContextId, inviter_id: PublicKey, invitee_id: PublicKey) -> Self {
+    pub const fn new(context_id: ContextId, inviter_id: PublicKey, valid_for_seconds: u64) -> Self {
         Self {
             context_id,
             inviter_id,
-            invitee_id,
+            valid_for_seconds,
         }
     }
 }
@@ -435,12 +434,14 @@ impl InviteToContextRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InviteToContextResponse {
-    pub data: Option<ContextInvitationPayload>,
+    pub data: Option<SignedOpenInvitation>,
 }
 
 impl InviteToContextResponse {
-    pub const fn new(payload: Option<ContextInvitationPayload>) -> Self {
-        Self { data: payload }
+    pub const fn new(signed_open_invitation: Option<SignedOpenInvitation>) -> Self {
+        Self {
+            data: signed_open_invitation,
+        }
     }
 }
 
@@ -524,12 +525,16 @@ impl InviteSpecializedNodeResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JoinContextRequest {
-    pub invitation_payload: ContextInvitationPayload,
+    pub invitation: SignedOpenInvitation,
+    pub new_member_public_key: PublicKey,
 }
 
 impl JoinContextRequest {
-    pub const fn new(invitation_payload: ContextInvitationPayload) -> Self {
-        Self { invitation_payload }
+    pub const fn new(invitation: SignedOpenInvitation, new_member_public_key: PublicKey) -> Self {
+        Self {
+            invitation,
+            new_member_public_key,
+        }
     }
 }
 
@@ -1426,10 +1431,17 @@ impl Validate for CreateContextRequest {
 
 impl Validate for InviteToContextRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        // Fields: context_id (ContextId), inviter_id (PublicKey), invitee_id (PublicKey)
-        // All fields are validated during serde deserialization via FromStr implementations.
-        // ContextId and PublicKey validate format (base58, length) at parse time.
-        Vec::new()
+        let mut errors = Vec::new();
+
+        if self.valid_for_seconds > MAX_VALID_FOR_SECONDS {
+            errors.push(ValidationError::ValueTooLarge {
+                field: "valid_for_seconds",
+                max: MAX_VALID_FOR_SECONDS,
+                actual: self.valid_for_seconds,
+            });
+        }
+
+        errors
     }
 }
 
@@ -1458,7 +1470,7 @@ impl Validate for InviteSpecializedNodeRequest {
 
 impl Validate for JoinContextRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        // ContextInvitationPayload is a typed structure with its own validation
+        // All fields are typed (SignedOpenInvitation, PublicKey) which have their own validation
         Vec::new()
     }
 }

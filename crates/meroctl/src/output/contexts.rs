@@ -175,14 +175,24 @@ impl Report for GrantPermissionResponse {
 
 impl Report for InviteToContextResponse {
     fn report(&self) {
-        if let Some(ref payload) = self.data {
+        if let Some(ref signed_invitation) = self.data {
             println!("{}", "Invitation Created Successfully".green());
             println!();
             println!("Invitation Payload:");
-            println!("{}", payload);
-            println!();
-            println!("To join, run from another node:");
-            println!("  meroctl --node <NODE_ID> context join {}", payload);
+            match serde_json::to_string(signed_invitation) {
+                Ok(json_payload) => {
+                    println!("{}", json_payload);
+                    println!();
+                    println!("To join, run from another node:");
+                    println!(
+                        "  meroctl --node <NODE_ID> context join '{}' --identity <PUBLIC_KEY>",
+                        json_payload
+                    );
+                }
+                Err(err) => {
+                    println!("Failed to serialize invitation: {}", err);
+                }
+            }
         } else {
             println!("Failed to create an invitation");
         }

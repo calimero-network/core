@@ -19,7 +19,7 @@ pub async fn handler(
 
     let result = state
         .ctx_client
-        .invite_member_by_open_invitation(
+        .invite_member(
             &req.context_id,
             &req.inviter_id,
             req.valid_for_seconds,

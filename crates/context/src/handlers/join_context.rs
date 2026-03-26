@@ -1,7 +1,10 @@
 use actix::{Handler, Message, ResponseFuture};
+use calimero_context_config::repr::ReprBytes;
+use calimero_context_config::types::SignedOpenInvitation;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::{JoinContextRequest, JoinContextResponse};
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::{ContextConfigParams, ContextId};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::{key, types, Store};
@@ -14,7 +17,10 @@ impl Handler<JoinContextRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        JoinContextRequest { invitation_payload }: JoinContextRequest,
+        JoinContextRequest {
+            invitation,
+            new_member_public_key,
+        }: JoinContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let node_client = self.node_client.clone();
@@ -22,8 +28,14 @@ impl Handler<JoinContextRequest> for ContextManager {
         let datastore = self.datastore.clone();
 
         let task = async move {
-            let (context_id, invitee_id) =
-                join_context(node_client, context_client, datastore, invitation_payload).await?;
+            let (context_id, invitee_id) = join_context(
+                node_client,
+                context_client,
+                datastore,
+                invitation,
+                new_member_public_key,
+            )
+            .await?;
 
             Ok(JoinContextResponse {
                 context_id,
@@ -39,16 +51,34 @@ async fn join_context(
     node_client: NodeClient,
     context_client: ContextClient,
     datastore: Store,
-    invitation_payload: calimero_primitives::context::ContextInvitationPayload,
+    signed_invitation: SignedOpenInvitation,
+    new_member_public_key: PublicKey,
 ) -> eyre::Result<(ContextId, PublicKey)> {
-    let (
-        context_id,
-        invitee_id,
-        invitation_app_id,
-        _inviter_id,
-        invitation_group_id,
-        invitation_blob_id,
-    ) = invitation_payload.parts()?;
+    let invitation = &signed_invitation.invitation;
+    let context_id: ContextId = invitation.context_id.to_bytes().into();
+    let inviter_id: PublicKey = {
+        let bytes: [u8; DIGEST_SIZE] = invitation.inviter_identity.as_bytes();
+        bytes.into()
+    };
+    let invitee_id = new_member_public_key;
+
+    let app = context_client
+        .get_context_application(&context_id)
+        .await
+        .ok();
+    let invitation_app_id = app.as_ref().map(|a| a.id).unwrap_or_else(|| {
+        calimero_primitives::application::ApplicationId::from([0u8; DIGEST_SIZE])
+    });
+    let invitation_blob_id = app
+        .as_ref()
+        .map(|a| a.blob.bytecode)
+        .unwrap_or_else(|| calimero_primitives::blobs::BlobId::from([0u8; DIGEST_SIZE]));
+
+    let invitation_group_id = {
+        let handle = datastore.handle();
+        let ref_key = key::ContextGroupRef::new(context_id);
+        handle.get(&ref_key)?.unwrap_or([0u8; DIGEST_SIZE])
+    };
 
     tracing::info!(%context_id, %invitee_id, %invitation_app_id, "join_context: starting join flow");
 
@@ -83,7 +113,6 @@ async fn join_context(
         eyre::bail!("identity mismatch")
     }
 
-    // Bootstrap context metadata if the context doesn't exist locally.
     let mut config = None;
     if !context_client.has_context(&context_id)? {
         let zero_app_id = calimero_primitives::application::ApplicationId::from([0u8; 32]);
@@ -106,7 +135,6 @@ async fn join_context(
         .sync_context_config(context_id, config)
         .await?;
 
-    // Write ContextIdentity so the sync key-share can find keys for this context.
     let mut rng = rand::thread_rng();
     let sender_key = PrivateKey::random(&mut rng);
 
@@ -123,7 +151,6 @@ async fn join_context(
 
     context_client.delete_identity(&ContextId::zero(), &invitee_id)?;
 
-    // Stub ApplicationMeta so the sync manager can get the blob_id for blob sharing.
     let zero_blob = calimero_primitives::blobs::BlobId::from([0u8; 32]);
     if invitation_blob_id != zero_blob && !node_client.has_application(&invitation_app_id)? {
         let mut handle = datastore.handle();
@@ -148,16 +175,12 @@ async fn join_context(
         );
     }
 
-    // Write group membership and context-group mapping so has_member()
-    // can recognise both the inviter and invitee via the GroupMember fallback.
     let zero_group = [0u8; 32];
     if invitation_group_id != zero_group {
         let gid = calimero_context_config::types::ContextGroupId::from(invitation_group_id);
 
-        // Ensure the context→group mapping exists on this node.
         group_store::register_context_in_group(&datastore, &gid, &context_id)?;
 
-        // Write the invitee as a GroupMember with keys.
         if !group_store::check_group_membership(&datastore, &gid, &invitee_id)? {
             group_store::add_group_member_with_keys(
                 &datastore,
@@ -169,16 +192,14 @@ async fn join_context(
             )?;
         }
 
-        // Write the inviter as a GroupMember (no keys) so this node
-        // recognises the inviter for sync.
         let zero_pk = calimero_primitives::identity::PublicKey::from([0u8; 32]);
-        if _inviter_id != zero_pk
-            && !group_store::check_group_membership(&datastore, &gid, &_inviter_id)?
+        if inviter_id != zero_pk
+            && !group_store::check_group_membership(&datastore, &gid, &inviter_id)?
         {
             group_store::add_group_member(
                 &datastore,
                 &gid,
-                &_inviter_id,
+                &inviter_id,
                 calimero_primitives::context::GroupMemberRole::Admin,
             )?;
         }

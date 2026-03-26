@@ -76,7 +76,7 @@ impl VerificationRequest {
 pub struct SpecializedNodeInvitationResponse {
     /// The nonce from the original request (for confirmation broadcast)
     pub nonce: [u8; 32],
-    /// Serialized ContextInvitationPayload (if verification succeeded)
+    /// Serialized SignedOpenInvitation (if verification succeeded)
     /// We use bytes here to avoid circular dependency with context-config crate
     pub invitation_bytes: Option<Vec<u8>>,
     /// Error message if verification failed

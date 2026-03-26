@@ -7,7 +7,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::common::DIGEST_SIZE;
-use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
+use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::{key, Store};
@@ -141,75 +141,6 @@ impl ContextClient {
         receiver.await.expect("Mailbox not to be dropped")
     }
 
-    /// Invites a new member to an existing context.
-    ///
-    /// This updates local membership records for local group governance (no chain submission).
-    ///
-    /// # Arguments
-    ///
-    /// * `context_id` - The context to invite the member to.
-    /// * `inviter_id` - The public key of an existing member who is performing the invitation.
-    /// * `invitee_id` - The public key of the identity being invited.
-    ///
-    /// # Returns
-    ///
-    /// * A `Result` containing an `Option` with the shareable `ContextInvitationPayload`.
-    /// * Returns `Ok(None)` if the context configuration cannot be found locally.
-    pub async fn invite_member(
-        &self,
-        context_id: &ContextId,
-        inviter_id: &PublicKey,
-        invitee_id: &PublicKey,
-    ) -> eyre::Result<Option<ContextInvitationPayload>> {
-        if !self.has_context(context_id)? {
-            return Ok(None);
-        }
-
-        let app = self.get_context_application(context_id).await.ok();
-        let application_id = app
-            .as_ref()
-            .map(|a| a.id)
-            .unwrap_or_else(|| ApplicationId::from([0u8; DIGEST_SIZE]));
-        let blob_id = app
-            .as_ref()
-            .map(|a| a.blob.bytecode)
-            .unwrap_or_else(|| calimero_primitives::blobs::BlobId::from([0u8; DIGEST_SIZE]));
-
-        let group_id = {
-            let handle = self.datastore.handle();
-            let ref_key = key::ContextGroupRef::new(*context_id);
-            handle.get(&ref_key)?.unwrap_or([0u8; DIGEST_SIZE])
-        };
-
-        // Write the invitee as a GroupMember (without keys) so that
-        // has_member() on the inviter's node recognises the invitee when
-        // they start syncing.  The invitee upgrades this entry with keys
-        // during join_context.
-        let gm_key = key::GroupMember::new(group_id, *invitee_id);
-        if !self.datastore.handle().has(&gm_key)? {
-            let mut handle = self.datastore.handle();
-            handle.put(
-                &gm_key,
-                &key::GroupMemberValue {
-                    role: calimero_primitives::context::GroupMemberRole::Member,
-                    private_key: None,
-                    sender_key: None,
-                },
-            )?;
-        }
-
-        let invitation_payload = ContextInvitationPayload::new(
-            *context_id,
-            *invitee_id,
-            application_id,
-            *inviter_id,
-            group_id,
-            blob_id,
-        )?;
-
-        Ok(Some(invitation_payload))
-    }
-
     /// Creates and signs a one-time, expiring open invitation for a new member.
     ///
     /// This method allows an existing member of a context (the inviter) to generate a
@@ -229,7 +160,7 @@ impl ContextClient {
     /// * A `Result` containing the `SignedOpenInvitation` if successful, or an error if
     /// the inviter's private key is not found or signing fails.
     /// * Returns `Ok(None)` if the context configuration cannot be found locally.
-    pub async fn invite_member_by_open_invitation(
+    pub async fn invite_member(
         &self,
         context_id: &ContextId,
         inviter_id: &PublicKey,
@@ -245,7 +176,7 @@ impl ContextClient {
             %context_id,
             %inviter_id,
             ctx_exists,
-            "invite_member_by_open_invitation: starting"
+            "invite_member: starting"
         );
         if !ctx_exists {
             return Ok(None);
@@ -288,36 +219,6 @@ impl ContextClient {
         }))
     }
 
-    /// Sends a request to join a context using an invitation payload.
-    ///
-    /// This is an asynchronous operation handled by the `ContextManager` actor. The actor
-    /// will parse the payload, validate the information, and configure the local node
-    /// to participate in the specified context.
-    ///
-    /// # Arguments
-    ///
-    /// * `invitation_payload` - The opaque `ContextInvitationPayload` received from an inviter.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing the `JoinContextResponse` from the actor upon completion.
-    pub async fn join_context(
-        &self,
-        invitation_payload: ContextInvitationPayload,
-    ) -> eyre::Result<JoinContextResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::JoinContext {
-                request: JoinContextRequest { invitation_payload },
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
     /// Sends a request to join a context using a signed open invitation.
     ///
     /// This is an asynchronous operation handled by the `ContextManager` actor. The actor
@@ -333,57 +234,25 @@ impl ContextClient {
     ///
     /// * A `Result` containing the `JoinContextResponse` from the actor upon completion.
     /// * Returns `Ok(None)` if the context already exists locally.
-    pub async fn join_context_by_open_invitation(
+    pub async fn join_context(
         &self,
         signed_invitation: SignedOpenInvitation,
         new_member_public_key: &PublicKey,
     ) -> eyre::Result<Option<JoinContextResponse>> {
-        let invitation = signed_invitation.invitation;
-        let context_id = invitation.context_id.to_bytes().into();
-
-        let new_member_identity = self
-            .get_identity(&ContextId::zero(), new_member_public_key)?
-            .with_context(|| format!("New member's identity {new_member_public_key} not found"))?;
+        let context_id: ContextId = signed_invitation.invitation.context_id.to_bytes().into();
 
         if self.has_context(&context_id)? {
             return Ok(None);
         }
 
-        let app = self.get_context_application(&context_id).await.ok();
-        let application_id = app
-            .as_ref()
-            .map(|a| a.id)
-            .unwrap_or_else(|| ApplicationId::from([0u8; DIGEST_SIZE]));
-        let blob_id = app
-            .as_ref()
-            .map(|a| a.blob.bytecode)
-            .unwrap_or_else(|| calimero_primitives::blobs::BlobId::from([0u8; DIGEST_SIZE]));
-
-        let inviter_id: PublicKey = {
-            use calimero_context_config::repr::ReprBytes;
-            let bytes: [u8; DIGEST_SIZE] = invitation.inviter_identity.as_bytes();
-            bytes.into()
-        };
-        let group_id = {
-            let handle = self.datastore.handle();
-            let ref_key = key::ContextGroupRef::new(context_id);
-            handle.get(&ref_key)?.unwrap_or([0u8; DIGEST_SIZE])
-        };
-
-        let invitation_payload = ContextInvitationPayload::new(
-            context_id,
-            new_member_identity.public_key,
-            application_id,
-            inviter_id,
-            group_id,
-            blob_id,
-        )?;
-
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
             .send(ContextMessage::JoinContext {
-                request: JoinContextRequest { invitation_payload },
+                request: JoinContextRequest {
+                    invitation: signed_invitation,
+                    new_member_public_key: *new_member_public_key,
+                },
                 outcome: sender,
             })
             .await

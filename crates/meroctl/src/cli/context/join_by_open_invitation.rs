@@ -32,7 +32,7 @@ impl JoinByOpenInvitationCommand {
         let invitation: SignedOpenInvitation = serde_json::from_str(&self.invitation)
             .context("Failed to serde-deserialize SignedOpenInvitation")?;
         let request = JoinContextByOpenInvitationRequest::new(invitation, self.identity);
-        let response = client.join_context_by_open_invitation(request).await?;
+        let response = client.join_context(request).await?;
 
         environment.output.write(&response);
 

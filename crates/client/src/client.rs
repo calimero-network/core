@@ -22,11 +22,10 @@ use calimero_server_primitives::admin::{
     InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
     InviteSpecializedNodeRequest, InviteSpecializedNodeResponse,
     InviteToContextOpenInvitationRequest, InviteToContextOpenInvitationResponse,
-    InviteToContextRequest, InviteToContextResponse, JoinContextByOpenInvitationRequest,
-    JoinContextRequest, JoinContextResponse, ListAliasesResponse, ListApplicationsResponse,
-    ListPackagesResponse, ListVersionsResponse, LookupAliasResponse, RevokePermissionResponse,
-    SyncContextResponse, UninstallApplicationResponse, UpdateContextApplicationRequest,
-    UpdateContextApplicationResponse,
+    JoinContextByOpenInvitationRequest, JoinContextResponse, ListAliasesResponse,
+    ListApplicationsResponse, ListPackagesResponse, ListVersionsResponse, LookupAliasResponse,
+    RevokePermissionResponse, SyncContextResponse, UninstallApplicationResponse,
+    UpdateContextApplicationRequest, UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
 use calimero_server_primitives::jsonrpc::{Request, Response};
@@ -345,17 +344,6 @@ where
 
     pub async fn invite_to_context(
         &self,
-        request: InviteToContextRequest,
-    ) -> Result<InviteToContextResponse> {
-        let response = self
-            .connection
-            .post("admin-api/contexts/invite", request)
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn invite_to_context_by_open_invitation(
-        &self,
         request: InviteToContextOpenInvitationRequest,
     ) -> Result<InviteToContextOpenInvitationResponse> {
         let response = self
@@ -431,15 +419,7 @@ where
         Ok(response)
     }
 
-    pub async fn join_context(&self, request: JoinContextRequest) -> Result<JoinContextResponse> {
-        let response = self
-            .connection
-            .post("admin-api/contexts/join", request)
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn join_context_by_open_invitation(
+    pub async fn join_context(
         &self,
         request: JoinContextByOpenInvitationRequest,
     ) -> Result<JoinContextResponse> {
