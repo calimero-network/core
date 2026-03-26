@@ -4,7 +4,9 @@ use core::fmt::{self, Debug, Formatter};
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId as PrimitiveContextId, UpgradePolicy};
+use calimero_primitives::context::{
+    ContextId as PrimitiveContextId, GroupMemberRole, UpgradePolicy,
+};
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 use generic_array::sequence::Concat;
 use generic_array::typenum::{U1, U32, U8};
@@ -1302,6 +1304,19 @@ pub struct GroupMetaValue {
     pub created_at: u64,
     pub admin_identity: PrimitivePublicKey,
     pub migration: Option<Vec<u8>>,
+    /// When true, joining members auto-subscribe to all visible contexts.
+    pub auto_join: bool,
+}
+
+/// Stored against [`GroupMember`]. Tracks the member's role and, for the local
+/// node, the Ed25519 key pair used for sync key-share across all contexts in
+/// this group.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupMemberValue {
+    pub role: GroupMemberRole,
+    pub private_key: Option<[u8; 32]>,
+    pub sender_key: Option<[u8; 32]>,
 }
 
 /// Tracks the progress of a group-wide upgrade operation.
@@ -1498,6 +1513,7 @@ mod tests {
                 created_at: 1_700_000_000,
                 admin_identity: PrimitivePublicKey::from([0xCC; 32]),
                 migration: None,
+                auto_join: true,
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -1523,6 +1539,7 @@ mod tests {
                 created_at: 1_700_000_000,
                 admin_identity: PrimitivePublicKey::from([0x33; 32]),
                 migration: None,
+                auto_join: true,
             };
 
             let bytes = to_vec(&value).expect("serialize");

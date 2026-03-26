@@ -1,7 +1,5 @@
 #![allow(single_use_lifetimes, reason = "borsh shenanigans")]
 
-use calimero_primitives::context::GroupMemberRole;
-
 use crate::entry::Borsh;
 use crate::key;
 use crate::types::PredefinedEntry;
@@ -13,7 +11,7 @@ impl PredefinedEntry for key::GroupMeta {
 
 impl PredefinedEntry for key::GroupMember {
     type Codec = Borsh;
-    type DataType<'a> = GroupMemberRole;
+    type DataType<'a> = key::GroupMemberValue;
 }
 
 impl PredefinedEntry for key::GroupContextIndex {

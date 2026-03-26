@@ -268,6 +268,7 @@ impl Prepared<'_> {
                         .as_secs(),
                     admin_identity: identity,
                     migration: None,
+                    auto_join: true,
                 },
             )?;
             group_store::add_group_member(

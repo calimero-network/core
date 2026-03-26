@@ -11,9 +11,9 @@ use calimero_store::key::{
     GroupContextLastMigrationValue, GroupContextMemberCap, GroupContextVisibility,
     GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
     GroupDefaultVisValue, GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
-    GroupMemberCapabilityValue, GroupMemberContext, GroupMeta, GroupMetaValue, GroupOpHead,
-    GroupOpHeadValue, GroupOpLog, GroupSigningKey, GroupSigningKeyValue, GroupUpgradeKey,
-    GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
+    GroupMemberCapabilityValue, GroupMemberContext, GroupMemberValue, GroupMeta, GroupMetaValue,
+    GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupSigningKey, GroupSigningKeyValue,
+    GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
     GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
     GROUP_CONTEXT_VISIBILITY_PREFIX, GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
     GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX,
@@ -125,9 +125,27 @@ pub fn add_group_member(
     identity: &PublicKey,
     role: GroupMemberRole,
 ) -> EyreResult<()> {
+    add_group_member_with_keys(store, group_id, identity, role, None, None)
+}
+
+pub fn add_group_member_with_keys(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+    role: GroupMemberRole,
+    private_key: Option<[u8; 32]>,
+    sender_key: Option<[u8; 32]>,
+) -> EyreResult<()> {
     let mut handle = store.handle();
     let key = GroupMember::new(group_id.to_bytes(), *identity);
-    handle.put(&key, &role)?;
+    handle.put(
+        &key,
+        &GroupMemberValue {
+            role,
+            private_key,
+            sender_key,
+        },
+    )?;
     Ok(())
 }
 
@@ -899,8 +917,17 @@ pub fn get_group_member_role(
 ) -> EyreResult<Option<GroupMemberRole>> {
     let handle = store.handle();
     let key = GroupMember::new(group_id.to_bytes(), *identity);
-    let value = handle.get(&key)?;
-    Ok(value)
+    Ok(handle.get(&key)?.map(|v: GroupMemberValue| v.role))
+}
+
+pub fn get_group_member_value(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+) -> EyreResult<Option<GroupMemberValue>> {
+    let handle = store.handle();
+    let key = GroupMember::new(group_id.to_bytes(), *identity);
+    Ok(handle.get(&key)?)
 }
 
 pub fn check_group_membership(
@@ -988,10 +1015,10 @@ pub fn count_group_admins(store: &Store, group_id: &ContextGroupId) -> EyreResul
         if key.group_id() != group_id_bytes {
             break;
         }
-        let role = handle
+        let val: GroupMemberValue = handle
             .get(&key)?
             .ok_or_else(|| eyre::eyre!("member key exists but value is missing"))?;
-        if role == GroupMemberRole::Admin {
+        if val.role == GroupMemberRole::Admin {
             count += 1;
         }
     }
@@ -1037,10 +1064,10 @@ pub fn list_group_members(
             break;
         }
 
-        let role = handle
+        let val: GroupMemberValue = handle
             .get(&key)?
             .ok_or_else(|| eyre::eyre!("member key exists but value is missing"))?;
-        results.push((key.identity(), role));
+        results.push((key.identity(), val.role));
     }
 
     Ok(results)
@@ -1965,6 +1992,7 @@ mod tests {
             created_at: 1_700_000_000,
             admin_identity: PublicKey::from([0x01; 32]),
             migration: None,
+            auto_join: true,
         }
     }
 

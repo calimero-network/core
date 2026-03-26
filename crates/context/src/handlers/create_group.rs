@@ -89,6 +89,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     created_at: now,
                     admin_identity: admin_identity.into(),
                     migration: None,
+                    auto_join: true,
                 };
 
                 group_store::save_group_meta(&datastore, &group_id, &meta)?;

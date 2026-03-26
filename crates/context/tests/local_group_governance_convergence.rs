@@ -45,6 +45,7 @@ fn sample_meta(admin: PublicKey) -> GroupMetaValue {
         created_at: 1_700_000_000,
         admin_identity: admin,
         migration: None,
+        auto_join: true,
     }
 }
 
