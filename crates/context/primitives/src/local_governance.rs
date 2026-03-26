@@ -99,18 +99,6 @@ pub enum GroupOp {
         signed_invitation: SignedGroupOpenInvitation,
         invitee_signature_hex: String,
     },
-    /// Record that a member joined a context through this group.
-    /// Enables cascade removal when the member is kicked from the group.
-    MemberJoinedContext {
-        member: PublicKey,
-        context_id: ContextId,
-        context_identity: [u8; 32],
-    },
-    /// Record that a member left (or was removed from) a context in this group.
-    MemberLeftContext {
-        member: PublicKey,
-        context_id: ContextId,
-    },
     /// Grant a capability to a member for a specific context.
     ContextCapabilityGranted {
         context_id: ContextId,

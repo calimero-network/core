@@ -8,7 +8,7 @@ use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::{ContextHost, ContextMutation};
-use calimero_store::{key, types, Store};
+use calimero_store::{key, Store};
 
 use crate::group_store;
 
@@ -184,38 +184,25 @@ pub async fn process_context_mutations(
                                     node_client,
                                     &group_id,
                                     &sk,
-                                    GroupOp::MemberJoinedContext {
+                                    GroupOp::MemberAdded {
                                         member: new_member,
-                                        context_id,
-                                        context_identity: *new_member.as_ref(),
+                                        role: calimero_primitives::context::GroupMemberRole::Member,
                                     },
                                 )
                                 .await
                                 {
                                     Ok(()) => {
-                                        debug!(%context_id, %new_member, "MemberJoinedContext governance op published")
+                                        debug!(%context_id, %new_member, "MemberAdded governance op published")
                                     }
                                     Err(e) => {
-                                        error!(%context_id, %new_member, error = ?e, "Failed to publish MemberJoinedContext")
+                                        error!(%context_id, %new_member, error = ?e, "Failed to publish MemberAdded")
                                     }
                                 }
                             }
                         }
                     }
                 } else {
-                    let mut handle = datastore.handle();
-                    let identity_key = key::ContextIdentity::new(context_id, new_member);
-                    if let Err(e) = handle.put(
-                        &identity_key,
-                        &types::ContextIdentity {
-                            private_key: None,
-                            sender_key: None,
-                        },
-                    ) {
-                        error!(%context_id, %new_member, error = ?e, "Failed to write member identity");
-                    } else {
-                        debug!(%context_id, %new_member, "Member added directly (no group)");
-                    }
+                    debug!(%context_id, %new_member, "AddMember skipped: context is not in a group");
                 }
             }
             ContextMutation::RemoveMember { public_key } => {
@@ -238,15 +225,15 @@ pub async fn process_context_mutations(
                                     node_client,
                                     &group_id,
                                     &sk,
-                                    GroupOp::MemberLeftContext { member, context_id },
+                                    GroupOp::MemberRemoved { member },
                                 )
                                 .await
                                 {
                                     Ok(()) => {
-                                        debug!(%context_id, %member, "MemberLeftContext governance op published")
+                                        debug!(%context_id, %member, "MemberRemoved governance op published")
                                     }
                                     Err(e) => {
-                                        error!(%context_id, %member, error = ?e, "Failed to publish MemberLeftContext")
+                                        error!(%context_id, %member, error = ?e, "Failed to publish MemberRemoved")
                                     }
                                 }
                             }

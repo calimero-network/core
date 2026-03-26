@@ -733,47 +733,6 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 invitee_signature_hex,
             )?;
         }
-        GroupOp::MemberJoinedContext {
-            member,
-            context_id,
-            context_identity,
-        } => {
-            if !check_group_membership(store, &group_id, &op.signer)?
-                && !is_group_admin(store, &group_id, &op.signer)?
-            {
-                bail!("signer must be a group member or admin to record context join");
-            }
-            if !check_group_membership(store, &group_id, member)?
-                && !is_group_admin(store, &group_id, member)?
-            {
-                bail!("member must be in the group to join a context");
-            }
-            let ctx_group = get_group_for_context(store, context_id)?;
-            if ctx_group.as_ref() != Some(&group_id) {
-                bail!("context is not registered in this group");
-            }
-            track_member_context_join(store, &group_id, member, context_id, *context_identity)?;
-
-            let mut handle = store.handle();
-            let identity_key = ContextIdentity::new(*context_id, (*member).into());
-            handle.put(
-                &identity_key,
-                &calimero_store::types::ContextIdentity {
-                    private_key: None,
-                    sender_key: None,
-                },
-            )?;
-        }
-        GroupOp::MemberLeftContext { member, context_id } => {
-            if !is_group_admin(store, &group_id, &op.signer)? && op.signer != *member {
-                bail!("only admin or the member themselves can remove from context");
-            }
-            let mut handle = store.handle();
-            let identity_key = ContextIdentity::new(*context_id, (*member).into());
-            handle.delete(&identity_key)?;
-            let track_key = GroupMemberContext::new(group_id.to_bytes(), *member, *context_id);
-            handle.delete(&track_key)?;
-        }
         GroupOp::ContextCapabilityGranted {
             context_id,
             member,

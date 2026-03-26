@@ -1213,51 +1213,9 @@ fn cascade_removal_deterministic_across_nodes() {
     }
 }
 
-#[test]
-fn member_joined_context_op_propagates() {
-    let mut rng = OsRng;
-    let gid = sample_group_id();
-    let gid_bytes = gid.to_bytes();
-
-    let node_a = empty_store();
-    let node_b = empty_store();
-
-    let admin_sk = PrivateKey::random(&mut rng);
-    let admin_pk = admin_sk.public_key();
-    let member_pk = PrivateKey::random(&mut rng).public_key();
-    let context_id = ContextId::from([0xDD; 32]);
-
-    for store in [&node_a, &node_b] {
-        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
-        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-        add_group_member(store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
-        group_store::register_context_in_group(store, &gid, &context_id).unwrap();
-    }
-
-    let op = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes,
-        vec![[0u8; 32]],
-        [0u8; 32],
-        1,
-        GroupOp::MemberJoinedContext {
-            member: member_pk,
-            context_id,
-            context_identity: *member_pk.as_ref(),
-        },
-    )
-    .unwrap();
-    let payload = borsh_to_vec(&op).unwrap();
-
-    apply_wire_payload(&node_a, &payload);
-    apply_wire_payload(&node_b, &payload);
-
-    for store in [&node_a, &node_b] {
-        let joins = get_member_context_joins(store, &gid, &member_pk).unwrap();
-        assert_eq!(joins.len(), 1, "tracking record should exist");
-        assert_eq!(joins[0].0, context_id);
-    }
-}
+// member_joined_context_op_propagates test removed:
+// MemberJoinedContext governance op was removed — context membership
+// is now derived from group membership + visibility.
 
 #[test]
 fn state_hash_allows_sequential_ops() {

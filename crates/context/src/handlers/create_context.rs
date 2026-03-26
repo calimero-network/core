@@ -488,25 +488,10 @@ async fn create_context(
             },
         )
         .await?;
-
-        // Creator membership via governance op: creates ContextIdentity with
-        // None keys that replicates to other nodes.
-        group_store::sign_apply_and_publish(
-            &datastore,
-            &node_client,
-            &group_id,
-            &sk,
-            GroupOp::MemberJoinedContext {
-                member: identity,
-                context_id: context.id,
-                context_identity: *identity.as_ref(),
-            },
-        )
-        .await?;
     }
 
-    // Store local private key + sender key on top of the identity the governance
-    // op created (governance records only the public side).
+    // Write ContextIdentity so the sync key-share can find keys for this context.
+    // The creator is already a GroupMember (admin) with keys stored there.
     let mut handle = datastore.handle();
     handle.put(
         &key::ContextIdentity::new(context.id, identity),
