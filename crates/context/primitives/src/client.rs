@@ -240,7 +240,14 @@ impl ContextClient {
         let salt: [u8; DIGEST_SIZE] = rng.gen::<[_; DIGEST_SIZE]>();
         let secret_salt = salt;
 
-        if !self.has_context(context_id)? {
+        let ctx_exists = self.has_context(context_id)?;
+        tracing::info!(
+            %context_id,
+            %inviter_id,
+            ctx_exists,
+            "invite_member_by_open_invitation: starting"
+        );
+        if !ctx_exists {
             return Ok(None);
         };
 
@@ -252,8 +259,12 @@ impl ContextClient {
 
         let inviter_identity = self
             .get_identity(context_id, inviter_id)?
-            .with_context(|| format!("Inviter identity {inviter_id} not found"))?;
-        let inviter_private_key = inviter_identity.private_key()?;
+            .with_context(|| {
+                format!("Inviter identity {inviter_id} not found for context {context_id}")
+            })?;
+        let inviter_private_key = inviter_identity.private_key().map_err(|e| {
+            eyre::eyre!("inviter {inviter_id} has no private key for context {context_id}: {e}")
+        })?;
 
         let inviter_identity: [u8; DIGEST_SIZE] = **inviter_id;
         let inviter_identity_context_type = inviter_identity.into();

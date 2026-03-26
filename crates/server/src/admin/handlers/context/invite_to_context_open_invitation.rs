@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_primitives::common::DIGEST_SIZE;
 use calimero_server_primitives::admin::{
     InviteToContextOpenInvitationRequest, InviteToContextOpenInvitationResponse,
 };
@@ -16,12 +15,7 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     ValidatedJson(req): ValidatedJson<InviteToContextOpenInvitationRequest>,
 ) -> impl IntoResponse {
-    // TODO: figure out the best place to generate salt.
-    // We temporarily ignore the passed `secret_salt` as we can't generate it in admin
-    // `invite_to_context_open_invitation::handler` as `Rng` is not thread-safe.
-    //let mut rng = rand::thread_rng();
-    //let salt: [u8; DIGEST_SIZE] = rng.gen::<[_; DIGEST_SIZE]>();
-    let salt = [0u8; DIGEST_SIZE];
+    let salt = [0u8; 32];
 
     let result = state
         .ctx_client
@@ -33,6 +27,24 @@ pub async fn handler(
         )
         .await;
 
+    match result {
+        Ok(ref data) => {
+            tracing::info!(
+                context_id=%req.context_id,
+                inviter_id=%req.inviter_id,
+                has_data=data.is_some(),
+                "open invitation result"
+            );
+        }
+        Err(ref err) => {
+            tracing::error!(
+                context_id=%req.context_id,
+                inviter_id=%req.inviter_id,
+                error=?err,
+                "open invitation error"
+            );
+        }
+    }
     match result {
         Ok(signed_open_invitation) => ApiResponse {
             payload: InviteToContextOpenInvitationResponse::new(signed_open_invitation),
