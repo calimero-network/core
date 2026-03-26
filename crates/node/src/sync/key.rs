@@ -147,10 +147,28 @@ impl SyncManager {
             "Starting bidirectional key share with challenge-response authentication",
         );
 
-        let mut their_identity_record = self
+        let mut their_identity_record = match self
             .context_client
             .get_identity(&context.id, &their_identity)?
-            .ok_or_eyre("expected peer identity to exist")?;
+        {
+            Some(record) => record,
+            None => {
+                // Peer is a group member but doesn't have a ContextIdentity
+                // entry yet. Create a placeholder — the key exchange will
+                // populate the sender_key during the protocol.
+                if !self
+                    .context_client
+                    .has_member(&context.id, &their_identity)?
+                {
+                    eyre::bail!("peer is not a member of context {}", context.id);
+                }
+                calimero_context_primitives::client::crypto::ContextIdentity {
+                    public_key: their_identity,
+                    private_key: None,
+                    sender_key: None,
+                }
+            }
+        };
 
         let (our_private_key, sender_key) = self
             .context_client
