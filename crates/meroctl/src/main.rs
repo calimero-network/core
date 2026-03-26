@@ -11,6 +11,7 @@ mod connection;
 mod defaults;
 
 mod output;
+pub mod sandbox;
 mod storage;
 
 mod version;

@@ -18,15 +18,21 @@ comfy-table.workspace = true
 const_format.workspace = true
 dirs.workspace = true
 eyre.workspace = true
+flate2.workspace = true
 futures-util.workspace = true
 hex.workspace = true
 libp2p.workspace = true
+near-crypto.workspace = true
+near-jsonrpc-client = { workspace = true }
+near-jsonrpc-primitives.workspace = true
+near-primitives.workspace = true
 notify.workspace = true
 rand.workspace = true
-reqwest = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "stream"] }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+tar.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "fs", "net", "rt-multi-thread", "process"] }
 tokio-tungstenite.workspace = true
