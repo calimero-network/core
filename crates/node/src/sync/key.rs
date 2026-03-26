@@ -154,14 +154,23 @@ impl SyncManager {
             Some(record) => record,
             None => {
                 // Peer is a group member but doesn't have a ContextIdentity
-                // entry yet. Create a placeholder — the key exchange will
-                // populate the sender_key during the protocol.
+                // entry yet. Write a placeholder to the store so that
+                // update_identity (called after key exchange) can find it.
                 if !self
                     .context_client
                     .has_member(&context.id, &their_identity)?
                 {
                     eyre::bail!("peer is not a member of context {}", context.id);
                 }
+                let mut handle = self.context_client.datastore().handle();
+                handle.put(
+                    &calimero_store::key::ContextIdentity::new(context.id, their_identity),
+                    &calimero_store::types::ContextIdentity {
+                        private_key: None,
+                        sender_key: None,
+                    },
+                )?;
+                drop(handle);
                 calimero_context_primitives::client::crypto::ContextIdentity {
                     public_key: their_identity,
                     private_key: None,
