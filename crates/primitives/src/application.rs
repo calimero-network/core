@@ -416,6 +416,12 @@ pub struct Application {
     pub size: u64,
     pub source: ApplicationSource,
     pub metadata: Vec<u8>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub signer_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
 }
 
 impl Application {
@@ -433,6 +439,17 @@ impl Application {
             size,
             source,
             metadata,
+            signer_id: String::new(),
+            package: String::new(),
+            version: String::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_bundle_info(mut self, signer_id: String, package: String, version: String) -> Self {
+        self.signer_id = signer_id;
+        self.package = package;
+        self.version = version;
+        self
     }
 }

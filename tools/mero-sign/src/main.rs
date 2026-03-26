@@ -18,6 +18,16 @@ use std::path::PathBuf;
 /// Multicodec indicator for ed25519-pub (0xed01, varint encoded).
 const ED25519_PUB_MULTICODEC: [u8; 2] = [0xed, 0x01];
 
+/// Well-known development signing key seed.
+///
+/// Derived deterministically: `SHA-256("calimero-dev-signing-key-v1")`.
+/// This key is PUBLIC and provides no security. It exists solely as a
+/// marker for development builds, analogous to Android's `debug.keystore`.
+const DEV_SEED: [u8; 32] = [
+    0x8c, 0xb7, 0xae, 0x25, 0x1b, 0x4d, 0xa5, 0x5a, 0xec, 0xc3, 0x87, 0x5f, 0x4c, 0x0a, 0x71, 0x2c,
+    0xe2, 0xb3, 0x4c, 0xb0, 0x6d, 0x47, 0x71, 0xe7, 0x13, 0xf2, 0xbb, 0x32, 0x89, 0xd0, 0xf7, 0xb4,
+];
+
 #[derive(Parser)]
 #[command(name = "mero-sign")]
 #[command(about = "Sign Calimero bundle manifests")]
@@ -35,8 +45,12 @@ enum Commands {
         manifest: PathBuf,
 
         /// Path to the key file (JSON format)
-        #[arg(long, short)]
-        key: PathBuf,
+        #[arg(long, short, conflicts_with = "dev")]
+        key: Option<PathBuf>,
+
+        /// Sign with the well-known development key (cannot be published to registry)
+        #[arg(long, conflicts_with = "key")]
+        dev: bool,
     },
 
     /// Generate a new Ed25519 keypair
@@ -90,7 +104,7 @@ fn derive_signer_id_did_key(pubkey: &[u8; 32]) -> String {
     // Encode with base58btc (multibase 'z' prefix)
     let encoded = bs58::encode(&multicodec_key).into_string();
 
-    format!("did:key:z{}", encoded)
+    format!("did:key:z{encoded}")
 }
 
 /// Canonicalizes a manifest JSON value using RFC 8785 (JCS).
@@ -143,10 +157,18 @@ fn load_signing_key(key_path: &PathBuf) -> Result<SigningKey> {
     Ok(SigningKey::from_bytes(&seed))
 }
 
+fn dev_signing_key() -> SigningKey {
+    SigningKey::from_bytes(&DEV_SEED)
+}
+
+/// Returns the well-known dev signer_id (derived from DEV_SEED at runtime).
+pub fn dev_signer_id() -> String {
+    let key = dev_signing_key();
+    derive_signer_id_did_key(key.verifying_key().as_bytes())
+}
+
 /// Sign a manifest file
-fn sign_manifest(manifest_path: &PathBuf, key_path: &PathBuf) -> Result<()> {
-    // Load the signing key
-    let signing_key = load_signing_key(key_path)?;
+fn sign_manifest(manifest_path: &PathBuf, signing_key: &SigningKey, is_dev: bool) -> Result<()> {
     let verifying_key = signing_key.verifying_key();
     let signer_id = derive_signer_id_did_key(verifying_key.as_bytes());
 
@@ -208,8 +230,14 @@ fn sign_manifest(manifest_path: &PathBuf, key_path: &PathBuf) -> Result<()> {
         )
     })?;
 
-    eprintln!("Signed manifest: {}", manifest_path.display());
-    eprintln!("  signerId: {}", signer_id);
+    if is_dev {
+        eprintln!(
+            "\u{26a0}  Signed with DEVELOPMENT key. This bundle cannot be published to the registry."
+        );
+    } else {
+        eprintln!("Signed manifest: {}", manifest_path.display());
+    }
+    eprintln!("  signerId: {signer_id}");
 
     Ok(())
 }
@@ -235,7 +263,7 @@ fn generate_key(output_path: &PathBuf) -> Result<()> {
         .with_context(|| format!("failed to write key file: {}", output_path.display()))?;
 
     eprintln!("Generated new keypair: {}", output_path.display());
-    eprintln!("  signerId: {}", signer_id);
+    eprintln!("  signerId: {signer_id}");
 
     Ok(())
 }
@@ -257,7 +285,16 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Sign { manifest, key } => sign_manifest(&manifest, &key),
+        Commands::Sign { manifest, key, dev } => {
+            let (signing_key, is_dev) = if dev {
+                (dev_signing_key(), true)
+            } else if let Some(key_path) = key {
+                (load_signing_key(&key_path)?, false)
+            } else {
+                bail!("either --key <path> or --dev must be specified")
+            };
+            sign_manifest(&manifest, &signing_key, is_dev)
+        }
         Commands::GenerateKey { output } => generate_key(&output),
         Commands::DeriveSignerId { key } => derive_signer_id(&key),
     }
@@ -311,7 +348,8 @@ mod tests {
         .unwrap();
 
         // Sign the manifest
-        sign_manifest(&manifest_path, &key_path).unwrap();
+        let signing_key = load_signing_key(&key_path).unwrap();
+        sign_manifest(&manifest_path, &signing_key, false).unwrap();
 
         // Read the signed manifest
         let signed_content = fs::read_to_string(&manifest_path).unwrap();
@@ -329,6 +367,59 @@ mod tests {
         );
         assert!(signature.get("publicKey").is_some());
         assert!(signature.get("signature").is_some());
+    }
+
+    #[test]
+    fn test_dev_key_deterministic() {
+        let key = dev_signing_key();
+        let signer_id = derive_signer_id_did_key(key.verifying_key().as_bytes());
+
+        assert!(signer_id.starts_with("did:key:z"));
+
+        // Must be deterministic across runs
+        let key2 = dev_signing_key();
+        let signer_id2 = derive_signer_id_did_key(key2.verifying_key().as_bytes());
+        assert_eq!(signer_id, signer_id2);
+    }
+
+    #[test]
+    fn test_dev_sign_manifest() {
+        let dir = tempdir().unwrap();
+        let manifest_path = dir.path().join("manifest.json");
+
+        let manifest = serde_json::json!({
+            "version": "1.0",
+            "package": "com.test.devapp",
+            "appVersion": "0.1.0",
+            "wasm": { "path": "app.wasm", "size": 512, "hash": null }
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let key = dev_signing_key();
+        sign_manifest(&manifest_path, &key, true).unwrap();
+
+        let signed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+
+        let expected_signer = dev_signer_id();
+        assert_eq!(
+            signed.get("signerId").unwrap().as_str().unwrap(),
+            expected_signer
+        );
+        assert!(signed.get("signature").is_some());
+    }
+
+    #[test]
+    fn test_dev_signer_id_is_stable() {
+        // This is the canonical dev signer_id. If this changes, all dev
+        // ApplicationIds change and existing dev contexts break.
+        let id = dev_signer_id();
+        eprintln!("DEV_SIGNER_ID = {id}");
+        assert!(id.starts_with("did:key:z6Mk"));
     }
 
     #[test]

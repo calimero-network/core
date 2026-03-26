@@ -48,6 +48,11 @@ impl NodeClient {
             application.size,
             application.source.parse()?,
             application.metadata.into_vec(),
+        )
+        .with_bundle_info(
+            application.signer_id.to_string(),
+            application.package.to_string(),
+            application.version.to_string(),
         );
 
         Ok(Some(application))
@@ -746,21 +751,6 @@ impl NodeClient {
             true,             // is_bundle: true for bundles
         )?;
 
-        // Delete bundle file after successful installation (it's now stored as a blob)
-        if let Err(e) = tokio::fs::remove_file(&bundle_path).await {
-            warn!(
-                path = %bundle_path,
-                error = %e,
-                "Failed to delete bundle file after installation"
-            );
-            // Don't fail installation if deletion fails - bundle is already installed
-        } else {
-            debug!(
-                path = %bundle_path,
-                "Deleted bundle file after successful installation"
-            );
-        }
-
         Ok(application_id)
     }
 
@@ -1395,8 +1385,10 @@ impl NodeClient {
                 path_str.to_string()
             };
 
-            // Skip macOS resource fork files (._* files)
-            // Check filename component, not full path, to catch files in subdirectories
+            // Skip directory entries and macOS resource fork files
+            if entry.header().entry_type().is_dir() {
+                continue;
+            }
             if let Some(file_name) = std::path::Path::new(&relative_path)
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -1603,16 +1595,23 @@ impl NodeClient {
 
         for (id, app) in iter.entries() {
             let (id, app) = (id?, app?);
-            applications.push(Application::new(
-                id.application_id(),
-                ApplicationBlob {
-                    bytecode: app.bytecode.blob_id(),
-                    compiled: app.compiled.blob_id(),
-                },
-                app.size,
-                app.source.parse()?,
-                app.metadata.to_vec(),
-            ));
+            applications.push(
+                Application::new(
+                    id.application_id(),
+                    ApplicationBlob {
+                        bytecode: app.bytecode.blob_id(),
+                        compiled: app.compiled.blob_id(),
+                    },
+                    app.size,
+                    app.source.parse()?,
+                    app.metadata.to_vec(),
+                )
+                .with_bundle_info(
+                    app.signer_id.to_string(),
+                    app.package.to_string(),
+                    app.version.to_string(),
+                ),
+            );
         }
 
         Ok(applications)
