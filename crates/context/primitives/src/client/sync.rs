@@ -263,13 +263,15 @@ impl ContextClient {
 
         let application_id = if let Some(ctx) = &context {
             ctx.application.application_id()
+        } else if let Some(id) = config.application_id {
+            id
         } else {
-            config.application_id.ok_or_else(|| {
-                eyre::eyre!(
-                    "bootstrap requires application_id in ContextConfigParams \
-                     (context {context_id} has no local metadata yet)"
-                )
-            })?
+            debug!(
+                %context_id,
+                "bootstrap: no application_id available yet; \
+                 writing placeholder — sync will populate it"
+            );
+            ApplicationId::from([0u8; 32])
         };
 
         if let Some(application) = self.node_client().get_application(&application_id)? {

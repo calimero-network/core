@@ -39,7 +39,7 @@ use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtoc
 use super::level_sync::{LevelWiseConfig, LevelWiseProtocol};
 use calimero_node_primitives::sync::{
     build_handshake_from_raw, estimate_entity_count, estimate_max_depth, select_protocol,
-    SyncHandshake, SyncProtocol, SyncProtocolExecutor, SyncTransport,
+    SyncHandshake, SyncProtocol, SyncProtocolExecutor,
 };
 
 /// Network synchronization manager.
