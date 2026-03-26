@@ -56,8 +56,6 @@ wasm_imports! {
             alias: Ref<Buffer<'_>>
         );
         fn context_delete(context_id_ptr: Ref<Buffer<'_>>);
-        fn context_add_member(public_key_ptr: Ref<Buffer<'_>>);
-        fn context_remove_member(public_key_ptr: Ref<Buffer<'_>>);
         fn context_is_member(public_key_ptr: Ref<Buffer<'_>>) -> Bool;
         fn context_members(register_id: RegisterId);
         // Check if alias resolves to a context ID

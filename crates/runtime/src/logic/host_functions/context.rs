@@ -100,48 +100,6 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
-    /// Requests adding a member to the current context.
-    ///
-    /// This is a write operation (intent). It does not happen immediately but is
-    /// recorded in the execution outcome.
-    ///
-    /// # Arguments
-    /// * `public_key_ptr` - Pointer to the 32-byte public key in guest memory.
-    pub fn context_add_member(&mut self, public_key_ptr: u64) -> VMLogicResult<()> {
-        let pk_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(public_key_ptr)? };
-
-        let public_key = *self.read_guest_memory_sized::<DIGEST_SIZE>(&pk_buf)?;
-
-        self.with_logic_mut(|logic| {
-            logic
-                .context_mutations
-                .push(ContextMutation::AddMember { public_key });
-        });
-
-        Ok(())
-    }
-
-    /// Requests removing a member from the current context.
-    ///
-    /// This is a write operation (intent). It does not happen immediately but is
-    /// recorded in the execution outcome.
-    ///
-    /// # Arguments
-    /// * `public_key_ptr` - Pointer to the 32-byte public key in guest memory.
-    pub fn context_remove_member(&mut self, public_key_ptr: u64) -> VMLogicResult<()> {
-        let pk_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(public_key_ptr)? };
-
-        let public_key = *self.read_guest_memory_sized::<DIGEST_SIZE>(&pk_buf)?;
-
-        self.with_logic_mut(|logic| {
-            logic
-                .context_mutations
-                .push(ContextMutation::RemoveMember { public_key });
-        });
-
-        Ok(())
-    }
-
     /// Checks if a public key is a member.
     ///
     /// # Returns
@@ -370,57 +328,6 @@ mod tests {
                 assert!(alias.is_none());
             }
             _ => panic!("Wrong mutation type"),
-        }
-    }
-
-    #[test]
-    fn test_context_add_member() {
-        let mut storage = SimpleMockStorage::new();
-        let limits = VMLimits::default();
-        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
-        let mut host = logic.host_functions(store.as_store_mut());
-
-        let public_key = [1u8; DIGEST_SIZE];
-        let pk_ptr = 100u64;
-        let pk_buf_ptr = 16u64;
-
-        // Write PK to guest memory
-        host.borrow_memory().write(pk_ptr, &public_key).unwrap();
-        prepare_guest_buf_descriptor(&host, pk_buf_ptr, pk_ptr, DIGEST_SIZE as u64);
-
-        // Call host function
-        host.context_add_member(pk_buf_ptr).unwrap();
-
-        // Verify logic state
-        let mutations = &host.borrow_logic().context_mutations;
-        assert_eq!(mutations.len(), 1);
-        match mutations[0] {
-            ContextMutation::AddMember { public_key: pk } => assert_eq!(pk, public_key),
-            _ => panic!("Unexpected mutation type"),
-        }
-    }
-
-    #[test]
-    fn test_context_remove_member() {
-        let mut storage = SimpleMockStorage::new();
-        let limits = VMLimits::default();
-        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
-        let mut host = logic.host_functions(store.as_store_mut());
-
-        let public_key = [2u8; DIGEST_SIZE];
-        let pk_ptr = 200u64;
-        let pk_buf_ptr = 32u64;
-
-        host.borrow_memory().write(pk_ptr, &public_key).unwrap();
-        prepare_guest_buf_descriptor(&host, pk_buf_ptr, pk_ptr, DIGEST_SIZE as u64);
-
-        host.context_remove_member(pk_buf_ptr).unwrap();
-
-        let mutations = &host.borrow_logic().context_mutations;
-        assert_eq!(mutations.len(), 1);
-        match mutations[0] {
-            ContextMutation::RemoveMember { public_key: pk } => assert_eq!(pk, public_key),
-            _ => panic!("Unexpected mutation type"),
         }
     }
 
@@ -677,50 +584,6 @@ mod tests {
         }
     }
 
-    /// Tests `context_add_member` and `context_remove_member` with boundary public keys.
-    #[test]
-    fn test_context_member_mutations_boundary_keys() {
-        let mut storage = SimpleMockStorage::new();
-        let limits = VMLimits::default();
-        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
-        let mut host = logic.host_functions(store.as_store_mut());
-
-        // Test with all-zeros public key
-        let pk_zeros = [0u8; DIGEST_SIZE];
-        let pk_zeros_ptr = 100u64;
-        let pk_zeros_buf_ptr = 16u64;
-        host.borrow_memory().write(pk_zeros_ptr, &pk_zeros).unwrap();
-        prepare_guest_buf_descriptor(&host, pk_zeros_buf_ptr, pk_zeros_ptr, DIGEST_SIZE as u64);
-
-        host.context_add_member(pk_zeros_buf_ptr).unwrap();
-
-        // Test with all-255 public key
-        let pk_max = [255u8; DIGEST_SIZE];
-        let pk_max_ptr = 200u64;
-        let pk_max_buf_ptr = 32u64;
-        host.borrow_memory().write(pk_max_ptr, &pk_max).unwrap();
-        prepare_guest_buf_descriptor(&host, pk_max_buf_ptr, pk_max_ptr, DIGEST_SIZE as u64);
-
-        host.context_add_member(pk_max_buf_ptr).unwrap();
-        host.context_remove_member(pk_max_buf_ptr).unwrap();
-
-        let mutations = &host.borrow_logic().context_mutations;
-        assert_eq!(mutations.len(), 3);
-
-        match mutations[0] {
-            ContextMutation::AddMember { public_key } => assert_eq!(public_key, pk_zeros),
-            _ => panic!("Unexpected mutation type"),
-        }
-        match mutations[1] {
-            ContextMutation::AddMember { public_key } => assert_eq!(public_key, pk_max),
-            _ => panic!("Unexpected mutation type"),
-        }
-        match mutations[2] {
-            ContextMutation::RemoveMember { public_key } => assert_eq!(public_key, pk_max),
-            _ => panic!("Unexpected mutation type"),
-        }
-    }
-
     /// Tests `context_delete` with all-zeros context ID.
     #[test]
     fn test_context_delete_zero_context_id() {
@@ -746,53 +609,5 @@ mod tests {
             }
             _ => panic!("Wrong mutation type"),
         }
-    }
-
-    /// Tests multiple context mutations in sequence.
-    #[test]
-    fn test_multiple_context_mutations() {
-        let mut storage = SimpleMockStorage::new();
-        let limits = VMLimits::default();
-        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
-        let mut host = logic.host_functions(store.as_store_mut());
-
-        // Add member 1
-        let pk1 = [1u8; DIGEST_SIZE];
-        let pk1_ptr = 100u64;
-        let pk1_buf = 16u64;
-        host.borrow_memory().write(pk1_ptr, &pk1).unwrap();
-        prepare_guest_buf_descriptor(&host, pk1_buf, pk1_ptr, DIGEST_SIZE as u64);
-        host.context_add_member(pk1_buf).unwrap();
-
-        // Add member 2
-        let pk2 = [2u8; DIGEST_SIZE];
-        let pk2_ptr = 200u64;
-        let pk2_buf = 32u64;
-        host.borrow_memory().write(pk2_ptr, &pk2).unwrap();
-        prepare_guest_buf_descriptor(&host, pk2_buf, pk2_ptr, DIGEST_SIZE as u64);
-        host.context_add_member(pk2_buf).unwrap();
-
-        // Remove member 1
-        host.context_remove_member(pk1_buf).unwrap();
-
-        // Delete a context
-        let ctx_id = [99u8; DIGEST_SIZE];
-        let ctx_ptr = 300u64;
-        let ctx_buf = 48u64;
-        host.borrow_memory().write(ctx_ptr, &ctx_id).unwrap();
-        prepare_guest_buf_descriptor(&host, ctx_buf, ctx_ptr, DIGEST_SIZE as u64);
-        host.context_delete(ctx_buf).unwrap();
-
-        let mutations = &host.borrow_logic().context_mutations;
-        assert_eq!(mutations.len(), 4);
-
-        // Verify order of mutations
-        assert!(matches!(mutations[0], ContextMutation::AddMember { .. }));
-        assert!(matches!(mutations[1], ContextMutation::AddMember { .. }));
-        assert!(matches!(mutations[2], ContextMutation::RemoveMember { .. }));
-        assert!(matches!(
-            mutations[3],
-            ContextMutation::DeleteContext { .. }
-        ));
     }
 }

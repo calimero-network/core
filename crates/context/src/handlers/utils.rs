@@ -1,7 +1,6 @@
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::local_governance::GroupOp;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::common::DIGEST_SIZE;
@@ -9,8 +8,6 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::{ContextHost, ContextMutation};
 use calimero_store::{key, Store};
-
-use crate::group_store;
 
 // A bridge implementation that exposes context information from the `calimero-store`
 /// to the runtime via the `ContextHost` trait.
@@ -162,85 +159,6 @@ pub async fn process_context_mutations(
                     Err(e) => {
                         error!(%context_id, target=%target_ctx, error=?e, "Failed to process DeleteContext request");
                     }
-                }
-            }
-            ContextMutation::AddMember { public_key } => {
-                let new_member = PublicKey::from(*public_key);
-                info!(%context_id, member = %new_member, "WASM requested AddMember");
-
-                let datastore = context_client.datastore();
-                if let Ok(Some(group_id)) =
-                    group_store::get_group_for_context(datastore, &context_id)
-                {
-                    if let Ok(Some(signer_pk)) =
-                        group_store::find_local_signing_identity(datastore, &context_id)
-                    {
-                        if let Ok(Some(id_val)) =
-                            context_client.get_identity(&context_id, &signer_pk)
-                        {
-                            if let Some(sk) = id_val.private_key {
-                                match group_store::sign_apply_and_publish(
-                                    datastore,
-                                    node_client,
-                                    &group_id,
-                                    &sk,
-                                    GroupOp::MemberAdded {
-                                        member: new_member,
-                                        role: calimero_primitives::context::GroupMemberRole::Member,
-                                    },
-                                )
-                                .await
-                                {
-                                    Ok(()) => {
-                                        debug!(%context_id, %new_member, "MemberAdded governance op published")
-                                    }
-                                    Err(e) => {
-                                        error!(%context_id, %new_member, error = ?e, "Failed to publish MemberAdded")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    debug!(%context_id, %new_member, "AddMember skipped: context is not in a group");
-                }
-            }
-            ContextMutation::RemoveMember { public_key } => {
-                let member = PublicKey::from(*public_key);
-                info!(%context_id, member = %member, "WASM requested RemoveMember");
-
-                let datastore = context_client.datastore();
-                if let Ok(Some(group_id)) =
-                    group_store::get_group_for_context(datastore, &context_id)
-                {
-                    if let Ok(Some(signer_pk)) =
-                        group_store::find_local_signing_identity(datastore, &context_id)
-                    {
-                        if let Ok(Some(id_val)) =
-                            context_client.get_identity(&context_id, &signer_pk)
-                        {
-                            if let Some(sk) = id_val.private_key {
-                                match group_store::sign_apply_and_publish(
-                                    datastore,
-                                    node_client,
-                                    &group_id,
-                                    &sk,
-                                    GroupOp::MemberRemoved { member },
-                                )
-                                .await
-                                {
-                                    Ok(()) => {
-                                        debug!(%context_id, %member, "MemberRemoved governance op published")
-                                    }
-                                    Err(e) => {
-                                        error!(%context_id, %member, error = ?e, "Failed to publish MemberRemoved")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    debug!(%context_id, %member, "RemoveMember skipped: context is not in a group");
                 }
             }
         }

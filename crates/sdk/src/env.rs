@@ -698,36 +698,6 @@ pub fn context_is_member(public_key: &[u8; 32]) -> bool {
     }
 }
 
-/// Requests adding a member to the current context.
-///
-/// This is an asynchronous operation. The request is recorded and executed by the host node
-/// after the WASM execution completes successfully.
-///
-/// # Arguments
-///
-/// * `public_key` - The 32-byte public key of the identity to invite.
-#[inline]
-pub fn context_add_member(public_key: &[u8; 32]) {
-    unsafe {
-        sys::context_add_member(Ref::new(&Buffer::from(&public_key[..])));
-    }
-}
-
-/// Requests removing a member from the current context.
-///
-/// This is an asynchronous operation. The request is recorded and executed by the host node
-/// after the WASM execution completes successfully.
-///
-/// # Arguments
-///
-/// * `public_key` - The 32-byte public key of the identity to remove.
-#[inline]
-pub fn context_remove_member(public_key: &[u8; 32]) {
-    unsafe {
-        sys::context_remove_member(Ref::new(&Buffer::from(&public_key[..])));
-    }
-}
-
 /// Returns a list of all members in the current context.
 ///
 /// # Returns

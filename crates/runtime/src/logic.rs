@@ -358,10 +358,6 @@ impl<'a> VMLogic<'a> {
 /// after the WASM execution completes successfully.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextMutation {
-    /// Request to add a new member to the context.
-    AddMember { public_key: [u8; DIGEST_SIZE] },
-    /// Request to remove an existing member from the context.
-    RemoveMember { public_key: [u8; DIGEST_SIZE] },
     /// Request to create a new context.
     CreateContext {
         protocol: String,

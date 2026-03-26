@@ -16,18 +16,6 @@ impl AccessControl {
         AccessControl {}
     }
 
-    pub fn add_member(&self, public_key: PublicKey) -> app::Result<()> {
-        app::log!("Adding member: {:?}", public_key);
-        env::context_add_member(&*public_key);
-        Ok(())
-    }
-
-    pub fn kick_member(&self, public_key: PublicKey) -> app::Result<()> {
-        app::log!("Kicking member: {:?}", public_key);
-        env::context_remove_member(&*public_key);
-        Ok(())
-    }
-
     pub fn is_member(&self, public_key: PublicKey) -> app::Result<bool> {
         app::log!("Checking membership for: {:?}", public_key);
         Ok(env::context_is_member(&*public_key))
