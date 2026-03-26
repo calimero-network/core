@@ -181,21 +181,21 @@ impl ContextClient {
             handle.get(&ref_key)?.unwrap_or([0u8; DIGEST_SIZE])
         };
 
-        // Pre-seed the invitee as a context member (None keys) so the
-        // inviter's node recognises the invitee when they start syncing,
-        // without waiting for group gossip to propagate.
-        {
-            let identity_key = key::ContextIdentity::new(*context_id, *invitee_id);
-            if !self.datastore.handle().has(&identity_key)? {
-                let mut handle = self.datastore.handle();
-                handle.put(
-                    &identity_key,
-                    &calimero_store::types::ContextIdentity {
-                        private_key: None,
-                        sender_key: None,
-                    },
-                )?;
-            }
+        // Write the invitee as a GroupMember (without keys) so that
+        // has_member() on the inviter's node recognises the invitee when
+        // they start syncing.  The invitee upgrades this entry with keys
+        // during join_context.
+        let gm_key = key::GroupMember::new(group_id, *invitee_id);
+        if !self.datastore.handle().has(&gm_key)? {
+            let mut handle = self.datastore.handle();
+            handle.put(
+                &gm_key,
+                &key::GroupMemberValue {
+                    role: calimero_primitives::context::GroupMemberRole::Member,
+                    private_key: None,
+                    sender_key: None,
+                },
+            )?;
         }
 
         let invitation_payload = ContextInvitationPayload::new(
@@ -825,17 +825,26 @@ impl ContextClient {
     /// # Returns
     ///
     /// A `Result` containing `true` if the identity is a known member, `false` otherwise.
-    pub fn has_member(
-        &self,
-        context_id: &ContextId,
-        public_key: &PublicKey,
-        // is_owned: Option<bool>,
-    ) -> eyre::Result<bool> {
+    pub fn has_member(&self, context_id: &ContextId, public_key: &PublicKey) -> eyre::Result<bool> {
         let handle = self.datastore.handle();
 
-        let key = key::ContextIdentity::new(*context_id, *public_key);
+        // Check ContextIdentity first (fast path, covers locally-written entries).
+        let ci_key = key::ContextIdentity::new(*context_id, *public_key);
+        if handle.has(&ci_key)? {
+            return Ok(true);
+        }
 
-        Ok(handle.has(&key)?)
+        // Fall back to group membership: if the identity is a member of the
+        // group that owns this context, they are implicitly a context member.
+        let ref_key = key::ContextGroupRef::new(*context_id);
+        if let Some(group_id_bytes) = handle.get(&ref_key)? {
+            let gm_key = key::GroupMember::new(group_id_bytes, *public_key);
+            if handle.has(&gm_key)? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 
     /// Retrieves and returns a stream of all members of a given context.

@@ -1,10 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_config::repr::ReprTransmute;
-use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::group::{JoinGroupContextRequest, JoinGroupContextResponse};
-use calimero_context_primitives::local_governance::GroupOp;
 use calimero_primitives::context::ContextConfigParams;
-use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
@@ -95,32 +91,10 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let mut rng = rand::thread_rng();
-                let identity_secret = PrivateKey::random(&mut rng);
-                let identity_pk = identity_secret.public_key();
-                let sender_key = PrivateKey::random(&mut rng);
-
-                let _context_identity: calimero_context_config::types::ContextIdentity =
-                    identity_pk.rt()?;
-
-                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                    eyre::eyre!("no signing key available for group governance op")
-                })?);
-
-                // Publish MemberJoinedContext governance op — propagates to all
-                // nodes via the group DAG, writing ContextIdentity + tracking record.
-                group_store::sign_apply_and_publish(
-                    &datastore,
-                    &node_client,
-                    &group_id,
-                    &sk,
-                    GroupOp::MemberJoinedContext {
-                        member: joiner_identity,
-                        context_id,
-                        context_identity: *identity_pk.as_ref(),
-                    },
-                )
-                .await?;
+                // Use the group member's existing keys (reused across all contexts).
+                let group_member_val =
+                    group_store::get_group_member_value(&datastore, &group_id, &joiner_identity)?
+                        .ok_or_else(|| eyre::eyre!("group member value not found"))?;
 
                 let config = if !context_client.has_context(&context_id)? {
                     let app_id = group_store::load_group_meta(&datastore, &group_id)?
@@ -139,15 +113,18 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                     .sync_context_config(context_id, config)
                     .await?;
 
-                // Store private key + sender key locally (node-local, not propagated)
-                context_client.update_identity(
-                    &context_id,
-                    &ContextIdentity {
-                        public_key: identity_pk,
-                        private_key: Some(identity_secret),
-                        sender_key: Some(sender_key),
-                    },
-                )?;
+                // Write ContextIdentity from group member keys so the sync
+                // key-share can find identity + keys for this context.
+                {
+                    let mut handle = datastore.handle();
+                    handle.put(
+                        &calimero_store::key::ContextIdentity::new(context_id, joiner_identity),
+                        &calimero_store::types::ContextIdentity {
+                            private_key: group_member_val.private_key,
+                            sender_key: group_member_val.sender_key,
+                        },
+                    )?;
+                }
 
                 node_client.subscribe(&context_id).await?;
                 node_client.sync(Some(&context_id), None).await?;
@@ -155,13 +132,13 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                 info!(
                     ?group_id,
                     ?context_id,
-                    %identity_pk,
-                    "joined context via group membership (governance op published)"
+                    %joiner_identity,
+                    "joined context via group membership"
                 );
 
                 Ok(JoinGroupContextResponse {
                     context_id,
-                    member_public_key: identity_pk,
+                    member_public_key: joiner_identity,
                 })
             }
             .into_actor(self),

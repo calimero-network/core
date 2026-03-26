@@ -271,11 +271,13 @@ impl Prepared<'_> {
                     auto_join: true,
                 },
             )?;
-            group_store::add_group_member(
+            group_store::add_group_member_with_keys(
                 datastore,
                 &auto_group_id,
                 &identity,
                 GroupMemberRole::Admin,
+                Some(*identity_secret),
+                Some(*PrivateKey::random(&mut rng)),
             )?;
             auto_group_id
         };

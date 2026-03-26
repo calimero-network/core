@@ -2,10 +2,12 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_config::types::{GroupRevealPayloadData, SignerId};
 use calimero_context_primitives::group::{JoinGroupRequest, JoinGroupResponse};
 use calimero_context_primitives::local_governance::GroupOp;
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_store::key;
 use eyre::bail;
 use sha2::{Digest, Sha256};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{group_store, ContextManager};
 
@@ -105,11 +107,60 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 )
                 .await?;
 
+                // Upgrade the GroupMember entry with local private + sender keys
+                // so the sync key-share can use them for all contexts in the group.
+                let sender_key = PrivateKey::random(&mut rand::thread_rng());
+                group_store::add_group_member_with_keys(
+                    &datastore,
+                    &group_id,
+                    &joiner_identity,
+                    GroupMemberRole::Member,
+                    Some(*sk),
+                    Some(*sender_key),
+                )?;
+
                 if let Some(ref alias_str) = group_alias {
                     group_store::set_group_alias(&datastore, &group_id, alias_str)?;
                 }
 
                 let _ = node_client.subscribe_group(group_id.to_bytes()).await;
+
+                // Auto-subscribe to all visible contexts if auto_join is set.
+                if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
+                    if meta.auto_join {
+                        let contexts = group_store::enumerate_group_contexts(
+                            &datastore,
+                            &group_id,
+                            0,
+                            usize::MAX,
+                        )?;
+                        for context_id in &contexts {
+                            // Write ContextIdentity from group keys so sync
+                            // key-share finds the identity for this context.
+                            let mut handle = datastore.handle();
+                            let ci_key = key::ContextIdentity::new(*context_id, joiner_identity);
+                            if !handle.has(&ci_key)? {
+                                handle.put(
+                                    &ci_key,
+                                    &calimero_store::types::ContextIdentity {
+                                        private_key: Some(*sk),
+                                        sender_key: Some(*sender_key),
+                                    },
+                                )?;
+                            }
+                            drop(handle);
+
+                            if let Err(e) = node_client.subscribe(context_id).await {
+                                warn!(
+                                    ?group_id,
+                                    %context_id,
+                                    ?e,
+                                    "failed to auto-subscribe to context"
+                                );
+                            }
+                        }
+                    }
+                }
 
                 info!(
                     ?group_id,
