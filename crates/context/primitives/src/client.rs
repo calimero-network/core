@@ -239,12 +239,6 @@ impl ContextClient {
         signed_invitation: SignedOpenInvitation,
         new_member_public_key: &PublicKey,
     ) -> eyre::Result<Option<JoinContextResponse>> {
-        let context_id: ContextId = signed_invitation.invitation.context_id.to_bytes().into();
-
-        if self.has_context(&context_id)? {
-            return Ok(None);
-        }
-
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
