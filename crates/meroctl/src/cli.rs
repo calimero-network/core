@@ -21,6 +21,7 @@ mod app;
 mod blob;
 mod call;
 mod context;
+mod dev;
 mod group;
 mod node;
 mod peers;
@@ -30,6 +31,7 @@ use app::AppCommand;
 use blob::BlobCommand;
 use call::CallCommand;
 use context::ContextCommand;
+use dev::DevCommand;
 use group::GroupCommand;
 use node::NodeCommand;
 use peers::PeersCommand;
@@ -82,6 +84,7 @@ pub enum SubCommands {
     App(AppCommand),
     Blob(BlobCommand),
     Context(ContextCommand),
+    Dev(DevCommand),
     Group(GroupCommand),
     Call(CallCommand),
     Peers(PeersCommand),
@@ -154,6 +157,7 @@ impl RootCommand {
             SubCommands::App(application) => application.run(&mut environment).await,
             SubCommands::Blob(blob) => blob.run(&mut environment).await,
             SubCommands::Context(context) => context.run(&mut environment).await,
+            SubCommands::Dev(dev) => dev.run(&mut environment).await,
             SubCommands::Group(group) => group.run(&mut environment).await,
             SubCommands::Call(call) => call.run(&mut environment).await,
             SubCommands::Peers(peers) => peers.run(&mut environment).await,
