@@ -148,12 +148,16 @@ async fn join_context(
         );
     }
 
-    // Also write the invitee as a GroupMember if we have the group_id from
-    // the invitation so that other nodes recognise this identity via group
-    // membership (has_member falls back to GroupMember).
+    // Write group membership and context-group mapping so has_member()
+    // can recognise both the inviter and invitee via the GroupMember fallback.
     let zero_group = [0u8; 32];
     if invitation_group_id != zero_group {
         let gid = calimero_context_config::types::ContextGroupId::from(invitation_group_id);
+
+        // Ensure the context→group mapping exists on this node.
+        group_store::register_context_in_group(&datastore, &gid, &context_id)?;
+
+        // Write the invitee as a GroupMember with keys.
         if !group_store::check_group_membership(&datastore, &gid, &invitee_id)? {
             group_store::add_group_member_with_keys(
                 &datastore,
@@ -162,6 +166,20 @@ async fn join_context(
                 calimero_primitives::context::GroupMemberRole::Member,
                 Some(*identity_secret),
                 Some(*sender_key),
+            )?;
+        }
+
+        // Write the inviter as a GroupMember (no keys) so this node
+        // recognises the inviter for sync.
+        let zero_pk = calimero_primitives::identity::PublicKey::from([0u8; 32]);
+        if _inviter_id != zero_pk
+            && !group_store::check_group_membership(&datastore, &gid, &_inviter_id)?
+        {
+            group_store::add_group_member(
+                &datastore,
+                &gid,
+                &_inviter_id,
+                calimero_primitives::context::GroupMemberRole::Admin,
             )?;
         }
     }
