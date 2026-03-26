@@ -273,7 +273,8 @@ impl ContextClient {
         };
 
         if let Some(application) = self.node_client().get_application(&application_id)? {
-            if !self.node_client.has_application(&application_id)? {
+            let is_stub = application.source.to_string().starts_with("calimero://");
+            if !self.node_client.has_application(&application_id)? && !is_stub {
                 let source: Url = application.source.into();
                 let metadata = application.metadata.clone();
                 let blob_id = application.blob.bytecode;
