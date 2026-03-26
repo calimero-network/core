@@ -568,17 +568,20 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             require_group_admin(store, &group_id, &op.signer)?;
             ensure_not_last_admin_removal(store, &group_id, member)?;
 
-            let joins = remove_all_member_context_joins(store, &group_id, member)?;
-            for (context_id, _ctx_identity) in &joins {
+            // Cascade-delete ContextIdentity entries for all contexts in this group.
+            let contexts = enumerate_group_contexts(store, &group_id, 0, usize::MAX)?;
+            for context_id in &contexts {
                 let mut handle = store.handle();
                 let identity_key = ContextIdentity::new(*context_id, (*member).into());
-                handle.delete(&identity_key)?;
-                tracing::info!(
-                    group_id = %hex::encode(group_id.to_bytes()),
-                    context_id = %hex::encode(context_id.as_ref()),
-                    member = %member,
-                    "cascade-removed member from context"
-                );
+                if handle.has(&identity_key)? {
+                    handle.delete(&identity_key)?;
+                    tracing::info!(
+                        group_id = %hex::encode(group_id.to_bytes()),
+                        context_id = %hex::encode(context_id.as_ref()),
+                        member = %member,
+                        "cascade-removed member from context"
+                    );
+                }
             }
 
             remove_group_member(store, &group_id, member)?;

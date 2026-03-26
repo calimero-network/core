@@ -9,9 +9,8 @@ use std::sync::Arc;
 use borsh::to_vec as borsh_to_vec;
 use calimero_context::governance_dag::{signed_op_to_delta, GroupGovernanceApplier};
 use calimero_context::group_store::{
-    self, add_group_member, apply_local_signed_group_op, compute_group_state_hash,
-    get_member_context_joins, get_op_head, list_group_members, load_group_meta, read_op_log_after,
-    save_group_meta, track_member_context_join,
+    self, add_group_member, apply_local_signed_group_op, compute_group_state_hash, get_op_head,
+    list_group_members, load_group_meta, read_op_log_after, save_group_meta,
 };
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, GroupRevealPayloadData, SignedGroupOpenInvitation,
@@ -1087,8 +1086,7 @@ fn cascade_removal_on_member_kick() {
 
     group_store::register_context_in_group(&store, &gid, &context_id).unwrap();
 
-    track_member_context_join(&store, &gid, &member_pk, &context_id, *member_pk.as_ref()).unwrap();
-
+    // Write a ContextIdentity entry for the member (simulating context access).
     {
         use calimero_store::key::ContextIdentity;
         let mut handle = store.handle();
@@ -1136,9 +1134,6 @@ fn cascade_removal_on_member_kick() {
             "member should be cascade-removed from context"
         );
     }
-
-    let joins = get_member_context_joins(&store, &gid, &member_pk).unwrap();
-    assert!(joins.is_empty(), "tracking records should be cleaned up");
 }
 
 #[test]
@@ -1163,9 +1158,6 @@ fn cascade_removal_deterministic_across_nodes() {
         add_group_member(store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
         group_store::register_context_in_group(store, &gid, &ctx1).unwrap();
         group_store::register_context_in_group(store, &gid, &ctx2).unwrap();
-
-        track_member_context_join(store, &gid, &member_pk, &ctx1, *member_pk.as_ref()).unwrap();
-        track_member_context_join(store, &gid, &member_pk, &ctx2, *member_pk.as_ref()).unwrap();
 
         use calimero_store::key::ContextIdentity;
         let mut handle = store.handle();
