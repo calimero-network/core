@@ -15,9 +15,9 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
-    - name: Install merobox from PyPI
+    - name: Install merobox from git
       shell: bash
-      run: pip install merobox
+      run: pip install "merobox @ git+https://github.com/calimero-network/merobox.git@feat/signed-open-invitation"
 
     - name: Verify merobox installation
       shell: bash
