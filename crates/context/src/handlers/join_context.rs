@@ -66,9 +66,17 @@ async fn join_context(
         .get_context_application(&context_id)
         .await
         .ok();
-    let invitation_app_id = app.as_ref().map(|a| a.id).unwrap_or_else(|| {
-        calimero_primitives::application::ApplicationId::from([0u8; DIGEST_SIZE])
-    });
+    let invitation_app_id = app
+        .as_ref()
+        .map(|a| a.id)
+        .or_else(|| {
+            signed_invitation
+                .application_id
+                .map(calimero_primitives::application::ApplicationId::from)
+        })
+        .unwrap_or_else(|| {
+            calimero_primitives::application::ApplicationId::from([0u8; DIGEST_SIZE])
+        });
     let invitation_blob_id = app
         .as_ref()
         .map(|a| a.blob.bytecode)

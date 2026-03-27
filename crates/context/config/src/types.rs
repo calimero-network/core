@@ -601,6 +601,10 @@ pub struct SignedOpenInvitation {
     pub invitation: InvitationFromMember,
     /// Inviter's signature for the invitation payload (hex-encoded)
     pub inviter_signature: String,
+    /// Application ID for the context (so the joiner can bootstrap the app).
+    /// Not covered by the signature — populated by the inviter from local state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<[u8; 32]>,
 }
 
 // The full payload Bob reveals in the second transaction

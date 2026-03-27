@@ -213,9 +213,18 @@ impl ContextClient {
         let hash = Sha256::digest(&invitation_bytes);
         let signature = inviter_private_key.sign(&hash).context("Signing failed")?;
 
+        let application_id = {
+            let ctx_id = calimero_primitives::context::ContextId::from(context_id);
+            self.get_context_application(&ctx_id)
+                .await
+                .ok()
+                .map(|app| *app.id)
+        };
+
         Ok(Some(SignedOpenInvitation {
             invitation,
             inviter_signature: hex::encode(signature.to_bytes()),
+            application_id,
         }))
     }
 
