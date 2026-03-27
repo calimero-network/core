@@ -595,11 +595,10 @@ pub struct InvitationFromMember {
 /// A container for an open invitation and the inviter's signature over it.
 /// This is the object that an existing member (Alice) would generate and send
 /// to a new member (Bob).
-///
 /// The fields below `inviter_signature` are **not** covered by the signature.
 /// They are populated by the inviter from local state so the joiner can
 /// bootstrap the application without an external source of truth.
-#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SignedOpenInvitation {
     /// An open invitation to the context
     pub invitation: InvitationFromMember,
@@ -618,7 +617,7 @@ pub struct SignedOpenInvitation {
 }
 
 // The full payload Bob reveals in the second transaction
-#[derive(BorshSerialize, BorshDeserialize, Debug, Deserialize, Clone, Serialize)]
+#[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct RevealPayloadData {
     /// Signed open invitation
     pub signed_open_invitation: SignedOpenInvitation,
@@ -629,7 +628,7 @@ pub struct RevealPayloadData {
 }
 
 // This is the final object submitted to the `reveal` method.
-#[derive(BorshSerialize, BorshDeserialize, Debug, Deserialize, Clone, Serialize)]
+#[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct SignedRevealPayload {
     /// The data that is needed to join the context.
     pub data: RevealPayloadData,

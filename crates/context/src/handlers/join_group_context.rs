@@ -83,12 +83,6 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let context_client = self.context_client.clone();
         let node_client = self.node_client.clone();
-        let effective_signing_key =
-            group_store::get_group_signing_key(&self.datastore, &group_id, &joiner_identity)
-                .ok()
-                .flatten()
-                .or_else(|| self.node_group_identity().map(|(_, sk_bytes)| sk_bytes));
-
         ActorResponse::r#async(
             async move {
                 // Use the group member's existing keys (reused across all contexts).

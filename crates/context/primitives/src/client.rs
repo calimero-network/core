@@ -152,9 +152,8 @@ impl ContextClient {
     /// * `context_id` - The context to invite the new member to.
     /// * `inviter_id` - The public key of the existing member creating the invitation.
     ///                  This node must have the corresponding private key for this identity.
-    /// * `valid_for_blocks` - A number of blocks from the current block height for which the
-    ///   invitation is considered to be valid.
-    /// * `secret_salt` - A 32-byte random value to ensure the invitation is unique.
+    /// * `valid_for_seconds` - How long (in seconds) the invitation remains valid.
+    /// * `_secret_salt` - Unused; a fresh random salt is generated internally.
     ///
     /// # Returns
     /// * A `Result` containing the `SignedOpenInvitation` if successful, or an error if
@@ -167,9 +166,10 @@ impl ContextClient {
         valid_for_seconds: u64,
         _secret_salt: [u8; DIGEST_SIZE],
     ) -> eyre::Result<Option<SignedOpenInvitation>> {
-        let mut rng = rand::thread_rng();
-        let salt: [u8; DIGEST_SIZE] = rng.gen::<[_; DIGEST_SIZE]>();
-        let secret_salt = salt;
+        let secret_salt = {
+            let mut rng = rand::thread_rng();
+            rng.gen::<[u8; DIGEST_SIZE]>()
+        };
 
         let ctx_exists = self.has_context(context_id)?;
         tracing::info!(
