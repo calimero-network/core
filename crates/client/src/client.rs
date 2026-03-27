@@ -122,7 +122,7 @@ where
     A: ClientAuthenticator + Clone + Send + Sync,
     S: ClientStorage + Clone + Send + Sync,
 {
-    pub connection: ConnectionInfo<A, S>,
+    connection: ConnectionInfo<A, S>,
 }
 
 impl<A, S> Client<A, S>
