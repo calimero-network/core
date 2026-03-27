@@ -1,5 +1,7 @@
 # Local Group Governance Architecture
 
+> **Interactive version:** See the [Architecture Site](../../architecture/local-governance.html) for interactive diagrams and visual deep-dives of this system.
+
 ## Overview
 
 Every piece of group and context management that used to live on a blockchain
@@ -12,13 +14,12 @@ same signed operations in the same causal order.
 ```
 Group (the top-level authority)
   ├── GroupMeta: admin, target_application, upgrade_policy
-  ├── Members: {PublicKey → Role (Admin/Member)}
+  ├── Members: {PublicKey → GroupMemberValue {role, private_key?, sender_key?}}
   ├── MemberCapabilities: {PublicKey → u32 bitfield}
   ├── Contexts: {ContextId → visibility, creator, alias}
-  │     ├── ContextIdentity: {ContextId + PublicKey → keys}
+  │     ├── ContextIdentity: {ContextId + PublicKey → keys} (derived from GroupMember)
   │     ├── ContextMemberCap: {ContextId + PublicKey → u8 bitfield}
   │     └── Allowlist: {ContextId + PublicKey → ()}
-  ├── MemberContextJoins: {PublicKey + ContextId → context_identity}
   ├── GovernanceDAG: {sequence → SignedGroupOp borsh}
   └── DAG Head: {dag_heads: Vec<[u8;32]>, sequence: u64}
 ```
@@ -55,7 +56,6 @@ The signature covers a domain-separated message:
 | **Membership** | `MemberAdded`, `MemberRemoved`, `MemberRoleSet` |
 | **Group capabilities** | `MemberCapabilitySet`, `DefaultCapabilitiesSet` |
 | **Context lifecycle** | `ContextRegistered`, `ContextDetached` |
-| **Context membership** | `MemberJoinedContext`, `MemberLeftContext` |
 | **Context capabilities** | `ContextCapabilityGranted`, `ContextCapabilityRevoked` |
 | **Visibility** | `DefaultVisibilitySet`, `ContextVisibilitySet`, `ContextAllowlistReplaced` |
 | **Aliases** | `GroupAliasSet`, `MemberAliasSet`, `ContextAliasSet` |
@@ -121,27 +121,21 @@ implements `DeltaApplier<SignedGroupOp>` and delegates to
 ## Cascade Removal
 
 When a member is kicked from a group, they are atomically removed from all
-contexts they joined through that group:
+contexts in that group:
 
 ```
 Admin signs: MemberRemoved { member: M }
 
 apply_local_signed_group_op:
-  1. Look up GroupMemberContext tracking records for (group, M)
-       → [(context_1, identity_1), (context_2, identity_2), ...]
-  2. For each: delete ContextIdentity record (removes context access)
-  3. Delete all tracking records
-  4. Remove M from group member list
+  1. Enumerate all contexts registered in the group
+  2. For each context: delete ContextIdentity(context_id, M)
+  3. Remove M from group member list
 ```
 
 This happens identically on every node because:
-- The `MemberJoinedContext` ops that created the tracking records propagated
-  via the governance DAG (so every node has the same tracking data)
+- The set of contexts in the group is replicated via `ContextRegistered` ops
 - The `MemberRemoved` op also propagates via the DAG
-- The cascade is deterministic given the same input
-
-This matches the on-chain contract's `remove_group_members` behavior where
-cascade removal was atomic within a single NEAR transaction.
+- The cascade is deterministic (sorted context enumeration, same deletion)
 
 ## Offline Catch-Up
 
@@ -232,21 +226,38 @@ affect authorization and shouldn't force re-signing.
 
 ### Principle
 
-The group governance DAG is the single authority for who can access which
-contexts. All joins and removals propagate as governance ops.
+Group membership is the single source of truth. Context access is **derived**
+from group membership + context visibility rules. There are no separate
+`MemberJoinedContext` / `MemberLeftContext` governance ops — context membership
+is implicit.
+
+A `GroupMemberValue` stores the member's `role`, `private_key`, and `sender_key`.
+These keys are reused across all contexts in the group. When a member accesses
+a context, a `ContextIdentity` entry is written from the group member's keys.
 
 ### Flows
 
-| Flow | Governance Op | Replicated? |
-|------|---------------|-------------|
-| Create context | `ContextRegistered` + `MemberJoinedContext` | Yes |
-| Join via group | `MemberJoinedContext` | Yes |
-| Join via invitation | `MemberJoinedContext` (signed by admin) | Yes |
-| WASM AddMember | `MemberJoinedContext` | Yes |
-| WASM RemoveMember | `MemberLeftContext` | Yes |
-| Kick from group | `MemberRemoved` (cascades to contexts) | Yes |
+| Flow | What Happens | Governance Op |
+|------|-------------|---------------|
+| Create context | `ContextRegistered` op; creator's `ContextIdentity` written from group keys | `ContextRegistered` |
+| Join via invitation | `SignedOpenInvitation` carries app metadata; joiner writes `GroupMember` + `ContextIdentity` | `MemberAdded` (via gossip) |
+| Join group context | Visibility check + `ContextIdentity` written from group keys | None (local) |
+| Kick from group | Cascade: all `ContextIdentity` entries removed | `MemberRemoved` |
 | Grant capability | `ContextCapabilityGranted` | Yes |
 | Revoke capability | `ContextCapabilityRevoked` | Yes |
+
+### Invitation Flow
+
+Invitations use a `SignedOpenInvitation` that carries:
+- `invitation`: signed `InvitationFromMember` (context_id, inviter, expiry, salt)
+- `inviter_signature`: Ed25519 signature over the invitation
+- `application_id`: so the joiner knows which app to bootstrap
+- `blob_id`: so the sync protocol can request the right WASM blob
+- `source`: original source URL (enables registry re-download fallback)
+
+The `application_id`, `blob_id`, and `source` are NOT covered by the signature.
+They are populated by the inviter from local state to help the joiner bootstrap
+without an external source of truth (replacing the on-chain contract).
 
 ### Context-Level Capabilities
 
