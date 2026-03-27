@@ -26,6 +26,10 @@ pub struct DevSandbox {
     pub contract_id: String,
 }
 
+fn pid_file_path(home_dir: &Path) -> PathBuf {
+    home_dir.join("sandbox.pid")
+}
+
 impl DevSandbox {
     pub fn rpc_port() -> u16 {
         SANDBOX_RPC_PORT
@@ -49,7 +53,7 @@ impl DevSandbox {
 
         let binary_path = ensure_sandbox_binary(&home_dir).await?;
 
-        cleanup_stale_sandbox();
+        cleanup_stale_sandbox(&home_dir);
 
         let data_dir = home_dir.join("data");
         if data_dir.exists() {
@@ -85,6 +89,9 @@ impl DevSandbox {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
+
+        let pid = process.id();
+        let _ = std::fs::write(pid_file_path(&home_dir), pid.to_string());
 
         let rpc_url = format!("http://localhost:{SANDBOX_RPC_PORT}");
 
@@ -142,6 +149,7 @@ impl Drop for DevSandbox {
         if let Some(mut proc) = self.process.take() {
             let _ = proc.kill();
             let _ = proc.wait();
+            let _ = std::fs::remove_file(pid_file_path(&self.home_dir));
             eprintln!("  NEAR sandbox stopped");
         }
     }
@@ -208,13 +216,28 @@ async fn ensure_sandbox_binary(home_dir: &Path) -> Result<PathBuf> {
     Ok(binary_path)
 }
 
-fn cleanup_stale_sandbox() {
-    let _ = Command::new("pkill")
-        .args(["-9", "near-sandbox"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    std::thread::sleep(Duration::from_millis(500));
+fn cleanup_stale_sandbox(home_dir: &Path) {
+    let pid_path = pid_file_path(home_dir);
+    if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            #[cfg(unix)]
+            {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let _ = std::fs::remove_file(&pid_path);
+    }
 }
 
 async fn wait_for_rpc(rpc_url: &str) -> Result<()> {
