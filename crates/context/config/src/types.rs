@@ -751,7 +751,8 @@ mod tests {
             "inviter_signature": "abc123"
         }"#;
 
-        let decoded: SignedOpenInvitation = serde_json::from_str(json).expect("deserialize old format");
+        let decoded: SignedOpenInvitation =
+            serde_json::from_str(json).expect("deserialize old format");
         assert_eq!(decoded.inviter_signature, "abc123");
         assert_eq!(decoded.application_id, None);
         assert_eq!(decoded.blob_id, None);

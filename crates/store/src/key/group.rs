@@ -1502,7 +1502,9 @@ mod tests {
         use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
         use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 
-        use super::super::{GroupMemberValue, GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
+        use super::super::{
+            GroupMemberValue, GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue,
+        };
 
         #[test]
         fn group_meta_value_roundtrip() {
