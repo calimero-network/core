@@ -201,6 +201,27 @@ async fn join_context(
     if invitation_group_id != zero_group {
         let gid = calimero_context_config::types::ContextGroupId::from(invitation_group_id);
 
+        // Write GroupMeta if it doesn't exist yet (needed for state hash
+        // computation when publishing governance ops).
+        if group_store::load_group_meta(&datastore, &gid)?.is_none() {
+            group_store::save_group_meta(
+                &datastore,
+                &gid,
+                &calimero_store::key::GroupMetaValue {
+                    app_key: [0u8; 32],
+                    target_application_id: invitation_app_id,
+                    upgrade_policy: calimero_primitives::context::UpgradePolicy::Automatic,
+                    created_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    admin_identity: inviter_id,
+                    migration: None,
+                    auto_join: true,
+                },
+            )?;
+        }
+
         group_store::register_context_in_group(&datastore, &gid, &context_id)?;
 
         if !group_store::check_group_membership(&datastore, &gid, &invitee_id)? {
