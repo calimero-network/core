@@ -233,7 +233,13 @@ async fn join_context(
         let gid = calimero_context_config::types::ContextGroupId::from(invitation_group_id);
 
         // Subscribe to the group gossip topic so we can publish on it.
+        // Also subscribe to the context topic first so libp2p forms mesh connections
+        // with node-1, then the group topic subscription piggybacks on those connections.
+        node_client.subscribe(&context_id).await?;
         node_client.subscribe_group(invitation_group_id).await?;
+
+        // Brief delay to let gossipsub mesh form before publishing.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // Build the invitation payload bytes for signature verification on receivers.
         let invitation_payload = borsh::to_vec(&signed_invitation.invitation).unwrap_or_default();
