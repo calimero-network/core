@@ -595,16 +595,26 @@ pub struct InvitationFromMember {
 /// A container for an open invitation and the inviter's signature over it.
 /// This is the object that an existing member (Alice) would generate and send
 /// to a new member (Bob).
+///
+/// The fields below `inviter_signature` are **not** covered by the signature.
+/// They are populated by the inviter from local state so the joiner can
+/// bootstrap the application without an external source of truth.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
 pub struct SignedOpenInvitation {
     /// An open invitation to the context
     pub invitation: InvitationFromMember,
     /// Inviter's signature for the invitation payload (hex-encoded)
     pub inviter_signature: String,
-    /// Application ID for the context (so the joiner can bootstrap the app).
-    /// Not covered by the signature — populated by the inviter from local state.
+    /// Application ID for the context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub application_id: Option<[u8; 32]>,
+    /// Bytecode blob ID for the application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_id: Option<[u8; 32]>,
+    /// Application source URL (registry URL, HTTP URL, or calimero:// stub).
+    /// Enables the joiner to re-download from the registry if blob sharing fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 // The full payload Bob reveals in the second transaction

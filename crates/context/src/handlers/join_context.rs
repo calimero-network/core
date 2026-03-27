@@ -80,6 +80,11 @@ async fn join_context(
     let invitation_blob_id = app
         .as_ref()
         .map(|a| a.blob.bytecode)
+        .or_else(|| {
+            signed_invitation
+                .blob_id
+                .map(calimero_primitives::blobs::BlobId::from)
+        })
         .unwrap_or_else(|| calimero_primitives::blobs::BlobId::from([0u8; DIGEST_SIZE]));
 
     let invitation_group_id = {
@@ -161,13 +166,19 @@ async fn join_context(
 
     let zero_blob = calimero_primitives::blobs::BlobId::from([0u8; 32]);
     if invitation_blob_id != zero_blob && !node_client.has_application(&invitation_app_id)? {
+        let default_source = format!("calimero://context/{context_id}");
+        let source = signed_invitation
+            .source
+            .as_deref()
+            .unwrap_or(&default_source);
+
         let mut handle = datastore.handle();
         handle.put(
             &key::ApplicationMeta::new(invitation_app_id),
             &calimero_store::types::ApplicationMeta::new(
                 key::BlobMeta::new(invitation_blob_id),
                 0,
-                format!("calimero://context/{context_id}").into_boxed_str(),
+                source.to_owned().into_boxed_str(),
                 Box::default(),
                 key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0u8; 32])),
                 "unknown".to_owned().into_boxed_str(),
@@ -179,6 +190,7 @@ async fn join_context(
             %context_id,
             %invitation_app_id,
             %invitation_blob_id,
+            %source,
             "wrote stub ApplicationMeta for blob sharing"
         );
     }
