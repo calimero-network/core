@@ -13,7 +13,7 @@ same signed operations in the same causal order.
 
 ```
 Group (the top-level authority)
-  ├── GroupMeta: admin, target_application, upgrade_policy
+  ├── GroupMeta: admin, target_application, upgrade_policy, auto_join
   ├── Members: {PublicKey → GroupMemberValue {role, private_key?, sender_key?}}
   ├── MemberCapabilities: {PublicKey → u32 bitfield}
   ├── Contexts: {ContextId → visibility, creator, alias}
@@ -28,7 +28,7 @@ Every context belongs to a group. If you create a context without specifying
 a group, one is auto-created with you as the sole admin.
 
 All data is stored in RocksDB under the `Group` column with distinct prefix
-bytes for each key type (0x20–0x33).
+bytes for each key type (0x20-0x33).
 
 ## The Signed Operation
 
@@ -38,12 +38,12 @@ Every mutation to group/context state is a `SignedGroupOp` (schema v3):
 SignedGroupOp:
   version: 3
   group_id: [u8; 32]
-  parent_op_hashes: Vec<[u8; 32]>   — DAG parents (causal ordering)
-  state_hash: [u8; 32]              — SHA-256 of group state at sign time
-  signer: PublicKey                  — who signed this
-  nonce: u64                         — monotonic per signer (replay protection)
-  op: GroupOp                        — the actual mutation
-  signature: [u8; 64]               — Ed25519 over all the above
+  parent_op_hashes: Vec<[u8; 32]>   -- DAG parents (causal ordering)
+  state_hash: [u8; 32]              -- SHA-256 of group state at sign time
+  signer: PublicKey                  -- who signed this
+  nonce: u64                         -- monotonic per signer (replay protection)
+  op: GroupOp                        -- the actual mutation
+  signature: [u8; 64]               -- Ed25519 over all the above
 ```
 
 The signature covers a domain-separated message:
@@ -60,7 +60,7 @@ The signature covers a domain-separated message:
 | **Visibility** | `DefaultVisibilitySet`, `ContextVisibilitySet`, `ContextAllowlistReplaced` |
 | **Aliases** | `GroupAliasSet`, `MemberAliasSet`, `ContextAliasSet` |
 | **Upgrades** | `UpgradePolicySet`, `TargetApplicationSet`, `GroupMigrationSet` |
-| **Joining** | `JoinWithInvitationClaim` |
+| **Joining** | `JoinWithInvitationClaim`, `MemberJoinedViaContextInvitation` |
 | **Deletion** | `GroupDelete` |
 | **Placeholder** | `Noop` |
 
@@ -117,6 +117,112 @@ The DagStore provides:
 The `GroupGovernanceApplier` bridges the DagStore to the group store: it
 implements `DeltaApplier<SignedGroupOp>` and delegates to
 `apply_local_signed_group_op()`.
+
+## Context Membership Model
+
+### Principle
+
+Group membership is the single source of truth. Context access is **derived**
+from group membership + context visibility rules.
+
+A `GroupMemberValue` stores the member's `role`, `private_key`, and `sender_key`.
+These keys are reused across all contexts in the group. When a member accesses
+a context, a `ContextIdentity` entry is written from the group member's keys.
+
+### Invitation and Join Flow
+
+```
+Node-1 (admin)                          Node-2 (joiner)
+     |                                       |
+     |  1. POST /contexts/invite             |
+     |  -> invite_member() creates           |
+     |     SignedOpenInvitation with:         |
+     |     - invitation (signed)             |
+     |     - application_id, blob_id         |
+     |     - source URL, group_id            |
+     |                                       |
+     |  -------- invitation token -------->  |
+     |                                       |
+     |                          2. POST /contexts/join
+     |                          -> join_context():
+     |                             a. Write ContextIdentity (own keys)
+     |                             b. Write ContextGroupRef + GroupMember
+     |                             c. Write stub ApplicationMeta
+     |                             d. Subscribe to context + group topics
+     |                             e. Publish MemberJoinedViaContext-
+     |                                Invitation on group topic
+     |                                       |
+     |  <-- governance op via gossip ---     |
+     |  apply: verify inviter sig,           |
+     |  add node-2 as GroupMember            |
+     |                                       |
+     |                             f. Trigger sync
+     |  <-- sync stream (key share) ---      |
+     |  has_member(node-2)? YES              |
+     |  (GroupMember was just added)         |
+     |                                       |
+     |  --- blob share (WASM binary) --->    |
+     |  --- DAG sync (state deltas) ---->    |
+     |                                       |
+     |  Root hashes converge                 |
+```
+
+### SignedOpenInvitation
+
+The invitation carries everything the joiner needs to bootstrap without
+an external source of truth (replacing the on-chain contract):
+
+| Field | Purpose |
+|-------|---------|
+| `invitation` | Signed `InvitationFromMember` (context_id, inviter, expiry, salt) |
+| `inviter_signature` | Ed25519 over borsh(invitation) |
+| `application_id` | Which app to install |
+| `blob_id` | Which WASM blob to request via blob sharing |
+| `source` | Original source URL (enables registry re-download) |
+| `group_id` | Which group to publish membership to |
+
+Fields after `inviter_signature` are NOT covered by the signature.
+They are populated by the inviter from local state.
+
+### MemberJoinedViaContextInvitation
+
+When a node joins via a context invitation, it publishes this governance op
+on the group gossip topic. Receiving nodes verify:
+
+1. The inviter is an admin of the group
+2. The inviter's signature matches the invitation payload
+3. The signer (joiner) is not already a member
+
+No admin role is required from the joiner -- authorization comes from
+the admin-signed invitation. This is the mechanism that lets node-1 learn
+about node-2's membership before sync starts.
+
+### Membership Flows
+
+| Flow | What Happens | Governance Op |
+|------|-------------|---------------|
+| Create context | Auto-create group, subscribe to both topics, `ContextRegistered` op | `ContextRegistered` |
+| Join via invitation | Write local membership, publish `MemberJoinedViaContextInvitation`, sync | `MemberJoinedViaContextInvitation` |
+| Join group context | Visibility check + `ContextIdentity` from group keys | None (local) |
+| Kick from group | Cascade: all `ContextIdentity` entries removed | `MemberRemoved` |
+| Grant capability | Per-context per-member bitfield | `ContextCapabilityGranted` |
+| Revoke capability | Per-context per-member bitfield | `ContextCapabilityRevoked` |
+
+### Sync Protocol (3 phases)
+
+After membership is established, the sync protocol runs:
+
+1. **Key share**: Bidirectional Diffie-Hellman exchange for encrypted communication.
+   Requires both nodes to have `ContextIdentity` records (or `GroupMember` for
+   the `has_member` check).
+
+2. **Blob share**: Transfer the application WASM binary. The joiner has a stub
+   `ApplicationMeta` with the correct `blob_id` from the invitation. After
+   receiving the blob, a proper `ApplicationMeta` is written.
+
+3. **DAG sync**: Synchronize state deltas. The WASM module is loaded from the
+   blob to process incoming deltas. Root hashes converge when both nodes have
+   applied the same set of deltas.
 
 ## Cascade Removal
 
@@ -186,14 +292,11 @@ BroadcastMessage::StateDelta {
 ```
 
 This allows receiving nodes to determine if the author was authorized at the
-governance state the delta was created against. If the author was removed in
-a governance op that happened *after* the delta's epoch, the node knows the
-delta was produced during the propagation window — it was legitimately
-authorized when created.
+governance state the delta was created against.
 
 ## State Hash (Convergence)
 
-Each `SignedGroupOp` includes a `state_hash` — a deterministic SHA-256 of the
+Each `SignedGroupOp` includes a `state_hash` -- a deterministic SHA-256 of the
 group's authorization-relevant state:
 
 - Sorted members and their roles
@@ -207,59 +310,19 @@ This serves as an optimistic lock:
 - Single-admin groups are fully convergent (linear chain, no concurrent ops)
 - Multi-admin concurrent ops are detected and the losing admin must re-sign
 
-### What state_hash covers
+## Gossip Topics
 
-```
-SHA-256(
-    group_id ||
-    admin_identity ||
-    target_application_id ||
-    for each member sorted by public key:
-        public_key || borsh(role)
-)
-```
+Two separate gossipsub topics per group/context:
 
-Cosmetic state (aliases, capabilities) is NOT included — these changes don't
-affect authorization and shouldn't force re-signing.
+| Topic | Format | Content | Encryption |
+|-------|--------|---------|------------|
+| **Context** | `<context_id>` | State deltas (CRDT ops from WASM), sync streams | Encrypted (shared key) |
+| **Group** | `group/<hex(group_id)>` | Governance ops (membership, visibility, etc.) | Plaintext (signed) |
 
-## Context Membership Model
+Both nodes must subscribe to both topics. Context creation subscribes to both;
+joining subscribes to both before publishing the membership governance op.
 
-### Principle
-
-Group membership is the single source of truth. Context access is **derived**
-from group membership + context visibility rules. There are no separate
-`MemberJoinedContext` / `MemberLeftContext` governance ops — context membership
-is implicit.
-
-A `GroupMemberValue` stores the member's `role`, `private_key`, and `sender_key`.
-These keys are reused across all contexts in the group. When a member accesses
-a context, a `ContextIdentity` entry is written from the group member's keys.
-
-### Flows
-
-| Flow | What Happens | Governance Op |
-|------|-------------|---------------|
-| Create context | `ContextRegistered` op; creator's `ContextIdentity` written from group keys | `ContextRegistered` |
-| Join via invitation | `SignedOpenInvitation` carries app metadata; joiner writes `GroupMember` + `ContextIdentity` | `MemberAdded` (via gossip) |
-| Join group context | Visibility check + `ContextIdentity` written from group keys | None (local) |
-| Kick from group | Cascade: all `ContextIdentity` entries removed | `MemberRemoved` |
-| Grant capability | `ContextCapabilityGranted` | Yes |
-| Revoke capability | `ContextCapabilityRevoked` | Yes |
-
-### Invitation Flow
-
-Invitations use a `SignedOpenInvitation` that carries:
-- `invitation`: signed `InvitationFromMember` (context_id, inviter, expiry, salt)
-- `inviter_signature`: Ed25519 signature over the invitation
-- `application_id`: so the joiner knows which app to bootstrap
-- `blob_id`: so the sync protocol can request the right WASM blob
-- `source`: original source URL (enables registry re-download fallback)
-
-The `application_id`, `blob_id`, and `source` are NOT covered by the signature.
-They are populated by the inviter from local state to help the joiner bootstrap
-without an external source of truth (replacing the on-chain contract).
-
-### Context-Level Capabilities
+## Context-Level Capabilities
 
 Per-context per-member capability bitfield stored in `GroupContextMemberCap`:
 
@@ -280,6 +343,7 @@ Granted/revoked via governance ops with admin authorization.
 | Nonce monotonicity | per signer | Replay protection |
 | State hash validation | per op | Stale-state rejection |
 | Ed25519 signature | per op | Authentication + tamper protection |
+| Invitation expiry | timestamp | Limits window for leaked tokens |
 
 ## Wire Protocol
 
@@ -289,7 +353,6 @@ Granted/revoked via governance ops with admin authorization.
 |---------|---------|
 | `GroupGovernanceDelta` | Carries a signed op with DAG metadata (`delta_id`, `parent_ids`) |
 | `GroupStateHeartbeat` | Periodic broadcast of DAG heads for divergence detection |
-| `GroupMutationNotification` | Legacy notification of group state change |
 
 ### Stream Protocol (libp2p request-response)
 
@@ -306,26 +369,28 @@ Granted/revoked via governance ops with admin authorization.
 | `crates/context/src/group_store.rs` | Apply logic, store helpers, `sign_apply_and_publish` |
 | `crates/context/src/governance_dag.rs` | `GroupGovernanceApplier`, `signed_op_to_delta` |
 | `crates/context/src/lib.rs` | `ContextManager` with per-group `DagStore`, heartbeat, reload |
+| `crates/context/src/handlers/create_context.rs` | Context + auto-group creation, subscribes to both topics |
+| `crates/context/src/handlers/join_context.rs` | Join via invitation, publish `MemberJoinedViaContextInvitation` |
 | `crates/context/src/handlers/apply_signed_group_op.rs` | Actor handler routing through DagStore |
-| `crates/store/src/key/group.rs` | All group store key types (0x20–0x33) |
+| `crates/context/config/src/types.rs` | `SignedOpenInvitation`, `InvitationFromMember` |
+| `crates/store/src/key/group.rs` | All group store key types (0x20-0x33) |
 | `crates/node/primitives/src/sync/snapshot.rs` | `BroadcastMessage` variants |
 | `crates/node/primitives/src/sync/wire.rs` | `GroupDeltaRequest`/`Response` stream types |
 | `crates/node/primitives/src/client.rs` | `publish_signed_group_op`, `publish_group_heartbeat` |
 | `crates/node/src/handlers/network_event.rs` | Gossip ingress handlers |
-| `crates/node/src/sync/manager.rs` | `GroupDeltaRequest` stream responder |
+| `crates/node/src/sync/manager.rs` | Sync protocol, `has_member` retry, blob/DAG sync |
 
 ## Known Limitations
 
 **Multi-admin convergence**: Two admins signing concurrent ops against the
 same state can cause nodes to accept different ops depending on gossip
 delivery order. The state hash detects this but doesn't resolve it
-deterministically. Single-admin groups have no issue. Future options:
-deterministic tiebreaker, CRDTs, or consensus protocol.
+deterministically. Single-admin groups have no issue.
 
-**Governance epoch validation**: The governance epoch is embedded in state
-deltas and logged on receive, but not yet used to reject deltas from
-revoked members. Future work: compare delta's epoch against current
-governance state to detect stale authorization.
+**Gossip propagation latency**: The sync responder retries `has_member` with
+a 2-second delay to handle the window between when a joiner publishes their
+membership op and when the responder receives it via gossip. In high-latency
+networks this window may need tuning.
 
 **Context-level capability enforcement**: Capabilities are stored but not
 yet checked during WASM execution. Future work: `ContextHost` checks
