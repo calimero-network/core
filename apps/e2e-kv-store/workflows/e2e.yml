@@ -2,9 +2,9 @@ name: E2E KV Store - Consolidated Backend Tests
 description: Consolidated E2E backend tests covering KV operations, handlers, user storage, frozen storage, private storage, nested CRDTs, and RGA
 
 force_pull_image: false
+near_devnet: false
 
 nodes:
-  chain_id: testnet-1
   count: 3
   image: ghcr.io/calimero-network/merod:edge
   prefix: e2e-node

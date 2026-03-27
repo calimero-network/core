@@ -2,9 +2,9 @@ name: XCall Rust Ping-Pong
 description: Cross-context ping/pong using the Rust SDK example.
 
 force_pull_image: true
+near_devnet: false
 
 nodes:
-  chain_id: testnet-1
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: rust-xcall
