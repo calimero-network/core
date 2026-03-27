@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wire Protocol — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  .transport-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: .68rem; font-family: 'JetBrains Mono', monospace; font-weight: 600; margin-left: 8px; }
+  .badge-gossip { background: #f59e0b20; color: var(--amber); }
+  .badge-stream { background: #8b5cf620; color: var(--violet); }
+  .badge-reqres { background: #3b82f620; color: var(--blue); }
+  .badge-internal { background: #6b6b8020; color: var(--text-dim); }
+  .variant-count { font-family: 'JetBrains Mono', monospace; font-size: .7rem; color: var(--text-dim); margin-left: 6px; }
+  .section-intro { font-size: .86rem; color: var(--text-dim); margin-bottom: 16px; line-height: 1.6; }
+  .typedef { white-space: pre-wrap; word-break: break-word; }
+  .typedef .sep { color: var(--border-hi); }
+  details + details { margin-top: 0; }
+  .borsh-note { font-size: .72rem; color: var(--cyan); font-family: 'JetBrains Mono', monospace; margin-top: 8px; padding: 6px 10px; background: #06b6d408; border: 1px solid #06b6d420; border-radius: 6px; }
+  .signing-box { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-top: 12px; }
+  .signing-box h4 { font-size: .82rem; color: var(--amber); margin-bottom: 8px; }
+  .signing-box p { font-size: .82rem; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Wire Protocol</span></div>
+
+<h1>Wire <em>Protocol</em></h1>
+<p class="page-subtitle">Every message type with field-level documentation</p>
+
+<div class="g3" style="margin-bottom:36px;">
+  <div class="stat"><div class="v">8</div><div class="l">gossipsub variants</div></div>
+  <div class="stat"><div class="v">11</div><div class="l">stream init types</div></div>
+  <div class="stat"><div class="v">25</div><div class="l">GroupOp variants</div></div>
+</div>
+
+<div class="legend" style="margin-bottom:32px;border-top:none;padding-top:0;">
+  <div class="legend-item"><span class="transport-badge badge-gossip">gossipsub</span> pub/sub broadcast</div>
+  <div class="legend-item"><span class="transport-badge badge-stream">stream</span> point-to-point</div>
+  <div class="legend-item"><span class="transport-badge badge-reqres">req/resp</span> request-response</div>
+  <div class="legend-item"><span class="transport-badge badge-internal">internal</span> actor messages</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     1. BROADCAST MESSAGE (GOSSIPSUB)
+     ═══════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>BroadcastMessage <span class="transport-badge badge-gossip">gossipsub</span> <span class="variant-count">8 variants</span></h2>
+<p class="section-intro">Top-level enum for all messages published via gossipsub topics. Each variant is Borsh-serialized before being sent as a gossipsub message payload. Context topics use <span class="code">context/&lt;hex&gt;</span>, group topics use <span class="code">group/&lt;hex&gt;</span>.</p>
+
+<details open>
+  <summary>StateDelta <span class="variant-count">— application state replication</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Carries a WASM execution result (state diff) to all peers in a context. Published on context gossipsub topics after a successful method execution and state commit.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">StateDelta</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,        <span class="comment">// target context</span>
+    <span class="field">author_id</span>:  <span class="ty">PublicKey</span>,         <span class="comment">// who executed the method</span>
+    <span class="field">delta_id</span>:   <span class="ty">[u8; 32]</span>,          <span class="comment">// content-addressed hash of this delta</span>
+    <span class="field">parent_ids</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>,     <span class="comment">// DAG ancestry (current heads at produce time)</span>
+    <span class="field">hlc</span>:        <span class="ty">HybridTimestamp</span>,    <span class="comment">// hybrid logical clock for causal ordering</span>
+    <span class="field">root_hash</span>:  <span class="ty">Hash</span>,              <span class="comment">// Merkle root after applying this delta</span>
+    <span class="field">artifact</span>:   <span class="ty">Cow&lt;[u8]&gt;</span>,         <span class="comment">// the actual state diff payload (opaque bytes)</span>
+    <span class="field">nonce</span>:      <span class="ty">Nonce</span>,             <span class="comment">// deduplication / replay protection</span>
+    <span class="field">events</span>:     <span class="ty">Option&lt;Cow&lt;[u8]&gt;&gt;</span>, <span class="comment">// optional WASM-emitted events</span>
+    <span class="field">governance_epoch</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>, <span class="comment">// governance DAG heads at delta time (future: stale check)</span>
+}</div>
+    <div class="borsh-note">Borsh serialization · delta_id = SHA-256(artifact + metadata) · parent_ids capped by DAG head limit</div>
+  </div>
+</details>
+
+<details>
+  <summary>HashHeartbeat <span class="variant-count">— context state comparison</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Periodic heartbeat published on context topics. Peers compare <span class="code">root_hash</span> and <span class="code">dag_heads</span> to detect divergence and trigger sync.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">HashHeartbeat</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,        <span class="comment">// which context</span>
+    <span class="field">root_hash</span>:  <span class="ty">Hash</span>,              <span class="comment">// current Merkle root of context state</span>
+    <span class="field">dag_heads</span>:  <span class="ty">Vec&lt;[u8; 32]&gt;</span>,     <span class="comment">// current DAG head delta IDs</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>SpecializedNodeDiscovery <span class="variant-count">— peer role announcement</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">SpecializedNodeDiscovery</span> {
+    <span class="field">nonce</span>:     <span class="ty">Nonce</span>,         <span class="comment">// unique per announcement (dedup)</span>
+    <span class="field">node_type</span>: <span class="ty">NodeType</span>,      <span class="comment">// e.g. Sequencer, Indexer, Relay</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>SpecializedNodeJoinConfirmation <span class="variant-count">— role join ack</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">SpecializedNodeJoinConfirmation</span> {
+    <span class="field">nonce</span>: <span class="ty">Nonce</span>,  <span class="comment">// matches the discovery nonce</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>GroupMutationNotification <span class="variant-count">— group change signal</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Lightweight notification that a group was mutated. Does not contain the full op — peers use this to decide whether to fetch details or update caches.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">GroupMutationNotification</span> {
+    <span class="field">group_id</span>:      <span class="ty">GroupId</span>,           <span class="comment">// affected group</span>
+    <span class="field">mutation_kind</span>: <span class="ty">GroupMutationKind</span>, <span class="comment">// what kind of mutation (see below)</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>SignedGroupOpV1 <span class="variant-count">— governance operation (v1 wire)</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Carries a Borsh-serialized <span class="code">SignedGroupOp</span> as an opaque byte vector. Published on group gossipsub topics. Receivers deserialize, verify signature, and apply.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">SignedGroupOpV1</span> {
+    <span class="field">payload</span>: <span class="ty">Vec&lt;u8&gt;</span>,  <span class="comment">// borsh(SignedGroupOp) — opaque wire format</span>
+}</div>
+    <div class="borsh-note">Inner payload is borsh(SignedGroupOp) — see SignedGroupOp schema section below for full structure</div>
+  </div>
+</details>
+
+<details>
+  <summary>GroupGovernanceDelta <span class="variant-count">— governance DAG delta</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Alternative governance replication format used by the DAG sync layer. Carries the same data as SignedGroupOpV1 but with explicit DAG metadata for the governance DAG.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">GroupGovernanceDelta</span> {
+    <span class="field">group_id</span>:   <span class="ty">GroupId</span>,          <span class="comment">// target group</span>
+    <span class="field">delta_id</span>:   <span class="ty">[u8; 32]</span>,         <span class="comment">// content hash of this governance delta</span>
+    <span class="field">parent_ids</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>,    <span class="comment">// governance DAG parents</span>
+    <span class="field">payload</span>:    <span class="ty">Vec&lt;u8&gt;</span>,          <span class="comment">// borsh(SignedGroupOp)</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>GroupStateHeartbeat <span class="variant-count">— group governance comparison</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Periodic heartbeat for governance DAG state. Published every 30s on group topics. Peers compare <span class="code">dag_heads</span> to detect missing ops and trigger governance catch-up.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">GroupStateHeartbeat</span> {
+    <span class="field">group_id</span>:     <span class="ty">GroupId</span>,       <span class="comment">// which group</span>
+    <span class="field">dag_heads</span>:    <span class="ty">Vec&lt;[u8; 32]&gt;</span>, <span class="comment">// current governance DAG head op hashes</span>
+    <span class="field">member_count</span>: <span class="ty">u64</span>,           <span class="comment">// current member count (quick sanity check)</span>
+}</div>
+  </div>
+</details>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     2. GROUP MUTATION KIND
+     ═══════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>GroupMutationKind <span class="variant-count">18 variants</span></h2>
+<p class="section-intro">Enum carried inside <span class="code">GroupMutationNotification</span>. Describes what kind of group mutation occurred, allowing receivers to react selectively without deserializing the full op.</p>
+
+<div class="typedef"><span class="kw">enum</span> <span class="ty">GroupMutationKind</span> {
+    <span class="field">MembersAdded</span>,            <span class="comment">// one or more members added</span>
+    <span class="field">MembersRemoved</span>,          <span class="comment">// one or more members removed (cascade)</span>
+    <span class="field">Upgraded</span>,                <span class="comment">// group upgrade policy or application changed</span>
+    <span class="field">Deleted</span>,                 <span class="comment">// group deleted entirely</span>
+    <span class="field">ContextDetached</span>,         <span class="comment">// context unbound from group</span>
+    <span class="field">SettingsUpdated</span>,         <span class="comment">// general group settings changed</span>
+    <span class="field">MemberRoleUpdated</span>,       <span class="comment">// member role changed (admin/member)</span>
+    <span class="field">VisibilityUpdated</span>,       <span class="comment">// context or default visibility changed</span>
+    <span class="field">ContextAttached</span>,         <span class="comment">// new context bound to group</span>
+    <span class="field">ContextAliasSet</span>,         <span class="comment">// human-readable context alias changed</span>
+    <span class="field">MemberCapabilitySet</span>,     <span class="comment">// per-member capability grant/revoke</span>
+    <span class="field">DefaultCapabilitiesSet</span>,  <span class="comment">// default capabilities for new members changed</span>
+    <span class="field">ContextVisibilitySet</span>,    <span class="comment">// per-context visibility changed</span>
+    <span class="field">DefaultVisibilitySet</span>,    <span class="comment">// default visibility for new contexts changed</span>
+    <span class="field">ContextAllowlistSet</span>,     <span class="comment">// per-context allowlist replaced</span>
+    <span class="field">MemberAliasSet</span>,          <span class="comment">// human-readable member alias changed</span>
+    <span class="field">GroupAliasSet</span>,           <span class="comment">// human-readable group alias changed</span>
+    <span class="field">ContextRegistered</span>,       <span class="comment">// new context registered to group</span>
+}</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     3. STREAM MESSAGE
+     ═══════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>StreamMessage <span class="transport-badge badge-stream">stream</span> <span class="variant-count">3 variants</span></h2>
+<p class="section-intro">Framing protocol for all point-to-point stream communication. Each stream begins with an <span class="code">Init</span> message, followed by zero or more <span class="code">Message</span> frames, and can terminate with <span class="code">OpaqueError</span>.</p>
+
+<div class="typedef"><span class="kw">enum</span> <span class="ty">StreamMessage</span> {
+    <span class="field">Init</span> {
+        <span class="field">payload</span>: <span class="ty">InitPayload</span>,  <span class="comment">// identifies the stream type and initial data</span>
+    },
+    <span class="field">Message</span> {
+        <span class="field">payload</span>: <span class="ty">MessagePayload</span>,  <span class="comment">// subsequent data frames</span>
+    },
+    <span class="field">OpaqueError</span> {
+        <span class="field">description</span>: <span class="ty">Cow&lt;str&gt;</span>,  <span class="comment">// human-readable error description</span>
+    },
+}</div>
+<div class="borsh-note">Borsh serialization · length-prefixed framing over libp2p streams (QUIC/TCP)</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     4. INIT PAYLOAD
+     ═══════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>InitPayload <span class="transport-badge badge-stream">stream init</span> <span class="variant-count">11 variants</span></h2>
+<p class="section-intro">Sent as the first message on a new stream. Determines the protocol/purpose of the stream and carries initial handshake data.</p>
+
+<details open>
+  <summary>BlobShare <span class="variant-count">— transfer application binary</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">BlobShare</span> {
+    <span class="field">blob_id</span>: <span class="ty">BlobId</span>,        <span class="comment">// identifier of the WASM blob</span>
+    <span class="field">blob</span>:    <span class="ty">Cow&lt;[u8]&gt;</span>,     <span class="comment">// the actual blob bytes</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>KeyShare <span class="variant-count">— exchange encryption key</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">KeyShare</span> {
+    <span class="field">context_id</span>:  <span class="ty">ContextId</span>,     <span class="comment">// target context</span>
+    <span class="field">holder_id</span>:   <span class="ty">PublicKey</span>,      <span class="comment">// who holds the key</span>
+    <span class="field">encrypted_key</span>: <span class="ty">Cow&lt;[u8]&gt;</span>,   <span class="comment">// encrypted store key material</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>DeltaRequest <span class="variant-count">— fetch specific delta</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">DeltaRequest</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,   <span class="comment">// which context</span>
+    <span class="field">delta_id</span>:   <span class="ty">[u8; 32]</span>,    <span class="comment">// content hash of the requested delta</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>DagHeadsRequest <span class="variant-count">— get current heads</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">DagHeadsRequest</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,  <span class="comment">// which context's DAG heads to return</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>SnapshotBoundaryRequest <span class="variant-count">— negotiate snapshot range</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">SnapshotBoundaryRequest</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,   <span class="comment">// target context</span>
+    <span class="field">root_hash</span>:  <span class="ty">Hash</span>,        <span class="comment">// requester's current root (may be empty)</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>SnapshotStreamRequest <span class="variant-count">— start full snapshot transfer</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">SnapshotStreamRequest</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,  <span class="comment">// which context to snapshot</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>TreeNodeRequest <span class="variant-count">— fetch Merkle tree node</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">TreeNodeRequest</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,   <span class="comment">// target context</span>
+    <span class="field">node_hash</span>:  <span class="ty">Hash</span>,        <span class="comment">// hash of the tree node to fetch</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>LevelWiseRequest <span class="variant-count">— level-wise tree comparison</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">LevelWiseRequest</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,        <span class="comment">// target context</span>
+    <span class="field">level</span>:      <span class="ty">u32</span>,              <span class="comment">// which tree level</span>
+    <span class="field">hashes</span>:     <span class="ty">Vec&lt;Hash&gt;</span>,        <span class="comment">// node hashes at this level</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>EntityPush <span class="variant-count">— push entities to peer</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">EntityPush</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,    <span class="comment">// target context</span>
+    <span class="field">entities</span>:   <span class="ty">Vec&lt;u8&gt;</span>,      <span class="comment">// serialized entity data</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>GroupDeltaRequest <span class="variant-count">— fetch governance op</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Requests a specific governance operation from the peer's op log. Used during governance catch-up when heartbeat reveals missing ops.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">GroupDeltaRequest</span> {
+    <span class="field">group_id</span>: <span class="ty">GroupId</span>,    <span class="comment">// which group</span>
+    <span class="field">delta_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// content hash of the requested governance op</span>
+}</div>
+  </div>
+</details>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     5. MESSAGE PAYLOAD
+     ═══════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>MessagePayload <span class="transport-badge badge-stream">stream data</span> <span class="variant-count">14 variants</span></h2>
+<p class="section-intro">Subsequent data frames sent after the initial <span class="code">Init</span> on a stream. The variant matches the stream type established by <span class="code">InitPayload</span>.</p>
+
+<details open>
+  <summary>DeltaResponse <span class="variant-count">— delta fetch result</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">DeltaResponse</span> {
+    <span class="field">delta</span>: <span class="ty">Option&lt;StateDelta&gt;</span>,  <span class="comment">// the requested delta, or None if not found</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>DagHeadsResponse <span class="variant-count">— current DAG heads</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">DagHeadsResponse</span> {
+    <span class="field">heads</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>,  <span class="comment">// current DAG head delta IDs</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>SnapshotBoundaryResponse <span class="variant-count">— snapshot range info</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">SnapshotBoundaryResponse</span> {
+    <span class="field">root_hash</span>:   <span class="ty">Hash</span>,              <span class="comment">// sender's current root</span>
+    <span class="field">dag_heads</span>:   <span class="ty">Vec&lt;[u8; 32]&gt;</span>,     <span class="comment">// sender's current DAG heads</span>
+    <span class="field">entity_count</span>: <span class="ty">u64</span>,              <span class="comment">// estimated entity count for sizing</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>SnapshotStreamData <span class="variant-count">— snapshot chunk</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">SnapshotStreamData</span> {
+    <span class="field">chunk</span>:    <span class="ty">Cow&lt;[u8]&gt;</span>,  <span class="comment">// serialized state chunk</span>
+    <span class="field">is_last</span>:  <span class="ty">bool</span>,       <span class="comment">// true if this is the final chunk</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>SnapshotStreamEnd <span class="variant-count">— snapshot complete</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">SnapshotStreamEnd</span> {
+    <span class="field">root_hash</span>: <span class="ty">Hash</span>,           <span class="comment">// final root hash for verification</span>
+    <span class="field">dag_heads</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>, <span class="comment">// DAG heads at snapshot time</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>TreeNodeResponse <span class="variant-count">— Merkle tree node data</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">TreeNodeResponse</span> {
+    <span class="field">node</span>: <span class="ty">Option&lt;TreeNode&gt;</span>,  <span class="comment">// the tree node, or None if not found</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>LevelWiseResponse <span class="variant-count">— level comparison result</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">LevelWiseResponse</span> {
+    <span class="field">differing</span>: <span class="ty">Vec&lt;Hash&gt;</span>,  <span class="comment">// hashes that differ at this level</span>
+    <span class="field">missing</span>:   <span class="ty">Vec&lt;Hash&gt;</span>,  <span class="comment">// hashes the responder doesn't have</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>EntityPushAck <span class="variant-count">— entity push acknowledgment</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">EntityPushAck</span> {
+    <span class="field">accepted</span>: <span class="ty">u64</span>,  <span class="comment">// number of entities accepted</span>
+    <span class="field">rejected</span>: <span class="ty">u64</span>,  <span class="comment">// number of entities rejected</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>GroupDeltaResponse <span class="variant-count">— governance op data</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">GroupDeltaResponse</span> {
+    <span class="field">payload</span>: <span class="ty">Option&lt;Vec&lt;u8&gt;&gt;</span>,  <span class="comment">// borsh(SignedGroupOp), or None if not found</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>BlobShareAck <span class="variant-count">— blob received confirmation</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">BlobShareAck</span> {
+    <span class="field">blob_id</span>:  <span class="ty">BlobId</span>,  <span class="comment">// confirmed blob</span>
+    <span class="field">accepted</span>: <span class="ty">bool</span>,    <span class="comment">// true if stored, false if already had it</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>KeyShareAck <span class="variant-count">— key share confirmation</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">KeyShareAck</span> {
+    <span class="field">accepted</span>: <span class="ty">bool</span>,  <span class="comment">// true if key was stored</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>ContextStateCheckResponse <span class="variant-count">— state check result</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">ContextStateCheckResponse</span> {
+    <span class="field">root_hash</span>: <span class="ty">Hash</span>,    <span class="comment">// peer's current root hash</span>
+    <span class="field">in_sync</span>:   <span class="ty">bool</span>,    <span class="comment">// whether peer considers itself in sync</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>StateSyncChunk <span class="variant-count">— incremental state sync data</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">StateSyncChunk</span> {
+    <span class="field">chunk_id</span>:  <span class="ty">u64</span>,         <span class="comment">// sequential chunk index</span>
+    <span class="field">data</span>:      <span class="ty">Cow&lt;[u8]&gt;</span>,   <span class="comment">// serialized entities</span>
+    <span class="field">is_last</span>:   <span class="ty">bool</span>,        <span class="comment">// final chunk marker</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>StateSyncComplete <span class="variant-count">— state sync finalization</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">StateSyncComplete</span> {
+    <span class="field">root_hash</span>: <span class="ty">Hash</span>,            <span class="comment">// final root hash after sync</span>
+    <span class="field">dag_heads</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>,  <span class="comment">// DAG heads after sync</span>
+    <span class="field">total_entities</span>: <span class="ty">u64</span>,       <span class="comment">// total entities transferred</span>
+}</div>
+  </div>
+</details>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     6. GROUP OP
+     ═══════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>GroupOp <span class="transport-badge badge-gossip">gossipsub</span> <span class="variant-count">25 variants</span></h2>
+<p class="section-intro">The actual governance operation inside a <span class="code">SignedGroupOp</span>. Each variant represents a specific group mutation. Applied deterministically on all nodes for convergence.</p>
+
+<details open>
+  <summary>Member Management <span class="variant-count">— 6 variants</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="field">MemberAdded</span> {
+    <span class="field">member_id</span>:    <span class="ty">PublicKey</span>,      <span class="comment">// Ed25519 public key of new member</span>
+    <span class="field">role</span>:         <span class="ty">MemberRole</span>,    <span class="comment">// Admin | Member</span>
+    <span class="field">capabilities</span>: <span class="ty">Capabilities</span>,  <span class="comment">// initial capability set</span>
+}
+
+<span class="field">MemberRemoved</span> {
+    <span class="field">member_id</span>: <span class="ty">PublicKey</span>,  <span class="comment">// triggers cascade removal from all contexts</span>
+}
+
+<span class="field">MemberRoleSet</span> {
+    <span class="field">member_id</span>: <span class="ty">PublicKey</span>,    <span class="comment">// target member</span>
+    <span class="field">role</span>:      <span class="ty">MemberRole</span>,  <span class="comment">// new role</span>
+}
+
+<span class="field">MemberCapabilitySet</span> {
+    <span class="field">member_id</span>:    <span class="ty">PublicKey</span>,      <span class="comment">// target member</span>
+    <span class="field">capabilities</span>: <span class="ty">Capabilities</span>,  <span class="comment">// updated capability bitmask</span>
+}
+
+<span class="field">DefaultCapabilitiesSet</span> {
+    <span class="field">capabilities</span>: <span class="ty">Capabilities</span>,  <span class="comment">// default for new members joining</span>
+}
+
+<span class="field">JoinWithInvitationClaim</span> {
+    <span class="field">claim</span>: <span class="ty">InvitationClaim</span>,  <span class="comment">// signed proof of valid invitation</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>Context Lifecycle <span class="variant-count">— 5 variants</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="field">ContextRegistered</span> {
+    <span class="field">context_id</span>:     <span class="ty">ContextId</span>,             <span class="comment">// new context identifier</span>
+    <span class="field">application_id</span>: <span class="ty">Option&lt;ApplicationId&gt;</span>, <span class="comment">// optional initial WASM app</span>
+}
+
+<span class="field">ContextDetached</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,  <span class="comment">// context to unbind from group</span>
+}
+
+<span class="field">MemberJoinedContext</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,  <span class="comment">// which context</span>
+    <span class="field">member_id</span>:  <span class="ty">PublicKey</span>,   <span class="comment">// who joined</span>
+}
+
+<span class="field">MemberLeftContext</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,  <span class="comment">// which context</span>
+    <span class="field">member_id</span>:  <span class="ty">PublicKey</span>,   <span class="comment">// who left voluntarily</span>
+}
+
+<span class="field">TargetApplicationSet</span> {
+    <span class="field">application_id</span>: <span class="ty">ApplicationId</span>,  <span class="comment">// default app for new contexts in this group</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>Visibility &amp; Access Control <span class="variant-count">— 5 variants</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="field">DefaultVisibilitySet</span> {
+    <span class="field">visibility</span>: <span class="ty">Visibility</span>,  <span class="comment">// Open | Restricted — default for new contexts</span>
+}
+
+<span class="field">ContextVisibilitySet</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,   <span class="comment">// target context</span>
+    <span class="field">visibility</span>: <span class="ty">Visibility</span>,  <span class="comment">// Open | Restricted</span>
+}
+
+<span class="field">ContextAllowlistReplaced</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,        <span class="comment">// target context</span>
+    <span class="field">allowlist</span>:  <span class="ty">Vec&lt;PublicKey&gt;</span>,  <span class="comment">// full replacement allowlist</span>
+}
+
+<span class="field">ContextCapabilityGranted</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,      <span class="comment">// target context</span>
+    <span class="field">member_id</span>:  <span class="ty">PublicKey</span>,       <span class="comment">// target member</span>
+    <span class="field">capability</span>: <span class="ty">Capability</span>,     <span class="comment">// specific capability granted</span>
+}
+
+<span class="field">ContextCapabilityRevoked</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,      <span class="comment">// target context</span>
+    <span class="field">member_id</span>:  <span class="ty">PublicKey</span>,       <span class="comment">// target member</span>
+    <span class="field">capability</span>: <span class="ty">Capability</span>,     <span class="comment">// specific capability revoked</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>Aliases <span class="variant-count">— 3 variants</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="field">ContextAliasSet</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,       <span class="comment">// target context</span>
+    <span class="field">alias</span>:      <span class="ty">Option&lt;String&gt;</span>,  <span class="comment">// human-readable name (None to clear)</span>
+}
+
+<span class="field">MemberAliasSet</span> {
+    <span class="field">member_id</span>: <span class="ty">PublicKey</span>,        <span class="comment">// target member</span>
+    <span class="field">alias</span>:     <span class="ty">Option&lt;String&gt;</span>,  <span class="comment">// human-readable name (None to clear)</span>
+}
+
+<span class="field">GroupAliasSet</span> {
+    <span class="field">alias</span>: <span class="ty">Option&lt;String&gt;</span>,  <span class="comment">// human-readable group name (None to clear)</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>Group Lifecycle &amp; Special <span class="variant-count">— 4 variants</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="field">GroupDelete</span> {
+    <span class="comment">// no fields — deletes the entire group and all bindings</span>
+}
+
+<span class="field">GroupMigrationSet</span> {
+    <span class="field">migration</span>: <span class="ty">MigrationConfig</span>,  <span class="comment">// migration parameters</span>
+}
+
+<span class="field">UpgradePolicySet</span> {
+    <span class="field">policy</span>: <span class="ty">UpgradePolicy</span>,  <span class="comment">// how application upgrades propagate</span>
+}
+
+<span class="field">Noop</span> {
+    <span class="comment">// no fields — merge sentinel, no state change</span>
+    <span class="comment">// used to reconcile divergent DAG heads</span>
+    <span class="comment">// typically has 2+ parent_op_hashes</span>
+}</div>
+  </div>
+</details>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     7. SIGNED GROUP OP SCHEMA
+     ═══════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>SignedGroupOp Schema <span class="variant-count">v3</span></h2>
+<p class="section-intro">The complete signed governance operation structure. Each op is content-addressed (SHA-256 of signable bytes), Ed25519 signed, and forms a DAG via parent hashes.</p>
+
+<div class="g2">
+  <div>
+    <h3>Wire Layout</h3>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">SignedGroupOp</span> {
+    <span class="field">version</span>:          <span class="ty">u8</span>,              <span class="comment">// schema version (currently 3)</span>
+    <span class="field">group_id</span>:         <span class="ty">[u8; 32]</span>,        <span class="comment">// target group identifier</span>
+    <span class="field">parent_op_hashes</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>,  <span class="comment">// DAG ancestry (current heads)</span>
+    <span class="field">state_hash</span>:       <span class="ty">[u8; 32]</span>,        <span class="comment">// optimistic lock on group state</span>
+    <span class="field">signer</span>:           <span class="ty">PublicKey</span>,       <span class="comment">// Ed25519 public key of signer</span>
+    <span class="field">nonce</span>:            <span class="ty">u64</span>,             <span class="comment">// per-signer monotonic counter</span>
+    <span class="field">op</span>:               <span class="ty">GroupOp</span>,         <span class="comment">// the actual operation</span>
+    <span class="field">signature</span>:        <span class="ty">[u8; 64]</span>,        <span class="comment">// Ed25519 signature</span>
+}</div>
+  </div>
+  <div>
+    <h3>Signable Subset</h3>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">SignableGroupOp</span> {
+    <span class="field">version</span>:          <span class="ty">u8</span>,
+    <span class="field">group_id</span>:         <span class="ty">[u8; 32]</span>,
+    <span class="field">parent_op_hashes</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>,
+    <span class="field">state_hash</span>:       <span class="ty">[u8; 32]</span>,
+    <span class="field">signer</span>:           <span class="ty">PublicKey</span>,
+    <span class="field">nonce</span>:            <span class="ty">u64</span>,
+    <span class="field">op</span>:               <span class="ty">GroupOp</span>,
+    <span class="comment">// signature excluded from signing input</span>
+}</div>
+  </div>
+</div>
+
+<div class="signing-box">
+  <h4>Signing Process</h4>
+  <p><strong>1. Build signable:</strong> Construct <span class="code">SignableGroupOp</span> (all fields except <span class="code">signature</span>).</p>
+  <p><strong>2. Domain prefix:</strong> Prepend domain separator <span class="code">b"calimero-signed-group-op-v3"</span> to Borsh-serialized bytes.</p>
+  <p><strong>3. Sign:</strong> <span class="code">signature = Ed25519::sign(private_key, domain_prefix ++ borsh(signable))</span></p>
+  <p><strong>4. Content hash:</strong> <span class="code">op_hash = SHA-256(borsh(signable))</span> — used as the DAG delta ID.</p>
+</div>
+
+<div class="g2" style="margin-top:16px;">
+  <div class="knobs" style="border-color:var(--amber);">
+    <h4 style="color:var(--amber);">Validation Order</h4>
+    <ul style="list-style:decimal;padding-left:18px;">
+      <li>Signature verification (Ed25519)</li>
+      <li>Schema version check (must be 3)</li>
+      <li>Nonce ≥ last seen nonce for signer</li>
+      <li>state_hash matches current group state (or all-zeros to bypass)</li>
+      <li>Signer has sufficient role/capabilities for the op</li>
+      <li>parent_op_hashes.len() ≤ 256</li>
+    </ul>
+  </div>
+  <div class="knobs" style="border-color:var(--green);">
+    <h4 style="color:var(--green);">Key Invariants</h4>
+    <ul>
+      <li><span class="kn">parent_op_hashes</span> — capped at 256 entries</li>
+      <li><span class="kn">nonce</span> — monotonically increasing per signer</li>
+      <li><span class="kn">state_hash</span> — all-zeros means skip validation</li>
+      <li><span class="kn">max_dag_heads</span> — capped at 64 per group</li>
+      <li>Content hash is deterministic: same signable bytes → same hash</li>
+    </ul>
+  </div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     8. NETWORK MESSAGE
+     ═══════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>NetworkMessage <span class="transport-badge badge-internal">internal</span> <span class="variant-count">15 variants</span></h2>
+<p class="section-intro">The Actix message enum sent to the <span class="code">NetworkManager</span> actor. These are internal to the node — never serialized on the wire. Each variant triggers a specific libp2p operation.</p>
+
+<div class="typedef"><span class="kw">enum</span> <span class="ty">NetworkMessage</span> {
+    <span class="field">Publish</span> { topic: <span class="ty">TopicHash</span>, data: <span class="ty">Vec&lt;u8&gt;</span> },              <span class="comment">// gossipsub publish</span>
+    <span class="field">Subscribe</span> { topic: <span class="ty">TopicHash</span> },                              <span class="comment">// join gossipsub topic</span>
+    <span class="field">Unsubscribe</span> { topic: <span class="ty">TopicHash</span> },                            <span class="comment">// leave gossipsub topic</span>
+    <span class="field">OpenStream</span> { peer: <span class="ty">PeerId</span>, protocol: <span class="ty">StreamProtocol</span> },      <span class="comment">// open direct stream</span>
+    <span class="field">SendMessage</span> { stream_id: <span class="ty">StreamId</span>, data: <span class="ty">Vec&lt;u8&gt;</span> },         <span class="comment">// send on open stream</span>
+    <span class="field">CloseStream</span> { stream_id: <span class="ty">StreamId</span> },                         <span class="comment">// close stream</span>
+    <span class="field">ProvideRecord</span> { key: <span class="ty">RecordKey</span>, value: <span class="ty">Vec&lt;u8&gt;</span> },           <span class="comment">// DHT PUT</span>
+    <span class="field">GetRecord</span> { key: <span class="ty">RecordKey</span> },                                 <span class="comment">// DHT GET</span>
+    <span class="field">GetProviders</span> { key: <span class="ty">RecordKey</span> },                              <span class="comment">// DHT find providers</span>
+    <span class="field">GetPeers</span>,                                                     <span class="comment">// list connected peers</span>
+    <span class="field">GetPeerInfo</span> { peer: <span class="ty">PeerId</span> },                                 <span class="comment">// get specific peer metadata</span>
+    <span class="field">Bootstrap</span>,                                                    <span class="comment">// trigger Kademlia bootstrap</span>
+    <span class="field">DialPeer</span> { peer: <span class="ty">PeerId</span>, addrs: <span class="ty">Vec&lt;Multiaddr&gt;</span> },            <span class="comment">// explicit peer dial</span>
+    <span class="field">GetListenAddrs</span>,                                               <span class="comment">// get node's listen addresses</span>
+    <span class="field">GetMeshPeers</span> { topic: <span class="ty">TopicHash</span> },                            <span class="comment">// gossipsub mesh peers for topic</span>
+}</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     9. NETWORK EVENT
+     ═══════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>NetworkEvent <span class="transport-badge badge-internal">internal</span> <span class="variant-count">11 variants</span></h2>
+<p class="section-intro">Events emitted by the <span class="code">NetworkManager</span> actor and handled by <span class="code">NodeManager</span>. These represent observed network activity — gossip messages, peer changes, stream events.</p>
+
+<div class="typedef"><span class="kw">enum</span> <span class="ty">NetworkEvent</span> {
+    <span class="field">GossipMessage</span> {
+        topic: <span class="ty">TopicHash</span>,                    <span class="comment">// which topic it arrived on</span>
+        source: <span class="ty">PeerId</span>,                       <span class="comment">// who sent it</span>
+        data: <span class="ty">Vec&lt;u8&gt;</span>,                        <span class="comment">// raw payload (deserialize as BroadcastMessage)</span>
+    },
+    <span class="field">StreamOpened</span> {
+        stream_id: <span class="ty">StreamId</span>,                  <span class="comment">// unique stream identifier</span>
+        peer: <span class="ty">PeerId</span>,                          <span class="comment">// remote peer</span>
+        protocol: <span class="ty">StreamProtocol</span>,              <span class="comment">// negotiated protocol</span>
+    },
+    <span class="field">StreamMessage</span> {
+        stream_id: <span class="ty">StreamId</span>,                  <span class="comment">// which stream</span>
+        data: <span class="ty">Vec&lt;u8&gt;</span>,                        <span class="comment">// raw payload (deserialize as StreamMessage)</span>
+    },
+    <span class="field">StreamClosed</span> {
+        stream_id: <span class="ty">StreamId</span>,                  <span class="comment">// which stream was closed</span>
+    },
+    <span class="field">PeerConnected</span> {
+        peer: <span class="ty">PeerId</span>,                          <span class="comment">// newly connected peer</span>
+        addrs: <span class="ty">Vec&lt;Multiaddr&gt;</span>,                <span class="comment">// peer's observed addresses</span>
+    },
+    <span class="field">PeerDisconnected</span> {
+        peer: <span class="ty">PeerId</span>,                          <span class="comment">// disconnected peer</span>
+    },
+    <span class="field">TopicSubscribed</span> {
+        topic: <span class="ty">TopicHash</span>,                    <span class="comment">// successfully subscribed</span>
+    },
+    <span class="field">TopicUnsubscribed</span> {
+        topic: <span class="ty">TopicHash</span>,                    <span class="comment">// successfully unsubscribed</span>
+    },
+    <span class="field">RecordFound</span> {
+        key: <span class="ty">RecordKey</span>,                      <span class="comment">// DHT key</span>
+        value: <span class="ty">Vec&lt;u8&gt;</span>,                      <span class="comment">// DHT value</span>
+    },
+    <span class="field">ProvidersFound</span> {
+        key: <span class="ty">RecordKey</span>,                      <span class="comment">// DHT key</span>
+        providers: <span class="ty">Vec&lt;PeerId&gt;</span>,               <span class="comment">// peers providing this record</span>
+    },
+    <span class="field">ListenAddrExpired</span> {
+        addr: <span class="ty">Multiaddr</span>,                     <span class="comment">// address no longer valid</span>
+    },
+}</div>
+
+<div class="borsh-note">These are NOT serialized on the wire — they are Actix messages exchanged internally between NetworkManager and NodeManager actors via LazyRecipient&lt;NodeMessage&gt;</div>
+</div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

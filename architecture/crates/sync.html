@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sync Engine — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="../system-overview.html">System Overview</a><span class="sep">/</span><span>Sync Engine</span></div>
+
+<h1><em>Sync</em> Engine</h1>
+<p class="page-subtitle">Sync protocols from calimero-node · calimero-node-primitives</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     1. PURPOSE
+     ═══════════════════════════════════════════════════════════════════ -->
+<h2>Purpose</h2>
+<p style="margin-bottom:32px;">Two independent synchronization systems keep peers converged: <strong>application state sync</strong> (context DAG) and <strong>group governance sync</strong> (governance DAG). The SyncManager runs periodic and on-demand sync cycles. Protocols are selected dynamically via handshake negotiation based on divergence metrics.</p>
+
+<div class="g4" style="margin-bottom:36px;">
+  <div class="stat"><div class="v" style="color:#f59e0b;">4</div><div class="l">app sync protocols</div></div>
+  <div class="stat"><div class="v" style="color:#f59e0b;">3</div><div class="l">governance mechanisms</div></div>
+  <div class="stat"><div class="v" style="color:#f59e0b;">30s</div><div class="l">heartbeat interval</div></div>
+  <div class="stat"><div class="v" style="color:#f59e0b;">N</div><div class="l">concurrent syncs</div></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     2. PROTOCOL SELECTION
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Protocol Selection</h2>
+<p style="margin-bottom:18px;">Peers exchange a <span class="code">SyncHandshake</span> to compare state. The comparison metrics determine which protocol minimizes bandwidth and latency for the current divergence level.</p>
+
+<svg viewBox="0 0 960 460" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="sync-arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#f59e0b"/></marker>
+    <marker id="sync-arr-dim" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#6b6b80"/></marker>
+    <filter id="glow-amber"><feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#f59e0b" flood-opacity="0.25"/></filter>
+  </defs>
+
+  <!-- Peer A -->
+  <rect x="20" y="40" width="160" height="70" rx="10" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="100" y="65" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Peer A</text>
+  <text x="100" y="85" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">root_hash, dag_heads</text>
+  <text x="100" y="99" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">entities, depth</text>
+
+  <!-- Peer B -->
+  <rect x="780" y="40" width="160" height="70" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="860" y="65" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Peer B</text>
+  <text x="860" y="85" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">root_hash, dag_heads</text>
+  <text x="860" y="99" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">entities, depth</text>
+
+  <!-- SyncHandshake exchange -->
+  <line x1="180" y1="65" x2="380" y2="65" stroke="#f59e0b" stroke-width="2" marker-end="url(#sync-arr)"/>
+  <line x1="780" y1="80" x2="580" y2="80" stroke="#f59e0b" stroke-width="2" marker-end="url(#sync-arr)"/>
+
+  <!-- Handshake box -->
+  <rect x="380" y="30" width="200" height="80" rx="12" fill="#f59e0b08" stroke="#f59e0b" stroke-width="2" filter="url(#glow-amber)"/>
+  <text x="480" y="55" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">SyncHandshake</text>
+  <text x="480" y="75" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Compare root_hash + dag_heads</text>
+  <text x="480" y="92" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">entity count + tree depth</text>
+
+  <!-- Decision arrow down -->
+  <line x1="480" y1="110" x2="480" y2="145" stroke="#f59e0b" stroke-width="1.5"/>
+  <polygon points="475,143 480,153 485,143" fill="#f59e0b"/>
+
+  <!-- Decision diamond -->
+  <polygon points="480,155 570,195 480,235 390,195" fill="#161622" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="480" y="192" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">divergence?</text>
+
+  <!-- Four protocol boxes -->
+  <!-- Hash Comparison (small diff) -->
+  <line x1="390" y1="195" x2="130" y2="195" stroke="#10b981" stroke-width="1.2"/>
+  <line x1="130" y1="195" x2="130" y2="280" stroke="#10b981" stroke-width="1.2"/>
+  <polygon points="125,278 130,288 135,278" fill="#10b981"/>
+
+  <rect x="30" y="290" width="200" height="100" rx="10" fill="#10b98110" stroke="#10b981" stroke-width="1.5"/>
+  <text x="130" y="315" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Hash Comparison</text>
+  <text x="130" y="338" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Merkle tree walk</text>
+  <text x="130" y="355" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Small diffs, few nodes</text>
+  <text x="130" y="375" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="8">LOW bandwidth</text>
+
+  <text x="250" y="188" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600">small</text>
+
+  <!-- Level-wise (broad shallow) -->
+  <line x1="435" y1="235" x2="370" y2="280" stroke="#3b82f6" stroke-width="1.2"/>
+  <polygon points="366,278 370,288 375,278" fill="#3b82f6"/>
+
+  <rect x="270" y="290" width="200" height="100" rx="10" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="370" y="315" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Level-wise</text>
+  <text x="370" y="338" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Wide-tree traversal</text>
+  <text x="370" y="355" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Broad, shallow divergence</text>
+  <text x="370" y="375" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="8">MEDIUM bandwidth</text>
+
+  <text x="410" y="260" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600">broad</text>
+
+  <!-- Snapshot (full transfer) -->
+  <line x1="525" y1="235" x2="590" y2="280" stroke="#ef4444" stroke-width="1.2"/>
+  <polygon points="586,278 590,288 595,278" fill="#ef4444"/>
+
+  <rect x="490" y="290" width="200" height="100" rx="10" fill="#ef444410" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="590" y="315" text-anchor="middle" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Snapshot</text>
+  <text x="590" y="338" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Full state transfer</text>
+  <text x="590" y="355" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Paged chunks + DeltaBuffer</text>
+  <text x="590" y="375" text-anchor="middle" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="8">HIGH bandwidth</text>
+
+  <text x="555" y="260" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600">large</text>
+
+  <!-- Delta (direct DAG exchange) -->
+  <line x1="570" y1="195" x2="830" y2="195" stroke="#8b5cf6" stroke-width="1.2"/>
+  <line x1="830" y1="195" x2="830" y2="280" stroke="#8b5cf6" stroke-width="1.2"/>
+  <polygon points="825,278 830,288 835,278" fill="#8b5cf6"/>
+
+  <rect x="730" y="290" width="200" height="100" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="830" y="315" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Delta Sync</text>
+  <text x="830" y="338" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Direct DAG exchange</text>
+  <text x="830" y="355" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Bloom filter + subtree prefetch</text>
+  <text x="830" y="375" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="8">OPTIMAL bandwidth</text>
+
+  <text x="710" y="188" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600">direct DAG</text>
+
+  <!-- Legend bar -->
+  <line x1="30" y1="420" x2="930" y2="420" stroke="#252538" stroke-width="1"/>
+  <circle cx="60" cy="442" r="5" fill="#10b981"/>
+  <text x="72" y="446" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Hash Comparison</text>
+  <circle cx="220" cy="442" r="5" fill="#3b82f6"/>
+  <text x="232" y="446" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Level-wise</text>
+  <circle cx="340" cy="442" r="5" fill="#ef4444"/>
+  <text x="352" y="446" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Snapshot</text>
+  <circle cx="440" cy="442" r="5" fill="#8b5cf6"/>
+  <text x="452" y="446" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Delta Sync</text>
+</svg>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     3. APPLICATION STATE PROTOCOLS
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Application State Protocols</h2>
+<p style="margin-bottom:18px;">Four protocols for synchronizing context application state. Each is optimized for a different divergence scenario.</p>
+
+<details>
+  <summary>Hash Comparison — Merkle tree walk</summary>
+  <div class="detail-body">
+    <p>The lightest sync protocol. Both peers share their Merkle tree root hash. If roots differ, they exchange hashes at progressively deeper levels to locate the divergent subtrees. Only the changed subtrees are transferred.</p>
+    <h4 style="margin-top:14px;">Algorithm</h4>
+    <div class="step"><div class="n">1</div>
+      <h4>Root Compare</h4>
+      <p>Exchange root hashes. If equal, sync is a no-op. If different, descend to the next level.</p>
+    </div>
+    <div class="step"><div class="n">2</div>
+      <h4>Level Descent</h4>
+      <p>Exchange hash nodes at the current depth. Mark subtrees with matching hashes as "synced" and skip them. Continue descending into differing subtrees.</p>
+    </div>
+    <div class="step"><div class="n">3</div>
+      <h4>Leaf Transfer</h4>
+      <p>At leaf level, exchange the actual data entries for divergent nodes. Apply incoming entries to local storage and update the Merkle tree.</p>
+    </div>
+    <p style="margin-top:14px;"><strong>Best for:</strong> Small, localized changes — a few keys updated in a large state tree.</p>
+    <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/crates/node/src/sync" target="_blank" rel="noopener">crates/node/src/sync</a>
+  </div>
+</details>
+
+<details>
+  <summary>Level-wise — wide-tree traversal</summary>
+  <div class="detail-body">
+    <p>Optimized for broad, shallow divergence where many branches differ but the tree isn't deep. Instead of drilling into individual branches, this protocol processes entire levels in parallel.</p>
+    <h4 style="margin-top:14px;">Algorithm</h4>
+    <div class="step"><div class="n">1</div>
+      <h4>Level Exchange</h4>
+      <p>Both peers serialize their entire tree at the current level and exchange the batch. This avoids the round-trip overhead of per-branch negotiation.</p>
+    </div>
+    <div class="step"><div class="n">2</div>
+      <h4>Batch Diff</h4>
+      <p>Compare the received level against the local level. Identify additions, deletions, and modifications in a single pass.</p>
+    </div>
+    <div class="step"><div class="n">3</div>
+      <h4>Descend Parallel</h4>
+      <p>For each differing node, descend to the next level. Process all descendants in parallel rather than sequentially.</p>
+    </div>
+    <p style="margin-top:14px;"><strong>Best for:</strong> Many keys changed across different parts of the tree — bulk updates, migrations.</p>
+  </div>
+</details>
+
+<details>
+  <summary>Snapshot — full state transfer</summary>
+  <div class="detail-body">
+    <p>Fallback protocol for maximum divergence or when a peer has no prior state (new joiner). Transfers the entire state as paged chunks with a <span class="code">DeltaBuffer</span> to capture mutations during transfer.</p>
+    <h4 style="margin-top:14px;">Algorithm</h4>
+    <div class="step"><div class="n">1</div>
+      <h4>Snapshot Begin</h4>
+      <p>Source peer takes a consistent read snapshot and begins chunking the state into pages of <span class="code">snapshot_chunk_size</span> bytes. A <span class="code">DeltaBuffer</span> is opened to capture any writes that occur during the transfer.</p>
+    </div>
+    <div class="step"><div class="n">2</div>
+      <h4>Chunk Transfer</h4>
+      <p>Pages are streamed to the target peer. Each page includes a sequence number and hash for integrity verification. The target applies pages to a staging area.</p>
+    </div>
+    <div class="step"><div class="n">3</div>
+      <h4>DeltaBuffer Replay</h4>
+      <p>After all pages are transferred, the accumulated <span class="code">DeltaBuffer</span> entries (mutations that occurred during the snapshot) are replayed on top of the restored state.</p>
+    </div>
+    <div class="step"><div class="n">4</div>
+      <h4>Commit</h4>
+      <p>The staging area is atomically swapped into the live state. The Merkle tree is rebuilt from the new state.</p>
+    </div>
+    <p style="margin-top:14px;"><strong>Best for:</strong> New peers joining a context, or peers that have been offline for a very long time.</p>
+  </div>
+</details>
+
+<details>
+  <summary>Delta Sync — direct DAG exchange</summary>
+  <div class="detail-body">
+    <p>Direct exchange of causal delta entries between peers. Uses bloom filters to efficiently identify which deltas the remote peer is missing, and subtree prefetch to minimize round-trips.</p>
+    <h4 style="margin-top:14px;">Algorithm</h4>
+    <div class="step"><div class="n">1</div>
+      <h4>Bloom Filter Exchange</h4>
+      <p>Each peer builds a bloom filter of their DAG entry hashes and exchanges it. This allows each side to quickly identify entries the other is likely missing without enumerating the full DAG.</p>
+    </div>
+    <div class="step"><div class="n">2</div>
+      <h4>Delta Request</h4>
+      <p>Based on bloom filter results, the receiver requests specific delta entries by hash. The sender responds with the full <span class="code">CausalDelta</span> payloads.</p>
+    </div>
+    <div class="step"><div class="n">3</div>
+      <h4>Subtree Prefetch</h4>
+      <p>When a requested delta has parent hashes that the receiver also lacks, the sender proactively includes the parent chain (subtree prefetch) to reduce additional round-trips.</p>
+    </div>
+    <div class="step"><div class="n">4</div>
+      <h4>Apply + Verify</h4>
+      <p>Received deltas are verified for causal consistency (all parents present) and applied to the local DAG in topological order. The Merkle tree is incrementally updated.</p>
+    </div>
+    <p style="margin-top:14px;"><strong>Best for:</strong> Moderate divergence with known recent activity — the most commonly used protocol during normal operation.</p>
+  </div>
+</details>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     4. GROUP GOVERNANCE SYNC
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Group Governance Sync</h2>
+<p style="margin-bottom:18px;">Governance operations form a separate DAG and use dedicated sync mechanisms. Three complementary approaches ensure governance state converges across all group members.</p>
+
+<div class="g2" style="margin-bottom:16px;">
+  <div class="cb">
+    <h4 style="color:#10b981;">Real-time Gossip</h4>
+    <span class="tag tag-done">primary</span>
+    <p style="margin-top:10px;"><span class="code">SignedGroupOpV1</span> operations are published via gossipsub on dedicated group topics. Each operation is verified on ingress — signature check, capability check, parent hash validation. Valid operations are fed directly into the local <span class="code">DagStore</span>.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="comment">// Gossip on group topic</span><br>
+<span class="kw">pub fn</span> <span class="field">publish_group_op</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;topic: &amp;<span class="ty">GroupTopic</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;op: &amp;<span class="ty">SignedGroupOpV1</span>,<br>
+) -&gt; <span class="ty">Result</span>&lt;()&gt;
+    </div>
+  </div>
+  <div class="cb">
+    <h4 style="color:#f59e0b;">Heartbeat Comparison</h4>
+    <span class="tag tag-cli">periodic</span>
+    <p style="margin-top:10px;"><span class="code">GroupStateHeartbeat</span> is broadcast every <strong>30 seconds</strong>. Contains the group's current <span class="code">dag_heads</span> (latest operation hashes). Peers compare heads and trigger catch-up if they differ.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">pub struct</span> <span class="ty">GroupStateHeartbeat</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">group_id</span>: GroupId,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">dag_heads</span>: Vec&lt;Hash&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">op_count</span>: u64,<br>
+}
+    </div>
+  </div>
+</div>
+
+<div class="g2" style="margin-bottom:16px;">
+  <div class="cb">
+    <h4 style="color:#3b82f6;">Stream Catch-Up</h4>
+    <span class="tag tag-actor">on-demand</span>
+    <p style="margin-top:10px;">When heartbeat comparison reveals a mismatch, a direct stream is opened to the divergent peer. The peer exchanges <span class="code">GroupDeltaRequest</span> specifying known heads, and receives a <span class="code">GroupDeltaResponse</span> with the missing operations scanned from the remote <span class="code">OpLog</span>.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">pub struct</span> <span class="ty">GroupDeltaRequest</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">group_id</span>: GroupId,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">known_heads</span>: Vec&lt;Hash&gt;,<br>
+}<br><br>
+<span class="kw">pub struct</span> <span class="ty">GroupDeltaResponse</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">ops</span>: Vec&lt;SignedGroupOpV1&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">has_more</span>: bool,<br>
+}
+    </div>
+  </div>
+  <div class="cb">
+    <h4 style="color:#8b5cf6;">Startup Recovery</h4>
+    <span class="tag tag-types">boot</span>
+    <p style="margin-top:10px;">On node startup, <span class="code">reload_group_dags</span> reads the persistent <span class="code">OpLog</span> from RocksDB and reconstructs all group DAGs in memory. The DAG heads are then compared with peers via the first heartbeat cycle to catch up on any operations missed while offline.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="comment">// Called at node boot</span><br>
+<span class="kw">pub async fn</span> <span class="field">reload_group_dags</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;store: &amp;<span class="ty">RocksDBStore</span>,<br>
+) -&gt; <span class="ty">Result</span>&lt;HashMap&lt;GroupId, DagState&gt;&gt;
+    </div>
+  </div>
+</div>
+
+<svg viewBox="0 0 960 100" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-top:8px;">
+  <defs>
+    <marker id="gov-arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#10b981"/></marker>
+  </defs>
+
+  <rect x="15" y="20" width="150" height="55" rx="8" fill="#10b98110" stroke="#10b981" stroke-width="1.2"/>
+  <text x="90" y="42" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">GroupOp Created</text>
+  <text x="90" y="58" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">sign + apply local</text>
+
+  <line x1="165" y1="48" x2="195" y2="48" stroke="#10b981" stroke-width="1.5" marker-end="url(#gov-arr)"/>
+
+  <rect x="195" y="20" width="150" height="55" rx="8" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="270" y="42" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Gossip Broadcast</text>
+  <text x="270" y="58" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">group topic</text>
+
+  <line x1="345" y1="48" x2="375" y2="48" stroke="#10b981" stroke-width="1.5" marker-end="url(#gov-arr)"/>
+
+  <rect x="375" y="20" width="150" height="55" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.2"/>
+  <text x="450" y="42" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Peer Ingestion</text>
+  <text x="450" y="58" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">verify + DagStore</text>
+
+  <line x1="525" y1="48" x2="555" y2="48" stroke="#10b981" stroke-width="1.5" marker-end="url(#gov-arr)"/>
+
+  <rect x="555" y="20" width="170" height="55" rx="8" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.2"/>
+  <text x="640" y="42" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Heartbeat Check</text>
+  <text x="640" y="58" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">dag_heads compare</text>
+
+  <line x1="725" y1="48" x2="755" y2="48" stroke="#10b981" stroke-width="1.5" marker-end="url(#gov-arr)"/>
+
+  <rect x="755" y="20" width="180" height="55" rx="8" fill="#ef444410" stroke="#ef4444" stroke-width="1.2"/>
+  <text x="845" y="42" text-anchor="middle" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Stream Catch-Up</text>
+  <text x="845" y="58" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">DeltaReq / DeltaResp</text>
+</svg>
+
+<div class="legend">
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>Real-time gossip</div>
+  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>Heartbeat periodic</div>
+  <div class="legend-item"><div class="ld" style="background:#3b82f6"></div>Stream catch-up</div>
+  <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>Startup recovery</div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     5. SYNCMANAGER
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>SyncManager</h2>
+<p style="margin-bottom:18px;">Long-running async task (not an Actix actor) that orchestrates all synchronization. Runs periodic sync cycles and handles on-demand sync triggered by incoming streams.</p>
+
+<h3>Configuration</h3>
+<div class="typedef" style="margin-bottom:16px;">
+<span class="kw">pub struct</span> <span class="ty">SyncConfig</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">timeout</span>: Duration,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// per-sync timeout</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">interval</span>: Duration,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// periodic sync interval</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">frequency</span>: u32,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// syncs per interval</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_concurrent</span>: usize,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// max parallel sync streams</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">snapshot_chunk_size</span>: usize,&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// bytes per snapshot page</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">delta_sync_threshold</span>: u64,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// entity count for delta vs snapshot</span><br>
+}
+</div>
+
+<h3>Core Loop</h3>
+<div class="g2" style="margin-bottom:18px;">
+  <div>
+    <div class="step"><div class="n">1</div>
+      <h4>start() — Spawn Loop</h4>
+      <p>The <span class="code">start()</span> method spawns the main sync loop as a Tokio task. It runs indefinitely, waking on a timer tick or when an incoming stream is opened by a remote peer.</p>
+    </div>
+    <div class="step"><div class="n">2</div>
+      <h4>Periodic Tick</h4>
+      <p>On each interval tick, iterates over all active contexts. For each context, builds a <span class="code">SyncState</span> (current root_hash, dag_heads, entity count) and selects a peer for synchronization.</p>
+    </div>
+    <div class="step"><div class="n">3</div>
+      <h4>Peer Selection</h4>
+      <p>Selects a sync peer based on: most recently seen heartbeat, lowest latency, and whether they reported a different state hash. Avoids peers already in an active sync session.</p>
+    </div>
+  </div>
+  <div>
+    <div class="step"><div class="n">4</div>
+      <h4>Concurrent Futures</h4>
+      <p>Sync operations run as bounded concurrent futures via <span class="code">FuturesUnordered</span>, capped at <span class="code">max_concurrent</span>. Each future handles one context-peer sync session from handshake through completion.</p>
+    </div>
+    <div class="step"><div class="n">5</div>
+      <h4>handle_opened_stream()</h4>
+      <p>When a remote peer opens a stream, reads the <span class="code">StreamMessage::Init</span> frame, extracts the <span class="code">InitPayload</span>, and dispatches to the appropriate sync protocol handler based on the negotiated protocol type.</p>
+    </div>
+  </div>
+</div>
+
+<h3>Stream Wire Types</h3>
+<div class="g2">
+  <div class="typedef">
+<span class="kw">pub enum</span> <span class="ty">StreamMessage</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Init</span>(<span class="ty">InitPayload</span>),<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Message</span>(<span class="ty">MessagePayload</span>),<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Close</span>,<br>
+}
+  </div>
+  <div>
+    <div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">InitPayload</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">context_id</span>: ContextId,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">protocol</span>: <span class="ty">SyncProtocol</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">handshake</span>: <span class="ty">SyncHandshake</span>,<br>
+}
+    </div>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">pub enum</span> <span class="ty">MessagePayload</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">HashNodes</span>(Vec&lt;HashNode&gt;),<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">LevelData</span>(LevelBatch),<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">SnapshotChunk</span>(PageData),<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">DeltaEntries</span>(Vec&lt;CausalDelta&gt;),<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">BloomFilter</span>(BloomData),<br>
+}
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     6. TRANSPORT
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Transport</h2>
+<p style="margin-bottom:18px;">The sync transport layer wraps libp2p streams with framing, encryption, and authentication.</p>
+
+<div class="g2" style="margin-bottom:16px;">
+  <div class="cb">
+    <h4 style="color:#8b5cf6;">SyncTransport</h4>
+    <p style="margin-top:8px;">Wraps a raw libp2p stream with length-delimited framing. Each frame is a Borsh-serialized <span class="code">StreamMessage</span>. Handles backpressure via Tokio's <span class="code">AsyncWrite</span> flow control.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">pub struct</span> <span class="ty">SyncTransport</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">framed</span>: Framed&lt;Stream, LengthCodec&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">encryption</span>: <span class="ty">EncryptionState</span>,<br>
+}
+    </div>
+  </div>
+  <div class="cb">
+    <h4 style="color:#10b981;">EncryptionState</h4>
+    <p style="margin-top:8px;">Manages per-stream encryption state. After the initial handshake, streams are encrypted with a shared key derived from the context's encryption domain. Supports both <span class="code">Encrypted</span> and <span class="code">Plaintext</span> modes (configurable per context).</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">pub enum</span> <span class="ty">EncryptionState</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Plaintext</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Encrypted</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">cipher</span>: ChaCha20Poly1305,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">nonce_counter</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;},<br>
+}
+    </div>
+  </div>
+</div>
+
+<div class="cb" style="margin-bottom:16px;">
+  <h4 style="color:#f59e0b;">Challenge Domain</h4>
+  <p style="margin-top:8px;">Each sync stream authenticates with a challenge derived from the context's encryption domain. The initiating peer signs a challenge nonce, and the responder verifies membership before accepting the stream. This prevents unauthorized peers from syncing context data.</p>
+</div>
+
+<svg viewBox="0 0 960 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="tr-arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#f59e0b"/></marker>
+  </defs>
+
+  <rect x="15" y="15" width="140" height="50" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1"/>
+  <text x="85" y="37" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">SyncManager</text>
+  <text x="85" y="52" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">open stream</text>
+
+  <line x1="155" y1="40" x2="185" y2="40" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#tr-arr)"/>
+
+  <rect x="185" y="15" width="150" height="50" rx="8" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1"/>
+  <text x="260" y="37" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Challenge Auth</text>
+  <text x="260" y="52" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">sign + verify</text>
+
+  <line x1="335" y1="40" x2="365" y2="40" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#tr-arr)"/>
+
+  <rect x="365" y="15" width="150" height="50" rx="8" fill="#10b98110" stroke="#10b981" stroke-width="1"/>
+  <text x="440" y="37" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Encryption</text>
+  <text x="440" y="52" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">ChaCha20Poly1305</text>
+
+  <line x1="515" y1="40" x2="545" y2="40" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#tr-arr)"/>
+
+  <rect x="545" y="15" width="150" height="50" rx="8" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1"/>
+  <text x="620" y="37" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Framed Stream</text>
+  <text x="620" y="52" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">length-delimited</text>
+
+  <line x1="695" y1="40" x2="725" y2="40" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#tr-arr)"/>
+
+  <rect x="725" y="15" width="140" height="50" rx="8" fill="#06b6d410" stroke="#06b6d4" stroke-width="1"/>
+  <text x="795" y="37" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">StreamMessage</text>
+  <text x="795" y="52" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">Borsh serialized</text>
+</svg>
+
+<div class="legend">
+  <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>Transport framing</div>
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>Encryption</div>
+  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>Authentication</div>
+  <div class="legend-item"><div class="ld" style="background:#06b6d4"></div>Wire format</div>
+</div>
+</div>
+
+</div>
+</div>
+<script src="../nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Context &amp; Groups — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="../system-overview.html">System Overview</a><span class="sep">/</span><span>Context &amp; Groups</span></div>
+
+<h1>Context &amp; <em>Groups</em></h1>
+<p class="page-subtitle">calimero-context + calimero-context-primitives + calimero-context-config</p>
+
+<!-- ════════════════════════════════════════════════════════
+     1. PURPOSE
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Purpose</h2>
+<p style="margin-bottom:14px;"><span class="code">ContextManager</span> is an <strong>Actix actor</strong> that manages <em>contexts</em> (application instances), <em>groups</em> (governance units), and the <em>governance DAG</em>. Every context belongs to a group. The manager holds per-group <span class="code">DagStore</span>s, handles 20+ message types, and coordinates with <span class="code">GroupStore</span> for persistence.</p>
+
+<svg viewBox="0 0 1060 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr-g" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#10b981"/></marker>
+    <marker id="arr-d" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#6b6b80"/></marker>
+  </defs>
+
+  <!-- ContextManager central box -->
+  <rect x="340" y="30" width="380" height="160" rx="14" fill="#10b98108" stroke="#10b981" stroke-width="2"/>
+  <text x="530" y="62" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="16" font-weight="700">ContextManager</text>
+  <rect x="600" y="44" width="55" height="18" rx="4" fill="#10b98120"/>
+  <text x="627" y="56" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">actor</text>
+
+  <text x="370" y="90" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">contexts cache &middot; group_dags HashMap</text>
+  <text x="370" y="110" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">GroupStore persistence &middot; OpLog DAGs</text>
+  <text x="370" y="130" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">20+ Handler&lt;ContextMessage&gt; variants</text>
+  <text x="370" y="150" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">upgrade propagators &middot; 30s heartbeat</text>
+  <text x="370" y="176" fill="#10b98180" font-family="JetBrains Mono, monospace" font-size="8">crates/context/src/lib.rs</text>
+
+  <!-- Incoming: Server -->
+  <rect x="30" y="55" width="150" height="45" rx="8" fill="#f9731610" stroke="#f97316" stroke-width="1.2"/>
+  <text x="105" y="74" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">Server / RPC</text>
+  <text x="105" y="90" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">ContextClient</text>
+  <line x1="180" y1="78" x2="340" y2="78" stroke="#10b981" stroke-width="1.5" marker-end="url(#arr-g)"/>
+
+  <!-- Incoming: NodeManager -->
+  <rect x="30" y="120" width="150" height="45" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.2"/>
+  <text x="105" y="139" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">NodeManager</text>
+  <text x="105" y="155" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">delta routing</text>
+  <line x1="180" y1="143" x2="340" y2="143" stroke="#10b981" stroke-width="1.5" marker-end="url(#arr-g)"/>
+
+  <!-- Outgoing: GroupStore -->
+  <rect x="800" y="55" width="150" height="45" rx="8" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="875" y="74" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">GroupStore</text>
+  <text x="875" y="90" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">persistence</text>
+  <line x1="720" y1="78" x2="800" y2="78" stroke="#6b6b80" stroke-width="1.2" marker-end="url(#arr-d)"/>
+
+  <!-- Outgoing: NetworkManager -->
+  <rect x="800" y="120" width="150" height="45" rx="8" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.2"/>
+  <text x="875" y="139" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">NetworkManager</text>
+  <text x="875" y="155" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">gossip publish</text>
+  <line x1="720" y1="143" x2="800" y2="143" stroke="#6b6b80" stroke-width="1.2" marker-end="url(#arr-d)"/>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     2. MODULE STRUCTURE
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Module Structure</h2>
+
+<h3 style="color:#10b981;">calimero-context</h3>
+<div class="fr"><div class="fp">lib.rs</div><div class="fd"><span class="code">ContextManager</span> actor &mdash; startup, fields, Actix lifecycle, heartbeat timer, DAG reload</div></div>
+<div class="fr"><div class="fp">group_store.rs</div><div class="fd">Authoritative persistence layer &mdash; <span class="code">apply_local_signed_group_op</span>, op log, DAG heads, nonce management</div></div>
+<div class="fr"><div class="fp">governance_dag.rs</div><div class="fd">DAG bridge &mdash; <span class="code">GroupGovernanceApplier</span> converts <span class="code">SignedGroupOp</span> to <span class="code">CausalDelta</span></div></div>
+<div class="fr"><div class="fp">handlers/</div><div class="fd">20+ handler files, one per <span class="code">ContextMessage</span> variant (create, join, delete, execute, group ops, etc.)</div></div>
+
+<h3 style="color:#10b981;margin-top:20px;">calimero-context-primitives</h3>
+<div class="fr"><div class="fp">client.rs</div><div class="fd"><span class="code">ContextClient</span> typedef &mdash; thin async fa&ccedil;ade wrapping <span class="code">LazyRecipient&lt;ContextMessage&gt;</span></div></div>
+<div class="fr"><div class="fp">client/sync.rs</div><div class="fd">Sync-related client helpers (group delta request/response coordination)</div></div>
+<div class="fr"><div class="fp">client/context_api.rs</div><div class="fd">Context-level API methods (create, join, delete, execute, config queries)</div></div>
+<div class="fr"><div class="fp">client/crypto.rs</div><div class="fd">Cryptographic helpers (signing, key derivation, invitation tokens)</div></div>
+<div class="fr"><div class="fp">local_governance.rs</div><div class="fd">Wire types: <span class="code">SignedGroupOp</span>, <span class="code">GroupOp</span>, <span class="code">SignableGroupOp</span> &mdash; Ed25519, borsh, schema v3</div></div>
+<div class="fr"><div class="fp">group.rs</div><div class="fd">Actix messages &mdash; group-level message types for actor communication</div></div>
+<div class="fr"><div class="fp">messages.rs</div><div class="fd"><span class="code">ContextMessage</span> enum &mdash; top-level message envelope with 20+ variants</div></div>
+
+<h3 style="color:#10b981;margin-top:20px;">calimero-context-config</h3>
+<div class="fr"><div class="fp">client_config.rs</div><div class="fd">Configuration for context client connections and transport settings</div></div>
+<div class="fr"><div class="fp">types.rs</div><div class="fd">Shared configuration types used across context crates</div></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     3. CONTEXTMANAGER ACTOR
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>ContextManager Actor</h2>
+<p style="margin-bottom:18px;">The central actor for all context and group operations. Initialized on node start, it rebuilds in-memory state from persistent storage and starts background coordination tasks.</p>
+
+<div class="g2" style="margin-bottom:20px;">
+  <div>
+    <h3>Key Fields</h3>
+    <div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">ContextManager</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">store</span>: Arc&lt;Store&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">node_client</span>: NodeClient,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">context_client</span>: ContextClient,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">group_dags</span>: HashMap&lt;GroupId, DagStore&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">contexts</span>: HashMap&lt;ContextId, ContextState&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">upgrade_propagators</span>: HashMap&lt;GroupId, UpgradeProp&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// ... network, runtime refs</span><br>
+}
+    </div>
+  </div>
+  <div>
+    <h3>Startup Sequence</h3>
+    <div class="step"><div class="n">1</div>
+      <h4>recover_in_progress_upgrades</h4>
+      <p>Resume any application upgrades that were interrupted by a previous shutdown.</p>
+    </div>
+    <div class="step"><div class="n">2</div>
+      <h4>reload_group_dags</h4>
+      <p>For each group in the store, read the full <span class="code">OpLog</span> and rebuild the in-memory <span class="code">DagStore</span> via <span class="code">restore_applied_delta</span>.</p>
+    </div>
+    <div class="step"><div class="n">3</div>
+      <h4>start_group_heartbeat (30s)</h4>
+      <p>Periodic timer publishes <span class="code">GroupStateHeartbeat</span> with current <span class="code">dag_heads</span> for every group, triggering catch-up on peers.</p>
+    </div>
+  </div>
+</div>
+
+<svg viewBox="0 0 1060 160" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="su" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#10b981"/></marker>
+  </defs>
+
+  <rect x="30" y="30" width="180" height="100" rx="10" fill="#10b98108" stroke="#10b981" stroke-width="1.5"/>
+  <text x="120" y="55" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">Actor::started()</text>
+  <text x="120" y="78" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">recover upgrades</text>
+  <text x="120" y="96" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">reload DAGs</text>
+  <text x="120" y="114" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">start heartbeat</text>
+
+  <line x1="210" y1="80" x2="280" y2="80" stroke="#10b981" stroke-width="1.5" marker-end="url(#su)"/>
+
+  <rect x="280" y="40" width="200" height="80" rx="10" fill="#f59e0b08" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="380" y="65" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">OpLog (storage)</text>
+  <text x="380" y="88" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">per-group sequence</text>
+  <text x="380" y="106" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">borsh(SignedGroupOp)</text>
+
+  <line x1="480" y1="80" x2="550" y2="80" stroke="#10b981" stroke-width="1.5" marker-end="url(#su)"/>
+
+  <rect x="550" y="40" width="200" height="80" rx="10" fill="#8b5cf608" stroke="#8b5cf6" stroke-width="1.2"/>
+  <text x="650" y="65" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">DagStore (memory)</text>
+  <text x="650" y="88" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">restore_applied_delta</text>
+  <text x="650" y="106" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">rebuild heads + pending</text>
+
+  <line x1="750" y1="80" x2="820" y2="80" stroke="#10b981" stroke-width="1.5" marker-end="url(#su)"/>
+
+  <rect x="820" y="40" width="200" height="80" rx="10" fill="#10b98108" stroke="#10b981" stroke-width="1.2"/>
+  <text x="920" y="65" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">Heartbeat (30s)</text>
+  <text x="920" y="88" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">GroupStateHeartbeat</text>
+  <text x="920" y="106" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">broadcast dag_heads</text>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     4. HANDLER MAP
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Handler Map</h2>
+<p style="margin-bottom:18px;">All 20+ <span class="code">ContextMessage</span> variants, grouped by function. Each variant is handled by a dedicated file in <span class="code">handlers/</span>.</p>
+
+<div class="g2" style="margin-bottom:16px;">
+  <div>
+    <h3 style="color:#3b82f6;">Context Lifecycle</h3>
+    <div class="fr"><div class="fp">CreateContext</div><div class="fd">Create a new context, bind to group, emit ContextRegistered ops</div></div>
+    <div class="fr"><div class="fp">JoinContext</div><div class="fd">Join existing context via invitation or open membership</div></div>
+    <div class="fr"><div class="fp">DeleteContext</div><div class="fd">Remove context and clean up all associated state</div></div>
+    <div class="fr"><div class="fp">Execute</div><div class="fd">Run WASM method, produce state delta, broadcast</div></div>
+    <div class="fr"><div class="fp">UpdateApplication</div><div class="fd">Upgrade WASM binary for a context</div></div>
+  </div>
+  <div>
+    <h3 style="color:#10b981;">Group Governance</h3>
+    <div class="fr"><div class="fp">AddGroupMembers</div><div class="fd">Add one or more members to a group</div></div>
+    <div class="fr"><div class="fp">RemoveGroupMembers</div><div class="fd">Remove members with cascade to all contexts</div></div>
+    <div class="fr"><div class="fp">ApplySignedGroupOp</div><div class="fd">Ingest a signed governance operation into the DAG</div></div>
+    <div class="fr"><div class="fp">SetMemberCapabilities</div><div class="fd">Grant or revoke per-member capability flags</div></div>
+    <div class="fr"><div class="fp">UpdateMemberRole</div><div class="fd">Change member role (admin, member, etc.)</div></div>
+    <div class="fr"><div class="fp">UpgradeGroup</div><div class="fd">Propagate application upgrade across group contexts</div></div>
+  </div>
+</div>
+
+<div class="g2">
+  <div>
+    <h3 style="color:#8b5cf6;">Membership &amp; Access</h3>
+    <div class="fr"><div class="fp">JoinGroup</div><div class="fd">Join a group via invitation claim flow</div></div>
+    <div class="fr"><div class="fp">JoinGroupContext</div><div class="fd">Join a specific context within a group</div></div>
+    <div class="fr"><div class="fp">CreateGroupInvitation</div><div class="fd">Generate a <span class="code">SignedGroupOpenInvitation</span></div></div>
+    <div class="fr"><div class="fp">SetContextVisibility</div><div class="fd">Toggle open vs restricted context access</div></div>
+    <div class="fr"><div class="fp">ManageContextAllowlist</div><div class="fd">Add/remove members from context allowlist</div></div>
+    <div class="fr"><div class="fp">SetDefaultCapabilities</div><div class="fd">Default capability flags for new group members</div></div>
+    <div class="fr"><div class="fp">SetDefaultVisibility</div><div class="fd">Default visibility for new contexts in group</div></div>
+  </div>
+  <div>
+    <h3 style="color:#f59e0b;">Configuration &amp; Sync</h3>
+    <div class="fr"><div class="fp">SyncGroup</div><div class="fd">Trigger group state synchronization with peers</div></div>
+    <div class="fr"><div class="fp">SetGroupAlias</div><div class="fd">Set human-readable alias for a group</div></div>
+    <div class="fr"><div class="fp">SetMemberAlias</div><div class="fd">Set human-readable alias for a member</div></div>
+    <div class="fr"><div class="fp">DeleteGroup</div><div class="fd">Delete group and cascade to all owned contexts</div></div>
+    <div class="fr"><div class="fp">DetachContextFromGroup</div><div class="fd">Unbind a context from its group</div></div>
+  </div>
+</div>
+
+<svg viewBox="0 0 1060 130" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-top:20px;">
+  <defs>
+    <marker id="hm" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#10b981"/></marker>
+  </defs>
+
+  <rect x="30" y="20" width="160" height="90" rx="10" fill="#f9731610" stroke="#f97316" stroke-width="1.2"/>
+  <text x="110" y="48" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">Caller</text>
+  <text x="110" y="70" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Server, NodeMgr,</text>
+  <text x="110" y="88" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">SyncManager</text>
+
+  <line x1="190" y1="65" x2="250" y2="65" stroke="#10b981" stroke-width="1.5" marker-end="url(#hm)"/>
+
+  <rect x="250" y="20" width="220" height="90" rx="10" fill="#10b98108" stroke="#10b981" stroke-width="1.5"/>
+  <text x="360" y="48" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">ContextMessage</text>
+  <text x="360" y="70" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">enum dispatch</text>
+  <text x="360" y="88" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">20+ variants</text>
+
+  <line x1="470" y1="40" x2="560" y2="25" stroke="#3b82f6" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="470" y1="55" x2="560" y2="50" stroke="#10b981" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="470" y1="70" x2="560" y2="75" stroke="#8b5cf6" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="470" y1="85" x2="560" y2="100" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2"/>
+
+  <rect x="560" y="10" width="200" height="28" rx="6" fill="#3b82f608" stroke="#3b82f6" stroke-width="1"/>
+  <text x="660" y="29" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Context Lifecycle (5)</text>
+
+  <rect x="560" y="42" width="200" height="28" rx="6" fill="#10b98108" stroke="#10b981" stroke-width="1"/>
+  <text x="660" y="61" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Group Governance (6)</text>
+
+  <rect x="560" y="74" width="200" height="28" rx="6" fill="#8b5cf608" stroke="#8b5cf6" stroke-width="1"/>
+  <text x="660" y="93" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Membership &amp; Access (7)</text>
+
+  <rect x="560" y="106" width="200" height="28" rx="6" fill="#f59e0b08" stroke="#f59e0b" stroke-width="1"/>
+  <text x="660" y="125" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Config &amp; Sync (5)</text>
+
+  <rect x="820" y="30" width="200" height="70" rx="10" fill="#161622" stroke="#252538"/>
+  <text x="920" y="55" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">handlers/</text>
+  <text x="920" y="76" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">one file per variant</text>
+  <text x="920" y="92" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">async fn handle(&amp;mut self, ...)</text>
+
+  <line x1="760" y1="65" x2="820" y2="65" stroke="#6b6b80" stroke-width="1" stroke-dasharray="4 3"/>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     5. GROUPSTORE DEEP-DIVE
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>GroupStore Deep-Dive</h2>
+<p style="margin-bottom:18px;">The authoritative persistence layer for all group and governance state. Handles signature verification, state-hash optimistic locking, nonce-based idempotency, DAG maintenance, and cascading side effects.</p>
+
+<h3>apply_local_signed_group_op Flow</h3>
+<div class="step"><div class="n">1</div>
+  <h4>Cap parent_op_hashes</h4>
+  <p>Ensure parent hashes reference valid DAG heads (capped at 64 concurrent heads).</p>
+</div>
+<div class="step"><div class="n">2</div>
+  <h4>verify_signature</h4>
+  <p>Ed25519 signature verification on the <span class="code">signable_bytes</span> of the operation.</p>
+</div>
+<div class="step"><div class="n">3</div>
+  <h4>check state_hash</h4>
+  <p>Optimistic lock &mdash; the op's <span class="code">state_hash</span> must match the current computed group state hash.</p>
+</div>
+<div class="step"><div class="n">4</div>
+  <h4>check nonce (idempotent on duplicate)</h4>
+  <p>Per-signer monotonic nonce. If the nonce was already seen, the op is silently treated as idempotent (no error, no re-apply).</p>
+</div>
+<div class="step"><div class="n">5</div>
+  <h4>dispatch GroupOp</h4>
+  <p>Match on the <span class="code">GroupOp</span> variant and apply the state mutation (add member, set visibility, cascade removal, etc.).</p>
+</div>
+<div class="step"><div class="n">6</div>
+  <h4>append OpLog</h4>
+  <p>Serialize the <span class="code">SignedGroupOp</span> via borsh and append to the persistent op log with an incrementing sequence number.</p>
+</div>
+<div class="step"><div class="n">7</div>
+  <h4>recompute dag_heads</h4>
+  <p>Update the set of DAG head hashes &mdash; the new op becomes a head, its parents are removed from the head set.</p>
+</div>
+<div class="step"><div class="n">8</div>
+  <h4>set nonce</h4>
+  <p>Record the signer's nonce for replay protection.</p>
+</div>
+
+<h3 style="margin-top:24px;">Key Storage Prefixes</h3>
+<p style="margin-bottom:12px;">All stored in <span class="code">Column::Group</span> with typed key prefixes:</p>
+<div class="g3">
+  <div>
+    <div class="fr"><div class="fp">GroupMeta</div><div class="fd">Group metadata (name, created_at)</div></div>
+    <div class="fr"><div class="fp">GroupMember</div><div class="fd">Member records per group</div></div>
+    <div class="fr"><div class="fp">GroupOpLog</div><div class="fd">Persisted signed operations</div></div>
+    <div class="fr"><div class="fp">GroupOpHead</div><div class="fd">Current DAG head hashes</div></div>
+  </div>
+  <div>
+    <div class="fr"><div class="fp">GroupLocalGovNonce</div><div class="fd">Per-signer monotonic nonce</div></div>
+    <div class="fr"><div class="fp">GroupContextIndex</div><div class="fd">Context &rarr; group mapping</div></div>
+    <div class="fr"><div class="fp">ContextGroupRef</div><div class="fd">Reverse group &rarr; context ref</div></div>
+    <div class="fr"><div class="fp">GroupMemberContext</div><div class="fd">Per-member context tracking</div></div>
+  </div>
+  <div>
+    <div class="fr"><div class="fp">GroupCapability</div><div class="fd">Member capability grants</div></div>
+    <div class="fr"><div class="fp">GroupAlias</div><div class="fd">Human-readable group alias</div></div>
+    <div class="fr"><div class="fp">MemberAlias</div><div class="fd">Human-readable member alias</div></div>
+    <div class="fr"><div class="fp">ContextAllowlist</div><div class="fd">Per-context member allowlist</div></div>
+  </div>
+</div>
+
+<details style="margin-top:18px;">
+  <summary>sign_apply_and_publish helper</summary>
+  <div class="detail-body">
+    <p>Convenience function used by most handlers to emit governance ops. Combines three steps into one call:</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">async fn</span> <span class="field">sign_apply_and_publish</span>(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&amp;<span class="kw">self</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;group_id: <span class="ty">GroupId</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;op: <span class="ty">GroupOp</span>,<br>
+) -&gt; <span class="ty">Result</span>&lt;()&gt; {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// 1. Sign op with node's Ed25519 key</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// 2. apply_local_signed_group_op (persist + DAG)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// 3. Publish via gossipsub on group topic</span><br>
+}
+    </div>
+  </div>
+</details>
+
+<svg viewBox="0 0 1060 110" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-top:18px;">
+  <defs>
+    <marker id="gs" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#10b981"/></marker>
+  </defs>
+
+  <rect x="30" y="20" width="130" height="65" rx="8" fill="#10b98110" stroke="#10b981" stroke-width="1.2"/>
+  <text x="95" y="44" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">GroupOp</text>
+  <text x="95" y="64" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">incoming op</text>
+
+  <line x1="160" y1="52" x2="200" y2="52" stroke="#10b981" stroke-width="1.5" marker-end="url(#gs)"/>
+
+  <rect x="200" y="15" width="140" height="75" rx="8" fill="#8b5cf608" stroke="#8b5cf6" stroke-width="1.2"/>
+  <text x="270" y="40" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">verify + check</text>
+  <text x="270" y="58" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">sig &middot; state_hash</text>
+  <text x="270" y="74" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">nonce &middot; parents</text>
+
+  <line x1="340" y1="52" x2="380" y2="52" stroke="#10b981" stroke-width="1.5" marker-end="url(#gs)"/>
+
+  <rect x="380" y="20" width="140" height="65" rx="8" fill="#f59e0b08" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="450" y="44" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">dispatch</text>
+  <text x="450" y="64" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">match GroupOp variant</text>
+
+  <line x1="520" y1="52" x2="560" y2="52" stroke="#10b981" stroke-width="1.5" marker-end="url(#gs)"/>
+
+  <rect x="560" y="20" width="140" height="65" rx="8" fill="#06b6d408" stroke="#06b6d4" stroke-width="1.2"/>
+  <text x="630" y="44" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">persist</text>
+  <text x="630" y="64" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">OpLog + heads + nonce</text>
+
+  <line x1="700" y1="52" x2="740" y2="52" stroke="#10b981" stroke-width="1.5" marker-end="url(#gs)"/>
+
+  <rect x="740" y="20" width="160" height="65" rx="8" fill="#10b98108" stroke="#10b981" stroke-width="1.2"/>
+  <text x="820" y="44" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">DAG updated</text>
+  <text x="820" y="64" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">new heads computed</text>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     6. CONTEXTCLIENT
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>ContextClient</h2>
+<p style="margin-bottom:14px;">Thin async fa&ccedil;ade wrapping <span class="code">LazyRecipient&lt;ContextMessage&gt;</span>. Used by Server (for RPC execution) and NodeManager (for delta routing) to invoke context-level operations without importing Actix directly.</p>
+
+<div class="typedef" style="margin-bottom:18px;">
+<span class="kw">pub struct</span> <span class="ty">ContextClient</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">recipient</span>: LazyRecipient&lt;<span class="ty">ContextMessage</span>&gt;,<br>
+}<br><br>
+<span class="kw">impl</span> <span class="ty">ContextClient</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">pub async fn</span> <span class="field">send</span>(&amp;self, msg: <span class="ty">ContextMessage</span>) -&gt; <span class="ty">Result</span>&lt;ContextResponse&gt;;<br>
+}
+</div>
+
+<div class="g2">
+  <div>
+    <h3 style="color:#3b82f6;">Context Operations</h3>
+    <div class="fr"><div class="fp">create_context</div><div class="fd">Create new context bound to group</div></div>
+    <div class="fr"><div class="fp">join_context</div><div class="fd">Join an existing context</div></div>
+    <div class="fr"><div class="fp">delete_context</div><div class="fd">Remove context and clean up state</div></div>
+    <div class="fr"><div class="fp">execute</div><div class="fd">Run WASM method, produce delta</div></div>
+    <div class="fr"><div class="fp">get_context</div><div class="fd">Query context metadata</div></div>
+
+    <h3 style="color:#10b981;margin-top:16px;">Group Operations</h3>
+    <div class="fr"><div class="fp">add_group_members</div><div class="fd">Add members to a group</div></div>
+    <div class="fr"><div class="fp">remove_group_members</div><div class="fd">Remove members with cascade</div></div>
+    <div class="fr"><div class="fp">apply_signed_group_op</div><div class="fd">Ingest signed op into DAG</div></div>
+    <div class="fr"><div class="fp">set_member_capabilities</div><div class="fd">Set capability flags for member</div></div>
+  </div>
+  <div>
+    <h3 style="color:#8b5cf6;">Membership</h3>
+    <div class="fr"><div class="fp">join_group</div><div class="fd">Join group via invitation claim</div></div>
+    <div class="fr"><div class="fp">join_group_context</div><div class="fd">Join context within group</div></div>
+    <div class="fr"><div class="fp">create_group_invitation</div><div class="fd">Generate invitation token</div></div>
+
+    <h3 style="color:#f59e0b;margin-top:16px;">Configuration</h3>
+    <div class="fr"><div class="fp">sync_group</div><div class="fd">Trigger group sync with peers</div></div>
+    <div class="fr"><div class="fp">set_context_visibility</div><div class="fd">Toggle open/restricted access</div></div>
+    <div class="fr"><div class="fp">manage_context_allowlist</div><div class="fd">Update context allowlist</div></div>
+
+    <h3 style="color:#06b6d4;margin-top:16px;">Query</h3>
+    <div class="fr"><div class="fp">context_config</div><div class="fd">Get context configuration</div></div>
+    <div class="fr"><div class="fp">get_context_application</div><div class="fd">Get WASM app metadata</div></div>
+    <div class="fr"><div class="fp">get_context_member_page</div><div class="fd">Paginated member listing</div></div>
+  </div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     7. DEPENDENCIES
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Dependencies</h2>
+<p style="margin-bottom:18px;">How the three context crates relate to other Calimero crates. Arrows show compile-time dependencies.</p>
+
+<svg viewBox="0 0 1060 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="dp" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#6b6b80"/></marker>
+    <marker id="dg" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#10b981"/></marker>
+  </defs>
+
+  <!-- Central: context crate -->
+  <rect x="380" y="20" width="300" height="60" rx="12" fill="#10b98110" stroke="#10b981" stroke-width="2"/>
+  <text x="530" y="47" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="14" font-weight="700">calimero-context</text>
+  <text x="530" y="68" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">ContextManager actor + handlers</text>
+
+  <!-- context-primitives -->
+  <rect x="80" y="130" width="280" height="50" rx="10" fill="#10b98110" stroke="#10b981" stroke-width="1.5"/>
+  <text x="220" y="155" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600">calimero-context-primitives</text>
+  <text x="220" y="172" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">ContextClient + messages + wire types</text>
+
+  <!-- context-config -->
+  <rect x="420" y="130" width="230" height="50" rx="10" fill="#10b98110" stroke="#10b981" stroke-width="1.5"/>
+  <text x="535" y="155" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600">calimero-context-config</text>
+  <text x="535" y="172" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">client config + types</text>
+
+  <!-- context → primitives, context → config -->
+  <line x1="430" y1="80" x2="280" y2="130" stroke="#10b981" stroke-width="1.5" marker-end="url(#dg)"/>
+  <line x1="530" y1="80" x2="535" y2="130" stroke="#10b981" stroke-width="1.5" marker-end="url(#dg)"/>
+
+  <!-- External deps row -->
+  <!-- store -->
+  <rect x="30" y="240" width="140" height="42" rx="8" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.2"/>
+  <text x="100" y="265" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">store</text>
+
+  <!-- dag -->
+  <rect x="200" y="240" width="120" height="42" rx="8" fill="#10b98110" stroke="#10b981" stroke-width="1"/>
+  <text x="260" y="265" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">dag</text>
+
+  <!-- node-primitives -->
+  <rect x="350" y="240" width="180" height="42" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.2"/>
+  <text x="440" y="265" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">node-primitives</text>
+
+  <!-- network-primitives -->
+  <rect x="560" y="240" width="200" height="42" rx="8" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.2"/>
+  <text x="660" y="265" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">network-primitives</text>
+
+  <!-- primitives -->
+  <rect x="790" y="240" width="140" height="42" rx="8" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="860" y="265" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">primitives</text>
+
+  <!-- context → external deps -->
+  <line x1="420" y1="80" x2="100" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="450" y1="80" x2="260" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="530" y1="80" x2="440" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="600" y1="80" x2="660" y2="240" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+
+  <!-- primitives → primitives (bottom) -->
+  <line x1="220" y1="180" x2="860" y2="240" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+  <line x1="535" y1="180" x2="860" y2="240" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#dp)"/>
+
+  <!-- External crate deps -->
+  <rect x="200" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
+  <text x="260" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">actix</text>
+
+  <rect x="350" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
+  <text x="410" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">tokio</text>
+
+  <rect x="500" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
+  <text x="560" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">borsh</text>
+
+  <rect x="650" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
+  <text x="710" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">ed25519-dalek</text>
+
+  <rect x="800" y="310" width="120" height="32" rx="6" fill="#161622" stroke="#252538"/>
+  <text x="860" y="331" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">serde</text>
+</svg>
+
+<div class="legend">
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>Context crates</div>
+  <div class="legend-item"><div class="ld" style="background:#06b6d4"></div>Storage</div>
+  <div class="legend-item"><div class="ld" style="background:#3b82f6"></div>Node</div>
+  <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>Network</div>
+  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>Primitives</div>
+  <div class="legend-item"><div class="ld" style="background:#252538"></div>External crates</div>
+</div>
+</div>
+
+</div>
+</div>
+<script src="../nav.js"></script>
+</body>
+</html>

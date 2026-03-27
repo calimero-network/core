@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Server & API — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="../system-overview.html">System Overview</a><span class="sep">/</span><span>Server &amp; API</span></div>
+
+<h1>Server & <em>API</em></h1>
+<p class="page-subtitle">calimero-server + calimero-server-primitives</p>
+
+<div class="g4" style="margin-bottom:36px;">
+  <div class="stat"><div class="v">5</div><div class="l">HTTP surfaces</div></div>
+  <div class="stat"><div class="v">30+</div><div class="l">admin endpoints</div></div>
+  <div class="stat"><div class="v">Axum</div><div class="l">framework</div></div>
+  <div class="stat"><div class="v">2</div><div class="l">auth modes</div></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     1. PURPOSE
+     ════════════════════════════════════════════════════════ -->
+<h2>Purpose</h2>
+<p style="margin-bottom:20px;">A single Axum HTTP server that binds multiple listeners and mounts all public-facing surfaces: Admin REST API, JSON-RPC 2.0, WebSocket, Server-Sent Events, Prometheus metrics, an optional embedded auth provider (mero-auth), and a static admin dashboard SPA. All business logic is delegated to <span class="code">ContextClient</span> and <span class="code">NodeClient</span> façades.</p>
+<a class="gh-link" href="https://github.com/calimero-network/core/tree/master/crates/server" target="_blank" rel="noopener">crates/server</a>
+
+<!-- ════════════════════════════════════════════════════════
+     2. HTTP SURFACES
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>HTTP Surfaces</h2>
+<p style="margin-bottom:18px;">The server exposes five distinct surface types on the same port. Each is mounted as a separate Axum router and merged into the main application.</p>
+
+<svg viewBox="0 0 1000 340" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="glow-or"><feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#f97316" flood-opacity="0.3"/></filter>
+    <marker id="arr-or" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#f97316"/></marker>
+  </defs>
+
+  <!-- Central server box -->
+  <rect x="380" y="10" width="240" height="65" rx="14" fill="#f9731615" stroke="#f97316" stroke-width="2" filter="url(#glow-or)"/>
+  <text x="500" y="38" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="15" font-weight="700">Axum Server</text>
+  <text x="500" y="60" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">single port · TLS optional · tower middleware</text>
+
+  <!-- Connector lines down -->
+  <line x1="300" y1="75" x2="110" y2="115" stroke="#f97316" stroke-width="1.2"/>
+  <line x1="400" y1="75" x2="310" y2="115" stroke="#f97316" stroke-width="1.2"/>
+  <line x1="500" y1="75" x2="500" y2="115" stroke="#f97316" stroke-width="1.2"/>
+  <line x1="600" y1="75" x2="690" y2="115" stroke="#f97316" stroke-width="1.2"/>
+  <line x1="700" y1="75" x2="890" y2="115" stroke="#f97316" stroke-width="1.2"/>
+
+  <!-- Surface 1: Admin REST -->
+  <rect x="15" y="115" width="190" height="210" rx="12" fill="#f9731610" stroke="#f97316" stroke-width="1.5"/>
+  <text x="110" y="142" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Admin REST API</text>
+  <text x="110" y="165" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">/admin-api/*</text>
+  <line x1="35" y1="178" x2="185" y2="178" stroke="#252538" stroke-width="1"/>
+  <text x="40" y="198" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Protected + public routes</text>
+  <text x="40" y="216" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Context management</text>
+  <text x="40" y="234" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Group operations</text>
+  <text x="40" y="252" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">App lifecycle</text>
+  <text x="40" y="270" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Blob management</text>
+  <text x="40" y="288" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Identity &amp; health</text>
+  <rect x="45" y="300" width="65" height="16" rx="4" fill="#f9731620"/>
+  <text x="77" y="312" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600">30+ routes</text>
+
+  <!-- Surface 2: JSON-RPC -->
+  <rect x="215" y="115" width="190" height="210" rx="12" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="310" y="142" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">JSON-RPC 2.0</text>
+  <text x="310" y="165" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">/jsonrpc POST</text>
+  <line x1="235" y1="178" x2="385" y2="178" stroke="#252538" stroke-width="1"/>
+  <text x="240" y="198" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">execute method</text>
+  <text x="240" y="216" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">→ ContextClient</text>
+  <text x="240" y="240" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Spec-compliant</text>
+  <text x="240" y="258" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Batch requests</text>
+  <text x="240" y="276" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Typed error codes</text>
+  <rect x="245" y="300" width="48" height="16" rx="4" fill="#3b82f620"/>
+  <text x="269" y="312" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600">WASM</text>
+
+  <!-- Surface 3: WebSocket -->
+  <rect x="415" y="115" width="170" height="210" rx="12" fill="#10b98110" stroke="#10b981" stroke-width="1.5"/>
+  <text x="500" y="142" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">WebSocket</text>
+  <text x="500" y="165" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">/ws upgrade</text>
+  <line x1="435" y1="178" x2="565" y2="178" stroke="#252538" stroke-width="1"/>
+  <text x="435" y="198" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">NodeEvent stream</text>
+  <text x="435" y="216" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Context subscriptions</text>
+  <text x="435" y="240" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Filtered by context</text>
+  <text x="435" y="258" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Ping/pong keepalive</text>
+  <rect x="440" y="300" width="55" height="16" rx="4" fill="#10b98120"/>
+  <text x="467" y="312" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600">realtime</text>
+
+  <!-- Surface 4: SSE -->
+  <rect x="595" y="115" width="190" height="210" rx="12" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="690" y="142" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">SSE</text>
+  <text x="690" y="165" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">/sse persistent</text>
+  <line x1="615" y1="178" x2="765" y2="178" stroke="#252538" stroke-width="1"/>
+  <text x="620" y="198" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Persistent sessions</text>
+  <text x="620" y="216" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Same event stream</text>
+  <text x="620" y="240" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">HTTP/1.1 compatible</text>
+  <text x="620" y="258" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Auto-reconnect</text>
+  <rect x="625" y="300" width="55" height="16" rx="4" fill="#8b5cf620"/>
+  <text x="652" y="312" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600">events</text>
+
+  <!-- Surface 5: Prometheus -->
+  <rect x="795" y="115" width="190" height="210" rx="12" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="890" y="142" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Prometheus</text>
+  <text x="890" y="165" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">/metrics</text>
+  <line x1="815" y1="178" x2="965" y2="178" stroke="#252538" stroke-width="1"/>
+  <text x="820" y="198" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Text exposition</text>
+  <text x="820" y="216" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Request latencies</text>
+  <text x="820" y="240" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Active connections</text>
+  <text x="820" y="258" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Context counts</text>
+  <rect x="825" y="300" width="68" height="16" rx="4" fill="#f59e0b20"/>
+  <text x="859" y="312" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600">monitoring</text>
+</svg>
+
+<div class="legend">
+  <div class="legend-item"><div class="ld" style="background:#f97316"></div>Admin REST</div>
+  <div class="legend-item"><div class="ld" style="background:#3b82f6"></div>JSON-RPC</div>
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>WebSocket</div>
+  <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>SSE</div>
+  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>Prometheus</div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     3. ADMIN API ENDPOINTS
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Admin API Endpoints</h2>
+<p style="margin-bottom:18px;">The Admin REST API provides comprehensive management of contexts, groups, applications, blobs, and node identity. All protected routes require authentication (JWT or proxy).</p>
+
+<details>
+  <summary>Contexts</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">GET /contexts</div><div class="fd">List all contexts visible to this node</div></div>
+    <div class="fr"><div class="fp">POST /contexts</div><div class="fd">Create a new context (initializes storage, deploys app)</div></div>
+    <div class="fr"><div class="fp">POST /contexts/:id/join</div><div class="fd">Join an existing context via invitation</div></div>
+    <div class="fr"><div class="fp">POST /contexts/:id/invite/open</div><div class="fd">Generate an open invitation link</div></div>
+    <div class="fr"><div class="fp">POST /contexts/:id/invite</div><div class="fd">Generate a specialized invitation for a specific identity</div></div>
+    <div class="fr"><div class="fp">DELETE /contexts/:id</div><div class="fd">Delete a context and all associated data</div></div>
+    <div class="fr"><div class="fp">GET /contexts/:id</div><div class="fd">Get context details (app, members, state hash)</div></div>
+    <div class="fr"><div class="fp">GET /contexts/:id/storage</div><div class="fd">Inspect raw storage contents</div></div>
+    <div class="fr"><div class="fp">GET /contexts/:id/identities</div><div class="fd">List context identities and their roles</div></div>
+    <div class="fr"><div class="fp">POST /contexts/:id/capabilities/grant</div><div class="fd">Grant a capability to a member</div></div>
+    <div class="fr"><div class="fp">POST /contexts/:id/capabilities/revoke</div><div class="fd">Revoke a capability from a member</div></div>
+    <div class="fr"><div class="fp">POST /contexts/:id/sync</div><div class="fd">Trigger manual sync for a context</div></div>
+  </div>
+</details>
+
+<details>
+  <summary>Groups</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">GET /groups</div><div class="fd">List all groups</div></div>
+    <div class="fr"><div class="fp">POST /groups</div><div class="fd">Create a new group</div></div>
+    <div class="fr"><div class="fp">GET /groups/:id</div><div class="fd">Get group info (settings, visibility, member count)</div></div>
+    <div class="fr"><div class="fp">PUT /groups/:id</div><div class="fd">Update group metadata</div></div>
+    <div class="fr"><div class="fp">DELETE /groups/:id</div><div class="fd">Delete a group</div></div>
+    <div class="fr"><div class="fp">GET /groups/:id/members</div><div class="fd">List group members with roles</div></div>
+    <div class="fr"><div class="fp">POST /groups/:id/members</div><div class="fd">Add a member to the group</div></div>
+    <div class="fr"><div class="fp">DELETE /groups/:id/members/:mid</div><div class="fd">Remove a member from the group</div></div>
+    <div class="fr"><div class="fp">PUT /groups/:id/members/:mid/roles</div><div class="fd">Update member roles</div></div>
+    <div class="fr"><div class="fp">PUT /groups/:id/members/:mid/aliases</div><div class="fd">Set member aliases</div></div>
+    <div class="fr"><div class="fp">PUT /groups/:id/members/:mid/caps</div><div class="fd">Set member capabilities</div></div>
+    <div class="fr"><div class="fp">GET /groups/:id/contexts</div><div class="fd">List contexts belonging to this group</div></div>
+    <div class="fr"><div class="fp">POST /groups/:id/invite</div><div class="fd">Generate group invitation</div></div>
+    <div class="fr"><div class="fp">POST /groups/:id/join</div><div class="fd">Join a group via invitation</div></div>
+    <div class="fr"><div class="fp">GET /groups/:id/signing-key</div><div class="fd">Get the group's signing key</div></div>
+    <div class="fr"><div class="fp">POST /groups/:id/upgrade</div><div class="fd">Propose a group app upgrade</div></div>
+    <div class="fr"><div class="fp">POST /groups/:id/sync</div><div class="fd">Trigger group governance sync</div></div>
+    <div class="fr"><div class="fp">PUT /groups/:id/visibility</div><div class="fd">Set group visibility (public/private)</div></div>
+    <div class="fr"><div class="fp">PUT /groups/:id/allowlist</div><div class="fd">Update the group allowlist</div></div>
+    <div class="fr"><div class="fp">PUT /groups/:id/settings</div><div class="fd">Update group settings</div></div>
+  </div>
+</details>
+
+<details>
+  <summary>Applications</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">POST /applications/install</div><div class="fd">Install an application from a package registry</div></div>
+    <div class="fr"><div class="fp">POST /applications/install-dev</div><div class="fd">Install from local path (dev mode, no registry)</div></div>
+    <div class="fr"><div class="fp">GET /applications</div><div class="fd">List installed applications</div></div>
+    <div class="fr"><div class="fp">GET /applications/:id</div><div class="fd">Get application details (version, size, contexts)</div></div>
+    <div class="fr"><div class="fp">DELETE /applications/:id</div><div class="fd">Uninstall an application</div></div>
+  </div>
+</details>
+
+<details>
+  <summary>Blobs</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">POST /blobs</div><div class="fd">Upload a binary blob (content-addressed, returns BlobId)</div></div>
+    <div class="fr"><div class="fp">GET /blobs/:id</div><div class="fd">Download blob content</div></div>
+    <div class="fr"><div class="fp">GET /blobs/:id/info</div><div class="fd">Get blob metadata (size, hash, refcount)</div></div>
+    <div class="fr"><div class="fp">GET /blobs</div><div class="fd">List all blobs</div></div>
+    <div class="fr"><div class="fp">DELETE /blobs/:id</div><div class="fd">Delete a blob (if refcount = 0)</div></div>
+  </div>
+</details>
+
+<details>
+  <summary>Packages</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">GET /packages</div><div class="fd">List packages in the registry</div></div>
+    <div class="fr"><div class="fp">GET /packages/:id/versions</div><div class="fd">List all versions of a package</div></div>
+    <div class="fr"><div class="fp">GET /packages/:id/latest</div><div class="fd">Get the latest version metadata</div></div>
+  </div>
+</details>
+
+<details>
+  <summary>Identity &amp; Other</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">POST /identity/context</div><div class="fd">Generate a new context identity (Ed25519 keypair)</div></div>
+    <div class="fr"><div class="fp">GET /health</div><div class="fd">Health check (returns 200 if node is running)</div></div>
+    <div class="fr"><div class="fp">GET /is-authed</div><div class="fd">Check if the current request is authenticated</div></div>
+    <div class="fr"><div class="fp">GET /certificate</div><div class="fd">Get the node's TLS certificate info</div></div>
+    <div class="fr"><div class="fp">GET /peers</div><div class="fd">List connected peers with connection info</div></div>
+    <div class="fr"><div class="fp">GET /tee/info</div><div class="fd">TEE enclave information (if running in TEE)</div></div>
+    <div class="fr"><div class="fp">POST /tee/attest</div><div class="fd">Request a TEE attestation</div></div>
+    <div class="fr"><div class="fp">POST /tee/verify</div><div class="fd">Verify a TEE attestation from another node</div></div>
+  </div>
+</details>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     4. AUTH
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Authentication</h2>
+<p style="margin-bottom:18px;">The server supports two authentication modes. The choice is made at startup via configuration.</p>
+
+<div class="g2" style="margin-bottom:18px;">
+  <div class="cb">
+    <h4 style="color:#84cc16;">Proxy Mode <span class="tag tag-done">default</span></h4>
+    <p style="margin-top:8px;">No in-process JWT handling. The server assumes an external reverse proxy (e.g. nginx, Envoy, Cloudflare Access) terminates TLS and validates credentials before forwarding requests. The server trusts all incoming requests as authenticated.</p>
+    <p style="margin-top:8px;">Suitable for production deployments behind an identity-aware proxy with mTLS or OAuth2 termination.</p>
+  </div>
+  <div class="cb">
+    <h4 style="color:#84cc16;">Embedded Mode <span class="tag tag-wasm">mero-auth</span></h4>
+    <p style="margin-top:8px;">Full in-process JWT issuing and verification via the <span class="code">mero-auth</span> crate. Mounts additional routes at <span class="code">/auth</span> for login flows (NEAR wallet, Ethereum wallet, challenge-nonce). Issues JWT tokens on successful authentication.</p>
+    <p style="margin-top:8px;">Protected routes are guarded by an <span class="code">AuthGuardLayer</span> (Tower middleware). Tokens can be passed via:</p>
+    <ul style="margin-top:8px;">
+      <li><span class="code">Authorization: Bearer &lt;token&gt;</span> header</li>
+      <li><span class="code">?token=&lt;token&gt;</span> query parameter</li>
+    </ul>
+  </div>
+</div>
+
+<svg viewBox="0 0 1000 170" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr-au" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#84cc16"/></marker>
+  </defs>
+
+  <!-- Client -->
+  <rect x="20" y="30" width="120" height="50" rx="8" fill="#06b6d410" stroke="#06b6d4" stroke-width="1"/>
+  <text x="80" y="52" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">Client</text>
+  <text x="80" y="68" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">request</text>
+
+  <line x1="140" y1="55" x2="180" y2="55" stroke="#84cc16" stroke-width="1.5" marker-end="url(#arr-au)"/>
+
+  <!-- Auth check -->
+  <rect x="180" y="20" width="200" height="70" rx="10" fill="#84cc1610" stroke="#84cc16" stroke-width="1.5"/>
+  <text x="280" y="45" text-anchor="middle" fill="#84cc16" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">AuthGuardLayer</text>
+  <text x="280" y="65" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">validate JWT · extract claims</text>
+  <text x="280" y="80" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">or pass-through (proxy mode)</text>
+
+  <line x1="380" y1="55" x2="420" y2="55" stroke="#84cc16" stroke-width="1.5" marker-end="url(#arr-au)"/>
+
+  <!-- Route handler -->
+  <rect x="420" y="20" width="200" height="70" rx="10" fill="#f9731610" stroke="#f97316" stroke-width="1.5"/>
+  <text x="520" y="45" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">Route Handler</text>
+  <text x="520" y="65" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">admin / rpc / ws / sse</text>
+
+  <line x1="620" y1="55" x2="660" y2="55" stroke="#84cc16" stroke-width="1.5" marker-end="url(#arr-au)"/>
+
+  <!-- Actors -->
+  <rect x="660" y="20" width="300" height="70" rx="10" fill="#10b98110" stroke="#10b981" stroke-width="1.5"/>
+  <text x="810" y="45" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">ContextClient / NodeClient</text>
+  <text x="810" y="65" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">business logic via actor facades</text>
+
+  <!-- Embedded auth path (below) -->
+  <rect x="180" y="115" width="200" height="45" rx="8" fill="#84cc1608" stroke="#84cc16" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="280" y="137" text-anchor="middle" fill="#84cc16" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">/auth endpoints</text>
+  <text x="280" y="152" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">login · challenge · verify · refresh</text>
+
+  <line x1="280" y1="90" x2="280" y2="115" stroke="#84cc16" stroke-width="1" stroke-dasharray="3 2"/>
+  <text x="310" y="107" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">embedded only</text>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     5. SERVER → ACTOR CONNECTION
+     ════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Server → Actor Connection</h2>
+<p style="margin-bottom:18px;">The server holds an <span class="code">AdminState</span> struct that is shared across all route handlers via Axum's state extraction. All business logic flows through the <span class="code">ContextClient</span> and <span class="code">NodeClient</span> façades — the server never accesses storage or actors directly.</p>
+
+<div class="typedef" style="margin-bottom:18px;">
+<span class="kw">pub struct</span> <span class="ty">AdminState</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">store</span>: Arc&lt;dyn <span class="ty">Database</span>&gt;, <span class="comment">// read-only queries (list, get)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">ctx_client</span>: <span class="ty">ContextClient</span>, <span class="comment">// execute, create, join, governance</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">node_client</span>: <span class="ty">NodeClient</span>, <span class="comment">// peers, blobs, boot</span><br>
+}
+</div>
+
+<svg viewBox="0 0 1000 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr-sd" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#6b6b80"/></marker>
+  </defs>
+
+  <!-- AdminState -->
+  <rect x="30" y="25" width="260" height="155" rx="14" fill="#f9731610" stroke="#f97316" stroke-width="1.8"/>
+  <text x="160" y="55" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="14" font-weight="700">AdminState</text>
+  <line x1="50" y1="68" x2="270" y2="68" stroke="#252538" stroke-width="1"/>
+
+  <rect x="55" y="80" width="210" height="28" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="160" y="99" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">store: Arc&lt;dyn Database&gt;</text>
+
+  <rect x="55" y="115" width="210" height="28" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="160" y="134" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">ctx_client: ContextClient</text>
+
+  <rect x="55" y="148" width="210" height="28" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="160" y="167" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">node_client: NodeClient</text>
+
+  <!-- Arrows to actors -->
+  <line x1="290" y1="94" x2="410" y2="60" stroke="#06b6d4" stroke-width="1.2" marker-end="url(#arr-sd)"/>
+  <line x1="290" y1="129" x2="410" y2="110" stroke="#10b981" stroke-width="1.2" marker-end="url(#arr-sd)"/>
+  <line x1="290" y1="162" x2="410" y2="165" stroke="#3b82f6" stroke-width="1.2" marker-end="url(#arr-sd)"/>
+
+  <!-- Storage (read-only) -->
+  <rect x="410" y="30" width="250" height="55" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.2"/>
+  <text x="535" y="53" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">Storage (read-only)</text>
+  <text x="535" y="72" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">list contexts, get metadata, query state</text>
+
+  <!-- ContextManager -->
+  <rect x="410" y="95" width="250" height="45" rx="10" fill="#10b98110" stroke="#10b981" stroke-width="1.2"/>
+  <text x="535" y="118" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">ContextManager</text>
+  <text x="535" y="132" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">via LazyRecipient&lt;ContextMessage&gt;</text>
+
+  <!-- NodeManager -->
+  <rect x="410" y="150" width="250" height="45" rx="10" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.2"/>
+  <text x="535" y="173" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">NodeManager</text>
+  <text x="535" y="187" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">via LazyRecipient&lt;NodeMessage&gt;</text>
+
+  <!-- Label -->
+  <text x="780" y="118" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">All mutations flow</text>
+  <text x="780" y="134" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">through actor façades.</text>
+  <text x="780" y="150" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Server never writes</text>
+  <text x="780" y="166" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">to storage directly.</text>
+</svg>
+
+<details style="margin-top:16px;">
+  <summary>Request lifecycle example</summary>
+  <div class="detail-body">
+    <div class="step"><div class="n">1</div>
+      <h4>HTTP Request Arrives</h4>
+      <p>Axum receives a <span class="code">POST /admin-api/contexts</span> request. Tower middleware extracts JWT claims (embedded mode) or passes through (proxy mode).</p>
+    </div>
+    <div class="step"><div class="n">2</div>
+      <h4>Route Handler</h4>
+      <p>The route handler extracts <span class="code">AdminState</span> and request body. Constructs the appropriate parameters for the operation.</p>
+    </div>
+    <div class="step"><div class="n">3</div>
+      <h4>Façade Call</h4>
+      <p>Calls <span class="code">state.ctx_client.create_context(params).await</span>. This sends a <span class="code">ContextMessage::CreateContext</span> to the ContextManager actor via <span class="code">LazyRecipient</span>.</p>
+    </div>
+    <div class="step"><div class="n">4</div>
+      <h4>Response</h4>
+      <p>The actor processes the message, returns a <span class="code">Result</span>. The route handler serializes it to JSON and sends the HTTP response.</p>
+    </div>
+  </div>
+</details>
+</div>
+
+</div>
+</div>
+<script src="../nav.js"></script>
+</body>
+</html>

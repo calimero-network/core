@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network &amp; P2P — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="../system-overview.html">System Overview</a><span class="sep">/</span><span>Network &amp; P2P</span></div>
+
+<h1>Network & <em>P2P</em></h1>
+<p class="page-subtitle">calimero-network + calimero-network-primitives</p>
+
+<!-- ════════════════════════════════════════════════════════
+     1. PURPOSE
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Purpose</h2>
+<p style="margin-bottom:14px;"><span class="code">NetworkManager</span> is an Actix actor that owns and drives the libp2p <span class="code">Swarm</span> with 10+ composed behaviours. It handles gossipsub pub/sub, Kademlia DHT, mDNS discovery, relay circuits, rendezvous registration, hole punching, and multiplexed streams.</p>
+<p>The network layer only moves <strong style="color:var(--text-bright)">opaque bytes</strong> — message decoding happens in the node layer. This clean boundary means <span class="code">calimero-network</span> never imports application-level types; it simply ferries <span class="code">Vec&lt;u8&gt;</span> payloads between peers and hands them up through <span class="code">NetworkEvent</span> variants.</p>
+
+<div class="g3" style="margin-top:22px;">
+  <div class="stat"><div class="v" style="color:var(--violet);">10+</div><div class="l">libp2p behaviours</div></div>
+  <div class="stat"><div class="v" style="color:var(--violet);">2</div><div class="l">stream protocols</div></div>
+  <div class="stat"><div class="v" style="color:var(--violet);">14</div><div class="l">NetworkClient methods</div></div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     2. LIBP2P BEHAVIOUR STACK
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>libp2p Behaviour Stack</h2>
+<p style="margin-bottom:18px;">All behaviours are composed into a single <span class="code">#[derive(NetworkBehaviour)]</span> struct. Each behaviour manages one protocol concern, and the swarm dispatches events through pattern-matched handlers.</p>
+
+<svg viewBox="0 0 1000 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="gv"><feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#8b5cf6" flood-opacity="0.3"/></filter>
+    <filter id="gp"><feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#ec4899" flood-opacity="0.3"/></filter>
+    <filter id="ga"><feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#f59e0b" flood-opacity="0.3"/></filter>
+    <filter id="gc"><feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#06b6d4" flood-opacity="0.3"/></filter>
+  </defs>
+
+  <!-- Row 1 -->
+  <rect x="10" y="10" width="230" height="82" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5" filter="url(#gv)"/>
+  <text x="125" y="36" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">Gossipsub</text>
+  <text x="125" y="54" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">pub/sub mesh relay</text>
+  <text x="125" y="72" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">topic-based broadcast</text>
+
+  <rect x="260" y="10" width="230" height="82" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5" filter="url(#gv)"/>
+  <text x="375" y="36" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">Kademlia</text>
+  <text x="375" y="54" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">DHT peer routing</text>
+  <text x="375" y="72" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">/calimero/kad/1.0.0</text>
+
+  <rect x="510" y="10" width="230" height="82" rx="10" fill="#10b98110" stroke="#10b981" stroke-width="1.5"/>
+  <text x="625" y="36" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">mDNS</text>
+  <text x="625" y="54" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">LAN discovery</text>
+  <text x="625" y="72" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">optional toggle</text>
+
+  <rect x="760" y="10" width="230" height="82" rx="10" fill="#ec489910" stroke="#ec4899" stroke-width="1.5" filter="url(#gp)"/>
+  <text x="875" y="36" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">Relay</text>
+  <text x="875" y="54" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">circuit relay v2</text>
+  <text x="875" y="72" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">NAT traversal fallback</text>
+
+  <!-- Row 2 -->
+  <rect x="10" y="112" width="230" height="82" rx="10" fill="#ec489910" stroke="#ec4899" stroke-width="1.5" filter="url(#gp)"/>
+  <text x="125" y="138" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">Rendezvous</text>
+  <text x="125" y="156" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">namespace registration</text>
+  <text x="125" y="174" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">peer discovery bootstrap</text>
+
+  <rect x="260" y="112" width="230" height="82" rx="10" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.5" filter="url(#ga)"/>
+  <text x="375" y="138" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">DCUtR</text>
+  <text x="375" y="156" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">direct connection upgrade</text>
+  <text x="375" y="174" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">hole punching</text>
+
+  <rect x="510" y="112" width="230" height="82" rx="10" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.5" filter="url(#ga)"/>
+  <text x="625" y="138" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">AutoNAT v2</text>
+  <text x="625" y="156" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">reachability detection</text>
+  <text x="625" y="174" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">public / private probe</text>
+
+  <rect x="760" y="112" width="230" height="82" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5" filter="url(#gc)"/>
+  <text x="875" y="138" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">Identify</text>
+  <text x="875" y="156" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">version &amp; protocol push</text>
+  <text x="875" y="174" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">agent string exchange</text>
+
+  <!-- Row 3 -->
+  <rect x="10" y="214" width="230" height="82" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5" filter="url(#gc)"/>
+  <text x="125" y="240" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">Ping</text>
+  <text x="125" y="258" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">liveness heartbeat</text>
+  <text x="125" y="276" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">RTT measurement</text>
+
+  <rect x="260" y="214" width="480" height="82" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5" filter="url(#gv)"/>
+  <text x="500" y="240" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">Streams (multiplexed)</text>
+  <text x="500" y="258" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">/calimero/stream/0.0.2  ·  /calimero/blob/0.0.2</text>
+  <text x="500" y="276" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">general sync, delta exchange, blob transfer</text>
+
+  <rect x="760" y="214" width="230" height="82" rx="10" fill="#f9731610" stroke="#f97316" stroke-width="1.5"/>
+  <text x="875" y="240" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">Request-Response</text>
+  <text x="875" y="258" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">specialized node invite</text>
+  <text x="875" y="276" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">verification &amp; response</text>
+
+  <!-- Composition frame -->
+  <rect x="5" y="320" width="990" height="52" rx="10" fill="#0f0f16" stroke="#8b5cf6" stroke-width="1.8" stroke-dasharray="6 4"/>
+  <text x="500" y="342" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">#[derive(NetworkBehaviour)] struct Behaviour { … }</text>
+  <text x="500" y="360" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">all behaviours composed into a single libp2p Swarm driven by NetworkManager actor</text>
+
+  <!-- Arrows from boxes to frame -->
+  <line x1="125" y1="296" x2="125" y2="320" stroke="#8b5cf640" stroke-width="1"/>
+  <line x1="375" y1="296" x2="375" y2="320" stroke="#8b5cf640" stroke-width="1"/>
+  <line x1="625" y1="296" x2="625" y2="320" stroke="#8b5cf640" stroke-width="1"/>
+  <line x1="875" y1="296" x2="875" y2="320" stroke="#8b5cf640" stroke-width="1"/>
+
+  <!-- Legend -->
+  <rect x="10" y="390" width="11" height="11" rx="3" fill="#8b5cf6"/>
+  <text x="28" y="400" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Core protocol</text>
+  <rect x="140" y="390" width="11" height="11" rx="3" fill="#ec4899"/>
+  <text x="158" y="400" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">NAT / relay</text>
+  <rect x="260" y="390" width="11" height="11" rx="3" fill="#f59e0b"/>
+  <text x="278" y="400" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Connectivity</text>
+  <rect x="380" y="390" width="11" height="11" rx="3" fill="#06b6d4"/>
+  <text x="398" y="400" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Diagnostics</text>
+  <rect x="500" y="390" width="11" height="11" rx="3" fill="#10b981"/>
+  <text x="518" y="400" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Discovery</text>
+  <rect x="620" y="390" width="11" height="11" rx="3" fill="#f97316"/>
+  <text x="638" y="400" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Specialized</text>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     3. TOPIC MANAGEMENT
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Topic Management</h2>
+<p style="margin-bottom:18px;">Gossipsub uses <span class="code">IdentTopic</span> for two distinct topic namespaces. The network crate only sees opaque topic strings — the semantic meaning is defined at the node layer.</p>
+
+<h3>Context Topics</h3>
+<div class="typedef">
+<span class="kw">let</span> topic = <span class="ty">IdentTopic</span>::new(<span class="field">context_id</span>);
+<br><span class="comment">// Carries: StateDelta, HashHeartbeat</span>
+<br><span class="comment">// One topic per context — peers subscribe on context join</span>
+</div>
+
+<h3>Group Topics</h3>
+<div class="typedef">
+<span class="kw">let</span> topic = <span class="ty">IdentTopic</span>::new(<span class="kw">format!</span>(<span class="field">"group/{}"</span>, hex::encode(<span class="field">group_id</span>)));
+<br><span class="comment">// Carries: SignedGroupOpV1, GroupGovernanceDelta,</span>
+<br><span class="comment">//          GroupStateHeartbeat, GroupMutationNotification</span>
+<br><span class="comment">// One topic per group — cross-context governance traffic</span>
+</div>
+
+<div style="margin-top:18px; padding:14px 18px; background:var(--surface2); border:1px solid var(--border); border-radius:10px;">
+  <p style="color:var(--amber); font-weight:600; margin-bottom:6px;">Important boundary</p>
+  <p><span class="code">BroadcastMessage</span> is <strong style="color:var(--text-bright)">not</strong> defined in the network crate — it lives in <span class="code">calimero-node-primitives</span>. The network layer only sees raw bytes; deserialization into <span class="code">BroadcastMessage</span> variants happens in <span class="code">NodeManager</span>.</p>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     4. STREAM PROTOCOLS
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Stream Protocols</h2>
+<p style="margin-bottom:18px;">Two multiplexed stream protocols ride on the same <span class="code">libp2p::Stream</span> infrastructure. Both use length-delimited framing for reliable message boundaries.</p>
+
+<div class="g2">
+  <div class="cb">
+    <h4 style="color:var(--violet);"><span class="code">/calimero/stream/0.0.2</span></h4>
+    <p style="margin:8px 0;">General-purpose sync stream for delta exchange, key sharing, and state negotiation.</p>
+    <ul>
+      <li>Length-delimited frames</li>
+      <li>8 MiB max frame size</li>
+      <li><span class="code">StreamMessage</span> → <span class="code">InitPayload</span> dispatch</li>
+      <li>Used by sync engine for catch-up &amp; real-time replication</li>
+    </ul>
+  </div>
+  <div class="cb">
+    <h4 style="color:var(--violet);"><span class="code">/calimero/blob/0.0.2</span></h4>
+    <p style="margin:8px 0;">Blob transfer protocol for large binary payloads (WASM, application data).</p>
+    <ul>
+      <li>JSON <span class="code">BlobRequest</span> / <span class="code">BlobResponse</span> handshake</li>
+      <li>Borsh-encoded <span class="code">BlobChunk</span> stream</li>
+      <li>Chunked transfer for large payloads</li>
+      <li>Announce / query / request lifecycle</li>
+    </ul>
+  </div>
+</div>
+
+<svg viewBox="0 0 1000 180" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-top:18px;">
+  <!-- Peer A -->
+  <rect x="10" y="30" width="180" height="50" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="100" y="52" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Peer A</text>
+  <text x="100" y="70" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">open_stream()</text>
+
+  <!-- Stream protocol box -->
+  <rect x="250" y="10" width="500" height="90" rx="10" fill="#0f0f16" stroke="#35354a" stroke-width="1"/>
+  <text x="500" y="34" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">Yamux Multiplexed Connection</text>
+  <rect x="270" y="46" width="220" height="42" rx="8" fill="#8b5cf610" stroke="#8b5cf680" stroke-width="1"/>
+  <text x="380" y="72" text-anchor="middle" fill="#d4d4dc" font-family="JetBrains Mono, monospace" font-size="9">/calimero/stream/0.0.2</text>
+  <rect x="510" y="46" width="220" height="42" rx="8" fill="#8b5cf610" stroke="#8b5cf680" stroke-width="1"/>
+  <text x="620" y="72" text-anchor="middle" fill="#d4d4dc" font-family="JetBrains Mono, monospace" font-size="9">/calimero/blob/0.0.2</text>
+
+  <!-- Peer B -->
+  <rect x="810" y="30" width="180" height="50" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="900" y="52" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Peer B</text>
+  <text x="900" y="70" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">accept_stream()</text>
+
+  <!-- Arrows -->
+  <line x1="190" y1="55" x2="250" y2="55" stroke="#8b5cf6" stroke-width="1.5"/>
+  <polygon points="248,55 240,51 240,59" fill="#8b5cf6"/>
+  <line x1="750" y1="55" x2="810" y2="55" stroke="#8b5cf6" stroke-width="1.5"/>
+  <polygon points="808,55 800,51 800,59" fill="#8b5cf6"/>
+
+  <!-- Frame detail -->
+  <rect x="250" y="120" width="500" height="46" rx="8" fill="#1e1e2e" stroke="#35354a" stroke-width="1"/>
+  <text x="270" y="142" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">Frame:</text>
+  <rect x="330" y="128" width="80" height="28" rx="5" fill="#f59e0b10" stroke="#f59e0b80" stroke-width="1"/>
+  <text x="370" y="146" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">len (4B)</text>
+  <rect x="420" y="128" width="310" height="28" rx="5" fill="#8b5cf610" stroke="#8b5cf680" stroke-width="1"/>
+  <text x="575" y="146" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9">payload (≤ 8 MiB)</text>
+
+  <line x1="500" y1="100" x2="500" y2="120" stroke="#35354a" stroke-width="1" stroke-dasharray="3 3"/>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     5. NETWORK CLIENT
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>NetworkClient</h2>
+<p style="margin-bottom:18px;"><span class="code">NetworkClient</span> is the async handle held by other actors to communicate with <span class="code">NetworkManager</span>. Each method sends a typed message and awaits the response.</p>
+
+<div class="g3">
+  <div class="cb">
+    <h4>Connection</h4>
+    <div class="typedef" style="margin-bottom:0;">
+<span class="kw">fn</span> <span class="field">dial</span>(addr) → Result<br>
+<span class="kw">fn</span> <span class="field">listen_on</span>(addr) → Result<br>
+<span class="kw">fn</span> <span class="field">bootstrap</span>() → Result
+    </div>
+  </div>
+  <div class="cb">
+    <h4>Pub/Sub</h4>
+    <div class="typedef" style="margin-bottom:0;">
+<span class="kw">fn</span> <span class="field">subscribe</span>(topic) → Result<br>
+<span class="kw">fn</span> <span class="field">unsubscribe</span>(topic) → Result<br>
+<span class="kw">fn</span> <span class="field">publish</span>(topic, data) → Result
+    </div>
+  </div>
+  <div class="cb">
+    <h4>Streams</h4>
+    <div class="typedef" style="margin-bottom:0;">
+<span class="kw">fn</span> <span class="field">open_stream</span>(peer) → Stream
+    </div>
+  </div>
+</div>
+
+<div class="g3" style="margin-top:12px;">
+  <div class="cb">
+    <h4>Mesh Info</h4>
+    <div class="typedef" style="margin-bottom:0;">
+<span class="kw">fn</span> <span class="field">peer_count</span>() → usize<br>
+<span class="kw">fn</span> <span class="field">mesh_peer_count</span>(topic) → usize<br>
+<span class="kw">fn</span> <span class="field">mesh_peers</span>(topic) → Vec
+    </div>
+  </div>
+  <div class="cb">
+    <h4>Blob Transfer</h4>
+    <div class="typedef" style="margin-bottom:0;">
+<span class="kw">fn</span> <span class="field">announce_blob</span>(hash) → Result<br>
+<span class="kw">fn</span> <span class="field">query_blob</span>(hash) → Providers<br>
+<span class="kw">fn</span> <span class="field">request_blob</span>(peer, hash) → Blob
+    </div>
+  </div>
+  <div class="cb">
+    <h4>Specialized Node</h4>
+    <div class="typedef" style="margin-bottom:0;">
+<span class="kw">fn</span> <span class="field">send_specialized_node_</span><br>
+&nbsp;&nbsp;<span class="field">verification_request</span>(..) → Result<br>
+<span class="kw">fn</span> <span class="field">send_specialized_node_</span><br>
+&nbsp;&nbsp;<span class="field">invitation_response</span>(..) → Result
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     6. DISCOVERY
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Discovery</h2>
+<p style="margin-bottom:18px;">The discovery subsystem combines multiple libp2p mechanisms into a state machine that progressively establishes connectivity with the mesh.</p>
+
+<svg viewBox="0 0 1000 340" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Boot -->
+  <rect x="10" y="20" width="200" height="60" rx="10" fill="#10b98110" stroke="#10b981" stroke-width="1.5"/>
+  <text x="110" y="46" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Boot</text>
+  <text x="110" y="64" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">dial bootstrap nodes</text>
+
+  <!-- Rendezvous Register -->
+  <rect x="270" y="20" width="200" height="60" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="370" y="46" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Register</text>
+  <text x="370" y="64" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">rendezvous namespace</text>
+
+  <!-- Rendezvous Discover -->
+  <rect x="530" y="20" width="200" height="60" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="630" y="46" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Discover</text>
+  <text x="630" y="64" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">find context peers</text>
+
+  <!-- Connect -->
+  <rect x="790" y="20" width="200" height="60" rx="10" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="890" y="46" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Connect</text>
+  <text x="890" y="64" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">dial discovered peers</text>
+
+  <!-- Arrows row 1 -->
+  <line x1="210" y1="50" x2="270" y2="50" stroke="#6b6b80" stroke-width="1.5"/>
+  <polygon points="268,50 260,46 260,54" fill="#6b6b80"/>
+  <line x1="470" y1="50" x2="530" y2="50" stroke="#6b6b80" stroke-width="1.5"/>
+  <polygon points="528,50 520,46 520,54" fill="#6b6b80"/>
+  <line x1="730" y1="50" x2="790" y2="50" stroke="#6b6b80" stroke-width="1.5"/>
+  <polygon points="788,50 780,46 780,54" fill="#6b6b80"/>
+
+  <!-- Row 2: relay + reachability -->
+  <rect x="10" y="130" width="230" height="80" rx="10" fill="#ec489910" stroke="#ec4899" stroke-width="1.5"/>
+  <text x="125" y="156" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Relay Reservation</text>
+  <text x="125" y="174" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">request circuit relay slot</text>
+  <text x="125" y="192" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">from configured relay nodes</text>
+
+  <rect x="270" y="130" width="230" height="80" rx="10" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="385" y="156" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">AutoNAT Probe</text>
+  <text x="385" y="174" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">test reachability from</text>
+  <text x="385" y="192" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">external peers</text>
+
+  <rect x="530" y="130" width="230" height="80" rx="10" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="645" y="156" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">DCUtR Upgrade</text>
+  <text x="645" y="174" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">attempt hole punch</text>
+  <text x="645" y="192" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">upgrade relayed → direct</text>
+
+  <rect x="790" y="130" width="200" height="80" rx="10" fill="#10b98110" stroke="#10b981" stroke-width="1.5"/>
+  <text x="890" y="156" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Public IP</text>
+  <text x="890" y="174" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">optional advertise</text>
+  <text x="890" y="192" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">external address</text>
+
+  <!-- Row 2 arrows -->
+  <line x1="240" y1="170" x2="270" y2="170" stroke="#6b6b80" stroke-width="1.2"/>
+  <polygon points="268,170 262,166 262,174" fill="#6b6b80"/>
+  <line x1="500" y1="170" x2="530" y2="170" stroke="#6b6b80" stroke-width="1.2"/>
+  <polygon points="528,170 522,166 522,174" fill="#6b6b80"/>
+  <line x1="760" y1="170" x2="790" y2="170" stroke="#6b6b80" stroke-width="1.2"/>
+  <polygon points="788,170 782,166 782,174" fill="#6b6b80"/>
+
+  <!-- Vertical link: Connect → Relay -->
+  <line x1="110" y1="80" x2="110" y2="130" stroke="#ec489980" stroke-width="1.2" stroke-dasharray="4 3"/>
+
+  <!-- Row 3: mDNS -->
+  <rect x="10" y="260" width="230" height="60" rx="10" fill="#10b98110" stroke="#10b981" stroke-width="1.5"/>
+  <text x="125" y="286" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">mDNS (LAN)</text>
+  <text x="125" y="304" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">concurrent local discovery (if enabled)</text>
+
+  <line x1="125" y1="210" x2="125" y2="260" stroke="#10b98160" stroke-width="1.2" stroke-dasharray="4 3"/>
+
+  <!-- Kademlia DHT -->
+  <rect x="270" y="260" width="230" height="60" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="385" y="286" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Kademlia DHT</text>
+  <text x="385" y="304" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">routing table &amp; provider records</text>
+
+  <line x1="385" y1="210" x2="385" y2="260" stroke="#8b5cf660" stroke-width="1.2" stroke-dasharray="4 3"/>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     7. TRANSPORT
+     ════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Transport</h2>
+<p style="margin-bottom:18px;">The transport layer supports multiple stacks for different network conditions. All connections are authenticated and encrypted.</p>
+
+<div class="g2">
+  <div class="cb">
+    <h4 style="color:var(--amber);">TCP Stack</h4>
+    <p style="margin:8px 0;">Primary transport for reliable connections.</p>
+    <div class="typedef" style="margin-bottom:0;">
+<span class="comment">// Transport chain:</span><br>
+<span class="ty">TCP</span> → <span class="ty">TLS</span> (libp2p-tls) → <span class="ty">Noise</span> (XX handshake)<br>
+&nbsp;&nbsp;&nbsp;→ <span class="ty">Yamux</span> (stream multiplexing)
+    </div>
+  </div>
+  <div class="cb">
+    <h4 style="color:var(--cyan);">QUIC Stack</h4>
+    <p style="margin:8px 0;">UDP-based transport with built-in encryption and muxing.</p>
+    <div class="typedef" style="margin-bottom:0;">
+<span class="comment">// Transport chain:</span><br>
+<span class="ty">QUIC</span> (UDP + TLS 1.3 built-in)<br>
+&nbsp;&nbsp;&nbsp;→ native stream multiplexing<br>
+<span class="comment">// No separate Noise/Yamux needed</span>
+    </div>
+  </div>
+</div>
+
+<svg viewBox="0 0 1000 130" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-top:18px;">
+  <!-- Yamux frame -->
+  <text x="10" y="20" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">Yamux Frame Codec:</text>
+
+  <rect x="10" y="35" width="120" height="40" rx="6" fill="#f59e0b10" stroke="#f59e0b80" stroke-width="1"/>
+  <text x="70" y="59" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">version (1B)</text>
+
+  <rect x="140" y="35" width="120" height="40" rx="6" fill="#f59e0b10" stroke="#f59e0b80" stroke-width="1"/>
+  <text x="200" y="59" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">type (1B)</text>
+
+  <rect x="270" y="35" width="120" height="40" rx="6" fill="#f59e0b10" stroke="#f59e0b80" stroke-width="1"/>
+  <text x="330" y="59" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">flags (2B)</text>
+
+  <rect x="400" y="35" width="160" height="40" rx="6" fill="#f59e0b10" stroke="#f59e0b80" stroke-width="1"/>
+  <text x="480" y="59" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">stream ID (4B)</text>
+
+  <rect x="570" y="35" width="160" height="40" rx="6" fill="#f59e0b10" stroke="#f59e0b80" stroke-width="1"/>
+  <text x="650" y="59" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">length (4B)</text>
+
+  <rect x="740" y="35" width="250" height="40" rx="6" fill="#8b5cf610" stroke="#8b5cf680" stroke-width="1"/>
+  <text x="865" y="59" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9">payload (variable)</text>
+
+  <!-- Noise handshake -->
+  <text x="10" y="105" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">Noise XX Handshake:</text>
+  <text x="230" y="105" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">→ e</text>
+  <text x="320" y="105" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">← e, ee, s, es</text>
+  <text x="510" y="105" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">→ s, se</text>
+  <text x="660" y="105" fill="#10b981" font-family="DM Sans, sans-serif" font-size="10">✓ mutual authentication complete</text>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     8. DEPENDENCIES
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Dependencies</h2>
+<p style="margin-bottom:18px;">Key crate dependencies and their roles in the network layer.</p>
+
+<div class="g2">
+  <div>
+    <h3>calimero-network</h3>
+    <div class="fr"><div class="fp">libp2p</div><div class="fd">Core networking stack — swarm, transports, all behaviour crates</div></div>
+    <div class="fr"><div class="fp">tokio</div><div class="fd">Async runtime for swarm event loop and stream I/O</div></div>
+    <div class="fr"><div class="fp">futures</div><div class="fd">Stream/Sink adapters for length-delimited framing</div></div>
+    <div class="fr"><div class="fp">serde / serde_json</div><div class="fd">Blob protocol JSON handshake serialization</div></div>
+    <div class="fr"><div class="fp">borsh</div><div class="fd">Blob chunk binary serialization</div></div>
+    <div class="fr"><div class="fp">tracing</div><div class="fd">Structured logging for network events</div></div>
+    <div class="fr"><div class="fp">calimero-network-primitives</div><div class="fd">Shared types: NetworkConfig, stream protocol IDs</div></div>
+  </div>
+  <div>
+    <h3>calimero-network-primitives</h3>
+    <div class="fr"><div class="fp">libp2p-identity</div><div class="fd">PeerId, Keypair re-exports</div></div>
+    <div class="fr"><div class="fp">multiaddr</div><div class="fd">Multi-address types for listen/dial configuration</div></div>
+    <div class="fr"><div class="fp">serde</div><div class="fd">Config serialization (NetworkConfig, BootstrapConfig, etc.)</div></div>
+    <div class="fr"><div class="fp">strum</div><div class="fd">Enum display/from_str for protocol IDs</div></div>
+  </div>
+</div>
+</div>
+
+</div><!-- .content -->
+</div><!-- .main -->
+<script src="../nav.js"></script>
+</body>
+</html>

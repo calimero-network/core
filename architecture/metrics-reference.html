@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Metrics Reference — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.metric-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+.metric-table th {
+  text-align: left; padding: 10px 12px; font-family: 'JetBrains Mono', monospace; font-size: .72rem;
+  color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px;
+  border-bottom: 2px solid var(--border); background: var(--surface2);
+}
+.metric-table th:first-child { border-radius: 8px 0 0 0; }
+.metric-table th:last-child { border-radius: 0 8px 0 0; }
+.metric-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: .82rem; vertical-align: top; }
+.metric-table tr:hover td { background: var(--surface2); }
+.metric-table .mn { font-family: 'JetBrains Mono', monospace; font-size: .78rem; color: var(--green); font-weight: 600; white-space: nowrap; }
+.metric-table .mt { font-family: 'JetBrains Mono', monospace; font-size: .72rem; color: var(--violet); }
+.metric-table .ml { font-family: 'JetBrains Mono', monospace; font-size: .72rem; color: var(--amber); }
+.metric-table .md { color: var(--text-dim); }
+
+.promql { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; font-family: 'JetBrains Mono', monospace; font-size: .78rem; line-height: 1.7; color: var(--text); overflow-x: auto; }
+.promql .label { color: var(--amber); }
+.promql .fn { color: var(--violet); }
+.promql .comment { color: var(--text-dim); font-style: italic; }
+
+.metric-note { background: var(--surface2); border-left: 3px solid var(--amber); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 8px 0 16px; font-size: .82rem; color: var(--text-dim); line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Metrics Reference</span></div>
+
+<h1>Metrics <em>Reference</em></h1>
+<p class="page-subtitle">All Prometheus metrics organized by subsystem</p>
+
+<div class="g4" style="margin-bottom:36px;">
+  <div class="stat"><div class="v">16</div><div class="l">sync metrics</div></div>
+  <div class="stat"><div class="v">5</div><div class="l">channel metrics</div></div>
+  <div class="stat"><div class="v">2</div><div class="l">context metrics</div></div>
+  <div class="stat"><div class="v">3</div><div class="l">subsystems</div></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     1. SYNC METRICS
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Sync Metrics</h2>
+<p style="margin-bottom:8px;">Metrics emitted by the sync engine covering protocol selection, data transfer, phase timing, and invariant monitoring.</p>
+<a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/prometheus_metrics.rs" target="_blank" rel="noopener">crates/node/src/sync/prometheus_metrics.rs</a>
+
+<h3>Transfer &amp; Volume</h3>
+<table class="metric-table">
+<thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="mn">sync_messages_sent</td>
+  <td class="mt">Family&lt;Counter&gt;</td>
+  <td class="ml">protocol</td>
+  <td class="md">Total sync protocol messages sent</td>
+</tr>
+<tr>
+  <td class="mn">sync_bytes_sent</td>
+  <td class="mt">Family&lt;Counter&gt;</td>
+  <td class="ml">protocol</td>
+  <td class="md">Total sync protocol bytes sent</td>
+</tr>
+<tr>
+  <td class="mn">sync_round_trips</td>
+  <td class="mt">Family&lt;Counter&gt;</td>
+  <td class="ml">protocol</td>
+  <td class="md">Total sync round trips</td>
+</tr>
+<tr>
+  <td class="mn">sync_entities_transferred</td>
+  <td class="mt">Counter</td>
+  <td class="ml">—</td>
+  <td class="md">Total entities transferred during sync</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>Transfer metric usage notes</summary>
+  <div class="detail-body">
+    <div class="metric-note"><strong>sync_messages_sent</strong> — High values per protocol indicate frequent sync activity. Compare across protocols to understand which sync strategy dominates. Alert if any single protocol accounts for &gt;90% of messages (may indicate stuck fallback).</div>
+    <div class="metric-note"><strong>sync_bytes_sent</strong> — Use with <span class="code">sync_messages_sent</span> to compute average message size. Snapshot protocol will naturally produce larger values. A sudden spike may indicate a node falling behind and triggering full snapshots.</div>
+    <div class="metric-note"><strong>sync_round_trips</strong> — Higher round trips for hash comparison is normal (binary search). For snapshot sync, this should be very low (1-2). High round trips on level-wise sync suggests deep DAG divergence.</div>
+    <div class="metric-note"><strong>sync_entities_transferred</strong> — Track the rate of this counter. Sustained high rates indicate active state divergence across the cluster. Should be near-zero during steady state.</div>
+  </div>
+</details>
+
+<h3>CRDT Operations</h3>
+<table class="metric-table">
+<thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="mn">sync_merges</td>
+  <td class="mt">Family&lt;Counter&gt;</td>
+  <td class="ml">protocol</td>
+  <td class="md">Total CRDT merge operations</td>
+</tr>
+<tr>
+  <td class="mn">sync_comparisons</td>
+  <td class="mt">Counter</td>
+  <td class="ml">—</td>
+  <td class="md">Total entity hash comparisons</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>CRDT metric usage notes</summary>
+  <div class="detail-body">
+    <div class="metric-note"><strong>sync_merges</strong> — Each merge represents a conflict resolution. High merge rates relative to entity transfers indicate heavy concurrent writes. Useful for tuning write concurrency.</div>
+    <div class="metric-note"><strong>sync_comparisons</strong> — Hash comparisons are cheap but high volume indicates the hash-compare protocol is doing a lot of work. The ratio of comparisons to entities transferred measures sync efficiency (lower ratio = more divergence).</div>
+  </div>
+</details>
+
+<h3>Phase Timing</h3>
+<table class="metric-table">
+<thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="mn">sync_phase_duration_seconds</td>
+  <td class="mt">Family&lt;Histogram&gt;</td>
+  <td class="ml">phase</td>
+  <td class="md">Duration of sync phases (buckets: 1ms, 2ms, 4ms, 8ms, 16ms, 32ms, 64ms, 128ms, 256ms, 512ms, 1s, 2s, 4s, 8s, 16s)</td>
+</tr>
+<tr>
+  <td class="mn">sync_duration_seconds</td>
+  <td class="mt">Family&lt;Histogram&gt;</td>
+  <td class="ml">protocol</td>
+  <td class="md">Full sync session duration (buckets: 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1.28s, 2.56s, 5.12s, 10.24s, 20.48s, 40.96s, 81.92s, 160s)</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>Timing metric usage notes</summary>
+  <div class="detail-body">
+    <div class="metric-note"><strong>sync_phase_duration_seconds</strong> — Break down which phase is the bottleneck. Phases include: discovery, comparison, transfer, and apply. If the "apply" phase is slow, storage writes may be the bottleneck. If "transfer" is slow, check network bandwidth.</div>
+    <div class="metric-note"><strong>sync_duration_seconds</strong> — The end-to-end duration of a complete sync session. Hash comparison should complete in &lt;100ms; level-wise in &lt;1s; snapshot may take 10s+. Alert on p99 &gt; 30s for any protocol.</div>
+  </div>
+</details>
+
+<h3>Invariant Monitoring</h3>
+<table class="metric-table">
+<thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="mn">sync_snapshot_blocked</td>
+  <td class="mt">Counter</td>
+  <td class="ml">—</td>
+  <td class="md">Snapshot blocked on initialized nodes (invariant I5)</td>
+</tr>
+<tr>
+  <td class="mn">sync_verification_failures</td>
+  <td class="mt">Counter</td>
+  <td class="ml">—</td>
+  <td class="md">Snapshot verification failures (invariant I7)</td>
+</tr>
+<tr>
+  <td class="mn">sync_lww_fallback</td>
+  <td class="mt">Counter</td>
+  <td class="ml">—</td>
+  <td class="md">LWW fallback events</td>
+</tr>
+<tr>
+  <td class="mn">sync_buffer_drops</td>
+  <td class="mt">Counter</td>
+  <td class="ml">—</td>
+  <td class="md">Delta buffer drop events (invariant I6 risk)</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>Invariant metric usage notes</summary>
+  <div class="detail-body">
+    <div class="metric-note"><strong>sync_snapshot_blocked</strong> — Should always be 0 in normal operation. Any increment means a snapshot sync was attempted on an already-initialized node, which is blocked by safety invariant I5. Investigate immediately if non-zero.</div>
+    <div class="metric-note"><strong>sync_verification_failures</strong> — Indicates post-snapshot state hash mismatch (invariant I7). Non-zero values suggest data corruption or non-deterministic execution. Requires urgent investigation.</div>
+    <div class="metric-note"><strong>sync_lww_fallback</strong> — LWW (last-writer-wins) fallback is a safety net when normal merge fails. Occasional occurrences are acceptable; sustained increases may indicate a bug in CRDT merge logic.</div>
+    <div class="metric-note"><strong>sync_buffer_drops</strong> — Delta buffer is bounded; drops mean incoming deltas are arriving faster than they can be processed (invariant I6 risk). May lead to data loss requiring catch-up sync. Alert on any increment.</div>
+  </div>
+</details>
+
+<h3>Protocol Selection &amp; Outcomes</h3>
+<table class="metric-table">
+<thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="mn">sync_attempts</td>
+  <td class="mt">Family&lt;Counter&gt;</td>
+  <td class="ml">protocol</td>
+  <td class="md">Total sync attempts by protocol</td>
+</tr>
+<tr>
+  <td class="mn">sync_successes</td>
+  <td class="mt">Family&lt;Counter&gt;</td>
+  <td class="ml">protocol</td>
+  <td class="md">Successful syncs by protocol</td>
+</tr>
+<tr>
+  <td class="mn">sync_failures</td>
+  <td class="mt">Family&lt;Counter&gt;</td>
+  <td class="ml">protocol</td>
+  <td class="md">Failed syncs by protocol</td>
+</tr>
+<tr>
+  <td class="mn">sync_protocol_selections</td>
+  <td class="mt">Family&lt;Counter&gt;</td>
+  <td class="ml">protocol</td>
+  <td class="md">Protocol selection decisions</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>Protocol outcome usage notes</summary>
+  <div class="detail-body">
+    <div class="metric-note"><strong>sync_attempts / sync_successes / sync_failures</strong> — Compute success rate per protocol: <span class="code">sync_successes / sync_attempts</span>. Hash comparison should have &gt;95% success rate. If snapshot failures are non-zero, check network stability and storage health.</div>
+    <div class="metric-note"><strong>sync_protocol_selections</strong> — Shows which protocol the adaptive selector chose. Healthy clusters should see mostly hash comparison. Increasing snapshot selections indicates growing state divergence across nodes.</div>
+  </div>
+</details>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     2. NETWORK EVENT CHANNEL METRICS
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Network Event Channel Metrics</h2>
+<p style="margin-bottom:8px;">Metrics from the bounded event channel between the network layer and node manager. All metrics are registered under the <span class="code">network_event_channel</span> sub-registry.</p>
+<a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/network_event_channel.rs" target="_blank" rel="noopener">crates/node/src/network_event_channel.rs</a>
+
+<table class="metric-table" style="margin-top:18px;">
+<thead><tr><th>Metric</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="mn">depth</td>
+  <td class="mt">Gauge</td>
+  <td class="md">Current events waiting in channel</td>
+</tr>
+<tr>
+  <td class="mn">received_total</td>
+  <td class="mt">Counter</td>
+  <td class="md">Total events sent to channel</td>
+</tr>
+<tr>
+  <td class="mn">processed_total</td>
+  <td class="mt">Counter</td>
+  <td class="md">Total events received from channel</td>
+</tr>
+<tr>
+  <td class="mn">dropped_total</td>
+  <td class="mt">Counter</td>
+  <td class="md">Events dropped (channel full)</td>
+</tr>
+<tr>
+  <td class="mn">processing_latency_seconds</td>
+  <td class="mt">Histogram</td>
+  <td class="md">Event send-to-processing latency</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>Channel metric usage notes</summary>
+  <div class="detail-body">
+    <div class="metric-note"><strong>depth</strong> — Instantaneous queue depth. Sustained high values (&gt;80% of capacity) indicate the NodeManager can't keep up with incoming network events. May cause drops.</div>
+    <div class="metric-note"><strong>received_total / processed_total</strong> — The difference <span class="code">received_total - processed_total</span> should equal <span class="code">depth + dropped_total</span> at any point. Growing divergence indicates processing lag.</div>
+    <div class="metric-note"><strong>dropped_total</strong> — Any increment means the channel was full and events were lost. Dropped events may cause missed gossip messages or delayed sync triggers. Alert on any non-zero rate.</div>
+    <div class="metric-note"><strong>processing_latency_seconds</strong> — Measures end-to-end event latency from when NetworkManager enqueues to when NodeManager dequeues. p99 &gt; 500ms indicates backpressure. p50 should be &lt; 10ms in healthy systems.</div>
+  </div>
+</details>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     3. CONTEXT METRICS
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Context Metrics</h2>
+<p style="margin-bottom:8px;">Per-context execution metrics for monitoring WASM runtime performance.</p>
+<a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/context/src/metrics.rs" target="_blank" rel="noopener">crates/context/src/metrics.rs</a>
+
+<table class="metric-table" style="margin-top:18px;">
+<thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="mn">execution_count</td>
+  <td class="mt">Family&lt;Gauge&gt;</td>
+  <td class="ml">context_id</td>
+  <td class="md">Context runtime execution counter</td>
+</tr>
+<tr>
+  <td class="mn">execution_duration_seconds</td>
+  <td class="mt">Family&lt;Histogram&gt;</td>
+  <td class="ml">context_id</td>
+  <td class="md">Execution duration (buckets: 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 512s, 1024s)</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>Context metric usage notes</summary>
+  <div class="detail-body">
+    <div class="metric-note"><strong>execution_count</strong> — A gauge tracking cumulative executions per context. Use <span class="code">rate()</span> to get executions per second. Contexts with unusually high execution rates may be under heavy client load or in a retry loop.</div>
+    <div class="metric-note"><strong>execution_duration_seconds</strong> — Measures WASM method execution time including host function calls and storage I/O. Bucket boundaries start at 1s — anything in the first bucket is healthy. Executions &gt; 64s may indicate infinite loops or expensive storage operations. Consider setting WASM gas limits.</div>
+  </div>
+</details>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     4. DASHBOARD QUERIES
+     ════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Dashboard Queries</h2>
+<p style="margin-bottom:20px;">Example PromQL queries for common monitoring scenarios. Adapt the label selectors to match your deployment.</p>
+
+<h3>Sync Health Overview</h3>
+<div class="promql">
+<span class="comment"># Sync success rate by protocol (5m window)</span><br>
+<span class="fn">sum</span>(<span class="fn">rate</span>(sync_successes_total{<span class="label">protocol</span>=~".*"}[5m])) <span class="fn">by</span> (<span class="label">protocol</span>)<br>
+/ <span class="fn">sum</span>(<span class="fn">rate</span>(sync_attempts_total{<span class="label">protocol</span>=~".*"}[5m])) <span class="fn">by</span> (<span class="label">protocol</span>)
+</div>
+
+<div class="promql">
+<span class="comment"># Sync failure rate — alert when &gt; 0.1/s</span><br>
+<span class="fn">sum</span>(<span class="fn">rate</span>(sync_failures_total[5m])) <span class="fn">by</span> (<span class="label">protocol</span>) > 0.1
+</div>
+
+<div class="promql">
+<span class="comment"># P99 sync duration by protocol</span><br>
+<span class="fn">histogram_quantile</span>(0.99, <span class="fn">sum</span>(<span class="fn">rate</span>(sync_duration_seconds_bucket[5m])) <span class="fn">by</span> (<span class="label">le</span>, <span class="label">protocol</span>))
+</div>
+
+<h3>Invariant Alerts</h3>
+<div class="promql">
+<span class="comment"># CRITICAL: Any snapshot verification failure</span><br>
+<span class="fn">increase</span>(sync_verification_failures_total[5m]) > 0
+</div>
+
+<div class="promql">
+<span class="comment"># WARNING: Delta buffer drops (I6 risk)</span><br>
+<span class="fn">rate</span>(sync_buffer_drops_total[5m]) > 0
+</div>
+
+<div class="promql">
+<span class="comment"># WARNING: Snapshot blocked on initialized node (I5)</span><br>
+<span class="fn">increase</span>(sync_snapshot_blocked_total[5m]) > 0
+</div>
+
+<h3>Network Channel Backpressure</h3>
+<div class="promql">
+<span class="comment"># Channel utilization (assuming capacity of 1000)</span><br>
+network_event_channel_depth / 1000
+</div>
+
+<div class="promql">
+<span class="comment"># Event drop rate — alert on any drops</span><br>
+<span class="fn">rate</span>(network_event_channel_dropped_total[1m]) > 0
+</div>
+
+<div class="promql">
+<span class="comment"># P99 event processing latency</span><br>
+<span class="fn">histogram_quantile</span>(0.99, <span class="fn">sum</span>(<span class="fn">rate</span>(network_event_channel_processing_latency_seconds_bucket[5m])) <span class="fn">by</span> (<span class="label">le</span>))
+</div>
+
+<h3>Context Execution Performance</h3>
+<div class="promql">
+<span class="comment"># Top 5 contexts by execution rate</span><br>
+<span class="fn">topk</span>(5, <span class="fn">rate</span>(execution_count[5m]))
+</div>
+
+<div class="promql">
+<span class="comment"># P95 execution duration per context</span><br>
+<span class="fn">histogram_quantile</span>(0.95, <span class="fn">sum</span>(<span class="fn">rate</span>(execution_duration_seconds_bucket[5m])) <span class="fn">by</span> (<span class="label">le</span>, <span class="label">context_id</span>))
+</div>
+
+<div class="promql">
+<span class="comment"># Slow executions (&gt; 30s) per context</span><br>
+<span class="fn">sum</span>(<span class="fn">rate</span>(execution_duration_seconds_bucket{<span class="label">le</span>="32"}[5m])) <span class="fn">by</span> (<span class="label">context_id</span>)<br>
+- <span class="fn">sum</span>(<span class="fn">rate</span>(execution_duration_seconds_bucket{<span class="label">le</span>="1024"}[5m])) <span class="fn">by</span> (<span class="label">context_id</span>)
+</div>
+
+<h3>Sync Bandwidth &amp; Efficiency</h3>
+<div class="promql">
+<span class="comment"># Bytes per message (average message size)</span><br>
+<span class="fn">rate</span>(sync_bytes_sent_total[5m]) / <span class="fn">rate</span>(sync_messages_sent_total[5m])
+</div>
+
+<div class="promql">
+<span class="comment"># Sync efficiency: entities per round trip</span><br>
+<span class="fn">rate</span>(sync_entities_transferred_total[5m]) / <span class="fn">sum</span>(<span class="fn">rate</span>(sync_round_trips_total[5m]))
+</div>
+
+<div class="promql">
+<span class="comment"># Protocol selection distribution</span><br>
+<span class="fn">sum</span>(<span class="fn">rate</span>(sync_protocol_selections_total[5m])) <span class="fn">by</span> (<span class="label">protocol</span>)<br>
+/ <span class="fn">ignoring</span>(<span class="label">protocol</span>) <span class="fn">group_left</span> <span class="fn">sum</span>(<span class="fn">rate</span>(sync_protocol_selections_total[5m]))
+</div>
+</div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>
