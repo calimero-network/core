@@ -709,4 +709,75 @@ mod tests {
         );
         assert_eq!(invitation.secret_salt, invitation_deserialized.secret_salt);
     }
+
+    #[test]
+    fn signed_open_invitation_serde_roundtrip_with_app_fields() {
+        let invitation = InvitationFromMember {
+            inviter_identity: [0x11; 32].into(),
+            context_id: [0x22; 32].into(),
+            expiration_timestamp: 1_700_000_000,
+            secret_salt: [0x33; 32],
+        };
+
+        let signed = SignedOpenInvitation {
+            invitation,
+            inviter_signature: "deadbeef".to_string(),
+            application_id: Some([0x44; 32]),
+            blob_id: Some([0x55; 32]),
+            source: Some("https://registry.example.com/apps/my-app".to_string()),
+        };
+
+        let json = serde_json::to_string(&signed).expect("serialize");
+        let decoded: SignedOpenInvitation = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(decoded.inviter_signature, "deadbeef");
+        assert_eq!(decoded.application_id, Some([0x44; 32]));
+        assert_eq!(decoded.blob_id, Some([0x55; 32]));
+        assert_eq!(
+            decoded.source.as_deref(),
+            Some("https://registry.example.com/apps/my-app")
+        );
+    }
+
+    #[test]
+    fn signed_open_invitation_serde_backward_compat() {
+        let json = r#"{
+            "invitation": {
+                "inviter_identity": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                "context_id": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                "expiration_timestamp": 1000,
+                "secret_salt": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+            },
+            "inviter_signature": "abc123"
+        }"#;
+
+        let decoded: SignedOpenInvitation = serde_json::from_str(json).expect("deserialize old format");
+        assert_eq!(decoded.inviter_signature, "abc123");
+        assert_eq!(decoded.application_id, None);
+        assert_eq!(decoded.blob_id, None);
+        assert_eq!(decoded.source, None);
+    }
+
+    #[test]
+    fn signed_open_invitation_none_fields_omitted_in_json() {
+        let invitation = InvitationFromMember {
+            inviter_identity: [0; 32].into(),
+            context_id: [0; 32].into(),
+            expiration_timestamp: 0,
+            secret_salt: [0; 32],
+        };
+
+        let signed = SignedOpenInvitation {
+            invitation,
+            inviter_signature: "sig".to_string(),
+            application_id: None,
+            blob_id: None,
+            source: None,
+        };
+
+        let json = serde_json::to_string(&signed).expect("serialize");
+        assert!(!json.contains("application_id"));
+        assert!(!json.contains("blob_id"));
+        assert!(!json.contains("source"));
+    }
 }

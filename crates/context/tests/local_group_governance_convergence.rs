@@ -1287,3 +1287,60 @@ fn state_hash_zero_skips_validation() {
     .unwrap();
     assert!(apply_local_signed_group_op(&store, &op).is_ok());
 }
+
+#[test]
+fn group_member_with_keys_persists_and_retrieves() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let sender_sk = PrivateKey::random(&mut rng);
+
+    group_store::add_group_member_with_keys(
+        &store,
+        &gid,
+        &member_pk,
+        GroupMemberRole::Member,
+        Some(*member_sk),
+        Some(*sender_sk),
+    )
+    .unwrap();
+
+    assert!(group_store::check_group_membership(&store, &gid, &member_pk).unwrap());
+
+    let value = group_store::get_group_member_value(&store, &gid, &member_pk)
+        .unwrap()
+        .expect("member value should exist");
+
+    assert_eq!(value.role, GroupMemberRole::Member);
+    assert_eq!(value.private_key, Some(*member_sk));
+    assert_eq!(value.sender_key, Some(*sender_sk));
+}
+
+#[test]
+fn group_member_without_keys_has_none_keys() {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+
+    let remote_pk = PrivateKey::random(&mut rng).public_key();
+    group_store::add_group_member(&store, &gid, &remote_pk, GroupMemberRole::Member).unwrap();
+
+    let value = group_store::get_group_member_value(&store, &gid, &remote_pk)
+        .unwrap()
+        .expect("member value should exist");
+
+    assert_eq!(value.role, GroupMemberRole::Member);
+    assert_eq!(value.private_key, None);
+    assert_eq!(value.sender_key, None);
+}

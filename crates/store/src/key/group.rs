@@ -1502,7 +1502,7 @@ mod tests {
         use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
         use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 
-        use super::super::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
+        use super::super::{GroupMemberValue, GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
 
         #[test]
         fn group_meta_value_roundtrip() {
@@ -1597,6 +1597,36 @@ mod tests {
                 }
                 other => panic!("expected InProgress, got {other:?}"),
             }
+        }
+
+        #[test]
+        fn group_member_value_roundtrip() {
+            for role in [GroupMemberRole::Admin, GroupMemberRole::Member] {
+                let value = GroupMemberValue {
+                    role: role.clone(),
+                    private_key: Some([0xAA; 32]),
+                    sender_key: Some([0xBB; 32]),
+                };
+                let bytes = to_vec(&value).expect("serialize");
+                let decoded: GroupMemberValue = from_slice(&bytes).expect("deserialize");
+                assert_eq!(decoded.role, role);
+                assert_eq!(decoded.private_key, Some([0xAA; 32]));
+                assert_eq!(decoded.sender_key, Some([0xBB; 32]));
+            }
+        }
+
+        #[test]
+        fn group_member_value_without_keys_roundtrip() {
+            let value = GroupMemberValue {
+                role: GroupMemberRole::Member,
+                private_key: None,
+                sender_key: None,
+            };
+            let bytes = to_vec(&value).expect("serialize");
+            let decoded: GroupMemberValue = from_slice(&bytes).expect("deserialize");
+            assert_eq!(decoded.role, GroupMemberRole::Member);
+            assert_eq!(decoded.private_key, None);
+            assert_eq!(decoded.sender_key, None);
         }
 
         #[test]
