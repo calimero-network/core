@@ -641,44 +641,6 @@ pub fn ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8
 // CONTEXT MANAGEMENT API
 // ========================================
 
-/// Requests the creation of a new context.
-///
-/// # Arguments
-/// * `protocol` - The protocol string (e.g., "near").
-/// * `application_id` - The 32-byte Application ID.
-/// * `args` - Initialization arguments for the new application.
-/// * `alias` - Optional alias to assign to the new context.
-///   If alias already exists, the function fails and context
-///   creation request is not created.
-#[inline]
-pub fn context_create(protocol: &str, application_id: &[u8; 32], args: &[u8], alias: Option<&str>) {
-    let alias_buf = if let Some(a) = alias {
-        Buffer::from(a)
-    } else {
-        Buffer::empty()
-    };
-
-    unsafe {
-        sys::context_create(
-            Ref::new(&Buffer::from(protocol)),
-            Ref::new(&Buffer::from(&application_id[..])),
-            Ref::new(&Buffer::from(args)),
-            Ref::new(&alias_buf),
-        );
-    }
-}
-
-/// Requests the deletion of a context.
-///
-/// # Arguments
-/// * `context_id` - The 32-byte ID of the context to delete.
-#[inline]
-pub fn context_delete(context_id: &[u8; 32]) {
-    unsafe {
-        sys::context_delete(Ref::new(&Buffer::from(&context_id[..])));
-    }
-}
-
 /// Checks if a given public key is a member of the current context.
 ///
 /// # Arguments

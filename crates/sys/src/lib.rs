@@ -49,13 +49,6 @@ wasm_imports! {
         fn ed25519_verify(signature_ptr: Ref<Buffer<'_>>, public_key_ptr: Ref<Buffer<'_>>, message_ptr: Ref<Buffer<'_>>) -> Bool;
         // --
         // Context Management functions
-        fn context_create(
-            protocol_ptr: Ref<Buffer<'_>>,
-            app_id_ptr: Ref<Buffer<'_>>,
-            args_ptr: Ref<Buffer<'_>>,
-            alias: Ref<Buffer<'_>>
-        );
-        fn context_delete(context_id_ptr: Ref<Buffer<'_>>);
         fn context_is_member(public_key_ptr: Ref<Buffer<'_>>) -> Bool;
         fn context_members(register_id: RegisterId);
         // Check if alias resolves to a context ID

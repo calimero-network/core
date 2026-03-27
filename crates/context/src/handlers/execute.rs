@@ -41,7 +41,7 @@ use crate::error::ContextError;
 use crate::handlers::update_application::{
     update_application_id, update_application_with_migration,
 };
-use crate::handlers::utils::{process_context_mutations, StoreContextHost};
+use crate::handlers::utils::StoreContextHost;
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
 
@@ -666,8 +666,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 .await?;
                         }
                     }
-
-                    process_context_mutations(&context_client, &node_client, context_id, executor, &outcome.context_mutations).await;
 
                     // Spawn handler executions as separate tasks.
                     // This runs after the current response is sent, avoiding actor deadlock.

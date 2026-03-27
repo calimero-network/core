@@ -5,7 +5,6 @@ set -ex
 
 BUILD_SCRIPTS=(
     "apps/abi_conformance/build.sh"
-    "apps/access-control/build.sh"
     "apps/blobs/build.sh"
     "apps/collaborative-editor/build.sh"
     "apps/kv-store-init/build.sh"
@@ -50,7 +49,6 @@ done
 # Build bundles 
 BUNDLE_SCRIPTS=(
     "apps/kv-store/build-bundle.sh"
-    "apps/access-control/build-bundle.sh"
 )
 
 for script in "${BUNDLE_SCRIPTS[@]}"; do

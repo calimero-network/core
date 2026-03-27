@@ -14,19 +14,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "access-control"
-version = "0.0.0"
-dependencies = [
- "borsh",
- "bs58 0.5.1",
- "calimero-sdk",
- "calimero-storage",
- "calimero-wasm-abi",
- "hex",
- "serde_json",
-]
-
-[[package]]
 name = "actix"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

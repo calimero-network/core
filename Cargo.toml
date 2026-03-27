@@ -12,7 +12,6 @@ description = "Core Calimero infrastructure and tools"
 version = "0.10.1-rc.8"
 exclude = [
     "./apps/abi_conformance",
-    "./apps/access-control",
     "./apps/blobs",
     "./apps/collaborative-editor",
     "./apps/kv-store",
@@ -74,7 +73,6 @@ members = [
     "./crates/utils/actix",
     "./crates/wasm-abi",
 
-    "./apps/access-control",
     "./apps/e2e-kv-store",
     "./apps/kv-store",
     "./apps/kv-store-init",

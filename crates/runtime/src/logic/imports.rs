@@ -135,8 +135,6 @@ impl VMLogic<'_> {
             fn ed25519_verify(signature_ptr: u64, public_key_ptr: u64, message_ptr: u64) -> u32;
 
             // Context Management functions
-            fn context_create(protocol_ptr: u64, app_id_ptr: u64, args_ptr: u64, alias_ptr: u64);
-            fn context_delete(context_id_ptr: u64);
             fn context_is_member(public_key_ptr: u64) -> u32;
             fn context_members(register_id: u64);
             fn context_resolve_alias(alias_ptr: u64, register_id: u64) -> u32;

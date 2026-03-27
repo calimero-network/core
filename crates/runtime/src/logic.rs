@@ -14,7 +14,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_sys as sys;
 use ouroboros::self_referencing;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::constants::{ONE_GIB, ONE_KIB, ONE_MIB};
 use crate::constraint::{Constrained, MaxU64};
@@ -246,8 +246,6 @@ pub struct VMLogic<'a> {
     /// Tracks whether the guest has explicitly called `env.commit`.
     commit_called: bool,
 
-    /// A list of context configuration mutations requested by the guest.
-    context_mutations: Vec<ContextMutation>,
     /// Interface to the host system for querying context information (e.g. membership).
     context_host: Option<Box<dyn ContextHost>>,
 
@@ -301,7 +299,6 @@ impl<'a> VMLogic<'a> {
             root_hash: None,
             artifact: vec![],
             commit_called: false,
-            context_mutations: vec![],
             context_host,
 
             // Blob functionality
@@ -352,24 +349,6 @@ impl<'a> VMLogic<'a> {
     }
 }
 
-/// Represents a request from the guest to modify context configuration.
-///
-/// These mutations are collected during execution and applied by the host
-/// after the WASM execution completes successfully.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ContextMutation {
-    /// Request to create a new context.
-    CreateContext {
-        protocol: String,
-        application_id: [u8; DIGEST_SIZE],
-        init_args: Vec<u8>,
-        alias: Option<String>,
-    },
-    /// Request to delete a context (locally).
-    DeleteContext { context_id: [u8; DIGEST_SIZE] },
-    // TODO: add Grant/Revoke capabilities for ACL here in the future.
-}
-
 /// Represents the final outcome of a VM execution.
 ///
 /// This struct aggregates all the results and side effects of function calls,
@@ -391,8 +370,6 @@ pub struct Outcome {
     /// The binary artifact produced if there were commits during the execution.
     //TODO: why the artifact is not an Option?
     pub artifact: Vec<u8>,
-    /// A list of context mutations submitted during execution.
-    pub context_mutations: Vec<ContextMutation>,
     //TODO: execution runtime (???).
     //TODO: current storage usage of the app (???).
 }
@@ -474,7 +451,6 @@ impl VMLogic<'_> {
             xcalls: self.xcalls,
             root_hash: self.root_hash,
             artifact: self.artifact,
-            context_mutations: self.context_mutations,
         }
     }
 }
