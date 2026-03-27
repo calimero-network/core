@@ -5972,6 +5972,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "hex",
+ "libc",
  "libp2p",
  "near-crypto",
  "near-jsonrpc-client",
