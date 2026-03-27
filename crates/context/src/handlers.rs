@@ -51,7 +51,6 @@ pub mod update_application;
 pub mod update_group_settings;
 pub mod update_member_role;
 pub mod upgrade_group;
-mod utils;
 
 impl Handler<ContextMessage> for ContextManager {
     type Result = ();

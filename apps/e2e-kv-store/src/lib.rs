@@ -756,19 +756,6 @@ impl E2eKvStore {
         Ok(results)
     }
 
-    // CONTEXT ADMIN
-
-    pub fn is_member(&self, public_key: PublicKey) -> app::Result<bool> {
-        app::log!("Checking membership for: {:?}", public_key);
-        Ok(env::context_is_member(&*public_key))
-    }
-
-    pub fn get_all_members(&self) -> app::Result<Vec<PublicKey>> {
-        app::log!("Listing all members");
-        let members = env::context_members();
-        Ok(members.into_iter().map(PublicKey::from).collect())
-    }
-
     // NESTED CRDT - COUNTERS
 
     // --- G-COUNTER (grow-only) ---

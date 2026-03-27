@@ -1,5 +1,4 @@
 mod blobs;
-mod context;
 mod js_collections;
 mod storage;
 mod system;

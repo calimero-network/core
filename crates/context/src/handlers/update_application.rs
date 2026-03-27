@@ -29,7 +29,6 @@ use eyre::bail;
 use tracing::{debug, error, info};
 
 use crate::handlers::execute::storage::ContextStorage;
-use crate::handlers::utils::StoreContextHost;
 use crate::ContextManager;
 
 impl Handler<UpdateApplicationRequest> for ContextManager {
@@ -508,30 +507,18 @@ async fn execute_migration(
         "Preparing to execute migration function"
     );
 
-    // Create storage for the migration execution
     let mut storage = ContextStorage::from(datastore.clone(), context_id);
 
-    // Create host context for membership queries
-    let context_host = StoreContextHost {
-        store: datastore.clone(),
-        context_id,
-    };
-
-    // Execute the migration function in a blocking task
-    // Migration functions take no parameters - context is accessed via host functions
-    // Use the update requestor's identity as executor for proper audit trail and authorization
     let outcome = global_runtime()
         .spawn_blocking(move || {
             module.run(
                 context_id,
                 executor_identity,
                 &method,
-                // Empty input - migration functions read old state via read_raw()
                 &[],
                 &mut storage,
                 None,
                 Some(node_client),
-                Some(Box::new(context_host)),
             )
         })
         .await

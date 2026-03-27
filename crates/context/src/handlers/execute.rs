@@ -21,7 +21,7 @@ use calimero_primitives::events::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_runtime::logic::{ContextHost, Outcome};
+use calimero_runtime::logic::Outcome;
 use calimero_storage::{
     action::Action,
     delta::{CausalDelta, StorageDelta},
@@ -41,7 +41,6 @@ use crate::error::ContextError;
 use crate::handlers::update_application::{
     update_application_id, update_application_with_migration,
 };
-use crate::handlers::utils::StoreContextHost;
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
 
@@ -864,14 +863,7 @@ async fn internal_execute(
     is_state_op: bool,
     identity_private_key: &PrivateKey,
 ) -> eyre::Result<(Outcome, Option<CausalDelta>)> {
-    // Create the host store context implementation
-    let context_host = StoreContextHost {
-        store: datastore.clone(),
-        context_id: context.id,
-    };
-
     let storage = ContextStorage::from(datastore.clone(), context.id);
-    // Create private storage (node-local, NOT synchronized)
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
     let (mut outcome, storage, private_storage) = execute(
         guard,
@@ -882,7 +874,6 @@ async fn internal_execute(
         storage,
         private_storage,
         node_client.clone(),
-        Some(Box::new(context_host)),
     )
     .await?;
 
@@ -1140,12 +1131,9 @@ pub async fn execute(
     mut storage: ContextStorage,
     mut private_storage: ContextPrivateStorage,
     node_client: NodeClient,
-    context_host: Option<Box<dyn ContextHost>>,
 ) -> eyre::Result<(Outcome, ContextStorage, ContextPrivateStorage)> {
     let context_id = **context;
 
-    // Run WASM execution in blocking context
-    // TODO(ctx)
     global_runtime()
         .spawn_blocking(move || {
             let outcome = module.run(
@@ -1156,7 +1144,6 @@ pub async fn execute(
                 &mut storage,
                 Some(&mut private_storage),
                 Some(node_client),
-                context_host,
             )?;
             Ok((outcome, storage, private_storage))
         })

@@ -19,7 +19,6 @@ use serde::Serialize;
 use crate::constants::{ONE_GIB, ONE_KIB, ONE_MIB};
 use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
-pub use crate::logic::traits::ContextHost;
 use crate::store::Storage;
 use crate::Constraint;
 
@@ -27,7 +26,6 @@ mod errors;
 mod host_functions;
 mod imports;
 mod registers;
-mod traits;
 
 pub use errors::VMLogicError;
 pub use host_functions::*;
@@ -246,9 +244,6 @@ pub struct VMLogic<'a> {
     /// Tracks whether the guest has explicitly called `env.commit`.
     commit_called: bool,
 
-    /// Interface to the host system for querying context information (e.g. membership).
-    context_host: Option<Box<dyn ContextHost>>,
-
     /// An optional client for interacting with the node's blob storage and aliases.
     node_client: Option<NodeClient>,
 
@@ -275,7 +270,6 @@ impl<'a> VMLogic<'a> {
         context: VMContext<'a>,
         limits: &'a VMLimits,
         node_client: Option<NodeClient>,
-        context_host: Option<Box<dyn ContextHost>>,
     ) -> Self {
         debug!(
             target: "runtime::logic",
@@ -299,9 +293,7 @@ impl<'a> VMLogic<'a> {
             root_hash: None,
             artifact: vec![],
             commit_called: false,
-            context_host,
 
-            // Blob functionality
             node_client,
             blob_handles: HashMap::new(),
             next_blob_fd: 1,
@@ -691,8 +683,7 @@ mod tests {
             let mut store = Store::default();
             let memory =
                 wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
-            // Pass None for private_storage in tests
-            let mut logic = VMLogic::new($storage, None, context, $limits, None, None);
+            let mut logic = VMLogic::new($storage, None, context, $limits, None);
             let _ = logic.with_memory(memory);
             (logic, store)
         }};
@@ -842,8 +833,7 @@ mod tests {
         let limits = VMLimits::default();
         let context = VMContext::new(Cow::Owned(vec![]), [0u8; DIGEST_SIZE], [0u8; DIGEST_SIZE]);
 
-        // Create VMLogic without attaching memory
-        let logic = VMLogic::new(&mut storage, None, context, &limits, None, None);
+        let logic = VMLogic::new(&mut storage, None, context, &limits, None);
 
         // Verify no memory is attached
         assert!(logic.memory.is_none(), "Memory should not be attached");
