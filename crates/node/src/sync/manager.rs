@@ -759,21 +759,28 @@ impl SyncManager {
                     )
                 })?
         } else {
+            // For non-bundle apps, write ApplicationMeta directly under the
+            // known application_id rather than re-deriving it via
+            // install_application (which hashes source+metadata and would
+            // produce a different ID than the original installer used).
             let size = blob_bytes.len() as u64;
-            self.node_client
-                .install_application(
-                    blob_id,
+            let mut handle = self.context_client.datastore_handle();
+            handle.put(
+                &calimero_store::key::ApplicationMeta::new(context.application_id),
+                &calimero_store::types::ApplicationMeta::new(
+                    calimero_store::key::BlobMeta::new(*blob_id),
                     size,
-                    &source,
-                    vec![],
-                    "unknown",
-                    "0.0.0",
-                    None,
-                    false,
-                )
-                .map_err(|e| {
-                    eyre::eyre!("Failed to install application from blob {}: {}", blob_id, e)
-                })?
+                    source.to_string().into_boxed_str(),
+                    Box::default(),
+                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
+                        [0u8; 32],
+                    )),
+                    "unknown".to_owned().into_boxed_str(),
+                    "0.0.0".to_owned().into_boxed_str(),
+                    String::new().into_boxed_str(),
+                ),
+            )?;
+            context.application_id
         };
 
         // Verify installation succeeded by fetching the installed application
