@@ -742,27 +742,39 @@ impl SyncManager {
             tokio::task::spawn_blocking(move || NodeClient::is_bundle_blob(&blob_bytes_clone))
                 .await?;
 
-        if !is_bundle {
-            return Ok(());
-        }
-
         // Get source from context config (use cached if available, otherwise fetch)
         let source = self
             .get_application_source(context_id, app_config_opt)
             .await?;
 
-        // Install bundle
-        let installed_app_id = self
-            .node_client
-            .install_application_from_bundle_blob(blob_id, &source)
-            .await
-            .map_err(|e| {
-                eyre::eyre!(
-                    "Failed to install bundle application from blob {}: {}",
+        let installed_app_id = if is_bundle {
+            self.node_client
+                .install_application_from_bundle_blob(blob_id, &source)
+                .await
+                .map_err(|e| {
+                    eyre::eyre!(
+                        "Failed to install bundle application from blob {}: {}",
+                        blob_id,
+                        e
+                    )
+                })?
+        } else {
+            let size = blob_bytes.len() as u64;
+            self.node_client
+                .install_application(
                     blob_id,
-                    e
+                    size,
+                    &source,
+                    vec![],
+                    "unknown",
+                    "0.0.0",
+                    None,
+                    false,
                 )
-            })?;
+                .map_err(|e| {
+                    eyre::eyre!("Failed to install application from blob {}: {}", blob_id, e)
+                })?
+        };
 
         // Verify installation succeeded by fetching the installed application
         let installed_application = self
@@ -1427,7 +1439,10 @@ impl SyncManager {
             );
 
             // After blob sharing, try to install application if it doesn't exist
-            if application.is_none() {
+            // or if we only have a stub (size==0 from join_context bootstrap)
+            let needs_install =
+                application.is_none() || application.as_ref().is_some_and(|app| app.size == 0);
+            if needs_install {
                 self.install_bundle_after_blob_sharing(
                     &context_id,
                     &blob_id,
