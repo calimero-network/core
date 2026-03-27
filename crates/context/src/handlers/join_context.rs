@@ -234,17 +234,10 @@ async fn join_context(
 
         group_store::register_context_in_group(&datastore, &gid, &context_id)?;
 
-        if !group_store::check_group_membership(&datastore, &gid, &invitee_id)? {
-            group_store::add_group_member_with_keys(
-                &datastore,
-                &gid,
-                &invitee_id,
-                calimero_primitives::context::GroupMemberRole::Member,
-                Some(*identity_secret),
-                Some(*sender_key),
-            )?;
-        }
-
+        // Add only the inviter (admin) before publishing the governance op.
+        // This ensures the state hash matches node-1's state (which only has
+        // the admin as a member). The invitee is added by the governance op
+        // apply handler.
         let zero_pk = calimero_primitives::identity::PublicKey::from([0u8; 32]);
         if inviter_id != zero_pk
             && !group_store::check_group_membership(&datastore, &gid, &inviter_id)?
@@ -256,25 +249,16 @@ async fn join_context(
                 calimero_primitives::context::GroupMemberRole::Admin,
             )?;
         }
-    }
 
-    // Publish membership to the group governance DAG so other nodes learn about us.
-    let zero_group = [0u8; 32];
-    if invitation_group_id != zero_group {
-        let gid = calimero_context_config::types::ContextGroupId::from(invitation_group_id);
-
-        // Subscribe to the group gossip topic so we can publish on it.
-        // Also subscribe to the context topic first so libp2p forms mesh connections
-        // with node-1, then the group topic subscription piggybacks on those connections.
+        // Subscribe to context + group topics before publishing.
         node_client.subscribe(&context_id).await?;
         node_client.subscribe_group(invitation_group_id).await?;
-
-        // Brief delay to let gossipsub mesh form before publishing.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        // Build the invitation payload bytes for signature verification on receivers.
+        // Publish MemberJoinedViaContextInvitation with zero state_hash.
+        // The joiner doesn't know the current group state (other members
+        // may have joined before us), so we skip state hash validation.
         let invitation_payload = borsh::to_vec(&signed_invitation.invitation).unwrap_or_default();
-
         let governance_op =
             calimero_context_primitives::local_governance::GroupOp::MemberJoinedViaContextInvitation {
                 context_id,
@@ -283,17 +267,51 @@ async fn join_context(
                 inviter_signature: signed_invitation.inviter_signature.clone(),
             };
 
-        if let Err(e) = group_store::sign_apply_and_publish(
-            &datastore,
-            &node_client,
-            &gid,
+        let nonce = group_store::get_local_gov_nonce(&datastore, &gid, &invitee_id)?
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| eyre!("nonce overflow"))?;
+        let parent_hashes = group_store::get_op_head(&datastore, &gid)?
+            .map(|h| h.dag_heads.clone())
+            .unwrap_or_default();
+
+        match calimero_context_primitives::local_governance::SignedGroupOp::sign(
             &identity_secret,
+            gid.to_bytes(),
+            parent_hashes,
+            [0u8; 32], // zero state hash — joiner doesn't know current group state
+            nonce,
             governance_op,
-        )
-        .await
-        {
-            tracing::warn!(%context_id, %invitee_id, %e, "failed to publish MemberJoinedViaContextInvitation (non-fatal)");
+        ) {
+            Ok(signed_op) => {
+                if let Err(e) = group_store::apply_local_signed_group_op(&datastore, &signed_op) {
+                    tracing::warn!(%context_id, %invitee_id, %e, "failed to apply MemberJoinedViaContextInvitation locally");
+                }
+                let delta_id = signed_op.content_hash().unwrap_or([0u8; 32]);
+                let parent_ids = signed_op.parent_op_hashes.clone();
+                let bytes = borsh::to_vec(&signed_op).unwrap_or_default();
+                if let Err(e) = node_client
+                    .publish_signed_group_op(gid.to_bytes(), delta_id, parent_ids, bytes)
+                    .await
+                {
+                    tracing::warn!(%context_id, %invitee_id, %e, "failed to publish MemberJoinedViaContextInvitation");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%context_id, %invitee_id, %e, "failed to sign MemberJoinedViaContextInvitation");
+            }
         }
+
+        // Overwrite the invitee's GroupMember entry with private keys
+        // (the governance op handler added them without keys).
+        group_store::add_group_member_with_keys(
+            &datastore,
+            &gid,
+            &invitee_id,
+            calimero_primitives::context::GroupMemberRole::Member,
+            Some(*identity_secret),
+            Some(*sender_key),
+        )?;
     }
 
     tracing::info!(%context_id, %invitee_id, "join_context: subscribing and syncing");
