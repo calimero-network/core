@@ -129,7 +129,7 @@ steps:
       public_key_3: publicKey
 
   - name: Create open invitation for node-3
-    type: invite_open
+    type: invite
     node: e2e-node-1
     context_id: "{{context_id}}"
     granter_id: "{{node1_key}}"
@@ -138,7 +138,7 @@ steps:
       open_invitation_3: invitation
 
   - name: Join via open invitation - node-3
-    type: join_open
+    type: join
     node: e2e-node-3
     invitee_id: "{{public_key_3}}"
     invitation: "{{open_invitation_3}}"
