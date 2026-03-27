@@ -231,6 +231,14 @@ impl ContextClient {
             handle.get(&key::ContextGroupRef::new(ctx_id))?
         };
 
+        tracing::info!(
+            ?application_id,
+            ?blob_id,
+            ?source,
+            ?group_id,
+            "invite_member: populated invitation metadata"
+        );
+
         Ok(Some(SignedOpenInvitation {
             invitation,
             inviter_signature: hex::encode(signature.to_bytes()),

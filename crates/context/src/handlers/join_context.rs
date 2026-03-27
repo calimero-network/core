@@ -95,7 +95,17 @@ async fn join_context(
     .or(signed_invitation.group_id)
     .unwrap_or([0u8; DIGEST_SIZE]);
 
-    tracing::info!(%context_id, %invitee_id, %invitation_app_id, "join_context: starting join flow");
+    tracing::info!(
+        %context_id,
+        %invitee_id,
+        %invitation_app_id,
+        %invitation_blob_id,
+        invitation_group_id = %hex::encode(invitation_group_id),
+        inv_app_id = ?signed_invitation.application_id,
+        inv_blob_id = ?signed_invitation.blob_id,
+        inv_group_id = ?signed_invitation.group_id,
+        "join_context: starting join flow"
+    );
 
     let already_joined = context_client
         .get_identity(&context_id, &invitee_id)?
