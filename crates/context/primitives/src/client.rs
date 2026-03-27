@@ -225,12 +225,19 @@ impl ContextClient {
             }
         };
 
+        let group_id = {
+            let ctx_id = calimero_primitives::context::ContextId::from(context_id);
+            let handle = self.datastore.handle();
+            handle.get(&key::ContextGroupRef::new(ctx_id))?
+        };
+
         Ok(Some(SignedOpenInvitation {
             invitation,
             inviter_signature: hex::encode(signature.to_bytes()),
             application_id,
             blob_id,
             source,
+            group_id,
         }))
     }
 

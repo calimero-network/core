@@ -614,6 +614,9 @@ pub struct SignedOpenInvitation {
     /// Enables the joiner to re-download from the registry if blob sharing fails.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Group ID that owns this context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<[u8; 32]>,
 }
 
 // The full payload Bob reveals in the second transaction
@@ -725,6 +728,7 @@ mod tests {
             application_id: Some([0x44; 32]),
             blob_id: Some([0x55; 32]),
             source: Some("https://registry.example.com/apps/my-app".to_string()),
+            group_id: Some([0x66; 32]),
         };
 
         let json = serde_json::to_string(&signed).expect("serialize");
@@ -774,6 +778,7 @@ mod tests {
             application_id: None,
             blob_id: None,
             source: None,
+            group_id: None,
         };
 
         let json = serde_json::to_string(&signed).expect("serialize");

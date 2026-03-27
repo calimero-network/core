@@ -90,8 +90,10 @@ async fn join_context(
     let invitation_group_id = {
         let handle = datastore.handle();
         let ref_key = key::ContextGroupRef::new(context_id);
-        handle.get(&ref_key)?.unwrap_or([0u8; DIGEST_SIZE])
-    };
+        handle.get(&ref_key)?
+    }
+    .or(signed_invitation.group_id)
+    .unwrap_or([0u8; DIGEST_SIZE]);
 
     tracing::info!(%context_id, %invitee_id, %invitation_app_id, "join_context: starting join flow");
 
@@ -222,6 +224,38 @@ async fn join_context(
                 &inviter_id,
                 calimero_primitives::context::GroupMemberRole::Admin,
             )?;
+        }
+    }
+
+    // Publish membership to the group governance DAG so other nodes learn about us.
+    let zero_group = [0u8; 32];
+    if invitation_group_id != zero_group {
+        let gid = calimero_context_config::types::ContextGroupId::from(invitation_group_id);
+
+        // Subscribe to the group gossip topic so we can publish on it.
+        node_client.subscribe_group(invitation_group_id).await?;
+
+        // Build the invitation payload bytes for signature verification on receivers.
+        let invitation_payload = borsh::to_vec(&signed_invitation.invitation).unwrap_or_default();
+
+        let governance_op =
+            calimero_context_primitives::local_governance::GroupOp::MemberJoinedViaContextInvitation {
+                context_id,
+                inviter_id,
+                invitation_payload,
+                inviter_signature: signed_invitation.inviter_signature.clone(),
+            };
+
+        if let Err(e) = group_store::sign_apply_and_publish(
+            &datastore,
+            &node_client,
+            &gid,
+            &identity_secret,
+            governance_op,
+        )
+        .await
+        {
+            tracing::warn!(%context_id, %invitee_id, %e, "failed to publish MemberJoinedViaContextInvitation (non-fatal)");
         }
     }
 

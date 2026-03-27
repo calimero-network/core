@@ -111,6 +111,19 @@ pub enum GroupOp {
         member: PublicKey,
         capability: u8,
     },
+    /// Join a group via a context-level open invitation.
+    /// The inviter signature proves an admin created the invitation;
+    /// the outer `SignedGroupOp` signature proves the joiner's identity.
+    MemberJoinedViaContextInvitation {
+        /// Context ID from the invitation.
+        context_id: ContextId,
+        /// The inviter's public key (must be a group admin).
+        inviter_id: PublicKey,
+        /// Borsh-serialized `InvitationFromMember` (needed for signature verification).
+        invitation_payload: Vec<u8>,
+        /// Hex-encoded inviter signature over the invitation payload.
+        inviter_signature: String,
+    },
 }
 
 /// Payload that is actually signed (everything except the signature bytes).

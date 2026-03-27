@@ -768,6 +768,30 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 current & !capability,
             )?;
         }
+        GroupOp::MemberJoinedViaContextInvitation {
+            context_id: _,
+            inviter_id,
+            invitation_payload,
+            inviter_signature,
+        } => {
+            if !is_group_admin(store, &group_id, inviter_id)? {
+                bail!("context invitation inviter is not a group admin");
+            }
+            let inv_hash = Sha256::digest(invitation_payload);
+            let sig_hex = inviter_signature.trim_start_matches("0x");
+            let sig_bytes_vec =
+                hex::decode(sig_hex).map_err(|e| eyre::eyre!("inviter sig hex: {e}"))?;
+            let sig_bytes: [u8; 64] = sig_bytes_vec
+                .try_into()
+                .map_err(|_| eyre::eyre!("inviter signature must be 64 bytes"))?;
+            inviter_id
+                .verify_raw_signature(&inv_hash, &sig_bytes)
+                .map_err(|e| eyre::eyre!("context invitation inviter signature invalid: {e}"))?;
+
+            if !check_group_membership(store, &group_id, &op.signer)? {
+                add_group_member(store, &group_id, &op.signer, GroupMemberRole::Member)?;
+            }
+        }
         #[allow(unreachable_patterns)]
         _ => bail!("unsupported group op variant for local apply"),
     }

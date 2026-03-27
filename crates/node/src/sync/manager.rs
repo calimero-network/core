@@ -2080,11 +2080,25 @@ impl SyncManager {
                 .context_client
                 .has_member(&context_id, &their_identity)?
             {
-                bail!(
-                    "unknown context member {} in context {}",
-                    their_identity,
-                    context_id
+                // The joiner may have just published a governance op announcing
+                // their membership. Wait briefly for gossip propagation and retry.
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    "member not found yet, waiting for governance gossip"
                 );
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                if !self
+                    .context_client
+                    .has_member(&context_id, &their_identity)?
+                {
+                    bail!(
+                        "unknown context member {} in context {}",
+                        their_identity,
+                        context_id
+                    );
+                }
             }
         }
 
