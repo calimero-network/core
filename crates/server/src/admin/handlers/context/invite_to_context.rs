@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_server_primitives::admin::{
-    InviteToContextOpenInvitationRequest, InviteToContextOpenInvitationResponse,
-};
+use calimero_server_primitives::admin::{InviteToContextRequest, InviteToContextResponse};
 //use rand::Rng;
 
 use crate::admin::handlers::validation::ValidatedJson;
@@ -13,7 +11,7 @@ use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    ValidatedJson(req): ValidatedJson<InviteToContextOpenInvitationRequest>,
+    ValidatedJson(req): ValidatedJson<InviteToContextRequest>,
 ) -> impl IntoResponse {
     let salt = [0u8; 32];
 
@@ -47,7 +45,7 @@ pub async fn handler(
     }
     match result {
         Ok(signed_open_invitation) => ApiResponse {
-            payload: InviteToContextOpenInvitationResponse::new(signed_open_invitation),
+            payload: InviteToContextResponse::new(signed_open_invitation),
         }
         .into_response(),
         Err(err) => parse_api_error(err).into_response(),

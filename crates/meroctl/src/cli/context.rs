@@ -10,10 +10,8 @@ pub mod delete;
 pub mod get;
 pub mod identity;
 pub mod invite;
-pub mod invite_by_open_invitation;
 pub mod invite_specialized_node;
 pub mod join;
-pub mod join_by_open_invitation;
 pub mod list;
 pub mod sync;
 pub mod update;
@@ -53,11 +51,7 @@ pub enum ContextSubCommands {
     List(list::ListCommand),
     Create(Box<create::CreateCommand>),
     Join(join::JoinCommand),
-    #[command(alias = "join-open")]
-    JoinByOpenInvitation(join_by_open_invitation::JoinByOpenInvitationCommand),
     Invite(invite::InviteCommand),
-    #[command(alias = "invite-open")]
-    InviteByOpenInvitation(invite_by_open_invitation::InviteByOpenInvitationCommand),
     InviteSpecializedNode(invite_specialized_node::InviteSpecializedNodeCommand),
     Get(get::GetCommand),
     #[command(alias = "del")]
@@ -78,12 +72,8 @@ impl ContextCommand {
             ContextSubCommands::Delete(delete) => delete.run(environment).await,
             ContextSubCommands::Get(get) => get.run(environment).await,
             ContextSubCommands::Invite(invite) => invite.run(environment).await,
-            ContextSubCommands::InviteByOpenInvitation(open_invite) => {
-                open_invite.run(environment).await
-            }
             ContextSubCommands::InviteSpecializedNode(cmd) => cmd.run(environment).await,
             ContextSubCommands::Join(join) => join.run(environment).await,
-            ContextSubCommands::JoinByOpenInvitation(join) => join.run(environment).await,
             ContextSubCommands::List(list) => list.run(environment).await,
             ContextSubCommands::Watch(watch) => watch.run(environment).await,
             ContextSubCommands::Update(update) => update.run(environment).await,

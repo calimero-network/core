@@ -75,10 +75,8 @@ src/
 │   │   ├── get.rs       # Get command
 │   │   ├── list.rs      # List command
 │   │   ├── invite.rs    # Invite command
-│   │   ├── invite_by_open_invitation.rs  # Invite by open invitation
 │   │   ├── invite_specialized_node.rs  # Invite specialized node
 │   │   ├── join.rs      # Join command
-│   │   ├── join_by_open_invitation.rs  # Join by open invitation
 │   │   ├── update.rs    # Update command
 │   │   ├── sync.rs      # Sync command
 │   │   ├── watch.rs     # Watch command

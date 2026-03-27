@@ -2,7 +2,7 @@ use calimero_context_config::types::SignedOpenInvitation;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::InviteToContextOpenInvitationRequest;
+use calimero_server_primitives::admin::InviteToContextRequest;
 use clap::Parser;
 use eyre::{OptionExt, Result};
 
@@ -59,7 +59,7 @@ impl InviteCommand {
             .cloned()
             .ok_or_eyre("unable to resolve")?;
 
-        let request = InviteToContextOpenInvitationRequest {
+        let request = InviteToContextRequest {
             context_id,
             inviter_id,
             valid_for_seconds: self.valid_for,

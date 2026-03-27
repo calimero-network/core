@@ -2,7 +2,7 @@ use calimero_context_config::types::SignedOpenInvitation;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::JoinContextByOpenInvitationRequest;
+use calimero_server_primitives::admin::JoinContextRequest;
 use clap::Parser;
 use eyre::Result;
 
@@ -42,7 +42,7 @@ impl JoinCommand {
             .cloned()
             .ok_or_else(|| eyre::eyre!("unable to resolve identity"))?;
 
-        let request = JoinContextByOpenInvitationRequest::new(invitation, new_member_public_key);
+        let request = JoinContextRequest::new(invitation, new_member_public_key);
         let response = client.join_context(request).await?;
 
         environment.output.write(&response);

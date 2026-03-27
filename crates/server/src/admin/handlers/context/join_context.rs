@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_server_primitives::admin::{JoinContextByOpenInvitationRequest, JoinContextResponse};
+use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
@@ -10,10 +10,10 @@ use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    ValidatedJson(JoinContextByOpenInvitationRequest {
+    ValidatedJson(JoinContextRequest {
         invitation,
         new_member_public_key,
-    }): ValidatedJson<JoinContextByOpenInvitationRequest>,
+    }): ValidatedJson<JoinContextRequest>,
 ) -> impl IntoResponse {
     let result = state
         .ctx_client

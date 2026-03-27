@@ -20,9 +20,8 @@ use calimero_server_primitives::admin::{
     GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
     GetContextsResponse, GetLatestVersionResponse, GetPeersCountResponse, GrantPermissionResponse,
     InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
-    InviteSpecializedNodeRequest, InviteSpecializedNodeResponse,
-    InviteToContextOpenInvitationRequest, InviteToContextOpenInvitationResponse,
-    JoinContextByOpenInvitationRequest, JoinContextResponse, ListAliasesResponse,
+    InviteSpecializedNodeRequest, InviteSpecializedNodeResponse, InviteToContextRequest,
+    InviteToContextResponse, JoinContextRequest, JoinContextResponse, ListAliasesResponse,
     ListApplicationsResponse, ListPackagesResponse, ListVersionsResponse, LookupAliasResponse,
     RevokePermissionResponse, SyncContextResponse, UninstallApplicationResponse,
     UpdateContextApplicationRequest, UpdateContextApplicationResponse,
@@ -344,11 +343,11 @@ where
 
     pub async fn invite_to_context(
         &self,
-        request: InviteToContextOpenInvitationRequest,
-    ) -> Result<InviteToContextOpenInvitationResponse> {
+        request: InviteToContextRequest,
+    ) -> Result<InviteToContextResponse> {
         let response = self
             .connection
-            .post("admin-api/contexts/invite_by_open_invitation", request)
+            .post("admin-api/contexts/invite", request)
             .await?;
         Ok(response)
     }
@@ -419,13 +418,10 @@ where
         Ok(response)
     }
 
-    pub async fn join_context(
-        &self,
-        request: JoinContextByOpenInvitationRequest,
-    ) -> Result<JoinContextResponse> {
+    pub async fn join_context(&self, request: JoinContextRequest) -> Result<JoinContextResponse> {
         let response = self
             .connection
-            .post("admin-api/contexts/join_by_open_invitation", request)
+            .post("admin-api/contexts/join", request)
             .await?;
         Ok(response)
     }

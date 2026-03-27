@@ -26,9 +26,8 @@ use crate::admin::handlers::applications::{
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_group, get_context_identities,
     get_context_ids, get_context_storage, get_contexts_for_application,
-    get_contexts_with_executors_for_application, invite_specialized_node,
-    invite_to_context_open_invitation, join_context_open_invitation, sync,
-    update_context_application,
+    get_contexts_with_executors_for_application, invite_specialized_node, invite_to_context,
+    join_context, sync, update_context_application,
 };
 use crate::admin::handlers::identity::generate_context_identity;
 use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
@@ -108,11 +107,9 @@ pub(crate) fn setup(
             "/contexts",
             get(get_context_ids::handler).post(create_context::handler),
         )
-        .route("/contexts/invite", post(invite_to_context_open_invitation::handler))
-        .route("/contexts/invite_by_open_invitation", post(invite_to_context_open_invitation::handler))
+        .route("/contexts/invite", post(invite_to_context::handler))
         .route("/contexts/invite-specialized-node", post(invite_specialized_node::handler))
-        .route("/contexts/join", post(join_context_open_invitation::handler))
-        .route("/contexts/join_by_open_invitation", post(join_context_open_invitation::handler))
+        .route("/contexts/join", post(join_context::handler))
         .route(
             "/contexts/:context_id",
             get(get_context::handler).delete(delete_context::handler),

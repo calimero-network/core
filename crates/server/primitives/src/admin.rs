@@ -417,7 +417,6 @@ impl GetContextsResponse {
 pub struct InviteToContextRequest {
     pub context_id: ContextId,
     pub inviter_id: PublicKey,
-    #[serde(alias = "validForBlocks")]
     pub valid_for_seconds: u64,
 }
 
@@ -438,44 +437,6 @@ pub struct InviteToContextResponse {
 }
 
 impl InviteToContextResponse {
-    pub const fn new(signed_open_invitation: Option<SignedOpenInvitation>) -> Self {
-        Self {
-            data: signed_open_invitation,
-        }
-    }
-}
-
-// TODO: refactor `InviteToContextRequest` with an optional `invitee_id` field to serve both
-// types of requests.
-#[derive(Debug, Deserialize, Copy, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteToContextOpenInvitationRequest {
-    pub context_id: ContextId,
-    pub inviter_id: PublicKey,
-    /// Seconds the invitation is valid for.
-    /// Also accepts `validForBlocks` for backward compatibility with older
-    /// merobox versions — remove alias once merobox is updated.
-    #[serde(alias = "validForBlocks")]
-    pub valid_for_seconds: u64,
-}
-
-impl InviteToContextOpenInvitationRequest {
-    pub const fn new(context_id: ContextId, inviter_id: PublicKey, valid_for_seconds: u64) -> Self {
-        Self {
-            context_id,
-            inviter_id,
-            valid_for_seconds,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteToContextOpenInvitationResponse {
-    pub data: Option<SignedOpenInvitation>,
-}
-
-impl InviteToContextOpenInvitationResponse {
     pub const fn new(signed_open_invitation: Option<SignedOpenInvitation>) -> Self {
         Self {
             data: signed_open_invitation,
@@ -530,22 +491,6 @@ pub struct JoinContextRequest {
 }
 
 impl JoinContextRequest {
-    pub const fn new(invitation: SignedOpenInvitation, new_member_public_key: PublicKey) -> Self {
-        Self {
-            invitation,
-            new_member_public_key,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JoinContextByOpenInvitationRequest {
-    pub invitation: SignedOpenInvitation,
-    pub new_member_public_key: PublicKey,
-}
-
-impl JoinContextByOpenInvitationRequest {
     pub const fn new(invitation: SignedOpenInvitation, new_member_public_key: PublicKey) -> Self {
         Self {
             invitation,
@@ -1445,22 +1390,6 @@ impl Validate for InviteToContextRequest {
     }
 }
 
-impl Validate for InviteToContextOpenInvitationRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        if self.valid_for_seconds > MAX_VALID_FOR_SECONDS {
-            errors.push(ValidationError::ValueTooLarge {
-                field: "valid_for_seconds",
-                max: MAX_VALID_FOR_SECONDS,
-                actual: self.valid_for_seconds,
-            });
-        }
-
-        errors
-    }
-}
-
 impl Validate for InviteSpecializedNodeRequest {
     fn validate(&self) -> Vec<ValidationError> {
         // All fields are typed (ContextId, Option<PublicKey>) which have their own validation
@@ -1469,13 +1398,6 @@ impl Validate for InviteSpecializedNodeRequest {
 }
 
 impl Validate for JoinContextRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed (SignedOpenInvitation, PublicKey) which have their own validation
-        Vec::new()
-    }
-}
-
-impl Validate for JoinContextByOpenInvitationRequest {
     fn validate(&self) -> Vec<ValidationError> {
         // All fields are typed (SignedOpenInvitation, PublicKey) which have their own validation
         Vec::new()
