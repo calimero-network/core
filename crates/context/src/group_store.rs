@@ -136,6 +136,7 @@ pub fn add_group_member_with_keys(
     private_key: Option<[u8; 32]>,
     sender_key: Option<[u8; 32]>,
 ) -> EyreResult<()> {
+    let is_admin = role == GroupMemberRole::Admin;
     let mut handle = store.handle();
     let key = GroupMember::new(group_id.to_bytes(), *identity);
     handle.put(
@@ -146,6 +147,16 @@ pub fn add_group_member_with_keys(
             sender_key,
         },
     )?;
+    drop(handle);
+
+    if !is_admin {
+        if let Some(defaults) = get_default_capabilities(store, group_id)? {
+            if defaults != 0 {
+                set_member_capability(store, group_id, identity, defaults)?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -453,8 +464,13 @@ fn apply_join_with_invitation_claim(
         bail!("invitation group_id does not match operation");
     }
     let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
-    if !is_group_admin(store, group_id, &inviter_pk)? {
-        bail!("inviter is not a group admin");
+    if !is_group_admin_or_has_capability(
+        store,
+        group_id,
+        &inviter_pk,
+        MemberCapabilities::CAN_INVITE_MEMBERS,
+    )? {
+        bail!("inviter lacks permission (not admin and missing CAN_INVITE_MEMBERS)");
     }
 
     let inv_bytes = borsh::to_vec(inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;
@@ -561,11 +577,33 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     match &op.op {
         GroupOp::Noop => {}
         GroupOp::MemberAdded { member, role } => {
-            require_group_admin(store, &group_id, &op.signer)?;
+            require_group_admin_or_capability(
+                store,
+                &group_id,
+                &op.signer,
+                MemberCapabilities::MANAGE_MEMBERS,
+                "add member",
+            )?;
+            if *role == GroupMemberRole::Admin
+                && !is_group_admin(store, &group_id, &op.signer)?
+            {
+                bail!("only admins can add new admins");
+            }
             add_group_member(store, &group_id, member, role.clone())?;
         }
         GroupOp::MemberRemoved { member } => {
-            require_group_admin(store, &group_id, &op.signer)?;
+            require_group_admin_or_capability(
+                store,
+                &group_id,
+                &op.signer,
+                MemberCapabilities::MANAGE_MEMBERS,
+                "remove member",
+            )?;
+            if is_group_admin(store, &group_id, member)?
+                && !is_group_admin(store, &group_id, &op.signer)?
+            {
+                bail!("only admins can remove other admins");
+            }
             ensure_not_last_admin_removal(store, &group_id, member)?;
 
             // Cascade-delete ContextIdentity entries for all contexts in this group.
@@ -613,7 +651,13 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             app_key,
             target_application_id,
         } => {
-            require_group_admin(store, &group_id, &op.signer)?;
+            require_group_admin_or_capability(
+                store,
+                &group_id,
+                &op.signer,
+                MemberCapabilities::MANAGE_APPLICATION,
+                "set target application",
+            )?;
             let mut meta = load_group_meta(store, &group_id)?
                 .ok_or_else(|| eyre::eyre!("group metadata not found"))?;
             meta.app_key = *app_key;
@@ -718,7 +762,13 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             delete_group_local_rows(store, &group_id)?;
         }
         GroupOp::GroupMigrationSet { migration } => {
-            require_group_admin(store, &group_id, &op.signer)?;
+            require_group_admin_or_capability(
+                store,
+                &group_id,
+                &op.signer,
+                MemberCapabilities::MANAGE_APPLICATION,
+                "set group migration",
+            )?;
             let mut meta = load_group_meta(store, &group_id)?
                 .ok_or_else(|| eyre::eyre!("group metadata not found"))?;
             meta.migration = migration.clone();
@@ -741,7 +791,13 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             member,
             capability,
         } => {
-            require_group_admin(store, &group_id, &op.signer)?;
+            require_group_admin_or_capability(
+                store,
+                &group_id,
+                &op.signer,
+                MemberCapabilities::MANAGE_MEMBERS,
+                "grant context capability",
+            )?;
             let current =
                 get_context_member_capability(store, &group_id, context_id, member)?.unwrap_or(0);
             set_context_member_capability(
@@ -757,7 +813,13 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             member,
             capability,
         } => {
-            require_group_admin(store, &group_id, &op.signer)?;
+            require_group_admin_or_capability(
+                store,
+                &group_id,
+                &op.signer,
+                MemberCapabilities::MANAGE_MEMBERS,
+                "revoke context capability",
+            )?;
             let current =
                 get_context_member_capability(store, &group_id, context_id, member)?.unwrap_or(0);
             set_context_member_capability(
@@ -774,8 +836,13 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             invitation_payload,
             inviter_signature,
         } => {
-            if !is_group_admin(store, &group_id, inviter_id)? {
-                bail!("context invitation inviter is not a group admin");
+            if !is_group_admin_or_has_capability(
+                store,
+                &group_id,
+                inviter_id,
+                MemberCapabilities::CAN_INVITE_MEMBERS,
+            )? {
+                bail!("context invitation inviter lacks permission (not admin and missing CAN_INVITE_MEMBERS)");
             }
             let inv_hash = Sha256::digest(invitation_payload);
             let sig_hex = inviter_signature.trim_start_matches("0x");

@@ -135,6 +135,8 @@ impl MemberCapabilities {
     pub const CAN_CREATE_CONTEXT: u32 = 1 << 0;
     pub const CAN_INVITE_MEMBERS: u32 = 1 << 1;
     pub const CAN_JOIN_OPEN_CONTEXTS: u32 = 1 << 2;
+    pub const MANAGE_MEMBERS: u32 = 1 << 3;
+    pub const MANAGE_APPLICATION: u32 = 1 << 4;
 }
 
 #[derive(Debug, Serialize, Deserialize)]

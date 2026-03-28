@@ -23,6 +23,7 @@ use crate::group::{
     StoreDefaultVisibilityRequest, StoreGroupAliasRequest, StoreGroupContextRequest,
     StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest,
     UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    GrantContextCapabilitiesRequest, RevokeContextCapabilitiesRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -364,5 +365,13 @@ pub enum ContextMessage {
     StoreGroupContext {
         request: StoreGroupContextRequest,
         outcome: oneshot::Sender<<StoreGroupContextRequest as Message>::Result>,
+    },
+    GrantContextCapabilities {
+        request: GrantContextCapabilitiesRequest,
+        outcome: oneshot::Sender<<GrantContextCapabilitiesRequest as Message>::Result>,
+    },
+    RevokeContextCapabilities {
+        request: RevokeContextCapabilitiesRequest,
+        outcome: oneshot::Sender<<RevokeContextCapabilitiesRequest as Message>::Result>,
     },
 }

@@ -35,7 +35,8 @@ use crate::group::{
     StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
     StoreGroupContextRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest,
     SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
-    UpgradeGroupRequest, UpgradeGroupResponse,
+    UpgradeGroupRequest, UpgradeGroupResponse, GrantContextCapabilitiesRequest,
+    RevokeContextCapabilitiesRequest,
 };
 use crate::messages::{
     ApplySignedGroupOpRequest, ContextMessage, CreateContextRequest, CreateContextResponse,
@@ -1571,6 +1572,40 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::SetDefaultVisibility {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn grant_context_capabilities(
+        &self,
+        request: GrantContextCapabilitiesRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::GrantContextCapabilities {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn revoke_context_capabilities(
+        &self,
+        request: RevokeContextCapabilitiesRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::RevokeContextCapabilities {
                 request,
                 outcome: sender,
             })

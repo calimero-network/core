@@ -560,6 +560,28 @@ impl Message for StoreContextAllowlistRequest {
     type Result = eyre::Result<()>;
 }
 
+#[derive(Debug)]
+pub struct GrantContextCapabilitiesRequest {
+    pub context_id: ContextId,
+    pub capabilities: Vec<(PublicKey, u8)>,
+    pub signer_id: PublicKey,
+}
+
+impl Message for GrantContextCapabilitiesRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct RevokeContextCapabilitiesRequest {
+    pub context_id: ContextId,
+    pub capabilities: Vec<(PublicKey, u8)>,
+    pub signer_id: PublicKey,
+}
+
+impl Message for RevokeContextCapabilitiesRequest {
+    type Result = eyre::Result<()>;
+}
+
 impl From<calimero_store::key::GroupUpgradeValue> for GroupUpgradeInfo {
     fn from(v: calimero_store::key::GroupUpgradeValue) -> Self {
         Self {

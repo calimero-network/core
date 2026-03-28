@@ -4,12 +4,12 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_config::types::Capability;
+use calimero_context_primitives::group::RevokeContextCapabilitiesRequest;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::validation::{
     helpers::validate_collection_size, Validate, ValidationError, MAX_CAPABILITIES_COUNT,
 };
-use eyre::bail;
 use serde::Deserialize;
 use tracing::{error, info};
 
@@ -44,19 +44,23 @@ pub async fn handler(
 ) -> impl IntoResponse {
     info!(context_id=%context_id, signer_id=%request.signer_id, count=%request.capabilities.len(), "Revoking capabilities");
 
-    let res = async {
-        let Some(_) = state.ctx_client.context_config(&context_id)? else {
-            bail!("context '{}' does not exist", context_id);
-        };
+    let caps: Vec<(PublicKey, u8)> = request
+        .capabilities
+        .iter()
+        .map(|(pk, cap)| (*pk, cap.as_bit()))
+        .collect();
 
-        // TODO: sign a ContextCapabilityRevoked governance op and publish via
-        // sign_apply_and_publish once the handler has access to the signing key
-        // and group_id for this context.
+    let result = state
+        .ctx_client
+        .revoke_context_capabilities(RevokeContextCapabilitiesRequest {
+            context_id,
+            capabilities: caps,
+            signer_id: request.signer_id,
+        })
+        .await;
 
-        Ok(())
-    };
-    match res.await {
-        Ok(_) => {
+    match result {
+        Ok(()) => {
             info!(context_id=%context_id, signer_id=%request.signer_id, "Capabilities revoked successfully");
             ApiResponse { payload: () }.into_response()
         }

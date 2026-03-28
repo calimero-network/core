@@ -1,5 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_config::types::{GroupRevealPayloadData, SignerId};
+use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::group::{JoinGroupRequest, JoinGroupResponse};
 use calimero_context_primitives::local_governance::GroupOp;
 use calimero_primitives::context::GroupMemberRole;
@@ -73,8 +74,13 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     );
                 }
 
-                if !group_store::is_group_admin(&datastore, &group_id, &inviter_identity)? {
-                    bail!("inviter is no longer an admin of this group");
+                if !group_store::is_group_admin_or_has_capability(
+                    &datastore,
+                    &group_id,
+                    &inviter_identity,
+                    MemberCapabilities::CAN_INVITE_MEMBERS,
+                )? {
+                    bail!("inviter lacks permission (not admin and missing CAN_INVITE_MEMBERS)");
                 }
 
                 if group_store::check_group_membership(&datastore, &group_id, &joiner_identity)? {

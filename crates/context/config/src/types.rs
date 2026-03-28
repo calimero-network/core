@@ -487,6 +487,14 @@ pub enum Capability {
     Proxy,
 }
 
+impl Capability {
+    /// Returns the bitmask for this capability (single bit set).
+    #[must_use]
+    pub const fn as_bit(self) -> u8 {
+        1 << (self as u8)
+    }
+}
+
 #[derive(Eq, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Signed<T> {
     payload: Repr<Box<[u8]>>,
