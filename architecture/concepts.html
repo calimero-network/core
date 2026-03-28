@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Core Concepts — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Core Concepts</span></div>
+<h1>Core <em>Concepts</em></h1>
+<p class="page-subtitle">Groups, contexts, roles, capabilities, and CRDTs for app builders</p>
+
+<div class="card ga">
+<h2>Groups</h2>
+<p>A <strong>group</strong> is the top-level governance boundary. It has members, an application, and one or more contexts. All membership management, access control, and upgrades happen at the group level via signed governance operations that propagate via P2P gossip.</p>
+<ul>
+<li>Think of the group as where you vote, invite people, and upgrade the app.</li>
+<li>Contexts live <em>inside</em> a group; they do not replace group governance.</li>
+<li>Every group has at least one Admin who can always perform administrative actions.</li>
+</ul>
+</div>
+
+<div class="card gb">
+<h2>Contexts</h2>
+<p>A <strong>context</strong> is a running instance of a WASM application with its own isolated state. State stays in sync across context members automatically, using CRDT-based replication.</p>
+<ul>
+<li>Each context belongs to exactly one group.</li>
+<li>Multiple contexts can run the same application with independent state.</li>
+<li>Joining a context is separate from joining the group; visibility rules apply (see below).</li>
+</ul>
+</div>
+
+<div class="card gc">
+<h2>Member roles</h2>
+<p>Roles define what a member can do inside a group. The platform enforces them consistently on every node.</p>
+<div class="g3">
+<div class="cb"><h4>Admin</h4><p>Full control: all governance operations, member management, and state writes.</p></div>
+<div class="cb"><h4>Member</h4><p>Standard participant: read and write app state. Some operations still require explicit capabilities.</p></div>
+<div class="cb"><h4>ReadOnly</h4><p>Observer: can join and read state. Mutations are rejected locally and on remote peers.</p></div>
+</div>
+</div>
+
+<div class="card ga">
+<h2>Subgroups</h2>
+<p>Groups form a <strong>tree</strong>. A child group links to a parent.</p>
+<h3>Membership and admin inheritance</h3>
+<ul>
+<li><strong>Membership</strong> inherits downward: a parent member is also a member of descendant groups.</li>
+<li><strong>Admin authority</strong> inherits for structural operations on the tree, but <em>not</em> for access control inside child resources (see Restricted contexts).</li>
+</ul>
+<h3>Privacy boundary for Restricted contexts</h3>
+<p>Only <strong>direct</strong> group admins may manage the allowlist for a <em>Restricted</em> context in that group. Parent admins cannot manage those allowlists on behalf of a child&mdash;this keeps child-level privacy intact.</p>
+</div>
+
+<div class="card gb">
+<h2>Capabilities</h2>
+<p>Beyond the base role, fine-grained <strong>capabilities</strong> gate specific actions.</p>
+<ul>
+<li>Admins always pass capability checks.</li>
+<li>Default capabilities can be configured per group and applied to new members automatically.</li>
+</ul>
+<h3>Flags</h3>
+<p>Each capability corresponds to a bit in the member&rsquo;s capability set (shown conceptually below).</p>
+<div class="typedef" aria-label="Capability bits (conceptual)"><span class="comment">// conceptual bit layout</span><br>
+<span class="kw">bit</span> <span class="field">0</span> &mdash; <span class="ty">CAN_CREATE_CONTEXT</span><br>
+<span class="kw">bit</span> <span class="field">1</span> &mdash; <span class="ty">CAN_INVITE_MEMBERS</span><br>
+<span class="kw">bit</span> <span class="field">2</span> &mdash; <span class="ty">CAN_JOIN_OPEN_CONTEXTS</span><br>
+<span class="kw">bit</span> <span class="field">3</span> &mdash; <span class="ty">MANAGE_MEMBERS</span><br>
+<span class="kw">bit</span> <span class="field">4</span> &mdash; <span class="ty">MANAGE_APPLICATION</span></div>
+<div class="g3" style="font-size:.82rem;">
+<div class="cb"><h4><span class="code">CAN_CREATE_CONTEXT</span></h4><p>Bit 0. Create new contexts in this group.</p></div>
+<div class="cb"><h4><span class="code">CAN_INVITE_MEMBERS</span></h4><p>Bit 1. Issue invitations for new members.</p></div>
+<div class="cb"><h4><span class="code">CAN_JOIN_OPEN_CONTEXTS</span></h4><p>Bit 2. Join contexts whose visibility is Open.</p></div>
+<div class="cb"><h4><span class="code">MANAGE_MEMBERS</span></h4><p>Bit 3. Add or remove non-admin members.</p></div>
+<div class="cb"><h4><span class="code">MANAGE_APPLICATION</span></h4><p>Bit 4. Set the target application and handle migration.</p></div>
+</div>
+</div>
+
+<div class="card gc">
+<h2>Context visibility</h2>
+<p>When you create a context, you choose who may join it.</p>
+<div class="g2">
+<div class="cb"><h4>Open</h4><p>Any group member (including membership inherited from a parent) may join when they hold the <span class="code">CAN_JOIN_OPEN_CONTEXTS</span> capability. Admins satisfy this implicitly.</p></div>
+<div class="cb"><h4>Restricted</h4><p>Only members on the allowlist may join. There is no admin bypass. Direct group admins edit the list; if an admin is not listed, they may add themselves (as direct admins), then join like any other allowlisted member.</p></div>
+</div>
+</div>
+
+<div class="card gd">
+<h2>CRDT state</h2>
+<p>All application state uses <strong>CRDTs</strong> for conflict-free synchronization. State changes produce <strong>deltas</strong> that are broadcast via gossip. Every node converges to the same logical state even when messages arrive in different orders.</p>
+<h3>Built-in types</h3>
+<p>Pick the structure that fits your app; the runtime handles merging.</p>
+<div class="g2">
+<div class="cb"><h4>UnorderedMap</h4><p>Key-value map with last-write-wins per key.</p></div>
+<div class="cb"><h4>Vector</h4><p>Ordered, append-only list of elements.</p></div>
+<div class="cb"><h4>Counter</h4><p>Distributed counter (G-Counter style, per-node slots).</p></div>
+<div class="cb"><h4>LwwRegister</h4><p>Single value with last-write-wins by timestamp.</p></div>
+<div class="cb"><h4>ReplicatedGrowableArray (RGA)</h4><p>Character-level text CRDT for collaborative editing.</p></div>
+</div>
+<details>
+<summary>What &ldquo;converge&rdquo; means for your app</summary>
+<div class="detail-body">
+<p>Peers may receive updates in different orders. CRDT rules guarantee that once all deltas are applied, every replica shows the same logical state. You design against the data types above instead of inventing your own merge logic.</p>
+</div>
+</details>
+</div>
+
+<div class="card ga">
+<h2>Cross-context communication</h2>
+<p><span class="code">xcall</span> is a <strong>fire-and-forget</strong> call from one context&rsquo;s WASM into another context on the <strong>same node</strong>.</p>
+<ul>
+<li>Calls are queued while your handler runs and execute <em>after</em> the current commit completes.</li>
+<li>There is no return value; treat it like an async notification.</li>
+<li>The target context processes the call as its own member.</li>
+</ul>
+<h3>When to use it</h3>
+<p>Good fits: secondary indexes, notifications, audit logs, or any work that should not block the caller&rsquo;s transaction on a synchronous response.</p>
+<details>
+<summary>Same-node scope</summary>
+<div class="detail-body">
+<p><span class="code">xcall</span> is intentionally local to one node. For replication or network-wide effects, use normal context state and sync; use <span class="code">xcall</span> for coordination between contexts co-located on that peer.</p>
+</div>
+</details>
+</div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

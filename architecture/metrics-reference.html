@@ -40,7 +40,7 @@
   <div class="stat"><div class="v">16</div><div class="l">sync metrics</div></div>
   <div class="stat"><div class="v">5</div><div class="l">channel metrics</div></div>
   <div class="stat"><div class="v">2</div><div class="l">context metrics</div></div>
-  <div class="stat"><div class="v">3</div><div class="l">subsystems</div></div>
+  <div class="stat"><div class="v">4</div><div class="l">sections</div></div>
 </div>
 
 <!-- ════════════════════════════════════════════════════════
@@ -313,7 +313,47 @@
 </div>
 
 <!-- ════════════════════════════════════════════════════════
-     4. DASHBOARD QUERIES
+     4. GOVERNANCE METRICS (PLANNED)
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Governance metrics <span style="font-size:.75em;font-weight:600;color:var(--amber);text-transform:uppercase;letter-spacing:.04em;">(planned)</span></h2>
+<p style="margin-bottom:8px;">These Prometheus-style names are reserved for future governance observability. They are not necessarily registered in the codebase yet; treat this as a specification placeholder.</p>
+
+<table class="metric-table" style="margin-top:18px;">
+<thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="mn">calimero_governance_ops_applied_total</td>
+  <td class="mt">Counter</td>
+  <td class="ml">—</td>
+  <td class="md">Total governance operations applied successfully</td>
+</tr>
+<tr>
+  <td class="mn">calimero_governance_ops_rejected_total</td>
+  <td class="mt">Counter</td>
+  <td class="ml">reason <span style="color:var(--text-dim);font-size:.85em;">(suggested)</span></td>
+  <td class="md">Total governance operations rejected (authorization failures, stale state, validation, etc.)</td>
+</tr>
+<tr>
+  <td class="mn">calimero_governance_dag_heads</td>
+  <td class="mt">Gauge</td>
+  <td class="ml">group_id <span style="color:var(--text-dim);font-size:.85em;">(suggested)</span></td>
+  <td class="md">Current number of DAG heads per group</td>
+</tr>
+<tr>
+  <td class="mn">calimero_governance_heartbeat_mismatches_total</td>
+  <td class="mt">Counter</td>
+  <td class="ml">—</td>
+  <td class="md">Heartbeat head comparison failures</td>
+</tr>
+</tbody>
+</table>
+
+<div class="metric-note" style="margin-top:16px;"><strong>Planned</strong> — Implementations may use different label sets or histograms; align exported names with this table when adding instrumentation.</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     5. DASHBOARD QUERIES
      ════════════════════════════════════════════════════════ -->
 <div class="card gd">
 <h2>Dashboard Queries</h2>

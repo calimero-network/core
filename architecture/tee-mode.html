@@ -83,6 +83,19 @@
 </div>
 </details>
 
+<div class="card gb">
+<h2>Attestation flow</h2>
+<ol style="margin:0;padding-left:1.25rem;line-height:1.7;color:var(--text-dim);">
+<li><span class="code">merod</span> starts and detects a <span class="code">[tee]</span> configuration block.</li>
+<li>Requests KMS self-attestation (<span class="code">POST /attest</span>) — verifies the KMS quote, nonce, binding, and MRTD/RTMR policy.</li>
+<li>Requests a challenge from the KMS.</li>
+<li>Generates a TDX attestation quote embedding the challenge nonce and peer ID hash.</li>
+<li>Signs the payload with the node identity key from <span class="code">config.toml</span>.</li>
+<li>Submits the signed request to the KMS.</li>
+<li>Receives the storage encryption key (AES-256).</li>
+<li>Uses that key for datastore and blobstore encryption.</li>
+</ol>
+</div>
 
 </div>
 </div>

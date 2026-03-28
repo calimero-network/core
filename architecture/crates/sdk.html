@@ -188,6 +188,21 @@
   </div>
 </div>
 
+<div class="g3" style="margin-bottom:16px;">
+  <div class="cb">
+    <h4 style="color:#ec4899;">Counter</h4>
+    <p style="margin-top:8px;">Distributed G-Counter. Each node increments its own slot; <span class="code">value()</span> returns the sum. Naturally commutative and idempotent.</p>
+  </div>
+  <div class="cb">
+    <h4 style="color:#14b8a6;">Vector</h4>
+    <p style="margin-top:8px;">Ordered append-only list. Items are pushed to the end. Concurrent pushes from different nodes both get appended.</p>
+  </div>
+  <div class="cb">
+    <h4 style="color:#6366f1;">UnorderedMap</h4>
+    <p style="margin-top:8px;">Key-value store with LWW (Last-Write-Wins) semantics per entry. Entries inserted, updated, and removed independently across nodes.</p>
+  </div>
+</div>
+
 <div class="cb" style="margin-bottom:0;">
   <h4 style="color:#06b6d4;">Mergeable Trait</h4>
   <p style="margin-top:8px;">Universal merge interface implemented by all CRDT types. The runtime calls <span class="code">merge()</span> automatically when applying incoming deltas from peers. Custom types can implement this trait for domain-specific merge logic.</p>

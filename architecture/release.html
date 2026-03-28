@@ -48,6 +48,21 @@
 </div>
 </details>
 
+<div class="card gb">
+<h2>CI workflow</h2>
+<p>Pushes to <span class="code">master</span> run the main CI pipeline. The release workflow reads the version from root <span class="code">Cargo.toml</span> workspace metadata (<span class="code">cargo metadata</span>), builds <span class="code">merod</span> and <span class="code">meroctl</span> binaries for Linux and macOS, publishes workspace crates with <span class="code">cargo-workspaces</span>, and creates a GitHub release attaching those artifacts.</p>
+</div>
+
+<div class="card gc">
+<h2>Docker images</h2>
+<p>The <span class="code">merod</span> image is published to <span class="code">ghcr.io/calimero-network/merod</span>. Images are tagged with the release version; <span class="code">edge</span> tracks the latest <span class="code">master</span> build.</p>
+</div>
+
+<div class="card ga">
+<h2>Changelog</h2>
+<p>Release notes are driven by <span class="code">CHANGELOG.md</span> at the repository root. It follows the <a href="https://keepachangelog.com/" target="_blank" rel="noopener">Keep a Changelog</a> format and should be updated in the same PR that bumps the workspace version.</p>
+</div>
+
 </div>
 </div>
 <script src="nav.js"></script>

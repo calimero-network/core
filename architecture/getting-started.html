@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Getting Started — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Getting Started</span></div>
+<h1>Getting <em>Started</em></h1>
+<p class="page-subtitle">From zero to a running app in 5 minutes</p>
+
+<div class="card ga">
+<h2>Quick path</h2>
+<p style="margin-bottom:18px;">Install <span class="code">merod</span>, run a node, install the sample <span class="code">kv-store</span> app, create a context, and invoke methods with <span class="code">meroctl</span>.</p>
+
+<div class="step"><div class="n">1</div><h4>Install merod</h4>
+<div class="typedef">cargo install --git https://github.com/calimero-network/core merod</div>
+<p>Or download a prebuilt binary from <a href="https://github.com/calimero-network/core/releases">GitHub releases</a>.</p></div>
+
+<div class="step"><div class="n">2</div><h4>Initialize a node</h4>
+<div class="typedef">merod --home ~/.calimero --node mynode init \<br>
+&nbsp;&nbsp;--server-port 2428 --swarm-port 2528</div></div>
+
+<div class="step"><div class="n">3</div><h4>Start the node</h4>
+<div class="typedef">merod --home ~/.calimero --node mynode run</div>
+<p>The node is listening. Admin API: <a href="http://localhost:2428/admin-api">http://localhost:2428/admin-api</a></p></div>
+
+<div class="step"><div class="n">4</div><h4>Build and install an app</h4>
+<div class="typedef">cd apps/kv-store &amp;&amp; ./build.sh<br>
+meroctl --node mynode app install --path res/kv_store.wasm</div>
+<p>Note the <span class="code">ApplicationId</span> printed in the output.</p></div>
+
+<div class="step"><div class="n">5</div><h4>Create a context</h4>
+<div class="typedef">meroctl --node mynode context create --application-id &lt;APP_ID&gt;</div>
+<p>Save the <span class="code">ContextId</span> and <span class="code">MemberPublicKey</span> from the response.</p></div>
+
+<div class="step"><div class="n">6</div><h4>Call a method</h4>
+<div class="g2">
+<div class="typedef">meroctl --node mynode call set --context &lt;CTX_ID&gt; \<br>
+&nbsp;&nbsp;--as &lt;MEMBER_KEY&gt; --args '{"key":"hello","value":"world"}'</div>
+<div class="typedef">meroctl --node mynode call get --context &lt;CTX_ID&gt; \<br>
+&nbsp;&nbsp;--as &lt;MEMBER_KEY&gt; --args '{"key":"hello"}'</div>
+</div></div>
+</div>
+
+<div class="card gb">
+<h2>What&rsquo;s next</h2>
+<div class="g3">
+<a href="concepts.html" class="cb" style="display:block;color:inherit;text-decoration:none;">
+<h4>Core Concepts</h4><p>Understand groups, roles, and capabilities.</p></a>
+<a href="crates/sdk.html" class="cb" style="display:block;color:inherit;text-decoration:none;">
+<h4>SDK Reference</h4><p>Build your own WASM app on Calimero.</p></a>
+<a href="example-chat.html" class="cb" style="display:block;color:inherit;text-decoration:none;">
+<h4>Example Apps</h4><p>See full app designs (e.g. chat) end to end.</p></a>
+</div>
+</div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

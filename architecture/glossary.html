@@ -83,6 +83,13 @@
 <!-- ─── C ─── -->
 <div class="term-letter" data-letter="C">C</div>
 
+<div class="term-row" data-term="capabilities">
+  <div class="term-name">Capabilities</div>
+  <div class="term-body">
+    Per-member u32 bitmask controlling group-level permissions (CAN_CREATE_CONTEXT, CAN_INVITE_MEMBERS, CAN_JOIN_OPEN_CONTEXTS, MANAGE_MEMBERS, MANAGE_APPLICATION).
+  </div>
+</div>
+
 <div class="term-row" data-term="causaldelta">
   <div class="term-name">CausalDelta</div>
   <div class="term-body">
@@ -169,13 +176,20 @@
 <div class="term-row" data-term="deltabuffer">
   <div class="term-name">DeltaBuffer</div>
   <div class="term-body">
-    Buffers incoming deltas during snapshot sync to prevent data loss.
+    Temporary storage for state deltas that arrive before their context is initialized or while a sync session is active.
     <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/delta_buffer.rs" target="_blank" rel="noopener">crates/node/primitives/src/delta_buffer.rs</a></div>
   </div>
 </div>
 
 <!-- ─── G ─── -->
 <div class="term-letter" data-letter="G">G</div>
+
+<div class="term-row" data-term="garbagecollector">
+  <div class="term-name">GarbageCollector</div>
+  <div class="term-body">
+    Periodic actor that cleans up stale data (unused blobs, expired entries). Default interval: 12 hours.
+  </div>
+</div>
 
 <div class="term-row" data-term="group">
   <div class="term-name">Group</div>
@@ -196,7 +210,7 @@
 <div class="term-row" data-term="groupmemberrole">
   <div class="term-name">GroupMemberRole</div>
   <div class="term-body">
-    Role within a group (e.g., admin, member).
+    Enum distinguishing Admin, Member, and ReadOnly members within a group.
     <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/key/group.rs" target="_blank" rel="noopener">crates/store/src/key/group.rs</a></div>
   </div>
 </div>
@@ -259,6 +273,13 @@
 
 <!-- ─── M ─── -->
 <div class="term-letter" data-letter="M">M</div>
+
+<div class="term-row" data-term="membercapabilities">
+  <div class="term-name">MemberCapabilities</div>
+  <div class="term-body">
+    Struct holding the five capability bit constants for group-level authorization.
+  </div>
+</div>
 
 <div class="term-row" data-term="mergeable">
   <div class="term-name">Mergeable</div>
@@ -340,11 +361,28 @@
 <!-- ─── P ─── -->
 <div class="term-letter" data-letter="P">P</div>
 
+<div class="term-row" data-term="privatestate">
+  <div class="term-name">PrivateState</div>
+  <div class="term-body">
+    Node-local storage column for data that should not be synchronized across peers.
+  </div>
+</div>
+
 <div class="term-row" data-term="publickey">
   <div class="term-name">PublicKey</div>
   <div class="term-body">
     Ed25519 public key used for identity and signing.
     <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/primitives/src/identity.rs" target="_blank" rel="noopener">crates/primitives/src/identity.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── R ─── -->
+<div class="term-letter" data-letter="R">R</div>
+
+<div class="term-row" data-term="readonly">
+  <div class="term-name">ReadOnly</div>
+  <div class="term-body">
+    Group member role that allows joining contexts and reading state but prevents all state mutations. Enforced at both local and remote nodes.
   </div>
 </div>
 
@@ -374,6 +412,13 @@
   </div>
 </div>
 
+<div class="term-row" data-term="subgroupcreated">
+  <div class="term-name">SubgroupCreated</div>
+  <div class="term-body">
+    Governance operation that links a child group to a parent, enabling membership inheritance.
+  </div>
+</div>
+
 <div class="term-row" data-term="streammessage">
   <div class="term-name">StreamMessage</div>
   <div class="term-body">
@@ -396,13 +441,20 @@
 <div class="term-row" data-term="upgradepolicy">
   <div class="term-name">UpgradePolicy</div>
   <div class="term-body">
-    How application updates propagate: Automatic, LazyOnAccess, or Coordinated.
+    Group setting controlling how application upgrades propagate: Automatic, LazyOnAccess, or Coordinated.
     <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/primitives/src/context.rs" target="_blank" rel="noopener">crates/primitives/src/context.rs</a></div>
   </div>
 </div>
 
 <!-- ─── V ─── -->
 <div class="term-letter" data-letter="V">V</div>
+
+<div class="term-row" data-term="visibility">
+  <div class="term-name">Visibility</div>
+  <div class="term-body">
+    Per-context access mode: Open (any group member can join) or Restricted (allowlist required, no admin bypass).
+  </div>
+</div>
 
 <div class="term-row" data-term="vmcontext">
   <div class="term-name">VMContext</div>

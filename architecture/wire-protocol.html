@@ -32,7 +32,7 @@
 <div class="g3" style="margin-bottom:36px;">
   <div class="stat"><div class="v">8</div><div class="l">gossipsub variants</div></div>
   <div class="stat"><div class="v">11</div><div class="l">stream init types</div></div>
-  <div class="stat"><div class="v">23</div><div class="l">GroupOp variants</div></div>
+  <div class="stat"><div class="v">24</div><div class="l">GroupOp variants</div></div>
 </div>
 
 <div class="legend" style="margin-bottom:32px;border-top:none;padding-top:0;">
@@ -191,9 +191,7 @@
     <span class="field">Message</span> {
         <span class="field">payload</span>: <span class="ty">MessagePayload</span>,  <span class="comment">// subsequent data frames</span>
     },
-    <span class="field">OpaqueError</span> {
-        <span class="field">description</span>: <span class="ty">Cow&lt;str&gt;</span>,  <span class="comment">// human-readable error description</span>
-    },
+    <span class="field">OpaqueError</span>,  <span class="comment">// unit variant — signals failure without leaking node state</span>
 }</div>
 <div class="borsh-note">Borsh serialization · length-prefixed framing over libp2p streams (QUIC/TCP)</div>
 </div>
@@ -457,11 +455,11 @@
      6. GROUP OP
      ═══════════════════════════════════════════════════════════ -->
 <div class="card gb">
-<h2>GroupOp <span class="transport-badge badge-gossip">gossipsub</span> <span class="variant-count">23 variants</span></h2>
+<h2>GroupOp <span class="transport-badge badge-gossip">gossipsub</span> <span class="variant-count">24 variants</span></h2>
 <p class="section-intro">The actual governance operation inside a <span class="code">SignedGroupOp</span>. Each variant represents a specific group mutation. Applied deterministically on all nodes for convergence.</p>
 
 <details open>
-  <summary>Member Management <span class="variant-count">— 6 variants</span></summary>
+  <summary>Member Management <span class="variant-count">— 9 variants</span></summary>
   <div class="detail-body">
     <div class="typedef"><span class="field">MemberAdded</span> {
     <span class="field">member_id</span>:    <span class="ty">PublicKey</span>,      <span class="comment">// Ed25519 public key of new member</span>
@@ -489,6 +487,21 @@
 
 <span class="field">JoinWithInvitationClaim</span> {
     <span class="field">claim</span>: <span class="ty">InvitationClaim</span>,  <span class="comment">// signed proof of valid invitation</span>
+}
+
+<span class="field">SubgroupCreated</span> {
+    <span class="field">child_group_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// link a child group under this group</span>
+}
+
+<span class="field">SubgroupRemoved</span> {
+    <span class="field">child_group_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// unlink a child group from its parent</span>
+}
+
+<span class="field">MemberJoinedViaContextInvitation</span> {
+    <span class="field">context_id</span>: <span class="ty">ContextId</span>,  <span class="comment">// context from the invitation</span>
+    <span class="field">inviter_id</span>: <span class="ty">PublicKey</span>,  <span class="comment">// inviter (must be group admin)</span>
+    <span class="field">invitation_payload</span>: <span class="ty">Vec&lt;u8&gt;</span>,  <span class="comment">// borsh(InvitationFromMember) for verification</span>
+    <span class="field">inviter_signature</span>: <span class="ty">String</span>,  <span class="comment">// hex signature over invitation payload</span>
 }</div>
   </div>
 </details>
