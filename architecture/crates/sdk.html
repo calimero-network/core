@@ -26,42 +26,182 @@
 <h2>Proc Macro Attributes</h2>
 <p style="margin-bottom:16px;">Each attribute transforms user-written Rust into the glue code needed for WASM execution, storage integration, and ABI generation.</p>
 
-<div class="fr">
-  <div class="fp">#[app::state]</div>
-  <div class="fd">Marks the persistent state struct. Generates automatic storage keys, versioning info, Borsh <span class="code">Serialize</span>/<span class="code">Deserialize</span> derives, and CRDT merge registration. Each field with a CRDT type gets its own storage subtree.</div>
+<details>
+<summary>#[app::state] &mdash; persistent state struct</summary>
+<div class="detail-body">
+<p>Marks the persistent state struct. Generates automatic storage keys, versioning info, Borsh derives, and CRDT merge registration. Each field with a CRDT type gets its own storage subtree.</p>
+<div class="typedef">
+<span class="kw">use</span> calimero_sdk::app;
+<span class="kw">use</span> calimero_sdk::borsh::{BorshSerialize, BorshDeserialize};
+<span class="kw">use</span> calimero_storage::collections::{UnorderedMap, LwwRegister};
+
+<span class="kw">#[app::state(emits = for&lt;'a&gt; Event&lt;'a&gt;)]</span>
+<span class="kw">#[derive(Debug, BorshSerialize, BorshDeserialize)]</span>
+<span class="kw">#[borsh(crate = "calimero_sdk::borsh")]</span>
+<span class="kw">pub struct</span> <span class="ty">MyApp</span> {
+    <span class="field">items</span>: UnorderedMap&lt;String, LwwRegister&lt;String&gt;&gt;,
+    <span class="field">count</span>: Counter,
+}
 </div>
-<div class="fr">
-  <div class="fp">#[app::logic]</div>
-  <div class="fd">Transforms an <span class="code">impl</span> block's public methods into WASM exports. Each method gets input deserialization from Borsh/JSON, output serialization, and error propagation via the host ABI. Private methods are not exported.</div>
 </div>
-<div class="fr">
-  <div class="fp">#[app::event]</div>
-  <div class="fd">Declares event types that can be emitted via <span class="code">app::emit!</span> or <span class="code">emit_with_handler</span>. Events are Borsh-serialized and delivered to subscribers via the node's event system.</div>
+</details>
+
+<details>
+<summary>#[app::logic] &mdash; WASM-exported methods</summary>
+<div class="detail-body">
+<p>Transforms an <span class="code">impl</span> block's public methods into WASM exports. Each method gets input deserialization, output serialization, and error propagation. Private methods are not exported.</p>
+<div class="typedef">
+<span class="kw">#[app::logic]</span>
+<span class="kw">impl</span> <span class="ty">MyApp</span> {
+    <span class="kw">pub fn</span> <span class="field">set</span>(&amp;<span class="kw">mut</span> self, key: String, value: String) -&gt; app::Result&lt;()&gt; {
+        self.items.insert(key, value.into())?;
+        self.count.increment()?;
+        Ok(())
+    }
+
+    <span class="kw">pub fn</span> <span class="field">get</span>(&amp;self, key: &amp;str) -&gt; app::Result&lt;Option&lt;String&gt;&gt; {
+        Ok(self.items.get(key)?.map(|v| v.get().clone()))
+    }
+}
 </div>
-<div class="fr">
-  <div class="fp">#[app::init]</div>
-  <div class="fd">Initialization hook called on first deployment. Sets up initial state, default values, and any one-time configuration. Runs before any logic methods are available.</div>
 </div>
-<div class="fr">
-  <div class="fp">#[app::destroy]</div>
-  <div class="fd">Cleanup hook called on application removal. Can perform resource cleanup, final event emission, or state archival before the context is torn down.</div>
+</details>
+
+<details>
+<summary>#[app::event] &mdash; typed event declarations</summary>
+<div class="detail-body">
+<p>Declares event types that can be emitted via <span class="code">app::emit!</span>. Events are Borsh-serialized and delivered to subscribers via SSE/WebSocket.</p>
+<div class="typedef">
+<span class="kw">#[app::event]</span>
+<span class="kw">pub enum</span> <span class="ty">Event</span>&lt;'a&gt; {
+    <span class="field">ItemSet</span> { key: &amp;'a str, value: &amp;'a str },
+    <span class="field">ItemRemoved</span> { key: &amp;'a str },
+}
+
+<span class="comment">// Emit without handler (fire-and-forget):</span>
+app::emit!(Event::ItemSet { key: &amp;k, value: &amp;v });
+
+<span class="comment">// Emit with handler (triggers on receiving nodes):</span>
+app::emit!((Event::ItemSet { key: &amp;k, value: &amp;v }, "on_item_set"));
 </div>
-<div class="fr">
-  <div class="fp">#[app::migrate]</div>
-  <div class="fd">State migration between versions. Reads raw bytes from the previous schema, transforms them into the new struct layout, and writes back. Supports multi-step migration chains across versions.</div>
 </div>
-<div class="fr">
-  <div class="fp">#[app::private]</div>
-  <div class="fd">Marks a method as internal-only — excluded from the ABI and not callable via JSON-RPC. Used for helper logic that should not be exposed to external callers.</div>
+</details>
+
+<details>
+<summary>#[app::init] &mdash; initialization hook</summary>
+<div class="detail-body">
+<p>Called on first deployment. Sets up initial state and default values. Runs before any logic methods are available.</p>
+<div class="typedef">
+<span class="kw">#[app::init]</span>
+<span class="kw">pub fn</span> <span class="field">init</span>() -&gt; <span class="ty">MyApp</span> {
+    <span class="ty">MyApp</span> {
+        items: UnorderedMap::new(),
+        count: Counter::new(),
+    }
+}
 </div>
-<div class="fr">
-  <div class="fp">app::emit!</div>
-  <div class="fd">Macro to emit events from within logic methods. Serializes the event payload and delivers it through the host event system. Supports typed event structs declared with <span class="code">#[app::event]</span>.</div>
 </div>
-<div class="fr">
-  <div class="fp">app::err! / bail! / log!</div>
-  <div class="fd">Error handling and logging macros. <span class="code">err!</span> constructs typed errors, <span class="code">bail!</span> returns early with an error, and <span class="code">log!</span> writes to the host debug log. All integrate with the WASM host function ABI.</div>
+</details>
+
+<details>
+<summary>#[app::migrate] &mdash; state migration between versions</summary>
+<div class="detail-body">
+<p>Reads raw bytes from the previous schema, transforms into the new layout, and returns the new state. Use <span class="code">BorshDeserialize::deserialize</span> (not <span class="code">try_from_slice</span>) to handle trailing storage metadata.</p>
+<div class="typedef">
+<span class="kw">#[derive(BorshDeserialize)]</span>
+<span class="kw">struct</span> <span class="ty">OldState</span> {
+    <span class="field">items</span>: UnorderedMap&lt;String, LwwRegister&lt;String&gt;&gt;,
+}
+
+<span class="kw">#[app::migrate]</span>
+<span class="kw">pub fn</span> <span class="field">migrate_v1_to_v2</span>() -&gt; <span class="ty">MyAppV2</span> {
+    <span class="kw">let</span> old_bytes = read_raw().expect(<span class="comment">"no state"</span>);
+    <span class="kw">let</span> old: OldState = BorshDeserialize::deserialize(&amp;<span class="kw">mut</span> &amp;old_bytes[..]).unwrap();
+    <span class="ty">MyAppV2</span> {
+        items: old.items,
+        count: Counter::new(), <span class="comment">// new field</span>
+    }
+}
 </div>
+</div>
+</details>
+
+<details>
+<summary>#[app::destroy] &mdash; cleanup hook</summary>
+<div class="detail-body">
+<p>Called on application removal. Can perform resource cleanup, final event emission, or state archival before the context is torn down.</p>
+<div class="typedef">
+<span class="kw">#[app::destroy]</span>
+<span class="kw">pub fn</span> <span class="field">cleanup</span>(&amp;self) {
+    app::emit!(Event::AppRemoved {});
+    app::log!(<span class="comment">"Application destroyed, state archived"</span>);
+}
+</div>
+</div>
+</details>
+
+<details>
+<summary>#[app::private] &mdash; internal-only methods</summary>
+<div class="detail-body">
+<p>Excludes a method from the ABI and JSON-RPC. Used for helper logic that should not be callable externally.</p>
+<div class="typedef">
+<span class="kw">#[app::logic]</span>
+<span class="kw">impl</span> <span class="ty">MyApp</span> {
+    <span class="kw">#[app::private]</span>
+    <span class="kw">fn</span> <span class="field">validate_key</span>(&amp;self, key: &amp;str) -&gt; bool {
+        !key.is_empty() &amp;&amp; key.len() &lt; 256
+    }
+
+    <span class="kw">pub fn</span> <span class="field">set</span>(&amp;<span class="kw">mut</span> self, key: String, value: String) -&gt; app::Result&lt;()&gt; {
+        <span class="kw">if</span> !self.validate_key(&amp;key) { app::bail!(<span class="comment">"invalid key"</span>); }
+        self.items.insert(key, value.into())?;
+        Ok(())
+    }
+}
+</div>
+</div>
+</details>
+
+<details>
+<summary>app::emit! &mdash; emit events</summary>
+<div class="detail-body">
+<p>Emits events from logic methods. Supports fire-and-forget or handler-triggered patterns.</p>
+<div class="typedef">
+<span class="comment">// Fire-and-forget (delivered to SSE/WS clients):</span>
+app::emit!(Event::ItemSet { key: <span class="comment">"foo"</span>, value: <span class="comment">"bar"</span> });
+
+<span class="comment">// With handler (executed on receiving nodes, not author):</span>
+app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <span class="comment">"bar"</span> }, <span class="comment">"on_item_set"</span>));
+
+<span class="comment">// Handler must be commutative, idempotent, and pure:</span>
+<span class="kw">pub fn</span> <span class="field">on_item_set</span>(&amp;<span class="kw">mut</span> self, key: &amp;str, value: &amp;str) {
+    self.counters.increment(); <span class="comment">// safe: CRDT op</span>
+}
+</div>
+</div>
+</details>
+
+<details>
+<summary>app::err! / bail! / log! &mdash; error handling and logging</summary>
+<div class="detail-body">
+<p>Error and logging macros that integrate with the WASM host function ABI.</p>
+<div class="typedef">
+<span class="kw">use</span> thiserror::Error;
+
+<span class="kw">#[derive(Debug, Error)]</span>
+<span class="kw">#[error(<span class="comment">"not found: {0}"</span>)]</span>
+<span class="kw">pub struct</span> <span class="ty">NotFound</span>(String);
+
+<span class="kw">pub fn</span> <span class="field">get</span>(&amp;self, key: &amp;str) -&gt; app::Result&lt;String&gt; {
+    app::log!(<span class="comment">"looking up {key}"</span>);
+    <span class="kw">let</span> Some(val) = self.items.get(key)? <span class="kw">else</span> {
+        app::bail!(NotFound(key.to_owned()));
+    };
+    Ok(val.get().clone())
+}
+</div>
+</div>
+</details>
 
 <div class="legend">
   <div class="legend-item"><div class="ld" style="background:#f97316"></div>State / lifecycle</div>
