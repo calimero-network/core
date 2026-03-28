@@ -36,11 +36,7 @@ impl Handler<RevokeContextCapabilitiesRequest> for ContextManager {
 
         if let Err(err) = (|| -> eyre::Result<()> {
             if signing_key.is_none() {
-                group_store::require_group_signing_key(
-                    &self.datastore,
-                    &group_id,
-                    &signer_id,
-                )?;
+                group_store::require_group_signing_key(&self.datastore, &group_id, &signer_id)?;
             }
             Ok(())
         })() {

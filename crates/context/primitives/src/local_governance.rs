@@ -111,6 +111,12 @@ pub enum GroupOp {
         member: PublicKey,
         capability: u8,
     },
+    /// Link a child group under this group (admin only).
+    /// Published on the parent group's gossip topic.
+    SubgroupCreated { child_group_id: [u8; 32] },
+    /// Unlink a child group from this group (admin only).
+    /// Does not delete the child group or its members/contexts.
+    SubgroupRemoved { child_group_id: [u8; 32] },
     /// Join a group via a context-level open invitation.
     /// The inviter signature proves an admin created the invitation;
     /// the outer `SignedGroupOp` signature proves the joiner's identity.

@@ -6,18 +6,19 @@ use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
-    AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupContextAlias,
+    AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupChildIndex, GroupContextAlias,
     GroupContextAllowlist, GroupContextIndex, GroupContextLastMigration,
     GroupContextLastMigrationValue, GroupContextMemberCap, GroupContextVisibility,
     GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
     GroupDefaultVisValue, GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMemberContext, GroupMemberValue, GroupMeta, GroupMetaValue,
-    GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupSigningKey, GroupSigningKeyValue,
-    GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_CONTEXT_ALLOWLIST_PREFIX,
-    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
-    GROUP_CONTEXT_VISIBILITY_PREFIX, GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
-    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX,
-    GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
+    GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupSigningKey,
+    GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
+    GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
+    GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
+    GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX,
+    GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX, GROUP_SIGNING_KEY_PREFIX,
+    GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -584,9 +585,7 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 MemberCapabilities::MANAGE_MEMBERS,
                 "add member",
             )?;
-            if *role == GroupMemberRole::Admin
-                && !is_group_admin(store, &group_id, &op.signer)?
-            {
+            if *role == GroupMemberRole::Admin && !is_group_admin(store, &group_id, &op.signer)? {
                 bail!("only admins can add new admins");
             }
             add_group_member(store, &group_id, member, role.clone())?;
@@ -859,6 +858,19 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 add_group_member(store, &group_id, &op.signer, GroupMemberRole::Member)?;
             }
         }
+        GroupOp::SubgroupCreated { child_group_id } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            let child_gid = ContextGroupId::from(*child_group_id);
+            set_parent_group(store, &child_gid, &group_id)?;
+        }
+        GroupOp::SubgroupRemoved { child_group_id } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            let child_gid = ContextGroupId::from(*child_group_id);
+            if get_parent_group(store, &child_gid)?.as_ref() != Some(&group_id) {
+                bail!("child group is not a subgroup of this group");
+            }
+            remove_parent_group(store, &child_gid)?;
+        }
         #[allow(unreachable_patterns)]
         _ => bail!("unsupported group op variant for local apply"),
     }
@@ -963,14 +975,25 @@ pub async fn sign_apply_and_publish(
         .await
 }
 
+/// Returns the member's effective role, walking up the ancestor chain.
+/// Direct membership takes priority; if not found, checks parent groups.
+/// Returns the most privileged role found (Admin > Member > ReadOnly).
 pub fn get_group_member_role(
     store: &Store,
     group_id: &ContextGroupId,
     identity: &PublicKey,
 ) -> EyreResult<Option<GroupMemberRole>> {
-    let handle = store.handle();
-    let key = GroupMember::new(group_id.to_bytes(), *identity);
-    Ok(handle.get(&key)?.map(|v: GroupMemberValue| v.role))
+    let mut current = *group_id;
+    for _ in 0..MAX_SUBGROUP_DEPTH {
+        if let Some(role) = get_direct_member_role(store, &current, identity)? {
+            return Ok(Some(role));
+        }
+        match get_parent_group(store, &current)? {
+            Some(parent) => current = parent,
+            None => return Ok(None),
+        }
+    }
+    Ok(None)
 }
 
 pub fn get_group_member_value(
@@ -1000,15 +1023,77 @@ pub fn is_read_only_for_context(
     }
 }
 
-pub fn check_group_membership(
+const MAX_SUBGROUP_DEPTH: usize = 16;
+
+pub fn get_parent_group(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<ContextGroupId>> {
+    let handle = store.handle();
+    let key = GroupParentRef::new(group_id.to_bytes());
+    Ok(handle.get(&key)?.map(ContextGroupId::from))
+}
+
+pub fn set_parent_group(
+    store: &Store,
+    child_group_id: &ContextGroupId,
+    parent_group_id: &ContextGroupId,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let ref_key = GroupParentRef::new(child_group_id.to_bytes());
+    handle.put(&ref_key, &parent_group_id.to_bytes())?;
+    let idx_key = GroupChildIndex::new(parent_group_id.to_bytes(), child_group_id.to_bytes());
+    handle.put(&idx_key, &())?;
+    Ok(())
+}
+
+pub fn remove_parent_group(store: &Store, child_group_id: &ContextGroupId) -> EyreResult<()> {
+    if let Some(parent_id) = get_parent_group(store, child_group_id)? {
+        let mut handle = store.handle();
+        let ref_key = GroupParentRef::new(child_group_id.to_bytes());
+        handle.delete(&ref_key)?;
+        let idx_key = GroupChildIndex::new(parent_id.to_bytes(), child_group_id.to_bytes());
+        handle.delete(&idx_key)?;
+    }
+    Ok(())
+}
+
+fn has_direct_member(
     store: &Store,
     group_id: &ContextGroupId,
     identity: &PublicKey,
 ) -> EyreResult<bool> {
     let handle = store.handle();
     let key = GroupMember::new(group_id.to_bytes(), *identity);
-    let exists = handle.has(&key)?;
-    Ok(exists)
+    Ok(handle.has(&key)?)
+}
+
+fn get_direct_member_role(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+) -> EyreResult<Option<GroupMemberRole>> {
+    let handle = store.handle();
+    let key = GroupMember::new(group_id.to_bytes(), *identity);
+    Ok(handle.get(&key)?.map(|v: GroupMemberValue| v.role))
+}
+
+pub fn check_group_membership(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+) -> EyreResult<bool> {
+    let mut current = *group_id;
+    for _ in 0..MAX_SUBGROUP_DEPTH {
+        if has_direct_member(store, &current, identity)? {
+            return Ok(true);
+        }
+        match get_parent_group(store, &current)? {
+            Some(parent) => current = parent,
+            None => return Ok(false),
+        }
+    }
+    Ok(false)
 }
 
 pub fn is_group_admin(

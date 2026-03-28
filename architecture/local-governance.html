@@ -137,6 +137,20 @@
   <div class="cb"><h4 style="color:var(--green);">Member</h4><p>Standard participant. Can read and write state in joined contexts. Specific governance operations require capability bits (e.g. <span class="code">CAN_INVITE_MEMBERS</span>, <span class="code">MANAGE_MEMBERS</span>).</p></div>
   <div class="cb"><h4 style="color:var(--cyan);">ReadOnly</h4><p>Observer. Can join contexts and read state, but state mutations are rejected by the platform. Enforced at both the local node (execute handler discards changes) and remote nodes (state deltas from ReadOnly authors are rejected on ingestion).</p></div>
 </div>
+
+<h3>Subgroups</h3>
+<p>Groups can form a tree hierarchy. A child group links to a parent via <span class="code">GroupParentRef</span>. Membership and admin authority inherit downward:</p>
+<div class="g2">
+<div>
+<h4>Membership Inheritance</h4>
+<p>Membership checks walk up the ancestor chain (max depth 16). A member of the parent group is automatically a member of all descendant groups. Direct membership in the child takes priority over inherited membership.</p>
+</div>
+<div>
+<h4>Admin Override</h4>
+<p>Parent admins have full admin authority over all descendant groups. They can manage child group members, contexts, and settings without being directly added to the child group.</p>
+</div>
+</div>
+<p style="margin-top:12px;">Create a subgroup with <span class="code">--parent-group-id</span> on <span class="code">meroctl group create</span> or via the <span class="code">parentGroupId</span> field in the API. The <span class="code">SubgroupCreated</span> governance op is published on the parent group's gossip topic.</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
@@ -247,6 +261,8 @@
     <div class="fr"><div class="fp">ContextCapabilityGranted</div><div class="fd">Grant per-context capability to a member (admin or MANAGE_MEMBERS)</div></div>
     <div class="fr"><div class="fp">ContextCapabilityRevoked</div><div class="fd">Revoke per-context capability from a member (admin or MANAGE_MEMBERS)</div></div>
     <div class="fr"><div class="fp">MemberJoinedViaContextInvitation</div><div class="fd">Join via context-level invitation (inviter must be admin or CAN_INVITE_MEMBERS)</div></div>
+    <div class="fr"><div class="fp">SubgroupCreated</div><div class="fd">Link a child group under this group (admin only)</div></div>
+    <div class="fr"><div class="fp">SubgroupRemoved</div><div class="fd">Unlink a child group from this group (admin only)</div></div>
   </div>
 </div>
 </div>

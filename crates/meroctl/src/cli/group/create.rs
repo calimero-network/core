@@ -43,6 +43,12 @@ pub struct CreateCommand {
         help = "Optional group ID (hex-encoded 32 bytes); generated if not provided"
     )]
     pub group_id: Option<String>,
+
+    #[clap(
+        long,
+        help = "Parent group ID (hex-encoded 32 bytes) to create this as a subgroup"
+    )]
+    pub parent_group_id: Option<String>,
 }
 
 impl CreateCommand {
@@ -61,6 +67,7 @@ impl CreateCommand {
             application_id: self.application_id,
             upgrade_policy,
             alias: None,
+            parent_group_id: self.parent_group_id,
         };
 
         let client = environment.client()?;

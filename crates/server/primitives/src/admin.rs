@@ -1562,6 +1562,8 @@ pub struct CreateGroupApiRequest {
     pub upgrade_policy: UpgradePolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_group_id: Option<String>,
 }
 
 impl Validate for CreateGroupApiRequest {

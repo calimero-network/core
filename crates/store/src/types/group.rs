@@ -103,3 +103,13 @@ impl PredefinedEntry for key::GroupOpHead {
     type Codec = Borsh;
     type DataType<'a> = key::GroupOpHeadValue;
 }
+
+impl PredefinedEntry for key::GroupParentRef {
+    type Codec = Borsh;
+    type DataType<'a> = [u8; 32];
+}
+
+impl PredefinedEntry for key::GroupChildIndex {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}

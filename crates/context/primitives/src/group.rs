@@ -37,6 +37,7 @@ pub struct CreateGroupRequest {
     pub application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
     pub alias: Option<String>,
+    pub parent_group_id: Option<ContextGroupId>,
 }
 
 impl Message for CreateGroupRequest {

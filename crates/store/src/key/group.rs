@@ -1066,6 +1066,8 @@ pub const GROUP_OP_HEAD_PREFIX: u8 = 0x31;
 
 pub const GROUP_MEMBER_CONTEXT_PREFIX: u8 = 0x32;
 pub const GROUP_CONTEXT_MEMBER_CAP_PREFIX: u8 = 0x33;
+pub const GROUP_PARENT_REF_PREFIX: u8 = 0x34;
+pub const GROUP_CHILD_INDEX_PREFIX: u8 = 0x35;
 
 /// Stores the latest applied op sequence and content hash for a group.
 /// Key: `prefix(1) + group_id(32)` → `GroupOpHeadValue`.
@@ -1354,6 +1356,113 @@ pub enum GroupUpgradeStatus {
         /// `LazyOnAccess` upgrades where contexts upgrade individually on demand.
         completed_at: Option<u64>,
     },
+}
+
+/// Maps a child group to its parent group.
+/// Key: `prefix(1) + child_group_id(32)` -> `[u8; 32]` (parent group ID).
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupParentRef(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl GroupParentRef {
+    #[must_use]
+    pub fn new(child_group_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_PARENT_REF_PREFIX])
+            .concat(GenericArray::from(child_group_id))))
+    }
+
+    #[must_use]
+    pub fn child_group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupParentRef {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupParentRef {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupParentRef {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupParentRef")
+            .field("child_group_id", &self.child_group_id())
+            .finish()
+    }
+}
+
+/// Reverse index: parent_group_id + child_group_id -> unit.
+/// Allows listing all children of a group.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupChildIndex(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupChildIndex {
+    #[must_use]
+    pub fn new(parent_group_id: [u8; 32], child_group_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_CHILD_INDEX_PREFIX])
+            .concat(GenericArray::from(parent_group_id))
+            .concat(GenericArray::from(child_group_id))))
+    }
+
+    #[must_use]
+    pub fn parent_group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn child_group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupChildIndex {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupChildIndex {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupChildIndex {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupChildIndex")
+            .field("parent_group_id", &self.parent_group_id())
+            .field("child_group_id", &self.child_group_id())
+            .finish()
+    }
 }
 
 #[cfg(test)]

@@ -46,7 +46,13 @@ pub async fn handler(
         None => None,
     };
 
-    info!(application_id=%req.application_id, "Creating group");
+    let parent_group_id = match req.parent_group_id.as_deref().map(parse_group_id) {
+        Some(Ok(id)) => Some(id),
+        Some(Err(err)) => return err.into_response(),
+        None => None,
+    };
+
+    info!(application_id=%req.application_id, ?parent_group_id, "Creating group");
 
     let result = state
         .ctx_client
@@ -56,6 +62,7 @@ pub async fn handler(
             application_id: req.application_id,
             upgrade_policy: req.upgrade_policy,
             alias: req.alias,
+            parent_group_id,
         })
         .await
         .map_err(parse_api_error);

@@ -21,6 +21,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             application_id,
             upgrade_policy,
             alias,
+            parent_group_id,
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -54,6 +55,22 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
         if let Ok(Some(_)) = group_store::load_group_meta(&self.datastore, &group_id) {
             return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
+        }
+
+        if let Some(ref parent_id) = parent_group_id {
+            match group_store::load_group_meta(&self.datastore, parent_id) {
+                Ok(Some(_)) => {}
+                _ => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "parent group '{parent_id:?}' not found"
+                    )));
+                }
+            }
+            if let Err(err) =
+                group_store::require_group_admin(&self.datastore, parent_id, &admin_identity)
+            {
+                return ActorResponse::reply(Err(err));
+            }
         }
 
         if let Err(err) = load_app_meta(&self.datastore, &application_id) {
@@ -104,9 +121,29 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     group_store::set_group_alias(&datastore, &group_id, alias_str)?;
                 }
 
+                if let Some(ref parent_id) = parent_group_id {
+                    group_store::set_parent_group(&datastore, &group_id, parent_id)?;
+
+                    if let Some(ref sk) = signing_key {
+                        use calimero_context_primitives::local_governance::GroupOp;
+                        use calimero_primitives::identity::PrivateKey;
+
+                        let _ = group_store::sign_apply_and_publish(
+                            &datastore,
+                            &node_client,
+                            parent_id,
+                            &PrivateKey::from(*sk),
+                            GroupOp::SubgroupCreated {
+                                child_group_id: group_id.to_bytes(),
+                            },
+                        )
+                        .await;
+                    }
+                }
+
                 let _ = node_client.subscribe_group(group_id.to_bytes()).await;
 
-                info!(?group_id, %admin_identity, "group created");
+                info!(?group_id, ?parent_group_id, %admin_identity, "group created");
 
                 Ok(CreateGroupResponse { group_id })
             }
