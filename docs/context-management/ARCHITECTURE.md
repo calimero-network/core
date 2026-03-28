@@ -396,3 +396,4 @@ networks this window may need tuning.
 yet checked during WASM execution. Future work: `ContextHost` checks
 `MANAGE_APPLICATION` before app updates and `MANAGE_MEMBERS` before
 member mutations.
+
