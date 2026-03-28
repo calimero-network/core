@@ -144,6 +144,7 @@ async fn create_group() {
             application_id: ApplicationId::from([0u8; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             alias: None,
+            parent_group_id: None,
         })
         .await
         .unwrap();
@@ -822,6 +823,7 @@ async fn create_group_returns_err_on_server_error() {
             application_id: ApplicationId::from([0u8; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             alias: None,
+            parent_group_id: None,
         })
         .await;
 

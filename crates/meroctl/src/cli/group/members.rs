@@ -13,6 +13,7 @@ use crate::cli::Environment;
 pub enum MemberRoleArg {
     Admin,
     Member,
+    ReadOnly,
 }
 
 impl From<MemberRoleArg> for GroupMemberRole {
@@ -20,6 +21,7 @@ impl From<MemberRoleArg> for GroupMemberRole {
         match arg {
             MemberRoleArg::Admin => GroupMemberRole::Admin,
             MemberRoleArg::Member => GroupMemberRole::Member,
+            MemberRoleArg::ReadOnly => GroupMemberRole::ReadOnly,
         }
     }
 }
