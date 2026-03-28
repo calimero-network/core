@@ -87,7 +87,8 @@ impl StartCommand {
             .await?;
 
         // Step 4: Print summary
-        self.print_summary(environment, application_id, context_id, member_public_key)?;
+        self.print_summary(environment, application_id, context_id, member_public_key)
+            .await?;
 
         // Step 5: Watch loop (blocks until ctrl-c)
         if self.watch {
@@ -160,7 +161,7 @@ impl StartCommand {
         Ok((application_id, context_id, member_public_key))
     }
 
-    fn print_summary(
+    async fn print_summary(
         &self,
         environment: &Environment,
         application_id: ApplicationId,
@@ -170,9 +171,7 @@ impl StartCommand {
         let client = environment.client()?;
         let node_url = client.api_url();
 
-        let app_response = tokio::task::block_in_place(|| {
-            Handle::current().block_on(client.get_application(&application_id))
-        })?;
+        let app_response = client.get_application(&application_id).await?;
         let app = app_response.data.application;
 
         let package_display = app
