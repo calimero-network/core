@@ -17,7 +17,7 @@ runs:
 
     - name: Install merobox from git
       shell: bash
-      run: pip install "merobox @ git+https://github.com/calimero-network/merobox.git@feat/signed-open-invitation"
+      run: pip install "merobox @ git+https://github.com/calimero-network/merobox.git@master"
 
     - name: Verify merobox installation
       shell: bash
