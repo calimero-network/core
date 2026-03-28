@@ -146,10 +146,27 @@
 <p>Membership checks walk up the ancestor chain (max depth 16). A member of the parent group is automatically a member of all descendant groups. Direct membership in the child takes priority over inherited membership.</p>
 </div>
 <div>
-<h4>Admin Override</h4>
-<p>Parent admins have full admin authority over all descendant groups. They can manage child group members, contexts, and settings without being directly added to the child group.</p>
+<h4>Admin Authority</h4>
+<p>Parent admins inherit <strong>structural</strong> governance over descendant groups: add/remove members, detach contexts, delete subgroups, set target application. However, parent admins do <strong>not</strong> inherit access control over Restricted contexts. Only <strong>direct</strong> group admins (or the context creator) can manage allowlists and change context visibility.</p>
 </div>
 </div>
+
+<h4 style="margin-top:16px;">Access Control for Restricted Contexts</h4>
+<div class="g3">
+<div class="cb">
+<h4>Joining</h4>
+<p>Admins and members alike must be on the allowlist. No admin bypass. An admin can add themselves to the allowlist (if they are a direct admin of the group), then join.</p>
+</div>
+<div class="cb">
+<h4>Allowlist Management</h4>
+<p>Only direct group admins or the context creator. Inherited parent admins cannot modify allowlists in child groups &mdash; this is a privacy boundary.</p>
+</div>
+<div class="cb">
+<h4>Visibility Changes</h4>
+<p>Only direct group admins or the context creator can change a context between Open and Restricted. Parent admins cannot flip Restricted to Open as a backdoor.</p>
+</div>
+</div>
+
 <p style="margin-top:12px;">Create a subgroup with <span class="code">--parent-group-id</span> on <span class="code">meroctl group create</span> or via the <span class="code">parentGroupId</span> field in the API. The <span class="code">SubgroupCreated</span> governance op is published on the parent group's gossip topic.</p>
 <p style="margin-top:8px;">When joining a parent group with <span class="code">auto_join</span>, the node subscribes to gossip topics and contexts in all descendant subgroups. <span class="code">MemberRemoved</span> cascades to descendant subgroup contexts (skipping child groups where the member has direct membership).</p>
 </div>
