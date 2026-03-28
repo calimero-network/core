@@ -123,11 +123,73 @@
     btn.onclick = () => sb.classList.toggle('open');
     document.body.prepend(btn);
 
+    const SEARCH_INDEX = [
+      { href: 'getting-started.html', title: 'Getting Started', keywords: 'install merod cargo build deploy app context create call method tutorial quickstart first' },
+      { href: 'concepts.html', title: 'Core Concepts', keywords: 'group context member admin readonly role subgroup capability visibility open restricted allowlist crdt counter vector map register rga xcall' },
+      { href: 'crates/sdk.html', title: 'SDK Reference', keywords: 'sdk macro state logic init event migrate destroy emit handler crdt counter vector map register rga borsh wasm rust app' },
+      { href: 'app-lifecycle.html', title: 'App Lifecycle', keywords: 'signing bundle mpk manifest mero-sign migrate migration upgrade applicationid appkey' },
+      { href: 'example-chat.html', title: 'Example: Chat', keywords: 'chat slack channel message reaction mention announcement readonly subgroup' },
+      { href: 'example-docs.html', title: 'Example: Docs', keywords: 'docs document collaborative editing rga character text cursor comment' },
+      { href: 'crates/tools.html', title: 'merod & meroctl', keywords: 'merod meroctl cli install init config run group create invite join members capabilities context app blob call peers node binary' },
+      { href: 'config-reference.html', title: 'Config Reference', keywords: 'config toml server port swarm network sync timeout interval governance tee kms' },
+      { href: 'tee-mode.html', title: 'TEE Mode', keywords: 'tee trusted execution kms phala attestation tdx encryption storage key' },
+      { href: 'release.html', title: 'Release Process', keywords: 'release version cargo publish ci docker changelog semver' },
+      { href: 'crates/auth.html', title: 'Auth Service', keywords: 'auth jwt token challenge provider near wallet proxy embedded login' },
+      { href: 'system-overview.html', title: 'System Overview', keywords: 'architecture actor node context network server runtime storage sync layer crate' },
+      { href: 'local-governance.html', title: 'Local Governance', keywords: 'governance group signedgroupop dag signed operation member capability visibility subgroup readonly' },
+      { href: 'sequence-diagrams.html', title: 'Sequence Diagrams', keywords: 'sequence diagram flow create join invite sync heartbeat delta state' },
+      { href: 'wire-protocol.html', title: 'Wire Protocol', keywords: 'wire protocol gossipsub stream broadcast borsh message delta heartbeat signedgroupop' },
+      { href: 'storage-schema.html', title: 'Storage Schema', keywords: 'storage rocksdb column family key prefix group member context identity state delta blob' },
+      { href: 'error-flows.html', title: 'Error Flows', keywords: 'error recovery partition signature stale state out of order wasm oom missing parent cascade' },
+      { href: 'metrics-reference.html', title: 'Metrics Reference', keywords: 'metrics prometheus counter gauge histogram sync execution governance' },
+      { href: 'dependency-explorer.html', title: 'Dependency Explorer', keywords: 'dependency crate graph import module' },
+      { href: 'glossary.html', title: 'Glossary', keywords: 'glossary term definition crdt group context member capability readonly' },
+      { href: 'crates/node.html', title: 'Node', keywords: 'node manager actor sync blob heartbeat event handler' },
+      { href: 'crates/context.html', title: 'Context & Groups', keywords: 'context manager group store handler governance upgrade' },
+      { href: 'crates/network.html', title: 'Network & P2P', keywords: 'network libp2p gossipsub kademlia mdns relay stream swarm' },
+      { href: 'crates/store.html', title: 'Storage', keywords: 'store rocksdb column key value entry layer temporal tee' },
+      { href: 'crates/sync.html', title: 'Sync Engine', keywords: 'sync hash level snapshot delta protocol stream' },
+      { href: 'crates/runtime.html', title: 'WASM Runtime', keywords: 'runtime wasmer wasm host function vmlogic vmlimits execution cranelift' },
+      { href: 'crates/server.html', title: 'Server & API', keywords: 'server axum http rest jsonrpc websocket sse admin api route endpoint' },
+      { href: 'crates/dag.html', title: 'Causal DAG', keywords: 'dag causal delta parent cascade pending applied heads fork merge' },
+    ];
+
     const search = sb.querySelector('#nav-search');
+    let searchResults = null;
+
     search.addEventListener('input', () => {
-      const q = search.value.toLowerCase();
-      linksEl.querySelectorAll('.nav-link').forEach(a => {
-        a.style.display = a.dataset.label.includes(q) ? '' : 'none';
+      const q = search.value.toLowerCase().trim();
+
+      if (searchResults) { searchResults.remove(); searchResults = null; }
+
+      if (q.length < 2) {
+        linksEl.querySelectorAll('.nav-link').forEach(a => { a.style.display = ''; });
+        linksEl.querySelectorAll('.nav-section').forEach(s => { s.style.display = ''; });
+        return;
+      }
+
+      const tokens = q.split(/\s+/);
+      const matches = SEARCH_INDEX.filter(entry =>
+        tokens.every(t => entry.title.toLowerCase().includes(t) || entry.keywords.includes(t))
+      );
+
+      if (matches.length > 0 && !linksEl.querySelector('.nav-link[data-label*="' + q + '"]')) {
+        searchResults = document.createElement('div');
+        searchResults.className = 'nav-search-results';
+        searchResults.style.cssText = 'padding:4px 12px 8px;border-bottom:1px solid var(--border);';
+        matches.forEach(m => {
+          const a = document.createElement('a');
+          a.className = 'nav-link';
+          a.href = PAGES_BASE + m.href;
+          a.innerHTML = '<span class="nav-dot" style="background:#f59e0b"></span>' + m.title;
+          a.style.fontSize = '.78rem';
+          searchResults.appendChild(a);
+        });
+        linksEl.prepend(searchResults);
+      }
+
+      linksEl.querySelectorAll('.nav-link:not(.nav-search-results *)').forEach(a => {
+        a.style.display = a.dataset.label && a.dataset.label.includes(q) ? '' : 'none';
       });
       linksEl.querySelectorAll('.nav-section').forEach(s => {
         const next = s.nextElementSibling;
