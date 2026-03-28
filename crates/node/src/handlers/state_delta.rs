@@ -53,6 +53,21 @@ pub async fn handle_state_delta(
         bail!("context '{}' not found", context_id);
     };
 
+    if calimero_context::group_store::is_read_only_for_context(
+        node_clients.context.datastore(),
+        &context_id,
+        &author_id,
+    )
+    .unwrap_or(false)
+    {
+        warn!(
+            %context_id,
+            %author_id,
+            "Rejecting state delta from ReadOnly member"
+        );
+        return Ok(());
+    }
+
     info!(
         %context_id,
         %author_id,

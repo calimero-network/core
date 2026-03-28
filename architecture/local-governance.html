@@ -130,6 +130,13 @@
   <text x="620" y="256" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">Group membership &rarr; access to contexts</text>
   <text x="620" y="276" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">MemberRemoved &rarr; cascade removal from all contexts</text>
 </svg>
+
+<h3>Member Roles</h3>
+<div class="g3">
+  <div class="cb"><h4 style="color:var(--amber);">Admin</h4><p>Full control. Can perform all governance operations, manage members, configure the group, and write state in all contexts.</p></div>
+  <div class="cb"><h4 style="color:var(--green);">Member</h4><p>Standard participant. Can read and write state in joined contexts. Specific governance operations require capability bits (e.g. <span class="code">CAN_INVITE_MEMBERS</span>, <span class="code">MANAGE_MEMBERS</span>).</p></div>
+  <div class="cb"><h4 style="color:var(--cyan);">ReadOnly</h4><p>Observer. Can join contexts and read state, but state mutations are rejected by the platform. Enforced at both the local node (execute handler discards changes) and remote nodes (state deltas from ReadOnly authors are rejected on ingestion).</p></div>
+</div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
@@ -388,7 +395,7 @@
 <h2>Known Limitations</h2>
 <div class="step" style="border-color:var(--amber);"><h4>Multi-admin convergence</h4><p>Concurrent ops from multiple admins with the same state_hash: first applied wins per node. Different nodes may pick different winners for conflicting ops. Merge Noop resolves heads but op ordering may differ. Single-admin groups have no ambiguity.</p></div>
 <div class="step" style="border-color:var(--amber);"><h4>Governance epoch</h4><p>State deltas carry a governance_epoch field but it's not yet used to reject stale application-level deltas from removed members.</p></div>
-<div class="step" style="border-color:var(--amber);"><h4>Context-level capability enforcement</h4><p>Context-level capabilities (ManageApplication, ManageMembers) are stored and can be granted/revoked via governance ops, but are not yet checked during WASM execution.</p></div>
+<div class="step" style="border-color:var(--amber);"><h4>Context-level capability enforcement</h4><p>Context-level capabilities (ManageApplication, ManageMembers) are stored and can be granted/revoked via governance ops, but are not yet checked during WASM execution. ReadOnly role enforcement is platform-level (execute handler + delta ingestion), not capability-based.</p></div>
 <div class="step" style="border-color:var(--amber);"><h4>Gossip publish failures</h4><p>If gossip publish fails, it's currently silent. Should surface errors to callers or retry.</p></div>
 </div>
 

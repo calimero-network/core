@@ -983,6 +983,23 @@ pub fn get_group_member_value(
     Ok(handle.get(&key)?)
 }
 
+/// Returns `true` if the member has a `ReadOnly` role in the group that owns this context.
+/// Returns `false` if the context has no group, the member is not found, or the member
+/// has `Admin` or `Member` role.
+pub fn is_read_only_for_context(
+    store: &Store,
+    context_id: &calimero_primitives::context::ContextId,
+    identity: &PublicKey,
+) -> EyreResult<bool> {
+    let Some(group_id) = get_group_for_context(store, context_id)? else {
+        return Ok(false);
+    };
+    match get_group_member_role(store, &group_id, identity)? {
+        Some(GroupMemberRole::ReadOnly) => Ok(true),
+        _ => Ok(false),
+    }
+}
+
 pub fn check_group_membership(
     store: &Store,
     group_id: &ContextGroupId,

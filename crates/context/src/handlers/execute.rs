@@ -863,6 +863,10 @@ async fn internal_execute(
     is_state_op: bool,
     identity_private_key: &PrivateKey,
 ) -> eyre::Result<(Outcome, Option<CausalDelta>)> {
+    let executor_is_read_only = !is_state_op
+        && crate::group_store::is_read_only_for_context(&datastore, &context.id, &executor)
+            .unwrap_or(false);
+
     let storage = ContextStorage::from(datastore.clone(), context.id);
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
     let (mut outcome, storage, private_storage) = execute(
@@ -918,6 +922,19 @@ async fn internal_execute(
     }
 
     let mut causal_delta = None;
+
+    if executor_is_read_only && outcome.root_hash.is_some() {
+        info!(
+            context_id = %context.id,
+            %executor,
+            method = %method,
+            "ReadOnly member attempted state mutation — discarding changes"
+        );
+        outcome.root_hash = None;
+        outcome.artifact.clear();
+        outcome.xcalls.clear();
+        return Ok((outcome, None));
+    }
 
     // Always update root_hash if present (even if storage is empty)
     // This is critical for state_ops like __calimero_sync_next where actions

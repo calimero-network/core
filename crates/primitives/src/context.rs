@@ -237,6 +237,7 @@ const _: () = {
 pub enum GroupMemberRole {
     Admin,
     Member,
+    ReadOnly,
 }
 
 /// A serialized and encoded payload for inviting a user to join a Context Group.
