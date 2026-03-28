@@ -128,7 +128,7 @@
   <text x="440" y="264" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11">Member 2</text>
 
   <text x="620" y="256" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">Group membership &rarr; access to contexts</text>
-  <text x="620" y="276" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">MemberRemoved &rarr; cascade removal from all contexts</text>
+  <text x="620" y="276" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">MemberRemoved &rarr; cascade removal from all contexts + subgroups</text>
 </svg>
 
 <h3>Member Roles</h3>
@@ -151,6 +151,7 @@
 </div>
 </div>
 <p style="margin-top:12px;">Create a subgroup with <span class="code">--parent-group-id</span> on <span class="code">meroctl group create</span> or via the <span class="code">parentGroupId</span> field in the API. The <span class="code">SubgroupCreated</span> governance op is published on the parent group's gossip topic.</p>
+<p style="margin-top:8px;">When joining a parent group with <span class="code">auto_join</span>, the node subscribes to gossip topics and contexts in all descendant subgroups. <span class="code">MemberRemoved</span> cascades to descendant subgroup contexts (skipping child groups where the member has direct membership).</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
@@ -241,7 +242,7 @@
     <h3>GroupOp Variants</h3>
     <div class="fr"><div class="fp">Noop</div><div class="fd">Merge sentinel (no state change, used to merge DAG heads)</div></div>
     <div class="fr"><div class="fp">MemberAdded</div><div class="fd">Add member to group (admin or MANAGE_MEMBERS)</div></div>
-    <div class="fr"><div class="fp">MemberRemoved</div><div class="fd">Remove member + cascade to all contexts (admin or MANAGE_MEMBERS)</div></div>
+    <div class="fr"><div class="fp">MemberRemoved</div><div class="fd">Remove member + cascade to all contexts in this group and descendant subgroups (admin or MANAGE_MEMBERS)</div></div>
     <div class="fr"><div class="fp">MemberRoleSet</div><div class="fd">Change member role (admin only)</div></div>
     <div class="fr"><div class="fp">MemberCapabilitySet</div><div class="fd">Set per-member capability bitfield (admin only)</div></div>
     <div class="fr"><div class="fp">DefaultCapabilitiesSet</div><div class="fd">Set default capabilities for new members (admin only)</div></div>
