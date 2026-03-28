@@ -14,89 +14,77 @@
      1. TITLE + STATS
      ═══════════════════════════════════════════════════════════════════ -->
 <h1>Local Group <em>Governance</em></h1>
-<p class="page-subtitle">feat/local-group-governance-ops &middot; calimero-network/core &middot; 15 commits on master</p>
+<p class="page-subtitle">Signed gossip operations, causal DAG, capability-based authorization</p>
 
 <div class="g4" style="margin-bottom:36px;">
-  <div class="stat"><div class="v">15</div><div class="l">commits</div></div>
-  <div class="stat"><div class="v">87</div><div class="l">files changed</div></div>
-  <div class="stat"><div class="v">4,109</div><div class="l">insertions</div></div>
-  <div class="stat"><div class="v">1,390</div><div class="l">deletions</div></div>
+  <div class="stat"><div class="v">Ed25519</div><div class="l">signed ops</div></div>
+  <div class="stat"><div class="v">DAG</div><div class="l">causal ordering</div></div>
+  <div class="stat"><div class="v">5</div><div class="l">capability bits</div></div>
+  <div class="stat"><div class="v">20+</div><div class="l">op variants</div></div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
-     2. BEFORE / AFTER SVG — Blockchain Removal
+     2. ARCHITECTURE OVERVIEW
      ═══════════════════════════════════════════════════════════════════ -->
 <div class="card ga">
-<h2>What Changed: Blockchain &rarr; Local Governance</h2>
-<svg viewBox="0 0 940 440" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- BEFORE panel -->
-  <rect x="20" y="55" width="420" height="340" rx="12" fill="#161622" stroke="#ef4444" stroke-width="1" stroke-dasharray="4 4" opacity="0.7"/>
-  <text x="230" y="42" text-anchor="middle" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">BEFORE (removed)</text>
+<h2>Architecture</h2>
+<svg viewBox="0 0 940 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="40" y="30" width="380" height="340" rx="12" fill="#10b98108" stroke="#10b981" stroke-width="1.5"/>
+  <text x="230" y="20" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Node A</text>
 
-  <rect x="50" y="85" width="160" height="48" rx="8" fill="#0f0f16" stroke="#252538"/>
-  <text x="130" y="114" text-anchor="middle" fill="#d4d4dc" font-family="DM Sans, sans-serif" font-size="12" font-weight="500">Node A</text>
+  <rect x="70" y="55" width="150" height="80" rx="8" fill="#0f0f16" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="145" y="78" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">GroupStore</text>
+  <text x="145" y="96" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Members, capabilities</text>
+  <text x="145" y="112" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Contexts, visibility</text>
 
-  <rect x="250" y="85" width="160" height="48" rx="8" fill="#0f0f16" stroke="#252538"/>
-  <text x="330" y="114" text-anchor="middle" fill="#d4d4dc" font-family="DM Sans, sans-serif" font-size="12" font-weight="500">Node B</text>
+  <rect x="250" y="55" width="150" height="80" rx="8" fill="#0f0f16" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="325" y="78" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">DagStore</text>
+  <text x="325" y="96" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Causal ordering</text>
+  <text x="325" y="112" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Pending resolution</text>
 
-  <line x1="130" y1="133" x2="230" y2="195" stroke="#ef4444" stroke-width="1.5" opacity="0.5"/>
-  <line x1="330" y1="133" x2="230" y2="195" stroke="#ef4444" stroke-width="1.5" opacity="0.5"/>
+  <rect x="70" y="155" width="330" height="55" rx="8" fill="#0f0f16" stroke="#10b981" stroke-width="1"/>
+  <text x="235" y="178" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">OpLog</text>
+  <text x="235" y="196" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Persistent sequence of applied ops + DAG heads</text>
 
-  <rect x="150" y="185" width="160" height="42" rx="8" fill="#ef444412" stroke="#ef4444"/>
-  <text x="230" y="211" text-anchor="middle" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">Relayer</text>
+  <rect x="70" y="230" width="330" height="120" rx="8" fill="#161622" stroke="#3b82f6" stroke-width="1"/>
+  <text x="235" y="255" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">SignedGroupOp (v3)</text>
+  <text x="235" y="279" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">group_id + parent_op_hashes</text>
+  <text x="235" y="299" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">state_hash + nonce + signer</text>
+  <text x="235" y="319" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">op: GroupOp + Ed25519 signature</text>
+  <text x="235" y="340" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">borsh &middot; content-addressed</text>
 
-  <line x1="230" y1="227" x2="230" y2="265" stroke="#ef4444" stroke-width="1.5" opacity="0.5"/>
-  <polygon points="225,263 230,273 235,263" fill="#ef4444" opacity="0.5"/>
+  <!-- Node B -->
+  <rect x="520" y="30" width="380" height="340" rx="12" fill="#10b98108" stroke="#10b981" stroke-width="1.5"/>
+  <text x="710" y="20" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Node B</text>
 
-  <rect x="100" y="275" width="260" height="58" rx="8" fill="#ef444412" stroke="#ef4444"/>
-  <text x="230" y="300" text-anchor="middle" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600">NEAR Blockchain</text>
-  <text x="230" y="320" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">context-config contract</text>
+  <rect x="550" y="55" width="150" height="80" rx="8" fill="#0f0f16" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="625" y="78" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">GroupStore</text>
+  <text x="625" y="96" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Members, capabilities</text>
+  <text x="625" y="112" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Contexts, visibility</text>
 
-  <!-- X through BEFORE -->
-  <line x1="30" y1="65" x2="430" y2="385" stroke="#ef4444" stroke-width="2" opacity="0.2"/>
-  <line x1="430" y1="65" x2="30" y2="385" stroke="#ef4444" stroke-width="2" opacity="0.2"/>
+  <rect x="730" y="55" width="150" height="80" rx="8" fill="#0f0f16" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="805" y="78" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">DagStore</text>
+  <text x="805" y="96" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Causal ordering</text>
+  <text x="805" y="112" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Pending resolution</text>
 
-  <!-- AFTER panel -->
-  <rect x="500" y="55" width="420" height="340" rx="12" fill="#10b98108" stroke="#10b981" stroke-width="1.5"/>
-  <text x="710" y="42" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">AFTER (local governance)</text>
+  <rect x="550" y="155" width="330" height="55" rx="8" fill="#0f0f16" stroke="#10b981" stroke-width="1"/>
+  <text x="715" y="178" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">OpLog</text>
+  <text x="715" y="196" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Persistent sequence of applied ops + DAG heads</text>
 
-  <rect x="530" y="85" width="150" height="100" rx="8" fill="#0f0f16" stroke="#3b82f6" stroke-width="1.5"/>
-  <text x="605" y="108" text-anchor="middle" fill="#d4d4dc" font-family="DM Sans, sans-serif" font-size="12" font-weight="700">Node A</text>
-  <text x="605" y="130" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">GroupStore</text>
-  <text x="605" y="148" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9">DagStore</text>
-  <text x="605" y="166" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="9">OpLog</text>
-
-  <rect x="740" y="85" width="150" height="100" rx="8" fill="#0f0f16" stroke="#3b82f6" stroke-width="1.5"/>
-  <text x="815" y="108" text-anchor="middle" fill="#d4d4dc" font-family="DM Sans, sans-serif" font-size="12" font-weight="700">Node B</text>
-  <text x="815" y="130" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">GroupStore</text>
-  <text x="815" y="148" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9">DagStore</text>
-  <text x="815" y="166" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="9">OpLog</text>
-
-  <!-- gossipsub arrows -->
-  <line x1="680" y1="125" x2="740" y2="125" stroke="#f59e0b" stroke-width="2"/>
-  <polygon points="738,121 748,125 738,129" fill="#f59e0b"/>
-  <line x1="740" y1="145" x2="680" y2="145" stroke="#f59e0b" stroke-width="2"/>
-  <polygon points="682,141 672,145 682,149" fill="#f59e0b"/>
-  <text x="710" y="113" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600">gossipsub</text>
-
-  <!-- SignedGroupOp box -->
-  <rect x="545" y="225" width="330" height="140" rx="8" fill="#161622" stroke="#8b5cf6" stroke-width="1"/>
-  <text x="710" y="250" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">SignedGroupOp (v3)</text>
-  <text x="710" y="274" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">group_id + parent_op_hashes</text>
-  <text x="710" y="294" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">state_hash + nonce + signer</text>
-  <text x="710" y="314" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">op: GroupOp + signature</text>
-  <text x="710" y="342" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">Ed25519 &middot; borsh &middot; content-addressed</text>
-
-  <!-- dashed lines from nodes to SignedGroupOp -->
-  <line x1="605" y1="185" x2="640" y2="225" stroke="#8b5cf6" stroke-width="1" stroke-dasharray="3 3"/>
-  <line x1="815" y1="185" x2="780" y2="225" stroke="#8b5cf6" stroke-width="1" stroke-dasharray="3 3"/>
+  <!-- gossipsub arrows between nodes -->
+  <line x1="420" y1="140" x2="520" y2="140" stroke="#f59e0b" stroke-width="2"/>
+  <polygon points="518,136 528,140 518,144" fill="#f59e0b"/>
+  <line x1="520" y1="170" x2="420" y2="170" stroke="#f59e0b" stroke-width="2"/>
+  <polygon points="422,166 412,170 422,174" fill="#f59e0b"/>
+  <text x="470" y="130" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">gossipsub</text>
+  <text x="470" y="188" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">group/&lt;hex&gt; topic</text>
 </svg>
 
 <div class="legend">
-  <div class="legend-item"><div class="ld" style="background:#ef4444"></div>Removed (blockchain, relayer, external client)</div>
-  <div class="legend-item"><div class="ld" style="background:#10b981"></div>New (local governance, DAG, op log)</div>
-  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>P2P gossip (group topics)</div>
-  <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>Signed operations</div>
+  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>GroupStore (persistence)</div>
+  <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>DagStore (causal ordering)</div>
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>OpLog (replay + catch-up)</div>
+  <div class="legend-item"><div class="ld" style="background:#3b82f6"></div>SignedGroupOp (wire format)</div>
 </div>
 </div>
 
@@ -230,27 +218,28 @@
   </div>
   <div>
     <h3>GroupOp Variants</h3>
-    <div class="fr"><div class="fp">MemberAdded</div><div class="fd">Add member to group</div></div>
-    <div class="fr"><div class="fp">MemberRemoved</div><div class="fd">Remove member (cascade to all contexts)</div></div>
-    <div class="fr"><div class="fp">ContextRegistered</div><div class="fd">Bind a new context to the group</div></div>
-    <div class="fr"><div class="fp">ContextDetached</div><div class="fd">Remove context from group</div></div>
-    <div class="fr"><div class="fp">VisibilitySet</div><div class="fd">Context access: open vs restricted</div></div>
-    <div class="fr"><div class="fp">AllowlistSet</div><div class="fd">Per-context member allowlist</div></div>
-    <div class="fr"><div class="fp">CapabilitiesSet</div><div class="fd">Per-member capability grants</div></div>
-    <div class="fr"><div class="fp">JoinWithInvitationClaim</div><div class="fd">Invitation-based group join</div></div>
-    <div class="fr"><div class="fp">MemberJoinedContext (removed)</div><div class="fd">Context membership is now implicit from group membership</div></div>
-    <div class="fr"><div class="fp">GroupDeleted</div><div class="fd">Delete the group</div></div>
-    <div class="fr"><div class="fp">Noop</div><div class="fd">Merge sentinel (no state change)</div></div>
-    <div class="fr"><div class="fp">TargetApplicationSet</div><div class="fd">Set default application for contexts</div></div>
-    <div class="fr"><div class="fp">GroupMigrationSet</div><div class="fd">Configure migration parameters</div></div>
-    <div class="fr"><div class="fp">ContextAliasSet</div><div class="fd">Set human-readable context alias</div></div>
-    <div class="fr"><div class="fp">MemberAliasSet</div><div class="fd">Set human-readable member alias</div></div>
-    <div class="fr"><div class="fp">GroupAliasSet</div><div class="fd">Set human-readable group alias</div></div>
-    <div class="fr"><div class="fp">DefaultCapabilitiesSet</div><div class="fd">Set default capabilities for new members</div></div>
-    <div class="fr"><div class="fp">DefaultVisibilitySet</div><div class="fd">Set default visibility for new contexts</div></div>
-    <div class="fr"><div class="fp">ContextMemberCapGranted</div><div class="fd">Grant capability to context member</div></div>
-    <div class="fr"><div class="fp">ContextMemberCapRevoked</div><div class="fd">Revoke capability from context member</div></div>
-    <div class="fr"><div class="fp">MemberLeftContext (removed)</div><div class="fd">Context membership is now implicit from group membership; explicit leave tracking removed</div></div>
+    <div class="fr"><div class="fp">Noop</div><div class="fd">Merge sentinel (no state change, used to merge DAG heads)</div></div>
+    <div class="fr"><div class="fp">MemberAdded</div><div class="fd">Add member to group (admin or MANAGE_MEMBERS)</div></div>
+    <div class="fr"><div class="fp">MemberRemoved</div><div class="fd">Remove member + cascade to all contexts (admin or MANAGE_MEMBERS)</div></div>
+    <div class="fr"><div class="fp">MemberRoleSet</div><div class="fd">Change member role (admin only)</div></div>
+    <div class="fr"><div class="fp">MemberCapabilitySet</div><div class="fd">Set per-member capability bitfield (admin only)</div></div>
+    <div class="fr"><div class="fp">DefaultCapabilitiesSet</div><div class="fd">Set default capabilities for new members (admin only)</div></div>
+    <div class="fr"><div class="fp">UpgradePolicySet</div><div class="fd">Set group upgrade policy (admin only)</div></div>
+    <div class="fr"><div class="fp">TargetApplicationSet</div><div class="fd">Set target application for the group (admin or MANAGE_APPLICATION)</div></div>
+    <div class="fr"><div class="fp">ContextRegistered</div><div class="fd">Bind a new context to the group (admin or CAN_CREATE_CONTEXT)</div></div>
+    <div class="fr"><div class="fp">ContextDetached</div><div class="fd">Remove context from group (admin only)</div></div>
+    <div class="fr"><div class="fp">DefaultVisibilitySet</div><div class="fd">Set default visibility for new contexts (admin only)</div></div>
+    <div class="fr"><div class="fp">ContextVisibilitySet</div><div class="fd">Set context visibility: Open or Restricted (admin or context creator)</div></div>
+    <div class="fr"><div class="fp">ContextAllowlistReplaced</div><div class="fd">Replace per-context member allowlist (admin or context creator)</div></div>
+    <div class="fr"><div class="fp">ContextAliasSet</div><div class="fd">Set human-readable context alias (admin or context creator)</div></div>
+    <div class="fr"><div class="fp">MemberAliasSet</div><div class="fd">Set human-readable member alias (admin or self)</div></div>
+    <div class="fr"><div class="fp">GroupAliasSet</div><div class="fd">Set human-readable group alias (admin only)</div></div>
+    <div class="fr"><div class="fp">GroupDelete</div><div class="fd">Delete the group (admin only, requires no contexts)</div></div>
+    <div class="fr"><div class="fp">GroupMigrationSet</div><div class="fd">Configure migration parameters (admin or MANAGE_APPLICATION)</div></div>
+    <div class="fr"><div class="fp">JoinWithInvitationClaim</div><div class="fd">Invitation-based group join (inviter must be admin or CAN_INVITE_MEMBERS)</div></div>
+    <div class="fr"><div class="fp">ContextCapabilityGranted</div><div class="fd">Grant per-context capability to a member (admin or MANAGE_MEMBERS)</div></div>
+    <div class="fr"><div class="fp">ContextCapabilityRevoked</div><div class="fd">Revoke per-context capability from a member (admin or MANAGE_MEMBERS)</div></div>
+    <div class="fr"><div class="fp">MemberJoinedViaContextInvitation</div><div class="fd">Join via context-level invitation (inviter must be admin or CAN_INVITE_MEMBERS)</div></div>
   </div>
 </div>
 </div>
@@ -393,25 +382,14 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
-     9. IMPLEMENTATION STATUS
+     9. KNOWN LIMITATIONS
      ═══════════════════════════════════════════════════════════════════ -->
 <div class="card gd">
-<h2>Implementation Status</h2>
-
-<h3>Completed</h3>
-<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;SignedGroupOp v3 + DAG</h4><p>Full wire types, Ed25519 signing, content-addressed DAG with parent hashes, state_hash optimistic locking, schema versioning (v1&rarr;v2&rarr;v3).</p></div>
-<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;GroupStore persistence + apply</h4><p>All GroupOp variants applied with auth checks. Op log with sequence numbers, DAG head tracking (capped at 64), per-signer nonce for replay protection + idempotency.</p></div>
-<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;Gossip propagation</h4><p>SignedGroupOpV1 + GroupGovernanceDelta broadcast on group topics. Verify-on-ingress at node level.</p></div>
-<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;Catch-up protocol</h4><p>GroupStateHeartbeat (30s), GroupDeltaRequest/Response stream, startup reload_group_dags from persistent op log.</p></div>
-<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;Cascade removal</h4><p>MemberRemoved cascades to all context identities + join tracking. Deterministic across nodes.</p></div>
-<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;Blockchain removal</h4><p>Relayer crate deleted. External client, proxy, NEAR transport, proposals removed. NEAR deps scoped to auth only.</p></div>
-<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;Comprehensive tests (21 convergence + 1 E2E)</h4><p>Two-node convergence, op log, idempotency, DAG ordering, state_hash conflict prevention, cascade removal, head capping, out-of-order delivery, deep chain replay.</p></div>
-
-<h3>Known Gaps / Future Work</h3>
-<div class="step" style="border-color:var(--amber);"><h4><span class="tag tag-partial">NOTED</span> &nbsp;Multi-admin convergence ambiguity</h4><p>Concurrent ops from multiple admins with the same state_hash: first applied wins per node. Different nodes may pick different winners for conflicting ops. Merge Noop resolves heads but op ordering may differ.</p></div>
-<div class="step" style="border-color:var(--amber);"><h4><span class="tag tag-partial">NOTED</span> &nbsp;Governance epoch not yet enforced</h4><p>State deltas carry a governance_epoch field but it's not yet used to reject stale application-level deltas from removed members.</p></div>
-<div class="step" style="border-color:var(--amber);"><h4><span class="tag tag-partial">NOTED</span> &nbsp;WASM capability enforcement</h4><p>Capabilities are stored and propagated but not yet checked in the WASM runtime for application-level add/remove member calls.</p></div>
-<div class="step" style="border-color:var(--red);"><h4><span class="tag tag-gap">GAP</span> &nbsp;Publish failure surfacing</h4><p>If gossip publish fails, it's currently silent. Should surface errors to callers or retry.</p></div>
+<h2>Known Limitations</h2>
+<div class="step" style="border-color:var(--amber);"><h4>Multi-admin convergence</h4><p>Concurrent ops from multiple admins with the same state_hash: first applied wins per node. Different nodes may pick different winners for conflicting ops. Merge Noop resolves heads but op ordering may differ. Single-admin groups have no ambiguity.</p></div>
+<div class="step" style="border-color:var(--amber);"><h4>Governance epoch</h4><p>State deltas carry a governance_epoch field but it's not yet used to reject stale application-level deltas from removed members.</p></div>
+<div class="step" style="border-color:var(--amber);"><h4>Context-level capability enforcement</h4><p>Context-level capabilities (ManageApplication, ManageMembers) are stored and can be granted/revoked via governance ops, but are not yet checked during WASM execution.</p></div>
+<div class="step" style="border-color:var(--amber);"><h4>Gossip publish failures</h4><p>If gossip publish fails, it's currently silent. Should surface errors to callers or retry.</p></div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
@@ -445,11 +423,6 @@
 <div class="fr"><div class="fp">context/tests/local_group_governance_convergence.rs</div><div class="fd">21 tests: two-node convergence, op log, idempotency, DAG ordering, state_hash conflict prevention, cascade removal, head capping.</div></div>
 <div class="fr"><div class="fp">node/src/local_governance_node_e2e.rs</div><div class="fd">E2E: gossip message &rarr; node manager &rarr; context apply &rarr; membership verified.</div></div>
 
-<h3 style="color:var(--red);">Removed</h3>
-<div class="fr"><div class="fp" style="color:var(--red);">crates/relayer/</div><div class="fd">Entire relayer crate deleted.</div></div>
-<div class="fr"><div class="fp" style="color:var(--red);">context/config/src/client/</div><div class="fd">External client, proxy, NEAR protocol transport.</div></div>
-<div class="fr"><div class="fp" style="color:var(--red);">runtime/src/logic/host_functions/governance.rs</div><div class="fd">WASM governance host functions.</div></div>
-<div class="fr"><div class="fp" style="color:var(--red);">server/src/admin/handlers/proposals.rs</div><div class="fd">Proposal system.</div></div>
 </div>
 
 </div>

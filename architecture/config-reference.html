@@ -569,27 +569,16 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
 <p>Guide for migrating between group governance modes.</p>
 
 <div class="card ga">
-<h3>New Nodes</h3>
+<h3>Default Configuration</h3>
 <div class="typedef">
 merod init --group-governance local
 </div>
-<p>Sets <span class="code">group_governance = "local"</span> and omits NEAR protocol params. Local-only group flows do not require chain RPC.</p>
+<p>Local governance is the default (and only) governance mode. Group operations are signed locally and propagated via gossip.</p>
 </div>
 
 <div class="card gb">
-<h3>Existing Deployment: External to Local</h3>
-<ol>
-<li>Stop the node (clean shutdown).</li>
-<li>Edit <span class="code">config.toml</span>: set <span class="code">group_governance = "local"</span> under <span class="code">[context]</span>.</li>
-<li>Ensure group metadata and members exist locally (from prior sync or gossip).</li>
-<li>Restart the node.</li>
-</ol>
-<p><strong>Caveats:</strong> Nodes that relied on chain sync must receive <span class="code">SignedGroupOp</span> gossip to keep <span class="code">group_store</span> authoritative. Switching back to <span class="code">external</span> requires valid NEAR config params and re-sync from chain.</p>
-</div>
-
-<div class="card gc">
-<h3>Backup and Rollback</h3>
-<p>Back up the node data directory before changing governance mode. To rollback, restore the previous <span class="code">config.toml</span> and data snapshot. Do not mix mismatched <span class="code">group_store</span> state with a mode that expects different sources of truth.</p>
+<h3>Backup</h3>
+<p>Back up the node data directory (RocksDB store path in <span class="code">config.toml</span>) regularly. The <span class="code">group_store</span> contains all governance state and can be rebuilt from the persistent op log, but a backup provides faster recovery.</p>
 </div>
 
 </div>
