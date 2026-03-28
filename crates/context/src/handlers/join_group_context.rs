@@ -50,18 +50,15 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                     }
                 }
                 Some((1, _)) => {
-                    let is_admin =
-                        group_store::is_group_admin(&self.datastore, &group_id, &joiner_identity)?;
-                    let on_allowlist = group_store::check_context_allowlist(
+                    if !group_store::check_context_allowlist(
                         &self.datastore,
                         &group_id,
                         &context_id,
                         &joiner_identity,
-                    )?;
-                    if !is_admin && !on_allowlist {
+                    )? {
                         bail!(
-                            "identity is not permitted to join restricted context '{context_id:?}' \
-                             (not an admin and not on the context allowlist)"
+                            "identity is not on the allowlist for restricted context \
+                             '{context_id:?}' (admins must be explicitly allowlisted too)"
                         );
                     }
                 }

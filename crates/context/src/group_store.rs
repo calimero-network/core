@@ -680,9 +680,12 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             mode,
             creator,
         } => {
-            let is_admin = is_group_admin(store, &group_id, &op.signer)?;
-            if !is_admin && op.signer != *creator {
-                bail!("only group admin or context creator can set context visibility");
+            let is_direct_admin = is_direct_group_admin(store, &group_id, &op.signer)?;
+            if !is_direct_admin && op.signer != *creator {
+                bail!(
+                    "only a direct group admin or context creator can set context visibility \
+                     (inherited parent admin authority does not apply)"
+                );
             }
             validate_visibility_mode(*mode)?;
             set_context_visibility(store, &group_id, context_id, *mode, *creator.as_ref())?;
@@ -696,13 +699,16 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             context_id,
             members,
         } => {
-            let is_admin = is_group_admin(store, &group_id, &op.signer)?;
-            if !is_admin {
+            let is_direct_admin = is_direct_group_admin(store, &group_id, &op.signer)?;
+            if !is_direct_admin {
                 if let Some((_, creator_bytes)) =
                     get_context_visibility(store, &group_id, context_id)?
                 {
                     if creator_bytes != *op.signer {
-                        bail!("only admin or context creator can replace the allowlist");
+                        bail!(
+                            "only a direct group admin or context creator can manage allowlists \
+                             (inherited parent admin authority does not apply)"
+                        );
                     }
                 } else {
                     bail!("context visibility not found for context in group");
@@ -1080,6 +1086,20 @@ pub fn check_group_membership(
         }
     }
     Ok(false)
+}
+
+/// Returns `true` if `identity` is a direct admin of this specific group
+/// (no ancestor walk). Used for operations where inherited admin authority
+/// should NOT apply (e.g., managing Restricted context allowlists).
+pub fn is_direct_group_admin(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+) -> EyreResult<bool> {
+    match get_direct_member_role(store, group_id, identity)? {
+        Some(GroupMemberRole::Admin) => Ok(true),
+        _ => Ok(false),
+    }
 }
 
 pub fn is_group_admin(
