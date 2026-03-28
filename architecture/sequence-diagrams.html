@@ -52,7 +52,7 @@
       </div>
 
       <h1>Sequence <em>Diagrams</em></h1>
-      <p class="page-subtitle">Step-by-step animated flows for 14 key operations</p>
+      <p class="page-subtitle">Step-by-step animated flows for 23 key operations</p>
 
       <div class="seq-tab-groups" data-tabs>
         <h4>Core Operations</h4>
@@ -77,6 +77,21 @@
         <div class="seq-tab-row">
           <button class="tab" data-target="p-auth-flow">HTTP Auth</button>
           <button class="tab" data-target="p-tee-invite">TEE Node Invite</button>
+        </div>
+        <h4>Group Management</h4>
+        <div class="seq-tab-row">
+          <button class="tab" data-target="p-create-subgroup">Create Subgroup</button>
+          <button class="tab" data-target="p-add-readonly">Add ReadOnly Member</button>
+          <button class="tab" data-target="p-grant-caps">Grant Capabilities</button>
+          <button class="tab" data-target="p-cascade-remove">Cascade Removal</button>
+          <button class="tab" data-target="p-privacy-boundary">Privacy Boundary</button>
+        </div>
+        <h4>Application Flows</h4>
+        <div class="seq-tab-row">
+          <button class="tab" data-target="p-app-sign">Sign &amp; Install Bundle</button>
+          <button class="tab" data-target="p-app-migrate">App Migration</button>
+          <button class="tab" data-target="p-xcall">xcall Cross-Context</button>
+          <button class="tab" data-target="p-rga-edit">RGA Collaborative Edit</button>
         </div>
       </div>
 
@@ -203,6 +218,87 @@
           <p class="diagram-desc">When a node subscribes to a group topic, three operations fire in parallel: sync group state, broadcast aliases, and broadcast local state.</p>
           <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-group-sub')">&#9654; Replay</button></div>
           <div class="diagram-container animating" id="d-group-sub"></div>
+        </div>
+      </div>
+
+      <!-- Create Subgroup -->
+      <div class="panel" id="p-create-subgroup">
+        <div class="card ga">
+          <p class="diagram-desc">Admin creates a child group under an existing parent. The SubgroupCreated governance op is published on the parent's gossip topic so all peers learn about the hierarchy.</p>
+          <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-create-subgroup')">&#9654; Replay</button></div>
+          <div class="diagram-container" id="d-create-subgroup"></div>
+        </div>
+      </div>
+
+      <!-- Add ReadOnly Member -->
+      <div class="panel" id="p-add-readonly">
+        <div class="card gb">
+          <p class="diagram-desc">A ReadOnly member is added to a group. They can join contexts and read state, but any state mutations are discarded locally and rejected by remote nodes.</p>
+          <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-add-readonly')">&#9654; Replay</button></div>
+          <div class="diagram-container" id="d-add-readonly"></div>
+        </div>
+      </div>
+
+      <!-- Grant Capabilities -->
+      <div class="panel" id="p-grant-caps">
+        <div class="card gc">
+          <p class="diagram-desc">Admin grants capability bits to a group member via a governance operation, enabling them to perform specific actions like creating contexts or inviting members.</p>
+          <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-grant-caps')">&#9654; Replay</button></div>
+          <div class="diagram-container" id="d-grant-caps"></div>
+        </div>
+      </div>
+
+      <!-- Cascade Removal -->
+      <div class="panel" id="p-cascade-remove">
+        <div class="card gd">
+          <p class="diagram-desc">When a member is removed from a parent group, their ContextIdentity entries are cascaded through all descendant subgroup contexts. Child groups where they have direct membership are skipped.</p>
+          <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-cascade-remove')">&#9654; Replay</button></div>
+          <div class="diagram-container" id="d-cascade-remove"></div>
+        </div>
+      </div>
+
+      <!-- Privacy Boundary -->
+      <div class="panel" id="p-privacy-boundary">
+        <div class="card ga">
+          <p class="diagram-desc">A parent admin tries to join a Restricted context in a child group. The platform enforces that only direct group admins or context creators can manage allowlists and access Restricted contexts.</p>
+          <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-privacy-boundary')">&#9654; Replay</button></div>
+          <div class="diagram-container" id="d-privacy-boundary"></div>
+        </div>
+      </div>
+
+      <!-- Sign & Install Bundle -->
+      <div class="panel" id="p-app-sign">
+        <div class="card gb">
+          <p class="diagram-desc">Developer generates a signing key, builds the WASM app, signs the manifest with JCS + SHA-256 + Ed25519, packages the .mpk bundle, and installs it on a node.</p>
+          <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-app-sign')">&#9654; Replay</button></div>
+          <div class="diagram-container" id="d-app-sign"></div>
+        </div>
+      </div>
+
+      <!-- App Migration -->
+      <div class="panel" id="p-app-migrate">
+        <div class="card gc">
+          <p class="diagram-desc">Context update with state migration: the new WASM module runs the migration function against the old state, produces new state bytes, and the context switches to the new application version.</p>
+          <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-app-migrate')">&#9654; Replay</button></div>
+          <div class="diagram-container" id="d-app-migrate"></div>
+        </div>
+      </div>
+
+      <!-- xcall Cross-Context -->
+      <div class="panel" id="p-xcall">
+        <div class="card gd">
+          <p class="diagram-desc">A WASM method in Context A queues a cross-context call to Context B. After Context A commits, the node executes the target method on Context B using an owned member identity.</p>
+          <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-xcall')">&#9654; Replay</button></div>
+          <div class="diagram-container" id="d-xcall"></div>
+        </div>
+      </div>
+
+      <!-- RGA Collaborative Edit -->
+      <div class="panel" id="p-rga-edit">
+        <div class="card ga">
+          <p class="diagram-desc">Two nodes concurrently edit the same document using the RGA CRDT. Each character insert generates a CharId with HLC timestamp. Both edits sync and merge deterministically.</p>
+          <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-rga-edit')">&#9654; Replay</button></div>
+          <div class="diagram-container" id="d-rga-edit"></div>
         </div>
       </div>
 
@@ -634,6 +730,194 @@
           { from: 1, to: 2, label: 'C: broadcast_group_local_state' },
           { from: 2, to: 3, label: 'GroupMutationNotification (aliases)' },
           { from: 2, to: 3, label: 'GroupMutationNotification (state)' }
+        ]
+      },
+      {
+        id: 'd-create-subgroup',
+        title: 'Create Subgroup',
+        lanes: [
+          { label: 'Admin',      color: '#f59e0b' },
+          { label: 'CtxMgr',     color: '#10b981' },
+          { label: 'GroupStore',  color: '#3b82f6' },
+          { label: 'Gossip',     color: '#8b5cf6' }
+        ],
+        steps: [
+          { from: 0, to: 1, label: 'CreateGroupRequest { parent_group_id }' },
+          { from: 1, to: 1, label: 'verify admin of parent group' },
+          { from: 1, to: 2, label: 'save_group_meta(child)' },
+          { from: 1, to: 2, label: 'add_group_member(admin)' },
+          { from: 1, to: 2, label: 'set_parent_group(child, parent)', color: '#A5FF11' },
+          { from: 1, to: 2, label: 'write GroupChildIndex' },
+          { from: 1, to: 3, label: 'SubgroupCreated { child_group_id }' },
+          { from: 1, to: 3, label: 'subscribe_group(child)' },
+          { from: 1, to: 0, label: 'Ok(CreateGroupResponse)', dashed: true }
+        ]
+      },
+      {
+        id: 'd-add-readonly',
+        title: 'Add ReadOnly Member',
+        lanes: [
+          { label: 'Admin',     color: '#f59e0b' },
+          { label: 'CtxMgr',    color: '#10b981' },
+          { label: 'GroupStore', color: '#3b82f6' },
+          { label: 'ReadOnly',  color: '#06b6d4' }
+        ],
+        steps: [
+          { from: 0, to: 1, label: 'AddGroupMembers { role: ReadOnly }' },
+          { from: 1, to: 2, label: 'MemberAdded { role: ReadOnly }', color: '#A5FF11' },
+          { from: 2, to: 2, label: 'write GroupMember + default caps' },
+          { type: 'divider', label: 'ReadOnly member calls a method' },
+          { from: 3, to: 1, label: 'Execute("set", args)' },
+          { from: 1, to: 1, label: 'WASM runs, produces root_hash' },
+          { from: 1, to: 1, label: 'is_read_only? YES → discard commit' },
+          { from: 1, to: 3, label: 'return read result (no state change)', dashed: true }
+        ]
+      },
+      {
+        id: 'd-grant-caps',
+        title: 'Grant Capabilities',
+        lanes: [
+          { label: 'Admin',     color: '#f59e0b' },
+          { label: 'CtxMgr',    color: '#10b981' },
+          { label: 'GroupStore', color: '#3b82f6' },
+          { label: 'Gossip',    color: '#8b5cf6' }
+        ],
+        steps: [
+          { from: 0, to: 1, label: 'SetMemberCapabilities { caps: 0x03 }' },
+          { from: 1, to: 1, label: 'require_group_admin(signer)' },
+          { from: 1, to: 2, label: 'MemberCapabilitySet { member, caps }', color: '#A5FF11' },
+          { from: 2, to: 2, label: 'write GroupMemberCapability' },
+          { from: 1, to: 3, label: 'publish SignedGroupOp' },
+          { from: 3, to: 3, label: 'peers verify + apply' },
+          { from: 1, to: 0, label: 'Ok()', dashed: true }
+        ]
+      },
+      {
+        id: 'd-cascade-remove',
+        title: 'Cascade Member Removal',
+        lanes: [
+          { label: 'Admin',      color: '#f59e0b' },
+          { label: 'GroupStore',  color: '#3b82f6' },
+          { label: 'ParentCtxs', color: '#10b981' },
+          { label: 'ChildCtxs',  color: '#06b6d4' }
+        ],
+        steps: [
+          { from: 0, to: 1, label: 'MemberRemoved { member }' },
+          { from: 1, to: 1, label: 'check not last admin' },
+          { from: 1, to: 2, label: 'enumerate parent group contexts' },
+          { from: 2, to: 2, label: 'delete ContextIdentity for each' },
+          { from: 1, to: 1, label: 'enumerate_child_groups()', color: '#A5FF11' },
+          { from: 1, to: 3, label: 'recurse into child group contexts' },
+          { from: 3, to: 3, label: 'delete ContextIdentity (if no direct membership)' },
+          { from: 1, to: 1, label: 'remove_group_member()' }
+        ]
+      },
+      {
+        id: 'd-privacy-boundary',
+        title: 'Privacy Boundary',
+        lanes: [
+          { label: 'ParentAdmin', color: '#f59e0b' },
+          { label: 'CtxMgr',     color: '#10b981' },
+          { label: 'GroupStore',  color: '#3b82f6' }
+        ],
+        steps: [
+          { from: 0, to: 1, label: 'join_group_context(restricted_ctx)' },
+          { from: 1, to: 2, label: 'check_group_membership → true (inherited)' },
+          { from: 1, to: 2, label: 'get visibility → Restricted' },
+          { from: 1, to: 2, label: 'check_context_allowlist → false' },
+          { from: 1, to: 0, label: 'REJECTED: not on allowlist', color: '#f85149' },
+          { type: 'divider', label: 'Parent admin tries to modify allowlist' },
+          { from: 0, to: 1, label: 'ContextAllowlistReplaced { members }' },
+          { from: 1, to: 2, label: 'is_direct_group_admin? → false (inherited only)' },
+          { from: 1, to: 0, label: 'REJECTED: direct admin required', color: '#f85149' }
+        ]
+      },
+      {
+        id: 'd-app-sign',
+        title: 'Sign & Install Bundle',
+        lanes: [
+          { label: 'Developer', color: '#f59e0b' },
+          { label: 'mero-sign', color: '#ec4899' },
+          { label: 'Node',      color: '#3b82f6' },
+          { label: 'BlobStore', color: '#06b6d4' }
+        ],
+        steps: [
+          { from: 0, to: 0, label: 'cargo build --target wasm32' },
+          { from: 0, to: 0, label: 'create manifest.json' },
+          { from: 0, to: 1, label: 'sign manifest.json --key key.json' },
+          { from: 1, to: 1, label: 'JCS canonicalize → SHA-256 → Ed25519' },
+          { from: 1, to: 0, label: 'manifest with signature attached' },
+          { from: 0, to: 0, label: 'tar -czf app.mpk manifest + wasm', color: '#A5FF11' },
+          { from: 0, to: 2, label: 'meroctl app install --path app.mpk' },
+          { from: 2, to: 2, label: 'verify signature + derive ApplicationId' },
+          { from: 2, to: 3, label: 'store blob → BlobId' },
+          { from: 2, to: 0, label: 'Ok(ApplicationId)', dashed: true }
+        ]
+      },
+      {
+        id: 'd-app-migrate',
+        title: 'App Migration (v1→v2)',
+        lanes: [
+          { label: 'Operator',  color: '#f59e0b' },
+          { label: 'CtxMgr',    color: '#10b981' },
+          { label: 'Runtime',   color: '#ec4899' },
+          { label: 'Storage',   color: '#06b6d4' }
+        ],
+        steps: [
+          { from: 0, to: 1, label: 'context update --migrate-method migrate_v1_to_v2' },
+          { from: 1, to: 1, label: 'verify AppKey continuity (same signerId)' },
+          { from: 1, to: 2, label: 'load new WASM module' },
+          { from: 1, to: 2, label: 'execute("migrate_v1_to_v2", [])' },
+          { from: 2, to: 3, label: 'read_raw() → old state bytes' },
+          { from: 2, to: 2, label: 'deserialize V1 → transform → V2', color: '#A5FF11' },
+          { from: 2, to: 3, label: 'value_return(Ok(new_state_bytes))' },
+          { from: 1, to: 3, label: 'save_raw() + update root_hash' },
+          { from: 1, to: 1, label: 'update ContextMeta.application_id' },
+          { from: 1, to: 0, label: 'Ok() → context now runs v2', dashed: true }
+        ]
+      },
+      {
+        id: 'd-xcall',
+        title: 'xcall Cross-Context',
+        lanes: [
+          { label: 'Client',   color: '#f59e0b' },
+          { label: 'CtxA',     color: '#3b82f6' },
+          { label: 'Runtime',  color: '#ec4899' },
+          { label: 'CtxB',     color: '#10b981' }
+        ],
+        steps: [
+          { from: 0, to: 1, label: 'call("send_message", args)' },
+          { from: 1, to: 2, label: 'execute WASM method' },
+          { from: 2, to: 2, label: 'app::xcall(ctx_b, "update_index", data)' },
+          { from: 2, to: 2, label: 'queued in outcome.xcalls' },
+          { from: 2, to: 1, label: 'commit + broadcast delta', color: '#A5FF11' },
+          { type: 'divider', label: 'After commit: process xcall queue' },
+          { from: 1, to: 3, label: 'find owned member of CtxB' },
+          { from: 1, to: 3, label: 'execute("update_index", data)' },
+          { from: 3, to: 3, label: 'CtxB commits independently' },
+          { from: 1, to: 0, label: 'ExecuteResponse (CtxA result)', dashed: true }
+        ]
+      },
+      {
+        id: 'd-rga-edit',
+        title: 'RGA Collaborative Edit',
+        lanes: [
+          { label: 'NodeA',    color: '#3b82f6' },
+          { label: 'RGA',      color: '#10b981' },
+          { label: 'Gossip',   color: '#8b5cf6' },
+          { label: 'NodeB',    color: '#f59e0b' }
+        ],
+        steps: [
+          { from: 0, to: 1, label: 'insert_str(5, "hello")' },
+          { from: 1, to: 1, label: 'generate CharIds (HLC + seq)' },
+          { from: 1, to: 1, label: 'set left_neighbor for each char' },
+          { from: 3, to: 1, label: 'insert_str(5, "world")', color: '#f59e0b' },
+          { from: 1, to: 1, label: 'concurrent: different CharIds' },
+          { from: 0, to: 2, label: 'broadcast delta (hello chars)', color: '#A5FF11' },
+          { from: 3, to: 2, label: 'broadcast delta (world chars)', color: '#A5FF11' },
+          { from: 2, to: 3, label: 'apply hello chars (merge)' },
+          { from: 2, to: 0, label: 'apply world chars (merge)' },
+          { from: 1, to: 1, label: 'both nodes: same text, same order' }
         ]
       }
     ];
