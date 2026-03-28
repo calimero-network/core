@@ -14,7 +14,7 @@ use calimero_store::key::{
     GroupMemberCapabilityValue, GroupMemberContext, GroupMemberValue, GroupMeta, GroupMetaValue,
     GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupSigningKey,
     GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
-    GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
+    GROUP_CHILD_INDEX_PREFIX, GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
     GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
     GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX,
     GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX, GROUP_SIGNING_KEY_PREFIX,
@@ -605,21 +605,7 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             }
             ensure_not_last_admin_removal(store, &group_id, member)?;
 
-            // Cascade-delete ContextIdentity entries for all contexts in this group.
-            let contexts = enumerate_group_contexts(store, &group_id, 0, usize::MAX)?;
-            for context_id in &contexts {
-                let mut handle = store.handle();
-                let identity_key = ContextIdentity::new(*context_id, (*member).into());
-                if handle.has(&identity_key)? {
-                    handle.delete(&identity_key)?;
-                    tracing::info!(
-                        group_id = %hex::encode(group_id.to_bytes()),
-                        context_id = %hex::encode(context_id.as_ref()),
-                        member = %member,
-                        "cascade-removed member from context"
-                    );
-                }
-            }
+            cascade_remove_member_from_group_tree(store, &group_id, member)?;
 
             remove_group_member(store, &group_id, member)?;
         }
@@ -1420,6 +1406,61 @@ pub fn get_group_for_context(
     let key = ContextGroupRef::new(*context_id);
     let value = handle.get(&key)?;
     Ok(value.map(ContextGroupId::from))
+}
+
+pub fn enumerate_child_groups(
+    store: &Store,
+    parent_group_id: &ContextGroupId,
+) -> EyreResult<Vec<ContextGroupId>> {
+    let handle = store.handle();
+    let parent_bytes: [u8; 32] = parent_group_id.to_bytes();
+    let start_key = GroupChildIndex::new(parent_bytes, [0u8; 32]);
+    let mut iter = handle.iter::<GroupChildIndex>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut results = Vec::new();
+
+    for entry in first.into_iter().chain(iter.keys()) {
+        let key = entry?;
+        if key.as_key().as_bytes()[0] != GROUP_CHILD_INDEX_PREFIX {
+            break;
+        }
+        if key.parent_group_id() != parent_bytes {
+            break;
+        }
+        results.push(ContextGroupId::from(key.child_group_id()));
+    }
+
+    Ok(results)
+}
+
+fn cascade_remove_member_from_group_tree(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+) -> EyreResult<()> {
+    let contexts = enumerate_group_contexts(store, group_id, 0, usize::MAX)?;
+    for context_id in &contexts {
+        let mut handle = store.handle();
+        let identity_key = ContextIdentity::new(*context_id, (*member).into());
+        if handle.has(&identity_key)? {
+            handle.delete(&identity_key)?;
+            tracing::info!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                context_id = %hex::encode(context_id.as_ref()),
+                member = %member,
+                "cascade-removed member from context"
+            );
+        }
+    }
+
+    let children = enumerate_child_groups(store, group_id)?;
+    for child_id in &children {
+        if !has_direct_member(store, child_id, member)? {
+            cascade_remove_member_from_group_tree(store, child_id, member)?;
+        }
+    }
+
+    Ok(())
 }
 
 pub fn enumerate_group_contexts(

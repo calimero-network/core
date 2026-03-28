@@ -131,38 +131,55 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                 let _ = node_client.subscribe_group(group_id.to_bytes()).await;
 
-                // Auto-subscribe to all visible contexts if auto_join is set.
+                // Auto-subscribe to all visible contexts if auto_join is set,
+                // including contexts in child subgroups (membership inherits down).
                 if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
                     if meta.auto_join {
-                        let contexts = group_store::enumerate_group_contexts(
-                            &datastore,
-                            &group_id,
-                            0,
-                            usize::MAX,
-                        )?;
-                        for context_id in &contexts {
-                            // Write ContextIdentity from group keys so sync
-                            // key-share finds the identity for this context.
-                            let mut handle = datastore.handle();
-                            let ci_key = key::ContextIdentity::new(*context_id, joiner_identity);
-                            if !handle.has(&ci_key)? {
-                                handle.put(
-                                    &ci_key,
-                                    &calimero_store::types::ContextIdentity {
-                                        private_key: Some(*sk),
-                                        sender_key: Some(*sender_key),
-                                    },
-                                )?;
-                            }
-                            drop(handle);
+                        let mut groups_to_visit = vec![group_id];
+                        let mut depth = 0u8;
+                        while let Some(gid) = groups_to_visit.pop() {
+                            let contexts = group_store::enumerate_group_contexts(
+                                &datastore,
+                                &gid,
+                                0,
+                                usize::MAX,
+                            )?;
+                            for context_id in &contexts {
+                                let mut handle = datastore.handle();
+                                let ci_key =
+                                    key::ContextIdentity::new(*context_id, joiner_identity);
+                                if !handle.has(&ci_key)? {
+                                    handle.put(
+                                        &ci_key,
+                                        &calimero_store::types::ContextIdentity {
+                                            private_key: Some(*sk),
+                                            sender_key: Some(*sender_key),
+                                        },
+                                    )?;
+                                }
+                                drop(handle);
 
-                            if let Err(e) = node_client.subscribe(context_id).await {
-                                warn!(
-                                    ?group_id,
-                                    %context_id,
-                                    ?e,
-                                    "failed to auto-subscribe to context"
-                                );
+                                if let Err(e) = node_client.subscribe(context_id).await {
+                                    warn!(
+                                        ?gid,
+                                        %context_id,
+                                        ?e,
+                                        "failed to auto-subscribe to context"
+                                    );
+                                }
+                            }
+
+                            if depth < 16 {
+                                if let Ok(children) =
+                                    group_store::enumerate_child_groups(&datastore, &gid)
+                                {
+                                    for child_id in children {
+                                        let _ =
+                                            node_client.subscribe_group(child_id.to_bytes()).await;
+                                        groups_to_visit.push(child_id);
+                                    }
+                                }
+                                depth += 1;
                             }
                         }
                     }
