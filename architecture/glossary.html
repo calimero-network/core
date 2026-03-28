@@ -50,8 +50,25 @@
 
 <div id="glossary-list">
 
+<!-- ─── # ─── -->
+<div class="term-letter" data-letter="#">#</div>
+
+<div class="term-row" data-term=".mpk bundle">
+  <div class="term-name">.mpk (bundle)</div>
+  <div class="term-body">
+    Signed application archive (tar.gz) containing manifest.json, app.wasm, and optional abi.json. The deployable unit for Calimero applications.
+  </div>
+</div>
+
 <!-- ─── A ─── -->
 <div class="term-letter" data-letter="A">A</div>
+
+<div class="term-row" data-term="appkey">
+  <div class="term-name">AppKey</div>
+  <div class="term-body">
+    Composite application identity: {package}:{signerId}. Determines the ApplicationId. Must stay stable across versions for the upgrade path to work.
+  </div>
+</div>
 
 <div class="term-row" data-term="applicationid">
   <div class="term-name">ApplicationId</div>
@@ -69,6 +86,13 @@
   <div class="term-body">
     Content-addressed identifier for binary blobs.
     <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/primitives/src/blobs.rs" target="_blank" rel="noopener">crates/primitives/src/blobs.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="borsh">
+  <div class="term-name">Borsh</div>
+  <div class="term-body">
+    Binary Object Representation Serializer for Hashing. Deterministic binary serialization format used for state deltas, governance payloads, store entries, and wire protocol messages.
   </div>
 </div>
 
@@ -146,6 +170,13 @@
   </div>
 </div>
 
+<div class="term-row" data-term="crdt">
+  <div class="term-name">CRDT</div>
+  <div class="term-body">
+    Conflict-free Replicated Data Type. Data structures where replicas can be updated independently and merged to produce a consistent result regardless of message ordering.
+  </div>
+</div>
+
 <!-- ─── D ─── -->
 <div class="term-letter" data-letter="D">D</div>
 
@@ -181,13 +212,51 @@
   </div>
 </div>
 
+<div class="term-row" data-term="did:key">
+  <div class="term-name">did:key</div>
+  <div class="term-body">
+    DID method that encodes an Ed25519 public key directly in the identifier string. Format: did:key:z{base58btc(0xed01 || public_key)}.
+  </div>
+</div>
+
+<!-- ─── E ─── -->
+<div class="term-letter" data-letter="E">E</div>
+
+<div class="term-row" data-term="ed25519">
+  <div class="term-name">Ed25519</div>
+  <div class="term-body">
+    Elliptic-curve digital signature algorithm used for governance operations, bundle manifests, and challenge-response authentication.
+  </div>
+</div>
+
 <!-- ─── G ─── -->
 <div class="term-letter" data-letter="G">G</div>
+
+<div class="term-row" data-term="g-counter">
+  <div class="term-name">G-Counter</div>
+  <div class="term-body">
+    Grow-only Counter CRDT. Each node increments its own slot; value() returns the sum. Calimero's Counter type follows this pattern.
+  </div>
+</div>
 
 <div class="term-row" data-term="garbagecollector">
   <div class="term-name">GarbageCollector</div>
   <div class="term-body">
     Periodic actor that cleans up stale data (unused blobs, expired entries). Default interval: 12 hours.
+  </div>
+</div>
+
+<div class="term-row" data-term="gossipsub">
+  <div class="term-name">gossipsub</div>
+  <div class="term-body">
+    libp2p publish/subscribe protocol. Calimero uses context/&lt;hex&gt; topics for state deltas and group/&lt;hex&gt; topics for governance operations.
+  </div>
+</div>
+
+<div class="term-row" data-term="governance epoch">
+  <div class="term-name">Governance epoch</div>
+  <div class="term-body">
+    Reserved field on state deltas for future staleness checks. Will reject deltas from removed members. Currently stored but not enforced.
   </div>
 </div>
 
@@ -207,6 +276,13 @@
   </div>
 </div>
 
+<div class="term-row" data-term="groupgovernancedelta">
+  <div class="term-name">GroupGovernanceDelta</div>
+  <div class="term-body">
+    Gossip message carrying a signed governance operation with explicit DAG metadata (delta_id, parent_ids) for replication and catch-up.
+  </div>
+</div>
+
 <div class="term-row" data-term="groupmemberrole">
   <div class="term-name">GroupMemberRole</div>
   <div class="term-body">
@@ -215,11 +291,25 @@
   </div>
 </div>
 
+<div class="term-row" data-term="groupmutationkind">
+  <div class="term-name">GroupMutationKind</div>
+  <div class="term-body">
+    Lightweight notification enum broadcast after a governance op is applied. Used for real-time UI notifications.
+  </div>
+</div>
+
 <div class="term-row" data-term="groupop">
   <div class="term-name">GroupOp</div>
   <div class="term-body">
     Non-exhaustive enum of governance operations (MemberAdded, ContextRegistered, etc.). 25+ variants.
     <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/primitives/src/local_governance.rs" target="_blank" rel="noopener">crates/context/primitives/src/local_governance.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="groupstateheartbeat">
+  <div class="term-name">GroupStateHeartbeat</div>
+  <div class="term-body">
+    Periodic gossip message (default 30s) carrying DAG heads and member count. Peers compare heads and request missing ops on divergence.
   </div>
 </div>
 
@@ -260,6 +350,40 @@
   </div>
 </div>
 
+<!-- ─── J ─── -->
+<div class="term-letter" data-letter="J">J</div>
+
+<div class="term-row" data-term="jcs">
+  <div class="term-name">JCS</div>
+  <div class="term-body">
+    JSON Canonicalization Scheme (RFC 8785). Produces deterministic byte ordering for JSON. Used by mero-sign before hashing bundle manifests.
+  </div>
+</div>
+
+<div class="term-row" data-term="json-rpc">
+  <div class="term-name">JSON-RPC</div>
+  <div class="term-body">
+    JSON-RPC 2.0 protocol for external method calls on contexts. Clients POST to /jsonrpc with method name and params.
+  </div>
+</div>
+
+<!-- ─── K ─── -->
+<div class="term-letter" data-letter="K">K</div>
+
+<div class="term-row" data-term="kademlia">
+  <div class="term-name">Kademlia</div>
+  <div class="term-body">
+    Distributed hash table protocol from libp2p used for peer discovery, bootstrap routing, and record storage.
+  </div>
+</div>
+
+<div class="term-row" data-term="kms">
+  <div class="term-name">KMS</div>
+  <div class="term-body">
+    Key Management Service. Releases encryption keys to TEE nodes via attestation. Supported: mero-kms-phala for Phala Cloud.
+  </div>
+</div>
+
 <!-- ─── L ─── -->
 <div class="term-letter" data-letter="L">L</div>
 
@@ -271,8 +395,29 @@
   </div>
 </div>
 
+<div class="term-row" data-term="libp2p">
+  <div class="term-name">libp2p</div>
+  <div class="term-body">
+    Modular P2P networking framework providing transport (TCP/QUIC), discovery (Kademlia, mDNS), messaging (gossipsub), and stream protocols.
+  </div>
+</div>
+
+<div class="term-row" data-term="lww last-write-wins">
+  <div class="term-name">LWW (Last-Write-Wins)</div>
+  <div class="term-body">
+    Merge strategy where concurrent updates are resolved by keeping the latest timestamp. Used by LwwRegister and per-entry in UnorderedMap.
+  </div>
+</div>
+
 <!-- ─── M ─── -->
 <div class="term-letter" data-letter="M">M</div>
+
+<div class="term-row" data-term="manifest">
+  <div class="term-name">manifest</div>
+  <div class="term-body">
+    JSON metadata inside an .mpk bundle: package, version, signerId, wasm/abi paths, migrations, and Ed25519 signature.
+  </div>
+</div>
 
 <div class="term-row" data-term="membercapabilities">
   <div class="term-name">MemberCapabilities</div>
@@ -286,6 +431,41 @@
   <div class="term-body">
     Trait for CRDT merge operations. Implemented by Map, Set, LwwRegister.
     <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/storage/" target="_blank" rel="noopener">crates/storage/</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="mero-sign">
+  <div class="term-name">mero-sign</div>
+  <div class="term-body">
+    Tool for Ed25519 key generation and bundle manifest signing using JCS + SHA-256 + Ed25519.
+  </div>
+</div>
+
+<div class="term-row" data-term="meroctl">
+  <div class="term-name">meroctl</div>
+  <div class="term-body">
+    Operator CLI for a running node. Command groups: app, context, group, call, blob, peers, node.
+  </div>
+</div>
+
+<div class="term-row" data-term="merod">
+  <div class="term-name">merod</div>
+  <div class="term-body">
+    Calimero node daemon. Commands: init (create config), config (modify settings), run (start all actors and servers).
+  </div>
+</div>
+
+<div class="term-row" data-term="merodb">
+  <div class="term-name">merodb</div>
+  <div class="term-body">
+    Debug CLI for direct RocksDB inspection: schema, export, validate, DAG export, YAML migration plans.
+  </div>
+</div>
+
+<div class="term-row" data-term="multiaddr">
+  <div class="term-name">Multiaddr</div>
+  <div class="term-body">
+    libp2p address format encoding layered protocol stacks (e.g. /ip4/127.0.0.1/tcp/2428/p2p/12D3KooW...).
   </div>
 </div>
 
@@ -361,6 +541,13 @@
 <!-- ─── P ─── -->
 <div class="term-letter" data-letter="P">P</div>
 
+<div class="term-row" data-term="peerid">
+  <div class="term-name">PeerId</div>
+  <div class="term-body">
+    libp2p peer identifier derived from the node's public key. Uniquely identifies a node in the P2P network.
+  </div>
+</div>
+
 <div class="term-row" data-term="privatestate">
   <div class="term-name">PrivateState</div>
   <div class="term-body">
@@ -376,6 +563,16 @@
   </div>
 </div>
 
+<!-- ─── Q ─── -->
+<div class="term-letter" data-letter="Q">Q</div>
+
+<div class="term-row" data-term="quic">
+  <div class="term-name">QUIC</div>
+  <div class="term-body">
+    UDP-based transport with built-in encryption and multiplexing. Calimero nodes listen on both TCP and QUIC.
+  </div>
+</div>
+
 <!-- ─── R ─── -->
 <div class="term-letter" data-letter="R">R</div>
 
@@ -386,8 +583,29 @@
   </div>
 </div>
 
+<div class="term-row" data-term="rga replicated growable array">
+  <div class="term-name">RGA (Replicated Growable Array)</div>
+  <div class="term-body">
+    Sequence CRDT for character-level collaborative text editing with HLC-based CharIds and left-neighbor positioning.
+  </div>
+</div>
+
+<div class="term-row" data-term="rocksdb">
+  <div class="term-name">RocksDB</div>
+  <div class="term-body">
+    Embedded LSM-tree key-value store backing all node persistence. 11 column families accessed via calimero-store.
+  </div>
+</div>
+
 <!-- ─── S ─── -->
 <div class="term-letter" data-letter="S">S</div>
+
+<div class="term-row" data-term="sha-256">
+  <div class="term-name">SHA-256</div>
+  <div class="term-body">
+    Hash function used for content-addressed IDs (delta_id, blob_id), state hashes, and bundle signing.
+  </div>
+</div>
 
 <div class="term-row" data-term="signedgroupop">
   <div class="term-name">SignedGroupOp</div>
@@ -405,17 +623,24 @@
   </div>
 </div>
 
+<div class="term-row" data-term="signedgroupopv1">
+  <div class="term-name">SignedGroupOpV1</div>
+  <div class="term-body">
+    Legacy gossip wrapper carrying opaque Borsh-serialized SignedGroupOp payload. Still accepted for compatibility.
+  </div>
+</div>
+
+<div class="term-row" data-term="signerid">
+  <div class="term-name">SignerId</div>
+  <div class="term-body">
+    did:key string from the Ed25519 key used to sign bundles. Establishes cryptographic update authority.
+  </div>
+</div>
+
 <div class="term-row" data-term="statedelta">
   <div class="term-name">StateDelta</div>
   <div class="term-body">
     BroadcastMessage variant carrying encrypted state diff for a context. Part of the context DAG.
-  </div>
-</div>
-
-<div class="term-row" data-term="subgroupcreated">
-  <div class="term-name">SubgroupCreated</div>
-  <div class="term-body">
-    Governance operation that links a child group to a parent, enabling membership inheritance.
   </div>
 </div>
 
@@ -427,11 +652,42 @@
   </div>
 </div>
 
+<div class="term-row" data-term="subgroupcreated">
+  <div class="term-name">SubgroupCreated</div>
+  <div class="term-body">
+    Governance operation that links a child group to a parent, enabling membership inheritance.
+  </div>
+</div>
+
 <div class="term-row" data-term="syncmanager">
   <div class="term-name">SyncManager</div>
   <div class="term-body">
     Async task managing periodic sync. Selects from HashComparison, LevelWise, Snapshot, or Delta protocols.
     <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/manager.rs" target="_blank" rel="noopener">crates/node/src/sync/manager.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── T ─── -->
+<div class="term-letter" data-letter="T">T</div>
+
+<div class="term-row" data-term="tdx">
+  <div class="term-name">TDX</div>
+  <div class="term-body">
+    Intel Trust Domain Extensions. Hardware TEE with attestation via measurement registers (MRTD, RTMR0-3).
+  </div>
+</div>
+
+<div class="term-row" data-term="tee">
+  <div class="term-name">TEE</div>
+  <div class="term-body">
+    Trusted Execution Environment. Hardware-isolated runtime protecting code and data. merod supports TEE mode with KMS key fetch.
+  </div>
+</div>
+
+<div class="term-row" data-term="topichash">
+  <div class="term-name">TopicHash</div>
+  <div class="term-body">
+    Gossipsub topic identifier. Formats: context/&lt;hex&gt; for state, group/&lt;hex&gt; for governance.
   </div>
 </div>
 
@@ -469,6 +725,26 @@
   <div class="term-body">
     WASM host function dispatcher. Manages registers, memory, storage, events.
     <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/runtime/src/logic.rs" target="_blank" rel="noopener">crates/runtime/src/logic.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── W ─── -->
+<div class="term-letter" data-letter="W">W</div>
+
+<div class="term-row" data-term="wasm">
+  <div class="term-name">WASM</div>
+  <div class="term-body">
+    WebAssembly. Portable bytecode for application logic. Apps compile to wasm32-unknown-unknown and run via Wasmer with Cranelift JIT.
+  </div>
+</div>
+
+<!-- ─── X ─── -->
+<div class="term-letter" data-letter="X">X</div>
+
+<div class="term-row" data-term="xcall">
+  <div class="term-name">xcall</div>
+  <div class="term-body">
+    Cross-context fire-and-forget call from one context's WASM to another on the same node. Queued during execution, runs after commit. No return value.
   </div>
 </div>
 
