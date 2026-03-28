@@ -2,6 +2,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+const AUTH_TIMEOUT_SECS: u64 = 120;
+
+use camino::Utf8PathBuf;
+
 use axum::extract::Query;
 use axum::response::Html;
 use axum::routing::get;
@@ -42,8 +46,9 @@ pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
 
     let auth_url = build_auth_url(api_url, callback_port)?;
 
-    let info_msg = format!("Opening browser to start authentication");
-    output.write(&InfoLine(&info_msg));
+    output.write(&InfoLine(
+        "Opening browser for authentication — you have 2 minutes to complete sign-in.",
+    ));
 
     if let Err(e) = webbrowser::open(&auth_url.to_string()) {
         let warning_msg = format!(
@@ -53,9 +58,9 @@ pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
         output.write(&WarnLine(&warning_msg));
     }
 
-    let auth_result = timeout(Duration::from_secs(300), callback_rx)
+    let auth_result = timeout(Duration::from_secs(AUTH_TIMEOUT_SECS), callback_rx)
         .await
-        .map_err(|_| eyre!("Authentication timed out after 300 seconds"))?
+        .map_err(|_| eyre!("Authentication timed out — please try again"))?
         .map_err(|_| eyre!("Callback server error"))?;
 
     match auth_result {
@@ -124,197 +129,149 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
                     }
 
                     return Html(
-                        r#"
-                <!DOCTYPE html>
-                <html lang="en">
-                    <head>
-                        <meta charset="UTF-8">
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                        <title>Authentication Complete</title>
-                        <style>
-                            * {
-                                margin: 0;
-                                padding: 0;
-                                box-sizing: border-box;
-                            }
-                            
-                            body {
-                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                                min-height: 100vh;
-                                display: flex;
-                                align-items: center;
-                                justify-content: center;
-                                color: white;
-                            }
-                            
-                            .container {
-                                text-align: center;
-                                background: rgba(255, 255, 255, 0.1);
-                                backdrop-filter: blur(10px);
-                                border-radius: 20px;
-                                padding: 3rem 2rem;
-                                border: 1px solid rgba(255, 255, 255, 0.2);
-                                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-                                max-width: 400px;
-                                width: 90%;
-                            }
-                            
-                            .emoji {
-                                font-size: 4rem;
-                                margin-bottom: 1rem;
-                                animation: bounce 2s infinite;
-                            }
-                            
-                            @keyframes bounce {
-                                0%, 20%, 50%, 80%, 100% {
-                                    transform: translateY(0);
-                                }
-                                40% {
-                                    transform: translateY(-10px);
-                                }
-                                60% {
-                                    transform: translateY(-5px);
-                                }
-                            }
-                            
-                            h1 {
-                                font-size: 2rem;
-                                margin-bottom: 1rem;
-                                font-weight: 600;
-                            }
-                            
-                            p {
-                                font-size: 1.1rem;
-                                margin-bottom: 1.5rem;
-                                opacity: 0.9;
-                                line-height: 1.5;
-                            }
-                            
-                            .message {
-                                font-size: 1.1rem;
-                                opacity: 1;
-                                font-weight: 600;
-                            }
-                        </style>
-                    </head>
-                    <body>
-                        <div class="container">
-                            <div class="emoji">🎉</div>
-                            <h1>Authentication Complete!</h1>
-                            <p>You can now close this browser window and return to the terminal.</p>
-                            <div class="message">Authentication successful!</div>
-                        </div>
-                    </body>
-                </html>
-                "#,
+                        r##"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authentication Complete</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #111111;
+            color: #ffffff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background-color: #1c1c1c;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.75rem;
+            padding: 3rem 2rem;
+            max-width: 420px;
+            width: 90%;
+            text-align: center;
+        }
+        .icon {
+            width: 56px;
+            height: 56px;
+            background-color: rgba(255, 122, 0, 0.15);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1.5rem;
+        }
+        .icon svg { width: 28px; height: 28px; }
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            line-height: 2rem;
+            margin-bottom: 0.75rem;
+        }
+        p {
+            font-size: 0.875rem;
+            color: rgba(255, 255, 255, 0.7);
+            line-height: 1.5;
+        }
+        .accent { color: #ff7a00; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#ff7a00" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+        </div>
+        <h1>You're <span class="accent">authenticated</span></h1>
+        <p>You can close this window and return to the terminal.</p>
+    </div>
+</body>
+</html>
+                "##,
                     );
                 }
 
                 // No query parameters - serve HTML page that extracts tokens from fragments
                 Html(
                     r#"
-                <!DOCTYPE html>
-                <html lang="en">
-                    <head>
-                        <meta charset="UTF-8">
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                        <title>Processing Authentication</title>
-                        <style>
-                            * {
-                                margin: 0;
-                                padding: 0;
-                                box-sizing: border-box;
-                            }
-                            
-                            body {
-                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                                min-height: 100vh;
-                                display: flex;
-                                align-items: center;
-                                justify-content: center;
-                                color: white;
-                            }
-                            
-                            .container {
-                                text-align: center;
-                                background: rgba(255, 255, 255, 0.1);
-                                backdrop-filter: blur(10px);
-                                border-radius: 20px;
-                                padding: 3rem 2rem;
-                                border: 1px solid rgba(255, 255, 255, 0.2);
-                                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-                                max-width: 400px;
-                                width: 90%;
-                            }
-                            
-                            .spinner {
-                                border: 3px solid rgba(255, 255, 255, 0.3);
-                                border-radius: 50%;
-                                border-top: 3px solid white;
-                                width: 40px;
-                                height: 40px;
-                                animation: spin 1s linear infinite;
-                                margin: 0 auto 1rem;
-                            }
-                            
-                            @keyframes spin {
-                                0% { transform: rotate(0deg); }
-                                100% { transform: rotate(360deg); }
-                            }
-                            
-                            h1 {
-                                font-size: 2rem;
-                                margin-bottom: 1rem;
-                                font-weight: 600;
-                            }
-                            
-                            p {
-                                font-size: 1.1rem;
-                                opacity: 0.9;
-                                line-height: 1.5;
-                            }
-                        </style>
-                    </head>
-                    <body>
-                        <div class="container">
-                            <div class="spinner"></div>
-                            <h1>Processing Authentication</h1>
-                            <p>Extracting tokens from URL...</p>
-                        </div>
-                        
-                        <script>
-                            // Extract tokens from URL fragments
-                            function extractTokensFromFragment() {
-                                const hash = window.location.hash.substring(1); // Remove the # character
-                                const params = new URLSearchParams(hash);
-                                
-                                const accessToken = params.get('access_token');
-                                const refreshToken = params.get('refresh_token');
-                                
-                                if (accessToken) {
-                                    // Redirect to the same URL but with query parameters instead of fragments
-                                    const currentUrl = window.location.origin + window.location.pathname;
-                                    const queryParams = new URLSearchParams();
-                                    queryParams.set('access_token', accessToken);
-                                    if (refreshToken) {
-                                        queryParams.set('refresh_token', refreshToken);
-                                    }
-                                    
-                                    window.location.href = currentUrl + '?' + queryParams.toString();
-                                } else {
-                                    // No tokens found in fragments
-                                    document.querySelector('.container').innerHTML = 
-                                        '<h1>❌ No Authentication Tokens</h1><p>No tokens found in URL. Please try again.</p>';
-                                }
-                            }
-                            
-                            // Run when page loads
-                            extractTokensFromFragment();
-                        </script>
-                    </body>
-                </html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authenticating</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #111111;
+            color: #ffffff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background-color: #1c1c1c;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.75rem;
+            padding: 3rem 2rem;
+            max-width: 420px;
+            width: 90%;
+            text-align: center;
+        }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(255, 122, 0, 0.2);
+            border-top-color: #ff7a00;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 1.5rem;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.75rem; }
+        p { font-size: 0.875rem; color: rgba(255, 255, 255, 0.7); line-height: 1.5; }
+        .error { color: #ff4444; margin-top: 1rem; font-size: 0.875rem; display: none; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="spinner"></div>
+        <h1>Authenticating</h1>
+        <p>Completing sign-in, please wait...</p>
+        <p class="error" id="err"></p>
+    </div>
+    <script>
+        (function() {
+            const hash = window.location.hash.substring(1);
+            const params = new URLSearchParams(hash);
+            const accessToken = params.get('access_token');
+            const refreshToken = params.get('refresh_token');
+            if (accessToken) {
+                const q = new URLSearchParams();
+                q.set('access_token', accessToken);
+                if (refreshToken) q.set('refresh_token', refreshToken);
+                window.location.href = window.location.origin + window.location.pathname + '?' + q.toString();
+            } else {
+                document.querySelector('.spinner').style.display = 'none';
+                document.querySelector('h1').textContent = 'Authentication failed';
+                document.querySelector('p').textContent = 'No tokens found in the URL.';
+                document.getElementById('err').style.display = 'block';
+                document.getElementById('err').textContent = 'Please close this window and try again.';
+            }
+        })();
+    </script>
+</body>
+</html>
                 "#,
                 )
             }
@@ -379,10 +336,14 @@ pub async fn check_authentication(
 }
 
 /// Helper function for session-based authentication with caching for external connections
-/// Returns a ConnectionInfo with appropriate authentication tokens
+/// Returns a ConnectionInfo with appropriate authentication tokens.
+///
+/// `local_node_path` should be `Some(path)` when the node is a local node found via the
+/// filesystem (so it is persisted as `NodeConnection::Local`).  Pass `None` for remote/URL nodes.
 pub async fn authenticate_with_session_cache(
     url: &Url,
     node_name: &str,
+    local_node_path: Option<&Utf8PathBuf>,
     output: Output,
 ) -> Result<ConnectionInfo> {
     let temp_connection = ConnectionInfo::new(
@@ -401,7 +362,7 @@ pub async fn authenticate_with_session_cache(
             // We have existing tokens for this URL in session cache
             Ok(ConnectionInfo::new(
                 url.clone(),
-                None,
+                Some(node_name.to_owned()),
                 create_cli_authenticator(output),
                 FileTokenStorage::new(),
             ))
@@ -412,9 +373,15 @@ pub async fn authenticate_with_session_cache(
                     // Store in session cache for future use during this session
                     session_cache.store_tokens(url.as_str(), &jwt_tokens).await;
 
+                    // Persist the node in config so FileTokenStorage can use tokens across
+                    // sessions. Reload config immediately before writing to reduce (but not
+                    // eliminate) the TOCTOU window; only insert when the key is absent so an
+                    // explicit `node add` entry is never overwritten.
+                    persist_node_in_config(node_name, url, local_node_path, &jwt_tokens).await?;
+
                     Ok(ConnectionInfo::new(
                         url.clone(),
-                        None,
+                        Some(node_name.to_owned()),
                         create_cli_authenticator(output),
                         FileTokenStorage::new(),
                     ))
@@ -435,6 +402,58 @@ pub async fn authenticate_with_session_cache(
     }
 }
 
+/// Persist a node entry and its fresh tokens in the meroctl config file.
+///
+/// * If the node is not yet in config it is inserted as `Local` (when `local_node_path` is
+///   `Some`) or `Remote` (otherwise).
+/// * If the node already exists its tokens are **always updated** so that
+///   `FileTokenStorage::load_tokens` finds the fresh credentials and does not trigger a
+///   redundant browser-auth prompt on the next request.
+///
+/// Config is reloaded immediately before the write to reduce (but not eliminate) the
+/// TOCTOU race window.
+async fn persist_node_in_config(
+    node_name: &str,
+    url: &Url,
+    local_node_path: Option<&Utf8PathBuf>,
+    jwt_tokens: &JwtToken,
+) -> Result<()> {
+    // Reload config just before mutating to reduce (but not eliminate) the TOCTOU window.
+    let mut config = crate::config::Config::load().await?;
+
+    let stored_tokens = Some(crate::storage::JwtToken {
+        access_token: jwt_tokens.access_token.clone(),
+        refresh_token: jwt_tokens.refresh_token.clone(),
+    });
+
+    if let Some(conn) = config.nodes.get_mut(node_name) {
+        // Node already registered — update tokens so FileTokenStorage sees fresh credentials.
+        match conn {
+            crate::config::NodeConnection::Local { jwt_tokens: t, .. }
+            | crate::config::NodeConnection::Remote { jwt_tokens: t, .. } => {
+                *t = stored_tokens;
+            }
+        }
+    } else {
+        // New node — register with the correct connection type.
+        let conn = if let Some(path) = local_node_path {
+            crate::config::NodeConnection::Local {
+                path: path.clone(),
+                jwt_tokens: stored_tokens,
+            }
+        } else {
+            crate::config::NodeConnection::Remote {
+                url: url.clone(),
+                jwt_tokens: stored_tokens,
+            }
+        };
+        config.nodes.insert(node_name.to_owned(), conn);
+    }
+
+    config.save().await?;
+    Ok(())
+}
+
 /// Meroctl-specific implementation of ClientAuthenticator
 ///
 /// This authenticator is designed to work with meroctl's Output type
@@ -442,6 +461,8 @@ pub async fn authenticate_with_session_cache(
 pub struct MeroctlAuthenticator {
     /// Output handler for meroctl
     output: Box<dyn calimero_client::MeroctlOutputHandler + Send + Sync>,
+    /// Raw output kept for cloning (Output is Copy)
+    raw_output: Output,
 }
 
 impl std::fmt::Debug for MeroctlAuthenticator {
@@ -454,18 +475,16 @@ impl std::fmt::Debug for MeroctlAuthenticator {
 
 impl Clone for MeroctlAuthenticator {
     fn clone(&self) -> Self {
-        // Since we can't clone the trait object, we'll create a new one
-        // This is a limitation, but it's acceptable for now
-        Self {
-            output: Box::new(NoOpOutputHandler),
-        }
+        create_cli_authenticator(self.raw_output)
     }
 }
 
 impl MeroctlAuthenticator {
-    /// Create a new meroctl authenticator
-    pub fn new(output: Box<dyn calimero_client::MeroctlOutputHandler + Send + Sync>) -> Self {
-        Self { output }
+    pub fn new(
+        output: Box<dyn calimero_client::MeroctlOutputHandler + Send + Sync>,
+        raw_output: Output,
+    ) -> Self {
+        Self { output, raw_output }
     }
 }
 
@@ -473,8 +492,9 @@ impl MeroctlAuthenticator {
 impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
     async fn authenticate(&self, api_url: &Url) -> Result<JwtToken> {
         // Use the proper OAuth authentication flow
-        self.output
-            .display_message("Starting OAuth authentication...");
+        self.output.display_message(
+            "Opening browser for authentication — you have 2 minutes to complete sign-in.",
+        );
 
         // Set up callback server
         let (callback_port, callback_rx) = start_callback_server().await?;
@@ -490,9 +510,9 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
         }
 
         // Wait for the OAuth callback
-        let auth_result = timeout(Duration::from_secs(300), callback_rx)
+        let auth_result = timeout(Duration::from_secs(AUTH_TIMEOUT_SECS), callback_rx)
             .await
-            .map_err(|_| eyre!("Authentication timed out after 300 seconds"))?
+            .map_err(|_| eyre!("Authentication timed out — please try again"))?
             .map_err(|_| eyre!("Callback server error"))?;
 
         match auth_result {
@@ -574,21 +594,6 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
     }
 }
 
-/// No-op output handler for cloning
-struct NoOpOutputHandler;
-
-impl auth::MeroctlOutputHandler for NoOpOutputHandler {
-    fn display_message(&self, _message: &str) {}
-    fn display_error(&self, _error: &str) {}
-    fn display_success(&self, _message: &str) {}
-    fn open_browser(&self, _url: &Url) -> Result<()> {
-        Ok(())
-    }
-    fn wait_for_input(&self, _prompt: &str) -> Result<String> {
-        Ok(String::new())
-    }
-}
-
 /// Concrete implementation of MeroctlOutputHandler for meroctl's Output type
 #[derive(Debug, Clone)]
 pub struct MeroctlOutputWrapper {
@@ -638,5 +643,163 @@ pub type CliAuthenticator = MeroctlAuthenticator;
 /// Helper function to create a new CliAuthenticator
 pub fn create_cli_authenticator(output: Output) -> CliAuthenticator {
     let wrapper = MeroctlOutputWrapper::new(output);
-    MeroctlAuthenticator::new(Box::new(wrapper))
+    MeroctlAuthenticator::new(Box::new(wrapper), output)
+}
+
+#[cfg(test)]
+mod tests {
+    use camino::Utf8PathBuf;
+    use url::Url;
+
+    use crate::config::{Config, NodeConnection};
+    use crate::storage::JwtToken;
+
+    fn make_tokens(access: &str) -> JwtToken {
+        JwtToken {
+            access_token: access.to_owned(),
+            refresh_token: Some("refresh".to_owned()),
+        }
+    }
+
+    /// Simulates the insert-or-update logic inside persist_node_in_config
+    /// for a new Local node.
+    #[test]
+    fn persist_inserts_new_local_node() {
+        let mut config = Config::default();
+        let path = Utf8PathBuf::from("/home/user/.calimero");
+        let tokens = make_tokens("access1");
+
+        let stored = Some(crate::storage::JwtToken {
+            access_token: tokens.access_token.clone(),
+            refresh_token: tokens.refresh_token.clone(),
+        });
+
+        config.nodes.insert(
+            "mynode".to_owned(),
+            NodeConnection::Local {
+                path: path.clone(),
+                jwt_tokens: stored,
+            },
+        );
+
+        assert_eq!(config.nodes.len(), 1);
+        match config.nodes.get("mynode").unwrap() {
+            NodeConnection::Local {
+                path: p,
+                jwt_tokens: t,
+            } => {
+                assert_eq!(p, &path);
+                assert_eq!(t.as_ref().unwrap().access_token, "access1");
+            }
+            _ => panic!("expected Local"),
+        }
+    }
+
+    /// Simulates the insert-or-update logic for a new Remote node.
+    #[test]
+    fn persist_inserts_new_remote_node() {
+        let mut config = Config::default();
+        let url: Url = "https://example.com".parse().unwrap();
+        let tokens = make_tokens("access2");
+
+        config.nodes.insert(
+            "remote".to_owned(),
+            NodeConnection::Remote {
+                url: url.clone(),
+                jwt_tokens: Some(crate::storage::JwtToken {
+                    access_token: tokens.access_token.clone(),
+                    refresh_token: tokens.refresh_token.clone(),
+                }),
+            },
+        );
+
+        match config.nodes.get("remote").unwrap() {
+            NodeConnection::Remote {
+                url: u,
+                jwt_tokens: t,
+            } => {
+                assert_eq!(u, &url);
+                assert_eq!(t.as_ref().unwrap().access_token, "access2");
+            }
+            _ => panic!("expected Remote"),
+        }
+    }
+
+    /// Simulates token refresh: existing node entry gets tokens updated in-place.
+    #[test]
+    fn persist_updates_tokens_for_existing_node() {
+        let mut config = Config::default();
+        let path = Utf8PathBuf::from("/home/user/.calimero");
+
+        // Insert initial entry
+        config.nodes.insert(
+            "mynode".to_owned(),
+            NodeConnection::Local {
+                path: path.clone(),
+                jwt_tokens: Some(crate::storage::JwtToken {
+                    access_token: "old_access".to_owned(),
+                    refresh_token: Some("old_refresh".to_owned()),
+                }),
+            },
+        );
+
+        // Simulate update (as persist_node_in_config does when node exists)
+        let new_stored = Some(crate::storage::JwtToken {
+            access_token: "new_access".to_owned(),
+            refresh_token: Some("new_refresh".to_owned()),
+        });
+        if let Some(conn) = config.nodes.get_mut("mynode") {
+            match conn {
+                NodeConnection::Local { jwt_tokens: t, .. }
+                | NodeConnection::Remote { jwt_tokens: t, .. } => {
+                    *t = new_stored;
+                }
+            }
+        }
+
+        // Verify tokens were updated; path unchanged
+        match config.nodes.get("mynode").unwrap() {
+            NodeConnection::Local {
+                path: p,
+                jwt_tokens: t,
+            } => {
+                assert_eq!(p, &path);
+                assert_eq!(t.as_ref().unwrap().access_token, "new_access");
+                assert_eq!(
+                    t.as_ref().unwrap().refresh_token.as_deref(),
+                    Some("new_refresh")
+                );
+            }
+            _ => panic!("expected Local"),
+        }
+    }
+
+    /// Config TOML round-trip: serialize then deserialize produces identical structure.
+    #[test]
+    fn config_toml_roundtrip() {
+        let mut config = Config::default();
+        config.nodes.insert(
+            "node1".to_owned(),
+            NodeConnection::Local {
+                path: Utf8PathBuf::from("/tmp/calimero"),
+                jwt_tokens: Some(crate::storage::JwtToken {
+                    access_token: "tok".to_owned(),
+                    refresh_token: None,
+                }),
+            },
+        );
+        config.active_node = Some("node1".to_owned());
+
+        let toml_str = toml::to_string_pretty(&config).expect("serialize");
+        let restored: Config = toml::from_str(&toml_str).expect("deserialize");
+
+        assert_eq!(restored.active_node.as_deref(), Some("node1"));
+        assert!(restored.nodes.contains_key("node1"));
+        match restored.nodes.get("node1").unwrap() {
+            NodeConnection::Local { jwt_tokens: t, .. } => {
+                assert_eq!(t.as_ref().unwrap().access_token, "tok");
+            }
+            _ => panic!("expected Local"),
+        }
+    }
 }

@@ -24,6 +24,8 @@ use tracing::{debug, trace, warn};
 
 use super::NodeClient;
 
+const MAX_ERROR_BODY_LEN: usize = 256;
+
 impl NodeClient {
     pub fn get_application(
         &self,
@@ -378,6 +380,22 @@ impl NodeClient {
         let uri = url.as_str().parse()?;
 
         let response = reqwest::Client::new().get(url.clone()).send().await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_owned());
+            // Truncate to avoid leaking sensitive data that may appear in error responses.
+            let truncated: String = body.chars().take(MAX_ERROR_BODY_LEN).collect();
+            eyre::bail!(
+                "Registry returned HTTP {} for {}: {}",
+                status,
+                url,
+                truncated
+            );
+        }
 
         let expected_size = response.content_length();
 
