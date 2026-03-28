@@ -674,7 +674,7 @@
   </div>
   <div class="flow-step">
     <h4 style="color:var(--amber);">Index Scan</h4>
-    <p>GroupStore scans the <span class="code">GroupMemberContext</span> index to find all contexts the removed member had joined via this group. This index is maintained on every <span class="code">MemberJoinedContext</span> op.</p>
+    <p>GroupStore scans the <span class="code">GroupMemberContext</span> index to find all contexts the removed member had joined via this group. This index is maintained automatically when members join contexts within the group.</p>
   </div>
   <div class="flow-step">
     <h4 style="color:var(--blue);">Cascade Removal</h4>

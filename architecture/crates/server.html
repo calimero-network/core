@@ -138,8 +138,7 @@
     <div class="fr"><div class="fp">GET /contexts</div><div class="fd">List all contexts visible to this node</div></div>
     <div class="fr"><div class="fp">POST /contexts</div><div class="fd">Create a new context (initializes storage, deploys app)</div></div>
     <div class="fr"><div class="fp">POST /contexts/:id/join</div><div class="fd">Join an existing context via invitation</div></div>
-    <div class="fr"><div class="fp">POST /contexts/:id/invite/open</div><div class="fd">Generate an open invitation link</div></div>
-    <div class="fr"><div class="fp">POST /contexts/:id/invite</div><div class="fd">Generate a specialized invitation for a specific identity</div></div>
+    <div class="fr"><div class="fp">POST /contexts/:id/invite</div><div class="fd">Generate an invitation (SignedOpenInvitation)</div></div>
     <div class="fr"><div class="fp">DELETE /contexts/:id</div><div class="fd">Delete a context and all associated data</div></div>
     <div class="fr"><div class="fp">GET /contexts/:id</div><div class="fd">Get context details (app, members, state hash)</div></div>
     <div class="fr"><div class="fp">GET /contexts/:id/storage</div><div class="fd">Inspect raw storage contents</div></div>

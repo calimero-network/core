@@ -11,7 +11,7 @@
 
 <div class="hero">
   <h1>Calimero <em>Core</em></h1>
-  <p class="tagline">Architecture reference for the peer-to-peer application platform. 22 Rust crates, local-first governance, CRDT state sync, and WASM execution &mdash; no blockchain required.</p>
+  <p class="tagline">Architecture reference for the peer-to-peer application platform. 22 Rust crates, local-first governance, CRDT state sync, and WASM execution.</p>
 
   <div class="g4" style="margin-bottom:36px;">
     <div class="stat"><div class="v">22</div><div class="l">crates</div></div>
@@ -27,7 +27,7 @@
 <div class="g3">
   <div class="step"><div class="n">1</div><h4>System Overview</h4><p>Understand the high-level architecture: actors, layers, and how they connect.</p><p style="margin-top:8px;"><a href="system-overview.html">Read System Overview &rarr;</a></p></div>
   <div class="step"><div class="n">2</div><h4>Pick a Layer</h4><p>Dive into the crate that interests you: Node, Context, Network, Storage, Runtime, Server, SDK, or Auth.</p><p style="margin-top:8px;"><a href="#crate-index">Browse Crates &rarr;</a></p></div>
-  <div class="step"><div class="n">3</div><h4>Governance Deep-Dive</h4><p>Understand how groups and contexts are managed without a blockchain.</p><p style="margin-top:8px;"><a href="local-governance.html">Read Local Governance &rarr;</a></p></div>
+  <div class="step"><div class="n">3</div><h4>Governance Deep-Dive</h4><p>Understand how groups and contexts are managed via local governance.</p><p style="margin-top:8px;"><a href="local-governance.html">Read Local Governance &rarr;</a></p></div>
 </div>
 </div>
 
@@ -179,7 +179,7 @@
   </div>
   <div>
     <h3>Group</h3>
-    <p>A group owns one or more contexts. Group membership, capabilities, visibility, and access control are managed via <strong>signed governance operations</strong> (SignedGroupOp) that form a causal DAG. No blockchain needed &mdash; ops propagate via gossipsub and catch-up protocols.</p>
+    <p>A group owns one or more contexts. Group membership, capabilities, visibility, and access control are managed via <strong>signed governance operations</strong> (SignedGroupOp) that form a causal DAG. Managed locally via signed governance operations that propagate via gossipsub and catch-up protocols.</p>
   </div>
   <div>
     <h3>State Sync</h3>

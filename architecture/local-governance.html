@@ -238,7 +238,7 @@
     <div class="fr"><div class="fp">AllowlistSet</div><div class="fd">Per-context member allowlist</div></div>
     <div class="fr"><div class="fp">CapabilitiesSet</div><div class="fd">Per-member capability grants</div></div>
     <div class="fr"><div class="fp">JoinWithInvitationClaim</div><div class="fd">Invitation-based group join</div></div>
-    <div class="fr"><div class="fp">MemberJoinedContext</div><div class="fd">Track per-context membership</div></div>
+    <div class="fr"><div class="fp">MemberJoinedContext (removed)</div><div class="fd">Context membership is now implicit from group membership</div></div>
     <div class="fr"><div class="fp">GroupDeleted</div><div class="fd">Delete the group</div></div>
     <div class="fr"><div class="fp">Noop</div><div class="fd">Merge sentinel (no state change)</div></div>
     <div class="fr"><div class="fp">TargetApplicationSet</div><div class="fd">Set default application for contexts</div></div>
@@ -250,7 +250,7 @@
     <div class="fr"><div class="fp">DefaultVisibilitySet</div><div class="fd">Set default visibility for new contexts</div></div>
     <div class="fr"><div class="fp">ContextMemberCapGranted</div><div class="fd">Grant capability to context member</div></div>
     <div class="fr"><div class="fp">ContextMemberCapRevoked</div><div class="fd">Revoke capability from context member</div></div>
-    <div class="fr"><div class="fp">MemberLeftContext</div><div class="fd">Member voluntarily leaves context</div></div>
+    <div class="fr"><div class="fp">MemberLeftContext (removed)</div><div class="fd">Context membership is now implicit from group membership; explicit leave tracking removed</div></div>
   </div>
 </div>
 </div>
@@ -282,7 +282,7 @@
 <h2>Join Context (within Group)</h2>
 <div class="step"><div class="n">1</div><h4>Member calls join_group_context</h4><p>Must already be a group member. Handler checks context <strong>visibility</strong> (open vs restricted) and member <strong>capabilities</strong> (<span class="code">CAN_JOIN_OPEN_CONTEXTS</span>).</p></div>
 <div class="step"><div class="n">2</div><h4>Allowlist check (if restricted)</h4><p>For restricted-visibility contexts, the member's public key must be on the allowlist.</p></div>
-<div class="step"><div class="n">3</div><h4>Context identity created</h4><p>Adds local context membership, emits <span class="code">MemberJoinedContext</span> GroupOp for replication to all peers.</p></div>
+<div class="step"><div class="n">3</div><h4>Context identity created</h4><p>Adds local context membership. Context membership is implicit from group membership &mdash; no separate governance op is required.</p></div>
 </div>
 
 <!-- 6d. Member Removal Cascade -->
