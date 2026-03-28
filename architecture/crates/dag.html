@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Causal DAG — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+<style>
+.dag-cmp { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: .82rem; }
+.dag-cmp th, .dag-cmp td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+.dag-cmp th { font-family: 'JetBrains Mono', monospace; color: var(--text-bright); background: var(--surface2); }
+.dag-cmp tr:hover td { background: var(--surface2); }
+.dag-cmp td:first-child { font-weight: 600; color: var(--text); }
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="../system-overview.html">System Overview</a><span class="sep">/</span><span>Causal DAG</span></div>
+
+<h1>Causal <em>DAG</em></h1>
+<p class="page-subtitle">calimero-dag</p>
+
+<div class="g4" style="margin-bottom:36px;">
+  <div class="stat"><div class="v">31</div><div class="l">tests</div></div>
+  <div class="stat"><div class="v">~200 B</div><div class="l">+ payload / delta</div></div>
+  <div class="stat"><div class="v">O(1)</div><div class="l"><span class="code">add_delta</span> when applied</div></div>
+  <div class="stat"><div class="v">Pure</div><div class="l">no network / storage in crate</div></div>
+</div>
+
+<div class="card ga">
+<h2>Purpose</h2>
+<p style="margin-bottom:14px;">Pure directed acyclic graph for <strong>causal delta tracking</strong> with automatic dependency resolution. The crate manages causal relationships between state changes so they are applied in the right order even when messages arrive out of order from the network.</p>
+<p style="margin-bottom:0;"><a class="gh-link" href="https://github.com/calimero-network/core/tree/master/crates/dag" target="_blank" rel="noopener">crates/dag</a> &middot; See also <a href="store.html">Storage layer</a> and <a href="node.html">Node</a> for how deltas persist and execute.</p>
+</div>
+
+<div class="card gb">
+<h2>Core types</h2>
+<p style="margin-bottom:16px;">Three central abstractions: the delta record, the in-memory store, and the async applier injected by callers.</p>
+
+<div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">CausalDelta</span>&lt;T&gt; {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">pub</span> <span class="field">id</span>: [<span class="ty">u8</span>; <span class="ty">32</span>],<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">pub</span> <span class="field">parents</span>: <span class="ty">Vec</span>&lt;[<span class="ty">u8</span>; <span class="ty">32</span>]&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">pub</span> <span class="field">payload</span>: T,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">pub</span> <span class="field">timestamp</span>: <span class="ty">u64</span>,<br>
+}
+</div>
+
+<div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">DagStore</span>&lt;T&gt; {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">deltas</span>: <span class="ty">HashMap</span>&lt;[<span class="ty">u8</span>; <span class="ty">32</span>], <span class="ty">CausalDelta</span>&lt;T&gt;&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">applied</span>: <span class="ty">HashSet</span>&lt;[<span class="ty">u8</span>; <span class="ty">32</span>]&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">pending</span>: <span class="ty">HashMap</span>&lt;[<span class="ty">u8</span>; <span class="ty">32</span>], <span class="ty">PendingDelta</span>&lt;T&gt;&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">heads</span>: <span class="ty">HashSet</span>&lt;[<span class="ty">u8</span>; <span class="ty">32</span>]&gt;,<br>
+}
+</div>
+
+<div class="typedef">
+<span class="kw">#[async_trait]</span><br>
+<span class="kw">pub trait</span> <span class="ty">DeltaApplier</span>&lt;T&gt;: <span class="ty">Send</span> + <span class="ty">Sync</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">async fn</span> <span class="field">apply</span>(&amp;self, delta: &amp;<span class="ty">CausalDelta</span>&lt;T&gt;) -&gt; <span class="ty">Result</span>&lt;(), <span class="ty">ApplyError</span>&gt;;<br>
+}
+</div>
+</div>
+
+<div class="card gc">
+<h2>Key features</h2>
+<div class="g3">
+  <div class="cb">
+    <h4>Out-of-order delivery</h4>
+    <p>Deltas whose parents are not yet applied go into <span class="code">pending</span>. When a parent arrives and is applied, dependents are reconsidered and may apply in a <strong>cascade</strong>.</p>
+  </div>
+  <div class="cb">
+    <h4>Concurrent updates</h4>
+    <p>Multiple <span class="code">heads</span> mean a fork. A merge delta whose <span class="code">parents</span> list includes those heads resolves the fork back to a single tip.</p>
+  </div>
+  <div class="cb">
+    <h4>Automatic cascade</h4>
+    <p>Applying one delta can unlock several pending children; the store chains applications until no more ready work remains.</p>
+  </div>
+</div>
+</div>
+
+<div class="card ga">
+<h2>API</h2>
+<p style="margin-bottom:14px;">Primary query and mutation surface on <span class="code">DagStore&lt;T&gt;</span>:</p>
+<ul style="margin-bottom:0;">
+  <li><span class="code">add_delta</span> &mdash; ingest a delta; returns whether it applied immediately (vs buffered)</li>
+  <li><span class="code">get_heads</span> &mdash; current DAG tips</li>
+  <li><span class="code">get_missing_parents</span> &mdash; parent IDs still needed from the network</li>
+  <li><span class="code">get_delta</span> &mdash; lookup by id</li>
+  <li><span class="code">cleanup_stale</span> &mdash; evict old pending entries by age</li>
+  <li><span class="code">pending_stats</span> &mdash; counts and missing-parent totals for observability</li>
+</ul>
+</div>
+
+<div class="card gb">
+<h2>Integration</h2>
+<p style="margin-bottom:14px;">The node wraps the DAG with WASM execution: <span class="code">DeltaStore</span> holds an <span class="code">Arc&lt;RwLock&lt;DagStore&lt;Vec&lt;Action&gt;&gt;&gt;&gt;</span> and an applier that runs storage actions in the context runtime.</p>
+<div class="typedef">
+<span class="comment">// Conceptual: node wires DAG to WASM</span><br>
+<span class="kw">pub struct</span> <span class="ty">DeltaStore</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">dag</span>: <span class="ty">Arc</span>&lt;<span class="ty">RwLock</span>&lt;<span class="ty">DagStore</span>&lt;<span class="ty">Vec</span>&lt;<span class="ty">Action</span>&gt;&gt;&gt;&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">applier</span>: <span class="ty">Arc</span>&lt;<span class="ty">ContextStorageApplier</span>&gt;,<br>
+}
+</div>
+<p style="margin-bottom:0;"><span class="code">ContextStorageApplier</span> implements <span class="code">DeltaApplier&lt;Vec&lt;Action&gt;&gt;</span>: serialize actions, call the context client&rsquo;s sync entry (e.g. <span class="code">__calimero_sync_next</span>), and complete when WASM finishes.</p>
+</div>
+
+<div class="card gc">
+<h2>Design</h2>
+<div class="g2">
+  <div>
+    <ul>
+      <li><strong>Pure logic</strong> &mdash; no network, storage, or WASM inside <span class="code">calimero-dag</span></li>
+      <li><strong>Generic payload</strong> &mdash; any <span class="code">T</span> for delta contents</li>
+      <li><strong>Dependency injection</strong> &mdash; behavior via <span class="code">DeltaApplier</span> for tests and integration</li>
+      <li><strong>Memory-only</strong> &mdash; DAG state lives in RAM; persistence is the wrapper&rsquo;s job</li>
+    </ul>
+  </div>
+  <div>
+    <h3 style="margin-top:0;">Performance</h3>
+    <ul>
+      <li><strong>Memory:</strong> ~200 bytes plus payload size per stored delta</li>
+      <li><strong><span class="code">add_delta</span>:</strong> O(1) when applied immediately; O(P) when pending (P = work to find unlocked children)</li>
+      <li><strong><span class="code">get_heads</span>:</strong> O(H) for H heads (typically small)</li>
+      <li><strong><span class="code">cleanup_stale</span>:</strong> O(P) over pending</li>
+      <li><strong>Cascade:</strong> O(N) where N is the number of pending deltas that become ready in one wave</li>
+    </ul>
+  </div>
+</div>
+</div>
+
+<div class="card ga">
+<h2>Test coverage</h2>
+<p style="margin-bottom:14px;"><strong>31 tests</strong> across basic flows, out-of-order ingestion, concurrent branches and merges, error handling, pending management, query helpers, and stress cases (on the order of 500&ndash;1000 deltas, random order, wide merges).</p>
+
+<details>
+<summary>Test categories (expand)</summary>
+<div class="detail-body">
+<div class="fr"><div class="fp">Basic</div><div class="fd">Creation, linear sequences, duplicate handling</div></div>
+<div class="fr"><div class="fp">Out-of-order</div><div class="fd">Buffering, cascade, deep pending chains</div></div>
+<div class="fr"><div class="fp">Concurrent</div><div class="fd">Forks, two- and three-way merges, complex topology</div></div>
+<div class="fr"><div class="fp">Errors</div><div class="fd">Apply failures and recovery paths</div></div>
+<div class="fr"><div class="fp">Pending</div><div class="fd">Stats, cleanup, missing-parent tracking</div></div>
+<div class="fr"><div class="fp">Query</div><div class="fd"><span class="code">has_delta</span>, <span class="code">get_delta</span>, <span class="code">get_deltas_since</span></div></div>
+<div class="fr"><div class="fp">Stress</div><div class="fd">Large chains, many branches, shuffled delivery (500&ndash;1000 deltas)</div></div>
+<p style="margin-top:14px;margin-bottom:0;font-size:.82rem;">Run: <span class="code">cargo test -p calimero-dag</span></p>
+</div>
+</details>
+</div>
+
+<div class="card gb">
+<h2>Comparison vs vector clocks</h2>
+<p style="margin-bottom:8px;">Calimero&rsquo;s DAG model trades implicit vector-clock causality for explicit structure and mergeable payloads.</p>
+<table class="dag-cmp">
+<thead>
+<tr><th>Feature</th><th>DAG (Calimero)</th><th>Vector clocks</th></tr>
+</thead>
+<tbody>
+<tr><td>Causality</td><td>Explicit parent references</td><td>Implicit per-replica counters</td></tr>
+<tr><td>Structure</td><td>Concrete deltas</td><td>Abstract clock tuples</td></tr>
+<tr><td>Merging</td><td>CRDT-style payload merging at merge deltas</td><td>Typically external merge logic</td></tr>
+<tr><td>Partial state</td><td>Supported (sync subsets of history)</td><td>Often needs fuller history for correctness</td></tr>
+</tbody>
+</table>
+</div>
+
+</div>
+</div>
+<script src="../nav.js"></script>
+</body>
+</html>

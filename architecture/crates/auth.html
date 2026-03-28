@@ -265,6 +265,81 @@
 
 <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/crates/mero-auth" target="_blank" rel="noopener">crates/mero-auth</a>
 
+<h2 id="api-reference">API Reference</h2>
+
+<div class="card ga">
+<h3>Public Endpoints</h3>
+<div class="typedef">
+GET  /auth/login              — React SPA for authentication
+GET  /auth/challenge          — Get signing challenge
+POST /auth/token              — Exchange challenge for root key JWT
+POST /auth/refresh            — Refresh expired tokens
+GET  /auth/providers          — List available providers
+GET  /auth/identity           — Service information
+GET  /auth/validate           — Forward auth validation endpoint
+</div>
+
+<h3>Protected Endpoints</h3>
+<div class="typedef">
+<span class="comment">— Root Key Management —</span>
+GET    /admin/keys                              — List root keys
+POST   /admin/keys                              — Create root key
+DELETE /admin/keys/{key_id}                     — Delete root key
+
+<span class="comment">— Client Key Management —</span>
+GET    /admin/keys/clients                      — List client keys
+POST   /admin/client-key                        — Generate client key
+DELETE /admin/keys/{key_id}/clients/{client_id} — Delete client key
+
+<span class="comment">— Permissions —</span>
+GET    /admin/keys/{key_id}/permissions         — Get key permissions
+PUT    /admin/keys/{key_id}/permissions         — Update permissions
+
+<span class="comment">— Token &amp; System —</span>
+POST   /admin/revoke                            — Revoke current token
+GET    /admin/metrics                           — Service metrics
+</div>
+</div>
+
+<div class="card gb">
+<h3>Deployment</h3>
+<div class="g2">
+<div>
+<h4>Nginx (Forward Auth)</h4>
+<p>Configure <span class="code">auth_request</span> to proxy to <span class="code">/auth/validate</span>. Protected routes get validated transparently. Auth routes (<span class="code">/auth/*</span>, <span class="code">/admin/*</span>) proxy directly to the auth service.</p>
+</div>
+<div>
+<h4>Traefik</h4>
+<p>Use <span class="code">forwardauth.address</span> middleware pointing to <span class="code">http://auth:3001/auth/validate</span>. Label auth service routes with <span class="code">PathPrefix(/auth)</span> and node routes with the forward-auth middleware.</p>
+</div>
+</div>
+</div>
+
+<div class="card gc">
+<h3>Configuration</h3>
+<p>All settings can be overridden via <span class="code">AUTH_</span>-prefixed environment variables (e.g. <span class="code">AUTH_JWT__ISSUER</span>, <span class="code">AUTH_STORAGE__TYPE</span>).</p>
+<details>
+<summary>config.toml example</summary>
+<div class="detail-body">
+<div class="typedef">
+listen_addr = "0.0.0.0:3001"
+
+[jwt]
+issuer = "calimero-auth"
+access_token_expiry = 3600
+refresh_token_expiry = 2592000
+
+[storage]
+type = "rocksdb"
+path = "/data/auth_db"
+
+[providers]
+near_wallet = true
+</div>
+</div>
+</details>
+</div>
+
 </div>
 </div>
 <script src="../nav.js"></script>

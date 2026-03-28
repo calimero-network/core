@@ -494,6 +494,87 @@
 </div>
 </div>
 
+<h2 id="merod">merod</h2>
+<p>Node daemon binary. Initializes configuration, manages the datastore, and runs all actors (Node, Context, Network, Server).</p>
+
+<div class="card ga">
+<h3>Commands</h3>
+<div class="typedef">
+merod init   <span class="comment">— Initialize node: config.toml, identity, datastore</span>
+merod config <span class="comment">— Modify config.toml fields (dot-path syntax)</span>
+merod run    <span class="comment">— Start the node (all actors, server, P2P)</span>
+</div>
+
+<details>
+<summary>Init options</summary>
+<div class="detail-body">
+<div class="typedef">
+merod --home /data --node mynode init \
+  --server-port 2428 \
+  --swarm-port 2528 \
+  --boot-network calimero-dev \
+  --group-governance local
+</div>
+<p><span class="code">--group-governance local</span> omits NEAR protocol params. Default is <span class="code">external</span> (chain-backed).</p>
+<p>For read-only nodes, add <span class="code">--mode read-only</span>.</p>
+</div>
+</details>
+</div>
+
+<div class="card gb">
+<h3>TEE Mode</h3>
+<p>When <span class="code">[tee]</span> configuration is present, merod fetches a storage encryption key from a KMS at startup using TDX attestation. See <a href="../tee-mode.html">TEE Mode</a> for full details.</p>
+</div>
+
+<h2 id="meroctl">meroctl</h2>
+<p>Operator CLI for managing a running merod node. Connects via the admin API.</p>
+
+<div class="card gc">
+<h3>Command Groups</h3>
+<div class="g3">
+<div class="cb">
+<h4>app</h4>
+<p><span class="code">install</span>, <span class="code">list</span>, <span class="code">get</span> — manage applications (bundles and raw WASM).</p>
+</div>
+<div class="cb">
+<h4>context</h4>
+<p><span class="code">create</span>, <span class="code">list</span>, <span class="code">invite</span>, <span class="code">join</span>, <span class="code">update</span>, <span class="code">delete</span> — context lifecycle.</p>
+</div>
+<div class="cb">
+<h4>call</h4>
+<p>Execute a WASM method: <span class="code">meroctl call METHOD --context ID --as KEY --args JSON</span></p>
+</div>
+<div class="cb">
+<h4>blob</h4>
+<p><span class="code">upload</span>, <span class="code">get</span>, <span class="code">delete</span> — binary large object management.</p>
+</div>
+<div class="cb">
+<h4>peers</h4>
+<p>List connected P2P peers.</p>
+</div>
+<div class="cb">
+<h4>node</h4>
+<p>Node identity and status information.</p>
+</div>
+</div>
+</div>
+
+<div class="card gd">
+<h3>Usage Example</h3>
+<div class="typedef">
+<span class="comment"># Install an application bundle</span>
+meroctl --node mynode app install --path app.mpk
+
+<span class="comment"># Create a context</span>
+meroctl --node mynode context create --application-id APP_ID
+
+<span class="comment"># Call a method</span>
+meroctl --node mynode call set_item \
+  --context CTX_ID --as MEMBER_KEY \
+  --args '{"key": "hello", "value": "world"}'
+</div>
+</div>
+
 </div>
 </div>
 <script src="../nav.js"></script>

@@ -371,6 +371,56 @@
 </details>
 </div>
 
+<h2 id="route-catalog">Route Catalog</h2>
+
+<div class="card ga">
+<h3>Admin API Routes</h3>
+<div class="typedef">
+<span class="comment">— Application Management —</span>
+POST   /admin-api/dev/install-application
+POST   /admin-api/dev/install-application-from-url
+GET    /admin-api/dev/applications
+GET    /admin-api/dev/applications/:app_id
+
+<span class="comment">— Context Management —</span>
+POST   /admin-api/contexts
+GET    /admin-api/contexts
+GET    /admin-api/contexts/:ctx_id
+DELETE /admin-api/contexts/:ctx_id
+POST   /admin-api/contexts/invite
+POST   /admin-api/contexts/join
+PUT    /admin-api/contexts/:ctx_id/application
+
+<span class="comment">— Group Management —</span>
+POST   /admin-api/groups
+GET    /admin-api/groups
+GET    /admin-api/groups/:group_id
+DELETE /admin-api/groups/:group_id
+POST   /admin-api/groups/:group_id/members
+DELETE /admin-api/groups/:group_id/members
+GET    /admin-api/groups/:group_id/members
+
+<span class="comment">— Identity &amp; Node —</span>
+GET    /admin-api/identity
+GET    /admin-api/node-info
+GET    /admin-api/peers
+</div>
+</div>
+
+<div class="card gb">
+<h3>Auth Modes</h3>
+<div class="g2">
+<div>
+<h4>Embedded Auth</h4>
+<p>Set <span class="code">network.server.embedded_auth = true</span> in config. The server runs the mero-auth JWT service internally. Admin Dashboard SPA is served from <span class="code">/admin/</span>. Frontend assets are baked in at build time via <span class="code">CALIMERO_AUTH_FRONTEND_DIR</span>.</p>
+</div>
+<div>
+<h4>Proxy Auth</h4>
+<p>Run mero-auth as a separate service behind a reverse proxy (nginx/Traefik). The proxy validates tokens via <span class="code">/auth/validate</span> before forwarding to the node. Node remains auth-unaware.</p>
+</div>
+</div>
+</div>
+
 </div>
 </div>
 <script src="../nav.js"></script>

@@ -19,6 +19,7 @@
     { label: 'Sequence Diagrams', href: 'sequence-diagrams.html', dot: '#ec4899' },
     { label: 'Dependency Explorer', href: 'dependency-explorer.html', dot: '#f59e0b' },
     { label: 'Error Flows', href: 'error-flows.html', dot: '#ef4444' },
+    { label: 'App Lifecycle', href: 'app-lifecycle.html', dot: '#06b6d4' },
     { section: 'Crate Deep-Dives' },
     { label: 'Node', href: 'crates/node.html', dot: '#3b82f6', sub: true },
     { label: 'Context & Groups', href: 'crates/context.html', dot: '#10b981', sub: true },
@@ -29,12 +30,15 @@
     { label: 'Server & API', href: 'crates/server.html', dot: '#f97316', sub: true },
     { label: 'SDK & Apps', href: 'crates/sdk.html', dot: '#f97316', sub: true },
     { label: 'Auth', href: 'crates/auth.html', dot: '#84cc16', sub: true },
+    { label: 'Causal DAG', href: 'crates/dag.html', dot: '#f59e0b', sub: true },
     { label: 'Tools', href: 'crates/tools.html', dot: '#f59e0b', sub: true },
     { section: 'Reference' },
     { label: 'Wire Protocol', href: 'wire-protocol.html', dot: '#8b5cf6' },
     { label: 'Storage Schema', href: 'storage-schema.html', dot: '#06b6d4' },
     { label: 'Metrics Reference', href: 'metrics-reference.html', dot: '#10b981' },
     { label: 'Config Reference', href: 'config-reference.html', dot: '#f97316' },
+    { label: 'Release Process', href: 'release.html', dot: '#10b981' },
+    { label: 'TEE Mode', href: 'tee-mode.html', dot: '#ec4899' },
     { label: 'Glossary', href: 'glossary.html', dot: '#d4d4dc' },
   ];
 

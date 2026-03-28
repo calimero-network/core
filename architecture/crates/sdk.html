@@ -264,6 +264,76 @@
 </div>
 </div>
 
+<h2 id="developer-guide">Developer Guide</h2>
+
+<div class="card ga">
+<h3>Handler Safety Requirements</h3>
+<p>Event handlers may execute in parallel across nodes. All handlers <strong>must</strong> be:</p>
+<div class="g2">
+<div>
+<h4>Commutative</h4>
+<p>Order-independent. Counter increments are safe; operations that depend on prior state (create then update) are not.</p>
+</div>
+<div>
+<h4>Independent</h4>
+<p>No shared mutable state. Each handler should use unique keys. Two handlers writing the same map key causes a race condition.</p>
+</div>
+<div>
+<h4>Idempotent</h4>
+<p>Safe to retry. CRDT operations are naturally idempotent. External API calls (payments, notifications) are not.</p>
+</div>
+<div>
+<h4>Pure</h4>
+<p>No external side effects. Only modify CRDT state and emit logs. HTTP calls, file I/O, and non-deterministic operations are forbidden.</p>
+</div>
+</div>
+</div>
+
+<div class="card gb">
+<h3>Common Patterns</h3>
+<div class="g3">
+<div class="cb">
+<h4>Counter</h4>
+<p>Use <span class="code">Counter</span> (G-Counter) for distributed counting. Each node tracks increments separately; <span class="code">value()</span> returns the sum.</p>
+</div>
+<div class="cb">
+<h4>Key-Value</h4>
+<p>Use <span class="code">UnorderedMap&lt;K, LwwRegister&lt;V&gt;&gt;</span> for key-value storage. Last-write-wins on concurrent updates to the same key.</p>
+</div>
+<div class="cb">
+<h4>Events</h4>
+<p>Use <span class="code">app::emit!</span> for fire-and-forget, or <span class="code">app::emit!((event, "handler_name"))</span> to trigger a handler on receiving nodes.</p>
+</div>
+</div>
+</div>
+
+<div class="card gc">
+<h3>Available Macros</h3>
+<div class="typedef">
+<span class="kw">#[app::state]</span>           <span class="comment">— Mark application state struct</span>
+<span class="kw">#[app::state(emits = Event)]</span> <span class="comment">— With events</span>
+<span class="kw">#[app::logic]</span>           <span class="comment">— Mark implementation block</span>
+<span class="kw">#[app::init]</span>            <span class="comment">— Mark constructor</span>
+<span class="kw">#[app::event]</span>           <span class="comment">— Mark event enum</span>
+<span class="kw">#[app::migrate]</span>         <span class="comment">— Mark migration function</span>
+<span class="kw">app::emit!(event)</span>       <span class="comment">— Emit event</span>
+<span class="kw">app::log!("msg")</span>        <span class="comment">— Logging</span>
+<span class="kw">app::bail!(Error::X)</span>    <span class="comment">— Early return with error</span>
+</div>
+</div>
+
+<div class="card gd">
+<h3>Environment Functions</h3>
+<div class="typedef">
+<span class="kw">use</span> calimero_sdk::env;
+
+<span class="kw">let</span> <span class="field">executor</span> = env::executor_id();  <span class="comment">// [u8; 32]</span>
+<span class="kw">let</span> <span class="field">context</span>  = env::context_id();   <span class="comment">// [u8; 32]</span>
+<span class="kw">let</span> <span class="field">now</span>      = env::time_now();     <span class="comment">// u64 nanoseconds</span>
+env::log("Hello from WASM");
+</div>
+</div>
+
 </div>
 </div>
 <script src="../nav.js"></script>

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TEE Mode — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>TEE Mode</span></div>
+<h1>TEE <em>Mode</em></h1>
+<p class="page-subtitle">Trusted Execution Environment operation</p>
+
+<div class="card ga">
+<h2>Overview</h2>
+<p><span class="code">merod</span> in TEE mode runs inside a confidential VM and obtains its <strong>storage encryption key</strong> from a KMS at startup. Only nodes with a <span class="code">[tee]</span> section perform the KMS key-fetch and attestation flow; other nodes use libp2p as usual without KMS.</p>
+<p>Deployment on GCP, Phala, and related images is documented in <a href="https://github.com/calimero-network/mero-tee" target="_blank" rel="noopener">mero-tee</a>.</p>
+</div>
+
+<div class="card ga">
+<h2>KMS provider</h2>
+<p>Supported path today: <strong>Phala Cloud</strong> — <span class="code">mero-kms-phala</span> from the <a href="https://github.com/calimero-network/mero-tee" target="_blank" rel="noopener">mero-tee</a> repository (merod in a Phala CVM with dstack).</p>
+</div>
+
+<div class="card ga">
+<h2>Configuration</h2>
+<p>Run <span class="code">merod … init</span> first, then add KMS settings (CLI <span class="code">config</span> or edit <span class="code">config.toml</span>):</p>
+<div class="typedef"><span class="field">[tee]</span><br>
+<span class="field">[tee.kms.phala]</span><br>
+<span class="field">url</span> = <span class="ty">"https://&lt;kms-host&gt;:8443/"</span><br>
+<br>
+<span class="field">[tee.kms.phala.attestation]</span><br>
+<span class="field">enabled</span> = <span class="ty">true</span><br>
+<span class="field">accept_mock</span> = <span class="ty">false</span><br>
+<span class="field">allowed_tcb_statuses</span> = [<span class="ty">"UpToDate"</span>]<br>
+<span class="field">allowed_mrtd</span> = [<span class="ty">"&lt;trusted_kms_mrtd_hex&gt;"</span>]<br>
+<span class="field">allowed_rtmr0</span> = [<span class="ty">"…"</span>]  <span class="comment">… allowed_rtmr1..3 similarly in production</span></div>
+<p>Optional TLS/mTLS paths under <span class="code">[tee.kms.phala.tls]</span>; external policy via <span class="code">policy_json_path</span> / <span class="code">binding_b64</span> as in <span class="code">docs/tee-mode.md</span>.</p>
+</div>
+
+<div class="card ga">
+<h2>Release policy environment variables</h2>
+<p>When set, merod fetches attestation policy from the official release and verifies the KMS via <span class="code">POST /attest</span> before key requests. Precedence:</p>
+<p><span class="code">MERO_KMS_RELEASE_TAG</span> &gt; <span class="code">MERO_KMS_VERSION</span> &gt; <span class="code">MERO_TEE_VERSION</span></p>
+<p>(<span class="code">MERO_KMS_RELEASE_TAG</span> accepts <span class="code">mero-kms-vX.Y.Z</span> or <span class="code">X.Y.Z</span>.) If a version is set and policy fetch fails, startup aborts (fail closed). Air-gapped: <span class="code">USE_ENV_POLICY=true</span> with a verified local policy script.</p>
+</div>
+
+<div class="card ga">
+<h2>Startup flow</h2>
+<ol style="margin:0;padding-left:1.25rem;line-height:1.7;color:var(--text-dim);">
+<li>If attestation is enabled: KMS self-attestation (<span class="code">POST /attest</span>) — quote validity, nonce/binding in <span class="code">reportData</span>, policy for TCB, MRTD, RTMR0–3.</li>
+<li>Request a challenge from the KMS.</li>
+<li>Build a TDX quote with the challenge nonce and peer ID hash.</li>
+<li>Sign with the node identity key from <span class="code">config.toml</span>.</li>
+<li>Submit to the KMS and receive the storage key for datastore/blobstore.</li>
+</ol>
+</div>
+
+<div class="card ga">
+<h2>GCP operators: MRTD verification</h2>
+<p>Compare deployed nodes to published measurements using <span class="code">published-mrtds.json</span> from mero-tee releases, e.g.:</p>
+<div class="typedef">https://github.com/calimero-network/mero-tee/releases/download/&lt;X.Y.Z&gt;/published-mrtds.json</div>
+<p>Step-by-step: <a href="https://github.com/calimero-network/mero-tee/blob/master/docs/verify-mrtd.md" target="_blank" rel="noopener">mero-tee verify-mrtd</a>.</p>
+</div>
+
+<div class="card ga">
+<h2>Deployment model</h2>
+<ul style="line-height:1.65;color:var(--text-dim);">
+<li>Isolate each merod release line with its own KMS; pin attestation inputs to a <strong>specific signed</strong> mero-tee release tag (do not auto-follow <span class="code">latest</span>).</li>
+<li>Avoid mixing old/new TEE cohorts against one KMS unless deliberately governed.</li>
+</ul>
+</div>
+
+<details>
+<summary>Troubleshooting</summary>
+<div class="detail-body">
+<ul style="line-height:1.65;color:var(--text-dim);margin:0;padding-left:1.25rem;">
+<li><strong>Key fetch fails</strong> — Confirm <span class="code">tee.kms.phala.url</span> is reachable; KMS <span class="code">/health</span> returns 200; KMS can access the TEE attestation socket (e.g. dstack on Phala).</li>
+<li><strong>KMS rejects attestation</strong> — Dev: mock attestation per mero-tee docs. Prod: align measurement policy with <a href="https://github.com/calimero-network/mero-tee/blob/master/crates/mero-kms-phala/README.md" target="_blank" rel="noopener">mero-kms-phala</a>.</li>
+<li><strong>Mock vs production</strong> — <span class="code">accept_mock</span> and <span class="code">MEROD_ALLOW_MOCK_KMS_ATTESTATION</span> are for development only.</li>
+</ul>
+</div>
+</details>
+
+<div class="fr" style="margin-top:24px;"><div class="fp">docs/tee-mode.md</div><div class="fd">Source document with full examples and links.</div></div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

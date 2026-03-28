@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Release Process — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Release Process</span></div>
+<h1>Release <em>Process</em></h1>
+<p class="page-subtitle">Versioning and release workflow</p>
+
+<div class="card ga">
+<h2>Where the version lives</h2>
+<p>The release version has a single source of truth in the root <span class="code">Cargo.toml</span>:</p>
+<ul>
+<li><span class="code">[workspace.metadata.workspaces].version</span> — authoritative version. The release workflow and tooling read it (e.g. <span class="code">cargo metadata | jq -r '.metadata.workspaces.version'</span>).</li>
+<li><span class="code">[workspace.package].version</span> stays <span class="code">"0.0.0"</span> as a placeholder; <span class="code">cargo-workspaces</span> uses the metadata version when publishing.</li>
+</ul>
+<div class="fr"><div class="fp">Cargo.toml</div><div class="fd">Root workspace manifest — bump <span class="code">[workspace.metadata.workspaces].version</span> only for a release.</div></div>
+</div>
+
+<div class="card ga">
+<h2>Cutting a release</h2>
+<p>Bump the version under <span class="code">[workspace.metadata.workspaces]</span>, merge (e.g. release PR), then the CI workflow:</p>
+<ul>
+<li>Reads the version from <span class="code">cargo metadata</span> (no <span class="code">sed</span> or in-repo string replacement).</li>
+<li>Builds binaries, publishes crates (<span class="code">cargo ws publish</span>), and creates the GitHub release with that version.</li>
+</ul>
+</div>
+
+<div class="card ga">
+<h2>Binaries, libraries, and types</h2>
+<ul>
+<li><strong>Binaries</strong> (<span class="code">merod</span>, <span class="code">meroctl</span>) — displayed version comes from build-time env vars in each crate’s <span class="code">build.rs</span> (<span class="code">MEROD_VERSION</span>, <span class="code">MEROCTL_VERSION</span>), derived from workspace metadata plus git describe/commit.</li>
+<li><strong>Libraries</strong> that need a release string (e.g. bundle <span class="code">minRuntimeVersion</span>) expose <span class="code">CALIMERO_RELEASE_VERSION</span> from <span class="code">build.rs</span>, sourced from <span class="code">[workspace.metadata.workspaces].version</span>.</li>
+<li>The <span class="code">Version</span> type and related protocol types live in <span class="code">calimero_primitives::version</span>.</li>
+</ul>
+<div class="fr"><div class="fp">docs/RELEASE.md</div><div class="fd">Full write-up; approach aligned with NEAR nearcore.</div></div>
+</div>
+
+<details>
+<summary>Example metadata bump</summary>
+<div class="detail-body">
+<div class="typedef"><span class="field">[workspace.metadata.workspaces]</span><br>
+<span class="field">version</span> = <span class="ty">"1.2.3"</span>   <span class="comment"># or e.g. "0.10.0-rc.43"</span></div>
+</div>
+</details>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

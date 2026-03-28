@@ -360,6 +360,38 @@
   </div>
 </div>
 
+<h2 id="crdt-collections">CRDT Collections</h2>
+<p>The <span class="code">calimero-storage</span> crate provides application-level CRDT collections built on top of the storage layer. These are what SDK applications use for state management.</p>
+
+<div class="card ga">
+<h3>Available Collections</h3>
+<div class="g3">
+<div class="cb">
+<h4>UnorderedMap</h4>
+<p>Key-value store with LWW (Last-Write-Wins) semantics per entry. Entries can be inserted, updated, and removed independently across nodes.</p>
+</div>
+<div class="cb">
+<h4>Vector</h4>
+<p>Ordered append-only list. Items are pushed to the end. Positional inserts and removes use index-based CRDT logic.</p>
+</div>
+<div class="cb">
+<h4>Counter</h4>
+<p>G-Counter (grow-only). Each node increments its own slot; <span class="code">value()</span> returns the sum across all nodes. Naturally commutative and idempotent.</p>
+</div>
+</div>
+</div>
+
+<div class="card gb">
+<h3>Merge Semantics</h3>
+<p>All collections implement the <span class="code">Mergeable</span> trait. When state deltas arrive from peers, the storage layer calls <span class="code">merge()</span> on each affected entry. The merge is:</p>
+<ul>
+<li><strong>Commutative</strong> — merge(A, B) = merge(B, A)</li>
+<li><strong>Associative</strong> — merge(merge(A, B), C) = merge(A, merge(B, C))</li>
+<li><strong>Idempotent</strong> — merge(A, A) = A</li>
+</ul>
+<p>These properties guarantee eventual consistency regardless of message ordering or duplication.</p>
+</div>
+
 </div>
 </div>
 <script src="../nav.js"></script>

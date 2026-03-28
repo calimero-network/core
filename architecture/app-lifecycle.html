@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>App Lifecycle — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>App Lifecycle</span></div>
+
+<h1>App <em>Lifecycle</em></h1>
+<p class="page-subtitle">Signing, installation, migration</p>
+
+<div class="card ga">
+<h2>Lifecycle at a glance</h2>
+<p>From first bundle to upgraded context: generate a key, build WASM, manifest, sign, package <span class="code">.mpk</span>, install, create a context; for upgrades use the <strong>same</strong> signing key, install the new bundle, then <span class="code">context update</span> with a migration method.</p>
+<div class="typedef">
+<span class="comment">/* End-to-end flow (static view) */</span><br>
+ 1. Generate signing key <span class="kw">(</span>Ed25519 → <span class="ty">did:key</span><span class="kw">)</span><br>
+    ↓<br>
+ 2. Build <span class="ty">app.wasm</span><br>
+    ↓<br>
+ 3. Create <span class="field">manifest.json</span> <span class="kw">→</span> 4. Sign <span class="kw">(</span><span class="code">mero-sign</span><span class="kw">)</span><br>
+    ↓<br>
+ 5. Package <span class="ty">.mpk</span> <span class="kw">(</span>tar.gz<span class="kw">)</span><br>
+    ↓<br>
+ 6. <span class="code">app install</span> on node → 7. <span class="code">context create</span><br>
+    ↓<br>
+ 8. Next version: same key, new WASM → 9. <span class="code">app install</span> + <span class="code">context update --migrate-method</span>
+</div>
+</div>
+
+<div class="g2">
+<div class="card gb">
+<h2>Key concepts</h2>
+<ul>
+<li><strong>SignerId</strong> — <span class="code">did:key:z{base58btc(0xed01 || public_key_32)}</span>; multicodec prefix <span class="code">0xed01</span> marks Ed25519.</li>
+<li><strong>AppKey</strong> — <span class="code">{package}:{signerId}</span>; continuity of both fixes the logical app.</li>
+<li><strong>ApplicationId</strong> — for signed bundles: <span class="code">hash(package, signer_id)</span> (32 bytes). Same package + same signer → same id across versions.</li>
+<li><strong>Bundle (.mpk)</strong> — <span class="code">tar.gz</span> of <span class="code">manifest.json</span>, <span class="code">app.wasm</span>, optional <span class="code">abi.json</span>.</li>
+</ul>
+</div>
+<div class="card gc">
+<h2>Why signing?</h2>
+<p>Only the private key holder can ship a valid bundle; the node verifies at install. AppKey continuity blocks another signer from updating an existing application. Lose the key → no updates to that app line (no recovery in v0).</p>
+</div>
+</div>
+
+<div class="card gd">
+<h2>Bundle structure &amp; manifest</h2>
+<div class="typedef">
+<span class="ty">app-name-version.mpk</span> <span class="comment">// tar.gz</span><br>
+├── <span class="field">manifest.json</span>  <span class="comment">// signed metadata</span><br>
+├── <span class="field">app.wasm</span><br>
+└── <span class="field">abi.json</span>       <span class="comment">// optional</span>
+</div>
+<h3>Manifest fields (essentials)</h3>
+<p><span class="code">version</span>, <span class="code">package</span>, <span class="code">appVersion</span>, <span class="code">minRuntimeVersion</span>, <span class="code">signerId</span>, <span class="code">wasm</span>, <span class="code">abi</span> (optional), <span class="code">migrations</span> (often <span class="code">[]</span>), <span class="code">signature</span>.</p>
+<details>
+<summary>Example manifest shape</summary>
+<div class="detail-body">
+<div class="typedef">
+<span class="kw">{</span><br>
+&nbsp;&nbsp;<span class="field">"version"</span><span class="kw">:</span> <span class="ty">"1.0"</span><span class="kw">,</span><br>
+&nbsp;&nbsp;<span class="field">"package"</span><span class="kw">:</span> <span class="ty">"com.example.app"</span><span class="kw">,</span><br>
+&nbsp;&nbsp;<span class="field">"appVersion"</span><span class="kw">:</span> <span class="ty">"1.0.0"</span><span class="kw">,</span><br>
+&nbsp;&nbsp;<span class="field">"minRuntimeVersion"</span><span class="kw">:</span> <span class="ty">"0.1.0"</span><span class="kw">,</span><br>
+&nbsp;&nbsp;<span class="field">"signerId"</span><span class="kw">:</span> <span class="ty">"did:key:z6Mk…"</span><span class="kw">,</span><br>
+&nbsp;&nbsp;<span class="field">"wasm"</span><span class="kw">:</span> <span class="kw">{</span> <span class="field">"path"</span><span class="kw">:</span> <span class="ty">"app.wasm"</span><span class="kw">,</span> <span class="field">"size"</span><span class="kw">:</span> <span class="ty">…</span><span class="kw">,</span> <span class="field">"hash"</span><span class="kw">:</span> <span class="kw">null</span> <span class="kw">},</span><br>
+&nbsp;&nbsp;<span class="field">"abi"</span><span class="kw">:</span> <span class="kw">{</span> … <span class="kw">},</span><br>
+&nbsp;&nbsp;<span class="field">"migrations"</span><span class="kw">:</span> <span class="kw">[],</span><br>
+&nbsp;&nbsp;<span class="field">"signature"</span><span class="kw">:</span> <span class="kw">{</span> <span class="field">"algorithm"</span><span class="kw">:</span> <span class="ty">"ed25519"</span><span class="kw">,</span> … <span class="kw">}</span><br>
+<span class="kw">}</span>
+</div>
+<p><span class="tag tag-done">Critical</span> <span class="code">package</span> must match across v1/v2; both bundles must be signed with the <strong>same</strong> key.</p>
+</div>
+</details>
+</div>
+
+<div class="card ga">
+<h2>Signing algorithm</h2>
+<ol>
+<li>Set <span class="code">signerId</span> (from public key) and <span class="code">minRuntimeVersion</span> if missing.</li>
+<li>Strip transient fields: <span class="code">signature</span> and underscore-prefixed keys (<span class="code">_binary</span>, etc.).</li>
+<li>Canonicalize JSON with <strong>JCS</strong> (RFC 8785).</li>
+<li><span class="code">bundleHash = SHA-256(canonical_bytes)</span></li>
+<li><span class="code">Ed25519_Sign(private_key, bundleHash)</span> → attach <span class="code">signature</span> object (<span class="code">ed25519</span>, base64url keys).</li>
+</ol>
+<p>Install-time verification repeats canonicalization (without signature), hashes, verifies Ed25519, and checks derived <span class="code">signerId</span> matches the manifest.</p>
+<div class="fr"><div class="fp">crates/node/primitives/src/bundle/signature.rs</div><div class="fd">Bundle signing / verification implementation</div></div>
+</div>
+
+<div class="g2">
+<div class="card gb">
+<h2>Installation</h2>
+<p>Node extracts <span class="code">.mpk</span>, verifies the manifest signature, derives <span class="code">ApplicationId = hash(package, signer_id)</span>, stores blob + metadata.</p>
+<div class="typedef">
+meroctl --node &lt;name&gt; app install --path app.mpk
+</div>
+</div>
+<div class="card gc">
+<h2>Context creation</h2>
+<p>New isolated instance: <span class="code">ContextId</span>, <span class="code">#[app::init]</span> runs, creator is first member.</p>
+<div class="typedef">
+meroctl --node &lt;name&gt; context create --protocol near \<br>
+&nbsp;&nbsp;--application-id &lt;APPLICATION_ID&gt;
+</div>
+</div>
+</div>
+
+<div class="card gd">
+<h2>Migration anatomy</h2>
+<p>Use <span class="code">#[app::migrate]</span> on a parameterless function. Read old bytes with <span class="code">read_raw()</span>, deserialize an <strong>old-schema</strong> struct (field order must match Borsh layout), build and <strong>return</strong> the new state struct; the macro serializes it for the runtime.</p>
+<div class="typedef">
+<span class="kw">#[</span><span class="ty">app::migrate</span><span class="kw">]</span><br>
+<span class="kw">pub fn</span> <span class="ty">migrate_v1_to_v2</span><span class="kw">() -></span> <span class="ty">NewState</span> <span class="kw">{</span><br>
+&nbsp;&nbsp;<span class="kw">let</span> old_bytes <span class="kw">=</span> <span class="ty">read_raw</span><span class="kw">().</span><span class="ty">expect</span><span class="kw">(…);</span><br>
+&nbsp;&nbsp;<span class="kw">let</span> old: <span class="ty">OldState</span> <span class="kw">=</span> <span class="ty">BorshDeserialize::deserialize</span><span class="kw">(&amp;mut &amp;old_bytes[..]).</span><span class="ty">expect</span><span class="kw">(…);</span><br>
+&nbsp;&nbsp;<span class="comment">// map fields → NewState { … }</span><br>
+<span class="kw">}</span>
+</div>
+<p><strong>Deserialization:</strong> use <span class="code">BorshDeserialize::deserialize(&amp;mut &amp;bytes[..])</span> — <em>not</em> <span class="code">try_from_slice</span>. Raw bytes can include trailing storage metadata; strict slice mode fails with <span class="code">"Not all bytes read"</span>.</p>
+<details>
+<summary>When is a migration required?</summary>
+<div class="detail-body">
+<ul>
+<li><span class="tag tag-done">Yes</span> Adding/removing/renaming fields, or changing field types on root state.</li>
+<li><span class="tag tag-done">No</span> New methods only, or logic changes without schema change.</li>
+</ul>
+</div>
+</details>
+</div>
+
+<div class="card ga">
+<h2>Deployment flow (upgrade)</h2>
+<ol>
+<li>Build v2 bundle: same <span class="code">package</span>, same signing key as v1.</li>
+<li><span class="code">meroctl app install --path v2.mpk</span> (does not rewrite running contexts).</li>
+<li><span class="code">meroctl context update --context ID --application-id ID --as MEMBER_KEY --migrate-method fn_name</span></li>
+</ol>
+<div class="typedef">
+<span class="comment">/* Under the hood (simplified) */</span><br>
+ CLI <span class="kw">→</span> admin <span class="ty">POST</span> …/contexts/<span class="kw">{</span>id<span class="kw">}</span>/application<br>
+ <span class="kw">→</span> verify <span class="ty">signerId</span> matches existing app <span class="kw">(</span>AppKey continuity<span class="kw">)</span><br>
+ <span class="kw">→</span> load new WASM <span class="kw">→</span> run exported <span class="ty">migrate_*</span> <span class="kw">(</span><span class="ty">read_raw</span>, transform, return<span class="kw">)</span><br>
+ <span class="kw">→</span> persist new root state <span class="kw">(</span>atomic; failure keeps old state<span class="kw">)</span>
+</div>
+</div>
+
+<div class="card gb">
+<h2>CLI cheat sheet</h2>
+<div class="typedef">
+<span class="comment"># key + sign</span><br>
+cargo run -p mero-sign -- generate-key --output key.json<br>
+cargo run -p mero-sign -- sign manifest.json --key key.json<br>
+<br>
+<span class="comment"># node</span><br>
+meroctl --node &lt;X&gt; app install --path app.mpk<br>
+meroctl --node &lt;X&gt; context update --context &lt;ID&gt; --application-id &lt;ID&gt; \<br>
+&nbsp;&nbsp;--as &lt;KEY&gt; --migrate-method &lt;fn_name&gt;
+</div>
+</div>
+
+<div class="card gc">
+<h2>Troubleshooting</h2>
+<div class="g3">
+<div>
+<h3><span class="code">Not all bytes read</span></h3>
+<p>Use <span class="code">deserialize(&amp;mut &amp;bytes[..])</span> instead of <span class="code">try_from_slice</span>.</p>
+</div>
+<div>
+<h3><span class="code">signerId mismatch</span></h3>
+<p>Sign both versions with the same key; keep <span class="code">package</span> identical.</p>
+</div>
+<div>
+<h3>Missing <span class="code">signature</span></h3>
+<p>Run <span class="code">mero-sign sign</span> on <span class="code">manifest.json</span> <em>before</em> tarring the <span class="code">.mpk</span>.</p>
+</div>
+</div>
+</div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>
