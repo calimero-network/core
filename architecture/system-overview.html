@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>System Overview — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>System Overview</span></div>
+
+<h1>System <em>Overview</em></h1>
+<p class="page-subtitle">Calimero Core v0.10.1-rc.8 — 22 crates Rust workspace</p>
+
+<!-- ────────────────────── Stats Row ────────────────────── -->
+<div class="g4" style="margin-bottom:36px;">
+  <div class="stat"><div class="v">22</div><div class="l">crates</div></div>
+  <div class="stat"><div class="v">11</div><div class="l">core libraries</div></div>
+  <div class="stat"><div class="v">2</div><div class="l">CLI binaries</div></div>
+  <div class="stat"><div class="v">15+</div><div class="l">sample apps</div></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     1. HIGH-LEVEL ARCHITECTURE
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>High-Level Architecture</h2>
+<p style="margin-bottom:18px;">The system is organized in horizontal layers. External clients and CLIs connect through the Server layer, which delegates to Actix actors. Actors coordinate via typed messages and share a common storage layer at the bottom.</p>
+
+<svg viewBox="0 0 1060 600" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="glow-blue"><feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#3b82f6" flood-opacity="0.3"/></filter>
+    <filter id="glow-green"><feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#10b981" flood-opacity="0.3"/></filter>
+    <filter id="glow-violet"><feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#8b5cf6" flood-opacity="0.3"/></filter>
+    <filter id="glow-amber"><feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#f59e0b" flood-opacity="0.3"/></filter>
+  </defs>
+
+  <!-- ── TOP ROW: Clients ── -->
+  <rect x="30" y="15" width="190" height="52" rx="10" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="125" y="38" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono" font-size="12" font-weight="700">meroctl CLI</text>
+  <text x="125" y="54" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="9">operator / admin</text>
+
+  <rect x="260" y="15" width="220" height="52" rx="10" fill="#ec489910" stroke="#ec4899" stroke-width="1.5"/>
+  <text x="370" y="38" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono" font-size="12" font-weight="700">Admin Dashboard</text>
+  <text x="370" y="54" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="9">embedded SPA (React)</text>
+
+  <rect x="520" y="15" width="220" height="52" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="630" y="38" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono" font-size="12" font-weight="700">External Clients</text>
+  <text x="630" y="54" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="9">RPC / WS / SSE</text>
+
+  <!-- Connection lines: clients → server -->
+  <line x1="125" y1="67" x2="125" y2="95" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <line x1="370" y1="67" x2="370" y2="95" stroke="#ec4899" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <line x1="630" y1="67" x2="630" y2="95" stroke="#06b6d4" stroke-width="1.2" stroke-dasharray="4 3"/>
+
+  <!-- ── SERVER LAYER ── -->
+  <rect x="30" y="95" width="710" height="65" rx="12" fill="#1e1e2e" stroke="#f97316" stroke-width="1.8"/>
+  <text x="55" y="122" fill="#f97316" font-family="JetBrains Mono" font-size="14" font-weight="700">Server Layer</text>
+  <text x="55" y="145" fill="#6b6b80" font-family="DM Sans" font-size="11">Axum · REST Admin API · JSON-RPC 2.0 · WebSocket · SSE Events · Prometheus Metrics</text>
+
+  <!-- Server → actors -->
+  <line x1="200" y1="160" x2="200" y2="195" stroke="#3b82f6" stroke-width="1.5"/>
+  <polygon points="200,195 196,188 204,188" fill="#3b82f6"/>
+  <line x1="555" y1="160" x2="555" y2="195" stroke="#10b981" stroke-width="1.5"/>
+  <polygon points="555,195 551,188 559,188" fill="#10b981"/>
+
+  <!-- ── MIDDLE: Actor Boxes ── -->
+  <!-- NodeManager -->
+  <rect x="30" y="195" width="340" height="110" rx="12" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.5" filter="url(#glow-blue)"/>
+  <text x="55" y="222" fill="#3b82f6" font-family="JetBrains Mono" font-size="14" font-weight="700">NodeManager</text>
+  <rect x="195" y="208" width="55" height="18" rx="4" fill="#3b82f620"/>
+  <text x="222" y="220" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="9" font-weight="600">actor</text>
+  <text x="55" y="244" fill="#6b6b80" font-family="DM Sans" font-size="10">Network event dispatch, blob cache, heartbeat</text>
+  <text x="55" y="260" fill="#6b6b80" font-family="DM Sans" font-size="10">Delta handling, stream routing, join/leave</text>
+  <text x="55" y="276" fill="#6b6b80" font-family="DM Sans" font-size="10">Startup orchestration, context boot</text>
+  <text x="55" y="294" fill="#3b82f680" font-family="JetBrains Mono" font-size="8">crates/node · Handler&lt;NodeMessage&gt;</text>
+
+  <!-- ContextManager -->
+  <rect x="400" y="195" width="340" height="110" rx="12" fill="#10b98110" stroke="#10b981" stroke-width="1.5" filter="url(#glow-green)"/>
+  <text x="425" y="222" fill="#10b981" font-family="JetBrains Mono" font-size="14" font-weight="700">ContextManager</text>
+  <text x="425" y="244" fill="#6b6b80" font-family="DM Sans" font-size="10">Contexts, groups, governance DAGs</text>
+  <text x="425" y="260" fill="#6b6b80" font-family="DM Sans" font-size="10">Application lifecycle, 20+ message handlers</text>
+  <text x="425" y="276" fill="#6b6b80" font-family="DM Sans" font-size="10">GroupStore, upgrades, member management</text>
+  <text x="425" y="294" fill="#10b98180" font-family="JetBrains Mono" font-size="8">crates/context · Handler&lt;ContextMessage&gt;</text>
+  <rect x="575" y="208" width="55" height="18" rx="4" fill="#10b98120"/>
+  <text x="602" y="220" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono" font-size="9" font-weight="600">actor</text>
+
+  <!-- Actor ↔ Actor line -->
+  <line x1="370" y1="250" x2="400" y2="250" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2"/>
+
+  <!-- Actors → lower tier -->
+  <line x1="200" y1="305" x2="200" y2="340" stroke="#8b5cf6" stroke-width="1.5"/>
+  <polygon points="200,340 196,333 204,333" fill="#8b5cf6"/>
+  <line x1="450" y1="305" x2="450" y2="340" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <line x1="620" y1="305" x2="620" y2="340" stroke="#ec4899" stroke-width="1.2" stroke-dasharray="4 3"/>
+
+  <!-- ── LOWER MIDDLE: Network / Sync / Runtime ── -->
+  <!-- NetworkManager -->
+  <rect x="30" y="340" width="340" height="95" rx="12" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5" filter="url(#glow-violet)"/>
+  <text x="55" y="367" fill="#8b5cf6" font-family="JetBrains Mono" font-size="14" font-weight="700">NetworkManager</text>
+  <rect x="210" y="353" width="55" height="18" rx="4" fill="#8b5cf620"/>
+  <text x="237" y="365" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="9" font-weight="600">actor</text>
+  <text x="55" y="390" fill="#6b6b80" font-family="DM Sans" font-size="10">libp2p: gossipsub, Kademlia, mDNS, relay</text>
+  <text x="55" y="406" fill="#6b6b80" font-family="DM Sans" font-size="10">Streams, AutoNAT v2, DCUtR, rendezvous</text>
+  <text x="55" y="422" fill="#8b5cf680" font-family="JetBrains Mono" font-size="8">crates/network · Handler&lt;NetworkMessage&gt;</text>
+
+  <!-- SyncManager -->
+  <rect x="400" y="340" width="170" height="95" rx="12" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.5" filter="url(#glow-amber)"/>
+  <text x="420" y="367" fill="#f59e0b" font-family="JetBrains Mono" font-size="13" font-weight="700">SyncManager</text>
+  <text x="420" y="388" fill="#6b6b80" font-family="DM Sans" font-size="10">Hash compare</text>
+  <text x="420" y="404" fill="#6b6b80" font-family="DM Sans" font-size="10">Level-wise sync</text>
+  <text x="420" y="420" fill="#6b6b80" font-family="DM Sans" font-size="10">Snapshot / Delta</text>
+
+  <!-- WASM Runtime -->
+  <rect x="590" y="340" width="150" height="95" rx="12" fill="#ec489910" stroke="#ec4899" stroke-width="1.5"/>
+  <text x="610" y="367" fill="#ec4899" font-family="JetBrains Mono" font-size="13" font-weight="700">WASM Runtime</text>
+  <text x="610" y="388" fill="#6b6b80" font-family="DM Sans" font-size="10">Wasmer + Cranelift</text>
+  <text x="610" y="404" fill="#6b6b80" font-family="DM Sans" font-size="10">50+ host functions</text>
+  <text x="610" y="420" fill="#6b6b80" font-family="DM Sans" font-size="10">CRDT collections</text>
+
+  <!-- Lower tier → Storage -->
+  <line x1="200" y1="435" x2="200" y2="470" stroke="#06b6d4" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <line x1="485" y1="435" x2="485" y2="470" stroke="#06b6d4" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <line x1="665" y1="435" x2="665" y2="470" stroke="#06b6d4" stroke-width="1.2" stroke-dasharray="4 3"/>
+
+  <!-- ── BOTTOM: Storage Layer ── -->
+  <rect x="30" y="470" width="710" height="60" rx="12" fill="#06b6d408" stroke="#06b6d4" stroke-width="1.8"/>
+  <text x="55" y="497" fill="#06b6d4" font-family="JetBrains Mono" font-size="14" font-weight="700">Storage Layer</text>
+  <text x="55" y="518" fill="#6b6b80" font-family="DM Sans" font-size="11">RocksDB · 10 column families · typed keys · causal DAG · CRDT collections · blob store</text>
+
+  <!-- ── RIGHT SIDE: Auth ── -->
+  <rect x="780" y="95" width="250" height="135" rx="12" fill="#84cc1610" stroke="#84cc16" stroke-width="1.5"/>
+  <text x="805" y="122" fill="#84cc16" font-family="JetBrains Mono" font-size="14" font-weight="700">mero-auth</text>
+  <rect x="902" y="108" width="48" height="18" rx="4" fill="#84cc1620"/>
+  <text x="926" y="120" text-anchor="middle" fill="#84cc16" font-family="JetBrains Mono" font-size="9" font-weight="600">lime</text>
+  <text x="805" y="146" fill="#6b6b80" font-family="DM Sans" font-size="10">JWT issuing + verification</text>
+  <text x="805" y="164" fill="#6b6b80" font-family="DM Sans" font-size="10">Pluggable providers (NEAR, ETH, …)</text>
+  <text x="805" y="182" fill="#6b6b80" font-family="DM Sans" font-size="10">Challenge / nonce auth flow</text>
+  <text x="805" y="200" fill="#6b6b80" font-family="DM Sans" font-size="10">Embedded or reverse-proxy mode</text>
+  <text x="805" y="218" fill="#84cc1680" font-family="JetBrains Mono" font-size="8">crates/mero-auth</text>
+
+  <!-- Server → Auth line -->
+  <line x1="740" y1="127" x2="780" y2="127" stroke="#84cc16" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <polygon points="780,127 773,123 773,131" fill="#84cc16"/>
+
+  <!-- ── RIGHT SIDE: P2P Cloud ── -->
+  <rect x="780" y="340" width="250" height="95" rx="12" fill="#8b5cf608" stroke="#8b5cf6" stroke-width="1.2" stroke-dasharray="5 4"/>
+  <text x="905" y="372" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="13" font-weight="600">P2P Network</text>
+  <text x="905" y="393" text-anchor="middle" fill="#6b6b80" font-family="DM Sans" font-size="10">Other Calimero nodes</text>
+  <text x="905" y="411" text-anchor="middle" fill="#6b6b80" font-family="DM Sans" font-size="10">gossipsub · streams · DHT</text>
+  <text x="905" y="425" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="8">topic-based message routing</text>
+
+  <!-- Network → P2P -->
+  <line x1="370" y1="388" x2="780" y2="388" stroke="#8b5cf6" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <polygon points="780,388 773,384 773,392" fill="#8b5cf6"/>
+
+  <!-- ── LEGEND ── -->
+  <line x1="30" y1="555" x2="1030" y2="555" stroke="#252538" stroke-width="1"/>
+  <circle cx="55" cy="577" r="6" fill="#3b82f6"/>
+  <text x="68" y="581" fill="#6b6b80" font-family="DM Sans" font-size="10">Node</text>
+  <circle cx="125" cy="577" r="6" fill="#10b981"/>
+  <text x="138" y="581" fill="#6b6b80" font-family="DM Sans" font-size="10">Context</text>
+  <circle cx="210" cy="577" r="6" fill="#8b5cf6"/>
+  <text x="223" y="581" fill="#6b6b80" font-family="DM Sans" font-size="10">Network</text>
+  <circle cx="305" cy="577" r="6" fill="#f59e0b"/>
+  <text x="318" y="581" fill="#6b6b80" font-family="DM Sans" font-size="10">Sync</text>
+  <circle cx="370" cy="577" r="6" fill="#ec4899"/>
+  <text x="383" y="581" fill="#6b6b80" font-family="DM Sans" font-size="10">Runtime</text>
+  <circle cx="455" cy="577" r="6" fill="#06b6d4"/>
+  <text x="468" y="581" fill="#6b6b80" font-family="DM Sans" font-size="10">Storage</text>
+  <circle cx="540" cy="577" r="6" fill="#f97316"/>
+  <text x="553" y="581" fill="#6b6b80" font-family="DM Sans" font-size="10">Server</text>
+  <circle cx="615" cy="577" r="6" fill="#84cc16"/>
+  <text x="628" y="581" fill="#6b6b80" font-family="DM Sans" font-size="10">Auth</text>
+
+  <line x1="720" y1="577" x2="750" y2="577" stroke="#6b6b80" stroke-width="1.5"/>
+  <text x="758" y="581" fill="#6b6b80" font-family="DM Sans" font-size="10">direct</text>
+  <line x1="820" y1="577" x2="850" y2="577" stroke="#6b6b80" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text x="858" y="581" fill="#6b6b80" font-family="DM Sans" font-size="10">async / indirect</text>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     2. CRATE DEPENDENCY GRAPH
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Crate Dependency Graph</h2>
+<p style="margin-bottom:18px;">Directed edges show compile-time dependencies. Top-level binaries depend on the server and node crates, which fan out through the core libraries, all converging on shared primitives at the bottom.</p>
+
+<svg viewBox="0 0 1060 450" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#6b6b80"/></marker>
+    <marker id="arr-b" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#3b82f6"/></marker>
+    <marker id="arr-g" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#10b981"/></marker>
+    <marker id="arr-v" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#8b5cf6"/></marker>
+    <marker id="arr-p" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#ec4899"/></marker>
+    <marker id="arr-c" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#06b6d4"/></marker>
+    <marker id="arr-a" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#f59e0b"/></marker>
+  </defs>
+
+  <!-- Tier 0: Binaries -->
+  <rect x="180" y="15" width="130" height="38" rx="8" fill="#f59e0b15" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="245" y="39" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono" font-size="11" font-weight="700">merod</text>
+  <rect x="360" y="15" width="130" height="38" rx="8" fill="#f59e0b15" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="425" y="39" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono" font-size="11" font-weight="700">meroctl</text>
+
+  <!-- Tier 1: server -->
+  <rect x="275" y="85" width="140" height="38" rx="8" fill="#f9731615" stroke="#f97316" stroke-width="1.5"/>
+  <text x="345" y="109" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono" font-size="11" font-weight="700">server</text>
+
+  <!-- merod → server -->
+  <line x1="245" y1="53" x2="320" y2="85" stroke="#f97316" stroke-width="1.2" marker-end="url(#arr)"/>
+  <!-- meroctl → server -->
+  <line x1="425" y1="53" x2="370" y2="85" stroke="#f97316" stroke-width="1.2" marker-end="url(#arr)"/>
+
+  <!-- Tier 2: node, context-primitives, node-primitives, auth -->
+  <rect x="80" y="160" width="130" height="38" rx="8" fill="#3b82f615" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="145" y="184" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="11" font-weight="700">node</text>
+
+  <rect x="260" y="160" width="180" height="38" rx="8" fill="#10b98115" stroke="#10b981" stroke-width="1.5"/>
+  <text x="350" y="184" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono" font-size="10" font-weight="700">context-primitives</text>
+
+  <rect x="490" y="160" width="160" height="38" rx="8" fill="#3b82f615" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="570" y="184" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="10" font-weight="700">node-primitives</text>
+
+  <rect x="700" y="160" width="120" height="38" rx="8" fill="#84cc1615" stroke="#84cc16" stroke-width="1.5"/>
+  <text x="760" y="184" text-anchor="middle" fill="#84cc16" font-family="JetBrains Mono" font-size="11" font-weight="700">mero-auth</text>
+
+  <!-- server → tier 2 -->
+  <line x1="310" y1="123" x2="170" y2="160" stroke="#3b82f6" stroke-width="1.2" marker-end="url(#arr-b)"/>
+  <line x1="345" y1="123" x2="350" y2="160" stroke="#10b981" stroke-width="1.2" marker-end="url(#arr-g)"/>
+  <line x1="380" y1="123" x2="550" y2="160" stroke="#3b82f6" stroke-width="1.2" marker-end="url(#arr-b)"/>
+  <line x1="415" y1="110" x2="700" y2="175" stroke="#84cc16" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arr)"/>
+
+  <!-- Tier 3: context, network, store, runtime -->
+  <rect x="30" y="240" width="130" height="38" rx="8" fill="#10b98115" stroke="#10b981" stroke-width="1.5"/>
+  <text x="95" y="264" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono" font-size="11" font-weight="700">context</text>
+
+  <rect x="195" y="240" width="130" height="38" rx="8" fill="#8b5cf615" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="260" y="264" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="11" font-weight="700">network</text>
+
+  <rect x="365" y="240" width="120" height="38" rx="8" fill="#06b6d415" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="425" y="264" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono" font-size="11" font-weight="700">store</text>
+
+  <rect x="525" y="240" width="130" height="38" rx="8" fill="#ec489915" stroke="#ec4899" stroke-width="1.5"/>
+  <text x="590" y="264" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono" font-size="11" font-weight="700">runtime</text>
+
+  <rect x="695" y="240" width="120" height="38" rx="8" fill="#f59e0b15" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="755" y="264" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono" font-size="11" font-weight="700">sync</text>
+
+  <!-- node → tier 3 -->
+  <line x1="110" y1="198" x2="95" y2="240" stroke="#10b981" stroke-width="1.2" marker-end="url(#arr-g)"/>
+  <line x1="145" y1="198" x2="245" y2="240" stroke="#8b5cf6" stroke-width="1.2" marker-end="url(#arr-v)"/>
+  <line x1="170" y1="198" x2="410" y2="240" stroke="#06b6d4" stroke-width="1.2" marker-end="url(#arr-c)"/>
+  <line x1="185" y1="198" x2="570" y2="240" stroke="#ec4899" stroke-width="1.2" marker-end="url(#arr-p)"/>
+  <line x1="195" y1="198" x2="735" y2="240" stroke="#f59e0b" stroke-width="1.2" marker-end="url(#arr-a)"/>
+
+  <!-- Tier 4: lower-level crates -->
+  <rect x="30" y="320" width="100" height="34" rx="7" fill="#10b98110" stroke="#10b981" stroke-width="1"/>
+  <text x="80" y="341" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono" font-size="9" font-weight="600">dag</text>
+
+  <rect x="155" y="320" width="140" height="34" rx="7" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1"/>
+  <text x="225" y="341" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="9" font-weight="600">network-primitives</text>
+
+  <rect x="320" y="320" width="130" height="34" rx="7" fill="#06b6d410" stroke="#06b6d4" stroke-width="1"/>
+  <text x="385" y="341" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono" font-size="9" font-weight="600">store-rocksdb</text>
+
+  <rect x="475" y="320" width="100" height="34" rx="7" fill="#ec489910" stroke="#ec4899" stroke-width="1"/>
+  <text x="525" y="341" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono" font-size="9" font-weight="600">storage</text>
+
+  <rect x="600" y="320" width="80" height="34" rx="7" fill="#ec489910" stroke="#ec4899" stroke-width="1"/>
+  <text x="640" y="341" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono" font-size="9" font-weight="600">sys</text>
+
+  <rect x="705" y="320" width="120" height="34" rx="7" fill="#f9731610" stroke="#f97316" stroke-width="1"/>
+  <text x="765" y="341" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono" font-size="9" font-weight="600">calimero-sdk</text>
+
+  <!-- tier 3 → tier 4 -->
+  <line x1="75" y1="278" x2="75" y2="320" stroke="#10b981" stroke-width="1" marker-end="url(#arr-g)"/>
+  <line x1="95" y1="278" x2="385" y2="320" stroke="#06b6d4" stroke-width="1" marker-end="url(#arr-c)"/>
+  <line x1="260" y1="278" x2="225" y2="320" stroke="#8b5cf6" stroke-width="1" marker-end="url(#arr-v)"/>
+  <line x1="425" y1="278" x2="385" y2="320" stroke="#06b6d4" stroke-width="1" marker-end="url(#arr-c)"/>
+  <line x1="575" y1="278" x2="525" y2="320" stroke="#ec4899" stroke-width="1" marker-end="url(#arr-p)"/>
+  <line x1="605" y1="278" x2="640" y2="320" stroke="#ec4899" stroke-width="1" marker-end="url(#arr-p)"/>
+
+  <!-- Tier 5: primitives (bottom) -->
+  <rect x="310" y="395" width="200" height="40" rx="10" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.8"/>
+  <text x="410" y="420" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono" font-size="13" font-weight="700">primitives</text>
+
+  <!-- Everything → primitives -->
+  <line x1="80" y1="354" x2="340" y2="395" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arr-a)"/>
+  <line x1="225" y1="354" x2="370" y2="395" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arr-a)"/>
+  <line x1="385" y1="354" x2="400" y2="395" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arr-a)"/>
+  <line x1="525" y1="354" x2="440" y2="395" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arr-a)"/>
+  <line x1="640" y1="354" x2="470" y2="395" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arr-a)"/>
+  <line x1="765" y1="354" x2="490" y2="395" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arr-a)"/>
+</svg>
+
+<div class="legend">
+  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>Binary / Primitives</div>
+  <div class="legend-item"><div class="ld" style="background:#f97316"></div>Server / SDK</div>
+  <div class="legend-item"><div class="ld" style="background:#3b82f6"></div>Node</div>
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>Context</div>
+  <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>Network</div>
+  <div class="legend-item"><div class="ld" style="background:#06b6d4"></div>Storage</div>
+  <div class="legend-item"><div class="ld" style="background:#ec4899"></div>Runtime</div>
+  <div class="legend-item"><div class="ld" style="background:#84cc16"></div>Auth</div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     3. ACTOR SYSTEM
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Actor System</h2>
+<p style="margin-bottom:18px;">Calimero uses <strong>Actix</strong> for its actor model. Three primary actors manage the system, plus a long-running async task for synchronization and a background garbage-collection actor.</p>
+
+<div class="g3" style="margin-bottom:24px;">
+  <div class="cb">
+    <h4 style="color:#3b82f6;">NodeManager <span class="tag tag-actor">actor</span></h4>
+    <p style="margin-top:8px;">Central orchestrator. Handles network events (peer join/leave, stream open), dispatches deltas to the right context, manages blob cache and heartbeat intervals. Owns <span class="code">LazyRecipient&lt;ContextMessage&gt;</span> and <span class="code">LazyRecipient&lt;NetworkMessage&gt;</span>.</p>
+    <p style="margin-top:8px;"><strong>Key messages:</strong></p>
+    <ul>
+      <li><span class="code">HandleNetworkEvent</span> — process gossip, stream, discovery events</li>
+      <li><span class="code">HandleStateDelta</span> — route incoming delta to context</li>
+      <li><span class="code">HandleGroupOp</span> — forward signed group ops</li>
+      <li><span class="code">BootContext</span> — initialize context after creation</li>
+    </ul>
+  </div>
+  <div class="cb">
+    <h4 style="color:#10b981;">ContextManager <span class="tag tag-actor">actor</span></h4>
+    <p style="margin-top:8px;">Manages all contexts and their groups. 20+ message handlers for execution, governance, membership, upgrades. Owns GroupStore instances per context. Coordinates with the runtime for WASM execution.</p>
+    <p style="margin-top:8px;"><strong>Key messages:</strong></p>
+    <ul>
+      <li><span class="code">ExecuteMethod</span> — run WASM method, produce delta</li>
+      <li><span class="code">HandleGroupOp</span> — ingest governance operation</li>
+      <li><span class="code">CreateContext</span> / <span class="code">JoinContext</span></li>
+      <li><span class="code">UpdateApplication</span> — upgrade WASM binary</li>
+    </ul>
+  </div>
+  <div class="cb">
+    <h4 style="color:#8b5cf6;">NetworkManager <span class="tag tag-actor">actor</span></h4>
+    <p style="margin-top:8px;">Wraps the libp2p swarm. Publishes and subscribes to gossipsub topics, manages Kademlia DHT, and handles stream-based request/response protocols. One topic per context + group topics.</p>
+    <p style="margin-top:8px;"><strong>Key messages:</strong></p>
+    <ul>
+      <li><span class="code">Publish</span> — send gossip message on topic</li>
+      <li><span class="code">Subscribe</span> / <span class="code">Unsubscribe</span></li>
+      <li><span class="code">OpenStream</span> — direct peer-to-peer stream</li>
+      <li><span class="code">ProvideRecord</span> / <span class="code">GetRecord</span> — DHT ops</li>
+    </ul>
+  </div>
+</div>
+
+<div class="g2">
+  <div class="cb">
+    <h4 style="color:#f59e0b;">SyncManager <span class="tag tag-lib">async task</span></h4>
+    <p style="margin-top:8px;">Not an Actix actor — runs as a long-lived async task spawned at startup. Implements four sync protocols: hash comparison (cheap), level-wise (medium), snapshot (heavy), and direct delta exchange. Triggered by heartbeat mismatches.</p>
+    <p style="margin-top:6px;">Communicates via <span class="code">tokio::broadcast</span> channels and direct <span class="code">LazyRecipient</span> sends to NodeManager.</p>
+  </div>
+  <div class="cb">
+    <h4 style="color:#ef4444;">GC Actor <span class="tag tag-lib">background</span></h4>
+    <p style="margin-top:8px;">Garbage collection actor that periodically cleans up expired blobs, stale peer entries, and orphaned context data. Runs on a configurable timer. Low-priority Actix actor.</p>
+    <p style="margin-top:6px;">Reads from storage columns and issues deletes for entries past their TTL.</p>
+  </div>
+</div>
+
+<h3>Communication Patterns</h3>
+<svg viewBox="0 0 1060 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr2" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7Z" fill="#6b6b80"/></marker>
+  </defs>
+
+  <!-- Actors -->
+  <rect x="30" y="30" width="160" height="50" rx="10" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="110" y="60" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="11" font-weight="700">NodeManager</text>
+
+  <rect x="280" y="30" width="180" height="50" rx="10" fill="#10b98110" stroke="#10b981" stroke-width="1.5"/>
+  <text x="370" y="60" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono" font-size="11" font-weight="700">ContextManager</text>
+
+  <rect x="550" y="30" width="180" height="50" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="640" y="60" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="11" font-weight="700">NetworkManager</text>
+
+  <rect x="830" y="30" width="180" height="50" rx="10" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="920" y="60" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono" font-size="11" font-weight="700">SyncManager</text>
+
+  <!-- LazyRecipient arrows -->
+  <path d="M190,65 L280,65" stroke="#6b6b80" stroke-width="1.2" marker-end="url(#arr2)"/>
+  <text x="235" y="58" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">LazyRecipient</text>
+
+  <path d="M460,55 L550,55" stroke="#6b6b80" stroke-width="1.2" marker-end="url(#arr2)"/>
+  <text x="505" y="48" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">LazyRecipient</text>
+
+  <path d="M550,65 L460,65" stroke="#6b6b80" stroke-width="1.2" marker-end="url(#arr2)"/>
+  <text x="505" y="78" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">LazyRecipient</text>
+
+  <!-- broadcast channel -->
+  <rect x="380" y="120" width="300" height="36" rx="8" fill="#1e1e2e" stroke="#252538" stroke-width="1"/>
+  <text x="530" y="142" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono" font-size="10" font-weight="600">tokio::broadcast channel</text>
+
+  <line x1="110" y1="80" x2="110" y2="138" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="110" y1="138" x2="380" y2="138" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arr2)"/>
+
+  <line x1="920" y1="80" x2="920" y2="138" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="920" y1="138" x2="680" y2="138" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arr2)"/>
+
+  <text x="530" y="172" text-anchor="middle" fill="#6b6b80" font-family="DM Sans" font-size="9">Heartbeat events, sync triggers, and state updates flow through the broadcast channel</text>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     4. DATA FLOW: METHOD EXECUTION
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Data Flow: Method Execution</h2>
+<p style="margin-bottom:20px;">End-to-end flow from a client calling a WASM method to state convergence across all peers.</p>
+
+<div class="g2">
+  <div>
+    <div class="step"><div class="n">1</div>
+      <h4>Client → Server</h4>
+      <p>External client sends a JSON-RPC 2.0 request to the <span class="code">/rpc</span> endpoint. The request specifies <span class="code">context_id</span>, <span class="code">method</span>, and <span class="code">args</span>. Authenticated via JWT bearer token (mero-auth).</p>
+    </div>
+    <div class="step"><div class="n">2</div>
+      <h4>Server → ContextManager</h4>
+      <p>The JSON-RPC handler constructs an <span class="code">ExecuteMethod</span> message and sends it to ContextManager via <span class="code">LazyRecipient&lt;ContextMessage&gt;</span>. Includes caller identity, payload, and executor kind.</p>
+    </div>
+    <div class="step"><div class="n">3</div>
+      <h4>ContextManager → Runtime</h4>
+      <p>ContextManager loads the WASM module (cached in-memory), builds a <span class="code">VMContext</span> with storage handles, caller identity, and method metadata. Invokes <span class="code">runtime::execute()</span>.</p>
+    </div>
+    <div class="step"><div class="n">4</div>
+      <h4>Runtime → WASM</h4>
+      <p>Wasmer executes the compiled WASM function. The application calls host functions for storage reads/writes, CRDT operations, event emissions, and cross-context calls. All mutations are collected in a pending changeset.</p>
+    </div>
+  </div>
+  <div>
+    <div class="step"><div class="n">5</div>
+      <h4>State Commit</h4>
+      <p>On successful return, the changeset is committed to storage. A <span class="code">CausalDelta</span> is constructed containing the diff, new <span class="code">root_hash</span>, parent hashes, and the operation metadata. Appended to the context's DAG.</p>
+    </div>
+    <div class="step"><div class="n">6</div>
+      <h4>Gossip Broadcast</h4>
+      <p>The delta is serialized and published via <span class="code">NetworkManager::Publish</span> on the context's gossipsub topic. The message includes the <span class="code">StateDelta</span> payload and the sender's peer ID.</p>
+    </div>
+    <div class="step"><div class="n">7</div>
+      <h4>Remote Nodes Receive + Apply</h4>
+      <p>Peer nodes receive the gossip message. <span class="code">NodeManager::HandleStateDelta</span> routes it to the correct context. ContextManager verifies the delta's parent hash exists in the local DAG, then applies it to storage.</p>
+    </div>
+    <div class="step"><div class="n">8</div>
+      <h4>Convergence</h4>
+      <p>Heartbeats carry each context's <span class="code">root_hash</span>. If peers disagree, SyncManager triggers a catch-up protocol (hash comparison → level-wise → snapshot fallback). All peers eventually converge to the same state.</p>
+    </div>
+  </div>
+</div>
+
+<svg viewBox="0 0 1060 90" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-top:16px;">
+  <defs>
+    <marker id="fa" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#f59e0b"/></marker>
+  </defs>
+  <!-- Flow summary bar -->
+  <rect x="15" y="20" width="90" height="50" rx="8" fill="#06b6d410" stroke="#06b6d4" stroke-width="1"/>
+  <text x="60" y="42" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono" font-size="9" font-weight="600">Client</text>
+  <text x="60" y="56" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">JSON-RPC</text>
+
+  <line x1="105" y1="45" x2="135" y2="45" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#fa)"/>
+
+  <rect x="135" y="20" width="90" height="50" rx="8" fill="#f9731610" stroke="#f97316" stroke-width="1"/>
+  <text x="180" y="42" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono" font-size="9" font-weight="600">Server</text>
+  <text x="180" y="56" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">Axum</text>
+
+  <line x1="225" y1="45" x2="255" y2="45" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#fa)"/>
+
+  <rect x="255" y="20" width="120" height="50" rx="8" fill="#10b98110" stroke="#10b981" stroke-width="1"/>
+  <text x="315" y="42" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono" font-size="9" font-weight="600">ContextMgr</text>
+  <text x="315" y="56" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">ExecuteMethod</text>
+
+  <line x1="375" y1="45" x2="405" y2="45" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#fa)"/>
+
+  <rect x="405" y="20" width="100" height="50" rx="8" fill="#ec489910" stroke="#ec4899" stroke-width="1"/>
+  <text x="455" y="42" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono" font-size="9" font-weight="600">Runtime</text>
+  <text x="455" y="56" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">WASM exec</text>
+
+  <line x1="505" y1="45" x2="535" y2="45" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#fa)"/>
+
+  <rect x="535" y="20" width="100" height="50" rx="8" fill="#06b6d410" stroke="#06b6d4" stroke-width="1"/>
+  <text x="585" y="42" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono" font-size="9" font-weight="600">Storage</text>
+  <text x="585" y="56" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">commit delta</text>
+
+  <line x1="635" y1="45" x2="665" y2="45" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#fa)"/>
+
+  <rect x="665" y="20" width="100" height="50" rx="8" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1"/>
+  <text x="715" y="42" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="9" font-weight="600">Gossip</text>
+  <text x="715" y="56" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">broadcast</text>
+
+  <line x1="765" y1="45" x2="795" y2="45" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#fa)"/>
+
+  <rect x="795" y="20" width="90" height="50" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1"/>
+  <text x="840" y="42" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="9" font-weight="600">Peers</text>
+  <text x="840" y="56" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">apply + verify</text>
+
+  <line x1="885" y1="45" x2="915" y2="45" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#fa)"/>
+
+  <rect x="915" y="20" width="120" height="50" rx="8" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1"/>
+  <text x="975" y="42" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono" font-size="9" font-weight="600">Converge</text>
+  <text x="975" y="56" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">heartbeat sync</text>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     5. DATA FLOW: GOVERNANCE OP
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Data Flow: Governance Operation</h2>
+<p style="margin-bottom:20px;">How an admin action (e.g. adding a member, changing capabilities) propagates across the group and reaches eventual consistency.</p>
+
+<div class="g2" style="margin-bottom:20px;">
+  <div>
+    <div class="step"><div class="n">1</div>
+      <h4>Admin Action</h4>
+      <p>An admin (via REST API or meroctl) submits a governance action. The server translates this into a <span class="code">GroupOp</span> variant — e.g. <span class="code">MemberAdded</span>, <span class="code">CapabilitiesSet</span>, <span class="code">VisibilitySet</span>. Includes the target group ID.</p>
+    </div>
+    <div class="step"><div class="n">2</div>
+      <h4>Sign + Apply Locally</h4>
+      <p>The operation is signed with the node's <strong>Ed25519</strong> key, producing a <span class="code">SignedGroupOpV1</span>. Includes: <span class="code">state_hash</span> (current group state), <span class="code">nonce</span> (monotonic), and parent hash. The op is applied to local GroupStore and appended to the <span class="code">OpLog</span> DAG.</p>
+    </div>
+    <div class="step"><div class="n">3</div>
+      <h4>Gossip Broadcast</h4>
+      <p>The signed operation is published via gossipsub on the <strong>group topic</strong> (separate from context data topics). All group members subscribed to this topic receive the message.</p>
+    </div>
+  </div>
+  <div>
+    <div class="step"><div class="n">4</div>
+      <h4>Remote Ingestion</h4>
+      <p>Receiving nodes verify the Ed25519 signature and check the sender has sufficient capabilities to perform the operation. The op is added to the local <span class="code">DagStore</span>. If parents are missing, the op enters a <strong>pending queue</strong> until parents arrive.</p>
+    </div>
+    <div class="step"><div class="n">5</div>
+      <h4>Catch-Up Protocol</h4>
+      <p>Heartbeats carry each group's latest <span class="code">state_hash</span>. On mismatch, peers exchange <span class="code">GroupDeltaRequest</span> / <span class="code">GroupDeltaResponse</span> messages to transfer missing operations. The DAG structure ensures causal ordering is preserved during catch-up.</p>
+    </div>
+  </div>
+</div>
+
+<svg viewBox="0 0 1060 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="ga2" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#10b981"/></marker>
+  </defs>
+
+  <rect x="15" y="20" width="120" height="55" rx="8" fill="#f9731610" stroke="#f97316" stroke-width="1"/>
+  <text x="75" y="42" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono" font-size="9" font-weight="600">Admin API</text>
+  <text x="75" y="58" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="8">GroupOp</text>
+
+  <line x1="135" y1="48" x2="170" y2="48" stroke="#10b981" stroke-width="1.5" marker-end="url(#ga2)"/>
+
+  <rect x="170" y="20" width="140" height="55" rx="8" fill="#10b98110" stroke="#10b981" stroke-width="1"/>
+  <text x="240" y="42" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono" font-size="9" font-weight="600">Sign + Apply</text>
+  <text x="240" y="58" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="8">Ed25519 · OpLog</text>
+
+  <line x1="310" y1="48" x2="345" y2="48" stroke="#10b981" stroke-width="1.5" marker-end="url(#ga2)"/>
+
+  <rect x="345" y="20" width="140" height="55" rx="8" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1"/>
+  <text x="415" y="42" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="9" font-weight="600">Gossip</text>
+  <text x="415" y="58" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="8">group topic</text>
+
+  <line x1="485" y1="48" x2="520" y2="48" stroke="#10b981" stroke-width="1.5" marker-end="url(#ga2)"/>
+
+  <rect x="520" y="20" width="170" height="55" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1"/>
+  <text x="605" y="42" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="9" font-weight="600">Remote Verify</text>
+  <text x="605" y="58" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="8">DagStore · pending</text>
+
+  <line x1="690" y1="48" x2="725" y2="48" stroke="#10b981" stroke-width="1.5" marker-end="url(#ga2)"/>
+
+  <rect x="725" y="20" width="180" height="55" rx="8" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1"/>
+  <text x="815" y="42" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono" font-size="9" font-weight="600">Catch-Up</text>
+  <text x="815" y="58" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="8">GroupDeltaReq/Resp</text>
+
+  <text x="530" y="95" text-anchor="middle" fill="#6b6b80" font-family="DM Sans" font-size="10">Each arrow represents a message boundary — failures at any stage are recoverable via the catch-up protocol</text>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     6. CROSS-CRATE COMMUNICATION
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Cross-Crate Communication</h2>
+<p style="margin-bottom:20px;">Crates communicate via thin async façade structs that wrap <span class="code">LazyRecipient&lt;M&gt;</span>. Each façade provides typed, async methods that hide the Actix message-passing details. This keeps crate boundaries clean — consumers never import Actix directly.</p>
+
+<div class="g3" style="margin-bottom:20px;">
+  <div class="cb">
+    <h4 style="color:#3b82f6;">NodeClient</h4>
+    <p style="margin-top:4px;font-size:.78rem;color:var(--text-dim);font-family:'JetBrains Mono',monospace;">LazyRecipient&lt;NodeMessage&gt;</p>
+    <p style="margin-top:8px;">Thin async façade used by Server and ContextManager to send commands to the NodeManager actor.</p>
+    <h4 style="margin-top:12px;">Key Methods</h4>
+    <ul>
+      <li><span class="code">boot_context()</span></li>
+      <li><span class="code">handle_network_event()</span></li>
+      <li><span class="code">get_peers()</span></li>
+      <li><span class="code">broadcast_delta()</span></li>
+      <li><span class="code">request_blob()</span></li>
+    </ul>
+  </div>
+  <div class="cb">
+    <h4 style="color:#10b981;">ContextClient</h4>
+    <p style="margin-top:4px;font-size:.78rem;color:var(--text-dim);font-family:'JetBrains Mono',monospace;">LazyRecipient&lt;ContextMessage&gt;</p>
+    <p style="margin-top:8px;">Used by Server (for RPC execution) and NodeManager (for delta routing) to invoke context-level operations.</p>
+    <h4 style="margin-top:12px;">Key Methods</h4>
+    <ul>
+      <li><span class="code">execute_method()</span></li>
+      <li><span class="code">create_context()</span></li>
+      <li><span class="code">join_context()</span></li>
+      <li><span class="code">handle_group_op()</span></li>
+      <li><span class="code">update_application()</span></li>
+      <li><span class="code">get_context_info()</span></li>
+    </ul>
+  </div>
+  <div class="cb">
+    <h4 style="color:#8b5cf6;">NetworkClient</h4>
+    <p style="margin-top:4px;font-size:.78rem;color:var(--text-dim);font-family:'JetBrains Mono',monospace;">LazyRecipient&lt;NetworkMessage&gt;</p>
+    <p style="margin-top:8px;">Used by NodeManager, ContextManager, and SyncManager to publish messages, open streams, and manage topic subscriptions.</p>
+    <h4 style="margin-top:12px;">Key Methods</h4>
+    <ul>
+      <li><span class="code">publish()</span></li>
+      <li><span class="code">subscribe()</span></li>
+      <li><span class="code">unsubscribe()</span></li>
+      <li><span class="code">open_stream()</span></li>
+      <li><span class="code">get_peers()</span></li>
+      <li><span class="code">provide_record()</span></li>
+    </ul>
+  </div>
+</div>
+
+<h3>Façade Pattern</h3>
+<svg viewBox="0 0 1060 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="fc" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#6b6b80"/></marker>
+  </defs>
+
+  <!-- Caller side -->
+  <rect x="30" y="20" width="180" height="55" rx="10" fill="#f9731610" stroke="#f97316" stroke-width="1.2"/>
+  <text x="120" y="42" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono" font-size="11" font-weight="600">Server / RPC Handler</text>
+  <text x="120" y="60" text-anchor="middle" fill="#6b6b80" font-family="DM Sans" font-size="9">async fn handle_request()</text>
+
+  <rect x="30" y="95" width="180" height="55" rx="10" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.2"/>
+  <text x="120" y="117" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="11" font-weight="600">NodeManager</text>
+  <text x="120" y="135" text-anchor="middle" fill="#6b6b80" font-family="DM Sans" font-size="9">fn handle(&mut self, msg)</text>
+
+  <!-- Façade -->
+  <rect x="310" y="50" width="200" height="70" rx="12" fill="#1e1e2e" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="410" y="74" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono" font-size="12" font-weight="700">ContextClient</text>
+  <text x="410" y="95" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="9">.execute_method(ctx, args)</text>
+  <text x="410" y="112" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="8">await LazyRecipient::send()</text>
+
+  <!-- Actor -->
+  <rect x="610" y="50" width="220" height="70" rx="12" fill="#10b98110" stroke="#10b981" stroke-width="1.5"/>
+  <text x="720" y="74" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono" font-size="12" font-weight="700">ContextManager</text>
+  <text x="720" y="95" text-anchor="middle" fill="#6b6b80" font-family="DM Sans" font-size="9">Handler&lt;ContextMessage&gt;</text>
+  <text x="720" y="112" text-anchor="middle" fill="#10b98180" font-family="JetBrains Mono" font-size="8">Actix actor mailbox</text>
+
+  <!-- Arrows -->
+  <line x1="210" y1="48" x2="310" y2="72" stroke="#6b6b80" stroke-width="1.2" marker-end="url(#fc)"/>
+  <line x1="210" y1="122" x2="310" y2="98" stroke="#6b6b80" stroke-width="1.2" marker-end="url(#fc)"/>
+  <line x1="510" y1="85" x2="610" y2="85" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#fc)"/>
+
+  <text x="560" y="78" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono" font-size="8">async send</text>
+
+  <!-- Labels -->
+  <text x="260" y="55" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">typed call</text>
+  <text x="260" y="118" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono" font-size="7">typed call</text>
+
+  <!-- Result -->
+  <rect x="880" y="58" width="150" height="50" rx="8" fill="#10b98108" stroke="#10b981" stroke-width="1" stroke-dasharray="3 2"/>
+  <text x="955" y="80" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono" font-size="9" font-weight="600">Result&lt;T, Error&gt;</text>
+  <text x="955" y="97" text-anchor="middle" fill="#6b6b80" font-family="DM Sans" font-size="8">returned to caller</text>
+  <line x1="830" y1="85" x2="880" y2="83" stroke="#10b981" stroke-width="1" stroke-dasharray="4 2"/>
+</svg>
+
+<details style="margin-top:16px;">
+  <summary>How LazyRecipient works</summary>
+  <div class="detail-body">
+    <p><span class="code">LazyRecipient&lt;M&gt;</span> is a wrapper around Actix's <span class="code">Recipient&lt;M&gt;</span> that defers resolution. It stores an <span class="code">Arc&lt;OnceCell&lt;Recipient&lt;M&gt;&gt;&gt;</span> internally. On first use, the address is resolved from the actor registry. Subsequent sends reuse the cached recipient.</p>
+    <p style="margin-top:8px;">This pattern breaks circular initialization dependencies — actors can hold LazyRecipients to each other without needing all actors to be started simultaneously. The <span class="code">send()</span> method is async and returns the actor's response.</p>
+    <div class="typedef" style="margin-top:12px;">
+<span class="kw">pub struct</span> <span class="ty">LazyRecipient</span>&lt;M: Message&gt; {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">inner</span>: Arc&lt;OnceCell&lt;Recipient&lt;M&gt;&gt;&gt;,<br>
+}<br><br>
+<span class="kw">impl</span>&lt;M&gt; <span class="ty">LazyRecipient</span>&lt;M&gt; {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">pub async fn</span> <span class="field">send</span>(&amp;self, msg: M) -&gt; <span class="ty">Result</span>&lt;M::Result&gt; { <span class="comment">/* ... */</span> }<br>
+}
+    </div>
+  </div>
+</details>
+
+<details>
+  <summary>Message envelope pattern</summary>
+  <div class="detail-body">
+    <p>Each actor defines a single top-level enum that wraps all possible messages. This allows a single <span class="code">Handler</span> impl to dispatch on variants, simplifying the API surface.</p>
+    <div class="typedef" style="margin-top:12px;">
+<span class="kw">pub enum</span> <span class="ty">ContextMessage</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">ExecuteMethod</span> { ctx: ContextId, method: String, args: Vec&lt;u8&gt; },<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">CreateContext</span> { params: CreateParams },<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">JoinContext</span> { invitation: Invitation },<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">HandleGroupOp</span> { op: SignedGroupOpV1 },<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">UpdateApplication</span> { ctx: ContextId, blob: BlobId },<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// ... 15+ more variants</span><br>
+}
+    </div>
+  </div>
+</details>
+</div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

@@ -3,6 +3,7 @@ use tokio::sync::OwnedMutexGuard;
 
 pub mod client;
 pub mod group;
+pub mod local_governance;
 pub mod messages;
 
 #[derive(Debug)]

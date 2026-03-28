@@ -1,6 +1,8 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::UpdateGroupSettingsRequest;
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_node_primitives::sync::GroupMutationKind;
+use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 
 use crate::group_store;
@@ -20,7 +22,6 @@ impl Handler<UpdateGroupSettingsRequest> for ContextManager {
     ) -> Self::Result {
         let node_identity = self.node_group_identity();
 
-        // Resolve requester: use provided value or fall back to node group identity
         let requester = match requester {
             Some(pk) => pk,
             None => match node_identity {
@@ -33,7 +34,6 @@ impl Handler<UpdateGroupSettingsRequest> for ContextManager {
             },
         };
 
-        // Auto-store node signing key so it's available for authorization checks
         if let Some((_, node_sk)) = node_identity {
             let _ = group_store::store_group_signing_key(
                 &self.datastore,
@@ -44,25 +44,42 @@ impl Handler<UpdateGroupSettingsRequest> for ContextManager {
         }
 
         if let Err(err) = (|| -> eyre::Result<()> {
-            let Some(mut meta) = group_store::load_group_meta(&self.datastore, &group_id)? else {
+            let Some(_meta) = group_store::load_group_meta(&self.datastore, &group_id)? else {
                 bail!("group '{group_id:?}' not found");
             };
 
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
             group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
 
-            meta.upgrade_policy = upgrade_policy;
-            group_store::save_group_meta(&self.datastore, &group_id, &meta)?;
-
             Ok(())
         })() {
             return ActorResponse::reply(Err(err));
         }
 
+        let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let effective_signing_key = node_identity.map(|(_, sk)| sk).or_else(|| {
+            group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
+                .ok()
+                .flatten()
+        });
 
         ActorResponse::r#async(
             async move {
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!("local group governance requires a signing key for the requester")
+                })?);
+                group_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &group_id,
+                    &sk,
+                    GroupOp::UpgradePolicySet {
+                        policy: upgrade_policy,
+                    },
+                )
+                .await?;
+
                 let _ = node_client
                     .broadcast_group_mutation(
                         group_id.to_bytes(),

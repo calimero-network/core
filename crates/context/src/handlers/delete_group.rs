@@ -1,6 +1,8 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::{DeleteGroupRequest, DeleteGroupResponse};
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_node_primitives::sync::GroupMutationKind;
+use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
@@ -71,48 +73,25 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                 .ok()
                 .flatten()
         });
-        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
 
         ActorResponse::r#async(
             async move {
-                if let Some(client_result) = group_client_result {
-                    let mut group_client = client_result?;
-                    group_client.delete_group().await?;
-                }
-
-                // Remove all members in bounded batches to cap peak allocation
-                loop {
-                    let batch = group_store::list_group_members(&datastore, &group_id, 0, 500)?;
-                    if batch.is_empty() {
-                        break;
-                    }
-                    for (identity, _role) in &batch {
-                        group_store::remove_group_member(&datastore, &group_id, identity)?;
-                    }
-                }
-
-                // Clean up member capability and alias entries that are not
-                // removed by the member-deletion loop above.
-                group_store::delete_all_member_capabilities(&datastore, &group_id)?;
-                group_store::delete_all_member_aliases(&datastore, &group_id)?;
-
-                // Clean up group-level settings and alias.
-                group_store::delete_default_capabilities(&datastore, &group_id)?;
-                group_store::delete_default_visibility(&datastore, &group_id)?;
-                group_store::delete_group_alias(&datastore, &group_id)?;
-
-                // Clean up per-context migration records for this group.
-                group_store::delete_all_context_last_migrations(&datastore, &group_id)?;
-
-                // Clean up any in-progress or completed upgrade record so crash
-                // recovery does not find orphaned entries for deleted groups.
-                group_store::delete_group_upgrade(&datastore, &group_id)?;
-                group_store::delete_all_group_signing_keys(&datastore, &group_id)?;
-                group_store::delete_group_meta(&datastore, &group_id)?;
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!("local group governance requires a signing key for the requester")
+                })?);
+                group_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &group_id,
+                    &sk,
+                    GroupOp::GroupDelete,
+                )
+                .await?;
 
                 let _ = node_client
                     .broadcast_group_mutation(group_id_bytes, GroupMutationKind::Deleted)
                     .await;
+
                 let _ = node_client.unsubscribe_group(group_id_bytes).await;
 
                 info!(?group_id, %requester, "group deleted");

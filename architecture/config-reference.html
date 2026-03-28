@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Config Reference — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.config-field {
+  display: grid; grid-template-columns: 200px 140px 140px 1fr; gap: 8px;
+  padding: 8px 12px; background: var(--surface2); border-radius: 8px; margin-bottom: 4px;
+  align-items: start; font-size: .82rem; border: 1px solid transparent; transition: border-color .15s;
+}
+.config-field:hover { border-color: var(--border-hi); }
+.config-field .cf-key { font-family: 'JetBrains Mono', monospace; font-size: .78rem; color: var(--green); font-weight: 600; }
+.config-field .cf-type { font-family: 'JetBrains Mono', monospace; font-size: .74rem; color: var(--violet); }
+.config-field .cf-default { font-family: 'JetBrains Mono', monospace; font-size: .74rem; color: var(--amber); }
+.config-field .cf-desc { color: var(--text-dim); line-height: 1.5; }
+
+.config-header {
+  display: grid; grid-template-columns: 200px 140px 140px 1fr; gap: 8px;
+  padding: 6px 12px; margin-bottom: 6px;
+  font-family: 'JetBrains Mono', monospace; font-size: .68rem; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: .5px;
+}
+
+.toml-example {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; margin-top: 12px; font-family: 'JetBrains Mono', monospace;
+  font-size: .76rem; line-height: 1.7; color: var(--text); overflow-x: auto; white-space: pre;
+}
+.toml-example .tc { color: var(--text-dim); font-style: italic; }
+.toml-example .tk { color: var(--green); }
+.toml-example .tv { color: var(--amber); }
+.toml-example .ts { color: var(--blue); }
+
+.cli-box {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  padding: 18px 20px; font-family: 'JetBrains Mono', monospace; font-size: .78rem;
+  line-height: 1.8; color: var(--text); overflow-x: auto; margin-bottom: 28px;
+}
+.cli-box .cc { color: var(--text-dim); }
+.cli-box .cf { color: var(--amber); }
+.cli-box .cv { color: var(--green); }
+
+.section-source { margin-top: 8px; }
+.section-source a { font-family: 'JetBrains Mono', monospace; font-size: .72rem; color: var(--blue); opacity: .7; }
+.section-source a:hover { opacity: 1; color: var(--amber); }
+
+details.config-section { margin-bottom: 14px; }
+details.config-section summary { font-size: .9rem; }
+details.config-section .detail-body { padding: 18px; }
+
+@media (max-width: 900px) {
+  .config-field { grid-template-columns: 1fr; }
+  .config-header { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Config Reference</span></div>
+
+<h1>Config <em>Reference</em></h1>
+<p class="page-subtitle">Complete config.toml schema with all fields, types, and defaults</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     merod init defaults
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>merod init defaults</h2>
+<p style="margin-bottom:14px;">Running <span class="code">merod init</span> generates a <span class="code">config.toml</span> with these CLI-controllable defaults:</p>
+
+<div class="cli-box">
+<span class="cc"># Generate default config</span>
+merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span class="cf">--node-name</span> <span class="cv">my-node</span> init
+
+<span class="cc"># All flags and their defaults:</span>
+  <span class="cf">--home</span>            <span class="cv">~/.calimero</span>          <span class="cc"># base directory for data + config</span>
+  <span class="cf">--node-name</span>       <span class="cv">(required)</span>           <span class="cc"># human-readable node name</span>
+  <span class="cf">--swarm-port</span>      <span class="cv">2428</span>                 <span class="cc"># libp2p swarm listen port</span>
+  <span class="cf">--server-port</span>    <span class="cv">2528</span>                 <span class="cc"># HTTP API listen port</span>
+  <span class="cf">--server-host</span>    <span class="cv">127.0.0.1</span>            <span class="cc"># HTTP API listen host</span>
+  <span class="cf">--mdns</span>            <span class="cv">true</span>                 <span class="cc"># enable mDNS discovery</span>
+  <span class="cf">--protocol</span>       <span class="cv">/calimero/devnet/global</span>  <span class="cc"># rendezvous namespace</span>
+  <span class="cf">--boot-nodes</span>      <span class="cv">[]</span>                   <span class="cc"># bootstrap multiaddrs</span>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     Top-level structure overview
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gb" style="margin-bottom:32px;">
+<h2>Top-Level Structure</h2>
+<div class="toml-example"><span class="tc"># config.toml — Top-level sections</span>
+<span class="ts">[identity]</span>         <span class="tc"># Ed25519 keypair + optional group identity</span>
+<span class="ts">[swarm]</span>            <span class="tc"># libp2p listen addresses</span>
+<span class="ts">[bootstrap]</span>        <span class="tc"># bootstrap node list</span>
+<span class="ts">[discovery]</span>        <span class="tc"># mDNS, rendezvous, relay, autonat</span>
+<span class="ts">[server]</span>           <span class="tc"># HTTP server config (listen, admin, jsonrpc, ws, sse, auth)</span>
+<span class="ts">[sync]</span>             <span class="tc"># sync timeouts and intervals</span>
+<span class="ts">[datastore]</span>        <span class="tc"># RocksDB data path</span>
+<span class="ts">[blobstore]</span>        <span class="tc"># blob storage path</span>
+<span class="ts">[context]</span>          <span class="tc"># context client config</span>
+<span class="ts">[tee]</span>              <span class="tc"># optional TEE/KMS config</span>
+<span class="ts">[specialized_node]</span> <span class="tc"># specialized node settings</span></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     CONFIG SECTIONS
+     ═══════════════════════════════════════════════════════════════════ -->
+
+<!-- ── [identity] ── -->
+<details class="config-section" open>
+<summary><span class="code" style="color:var(--green)">[identity]</span> &mdash; Node Identity</summary>
+<div class="detail-body">
+<p style="margin-bottom:12px;">Ed25519 keypair for the node. Generated automatically on <span class="code">merod init</span>.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/config.rs" target="_blank" rel="noopener">IdentityConfig</a></div>
+
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">mode</div>
+  <div class="cf-type">String</div>
+  <div class="cf-default">"Standard"</div>
+  <div class="cf-desc">Node operation mode. <span class="code">Standard</span> for full participation, <span class="code">ReadOnly</span> for read-only sync.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">secret_key</div>
+  <div class="cf-type">String (hex)</div>
+  <div class="cf-default">(generated)</div>
+  <div class="cf-desc">Ed25519 secret key in hex. Auto-generated on init, never commit to source control.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">group_identity</div>
+  <div class="cf-type">Option&lt;GroupIdentity&gt;</div>
+  <div class="cf-default">None</div>
+  <div class="cf-desc">Optional group-scoped identity for specialized nodes.</div>
+</div>
+
+<div class="toml-example"><span class="ts">[identity]</span>
+<span class="tk">mode</span> = <span class="tv">"Standard"</span>
+<span class="tk">secret_key</span> = <span class="tv">"a1b2c3...hex..."</span></div>
+</div>
+</details>
+
+<!-- ── [swarm] ── -->
+<details class="config-section">
+<summary><span class="code" style="color:var(--green)">[swarm]</span> &mdash; libp2p Swarm</summary>
+<div class="detail-body">
+<p style="margin-bottom:12px;">Multiaddrs the libp2p swarm listens on for peer connections.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/network/src/config.rs" target="_blank" rel="noopener">SwarmConfig</a></div>
+
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">listen</div>
+  <div class="cf-type">Vec&lt;Multiaddr&gt;</div>
+  <div class="cf-default">(see below)</div>
+  <div class="cf-desc">Array of multiaddrs to listen on. Supports TCP and QUIC transports.</div>
+</div>
+
+<div class="toml-example"><span class="ts">[swarm]</span>
+<span class="tk">listen</span> = [
+  <span class="tv">"/ip4/0.0.0.0/tcp/2428"</span>,
+  <span class="tv">"/ip4/0.0.0.0/udp/2428/quic-v1"</span>
+]</div>
+</div>
+</details>
+
+<!-- ── [bootstrap] ── -->
+<details class="config-section">
+<summary><span class="code" style="color:var(--green)">[bootstrap]</span> &mdash; Bootstrap Nodes</summary>
+<div class="detail-body">
+<p style="margin-bottom:12px;">List of bootstrap peers to connect to on startup for peer discovery.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/network/src/config.rs" target="_blank" rel="noopener">BootstrapConfig</a></div>
+
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">nodes</div>
+  <div class="cf-type">Vec&lt;Multiaddr&gt;</div>
+  <div class="cf-default">[]</div>
+  <div class="cf-desc">Multiaddrs of bootstrap peers (e.g., <span class="code">/ip4/1.2.3.4/tcp/2428/p2p/12D3...</span>).</div>
+</div>
+
+<div class="toml-example"><span class="ts">[bootstrap]</span>
+<span class="tk">nodes</span> = [
+  <span class="tv">"/ip4/35.123.45.67/tcp/2428/p2p/12D3KooW..."</span>
+]</div>
+</div>
+</details>
+
+<!-- ── [discovery] ── -->
+<details class="config-section">
+<summary><span class="code" style="color:var(--green)">[discovery]</span> &mdash; Peer Discovery</summary>
+<div class="detail-body">
+<p style="margin-bottom:12px;">Configures mDNS, rendezvous, relay circuit, autonat, and address advertisement.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/network/src/config.rs" target="_blank" rel="noopener">DiscoveryConfig</a></div>
+
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">mdns</div>
+  <div class="cf-type">bool</div>
+  <div class="cf-default">true</div>
+  <div class="cf-desc">Enable mDNS for local network peer discovery.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">advertise_address</div>
+  <div class="cf-type">bool</div>
+  <div class="cf-default">false</div>
+  <div class="cf-desc">Whether to advertise external addresses to the network.</div>
+</div>
+
+<h3 style="margin-top:18px;">[discovery.rendezvous]</h3>
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">namespace</div>
+  <div class="cf-type">String</div>
+  <div class="cf-default">"/calimero/devnet/global"</div>
+  <div class="cf-desc">Rendezvous namespace for peer discovery grouping.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">registrations_limit</div>
+  <div class="cf-type">usize</div>
+  <div class="cf-default">3</div>
+  <div class="cf-desc">Max concurrent rendezvous registrations.</div>
+</div>
+
+<h3>[discovery.relay]</h3>
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">registrations_limit</div>
+  <div class="cf-type">usize</div>
+  <div class="cf-default">3</div>
+  <div class="cf-desc">Max concurrent relay circuit registrations.</div>
+</div>
+
+<h3>[discovery.autonat]</h3>
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">probe_interval</div>
+  <div class="cf-type">Duration</div>
+  <div class="cf-default">10s</div>
+  <div class="cf-desc">Interval between autonat probes for NAT detection.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">max_candidates</div>
+  <div class="cf-type">usize</div>
+  <div class="cf-default">5</div>
+  <div class="cf-desc">Maximum number of autonat probe candidates.</div>
+</div>
+
+<div class="toml-example"><span class="ts">[discovery]</span>
+<span class="tk">mdns</span> = <span class="tv">true</span>
+<span class="tk">advertise_address</span> = <span class="tv">false</span>
+
+<span class="ts">[discovery.rendezvous]</span>
+<span class="tk">namespace</span> = <span class="tv">"/calimero/devnet/global"</span>
+<span class="tk">registrations_limit</span> = <span class="tv">3</span>
+
+<span class="ts">[discovery.relay]</span>
+<span class="tk">registrations_limit</span> = <span class="tv">3</span>
+
+<span class="ts">[discovery.autonat]</span>
+<span class="tk">probe_interval</span> = <span class="tv">"10s"</span>
+<span class="tk">max_candidates</span> = <span class="tv">5</span></div>
+</div>
+</details>
+
+<!-- ── [server] ── -->
+<details class="config-section">
+<summary><span class="code" style="color:var(--green)">[server]</span> &mdash; HTTP Server</summary>
+<div class="detail-body">
+<p style="margin-bottom:12px;">HTTP/WebSocket/SSE API server for meroctl and external clients.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/server/src/config.rs" target="_blank" rel="noopener">ServerConfig</a></div>
+
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">listen</div>
+  <div class="cf-type">Vec&lt;Multiaddr&gt;</div>
+  <div class="cf-default">["/ip4/127.0.0.1/tcp/2528"]</div>
+  <div class="cf-desc">Multiaddrs for the HTTP API server to listen on.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">auth_mode</div>
+  <div class="cf-type">String</div>
+  <div class="cf-default">"Proxy"</div>
+  <div class="cf-desc">Auth mode: <span class="code">Proxy</span> (trust upstream headers) or <span class="code">Embedded</span> (built-in JWT auth).</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">admin</div>
+  <div class="cf-type">AdminConfig</div>
+  <div class="cf-default">(enabled)</div>
+  <div class="cf-desc">Admin API endpoint configuration.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">jsonrpc</div>
+  <div class="cf-type">JsonRpcConfig</div>
+  <div class="cf-default">(enabled)</div>
+  <div class="cf-desc">JSON-RPC endpoint configuration for application calls.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">websocket</div>
+  <div class="cf-type">WsConfig</div>
+  <div class="cf-default">(enabled)</div>
+  <div class="cf-desc">WebSocket endpoint for real-time event subscriptions.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">sse</div>
+  <div class="cf-type">SseConfig</div>
+  <div class="cf-default">(enabled)</div>
+  <div class="cf-desc">Server-Sent Events endpoint for event streaming.</div>
+</div>
+
+<h3 style="margin-top:18px;">[server.embedded_auth]</h3>
+<p style="margin-bottom:12px;">Embedded authentication settings (used when <span class="code">auth_mode = "Embedded"</span>).</p>
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">jwt_secret</div>
+  <div class="cf-type">Option&lt;String&gt;</div>
+  <div class="cf-default">(generated)</div>
+  <div class="cf-desc">HMAC secret for signing JWT tokens. Auto-generated if not set.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">jwt_expiry_secs</div>
+  <div class="cf-type">u64</div>
+  <div class="cf-default">86400</div>
+  <div class="cf-desc">JWT token expiry in seconds (default: 24 hours).</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">refresh_expiry_secs</div>
+  <div class="cf-type">u64</div>
+  <div class="cf-default">604800</div>
+  <div class="cf-desc">Refresh token expiry in seconds (default: 7 days).</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">storage</div>
+  <div class="cf-type">String</div>
+  <div class="cf-default">"rocksdb"</div>
+  <div class="cf-desc">Token storage backend: <span class="code">rocksdb</span> or <span class="code">memory</span>.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">cors_origins</div>
+  <div class="cf-type">Vec&lt;String&gt;</div>
+  <div class="cf-default">["*"]</div>
+  <div class="cf-desc">Allowed CORS origins for the auth endpoints.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">secure_cookies</div>
+  <div class="cf-type">bool</div>
+  <div class="cf-default">false</div>
+  <div class="cf-desc">Send cookies with the Secure flag (requires HTTPS).</div>
+</div>
+
+<div class="toml-example"><span class="ts">[server]</span>
+<span class="tk">listen</span> = [<span class="tv">"/ip4/127.0.0.1/tcp/2528"</span>]
+<span class="tk">auth_mode</span> = <span class="tv">"Proxy"</span>
+
+<span class="tc"># Embedded auth (when auth_mode = "Embedded")</span>
+<span class="ts">[server.embedded_auth]</span>
+<span class="tk">jwt_expiry_secs</span> = <span class="tv">86400</span>
+<span class="tk">refresh_expiry_secs</span> = <span class="tv">604800</span>
+<span class="tk">storage</span> = <span class="tv">"rocksdb"</span>
+<span class="tk">cors_origins</span> = [<span class="tv">"*"</span>]
+<span class="tk">secure_cookies</span> = <span class="tv">false</span></div>
+</div>
+</details>
+
+<!-- ── [sync] ── -->
+<details class="config-section">
+<summary><span class="code" style="color:var(--green)">[sync]</span> &mdash; Sync Engine</summary>
+<div class="detail-body">
+<p style="margin-bottom:12px;">Timeouts and intervals for the state synchronization engine.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/manager.rs" target="_blank" rel="noopener">SyncConfig</a></div>
+
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">timeout_ms</div>
+  <div class="cf-type">u64</div>
+  <div class="cf-default">30000</div>
+  <div class="cf-desc">Maximum time in ms to wait for a sync response before timing out.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">interval_ms</div>
+  <div class="cf-type">u64</div>
+  <div class="cf-default">5000</div>
+  <div class="cf-desc">Base interval in ms between sync rounds for a context.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">frequency_ms</div>
+  <div class="cf-type">u64</div>
+  <div class="cf-default">10000</div>
+  <div class="cf-desc">Minimum ms between consecutive sync attempts for the same context.</div>
+</div>
+
+<div class="toml-example"><span class="ts">[sync]</span>
+<span class="tk">timeout_ms</span> = <span class="tv">30000</span>
+<span class="tk">interval_ms</span> = <span class="tv">5000</span>
+<span class="tk">frequency_ms</span> = <span class="tv">10000</span></div>
+</div>
+</details>
+
+<!-- ── [datastore] ── -->
+<details class="config-section">
+<summary><span class="code" style="color:var(--green)">[datastore]</span> &mdash; RocksDB Storage</summary>
+<div class="detail-body">
+<p style="margin-bottom:12px;">Path for the RocksDB persistent storage engine.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/config.rs" target="_blank" rel="noopener">DataStoreConfig</a></div>
+
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">path</div>
+  <div class="cf-type">PathBuf</div>
+  <div class="cf-default">"data"</div>
+  <div class="cf-desc">Relative or absolute path to the RocksDB data directory.</div>
+</div>
+
+<div class="toml-example"><span class="ts">[datastore]</span>
+<span class="tk">path</span> = <span class="tv">"data"</span></div>
+</div>
+</details>
+
+<!-- ── [blobstore] ── -->
+<details class="config-section">
+<summary><span class="code" style="color:var(--green)">[blobstore]</span> &mdash; Blob Storage</summary>
+<div class="detail-body">
+<p style="margin-bottom:12px;">Path for binary blob (WASM applications, large files) storage.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/config.rs" target="_blank" rel="noopener">BlobStoreConfig</a></div>
+
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">path</div>
+  <div class="cf-type">PathBuf</div>
+  <div class="cf-default">"blobs"</div>
+  <div class="cf-desc">Relative or absolute path to the blob storage directory.</div>
+</div>
+
+<div class="toml-example"><span class="ts">[blobstore]</span>
+<span class="tk">path</span> = <span class="tv">"blobs"</span></div>
+</div>
+</details>
+
+<!-- ── [context] ── -->
+<details class="config-section">
+<summary><span class="code" style="color:var(--green)">[context]</span> &mdash; Context Client</summary>
+<div class="detail-body">
+<p style="margin-bottom:12px;">Configuration for the context management subsystem.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/context/src/config.rs" target="_blank" rel="noopener">ContextConfig</a></div>
+
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">client</div>
+  <div class="cf-type">ContextClientConfig</div>
+  <div class="cf-default">(default)</div>
+  <div class="cf-desc">Context client connection and retry settings.</div>
+</div>
+
+<div class="toml-example"><span class="ts">[context]</span>
+<span class="tc"># Uses defaults — typically no manual configuration needed</span></div>
+</div>
+</details>
+
+<!-- ── [tee] ── -->
+<details class="config-section">
+<summary><span class="code" style="color:var(--green)">[tee]</span> &mdash; TEE / KMS</summary>
+<div class="detail-body">
+<p style="margin-bottom:12px;">Optional Trusted Execution Environment and Key Management Service configuration. Only relevant for nodes running in secure enclaves.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/config.rs" target="_blank" rel="noopener">TeeConfig</a></div>
+
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">enabled</div>
+  <div class="cf-type">bool</div>
+  <div class="cf-default">false</div>
+  <div class="cf-desc">Enable TEE attestation and sealed storage.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">kms_url</div>
+  <div class="cf-type">Option&lt;String&gt;</div>
+  <div class="cf-default">None</div>
+  <div class="cf-desc">URL of the Key Management Service for key provisioning.</div>
+</div>
+
+<div class="toml-example"><span class="ts">[tee]</span>
+<span class="tk">enabled</span> = <span class="tv">false</span>
+<span class="tc"># kms_url = "https://kms.example.com"</span></div>
+</div>
+</details>
+
+<!-- ── [specialized_node] ── -->
+<details class="config-section">
+<summary><span class="code" style="color:var(--green)">[specialized_node]</span> &mdash; Specialized Node</summary>
+<div class="detail-body">
+<p style="margin-bottom:12px;">Settings for specialized node roles (e.g., TEE nodes that handle key shares).</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/config.rs" target="_blank" rel="noopener">SpecializedNodeConfig</a></div>
+
+<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
+<div class="config-field">
+  <div class="cf-key">invite_topic</div>
+  <div class="cf-type">String</div>
+  <div class="cf-default">"mero_specialized_node_invites"</div>
+  <div class="cf-desc">Gossipsub topic for receiving specialized node invitations.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">accept_mock_tee</div>
+  <div class="cf-type">bool</div>
+  <div class="cf-default">false</div>
+  <div class="cf-desc">Accept mock TEE attestations (for development/testing only).</div>
+</div>
+
+<div class="toml-example"><span class="ts">[specialized_node]</span>
+<span class="tk">invite_topic</span> = <span class="tv">"mero_specialized_node_invites"</span>
+<span class="tk">accept_mock_tee</span> = <span class="tv">false</span></div>
+</div>
+</details>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     Full example
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc" style="margin-top:36px;">
+<h2>Complete Example</h2>
+<p style="margin-bottom:14px;">A typical production <span class="code">config.toml</span> with commonly customized fields:</p>
+<div class="toml-example"><span class="ts">[identity]</span>
+<span class="tk">mode</span> = <span class="tv">"Standard"</span>
+
+<span class="ts">[swarm]</span>
+<span class="tk">listen</span> = [
+  <span class="tv">"/ip4/0.0.0.0/tcp/2428"</span>,
+  <span class="tv">"/ip4/0.0.0.0/udp/2428/quic-v1"</span>
+]
+
+<span class="ts">[bootstrap]</span>
+<span class="tk">nodes</span> = []
+
+<span class="ts">[discovery]</span>
+<span class="tk">mdns</span> = <span class="tv">true</span>
+<span class="tk">advertise_address</span> = <span class="tv">false</span>
+
+<span class="ts">[discovery.rendezvous]</span>
+<span class="tk">namespace</span> = <span class="tv">"/calimero/devnet/global"</span>
+<span class="tk">registrations_limit</span> = <span class="tv">3</span>
+
+<span class="ts">[discovery.relay]</span>
+<span class="tk">registrations_limit</span> = <span class="tv">3</span>
+
+<span class="ts">[discovery.autonat]</span>
+<span class="tk">probe_interval</span> = <span class="tv">"10s"</span>
+<span class="tk">max_candidates</span> = <span class="tv">5</span>
+
+<span class="ts">[server]</span>
+<span class="tk">listen</span> = [<span class="tv">"/ip4/127.0.0.1/tcp/2528"</span>]
+<span class="tk">auth_mode</span> = <span class="tv">"Proxy"</span>
+
+<span class="ts">[sync]</span>
+<span class="tk">timeout_ms</span> = <span class="tv">30000</span>
+<span class="tk">interval_ms</span> = <span class="tv">5000</span>
+<span class="tk">frequency_ms</span> = <span class="tv">10000</span>
+
+<span class="ts">[datastore]</span>
+<span class="tk">path</span> = <span class="tv">"data"</span>
+
+<span class="ts">[blobstore]</span>
+<span class="tk">path</span> = <span class="tv">"blobs"</span>
+
+<span class="ts">[specialized_node]</span>
+<span class="tk">invite_topic</span> = <span class="tv">"mero_specialized_node_invites"</span>
+<span class="tk">accept_mock_tee</span> = <span class="tv">false</span></div>
+</div>
+
+</div>
+</div>
+
+<script src="nav.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  arch.buildBreadcrumb([
+    { label: 'Home', href: 'index.html' },
+    { label: 'Config Reference' }
+  ]);
+});
+</script>
+</body>
+</html>

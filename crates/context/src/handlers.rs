@@ -5,6 +5,7 @@ use calimero_utils_actix::adapters::ActorExt;
 use crate::ContextManager;
 
 pub mod add_group_members;
+pub mod apply_signed_group_op;
 pub mod broadcast_group_aliases;
 pub mod broadcast_group_local_state;
 pub mod create_context;
@@ -50,7 +51,6 @@ pub mod update_application;
 pub mod update_group_settings;
 pub mod update_member_role;
 pub mod upgrade_group;
-mod utils;
 
 impl Handler<ContextMessage> for ContextManager {
     type Result = ();
@@ -72,13 +72,6 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::JoinContext { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::JoinContextOpenInvitation {
-                request: _,
-                outcome: _,
-            } => {
-                //TODO(identity): do we need that here? I don't think so.
-                //self.forward_handler(ctx, request, outcome)
-            }
             ContextMessage::Sync { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
@@ -89,6 +82,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::AddGroupMembers { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ApplySignedGroupOp { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RemoveGroupMembers { request, outcome } => {

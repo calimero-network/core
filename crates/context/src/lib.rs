@@ -1,15 +1,15 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
-use std::collections::{btree_map, BTreeMap, HashSet};
+use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
 use actix::{Actor, ActorFutureExt, AsyncContext, WrapFuture};
-use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_primitives::client::external::group::ExternalGroupClient;
 use calimero_context_primitives::client::ContextClient;
+use calimero_context_primitives::local_governance::SignedGroupOp;
+use calimero_dag::DagStore;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, UpgradePolicy};
@@ -23,6 +23,7 @@ use crate::metrics::Metrics;
 
 pub mod config;
 pub mod error;
+pub mod governance_dag;
 pub mod group_store;
 pub mod handlers;
 mod metrics;
@@ -54,10 +55,7 @@ pub struct ContextManager {
     /// for interacting with the datastore.
     context_client: ContextClient,
 
-    /// Configuration for interacting with external blockchain contracts (e.g., NEAR).
-    external_config: ExternalClientConfig,
-
-    /// Dedicated group identity keypair, decoupled from the NEAR signer key.
+    /// Dedicated group identity keypair for signed P2P group operations.
     group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
 
     /// An in-memory cache of active contexts (`ContextId` -> `ContextMeta`).
@@ -83,6 +81,10 @@ pub struct ContextManager {
     /// manual retry handler from spawning a second propagator while an
     /// existing one is still active (e.g. sleeping in its backoff delay).
     active_propagators: HashSet<ContextGroupId>,
+
+    /// Per-group governance DAG. Tracks causal ordering of signed group ops,
+    /// with a pending queue for out-of-order delivery.
+    group_dags: HashMap<ContextGroupId, Arc<tokio::sync::Mutex<DagStore<SignedGroupOp>>>>,
     //
     // todo! when runtime let's us compile blobs separate from its
     // todo! execution, we can introduce a cached::TimedSizedCache
@@ -97,15 +99,12 @@ pub struct ContextManager {
 /// * `datastore` - The persistent storage backend.
 /// * `node_client` - Client for interacting with the underlying Calimero node.
 /// * `context_client` - The context client facade.
-/// * `external_config` - Configuration for interacting with external blockchain contracts (e.g.,
-/// NEAR).
 /// * `prometheus_registry` - A mutable reference to a Prometheus registry for registering metrics.
 impl ContextManager {
     pub fn new(
         datastore: Store,
         node_client: NodeClient,
         context_client: ContextClient,
-        external_config: ExternalClientConfig,
         group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
@@ -113,7 +112,6 @@ impl ContextManager {
             datastore,
             node_client,
             context_client,
-            external_config,
             group_identity,
 
             contexts: BTreeMap::new(),
@@ -121,6 +119,7 @@ impl ContextManager {
 
             metrics: prometheus_registry.map(Metrics::new),
             active_propagators: HashSet::new(),
+            group_dags: HashMap::new(),
         }
     }
 
@@ -164,25 +163,17 @@ impl ContextManager {
             sk_bytes,
         ))
     }
+}
 
-    fn group_client(
-        &self,
-        group_id: ContextGroupId,
-        signing_key: [u8; 32],
-    ) -> eyre::Result<ExternalGroupClient> {
-        let params = self
-            .external_config
-            .params
-            .get("near")
-            .ok_or_else(|| eyre::eyre!("no 'near' protocol config"))?;
-
-        Ok(self.context_client.group_client(
-            group_id,
-            signing_key,
-            "near".to_owned(),
-            params.network.clone(),
-            params.contract_id.clone(),
-        ))
+impl ContextManager {
+    fn get_or_create_group_dag(
+        &mut self,
+        group_id: &ContextGroupId,
+    ) -> Arc<tokio::sync::Mutex<DagStore<SignedGroupOp>>> {
+        self.group_dags
+            .entry(*group_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(DagStore::new([0u8; 32]))))
+            .clone()
     }
 }
 
@@ -196,6 +187,8 @@ impl Actor for ContextManager {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         self.recover_in_progress_upgrades(ctx);
+        self.reload_group_dags();
+        self.start_group_heartbeat(ctx);
     }
 }
 
@@ -282,6 +275,98 @@ impl ContextManager {
                 act.active_propagators.remove(&group_id);
             }));
         }
+    }
+
+    /// Reloads persisted group ops into per-group DAGs so the pending queue
+    /// can correctly track causal parents for newly arriving deltas.
+    fn reload_group_dags(&mut self) {
+        let groups = match group_store::enumerate_all_groups(&self.datastore, 0, usize::MAX) {
+            Ok(g) => g,
+            Err(err) => {
+                tracing::error!(%err, "failed to enumerate groups for DAG reload");
+                return;
+            }
+        };
+
+        for (group_id_bytes, _meta) in &groups {
+            let group_id = ContextGroupId::from(*group_id_bytes);
+            let entries =
+                match group_store::read_op_log_after(&self.datastore, &group_id, 0, usize::MAX) {
+                    Ok(e) => e,
+                    Err(err) => {
+                        tracing::warn!(
+                            group_id = %hex::encode(group_id_bytes),
+                            %err,
+                            "failed to read op log for group DAG reload"
+                        );
+                        continue;
+                    }
+                };
+
+            if entries.is_empty() {
+                continue;
+            }
+
+            let dag = self.get_or_create_group_dag(&group_id);
+            let mut dag_guard = dag.try_lock().expect("DAG lock uncontended at startup");
+
+            for (_seq, op_bytes) in &entries {
+                let op: SignedGroupOp = match borsh::from_slice(op_bytes) {
+                    Ok(op) => op,
+                    Err(err) => {
+                        tracing::warn!(%err, "failed to decode persisted group op, skipping");
+                        continue;
+                    }
+                };
+                let delta = match governance_dag::signed_op_to_delta(&op) {
+                    Ok(d) => d,
+                    Err(err) => {
+                        tracing::warn!(
+                            %err,
+                            "failed to create delta from persisted op, skipping"
+                        );
+                        continue;
+                    }
+                };
+                dag_guard.restore_applied_delta(delta);
+            }
+
+            tracing::info!(
+                group_id = %hex::encode(group_id_bytes),
+                ops = entries.len(),
+                heads = dag_guard.get_heads().len(),
+                "reloaded group governance DAG"
+            );
+        }
+    }
+
+    fn start_group_heartbeat(&self, ctx: &mut actix::Context<Self>) {
+        let datastore = self.datastore.clone();
+        let node_client = self.node_client.clone();
+
+        ctx.run_interval(std::time::Duration::from_secs(30), move |_act, _ctx| {
+            let datastore = datastore.clone();
+            let node_client = node_client.clone();
+
+            actix::spawn(async move {
+                let groups = match group_store::enumerate_all_groups(&datastore, 0, usize::MAX) {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+
+                for (group_id_bytes, _meta) in groups {
+                    let gid = ContextGroupId::from(group_id_bytes);
+                    let head = match group_store::get_op_head(&datastore, &gid) {
+                        Ok(Some(h)) => h,
+                        _ => continue,
+                    };
+
+                    let _ = node_client
+                        .publish_group_heartbeat(group_id_bytes, head.dag_heads, 0)
+                        .await;
+                }
+            });
+        });
     }
 }
 

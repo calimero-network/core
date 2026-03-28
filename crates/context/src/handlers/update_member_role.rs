@@ -1,7 +1,8 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::UpdateMemberRoleRequest;
-use calimero_node_primitives::sync::GroupMutationKind;
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 
 use crate::group_store;
@@ -22,7 +23,6 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
     ) -> Self::Result {
         let node_identity = self.node_group_identity();
 
-        // Resolve requester: use provided value or fall back to node group identity
         let requester = match requester {
             Some(pk) => pk,
             None => match node_identity {
@@ -35,7 +35,6 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
             },
         };
 
-        // Resolve signing_key from node identity key
         let node_sk = node_identity.map(|(_, sk)| sk);
         let signing_key = node_sk;
 
@@ -46,7 +45,6 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
 
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
 
-            // Auto-store signing key if provided
             if let Some(ref sk) = signing_key {
                 let _ = group_store::store_group_signing_key(
                     &self.datastore,
@@ -75,23 +73,49 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
                 }
             }
 
-            group_store::add_group_member(&self.datastore, &group_id, &identity, new_role)?;
-
             Ok(())
         })() {
             return ActorResponse::reply(Err(err));
         }
 
+        let Some(current_role) =
+            group_store::get_group_member_role(&self.datastore, &group_id, &identity)
+                .ok()
+                .flatten()
+        else {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "identity is not a member of group '{group_id:?}'"
+            )));
+        };
+
+        if current_role == new_role {
+            return ActorResponse::reply(Ok(()));
+        }
+
+        let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let effective_signing_key = signing_key.or_else(|| {
+            group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
+                .ok()
+                .flatten()
+        });
 
         ActorResponse::r#async(
             async move {
-                let _ = node_client
-                    .broadcast_group_mutation(
-                        group_id.to_bytes(),
-                        GroupMutationKind::MemberRoleUpdated,
-                    )
-                    .await;
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!("local group governance requires a signing key for the requester")
+                })?);
+                group_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &group_id,
+                    &sk,
+                    GroupOp::MemberRoleSet {
+                        member: identity,
+                        role: new_role,
+                    },
+                )
+                .await?;
                 Ok(())
             }
             .into_actor(self),

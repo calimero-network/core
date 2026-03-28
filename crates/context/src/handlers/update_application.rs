@@ -29,7 +29,6 @@ use eyre::bail;
 use tracing::{debug, error, info};
 
 use crate::handlers::execute::storage::ContextStorage;
-use crate::handlers::utils::StoreContextHost;
 use crate::ContextManager;
 
 impl Handler<UpdateApplicationRequest> for ContextManager {
@@ -219,23 +218,15 @@ async fn finalize_application_update(
     context_client: &ContextClient,
     context: &mut Context,
     application: &Application,
-    public_key: PublicKey,
 ) -> eyre::Result<()> {
     let context_id = context.id;
 
-    let Some(config_client) = context_client.context_config(&context_id)? else {
+    if context_client.context_config(&context_id)?.is_none() {
         bail!(
             "missing context config parameters for context '{}'",
             context_id
         );
-    };
-
-    let external_client = context_client.external_client(&context_id, &config_client)?;
-
-    external_client
-        .config()
-        .update_application(&public_key, application)
-        .await?;
+    }
 
     let mut handle = datastore.handle();
 
@@ -261,7 +252,7 @@ pub async fn update_application_id(
     context: Option<Context>,
     application_id: ApplicationId,
     application: Option<Application>,
-    public_key: PublicKey,
+    _public_key: PublicKey,
 ) -> eyre::Result<Application> {
     let (mut context, application) = resolve_context_and_application(
         &context_client,
@@ -281,7 +272,6 @@ pub async fn update_application_id(
         &context_client,
         &mut context,
         &application,
-        public_key,
     )
     .await?;
 
@@ -490,7 +480,6 @@ pub(crate) async fn update_application_with_migration(
         &context_client,
         &mut context,
         &application,
-        public_key,
     )
     .await?;
 
@@ -518,30 +507,18 @@ async fn execute_migration(
         "Preparing to execute migration function"
     );
 
-    // Create storage for the migration execution
     let mut storage = ContextStorage::from(datastore.clone(), context_id);
 
-    // Create host context for membership queries
-    let context_host = StoreContextHost {
-        store: datastore.clone(),
-        context_id,
-    };
-
-    // Execute the migration function in a blocking task
-    // Migration functions take no parameters - context is accessed via host functions
-    // Use the update requestor's identity as executor for proper audit trail and authorization
     let outcome = global_runtime()
         .spawn_blocking(move || {
             module.run(
                 context_id,
                 executor_identity,
                 &method,
-                // Empty input - migration functions read old state via read_raw()
                 &[],
                 &mut storage,
                 None,
                 Some(node_client),
-                Some(Box::new(context_host)),
             )
         })
         .await

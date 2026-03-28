@@ -5,7 +5,6 @@ use core::fmt;
 use core::ops::Deref;
 use core::str::FromStr;
 use core::time::Duration;
-use std::borrow::Cow;
 use std::io;
 
 use serde::{Deserialize, Serialize};
@@ -97,143 +96,6 @@ impl FromStr for ContextId {
     }
 }
 
-/// A serialized and encoded payload for inviting a user to join a Context.
-///
-/// It is internally Borsh-serialized for compact, deterministic representation and
-/// then Base58-encoded for a human-readable string format.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(into = "String", try_from = "&str")]
-pub struct ContextInvitationPayload(Vec<u8>);
-
-impl fmt::Debug for ContextInvitationPayload {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        #[cfg(feature = "borsh")]
-        {
-            let is_alternate = f.alternate();
-            let mut d = f.debug_struct("ContextInvitationPayload");
-            let (context_id, invitee_id, protocol, network, contract_id) =
-                self.parts().map_err(|_| fmt::Error)?;
-
-            _ = d
-                .field("context_id", &context_id)
-                .field("invitee_id", &invitee_id)
-                .field("protocol", &protocol)
-                .field("network", &network)
-                .field("contract_id", &contract_id);
-
-            if !is_alternate {
-                return d.finish();
-            }
-        }
-
-        let mut d = f.debug_struct("ContextInvitationPayload");
-        _ = d.field("raw", &self.to_string());
-
-        d.finish()
-    }
-}
-
-impl fmt::Display for ContextInvitationPayload {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad(&bs58::encode(self.0.as_slice()).into_string())
-    }
-}
-
-impl FromStr for ContextInvitationPayload {
-    type Err = io::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        bs58::decode(s)
-            .into_vec()
-            .map(Self)
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
-    }
-}
-
-impl From<ContextInvitationPayload> for String {
-    fn from(payload: ContextInvitationPayload) -> Self {
-        bs58::encode(payload.0.as_slice()).into_string()
-    }
-}
-
-impl TryFrom<&str> for ContextInvitationPayload {
-    type Error = io::Error;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        value.parse()
-    }
-}
-
-// TODO: add implementation of `impl TryFrom<InvitationPayload> for ContextInvitationPayload` and vice
-// versa for more convenient handling.
-
-#[cfg(feature = "borsh")]
-#[expect(single_use_lifetimes, reason = "False positive")]
-const _: () = {
-    use std::borrow::Cow;
-
-    use borsh::{BorshDeserialize, BorshSerialize};
-
-    use crate::identity::PublicKey;
-
-    #[derive(BorshSerialize, BorshDeserialize)]
-    struct InvitationPayload<'a> {
-        context_id: [u8; DIGEST_SIZE],
-        invitee_id: [u8; DIGEST_SIZE],
-        protocol: Cow<'a, str>,
-        network: Cow<'a, str>,
-        contract_id: Cow<'a, str>,
-    }
-
-    /// Creates a new, serialized invitation payload.
-    ///
-    /// # Arguments
-    /// * `context_id` - The ID of the context to join.
-    /// * `invitee_id` - The public key of the identity being invited.
-    /// * `protocol` - The protocol used by the context (e.g. "near").
-    /// * `network` - The network identifier (e.g. "testnet").
-    /// * `contract_id` - The contract id for the context.
-    ///
-    /// # Returns
-    /// A `Result` containing the `ContextInvitationPayload` or an `io::Error` if serialization fails.
-    impl ContextInvitationPayload {
-        pub fn new(
-            context_id: ContextId,
-            invitee_id: PublicKey,
-            protocol: Cow<'_, str>,
-            network: Cow<'_, str>,
-            contract_id: Cow<'_, str>,
-        ) -> io::Result<Self> {
-            let payload = InvitationPayload {
-                context_id: *context_id,
-                invitee_id: *invitee_id,
-                protocol,
-                network,
-                contract_id,
-            };
-
-            borsh::to_vec(&payload).map(Self)
-        }
-
-        /// Deserializes the payload and extracts its constituent parts.
-        ///
-        /// # Returns
-        /// A `Result` containing a tuple of the decoded parts or an `io::Error` if deserialization fails.
-        /// The returned tuple consists of: `context_id, public_key, protocol, network, contract_id`.
-        pub fn parts(&self) -> io::Result<(ContextId, PublicKey, String, String, String)> {
-            let payload: InvitationPayload<'_> = borsh::from_slice(&self.0)?;
-
-            Ok((
-                payload.context_id.into(),
-                payload.invitee_id.into(),
-                payload.protocol.into_owned(),
-                payload.network.into_owned(),
-                payload.contract_id.into_owned(),
-            ))
-        }
-    }
-};
-
 /// Represents the core metadata of a Context.
 ///
 /// This struct provides a snapshot of the context's essential properties,
@@ -291,20 +153,12 @@ impl Context {
 }
 
 /// A collection of configuration parameters for a Context.
-///
-/// This is used to define the external, on-chain properties of a context.
-/// The use of `Cow<'a, str>` is an optimization to avoid string allocations when the
-/// data can be borrowed.
 #[derive(Clone, Debug)]
-pub struct ContextConfigParams<'a> {
-    /// The name of the protocol used for external communication (e.g., "near").
-    pub protocol: Cow<'a, str>,
-    /// The identifier of the external network (e.g., "testnet").
-    pub network_id: Cow<'a, str>,
-    /// The account ID of the main smart contract for this context on the external network.
-    pub contract_id: Cow<'a, str>,
-    /// The account ID of a proxy contract used for interactions.
-    pub proxy_contract: Cow<'a, str>,
+pub struct ContextConfigParams {
+    /// The application that this context runs, supplied by the caller during
+    /// bootstrap so `sync_context_config` does not need to read `ContextMeta`
+    /// (which has not been written yet at that point).
+    pub application_id: Option<ApplicationId>,
     /// A revision number for the application, used for tracking updates.
     pub application_revision: u64,
     /// A revision number for the members list, used for tracking membership changes.
@@ -312,7 +166,7 @@ pub struct ContextConfigParams<'a> {
 }
 
 /// Controls how application upgrades propagate across contexts in a group.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum UpgradePolicy {
     /// Upgrade all contexts immediately when the group target changes.
@@ -445,63 +299,37 @@ const _: () = {
         inviter_identity: [u8; DIGEST_SIZE],
         invitee_identity: Option<[u8; DIGEST_SIZE]>,
         expiration: Option<u64>,
-        protocol: String,
-        network_id: String,
-        contract_id: String,
         inviter_signature: String,
         secret_salt: [u8; 32],
-        expiration_block_height: u64,
+        expiration_timestamp: u64,
     }
 
     impl GroupInvitationPayload {
         /// Creates a new, serialized group invitation payload.
-        ///
-        /// # Arguments
-        /// * `group_id` - The 32-byte group identifier.
-        /// * `inviter_identity` - The public key of the admin who created the invitation.
-        /// * `invitee_identity` - Optional specific invitee. `None` means open invitation.
-        /// * `expiration` - Optional unix timestamp after which the invitation is invalid.
-        /// * `protocol` - Protocol name (e.g., "near").
-        /// * `network_id` - Network identifier (e.g., "testnet").
-        /// * `contract_id` - Contract account ID on the external network.
-        /// * `inviter_signature` - Hex-encoded admin signature over the invitation.
-        /// * `secret_salt` - Random salt for MEV protection.
-        /// * `expiration_block_height` - Block-height expiration for the contract.
         #[allow(clippy::too_many_arguments)]
         pub fn new(
             group_id: [u8; DIGEST_SIZE],
             inviter_identity: PublicKey,
             invitee_identity: Option<PublicKey>,
             expiration: Option<u64>,
-            protocol: &str,
-            network_id: &str,
-            contract_id: &str,
             inviter_signature: String,
             secret_salt: [u8; 32],
-            expiration_block_height: u64,
+            expiration_timestamp: u64,
         ) -> io::Result<Self> {
             let payload = GroupInvitationInner {
                 group_id,
                 inviter_identity: *inviter_identity,
                 invitee_identity: invitee_identity.map(|pk| *pk),
                 expiration,
-                protocol: protocol.to_owned(),
-                network_id: network_id.to_owned(),
-                contract_id: contract_id.to_owned(),
                 inviter_signature,
                 secret_salt,
-                expiration_block_height,
+                expiration_timestamp,
             };
 
             borsh::to_vec(&payload).map(Self)
         }
 
         /// Deserializes the payload and extracts its constituent parts.
-        ///
-        /// # Returns
-        /// A tuple of `(group_id_bytes, inviter_identity, invitee_identity, expiration,
-        /// protocol, network_id, contract_id, inviter_signature, secret_salt,
-        /// expiration_block_height)`.
         #[allow(clippy::type_complexity)]
         pub fn parts(
             &self,
@@ -510,9 +338,6 @@ const _: () = {
             PublicKey,
             Option<PublicKey>,
             Option<u64>,
-            String,
-            String,
-            String,
             String,
             [u8; 32],
             u64,
@@ -524,12 +349,9 @@ const _: () = {
                 payload.inviter_identity.into(),
                 payload.invitee_identity.map(Into::into),
                 payload.expiration,
-                payload.protocol,
-                payload.network_id,
-                payload.contract_id,
                 payload.inviter_signature,
                 payload.secret_salt,
-                payload.expiration_block_height,
+                payload.expiration_timestamp,
             ))
         }
     }
@@ -543,60 +365,6 @@ mod tests {
     use crate::identity::PublicKey;
 
     use std::str::FromStr;
-
-    #[test]
-    fn test_context_invitation_payload_roundtrip() {
-        // Setup initial data
-        let context_id = ContextId::from([1; DIGEST_SIZE]);
-        let invitee_id = PublicKey::from([2; DIGEST_SIZE]);
-        let protocol = String::from("near");
-        let network = String::from("testnet");
-        let contract_id = String::from("calimero.testnet");
-
-        // Create the context invitation payload
-        let invitation_payload = ContextInvitationPayload::new(
-            context_id,
-            invitee_id,
-            protocol.clone().into(),
-            network.clone().into(),
-            contract_id.clone().into(),
-        )
-        .expect("Payload creation should succeed");
-
-        // Encode context invitation payload to a Base58 string
-        let encoded_string = invitation_payload.to_string();
-        let expected_encoded_string = "4Mb2deLtaS7ApRdhh5ms1GuT2GtGKkKxDMakmd1C3YA2NRYwniNiijac1Nn8NYHVeWoqzvYFpmJMekAeUYKyWpq5j1QaVjpW6r5V86oo3tz6uKx1Hri82LHf8rrs2m2dyjZUZeCaeBEb";
-        assert!(!encoded_string.is_empty());
-        assert_eq!(&encoded_string, expected_encoded_string);
-
-        // Decode context invitation payload back from the Base58 string
-        let decoded_invitation_payload = ContextInvitationPayload::from_str(&encoded_string)
-            .expect("Payload decoding should succeed");
-
-        // Extract parts and verify they match the original data
-        let (
-            decoded_context_id,
-            decoded_invitee_id,
-            decoded_protocol,
-            decoded_network,
-            decoded_contract_id,
-        ) = decoded_invitation_payload
-            .parts()
-            .expect("Extracting parts should succeed");
-
-        assert_eq!(context_id, decoded_context_id);
-        assert_eq!(invitee_id, decoded_invitee_id);
-        assert_eq!(protocol, decoded_protocol);
-        assert_eq!(network, decoded_network);
-        assert_eq!(contract_id, decoded_contract_id);
-    }
-
-    #[test]
-    fn test_context_invitation_payload_invalid_base58() {
-        let invalid_str = "This is not valid Base58!";
-        let result = ContextInvitationPayload::from_str(invalid_str);
-        assert!(result.is_err());
-    }
 
     #[test]
     fn test_context_id_rountrip() {
@@ -633,9 +401,6 @@ mod tests {
             inviter,
             Some(invitee),
             Some(1_700_000_000),
-            "near",
-            "testnet",
-            "calimero.testnet",
             "abcd1234".to_string(),
             salt,
             999_999_999,
@@ -648,28 +413,15 @@ mod tests {
         let decoded =
             GroupInvitationPayload::from_str(&encoded).expect("Payload decoding should succeed");
 
-        let (
-            g,
-            inv,
-            invitee_out,
-            exp,
-            protocol,
-            network_id,
-            contract_id,
-            sig,
-            decoded_salt,
-            exp_bh,
-        ) = decoded.parts().expect("Parts extraction should succeed");
+        let (g, inv, invitee_out, exp, sig, decoded_salt, exp_ts) =
+            decoded.parts().expect("Parts extraction should succeed");
         assert_eq!(g, group_id);
         assert_eq!(inv, inviter);
         assert_eq!(invitee_out, Some(invitee));
         assert_eq!(exp, Some(1_700_000_000));
-        assert_eq!(protocol, "near");
-        assert_eq!(network_id, "testnet");
-        assert_eq!(contract_id, "calimero.testnet");
         assert_eq!(sig, "abcd1234");
         assert_eq!(decoded_salt, salt);
-        assert_eq!(exp_bh, 999_999_999);
+        assert_eq!(exp_ts, 999_999_999);
     }
 
     #[test]
@@ -683,9 +435,6 @@ mod tests {
             inviter,
             None,
             None,
-            "near",
-            "testnet",
-            "c.near",
             "sig_hex".to_string(),
             salt,
             1_000_000_000,
@@ -696,28 +445,15 @@ mod tests {
         let decoded =
             GroupInvitationPayload::from_str(&encoded).expect("Payload decoding should succeed");
 
-        let (
-            g,
-            inv,
-            invitee_out,
-            exp,
-            protocol,
-            network_id,
-            contract_id,
-            sig,
-            decoded_salt,
-            exp_bh,
-        ) = decoded.parts().expect("Parts extraction should succeed");
+        let (g, inv, invitee_out, exp, sig, decoded_salt, exp_ts) =
+            decoded.parts().expect("Parts extraction should succeed");
         assert_eq!(g, group_id);
         assert_eq!(inv, inviter);
         assert_eq!(invitee_out, None);
         assert_eq!(exp, None);
-        assert_eq!(protocol, "near");
-        assert_eq!(network_id, "testnet");
-        assert_eq!(contract_id, "c.near");
         assert_eq!(sig, "sig_hex");
         assert_eq!(decoded_salt, salt);
-        assert_eq!(exp_bh, 1_000_000_000);
+        assert_eq!(exp_ts, 1_000_000_000);
     }
 
     #[test]

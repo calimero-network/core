@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Local group governance** replaces all blockchain/NEAR/relayer infrastructure for context management. Group membership, context registration, and member capabilities are now managed via signed gossip ops and a local `group_store`. The external client, proxy client, proposal system, relayer crate, and all NEAR protocol dependencies have been removed from core.
+- **`merod init`** now produces a local-only config; the `--group-governance` flag and relayer signer are no longer applicable.
+- **`calimero-context-config`** has been simplified — the `client`, `client-base`, and `near_client` Cargo features and associated NEAR/relayer transport code have been removed.
+
 ## [0.10.1-rc.8] - 2026-03-24
 
 ### Added

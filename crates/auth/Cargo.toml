@@ -29,9 +29,9 @@ hex.workspace = true
 ic-agent = { workspace = true, optional = true }
 jsonwebtoken.workspace = true
 lazy_static.workspace = true
-near-crypto.workspace = true
-near-jsonrpc-client.workspace = true
-near-primitives.workspace = true
+near-crypto = "0.27.0"
+near-jsonrpc-client = { version = "0.14.0", default-features = false, features = ["rustls-tls"] }
+near-primitives = "0.27.0"
 parking_lot.workspace = true
 rand.workspace = true
 regex = "1.10.2"

@@ -1,7 +1,8 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::group::ManageContextAllowlistRequest;
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_node_primitives::sync::GroupMutationKind;
+use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
@@ -44,7 +45,6 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
                 bail!("group '{group_id:?}' not found");
             }
 
-            // Allowlist can be managed by admin or context creator
             let is_admin = group_store::is_group_admin(&self.datastore, &group_id, &requester)?;
             if !is_admin {
                 if let Some((_, creator_bytes)) =
@@ -62,24 +62,6 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
                 group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
             }
 
-            for member in &add {
-                group_store::add_to_context_allowlist(
-                    &self.datastore,
-                    &group_id,
-                    &context_id,
-                    member,
-                )?;
-            }
-
-            for member in &remove {
-                group_store::remove_from_context_allowlist(
-                    &self.datastore,
-                    &group_id,
-                    &context_id,
-                    member,
-                )?;
-            }
-
             Ok(())
         })() {
             return ActorResponse::reply(Err(err));
@@ -90,46 +72,47 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
                 group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
         }
 
-        let current_allowlist =
+        let mut merged_allowlist =
             match group_store::list_context_allowlist(&self.datastore, &group_id, &context_id) {
                 Ok(v) => v,
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
+        for r in &remove {
+            merged_allowlist.retain(|x| x != r);
+        }
+        for a in &add {
+            if !merged_allowlist.contains(a) {
+                merged_allowlist.push(*a);
+            }
+        }
 
+        let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
                 .flatten()
         });
-        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
 
         ActorResponse::r#async(
             async move {
-                if let Some(client_result) = group_client_result {
-                    let mut group_client = client_result?;
-                    let add_signer_ids: Vec<calimero_context_config::types::SignerId> = add
-                        .iter()
-                        .map(|pk| pk.rt())
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let remove_signer_ids: Vec<calimero_context_config::types::SignerId> = remove
-                        .iter()
-                        .map(|pk| pk.rt())
-                        .collect::<Result<Vec<_>, _>>()?;
-                    group_client
-                        .manage_context_allowlist(context_id, add_signer_ids, remove_signer_ids)
-                        .await?;
-                }
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!("local group governance requires a signing key for the requester")
+                })?);
+                let members = merged_allowlist.clone();
+                group_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &group_id,
+                    &sk,
+                    GroupOp::ContextAllowlistReplaced {
+                        context_id,
+                        members,
+                    },
+                )
+                .await?;
 
-                info!(
-                    ?group_id,
-                    %context_id,
-                    added = add.len(),
-                    removed = remove.len(),
-                    "context allowlist updated"
-                );
-
-                let members_raw: Vec<[u8; 32]> = current_allowlist.iter().map(|pk| **pk).collect();
+                let members_raw: Vec<[u8; 32]> = merged_allowlist.iter().map(|pk| **pk).collect();
                 let _ = node_client
                     .broadcast_group_mutation(
                         group_id.to_bytes(),
@@ -139,6 +122,14 @@ impl Handler<ManageContextAllowlistRequest> for ContextManager {
                         },
                     )
                     .await;
+
+                info!(
+                    ?group_id,
+                    %context_id,
+                    added = add.len(),
+                    removed = remove.len(),
+                    "context allowlist updated"
+                );
 
                 Ok(())
             }

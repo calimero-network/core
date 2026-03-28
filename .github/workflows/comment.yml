@@ -6,9 +6,7 @@ on:
       [
         "PR Description",
         "PR Title",
-        "Merobox Proposals - Blockchain Integration Tests",
         "E2E - Rust Apps",
-        "E2E - Blockchain Proposals",
       ]
     types:
       - completed
@@ -27,7 +25,6 @@ jobs:
         run: |
           case "${{ github.event.workflow_run.name }}" in
             "E2E - Rust Apps") echo "name=pr-comment-payload-rust-apps" >> $GITHUB_OUTPUT ;;
-            "E2E - Blockchain Proposals") echo "name=pr-comment-payload-blockchain" >> $GITHUB_OUTPUT ;;
             *) echo "name=pr-comment-payload" >> $GITHUB_OUTPUT ;;
           esac
 

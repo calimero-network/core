@@ -1,7 +1,7 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::group::AddGroupMembersRequest;
-use calimero_node_primitives::sync::GroupMutationKind;
+use calimero_context_primitives::local_governance::GroupOp;
+use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
@@ -66,29 +66,32 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                 .ok()
                 .flatten()
         });
-        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
+        let members = members.clone();
 
         ActorResponse::r#async(
             async move {
-                if let Some(client_result) = group_client_result {
-                    let mut group_client = client_result?;
-                    let signer_ids: Vec<calimero_context_config::types::SignerId> = members
-                        .iter()
-                        .map(|(pk, _)| pk.rt())
-                        .collect::<Result<Vec<_>, _>>()?;
-                    group_client.add_group_members(&signer_ids).await?;
-                }
-
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!("local group governance requires a signing key for the requester")
+                })?);
                 for (identity, role) in &members {
-                    group_store::add_group_member(&datastore, &group_id, identity, role.clone())?;
+                    group_store::sign_apply_and_publish(
+                        &datastore,
+                        &node_client,
+                        &group_id,
+                        &sk,
+                        GroupOp::MemberAdded {
+                            member: *identity,
+                            role: role.clone(),
+                        },
+                    )
+                    .await?;
                 }
-
-                info!(?group_id, count = members.len(), %requester, "members added to group");
-
-                let _ = node_client
-                    .broadcast_group_mutation(group_id.to_bytes(), GroupMutationKind::MembersAdded)
-                    .await;
-
+                info!(
+                    ?group_id,
+                    count = members.len(),
+                    %requester,
+                    "members added to group (local governance signed ops)"
+                );
                 Ok(())
             }
             .into_actor(self),

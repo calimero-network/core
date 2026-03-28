@@ -13,6 +13,11 @@ cd core/crates/merod
 cargo build --release
 ```
 
+### Cargo features
+
+- **`near_init`** (enabled by default) — NEAR protocol blocks and local signer key generation during `merod init` for **`external`** governance (pulls in `near-crypto` on the `merod` crate).
+- Build with **`cargo build --no-default-features`** to drop that dependency; then only **`merod init --group-governance local`** is supported at init time (external / default init exits with an error directing you to rebuild with default features).
+
 ## Quick Start
 
 ```bash
@@ -51,6 +56,9 @@ merod --node node1 init \
   --protocol near \
   --relayer-url https://relayer.near.org
 
+# Local group governance (no NEAR protocol block or relayer in context client config)
+merod --node node1 init --group-governance local
+
 # Authentication mode
 merod --node node1 init \
   --auth-mode embedded \
@@ -69,7 +77,8 @@ merod --node node1 init --force
 - `--boot-nodes <ADDR>...` - Bootstrap nodes for P2P discovery
 - `--boot-network <NETWORK>` - Use nodes from known network (`calimero-dev`, `ipfs`)
 - `--protocol <PROTOCOL>` - Blockchain protocol (`near`)
-- `--relayer-url <URL>` - Relayer URL for blockchain transactions
+- `--group-governance <external|local>` - Group policy: `external` (default, NEAR blocks in context client config) or `local` (omit NEAR protocol params; signed gossip governance)
+- `--relayer-url <URL>` - Relayer URL for blockchain transactions (written into context client config when applicable; not emitted for `--group-governance local`)
 - `--auth-mode <MODE>` - Authentication mode (`none`, `embedded`, `remote`)
 - `--auth-storage <STORAGE>` - Auth storage type (`persistent`, `memory`)
 - `--auth-storage-path <PATH>` - Path for persistent auth storage

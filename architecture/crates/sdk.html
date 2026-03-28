@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SDK &amp; Apps — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="../system-overview.html">System Overview</a><span class="sep">/</span><span>SDK &amp; Apps</span></div>
+
+<h1>SDK &amp; <em>Apps</em></h1>
+<p class="page-subtitle">calimero-sdk · calimero-sdk-macros · calimero-sys · calimero-wasm-abi</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     1. PURPOSE
+     ═══════════════════════════════════════════════════════════════════ -->
+<h2>Purpose</h2>
+<p style="margin-bottom:32px;">Proc-macro SDK for building Calimero applications. Developers define state with <span class="code">#[app::state]</span>, implement methods with <span class="code">#[app::logic]</span>, and emit events with <span class="code">#[app::event]</span>. The SDK compiles to WASM and exposes methods as JSON-RPC-callable endpoints. All persistent collections use CRDT types for conflict-free replicated state across peers.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     2. PROC MACRO ATTRIBUTES
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Proc Macro Attributes</h2>
+<p style="margin-bottom:16px;">Each attribute transforms user-written Rust into the glue code needed for WASM execution, storage integration, and ABI generation.</p>
+
+<div class="fr">
+  <div class="fp">#[app::state]</div>
+  <div class="fd">Marks the persistent state struct. Generates automatic storage keys, versioning info, Borsh <span class="code">Serialize</span>/<span class="code">Deserialize</span> derives, and CRDT merge registration. Each field with a CRDT type gets its own storage subtree.</div>
+</div>
+<div class="fr">
+  <div class="fp">#[app::logic]</div>
+  <div class="fd">Transforms an <span class="code">impl</span> block's public methods into WASM exports. Each method gets input deserialization from Borsh/JSON, output serialization, and error propagation via the host ABI. Private methods are not exported.</div>
+</div>
+<div class="fr">
+  <div class="fp">#[app::event]</div>
+  <div class="fd">Declares event types that can be emitted via <span class="code">app::emit!</span> or <span class="code">emit_with_handler</span>. Events are Borsh-serialized and delivered to subscribers via the node's event system.</div>
+</div>
+<div class="fr">
+  <div class="fp">#[app::init]</div>
+  <div class="fd">Initialization hook called on first deployment. Sets up initial state, default values, and any one-time configuration. Runs before any logic methods are available.</div>
+</div>
+<div class="fr">
+  <div class="fp">#[app::destroy]</div>
+  <div class="fd">Cleanup hook called on application removal. Can perform resource cleanup, final event emission, or state archival before the context is torn down.</div>
+</div>
+<div class="fr">
+  <div class="fp">#[app::migrate]</div>
+  <div class="fd">State migration between versions. Reads raw bytes from the previous schema, transforms them into the new struct layout, and writes back. Supports multi-step migration chains across versions.</div>
+</div>
+<div class="fr">
+  <div class="fp">#[app::private]</div>
+  <div class="fd">Marks a method as internal-only — excluded from the ABI and not callable via JSON-RPC. Used for helper logic that should not be exposed to external callers.</div>
+</div>
+<div class="fr">
+  <div class="fp">app::emit!</div>
+  <div class="fd">Macro to emit events from within logic methods. Serializes the event payload and delivers it through the host event system. Supports typed event structs declared with <span class="code">#[app::event]</span>.</div>
+</div>
+<div class="fr">
+  <div class="fp">app::err! / bail! / log!</div>
+  <div class="fd">Error handling and logging macros. <span class="code">err!</span> constructs typed errors, <span class="code">bail!</span> returns early with an error, and <span class="code">log!</span> writes to the host debug log. All integrate with the WASM host function ABI.</div>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="ld" style="background:#f97316"></div>State / lifecycle</div>
+  <div class="legend-item"><div class="ld" style="background:#3b82f6"></div>Logic / export</div>
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>Events / logging</div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     3. APP LIFECYCLE
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>App Lifecycle</h2>
+<p style="margin-bottom:18px;">From writing application code to executing methods in a live context.</p>
+
+<div class="step"><div class="n">1</div>
+  <h4>Write App with SDK</h4>
+  <p>Define your state struct with <span class="code">#[app::state]</span>, implement methods with <span class="code">#[app::logic]</span>, declare events with <span class="code">#[app::event]</span>. Use CRDT collections (<span class="code">Map</span>, <span class="code">Set</span>, <span class="code">LwwRegister</span>) for conflict-free replicated state.</p>
+</div>
+<div class="step"><div class="n">2</div>
+  <h4>Build with cargo-mero</h4>
+  <p>Run <span class="code">cargo mero build</span> to compile to <span class="code">.wasm</span>. The build tool runs proc-macro expansion, generates the ABI manifest, and targets <span class="code">wasm32-unknown-unknown</span>. The output is a single <span class="code">.wasm</span> binary ready for installation.</p>
+</div>
+<div class="step"><div class="n">3</div>
+  <h4>Install Application</h4>
+  <p>Use <span class="code">meroctl app install</span> to upload the <span class="code">.wasm</span> binary to a running node. The node stores it as a blob, computes its <span class="code">BlobId</span> (content hash), and registers it in the application catalog.</p>
+</div>
+<div class="step"><div class="n">4</div>
+  <h4>Create Context</h4>
+  <p>Create a context (group + application binding) via the admin API or <span class="code">meroctl context create</span>. This associates the installed application with a new group, sets up storage, and subscribes to the context's gossipsub topic.</p>
+</div>
+<div class="step"><div class="n">5</div>
+  <h4>Execute Methods via JSON-RPC</h4>
+  <p>External clients call methods on the running context via <span class="code">JSON-RPC 2.0</span>. Each call is deserialized, executed in the WASM runtime, and produces a delta that is broadcast to all peers via gossip. State converges automatically.</p>
+</div>
+
+<svg viewBox="0 0 960 80" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-top:18px;">
+  <defs>
+    <marker id="sdk-arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#f97316"/></marker>
+  </defs>
+
+  <rect x="10" y="15" width="130" height="50" rx="8" fill="#f9731610" stroke="#f97316" stroke-width="1.2"/>
+  <text x="75" y="37" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Write App</text>
+  <text x="75" y="52" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">SDK macros</text>
+
+  <line x1="140" y1="40" x2="170" y2="40" stroke="#f97316" stroke-width="1.5" marker-end="url(#sdk-arr)"/>
+
+  <rect x="170" y="15" width="140" height="50" rx="8" fill="#ec489910" stroke="#ec4899" stroke-width="1.2"/>
+  <text x="240" y="37" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">cargo mero build</text>
+  <text x="240" y="52" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">.wasm output</text>
+
+  <line x1="310" y1="40" x2="340" y2="40" stroke="#f97316" stroke-width="1.5" marker-end="url(#sdk-arr)"/>
+
+  <rect x="340" y="15" width="150" height="50" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.2"/>
+  <text x="415" y="37" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">meroctl install</text>
+  <text x="415" y="52" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">blob store</text>
+
+  <line x1="490" y1="40" x2="520" y2="40" stroke="#f97316" stroke-width="1.5" marker-end="url(#sdk-arr)"/>
+
+  <rect x="520" y="15" width="160" height="50" rx="8" fill="#10b98110" stroke="#10b981" stroke-width="1.2"/>
+  <text x="600" y="37" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">Create Context</text>
+  <text x="600" y="52" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">group + app</text>
+
+  <line x1="680" y1="40" x2="710" y2="40" stroke="#f97316" stroke-width="1.5" marker-end="url(#sdk-arr)"/>
+
+  <rect x="710" y="15" width="170" height="50" rx="8" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="795" y="37" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">JSON-RPC Execute</text>
+  <text x="795" y="52" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="7">call methods</text>
+</svg>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     4. CRDT COLLECTIONS
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>CRDT Collections</h2>
+<p style="margin-bottom:18px;">Conflict-free replicated data types available to application state. All implement the <span class="code">Mergeable</span> trait for automatic convergence across peers.</p>
+
+<div class="g2" style="margin-bottom:16px;">
+  <div class="cb">
+    <h4 style="color:#10b981;">Map&lt;K, V&gt;</h4>
+    <p style="margin-top:8px;">Key-value store with per-key merge semantics. Supports nested maps — inner maps merge recursively. Values must implement <span class="code">Mergeable</span>. Used for most application state.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">use</span> calimero_sdk::collections::<span class="ty">Map</span>;<br><br>
+<span class="kw">struct</span> <span class="ty">State</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">users</span>: Map&lt;AccountId, UserProfile&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">nested</span>: Map&lt;String, Map&lt;String, Value&gt;&gt;,<br>
+}
+    </div>
+  </div>
+  <div class="cb">
+    <h4 style="color:#3b82f6;">Set&lt;T&gt;</h4>
+    <p style="margin-top:8px;">Add-wins set. Concurrent additions and removals resolve in favor of additions. Elements must be <span class="code">Eq + Hash + Borsh</span>. Ideal for membership lists, tags, and unique collections.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">use</span> calimero_sdk::collections::<span class="ty">Set</span>;<br><br>
+<span class="kw">struct</span> <span class="ty">State</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">members</span>: Set&lt;AccountId&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">tags</span>: Set&lt;String&gt;,<br>
+}
+    </div>
+  </div>
+</div>
+
+<div class="g2" style="margin-bottom:16px;">
+  <div class="cb">
+    <h4 style="color:#f59e0b;">LwwRegister&lt;T&gt;</h4>
+    <p style="margin-top:8px;">Last-write-wins register with logical timestamp. Concurrent writes resolve by highest timestamp. Simple but effective for single-value fields where latest value is always preferred.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">use</span> calimero_sdk::collections::<span class="ty">LwwRegister</span>;<br><br>
+<span class="kw">struct</span> <span class="ty">State</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">title</span>: LwwRegister&lt;String&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">config</span>: LwwRegister&lt;AppConfig&gt;,<br>
+}
+    </div>
+  </div>
+  <div class="cb">
+    <h4 style="color:#8b5cf6;">RGA (Replicated Growable Array)</h4>
+    <p style="margin-top:8px;">Sequence CRDT for ordered collections and text. Supports concurrent insert, delete, and move operations. Preserves user intent for collaborative editing scenarios.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="comment">// Used internally for text/sequence state</span><br>
+<span class="comment">// Supports: insert_at, delete_at, move</span><br>
+<span class="comment">// Conflict resolution: position-based</span>
+    </div>
+  </div>
+</div>
+
+<div class="cb" style="margin-bottom:0;">
+  <h4 style="color:#06b6d4;">Mergeable Trait</h4>
+  <p style="margin-top:8px;">Universal merge interface implemented by all CRDT types. The runtime calls <span class="code">merge()</span> automatically when applying incoming deltas from peers. Custom types can implement this trait for domain-specific merge logic.</p>
+  <div class="typedef" style="margin-top:10px;">
+<span class="kw">pub trait</span> <span class="ty">Mergeable</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">merge</span>(&amp;<span class="kw">mut</span> self, other: <span class="ty">Self</span>) -&gt; <span class="ty">MergeResult</span>;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">is_empty</span>(&amp;self) -&gt; <span class="kw">bool</span>;<br>
+}
+  </div>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>Key-value (Map)</div>
+  <div class="legend-item"><div class="ld" style="background:#3b82f6"></div>Collection (Set)</div>
+  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>Register (LWW)</div>
+  <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>Sequence (RGA)</div>
+  <div class="legend-item"><div class="ld" style="background:#06b6d4"></div>Trait (Mergeable)</div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     5. SAMPLE APPS
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Sample Apps</h2>
+<p style="margin-bottom:18px;">Reference applications demonstrating SDK features, CRDT patterns, and migration workflows.</p>
+
+<div class="g4">
+  <div class="cb">
+    <h4 style="color:#f97316;">kv-store</h4>
+    <p style="margin-top:6px;">Basic key-value store using <span class="code">Map&lt;String, String&gt;</span>. Demonstrates <span class="code">#[app::state]</span>, <span class="code">#[app::logic]</span>, and simple CRUD operations. The canonical "hello world" for Calimero apps.</p>
+    <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/kv-store" target="_blank" rel="noopener">apps/kv-store</a>
+  </div>
+  <div class="cb">
+    <h4 style="color:#ec4899;">collaborative-editor</h4>
+    <p style="margin-top:6px;">Real-time collaborative text editor. Uses RGA for character-level CRDT operations. Demonstrates event emission for cursor position sharing and multi-user editing.</p>
+    <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/collaborative-editor" target="_blank" rel="noopener">apps/collaborative-editor</a>
+  </div>
+  <div class="cb">
+    <h4 style="color:#10b981;">access-control</h4>
+    <p style="margin-top:6px;">Role-based access control. Uses <span class="code">Map&lt;AccountId, Set&lt;Role&gt;&gt;</span> for per-user role sets. Demonstrates <span class="code">#[app::private]</span> for internal admin checks.</p>
+    <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/access-control" target="_blank" rel="noopener">apps/access-control</a>
+  </div>
+  <div class="cb">
+    <h4 style="color:#3b82f6;">blobs</h4>
+    <p style="margin-top:6px;">Binary large object storage. Demonstrates the blob API for storing and retrieving arbitrary binary data via content-addressed <span class="code">BlobId</span> handles.</p>
+    <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/blobs" target="_blank" rel="noopener">apps/blobs</a>
+  </div>
+  <div class="cb">
+    <h4 style="color:#8b5cf6;">nested-crdt-test</h4>
+    <p style="margin-top:6px;">Nested CRDT stress test. Uses <span class="code">Map&lt;K, Map&lt;K, Set&lt;V&gt;&gt;&gt;</span> to verify recursive merge behavior under concurrent modifications.</p>
+    <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/nested-crdt-test" target="_blank" rel="noopener">apps/nested-crdt-test</a>
+  </div>
+  <div class="cb">
+    <h4 style="color:#f59e0b;">team-metrics</h4>
+    <p style="margin-top:6px;">Dual-implementation app: one using SDK macros, one with a custom ABI. Demonstrates both approaches side-by-side for comparison.</p>
+    <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/team-metrics" target="_blank" rel="noopener">apps/team-metrics</a>
+  </div>
+  <div class="cb">
+    <h4 style="color:#06b6d4;">private_data</h4>
+    <p style="margin-top:6px;">Private data patterns with encrypted fields and selective disclosure. Uses <span class="code">LwwRegister</span> for per-field encryption keys and <span class="code">#[app::private]</span> for access gates.</p>
+    <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/private_data" target="_blank" rel="noopener">apps/private_data</a>
+  </div>
+  <div class="cb">
+    <h4 style="color:#ef4444;">migrations</h4>
+    <p style="margin-top:6px;">5-version migration suite demonstrating <span class="code">#[app::migrate]</span> across schema changes. Each version adds fields, renames keys, or restructures the state tree.</p>
+    <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/migrations" target="_blank" rel="noopener">apps/migrations</a>
+  </div>
+  <div class="cb">
+    <h4 style="color:#84cc16;">e2e-kv-store</h4>
+    <p style="margin-top:6px;">End-to-end test harness for the kv-store app. Runs multi-node scenarios with concurrent writes, verifies CRDT convergence, and validates sync protocol correctness.</p>
+    <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/e2e-kv-store" target="_blank" rel="noopener">apps/e2e-kv-store</a>
+  </div>
+</div>
+</div>
+
+</div>
+</div>
+<script src="../nav.js"></script>
+</body>
+</html>

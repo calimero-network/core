@@ -1,5 +1,6 @@
+use calimero_context_config::types::SignedOpenInvitation;
 use calimero_primitives::alias::Alias;
-use calimero_primitives::context::{ContextId, ContextInvitationPayload};
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::JoinContextRequest;
 use clap::Parser;
@@ -11,21 +12,37 @@ use crate::cli::Environment;
 #[command(about = "Join an application context")]
 pub struct JoinCommand {
     #[clap(
-        value_name = "INVITE",
-        help = "The invitation payload for joining the context"
+        value_name = "INVITE_JSON",
+        help = "The SignedOpenInvitation JSON string for joining the context"
     )]
-    pub invitation_payload: ContextInvitationPayload,
+    pub invitation_json: String,
+    #[clap(
+        long = "identity",
+        value_name = "IDENTITY",
+        help = "The public key of the identity that will join",
+        default_value = "default"
+    )]
+    pub identity: Alias<PublicKey>,
     #[clap(long = "name", help = "The alias for the context")]
     pub context: Option<Alias<ContextId>>,
     #[clap(long = "as", help = "The alias for the invitee")]
-    pub identity: Option<Alias<PublicKey>>,
+    pub identity_alias: Option<Alias<PublicKey>>,
 }
 
 impl JoinCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?.clone();
 
-        let request = JoinContextRequest::new(self.invitation_payload);
+        let invitation: SignedOpenInvitation = serde_json::from_str(&self.invitation_json)?;
+
+        let new_member_public_key = client
+            .resolve_alias(self.identity, None)
+            .await?
+            .value()
+            .cloned()
+            .ok_or_else(|| eyre::eyre!("unable to resolve identity"))?;
+
+        let request = JoinContextRequest::new(invitation, new_member_public_key);
         let response = client.join_context(request).await?;
 
         environment.output.write(&response);
@@ -37,10 +54,10 @@ impl JoinCommand {
                     .await?;
                 environment.output.write(&res);
             }
-            if let Some(identity) = self.identity {
+            if let Some(identity_alias) = self.identity_alias {
                 let res = client
                     .create_alias_generic(
-                        identity,
+                        identity_alias,
                         Some(payload.context_id),
                         payload.member_public_key,
                     )

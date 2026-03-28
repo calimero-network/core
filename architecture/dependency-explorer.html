@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dependency Explorer — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  #dep-graph { width: 100%; height: 800px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; cursor: grab; }
+  #dep-graph:active { cursor: grabbing; }
+  #dep-graph text { pointer-events: none; }
+
+  .graph-toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .graph-toolbar input[type="text"] {
+    flex: 1; min-width: 200px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface2); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: .84rem; outline: none; transition: border-color .15s;
+  }
+  .graph-toolbar input:focus { border-color: var(--amber); }
+  .graph-toolbar input::placeholder { color: var(--text-dim); }
+  .graph-toolbar button {
+    padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface2);
+    color: var(--text-dim); font-family: 'DM Sans', sans-serif; font-size: .82rem; cursor: pointer; transition: all .15s;
+  }
+  .graph-toolbar button:hover { border-color: var(--amber); color: var(--text); }
+
+  .graph-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; padding: 14px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+  .graph-legend-item { display: flex; align-items: center; gap: 7px; font-size: .78rem; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
+  .graph-legend-dot { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+
+  .graph-tooltip {
+    position: fixed; padding: 6px 12px; background: var(--surface3); border: 1px solid var(--border-hi);
+    border-radius: 8px; font-family: 'JetBrains Mono', monospace; font-size: .76rem; color: var(--text-bright);
+    pointer-events: none; opacity: 0; transition: opacity .12s; z-index: 300; white-space: nowrap;
+  }
+
+  #detail-panel {
+    margin-top: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+    padding: 28px 32px; display: none; position: relative; overflow: hidden;
+  }
+  #detail-panel::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--amber), var(--blue), var(--green)); }
+  #detail-panel .dp-header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+  #detail-panel .dp-name { font-family: 'JetBrains Mono', monospace; font-size: 1.15rem; color: var(--text-bright); font-weight: 600; }
+  #detail-panel .dp-group { font-family: 'JetBrains Mono', monospace; font-size: .75rem; padding: 2px 8px; border-radius: 4px; font-weight: 600; }
+  #detail-panel .dp-stats { display: flex; gap: 24px; margin-bottom: 18px; }
+  #detail-panel .dp-stat-val { font-family: 'Instrument Serif', serif; font-size: 1.6rem; color: var(--amber); }
+  #detail-panel .dp-stat-lbl { font-family: 'JetBrains Mono', monospace; font-size: .7rem; color: var(--text-dim); }
+  #detail-panel .dp-lists { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 700px) { #detail-panel .dp-lists { grid-template-columns: 1fr; } }
+  #detail-panel .dp-list h4 { font-family: 'JetBrains Mono', monospace; font-size: .82rem; color: var(--text-bright); margin-bottom: 8px; }
+  #detail-panel .dp-list ul { list-style: none; padding: 0; }
+  #detail-panel .dp-list li { padding: 3px 0; }
+  #detail-panel .dp-list a { font-family: 'JetBrains Mono', monospace; font-size: .78rem; color: var(--blue); cursor: pointer; transition: color .15s; }
+  #detail-panel .dp-list a:hover { color: var(--amber); }
+  #detail-panel .dp-link { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Dependency Explorer</span></div>
+
+<h1>Dependency <em>Explorer</em></h1>
+<p class="page-subtitle">Interactive force-directed graph of all workspace crate dependencies</p>
+
+<div class="graph-toolbar">
+  <input type="text" id="search-input" placeholder="Search crates..." autocomplete="off">
+  <button id="btn-reset">Reset view</button>
+</div>
+
+<div class="graph-legend">
+  <div class="graph-legend-item"><div class="graph-legend-dot" style="background:#f59e0b"></div>cli</div>
+  <div class="graph-legend-item"><div class="graph-legend-dot" style="background:#3b82f6"></div>core</div>
+  <div class="graph-legend-item"><div class="graph-legend-dot" style="background:#10b981"></div>types</div>
+  <div class="graph-legend-item"><div class="graph-legend-dot" style="background:#06b6d4"></div>data</div>
+  <div class="graph-legend-item"><div class="graph-legend-dot" style="background:#d4d4dc"></div>foundation</div>
+  <div class="graph-legend-item"><div class="graph-legend-dot" style="background:#ec4899"></div>wasm</div>
+</div>
+
+<svg id="dep-graph"></svg>
+
+<div id="detail-panel"></div>
+
+<div class="graph-tooltip" id="tooltip"></div>
+
+</div>
+</div>
+
+<script src="nav.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+
+const CRATES = {
+  "merod": { color: "#f59e0b", group: "cli", deps: ["calimero-node","calimero-server","calimero-config","calimero-context","calimero-context-config","calimero-network-primitives","calimero-node-primitives","calimero-primitives","calimero-store","calimero-store-rocksdb","calimero-blobstore","calimero-tee-attestation","calimero-utils-actix","calimero-build-utils","mero-auth"] },
+  "meroctl": { color: "#f59e0b", group: "cli", deps: ["calimero-client","calimero-config","calimero-context-config","calimero-primitives","calimero-server-primitives","calimero-build-utils"] },
+  "calimero-node": { color: "#3b82f6", group: "core", deps: ["calimero-context","calimero-context-config","calimero-context-primitives","calimero-crypto","calimero-dag","calimero-network","calimero-network-primitives","calimero-node-primitives","calimero-primitives","calimero-server","calimero-storage","calimero-store","calimero-store-encryption","calimero-store-rocksdb","calimero-blobstore","calimero-tee-attestation","calimero-utils-actix"] },
+  "calimero-context": { color: "#10b981", group: "core", deps: ["calimero-context-config","calimero-context-primitives","calimero-dag","calimero-node-primitives","calimero-prelude","calimero-primitives","calimero-runtime","calimero-storage","calimero-store","calimero-utils-actix"] },
+  "calimero-context-primitives": { color: "#10b981", group: "types", deps: ["calimero-blobstore","calimero-context-config","calimero-network-primitives","calimero-node-primitives","calimero-primitives","calimero-store","calimero-utils-actix"] },
+  "calimero-context-config": { color: "#10b981", group: "types", deps: [] },
+  "calimero-network": { color: "#8b5cf6", group: "core", deps: ["calimero-network-primitives","calimero-primitives","calimero-utils-actix"] },
+  "calimero-network-primitives": { color: "#8b5cf6", group: "types", deps: ["calimero-primitives","calimero-utils-actix"] },
+  "calimero-node-primitives": { color: "#3b82f6", group: "types", deps: ["calimero-blobstore","calimero-crypto","calimero-network-primitives","calimero-primitives","calimero-storage","calimero-store","calimero-utils-actix"] },
+  "calimero-server": { color: "#f97316", group: "core", deps: ["calimero-context-config","calimero-context-primitives","calimero-node-primitives","calimero-primitives","calimero-server-primitives","calimero-store","calimero-tee-attestation","mero-auth"] },
+  "calimero-server-primitives": { color: "#f97316", group: "types", deps: ["calimero-context-config","calimero-context-primitives","calimero-primitives"] },
+  "calimero-runtime": { color: "#ec4899", group: "core", deps: ["calimero-node-primitives","calimero-primitives","calimero-storage","calimero-sys"] },
+  "calimero-store": { color: "#06b6d4", group: "data", deps: ["calimero-primitives","calimero-storage"] },
+  "calimero-store-rocksdb": { color: "#06b6d4", group: "data", deps: ["calimero-store"] },
+  "calimero-store-encryption": { color: "#06b6d4", group: "data", deps: ["calimero-store"] },
+  "calimero-blobstore": { color: "#06b6d4", group: "data", deps: ["calimero-primitives","calimero-store"] },
+  "calimero-dag": { color: "#f59e0b", group: "data", deps: ["calimero-storage"] },
+  "calimero-storage": { color: "#06b6d4", group: "data", deps: ["calimero-prelude","calimero-primitives","calimero-storage-macros"] },
+  "calimero-storage-macros": { color: "#06b6d4", group: "data", deps: [] },
+  "calimero-primitives": { color: "#d4d4dc", group: "foundation", deps: [] },
+  "calimero-prelude": { color: "#d4d4dc", group: "foundation", deps: ["calimero-primitives"] },
+  "calimero-crypto": { color: "#d4d4dc", group: "foundation", deps: ["calimero-primitives"] },
+  "calimero-utils-actix": { color: "#d4d4dc", group: "foundation", deps: ["calimero-primitives"] },
+  "calimero-sys": { color: "#ec4899", group: "wasm", deps: [] },
+  "calimero-sdk": { color: "#f97316", group: "wasm", deps: ["calimero-prelude","calimero-primitives","calimero-sdk-macros","calimero-sys","calimero-wasm-abi"] },
+  "calimero-sdk-macros": { color: "#f97316", group: "wasm", deps: [] },
+  "calimero-wasm-abi": { color: "#f97316", group: "wasm", deps: [] },
+  "mero-auth": { color: "#84cc16", group: "core", deps: ["calimero-primitives","calimero-store"] },
+  "calimero-tee-attestation": { color: "#d4d4dc", group: "foundation", deps: ["calimero-server-primitives"] },
+  "calimero-config": { color: "#f59e0b", group: "cli", deps: ["calimero-context","calimero-network-primitives","calimero-node-primitives","calimero-server","mero-auth"] },
+  "calimero-client": { color: "#f59e0b", group: "cli", deps: ["calimero-context-config","calimero-primitives","calimero-server-primitives"] },
+  "calimero-build-utils": { color: "#d4d4dc", group: "foundation", deps: [] },
+};
+
+const REPO = 'https://github.com/calimero-network/core';
+
+const reverseDeps = {};
+for (const name of Object.keys(CRATES)) reverseDeps[name] = [];
+for (const [name, info] of Object.entries(CRATES)) {
+  for (const dep of info.deps) {
+    if (reverseDeps[dep]) reverseDeps[dep].push(name);
+  }
+}
+
+const nodes = Object.entries(CRATES).map(([id, info]) => ({
+  id,
+  color: info.color,
+  group: info.group,
+  depCount: info.deps.length,
+  revCount: reverseDeps[id].length,
+  radius: 6 + Math.sqrt(info.deps.length + reverseDeps[id].length) * 3,
+}));
+
+const links = [];
+for (const [source, info] of Object.entries(CRATES)) {
+  for (const target of info.deps) {
+    if (CRATES[target]) links.push({ source, target });
+  }
+}
+
+const svg = d3.select('#dep-graph');
+const width = svg.node().getBoundingClientRect().width;
+const height = 800;
+svg.attr('viewBox', [0, 0, width, height]);
+
+const defs = svg.append('defs');
+
+defs.append('marker')
+  .attr('id', 'arrow')
+  .attr('viewBox', '0 0 10 6')
+  .attr('refX', 10).attr('refY', 3)
+  .attr('markerWidth', 8).attr('markerHeight', 5)
+  .attr('orient', 'auto')
+  .append('path')
+  .attr('d', 'M0,0 L10,3 L0,6 Z')
+  .attr('fill', '#35354a');
+
+defs.append('marker')
+  .attr('id', 'arrow-out')
+  .attr('viewBox', '0 0 10 6')
+  .attr('refX', 10).attr('refY', 3)
+  .attr('markerWidth', 8).attr('markerHeight', 5)
+  .attr('orient', 'auto')
+  .append('path')
+  .attr('d', 'M0,0 L10,3 L0,6 Z')
+  .attr('fill', '#3b82f6');
+
+defs.append('marker')
+  .attr('id', 'arrow-in')
+  .attr('viewBox', '0 0 10 6')
+  .attr('refX', 10).attr('refY', 3)
+  .attr('markerWidth', 8).attr('markerHeight', 5)
+  .attr('orient', 'auto')
+  .append('path')
+  .attr('d', 'M0,0 L10,3 L0,6 Z')
+  .attr('fill', '#f59e0b');
+
+const g = svg.append('g');
+
+const zoom = d3.zoom()
+  .scaleExtent([0.2, 4])
+  .on('zoom', (e) => g.attr('transform', e.transform));
+svg.call(zoom);
+
+const simulation = d3.forceSimulation(nodes)
+  .force('link', d3.forceLink(links).id(d => d.id).distance(100).strength(0.3))
+  .force('charge', d3.forceManyBody().strength(-350))
+  .force('center', d3.forceCenter(width / 2, height / 2))
+  .force('collision', d3.forceCollide().radius(d => d.radius + 4))
+  .force('x', d3.forceX(width / 2).strength(0.04))
+  .force('y', d3.forceY(height / 2).strength(0.04));
+
+const linkGroup = g.append('g');
+const linkElements = linkGroup.selectAll('line')
+  .data(links)
+  .join('line')
+  .attr('stroke', '#252538')
+  .attr('stroke-width', 1)
+  .attr('marker-end', 'url(#arrow)');
+
+const nodeGroup = g.append('g');
+const nodeElements = nodeGroup.selectAll('g')
+  .data(nodes)
+  .join('g')
+  .attr('cursor', 'pointer')
+  .call(d3.drag()
+    .on('start', dragStart)
+    .on('drag', dragging)
+    .on('end', dragEnd));
+
+nodeElements.append('circle')
+  .attr('r', d => d.radius)
+  .attr('fill', d => d.color + '20')
+  .attr('stroke', d => d.color)
+  .attr('stroke-width', 1.5)
+  .attr('class', 'node-circle');
+
+nodeElements.append('text')
+  .text(d => d.id.replace('calimero-', 'c-'))
+  .attr('dy', d => d.radius + 13)
+  .attr('text-anchor', 'middle')
+  .attr('fill', '#6b6b80')
+  .attr('font-family', 'JetBrains Mono, monospace')
+  .attr('font-size', '9px')
+  .attr('class', 'node-label');
+
+const tooltip = document.getElementById('tooltip');
+
+nodeElements
+  .on('mouseenter', (e, d) => {
+    tooltip.textContent = d.id;
+    tooltip.style.opacity = '1';
+  })
+  .on('mousemove', (e) => {
+    tooltip.style.left = (e.clientX + 14) + 'px';
+    tooltip.style.top = (e.clientY - 10) + 'px';
+  })
+  .on('mouseleave', () => {
+    tooltip.style.opacity = '0';
+  })
+  .on('click', (e, d) => {
+    e.stopPropagation();
+    selectNode(d.id);
+  });
+
+svg.on('click', () => clearSelection());
+
+simulation.on('tick', () => {
+  linkElements
+    .attr('x1', d => d.source.x)
+    .attr('y1', d => d.source.y)
+    .attr('x2', d => {
+      const dx = d.target.x - d.source.x;
+      const dy = d.target.y - d.source.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const targetNode = nodes.find(n => n.id === d.target.id);
+      const r = targetNode ? targetNode.radius : 8;
+      return d.target.x - (dx / dist) * (r + 4);
+    })
+    .attr('y2', d => {
+      const dx = d.target.x - d.source.x;
+      const dy = d.target.y - d.source.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const targetNode = nodes.find(n => n.id === d.target.id);
+      const r = targetNode ? targetNode.radius : 8;
+      return d.target.y - (dy / dist) * (r + 4);
+    });
+
+  nodeElements.attr('transform', d => `translate(${d.x},${d.y})`);
+});
+
+function dragStart(e, d) {
+  if (!e.active) simulation.alphaTarget(0.3).restart();
+  d.fx = d.x; d.fy = d.y;
+}
+function dragging(e, d) { d.fx = e.x; d.fy = e.y; }
+function dragEnd(e, d) {
+  if (!e.active) simulation.alphaTarget(0);
+  d.fx = null; d.fy = null;
+}
+
+let selectedNode = null;
+
+function selectNode(id) {
+  selectedNode = id;
+  const info = CRATES[id];
+  const deps = new Set(info.deps);
+  const revs = new Set(reverseDeps[id]);
+
+  nodeElements.select('.node-circle')
+    .attr('stroke-width', d => d.id === id ? 3 : 1.5)
+    .attr('stroke', d => {
+      if (d.id === id) return '#f0f0f5';
+      if (deps.has(d.id)) return '#3b82f6';
+      if (revs.has(d.id)) return '#f59e0b';
+      return d.color + '30';
+    })
+    .attr('fill', d => {
+      if (d.id === id) return d.color + '50';
+      if (deps.has(d.id)) return '#3b82f620';
+      if (revs.has(d.id)) return '#f59e0b20';
+      return d.color + '08';
+    });
+
+  nodeElements.select('.node-label')
+    .attr('fill', d => {
+      if (d.id === id || deps.has(d.id) || revs.has(d.id)) return '#d4d4dc';
+      return '#6b6b8030';
+    });
+
+  linkElements
+    .attr('stroke', d => {
+      const sid = typeof d.source === 'object' ? d.source.id : d.source;
+      const tid = typeof d.target === 'object' ? d.target.id : d.target;
+      if (sid === id && deps.has(tid)) return '#3b82f6';
+      if (tid === id && revs.has(sid)) return '#f59e0b';
+      return '#252538' + '20';
+    })
+    .attr('stroke-width', d => {
+      const sid = typeof d.source === 'object' ? d.source.id : d.source;
+      const tid = typeof d.target === 'object' ? d.target.id : d.target;
+      if ((sid === id && deps.has(tid)) || (tid === id && revs.has(sid))) return 2;
+      return 0.5;
+    })
+    .attr('marker-end', d => {
+      const sid = typeof d.source === 'object' ? d.source.id : d.source;
+      const tid = typeof d.target === 'object' ? d.target.id : d.target;
+      if (sid === id && deps.has(tid)) return 'url(#arrow-out)';
+      if (tid === id && revs.has(sid)) return 'url(#arrow-in)';
+      return 'url(#arrow)';
+    });
+
+  showDetail(id);
+}
+
+function clearSelection() {
+  selectedNode = null;
+  nodeElements.select('.node-circle')
+    .attr('stroke-width', 1.5)
+    .attr('stroke', d => d.color)
+    .attr('fill', d => d.color + '20');
+  nodeElements.select('.node-label')
+    .attr('fill', '#6b6b80');
+  linkElements
+    .attr('stroke', '#252538')
+    .attr('stroke-width', 1)
+    .attr('marker-end', 'url(#arrow)');
+  document.getElementById('detail-panel').style.display = 'none';
+}
+
+function showDetail(id) {
+  const info = CRATES[id];
+  const deps = info.deps;
+  const revs = reverseDeps[id];
+  const panel = document.getElementById('detail-panel');
+
+  const groupColors = {
+    cli: { bg: '#f59e0b20', color: '#f59e0b' },
+    core: { bg: '#3b82f620', color: '#3b82f6' },
+    types: { bg: '#8b5cf620', color: '#8b5cf6' },
+    data: { bg: '#06b6d420', color: '#06b6d4' },
+    foundation: { bg: '#d4d4dc20', color: '#d4d4dc' },
+    wasm: { bg: '#ec489920', color: '#ec4899' },
+  };
+  const gc = groupColors[info.group] || groupColors.foundation;
+
+  const depLinks = deps.length
+    ? deps.map(d => `<li><a data-crate="${d}">${d}</a></li>`).join('')
+    : '<li style="color:var(--text-dim);font-size:.78rem;">none</li>';
+  const revLinks = revs.length
+    ? revs.map(r => `<li><a data-crate="${r}">${r}</a></li>`).join('')
+    : '<li style="color:var(--text-dim);font-size:.78rem;">none</li>';
+
+  const cratePath = id.startsWith('mero') ? `crates/${id}` : `crates/${id}`;
+
+  panel.innerHTML = `
+    <div class="dp-header">
+      <span class="dp-name">${id}</span>
+      <span class="dp-group" style="background:${gc.bg};color:${gc.color}">${info.group}</span>
+    </div>
+    <div class="dp-stats">
+      <div><div class="dp-stat-val">${deps.length}</div><div class="dp-stat-lbl">dependencies</div></div>
+      <div><div class="dp-stat-val">${revs.length}</div><div class="dp-stat-lbl">reverse deps</div></div>
+    </div>
+    <div class="dp-lists">
+      <div class="dp-list">
+        <h4 style="color:#3b82f6">Dependencies <span style="color:var(--text-dim)">(outgoing)</span></h4>
+        <ul>${depLinks}</ul>
+      </div>
+      <div class="dp-list">
+        <h4 style="color:#f59e0b">Reverse Dependencies <span style="color:var(--text-dim)">(incoming)</span></h4>
+        <ul>${revLinks}</ul>
+      </div>
+    </div>
+    <div class="dp-link">
+      <a class="gh-link" href="${REPO}/tree/master/${cratePath}" target="_blank" rel="noopener">View source on GitHub →</a>
+    </div>
+  `;
+
+  panel.style.display = 'block';
+
+  panel.querySelectorAll('[data-crate]').forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      selectNode(link.dataset.crate);
+      svg.node().scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  });
+}
+
+const searchInput = document.getElementById('search-input');
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.toLowerCase().trim();
+  if (!q) {
+    if (!selectedNode) clearSelection();
+    return;
+  }
+
+  const matches = new Set(
+    Object.keys(CRATES).filter(name => name.toLowerCase().includes(q))
+  );
+
+  nodeElements.select('.node-circle')
+    .attr('stroke-width', d => matches.has(d.id) ? 2.5 : 1.5)
+    .attr('stroke', d => matches.has(d.id) ? '#f0f0f5' : d.color + '25')
+    .attr('fill', d => matches.has(d.id) ? d.color + '40' : d.color + '06');
+
+  nodeElements.select('.node-label')
+    .attr('fill', d => matches.has(d.id) ? '#d4d4dc' : '#6b6b8020');
+
+  linkElements
+    .attr('stroke', '#252538' + '18')
+    .attr('stroke-width', 0.5);
+});
+
+document.getElementById('btn-reset').addEventListener('click', () => {
+  searchInput.value = '';
+  clearSelection();
+  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity);
+  simulation.alpha(0.5).restart();
+});
+
+if (window.arch && window.arch.buildBreadcrumb) {
+  window.arch.buildBreadcrumb([
+    { label: 'Home', href: 'index.html' },
+    { label: 'Dependency Explorer' },
+  ]);
+}
+
+});
+</script>
+</body>
+</html>

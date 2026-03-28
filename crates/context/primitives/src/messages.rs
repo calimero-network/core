@@ -1,8 +1,8 @@
 use actix::Message;
-use calimero_context_config::types::{ContextGroupId, SignedRevealPayload};
+use calimero_context_config::types::{ContextGroupId, SignedOpenInvitation};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, ContextInvitationPayload};
+use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use serde::{Deserialize, Serialize};
@@ -116,7 +116,8 @@ pub enum ExecuteError {
 
 #[derive(Debug)]
 pub struct JoinContextRequest {
-    pub invitation_payload: ContextInvitationPayload,
+    pub invitation: SignedOpenInvitation,
+    pub new_member_public_key: PublicKey,
 }
 
 impl Message for JoinContextRequest {
@@ -129,15 +130,6 @@ pub struct JoinContextResponse {
     pub member_public_key: PublicKey,
 }
 
-#[derive(Debug)]
-pub struct JoinContextOpenInvitationRequest {
-    pub payload: SignedRevealPayload,
-}
-
-impl Message for JoinContextOpenInvitationRequest {
-    type Result = eyre::Result<JoinContextResponse>;
-}
-
 #[derive(Copy, Clone, Debug)]
 pub struct SyncRequest {
     pub context_id: ContextId,
@@ -146,6 +138,15 @@ pub struct SyncRequest {
 
 impl Message for SyncRequest {
     type Result = ();
+}
+
+#[derive(Debug, Clone)]
+pub struct ApplySignedGroupOpRequest {
+    pub op: crate::local_governance::SignedGroupOp,
+}
+
+impl Message for ApplySignedGroupOpRequest {
+    type Result = eyre::Result<bool>;
 }
 
 /// Parameters for executing a state migration during application update.
@@ -192,10 +193,6 @@ pub enum ContextMessage {
         request: JoinContextRequest,
         outcome: oneshot::Sender<<JoinContextRequest as Message>::Result>,
     },
-    JoinContextOpenInvitation {
-        request: JoinContextOpenInvitationRequest,
-        outcome: oneshot::Sender<<JoinContextOpenInvitationRequest as Message>::Result>,
-    },
     UpdateApplication {
         request: UpdateApplicationRequest,
         outcome: oneshot::Sender<<UpdateApplicationRequest as Message>::Result>,
@@ -215,6 +212,10 @@ pub enum ContextMessage {
     AddGroupMembers {
         request: AddGroupMembersRequest,
         outcome: oneshot::Sender<<AddGroupMembersRequest as Message>::Result>,
+    },
+    ApplySignedGroupOp {
+        request: ApplySignedGroupOpRequest,
+        outcome: oneshot::Sender<<ApplySignedGroupOpRequest as Message>::Result>,
     },
     RemoveGroupMembers {
         request: RemoveGroupMembersRequest,

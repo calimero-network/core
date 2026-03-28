@@ -48,24 +48,6 @@ wasm_imports! {
         // Crypto functions
         fn ed25519_verify(signature_ptr: Ref<Buffer<'_>>, public_key_ptr: Ref<Buffer<'_>>, message_ptr: Ref<Buffer<'_>>) -> Bool;
         // --
-        fn send_proposal(value: Ref<Buffer<'_>>, buf: Ref<BufferMut<'_>>);
-        fn approve_proposal(value: Ref<Buffer<'_>>);
-        // --
-        // Context Management functions
-        fn context_create(
-            protocol_ptr: Ref<Buffer<'_>>,
-            app_id_ptr: Ref<Buffer<'_>>,
-            args_ptr: Ref<Buffer<'_>>,
-            alias: Ref<Buffer<'_>>
-        );
-        fn context_delete(context_id_ptr: Ref<Buffer<'_>>);
-        fn context_add_member(public_key_ptr: Ref<Buffer<'_>>);
-        fn context_remove_member(public_key_ptr: Ref<Buffer<'_>>);
-        fn context_is_member(public_key_ptr: Ref<Buffer<'_>>) -> Bool;
-        fn context_members(register_id: RegisterId);
-        // Check if alias resolves to a context ID
-        fn context_resolve_alias(alias: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
-        // --
         // Streaming blob functions
         fn blob_create() -> PtrSizedInt;
         fn blob_open(blob_id: Ref<Buffer<'_>>) -> PtrSizedInt;

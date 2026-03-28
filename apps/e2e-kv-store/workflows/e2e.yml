@@ -2,9 +2,9 @@ name: E2E KV Store - Consolidated Backend Tests
 description: Consolidated E2E backend tests covering KV operations, handlers, user storage, frozen storage, private storage, nested CRDTs, and RGA
 
 force_pull_image: false
+near_devnet: false
 
 nodes:
-  chain_id: testnet-1
   count: 3
   image: ghcr.io/calimero-network/merod:edge
   prefix: e2e-node
@@ -129,16 +129,16 @@ steps:
       public_key_3: publicKey
 
   - name: Create open invitation for node-3
-    type: invite_open
+    type: invite
     node: e2e-node-1
     context_id: "{{context_id}}"
     granter_id: "{{node1_key}}"
-    valid_for_blocks: 1000
+    valid_for_seconds: 3600
     outputs:
       open_invitation_3: invitation
 
   - name: Join via open invitation - node-3
-    type: join_open
+    type: join
     node: e2e-node-3
     invitee_id: "{{public_key_3}}"
     invitation: "{{open_invitation_3}}"
@@ -1751,58 +1751,6 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{doc_title_node3}}, {"output": "E2E Test Document"})'
-
-  # CONTEXT ADMIN - Member management
-
-  - name: Check if node-2 is member
-    type: call
-    node: e2e-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
-    method: is_member
-    args:
-      public_key: "{{public_key_e2e-node-2}}"
-    outputs:
-      is_node2_member: result
-
-  - name: Assert node-2 is member
-    type: json_assert
-    statements:
-      - 'json_equal({{is_node2_member}}, {"output": true})'
-
-  - name: Check if node-3 is member
-    type: call
-    node: e2e-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
-    method: is_member
-    args:
-      public_key: "{{node3_key}}"
-    outputs:
-      is_node3_member: result
-
-  - name: Assert node-3 is member
-    type: json_assert
-    statements:
-      - 'json_equal({{is_node3_member}}, {"output": true})'
-
-  - name: Get all members
-    type: call
-    node: e2e-node-1
-    context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
-    method: get_all_members
-    outputs:
-      all_members: result
-
-  - name: Assert members list not empty
-    type: assert
-    statements:
-      - "is_set({{all_members}})"
-
-  # Note: add_member and kick_member require admin privileges and are
-  # tested implicitly through context creation. Direct testing would
-  # require additional privilege setup.
 
   # BLOB STORAGE - File Upload, Discovery, and Deletion
 

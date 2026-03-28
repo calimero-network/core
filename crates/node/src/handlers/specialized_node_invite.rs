@@ -11,7 +11,7 @@
 //! 3. Receives `VerificationRequest` from specialized node (contains nonce, not context_id)
 //! 4. Atomically transitions state to AwaitingConfirmation (prevents race conditions)
 //! 5. Verifies the node (e.g., TEE attestation)
-//! 6. If valid, creates regular invitation and sends `SpecializedNodeInvitationResponse`
+//! 6. If valid, creates open invitation and sends `SpecializedNodeInvitationResponse`
 //! 7. Waits for `SpecializedNodeJoinConfirmation` on context topic
 //! 8. If confirmation received, removes pending entry
 //! 9. If TTL expires (60s) without confirmation, resets to Pending for retry
@@ -20,18 +20,19 @@
 //! 1. Receives `SpecializedNodeDiscovery` broadcast (subscribed to global topic)
 //! 2. Generates verification data (e.g., TEE attestation with nonce)
 //! 3. Sends `VerificationRequest` via request-response (no context_id needed)
-//! 4. Receives `SpecializedNodeInvitationResponse` with ContextInvitationPayload
-//! 5. Joins context using the invitation payload
+//! 4. Receives `SpecializedNodeInvitationResponse` with SignedOpenInvitation
+//! 5. Joins context using the signed open invitation
 //! 6. Broadcasts `SpecializedNodeJoinConfirmation` on context topic
 
 use crate::specialized_node_invite_state::{
     InviteState, PendingSpecializedNodeInvites, SpecializedNodeInviteAction,
 };
+use calimero_context_config::types::SignedOpenInvitation;
 use calimero_context_primitives::client::ContextClient;
 use calimero_network_primitives::specialized_node_invite::{
     SpecializedNodeInvitationResponse, VerificationRequest,
 };
-use calimero_primitives::context::{ContextId, ContextInvitationPayload};
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_tee_attestation::{
     build_report_data, generate_attestation, is_mock_quote, verify_attestation,
@@ -60,8 +61,6 @@ pub fn handle_specialized_node_discovery(
         "Received specialized node discovery - generating verification"
     );
 
-    // Create a new identity - this generates a keypair and stores the private key
-    // in the datastore under ContextId::zero() (identity pool)
     let our_public_key = context_client.new_identity()?;
 
     info!(
@@ -69,11 +68,8 @@ pub fn handle_specialized_node_discovery(
         "Created identity for specialized node invitation (private key stored in datastore)"
     );
 
-    // Build report_data: nonce || zeros
-    // The nonce alone provides replay protection - context_id is tracked by the requester
     let report_data = build_report_data(&nonce, None);
 
-    // Generate attestation
     let attestation_result = generate_attestation(report_data)?;
 
     info!(
@@ -81,7 +77,6 @@ pub fn handle_specialized_node_discovery(
         "TEE attestation generated successfully for specialized node verification"
     );
 
-    // Create the verification request to send to the inviting node
     let request = VerificationRequest::TeeAttestation {
         nonce,
         quote_bytes: attestation_result.quote_bytes,
@@ -92,17 +87,6 @@ pub fn handle_specialized_node_discovery(
 }
 
 /// Handle receiving a verification request (for standard/inviting nodes)
-///
-/// When an inviting node receives this request, it:
-/// 1. Atomically claims the nonce by transitioning state to AwaitingConfirmation
-/// 2. Verifies the specialized node (e.g., TEE attestation, supports mock for testing)
-/// 3. If valid, creates a regular invitation for the node's public key
-/// 4. Sends the invitation back via the response channel
-///
-/// State machine prevents race conditions:
-/// - Only one request can claim a Pending nonce at a time
-/// - If AwaitingConfirmation, check TTL before allowing retry
-/// - On failure, state is reset to Pending for retry
 pub async fn handle_verification_request(
     peer_id: PeerId,
     request: VerificationRequest,
@@ -120,9 +104,6 @@ pub async fn handle_verification_request(
         "Received verification request - verifying specialized node"
     );
 
-    // Atomically check and claim the pending invite.
-    // This prevents race conditions where multiple specialized nodes could
-    // all get invitations from a single broadcast.
     let (context_id, inviter_id) = {
         let mut entry = match pending_invites.get_mut(&nonce) {
             Some(entry) => entry,
@@ -138,9 +119,7 @@ pub async fn handle_verification_request(
             }
         };
 
-        // Check if we can accept this request based on current state
         if !entry.state.can_accept_request() {
-            // Already processing another request and TTL hasn't expired
             if let InviteState::AwaitingConfirmation {
                 invitee_public_key, ..
             } = &entry.state
@@ -158,7 +137,6 @@ pub async fn handle_verification_request(
             );
         }
 
-        // Extract context_id and inviter_id before transitioning state
         let (context_id, inviter_id) = match &entry.action {
             SpecializedNodeInviteAction::HandleContextInvite {
                 context_id,
@@ -166,7 +144,6 @@ pub async fn handle_verification_request(
             } => (*context_id, *inviter_id),
         };
 
-        // Atomically transition to AwaitingConfirmation to claim this nonce
         entry.transition_to_awaiting(public_key);
 
         info!(
@@ -177,22 +154,18 @@ pub async fn handle_verification_request(
         );
 
         (context_id, inviter_id)
-    }; // Release the lock here
+    };
 
-    // Handle verification based on request type
     match request {
         VerificationRequest::TeeAttestation {
             nonce,
             quote_bytes,
             public_key,
         } => {
-            // Verify the attestation - detect mock vs real quotes
             let is_mock = is_mock_quote(&quote_bytes);
 
-            // Reject mock attestation if not allowed
             if is_mock && !accept_mock_tee {
                 warn!("Received mock TEE attestation but accept_mock_tee is disabled");
-                // Reset state to allow retry
                 reset_to_pending(pending_invites, &nonce);
                 return SpecializedNodeInvitationResponse::error(
                     nonce,
@@ -201,17 +174,11 @@ pub async fn handle_verification_request(
             }
 
             let verification_result = if is_mock {
-                // Mock attestation for development/testing
                 warn!("Verifying MOCK attestation - NOT FOR PRODUCTION USE");
-                match verify_mock_attestation(
-                    &quote_bytes,
-                    &nonce,
-                    None, // No app hash expected
-                ) {
+                match verify_mock_attestation(&quote_bytes, &nonce, None) {
                     Ok(result) => result,
                     Err(err) => {
                         error!(error = %err, "Failed to verify mock TEE attestation");
-                        // Reset state to allow retry
                         reset_to_pending(pending_invites, &nonce);
                         return SpecializedNodeInvitationResponse::error(
                             nonce,
@@ -220,18 +187,10 @@ pub async fn handle_verification_request(
                     }
                 }
             } else {
-                // Real TDX attestation
-                match verify_attestation(
-                    &quote_bytes,
-                    &nonce,
-                    None, // No app hash expected - specialized node doesn't know context_id
-                )
-                .await
-                {
+                match verify_attestation(&quote_bytes, &nonce, None).await {
                     Ok(result) => result,
                     Err(err) => {
                         error!(error = %err, "Failed to verify TEE attestation");
-                        // Reset state to allow retry
                         reset_to_pending(pending_invites, &nonce);
                         return SpecializedNodeInvitationResponse::error(
                             nonce,
@@ -249,7 +208,6 @@ pub async fn handle_verification_request(
                     is_mock = is_mock,
                     "TEE attestation verification failed"
                 );
-                // Reset state to allow retry
                 reset_to_pending(pending_invites, &nonce);
                 return SpecializedNodeInvitationResponse::error(
                     nonce,
@@ -265,7 +223,6 @@ pub async fn handle_verification_request(
                 "TEE attestation verified successfully"
             );
 
-            // Create invitation for the verified node
             let response = create_invitation_response(
                 nonce,
                 context_client,
@@ -275,19 +232,15 @@ pub async fn handle_verification_request(
             )
             .await;
 
-            // If invitation creation failed, reset state to allow retry
             if response.invitation_bytes.is_none() {
                 reset_to_pending(pending_invites, &nonce);
             }
-            // Note: We don't remove the entry here - it stays in AwaitingConfirmation
-            // until we receive a join confirmation or TTL expires
 
             response
         }
     }
 }
 
-/// Reset a pending invite back to Pending state to allow retry
 fn reset_to_pending(pending_invites: &PendingSpecializedNodeInvites, nonce: &[u8; 32]) {
     if let Some(mut entry) = pending_invites.get_mut(nonce) {
         debug!(
@@ -299,9 +252,6 @@ fn reset_to_pending(pending_invites: &PendingSpecializedNodeInvites, nonce: &[u8
 }
 
 /// Handle a join confirmation from a specialized node
-///
-/// Called when a specialized node broadcasts `SpecializedNodeJoinConfirmation`
-/// on the context topic after successfully joining.
 pub fn handle_join_confirmation(pending_invites: &PendingSpecializedNodeInvites, nonce: [u8; 32]) {
     if let Some((_, pending)) = pending_invites.remove(&nonce) {
         let context_id = match &pending.action {
@@ -320,21 +270,22 @@ pub fn handle_join_confirmation(pending_invites: &PendingSpecializedNodeInvites,
     }
 }
 
-/// Create an invitation for a verified specialized node
+/// Create an open invitation for a verified specialized node
 async fn create_invitation_response(
     nonce: [u8; 32],
     context_client: &ContextClient,
     context_id: ContextId,
     inviter_id: PublicKey,
-    invitee_public_key: PublicKey,
+    _invitee_public_key: PublicKey,
 ) -> SpecializedNodeInvitationResponse {
-    // Create a regular invitation for the specialized node's public key
-    // This adds the node's public key as a member on-chain
-    let invitation_payload = match context_client
-        .invite_member(&context_id, &inviter_id, &invitee_public_key)
+    let salt = [0u8; 32];
+    let valid_for_seconds = 3600;
+
+    let signed_invitation = match context_client
+        .invite_member(&context_id, &inviter_id, valid_for_seconds, salt)
         .await
     {
-        Ok(Some(payload)) => payload,
+        Ok(Some(invitation)) => invitation,
         Ok(None) => {
             error!(%context_id, "Context configuration not found");
             return SpecializedNodeInvitationResponse::error(
@@ -353,12 +304,20 @@ async fn create_invitation_response(
 
     info!(
         %context_id,
-        %invitee_public_key,
-        "Created invitation for specialized node"
+        %_invitee_public_key,
+        "Created open invitation for specialized node"
     );
 
-    // Serialize the invitation payload
-    let invitation_bytes = invitation_payload.to_string().into_bytes();
+    let invitation_bytes = match serde_json::to_vec(&signed_invitation) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            error!(error = %err, "Failed to serialize SignedOpenInvitation");
+            return SpecializedNodeInvitationResponse::error(
+                nonce,
+                format!("Failed to serialize invitation: {}", err),
+            );
+        }
+    };
 
     SpecializedNodeInvitationResponse::success(nonce, invitation_bytes)
 }
@@ -367,7 +326,7 @@ async fn create_invitation_response(
 ///
 /// When a specialized node receives this response, it:
 /// 1. Checks for errors in the response
-/// 2. If successful, deserializes the ContextInvitationPayload
+/// 2. If successful, deserializes the SignedOpenInvitation
 /// 3. Joins the context using the invitation
 /// 4. Returns the nonce and context_id for confirmation broadcast
 pub async fn handle_specialized_node_invitation_response(
@@ -397,41 +356,58 @@ pub async fn handle_specialized_node_invitation_response(
         "Received specialized node invitation - joining context"
     );
 
-    // Deserialize ContextInvitationPayload from the bytes
-    // The payload is serialized as a Base58-encoded string
-    let invitation_str = match String::from_utf8(invitation_bytes) {
-        Ok(s) => s,
+    let signed_invitation: SignedOpenInvitation = match serde_json::from_slice(&invitation_bytes) {
+        Ok(inv) => inv,
         Err(err) => {
-            error!(%peer_id, error = %err, "Failed to decode invitation bytes as UTF-8");
+            error!(%peer_id, error = %err, "Failed to parse SignedOpenInvitation");
             return Ok(None);
         }
     };
 
-    let invitation_payload: ContextInvitationPayload = match invitation_str.parse() {
-        Ok(payload) => payload,
-        Err(err) => {
-            error!(%peer_id, error = %err, "Failed to parse ContextInvitationPayload");
-            return Ok(None);
+    let context_id: ContextId = signed_invitation.invitation.context_id.to_bytes().into();
+
+    // Find this node's public key for joining
+    // The identity was created during handle_specialized_node_discovery and stored in the pool
+    let our_public_key = {
+        use futures_util::StreamExt;
+        let mut stream =
+            std::pin::pin!(context_client.get_context_members(&ContextId::zero(), Some(true)));
+        let found = if let Some(Ok((pk, _))) = stream.next().await {
+            Some(pk)
+        } else {
+            None
+        };
+        match found {
+            Some(pk) => pk,
+            None => {
+                error!(%peer_id, "No identity found in pool for specialized node join");
+                return Ok(None);
+            }
         }
     };
 
     info!(
         %peer_id,
-        invitation_len = invitation_str.len(),
-        "Joining context via specialized node invitation"
+        %our_public_key,
+        "Joining context via specialized node open invitation"
     );
 
-    // Join the context using the invitation payload
-    match context_client.join_context(invitation_payload).await {
-        Ok(join_response) => {
+    match context_client
+        .join_context(signed_invitation, &our_public_key)
+        .await
+    {
+        Ok(Some(join_response)) => {
             info!(
                 %peer_id,
                 context_id = %join_response.context_id,
                 member_public_key = %join_response.member_public_key,
                 "Successfully joined context via specialized node invitation"
             );
-            // Return the context_id so caller can broadcast confirmation
             Ok(Some(join_response.context_id))
+        }
+        Ok(None) => {
+            info!(%peer_id, %context_id, "Context already exists locally, skipping join");
+            Ok(Some(context_id))
         }
         Err(err) => {
             error!(

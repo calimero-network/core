@@ -38,7 +38,7 @@ pub async fn handler(
     let result = state
         .ctx_client
         .create_context(
-            req.protocol,
+            "local".to_owned(),
             &req.application_id,
             identity_secret,
             req.initialization_params,

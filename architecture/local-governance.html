@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Local Group Governance — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Local Group Governance</span></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     1. TITLE + STATS
+     ═══════════════════════════════════════════════════════════════════ -->
+<h1>Local Group <em>Governance</em></h1>
+<p class="page-subtitle">feat/local-group-governance-ops &middot; calimero-network/core &middot; 15 commits on master</p>
+
+<div class="g4" style="margin-bottom:36px;">
+  <div class="stat"><div class="v">15</div><div class="l">commits</div></div>
+  <div class="stat"><div class="v">87</div><div class="l">files changed</div></div>
+  <div class="stat"><div class="v">4,109</div><div class="l">insertions</div></div>
+  <div class="stat"><div class="v">1,390</div><div class="l">deletions</div></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     2. BEFORE / AFTER SVG — Blockchain Removal
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>What Changed: Blockchain &rarr; Local Governance</h2>
+<svg viewBox="0 0 940 440" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- BEFORE panel -->
+  <rect x="20" y="55" width="420" height="340" rx="12" fill="#161622" stroke="#ef4444" stroke-width="1" stroke-dasharray="4 4" opacity="0.7"/>
+  <text x="230" y="42" text-anchor="middle" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">BEFORE (removed)</text>
+
+  <rect x="50" y="85" width="160" height="48" rx="8" fill="#0f0f16" stroke="#252538"/>
+  <text x="130" y="114" text-anchor="middle" fill="#d4d4dc" font-family="DM Sans, sans-serif" font-size="12" font-weight="500">Node A</text>
+
+  <rect x="250" y="85" width="160" height="48" rx="8" fill="#0f0f16" stroke="#252538"/>
+  <text x="330" y="114" text-anchor="middle" fill="#d4d4dc" font-family="DM Sans, sans-serif" font-size="12" font-weight="500">Node B</text>
+
+  <line x1="130" y1="133" x2="230" y2="195" stroke="#ef4444" stroke-width="1.5" opacity="0.5"/>
+  <line x1="330" y1="133" x2="230" y2="195" stroke="#ef4444" stroke-width="1.5" opacity="0.5"/>
+
+  <rect x="150" y="185" width="160" height="42" rx="8" fill="#ef444412" stroke="#ef4444"/>
+  <text x="230" y="211" text-anchor="middle" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">Relayer</text>
+
+  <line x1="230" y1="227" x2="230" y2="265" stroke="#ef4444" stroke-width="1.5" opacity="0.5"/>
+  <polygon points="225,263 230,273 235,263" fill="#ef4444" opacity="0.5"/>
+
+  <rect x="100" y="275" width="260" height="58" rx="8" fill="#ef444412" stroke="#ef4444"/>
+  <text x="230" y="300" text-anchor="middle" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600">NEAR Blockchain</text>
+  <text x="230" y="320" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">context-config contract</text>
+
+  <!-- X through BEFORE -->
+  <line x1="30" y1="65" x2="430" y2="385" stroke="#ef4444" stroke-width="2" opacity="0.2"/>
+  <line x1="430" y1="65" x2="30" y2="385" stroke="#ef4444" stroke-width="2" opacity="0.2"/>
+
+  <!-- AFTER panel -->
+  <rect x="500" y="55" width="420" height="340" rx="12" fill="#10b98108" stroke="#10b981" stroke-width="1.5"/>
+  <text x="710" y="42" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">AFTER (local governance)</text>
+
+  <rect x="530" y="85" width="150" height="100" rx="8" fill="#0f0f16" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="605" y="108" text-anchor="middle" fill="#d4d4dc" font-family="DM Sans, sans-serif" font-size="12" font-weight="700">Node A</text>
+  <text x="605" y="130" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">GroupStore</text>
+  <text x="605" y="148" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9">DagStore</text>
+  <text x="605" y="166" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="9">OpLog</text>
+
+  <rect x="740" y="85" width="150" height="100" rx="8" fill="#0f0f16" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="815" y="108" text-anchor="middle" fill="#d4d4dc" font-family="DM Sans, sans-serif" font-size="12" font-weight="700">Node B</text>
+  <text x="815" y="130" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">GroupStore</text>
+  <text x="815" y="148" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9">DagStore</text>
+  <text x="815" y="166" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="9">OpLog</text>
+
+  <!-- gossipsub arrows -->
+  <line x1="680" y1="125" x2="740" y2="125" stroke="#f59e0b" stroke-width="2"/>
+  <polygon points="738,121 748,125 738,129" fill="#f59e0b"/>
+  <line x1="740" y1="145" x2="680" y2="145" stroke="#f59e0b" stroke-width="2"/>
+  <polygon points="682,141 672,145 682,149" fill="#f59e0b"/>
+  <text x="710" y="113" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="8" font-weight="600">gossipsub</text>
+
+  <!-- SignedGroupOp box -->
+  <rect x="545" y="225" width="330" height="140" rx="8" fill="#161622" stroke="#8b5cf6" stroke-width="1"/>
+  <text x="710" y="250" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">SignedGroupOp (v3)</text>
+  <text x="710" y="274" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">group_id + parent_op_hashes</text>
+  <text x="710" y="294" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">state_hash + nonce + signer</text>
+  <text x="710" y="314" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">op: GroupOp + signature</text>
+  <text x="710" y="342" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9">Ed25519 &middot; borsh &middot; content-addressed</text>
+
+  <!-- dashed lines from nodes to SignedGroupOp -->
+  <line x1="605" y1="185" x2="640" y2="225" stroke="#8b5cf6" stroke-width="1" stroke-dasharray="3 3"/>
+  <line x1="815" y1="185" x2="780" y2="225" stroke="#8b5cf6" stroke-width="1" stroke-dasharray="3 3"/>
+</svg>
+
+<div class="legend">
+  <div class="legend-item"><div class="ld" style="background:#ef4444"></div>Removed (blockchain, relayer, external client)</div>
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>New (local governance, DAG, op log)</div>
+  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>P2P gossip (group topics)</div>
+  <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>Signed operations</div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     3. GROUPS OWN CONTEXTS
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Core Concept: Groups Own Contexts</h2>
+<svg viewBox="0 0 940 310" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Group -->
+  <rect x="310" y="18" width="320" height="68" rx="12" fill="#f59e0b10" stroke="#f59e0b" stroke-width="2"/>
+  <text x="470" y="46" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="15" font-weight="700">Group</text>
+  <text x="470" y="68" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">admin &middot; members &middot; policies &middot; visibility</text>
+
+  <!-- Contexts -->
+  <rect x="80" y="145" width="210" height="52" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="185" y="168" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600">Context A</text>
+  <text x="185" y="186" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">app + state + identities</text>
+
+  <rect x="365" y="145" width="210" height="52" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="470" y="168" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600">Context B</text>
+  <text x="470" y="186" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">app + state + identities</text>
+
+  <rect x="650" y="145" width="210" height="52" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="755" y="168" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600">Context C</text>
+  <text x="755" y="186" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">app + state + identities</text>
+
+  <!-- Group -> Context lines -->
+  <line x1="380" y1="86" x2="185" y2="145" stroke="#f59e0b" stroke-width="1.5" opacity="0.5"/>
+  <line x1="470" y1="86" x2="470" y2="145" stroke="#f59e0b" stroke-width="1.5" opacity="0.5"/>
+  <line x1="560" y1="86" x2="755" y2="145" stroke="#f59e0b" stroke-width="1.5" opacity="0.5"/>
+
+  <!-- Members -->
+  <rect x="80" y="240" width="120" height="38" rx="8" fill="#10b98110" stroke="#10b981"/>
+  <text x="140" y="264" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11">Admin</text>
+
+  <rect x="230" y="240" width="120" height="38" rx="8" fill="#10b98110" stroke="#10b981"/>
+  <text x="290" y="264" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11">Member 1</text>
+
+  <rect x="380" y="240" width="120" height="38" rx="8" fill="#10b98110" stroke="#10b981"/>
+  <text x="440" y="264" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11">Member 2</text>
+
+  <text x="620" y="256" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">Group membership &rarr; access to contexts</text>
+  <text x="620" y="276" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">MemberRemoved &rarr; cascade removal from all contexts</text>
+</svg>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     4. GOVERNANCE DAG STRUCTURE
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Governance DAG Structure</h2>
+<p style="color:var(--text-dim);margin-bottom:18px;font-size:.88rem;">Each group has a DAG of <span class="code">SignedGroupOp</span> operations. Operations reference their parents by content hash, forming a causal chain that supports offline ops, concurrent admins, and merge.</p>
+
+<svg viewBox="0 0 940 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Genesis -->
+  <circle cx="470" cy="40" r="22" fill="#f59e0b18" stroke="#f59e0b" stroke-width="2"/>
+  <text x="470" y="45" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">G</text>
+  <text x="525" y="44" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">genesis (group create)</text>
+
+  <!-- G -> A1 -->
+  <line x1="470" y1="62" x2="470" y2="92" stroke="#f59e0b" stroke-width="1.5"/>
+  <circle cx="470" cy="114" r="18" fill="#3b82f615" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="470" y="119" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">A1</text>
+  <text x="530" y="118" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">MemberAdded</text>
+
+  <!-- Fork: A1 -> A2 (left, blue) and A1 -> B1 (right, green) -->
+  <line x1="452" y1="130" x2="330" y2="178" stroke="#3b82f6" stroke-width="1.5"/>
+  <line x1="488" y1="130" x2="610" y2="178" stroke="#10b981" stroke-width="1.5"/>
+
+  <!-- Admin A branch -->
+  <circle cx="330" cy="198" r="18" fill="#3b82f615" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="330" y="203" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">A2</text>
+  <text x="235" y="202" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="9">Admin A</text>
+
+  <line x1="330" y1="216" x2="330" y2="248" stroke="#3b82f6" stroke-width="1.5"/>
+  <circle cx="330" cy="268" r="18" fill="#3b82f615" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="330" y="273" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">A3</text>
+
+  <!-- Admin B branch -->
+  <circle cx="610" cy="198" r="18" fill="#10b98115" stroke="#10b981" stroke-width="1.5"/>
+  <text x="610" y="203" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">B1</text>
+  <text x="668" y="202" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="9">Admin B</text>
+
+  <line x1="610" y1="216" x2="610" y2="248" stroke="#10b981" stroke-width="1.5"/>
+  <circle cx="610" cy="268" r="18" fill="#10b98115" stroke="#10b981" stroke-width="1.5"/>
+  <text x="610" y="273" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">B2</text>
+
+  <!-- Merge: A3 + B2 -> M -->
+  <line x1="348" y1="282" x2="448" y2="340" stroke="#8b5cf6" stroke-width="2"/>
+  <line x1="592" y1="282" x2="492" y2="340" stroke="#8b5cf6" stroke-width="2"/>
+  <circle cx="470" cy="360" r="24" fill="#8b5cf618" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="470" y="365" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">M</text>
+  <text x="540" y="364" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10">Merge (Noop with 2 parents)</text>
+
+  <!-- Annotation boxes -->
+  <rect x="30" y="310" width="230" height="72" rx="8" fill="#161622" stroke="#252538"/>
+  <text x="42" y="332" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">delta_id = SHA-256(signable_bytes)</text>
+  <text x="42" y="350" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">parents = current DAG heads</text>
+  <text x="42" y="368" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">state_hash = optimistic lock</text>
+
+  <rect x="700" y="310" width="220" height="72" rx="8" fill="#161622" stroke="#252538"/>
+  <text x="712" y="332" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">Ordering guarantees:</text>
+  <text x="712" y="350" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">&bull; topological (parents first)</text>
+  <text x="712" y="368" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="10">&bull; pending queue for OOO</text>
+</svg>
+
+<div class="legend">
+  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>Genesis</div>
+  <div class="legend-item"><div class="ld" style="background:#3b82f6"></div>Admin A ops</div>
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>Admin B ops (concurrent)</div>
+  <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>Merge op</div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     5. SIGNED GROUP OP SCHEMA v3
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>SignedGroupOp Schema (v3)</h2>
+<div class="g2">
+  <div>
+    <h3>Signable Payload</h3>
+    <div class="fr"><div class="fp">version</div><div class="fd">Schema version (currently 3)</div></div>
+    <div class="fr"><div class="fp">group_id</div><div class="fd">Target group identifier</div></div>
+    <div class="fr"><div class="fp">parent_op_hashes</div><div class="fd">DAG ancestry (current heads at sign time)</div></div>
+    <div class="fr"><div class="fp">state_hash</div><div class="fd">Optimistic lock &mdash; SHA-256 of group state</div></div>
+    <div class="fr"><div class="fp">signer</div><div class="fd">Ed25519 public key of the admin</div></div>
+    <div class="fr"><div class="fp">nonce</div><div class="fd">Per-signer monotonic (dedup + replay)</div></div>
+    <div class="fr"><div class="fp">op: GroupOp</div><div class="fd">The actual operation (see right column)</div></div>
+  </div>
+  <div>
+    <h3>GroupOp Variants</h3>
+    <div class="fr"><div class="fp">MemberAdded</div><div class="fd">Add member to group</div></div>
+    <div class="fr"><div class="fp">MemberRemoved</div><div class="fd">Remove member (cascade to all contexts)</div></div>
+    <div class="fr"><div class="fp">ContextRegistered</div><div class="fd">Bind a new context to the group</div></div>
+    <div class="fr"><div class="fp">ContextDetached</div><div class="fd">Remove context from group</div></div>
+    <div class="fr"><div class="fp">VisibilitySet</div><div class="fd">Context access: open vs restricted</div></div>
+    <div class="fr"><div class="fp">AllowlistSet</div><div class="fd">Per-context member allowlist</div></div>
+    <div class="fr"><div class="fp">CapabilitiesSet</div><div class="fd">Per-member capability grants</div></div>
+    <div class="fr"><div class="fp">JoinWithInvitationClaim</div><div class="fd">Invitation-based group join</div></div>
+    <div class="fr"><div class="fp">MemberJoinedContext (removed)</div><div class="fd">Context membership is now implicit from group membership</div></div>
+    <div class="fr"><div class="fp">GroupDeleted</div><div class="fd">Delete the group</div></div>
+    <div class="fr"><div class="fp">Noop</div><div class="fd">Merge sentinel (no state change)</div></div>
+    <div class="fr"><div class="fp">TargetApplicationSet</div><div class="fd">Set default application for contexts</div></div>
+    <div class="fr"><div class="fp">GroupMigrationSet</div><div class="fd">Configure migration parameters</div></div>
+    <div class="fr"><div class="fp">ContextAliasSet</div><div class="fd">Set human-readable context alias</div></div>
+    <div class="fr"><div class="fp">MemberAliasSet</div><div class="fd">Set human-readable member alias</div></div>
+    <div class="fr"><div class="fp">GroupAliasSet</div><div class="fd">Set human-readable group alias</div></div>
+    <div class="fr"><div class="fp">DefaultCapabilitiesSet</div><div class="fd">Set default capabilities for new members</div></div>
+    <div class="fr"><div class="fp">DefaultVisibilitySet</div><div class="fd">Set default visibility for new contexts</div></div>
+    <div class="fr"><div class="fp">ContextMemberCapGranted</div><div class="fd">Grant capability to context member</div></div>
+    <div class="fr"><div class="fp">ContextMemberCapRevoked</div><div class="fd">Revoke capability from context member</div></div>
+    <div class="fr"><div class="fp">MemberLeftContext (removed)</div><div class="fd">Context membership is now implicit from group membership; explicit leave tracking removed</div></div>
+  </div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     6. OPERATION FLOWS
+     ═══════════════════════════════════════════════════════════════════ -->
+<h2 style="margin-top:40px;">Operation Flows</h2>
+
+<!-- 6a. Create Context -->
+<div class="card gb">
+<h2>Create Context Flow</h2>
+<div class="step"><div class="n">1</div><h4>Admin calls create_context</h4><p>API receives <span class="code">group_id</span> (or auto-creates group). Uses node's group identity keypair if no explicit secret provided.</p></div>
+<div class="step"><div class="n">2</div><h4>Handler signs GroupOps</h4><p>Emits a sequence: <span class="code">ContextRegistered</span> &rarr; <span class="code">ContextVisibilitySet</span> &rarr; optional <span class="code">ContextAliasSet</span>. Each is a <span class="code">SignedGroupOp</span> applied locally and published via gossip.</p></div>
+<div class="step"><div class="n">3</div><h4>Local apply + OpLog</h4><p><span class="code">group_store::apply_local_signed_group_op</span> verifies signature, checks state_hash, updates KV rows, appends to op log, recomputes DAG heads.</p></div>
+<div class="step"><div class="n">4</div><h4>Gossip propagation</h4><p>Published on <span class="code">group/&lt;hex&gt;</span> topic. Remote nodes receive via <span class="code">SignedGroupOpV1</span> broadcast, verify, and apply the same ops.</p></div>
+</div>
+
+<!-- 6b. Join Group via Invitation -->
+<div class="card ga">
+<h2>Join Group via Invitation</h2>
+<div class="step"><div class="n">1</div><h4>Admin creates invitation</h4><p><span class="code">create_group_invitation</span> generates a <span class="code">SignedGroupOpenInvitation</span> with optional expiration timestamp. Shared out-of-band to the joiner.</p></div>
+<div class="step"><div class="n">2</div><h4>Joiner submits invitation</h4><p><span class="code">join_group</span> builds <span class="code">GroupRevealPayloadData</span>, signs it, submits a <span class="code">JoinWithInvitationClaim</span> GroupOp.</p></div>
+<div class="step"><div class="n">3</div><h4>Op applied + member added</h4><p>Group store validates the claim, adds the new member, updates op log. Gossip ensures all peers converge.</p></div>
+</div>
+
+<!-- 6c. Join Context within Group -->
+<div class="card gc">
+<h2>Join Context (within Group)</h2>
+<div class="step"><div class="n">1</div><h4>Member calls join_group_context</h4><p>Must already be a group member. Handler checks context <strong>visibility</strong> (open vs restricted) and member <strong>capabilities</strong> (<span class="code">CAN_JOIN_OPEN_CONTEXTS</span>).</p></div>
+<div class="step"><div class="n">2</div><h4>Allowlist check (if restricted)</h4><p>For restricted-visibility contexts, the member's public key must be on the allowlist.</p></div>
+<div class="step"><div class="n">3</div><h4>Context identity created</h4><p>Adds local context membership. Context membership is implicit from group membership &mdash; no separate governance op is required.</p></div>
+</div>
+
+<!-- 6d. Member Removal Cascade -->
+<div class="card gd">
+<h2>Member Removal Cascade</h2>
+<svg viewBox="0 0 940 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Trigger -->
+  <rect x="30" y="28" width="175" height="48" rx="8" fill="#ef444412" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="118" y="57" text-anchor="middle" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">MemberRemoved</text>
+
+  <line x1="205" y1="52" x2="268" y2="52" stroke="#ef4444" stroke-width="1.5"/>
+  <polygon points="266,48 276,52 266,56" fill="#ef4444"/>
+
+  <!-- Remove from group -->
+  <rect x="280" y="18" width="210" height="68" rx="8" fill="#161622" stroke="#ef4444"/>
+  <text x="385" y="42" text-anchor="middle" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">Remove from group</text>
+  <text x="385" y="62" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">GroupMember row deleted</text>
+
+  <!-- Fan-out -->
+  <line x1="490" y1="52" x2="558" y2="25" stroke="#ef4444" stroke-width="1" stroke-dasharray="3 3"/>
+  <line x1="490" y1="52" x2="558" y2="55" stroke="#ef4444" stroke-width="1" stroke-dasharray="3 3"/>
+  <line x1="490" y1="52" x2="558" y2="85" stroke="#ef4444" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <rect x="562" y="8" width="210" height="32" rx="6" fill="#3b82f608" stroke="#3b82f6"/>
+  <text x="667" y="29" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10">Context A identity removed</text>
+
+  <rect x="562" y="50" width="210" height="32" rx="6" fill="#3b82f608" stroke="#3b82f6"/>
+  <text x="667" y="71" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10">Context B identity removed</text>
+
+  <rect x="562" y="92" width="210" height="32" rx="6" fill="#3b82f608" stroke="#3b82f6"/>
+  <text x="667" y="113" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10">Join tracking cleaned up</text>
+
+  <!-- Deterministic note -->
+  <rect x="30" y="148" width="880" height="35" rx="6" fill="#10b98108" stroke="#10b981"/>
+  <text x="470" y="170" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10">Deterministic: same op on any node produces identical cascade &mdash; verified by convergence tests</text>
+</svg>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     7. SYNC & CATCH-UP PROTOCOL
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Sync &amp; Catch-up Protocol</h2>
+<svg viewBox="0 0 940 470" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Node A column -->
+  <rect x="60" y="25" width="210" height="420" rx="12" fill="#161622" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="165" y="55" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">Node A (online)</text>
+
+  <!-- Node B column -->
+  <rect x="670" y="25" width="210" height="420" rx="12" fill="#161622" stroke="#10b981" stroke-width="1.5"/>
+  <text x="775" y="55" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700">Node B (rejoining)</text>
+
+  <!-- Step 1: heartbeat -->
+  <text x="165" y="95" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">every 30s</text>
+  <rect x="90" y="105" width="150" height="35" rx="6" fill="#f59e0b10" stroke="#f59e0b"/>
+  <text x="165" y="127" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10">StateHeartbeat</text>
+
+  <line x1="240" y1="122" x2="670" y2="122" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <polygon points="666,118 676,122 666,126" fill="#f59e0b"/>
+  <text x="450" y="114" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">{ group_id, dag_heads: [h1, h2] }</text>
+
+  <!-- Step 2: compare -->
+  <rect x="700" y="155" width="150" height="48" rx="6" fill="#10b98110" stroke="#10b981"/>
+  <text x="775" y="174" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10">Compare heads</text>
+  <text x="775" y="192" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">missing h2?</text>
+
+  <!-- Step 3: delta request -->
+  <rect x="700" y="220" width="150" height="30" rx="6" fill="#8b5cf615" stroke="#8b5cf6"/>
+  <text x="775" y="240" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10">Stream request</text>
+
+  <line x1="670" y1="235" x2="270" y2="235" stroke="#8b5cf6" stroke-width="1.5"/>
+  <polygon points="274,231 264,235 274,239" fill="#8b5cf6"/>
+  <text x="450" y="228" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9">GroupDeltaRequest { delta_id: h2 }</text>
+
+  <!-- Step 4: read op log -->
+  <rect x="90" y="262" width="150" height="40" rx="6" fill="#3b82f610" stroke="#3b82f6"/>
+  <text x="165" y="280" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10">read_op_log</text>
+  <text x="165" y="296" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">scan for hash</text>
+
+  <!-- Step 4: delta response -->
+  <line x1="270" y1="320" x2="670" y2="320" stroke="#3b82f6" stroke-width="1.5"/>
+  <polygon points="666,316 676,320 666,324" fill="#3b82f6"/>
+  <text x="450" y="312" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="9">GroupDeltaResponse { payload: borsh(SignedGroupOp) }</text>
+
+  <!-- Step 5: apply -->
+  <rect x="700" y="340" width="150" height="48" rx="6" fill="#10b98110" stroke="#10b981"/>
+  <text x="775" y="360" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10">apply_signed_</text>
+  <text x="775" y="376" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10">group_op</text>
+
+  <!-- Step 6: converged -->
+  <rect x="700" y="408" width="150" height="26" rx="6" fill="#f59e0b10" stroke="#f59e0b"/>
+  <text x="775" y="426" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">converged &#10003;</text>
+
+  <line x1="775" y1="388" x2="775" y2="408" stroke="#10b981" stroke-width="1" stroke-dasharray="3 3"/>
+</svg>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     8. STARTUP RECOVERY
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Startup Recovery</h2>
+<div class="g3">
+  <div class="step"><div class="n">1</div><h4>reload_group_dags</h4><p>On node start, for each group in the store, reads the full <span class="code">OpLog</span> and rebuilds the in-memory <span class="code">DagStore</span> via <span class="code">restore_applied_delta</span>. Reconstructs pending parent resolution state.</p></div>
+  <div class="step"><div class="n">2</div><h4>start_group_heartbeat</h4><p>Starts a 30-second periodic timer. Each tick publishes <span class="code">GroupStateHeartbeat</span> with current <span class="code">dag_heads</span> for every group.</p></div>
+  <div class="step"><div class="n">3</div><h4>Peers respond with deltas</h4><p>Peers compare heads against their own. For any ops the restarted node is missing, they serve them via <span class="code">GroupDeltaRequest/Response</span> streams.</p></div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     9. IMPLEMENTATION STATUS
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Implementation Status</h2>
+
+<h3>Completed</h3>
+<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;SignedGroupOp v3 + DAG</h4><p>Full wire types, Ed25519 signing, content-addressed DAG with parent hashes, state_hash optimistic locking, schema versioning (v1&rarr;v2&rarr;v3).</p></div>
+<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;GroupStore persistence + apply</h4><p>All GroupOp variants applied with auth checks. Op log with sequence numbers, DAG head tracking (capped at 64), per-signer nonce for replay protection + idempotency.</p></div>
+<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;Gossip propagation</h4><p>SignedGroupOpV1 + GroupGovernanceDelta broadcast on group topics. Verify-on-ingress at node level.</p></div>
+<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;Catch-up protocol</h4><p>GroupStateHeartbeat (30s), GroupDeltaRequest/Response stream, startup reload_group_dags from persistent op log.</p></div>
+<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;Cascade removal</h4><p>MemberRemoved cascades to all context identities + join tracking. Deterministic across nodes.</p></div>
+<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;Blockchain removal</h4><p>Relayer crate deleted. External client, proxy, NEAR transport, proposals removed. NEAR deps scoped to auth only.</p></div>
+<div class="step" style="border-color:var(--green);"><h4><span class="tag tag-done">DONE</span> &nbsp;Comprehensive tests (21 convergence + 1 E2E)</h4><p>Two-node convergence, op log, idempotency, DAG ordering, state_hash conflict prevention, cascade removal, head capping, out-of-order delivery, deep chain replay.</p></div>
+
+<h3>Known Gaps / Future Work</h3>
+<div class="step" style="border-color:var(--amber);"><h4><span class="tag tag-partial">NOTED</span> &nbsp;Multi-admin convergence ambiguity</h4><p>Concurrent ops from multiple admins with the same state_hash: first applied wins per node. Different nodes may pick different winners for conflicting ops. Merge Noop resolves heads but op ordering may differ.</p></div>
+<div class="step" style="border-color:var(--amber);"><h4><span class="tag tag-partial">NOTED</span> &nbsp;Governance epoch not yet enforced</h4><p>State deltas carry a governance_epoch field but it's not yet used to reject stale application-level deltas from removed members.</p></div>
+<div class="step" style="border-color:var(--amber);"><h4><span class="tag tag-partial">NOTED</span> &nbsp;WASM capability enforcement</h4><p>Capabilities are stored and propagated but not yet checked in the WASM runtime for application-level add/remove member calls.</p></div>
+<div class="step" style="border-color:var(--red);"><h4><span class="tag tag-gap">GAP</span> &nbsp;Publish failure surfacing</h4><p>If gossip publish fails, it's currently silent. Should surface errors to callers or retry.</p></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     10. KEY FILE MAP
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Key File Map</h2>
+
+<h3>Core Governance</h3>
+<div class="fr"><div class="fp">context/primitives/src/local_governance.rs</div><div class="fd">Wire types: <span class="code">SignedGroupOp</span>, <span class="code">GroupOp</span>, <span class="code">SignableGroupOp</span>. Ed25519 signing/verification, content hashing, schema v3.</div></div>
+<div class="fr"><div class="fp">context/src/governance_dag.rs</div><div class="fd"><span class="code">GroupGovernanceApplier</span> bridges <span class="code">calimero_dag</span>: converts <span class="code">SignedGroupOp</span> to <span class="code">CausalDelta</span>, delegates apply to group_store.</div></div>
+<div class="fr"><div class="fp">context/src/group_store.rs</div><div class="fd">Authoritative persistence. <span class="code">apply_local_signed_group_op</span> handles all GroupOp variants, manages op log, DAG heads, nonces, cascades.</div></div>
+<div class="fr"><div class="fp">context/src/lib.rs</div><div class="fd"><span class="code">ContextManager</span> actor. Holds per-group <span class="code">DagStore</span>s, runs <span class="code">reload_group_dags</span> on startup, starts heartbeat timer.</div></div>
+
+<h3>Storage Layer</h3>
+<div class="fr"><div class="fp">store/src/key/group.rs</div><div class="fd">20+ typed key prefixes for Column::Group: GroupMeta, GroupMember, OpLog, OpHead, Nonce, Context indexes, capabilities, aliases.</div></div>
+<div class="fr"><div class="fp">store/src/types/group.rs</div><div class="fd">Value types: <span class="code">GroupOpHeadValue</span> (sequence + dag_heads), <span class="code">GroupMetaValue</span>, <span class="code">GroupUpgradeValue</span>.</div></div>
+
+<h3>Network Integration</h3>
+<div class="fr"><div class="fp">node/src/handlers/network_event.rs</div><div class="fd">Gossip ingestion: <span class="code">SignedGroupOpV1</span>, <span class="code">GroupGovernanceDelta</span>, <span class="code">GroupStateHeartbeat</span> &rarr; apply or stream-request missing ops.</div></div>
+<div class="fr"><div class="fp">node/src/sync/manager.rs</div><div class="fd">Responds to <span class="code">GroupDeltaRequest</span> by scanning op log and sending <span class="code">GroupDeltaResponse</span>.</div></div>
+
+<h3>Handlers</h3>
+<div class="fr"><div class="fp">context/src/handlers/create_context.rs</div><div class="fd">Emits ContextRegistered + VisibilitySet + optional alias as signed ops.</div></div>
+<div class="fr"><div class="fp">context/src/handlers/join_group.rs</div><div class="fd">Invitation claim flow: validate <span class="code">SignedGroupOpenInvitation</span>, build reveal payload, submit <span class="code">JoinWithInvitationClaim</span>.</div></div>
+<div class="fr"><div class="fp">context/src/handlers/join_group_context.rs</div><div class="fd">Context membership with visibility/capability checks.</div></div>
+<div class="fr"><div class="fp">context/src/handlers/apply_signed_group_op.rs</div><div class="fd">DagStore integration: feeds op into DAG, handles pending/applied/error states.</div></div>
+<div class="fr"><div class="fp">context/src/handlers/upgrade_group.rs</div><div class="fd">Application upgrade propagation across group contexts.</div></div>
+
+<h3>Tests</h3>
+<div class="fr"><div class="fp">context/tests/local_group_governance_convergence.rs</div><div class="fd">21 tests: two-node convergence, op log, idempotency, DAG ordering, state_hash conflict prevention, cascade removal, head capping.</div></div>
+<div class="fr"><div class="fp">node/src/local_governance_node_e2e.rs</div><div class="fd">E2E: gossip message &rarr; node manager &rarr; context apply &rarr; membership verified.</div></div>
+
+<h3 style="color:var(--red);">Removed</h3>
+<div class="fr"><div class="fp" style="color:var(--red);">crates/relayer/</div><div class="fd">Entire relayer crate deleted.</div></div>
+<div class="fr"><div class="fp" style="color:var(--red);">context/config/src/client/</div><div class="fd">External client, proxy, NEAR protocol transport.</div></div>
+<div class="fr"><div class="fp" style="color:var(--red);">runtime/src/logic/host_functions/governance.rs</div><div class="fd">WASM governance host functions.</div></div>
+<div class="fr"><div class="fp" style="color:var(--red);">server/src/admin/handlers/proposals.rs</div><div class="fd">Proposal system.</div></div>
+</div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

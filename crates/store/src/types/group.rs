@@ -1,7 +1,5 @@
 #![allow(single_use_lifetimes, reason = "borsh shenanigans")]
 
-use calimero_primitives::context::GroupMemberRole;
-
 use crate::entry::Borsh;
 use crate::key;
 use crate::types::PredefinedEntry;
@@ -13,7 +11,7 @@ impl PredefinedEntry for key::GroupMeta {
 
 impl PredefinedEntry for key::GroupMember {
     type Codec = Borsh;
-    type DataType<'a> = GroupMemberRole;
+    type DataType<'a> = key::GroupMemberValue;
 }
 
 impl PredefinedEntry for key::GroupContextIndex {
@@ -66,6 +64,11 @@ impl PredefinedEntry for key::GroupContextLastMigration {
     type DataType<'a> = key::GroupContextLastMigrationValue;
 }
 
+impl PredefinedEntry for key::GroupLocalGovNonce {
+    type Codec = Borsh;
+    type DataType<'a> = u64;
+}
+
 impl PredefinedEntry for key::GroupContextAlias {
     type Codec = Borsh;
     type DataType<'a> = String;
@@ -79,4 +82,24 @@ impl PredefinedEntry for key::GroupMemberAlias {
 impl PredefinedEntry for key::GroupAlias {
     type Codec = Borsh;
     type DataType<'a> = String;
+}
+
+impl PredefinedEntry for key::GroupOpLog {
+    type Codec = Borsh;
+    type DataType<'a> = Vec<u8>;
+}
+
+impl PredefinedEntry for key::GroupMemberContext {
+    type Codec = Borsh;
+    type DataType<'a> = [u8; 32];
+}
+
+impl PredefinedEntry for key::GroupContextMemberCap {
+    type Codec = Borsh;
+    type DataType<'a> = u8;
+}
+
+impl PredefinedEntry for key::GroupOpHead {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupOpHeadValue;
 }

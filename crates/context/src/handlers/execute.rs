@@ -6,7 +6,6 @@ use std::time::Instant;
 use actix::{
     ActorFuture, ActorFutureExt, ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture,
 };
-use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::{
@@ -22,7 +21,7 @@ use calimero_primitives::events::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_runtime::logic::{ContextHost, Outcome};
+use calimero_runtime::logic::Outcome;
 use calimero_storage::{
     action::Action,
     delta::{CausalDelta, StorageDelta},
@@ -42,7 +41,6 @@ use crate::error::ContextError;
 use crate::handlers::update_application::{
     update_application_id, update_application_with_migration,
 };
-use crate::handlers::utils::{process_context_mutations, StoreContextHost};
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
 
@@ -120,8 +118,8 @@ impl Handler<ExecuteRequest> for ContextManager {
             maybe_lazy_upgrade(&self.datastore, &context_id, &current_application_id)
         };
 
-        let external_config = match self.context_client.context_config(&context_id) {
-            Ok(Some(external_config)) => external_config,
+        match self.context_client.context_config(&context_id) {
+            Ok(Some(_)) => {}
             Ok(None) => {
                 error!(%context_id, "missing context config for context");
 
@@ -132,7 +130,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 return ActorResponse::reply(Err(ExecuteError::InternalError));
             }
-        };
+        }
 
         // Fetch the full identity, not just the sender_key
         let identity = match self.context_client.get_identity(&context_id, &executor) {
@@ -638,6 +636,20 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 Some(serialized)
                             };
 
+                            let governance_epoch = {
+                                let ds = context_client.datastore();
+                                crate::group_store::get_group_for_context(ds, &context_id)
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|gid| {
+                                        crate::group_store::get_op_head(ds, &gid)
+                                            .ok()
+                                            .flatten()
+                                            .map(|h| h.dag_heads)
+                                    })
+                                    .unwrap_or_default()
+                            };
+
                             node_client
                                 .broadcast(
                                     &context,
@@ -648,33 +660,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     the_delta.parents.clone(),
                                     the_delta.hlc,
                                     events_data,
+                                    governance_epoch,
                                 )
                                 .await?;
                         }
                     }
-
-                    let external_client =
-                        context_client.external_client(&context_id, &external_config)?;
-
-                    let proxy_client = external_client.proxy();
-
-                    for (proposal_id, actions) in &outcome.proposals {
-                        let actions = borsh::from_slice(actions)?;
-
-                        let proposal_id = proposal_id.rt().expect("infallible conversion");
-
-                        proxy_client
-                            .propose(&executor, &proposal_id, actions)
-                            .await?;
-                    }
-
-                    for proposal_id in &outcome.approvals {
-                        let proposal_id = proposal_id.rt().expect("infallible conversion");
-
-                        proxy_client.approve(&executor, &proposal_id).await?;
-                    }
-
-                    process_context_mutations(&context_client, &node_client, context_id, executor, &outcome.context_mutations).await;
 
                     // Spawn handler executions as separate tasks.
                     // This runs after the current response is sent, avoiding actor deadlock.
@@ -873,14 +863,7 @@ async fn internal_execute(
     is_state_op: bool,
     identity_private_key: &PrivateKey,
 ) -> eyre::Result<(Outcome, Option<CausalDelta>)> {
-    // Create the host store context implementation
-    let context_host = StoreContextHost {
-        store: datastore.clone(),
-        context_id: context.id,
-    };
-
     let storage = ContextStorage::from(datastore.clone(), context.id);
-    // Create private storage (node-local, NOT synchronized)
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
     let (mut outcome, storage, private_storage) = execute(
         guard,
@@ -891,7 +874,6 @@ async fn internal_execute(
         storage,
         private_storage,
         node_client.clone(),
-        Some(Box::new(context_host)),
     )
     .await?;
 
@@ -1149,12 +1131,9 @@ pub async fn execute(
     mut storage: ContextStorage,
     mut private_storage: ContextPrivateStorage,
     node_client: NodeClient,
-    context_host: Option<Box<dyn ContextHost>>,
 ) -> eyre::Result<(Outcome, ContextStorage, ContextPrivateStorage)> {
     let context_id = **context;
 
-    // Run WASM execution in blocking context
-    // TODO(ctx)
     global_runtime()
         .spawn_blocking(move || {
             let outcome = module.run(
@@ -1165,7 +1144,6 @@ pub async fn execute(
                 &mut storage,
                 Some(&mut private_storage),
                 Some(node_client),
-                context_host,
             )?;
             Ok((outcome, storage, private_storage))
         })

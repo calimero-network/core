@@ -44,7 +44,6 @@ fn main() -> EyreResult<()> {
         &mut storage,
         None, // No private storage for example
         None,
-        None,
     )?;
 
     let returns = String::from_utf8(outcome.returns.unwrap().unwrap()).unwrap();

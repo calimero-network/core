@@ -16,7 +16,7 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
-use crate::cli::validation::{non_empty_string, validate_file_exists};
+use crate::cli::validation::validate_file_exists;
 use crate::cli::Environment;
 use crate::client::Client;
 use crate::output::{ErrorLine, InfoLine};
@@ -59,9 +59,6 @@ pub struct CreateCommand {
     )]
     pub context_seed: Option<Hash>,
 
-    #[clap(long, value_name = "PROTOCOL", value_parser = non_empty_string)]
-    pub protocol: String,
-
     #[clap(long = "as", help = "Create an alias for the context identity")]
     pub identity: Option<Alias<PublicKey>>,
 
@@ -90,7 +87,6 @@ impl CreateCommand {
                 context_seed,
                 metadata: None,
                 params,
-                protocol,
                 identity,
                 context,
                 group_id,
@@ -103,7 +99,6 @@ impl CreateCommand {
                     context_seed,
                     app_id,
                     params,
-                    protocol,
                     identity,
                     context,
                     group_id,
@@ -118,7 +113,6 @@ impl CreateCommand {
                 context_seed,
                 metadata,
                 params,
-                protocol,
                 identity,
                 context,
                 group_id,
@@ -148,7 +142,6 @@ impl CreateCommand {
                     context_seed,
                     application_id,
                     params,
-                    protocol,
                     identity,
                     context,
                     group_id,
@@ -180,7 +173,6 @@ pub async fn create_context(
     context_seed: Option<Hash>,
     application_id: ApplicationId,
     params: Option<String>,
-    protocol: String,
     identity: Option<Alias<PublicKey>>,
     context: Option<Alias<ContextId>>,
     group_id: Option<String>,
@@ -194,7 +186,6 @@ pub async fn create_context(
     }
 
     let mut request = CreateContextRequest::new(
-        protocol,
         application_id,
         context_seed,
         params.map(String::into_bytes).unwrap_or_default(),

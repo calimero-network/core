@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Storage Schema — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.schema-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+.schema-table th {
+  text-align: left; padding: 10px 12px; font-family: 'JetBrains Mono', monospace; font-size: .72rem;
+  color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px;
+  border-bottom: 2px solid var(--border); background: var(--surface2);
+}
+.schema-table th:first-child { border-radius: 8px 0 0 0; }
+.schema-table th:last-child { border-radius: 0 8px 0 0; }
+.schema-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: .82rem; vertical-align: top; }
+.schema-table tr:hover td { background: var(--surface2); }
+.schema-table .sk { font-family: 'JetBrains Mono', monospace; font-size: .78rem; color: var(--green); font-weight: 600; white-space: nowrap; }
+.schema-table .sp { font-family: 'JetBrains Mono', monospace; font-size: .76rem; color: var(--amber); font-weight: 700; }
+.schema-table .sl { font-family: 'JetBrains Mono', monospace; font-size: .72rem; color: var(--cyan); }
+.schema-table .sv { font-family: 'JetBrains Mono', monospace; font-size: .72rem; color: var(--violet); }
+.schema-table .sc { font-family: 'JetBrains Mono', monospace; font-size: .72rem; color: var(--pink); }
+.schema-table .sd { color: var(--text-dim); }
+
+.byte-layout { display: inline-flex; gap: 2px; align-items: center; flex-wrap: wrap; }
+.byte-layout .seg {
+  display: inline-block; padding: 2px 6px; border-radius: 4px; font-family: 'JetBrains Mono', monospace;
+  font-size: .7rem; font-weight: 600; border: 1px solid var(--border);
+}
+.byte-layout .seg-prefix { background: var(--amber); color: #000; border-color: var(--amber); }
+.byte-layout .seg-id { background: var(--blue); color: #fff; border-color: var(--blue); opacity: .8; }
+.byte-layout .seg-id2 { background: var(--green); color: #fff; border-color: var(--green); opacity: .8; }
+.byte-layout .seg-id3 { background: var(--violet); color: #fff; border-color: var(--violet); opacity: .8; }
+.byte-layout .seg-seq { background: var(--cyan); color: #000; border-color: var(--cyan); opacity: .8; }
+.byte-layout .seg-var { background: var(--surface3); color: var(--text-dim); }
+.byte-layout .plus { color: var(--text-dim); font-size: .7rem; padding: 0 1px; }
+
+.col-chip {
+  display: inline-block; padding: 3px 10px; border-radius: 6px; font-family: 'JetBrains Mono', monospace;
+  font-size: .72rem; font-weight: 600; border: 1px solid;
+}
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Storage Schema</span></div>
+
+<h1>Storage <em>Schema</em></h1>
+<p class="page-subtitle">Every key/value type across all 10 columns with byte layouts</p>
+
+<div class="g4" style="margin-bottom:36px;">
+  <div class="stat"><div class="v">11</div><div class="l">column families</div></div>
+  <div class="stat"><div class="v">20</div><div class="l">group prefixes</div></div>
+  <div class="stat"><div class="v">Borsh</div><div class="l">default codec</div></div>
+  <div class="stat"><div class="v">RocksDB</div><div class="l">storage engine</div></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     1. COLUMN ENUM
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Column Enum</h2>
+<p style="margin-bottom:16px;">All persistent data is partitioned into 11 column families. Each variant maps to a dedicated RocksDB column family with independent compaction and bloom filters.</p>
+
+<div class="typedef">
+<span class="kw">pub enum</span> <span class="ty">Column</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Meta</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// schema version, node id</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Config</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// node configuration</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Identity</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// keypairs per context</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">State</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// shared context state KV</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">PrivateState</span>,&nbsp;&nbsp;<span class="comment">// per-node private KV (not synced)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Delta</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// causal deltas (DAG)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Blobs</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// content-addressed binary data</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Application</span>,&nbsp;&nbsp;&nbsp;<span class="comment">// WASM binaries + metadata</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Alias</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// human-readable name → id</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Generic</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// uncategorized data</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Group</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// governance: 20 prefix-partitioned sub-namespaces</span><br>
+}
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     2. CONTEXT COLUMNS
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Context Column Types</h2>
+<p style="margin-bottom:18px;">Key/value types for the columns that store per-context data: metadata, configuration, shared state, private state, identity, and deltas.</p>
+
+<h3>Meta Column</h3>
+<table class="schema-table">
+<thead><tr><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Codec</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sk">ContextMeta</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-id">context_id (32)</span></span></td>
+  <td class="sv">ContextMetaValue</td>
+  <td class="sc">Borsh</td>
+  <td class="sd">Context metadata including application info and DAG state</td>
+</tr>
+</tbody>
+</table>
+
+<div class="typedef">
+<span class="kw">struct</span> <span class="ty">ContextMetaValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">application</span>: <span class="ty">ApplicationMeta</span>,&nbsp;&nbsp;<span class="comment">// app_id + version</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">root_hash</span>: <span class="ty">Hash</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// Merkle root of context state</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">dag_heads</span>: Vec&lt;[u8; 32]&gt;,&nbsp;&nbsp;&nbsp;<span class="comment">// current DAG head delta IDs</span><br>
+}
+</div>
+
+<h3>Config Column</h3>
+<table class="schema-table">
+<thead><tr><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Codec</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sk">ContextConfig</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-id">context_id (32)</span></span></td>
+  <td class="sv">ContextConfigValue</td>
+  <td class="sc">Borsh</td>
+  <td class="sd">Per-context revision counters</td>
+</tr>
+</tbody>
+</table>
+
+<div class="typedef">
+<span class="kw">struct</span> <span class="ty">ContextConfigValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">application_revision</span>: u64,&nbsp;&nbsp;<span class="comment">// incremented on app upgrades</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">members_revision</span>: u64,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// incremented on membership changes</span><br>
+}
+</div>
+
+<h3>Identity Column</h3>
+<table class="schema-table">
+<thead><tr><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Codec</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sk">ContextIdentity</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-id">context_id (32)</span></span></td>
+  <td class="sv">ContextIdentityValue</td>
+  <td class="sc">Borsh</td>
+  <td class="sd">Keypair for this node's identity within a context</td>
+</tr>
+</tbody>
+</table>
+
+<div class="typedef">
+<span class="kw">struct</span> <span class="ty">ContextIdentityValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">private_key</span>: Option&lt;[u8; 32]&gt;,&nbsp;&nbsp;<span class="comment">// Ed25519 private key</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sender_key</span>: Option&lt;[u8; 32]&gt;,&nbsp;&nbsp;&nbsp;<span class="comment">// sender public key</span><br>
+}
+</div>
+
+<h3>State &amp; PrivateState Columns</h3>
+<table class="schema-table">
+<thead><tr><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Codec</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sk">ContextState</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-id">context_id (32)</span><span class="plus">+</span><span class="seg seg-var">app_key (var)</span></span></td>
+  <td class="sv">Slice</td>
+  <td class="sc">Identity</td>
+  <td class="sd">Shared context state — raw bytes, no serialization overhead</td>
+</tr>
+<tr>
+  <td class="sk">ContextPrivateState</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-id">context_id (32)</span><span class="plus">+</span><span class="seg seg-var">app_key (var)</span></span></td>
+  <td class="sv">Slice</td>
+  <td class="sc">Identity</td>
+  <td class="sd">Per-node private state — NOT synced to other nodes</td>
+</tr>
+</tbody>
+</table>
+
+<h3>Delta Column</h3>
+<table class="schema-table">
+<thead><tr><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Codec</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sk">ContextDagDelta</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-id">context_id (32)</span><span class="plus">+</span><span class="seg seg-id2">delta_id (32)</span></span></td>
+  <td class="sv">ContextDagDeltaValue</td>
+  <td class="sc">Borsh</td>
+  <td class="sd">Causal delta with parents, actions, and verification data</td>
+</tr>
+</tbody>
+</table>
+
+<div class="typedef">
+<span class="kw">struct</span> <span class="ty">ContextDagDeltaValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">delta_id</span>: [u8; 32],<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">parents</span>: Vec&lt;[u8; 32]&gt;,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// causal parent IDs</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">actions</span>: Vec&lt;Action&gt;,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// state mutations</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">hlc</span>: <span class="ty">HybridTimestamp</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// hybrid logical clock</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">applied</span>: bool,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// has been applied to state</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">expected_root_hash</span>: <span class="ty">Hash</span>,&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// post-apply verification</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">events</span>: Vec&lt;Event&gt;,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// emitted events</span><br>
+}
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     3. GROUP COLUMN DETAIL
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Group Column Detail</h2>
+<p style="margin-bottom:18px;">The Group column uses a single-byte prefix to partition 20 logical sub-namespaces within one RocksDB column family. Each prefix isolates a governance concern — membership, capabilities, operations log, upgrades, and aliases.</p>
+
+<h3>Membership &amp; Metadata (0x20–0x23)</h3>
+<table class="schema-table">
+<thead><tr><th>Prefix</th><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sp">0x20</td>
+  <td class="sk">GroupMeta</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x20</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span></span></td>
+  <td class="sv">GroupMetaValue</td>
+  <td class="sd">Group metadata (app_key, target_app, upgrade_policy, admin, migration)</td>
+</tr>
+<tr>
+  <td class="sp">0x21</td>
+  <td class="sk">GroupMember</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x21</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">identity (32)</span></span></td>
+  <td class="sv">GroupMemberRole</td>
+  <td class="sd">Member role in group</td>
+</tr>
+<tr>
+  <td class="sp">0x22</td>
+  <td class="sk">GroupContextIndex</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x22</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">context_id (32)</span></span></td>
+  <td class="sv">()</td>
+  <td class="sd">Context belongs to group (presence key)</td>
+</tr>
+<tr>
+  <td class="sp">0x23</td>
+  <td class="sk">ContextGroupRef</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x23</span><span class="plus">+</span><span class="seg seg-id">context_id (32)</span></span></td>
+  <td class="sv">[u8; 32]</td>
+  <td class="sd">Reverse index: context → group_id</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>GroupMetaValue definition</summary>
+  <div class="detail-body">
+    <div class="typedef">
+<span class="kw">struct</span> <span class="ty">GroupMetaValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">app_key</span>: [u8; 32],&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// application identity</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">target_application_id</span>: [u8; 32],&nbsp;<span class="comment">// target WASM application</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">upgrade_policy</span>: <span class="ty">UpgradePolicy</span>,&nbsp;&nbsp;<span class="comment">// auto / manual / frozen</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">created_at</span>: u64,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// unix timestamp</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">admin_identity</span>: [u8; 32],&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// group administrator</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">migration</span>: Option&lt;String&gt;,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// migration method name</span><br>
+}
+    </div>
+  </div>
+</details>
+
+<h3>Upgrades &amp; Signing (0x24–0x25)</h3>
+<table class="schema-table">
+<thead><tr><th>Prefix</th><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sp">0x24</td>
+  <td class="sk">GroupUpgradeKey</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x24</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span></span></td>
+  <td class="sv">GroupUpgradeValue</td>
+  <td class="sd">Active upgrade state</td>
+</tr>
+<tr>
+  <td class="sp">0x25</td>
+  <td class="sk">GroupSigningKey</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x25</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">key_id (32)</span></span></td>
+  <td class="sv">GroupSigningKeyValue</td>
+  <td class="sd">Ed25519 signing key for group</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>GroupUpgradeValue &amp; GroupUpgradeStatus definitions</summary>
+  <div class="detail-body">
+    <div class="typedef">
+<span class="kw">struct</span> <span class="ty">GroupUpgradeValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">from_version</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">to_version</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">migration</span>: Option&lt;String&gt;,&nbsp;&nbsp;&nbsp;<span class="comment">// migration method name</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">initiated_at</span>: u64,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// unix timestamp</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">initiated_by</span>: [u8; 32],&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// admin identity</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">status</span>: <span class="ty">GroupUpgradeStatus</span>,<br>
+}
+    </div>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">enum</span> <span class="ty">GroupUpgradeStatus</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">InProgress</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">total</span>: u64,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// total contexts to migrate</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">completed</span>: u64,&nbsp;<span class="comment">// successfully migrated</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">failed</span>: u64,&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// failed migrations</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;},<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Completed</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">completed_at</span>: u64,&nbsp;&nbsp;<span class="comment">// unix timestamp</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;},<br>
+}
+    </div>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">struct</span> <span class="ty">GroupSigningKeyValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">private_key</span>: [u8; 32],&nbsp;&nbsp;<span class="comment">// Ed25519 private key bytes</span><br>
+}
+    </div>
+  </div>
+</details>
+
+<h3>Capabilities &amp; Visibility (0x26–0x2A)</h3>
+<table class="schema-table">
+<thead><tr><th>Prefix</th><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sp">0x26</td>
+  <td class="sk">GroupMemberCapability</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x26</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">identity (32)</span></span></td>
+  <td class="sv">GroupMemberCapabilityValue</td>
+  <td class="sd">Per-member capability bitmask</td>
+</tr>
+<tr>
+  <td class="sp">0x27</td>
+  <td class="sk">GroupContextVisibility</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x27</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">context_id (32)</span></span></td>
+  <td class="sv">GroupContextVisibilityValue</td>
+  <td class="sd">Per-context visibility (mode + creator)</td>
+</tr>
+<tr>
+  <td class="sp">0x28</td>
+  <td class="sk">GroupContextAllowlist</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x28</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">context_id (32)</span><span class="plus">+</span><span class="seg seg-id3">identity (32)</span></span></td>
+  <td class="sv">()</td>
+  <td class="sd">Allowlist entry for restricted context (presence key)</td>
+</tr>
+<tr>
+  <td class="sp">0x29</td>
+  <td class="sk">GroupDefaultCaps</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x29</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span></span></td>
+  <td class="sv">GroupDefaultCapsValue</td>
+  <td class="sd">Default capabilities for new members</td>
+</tr>
+<tr>
+  <td class="sp">0x2A</td>
+  <td class="sk">GroupDefaultVis</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x2A</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span></span></td>
+  <td class="sv">GroupDefaultVisValue</td>
+  <td class="sd">Default visibility for new contexts</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>Capability &amp; visibility value definitions</summary>
+  <div class="detail-body">
+    <div class="typedef">
+<span class="kw">struct</span> <span class="ty">GroupMemberCapabilityValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">capabilities</span>: u32,&nbsp;&nbsp;<span class="comment">// bitmask: bit 0 = manage_members, bit 1 = manage_contexts, ...</span><br>
+}
+    </div>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">struct</span> <span class="ty">GroupContextVisibilityValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">mode</span>: u8,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// 0 = public, 1 = restricted, 2 = private</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">creator</span>: [u8; 32],&nbsp;&nbsp;<span class="comment">// identity that created the context</span><br>
+}
+    </div>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">struct</span> <span class="ty">GroupDefaultCapsValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">capabilities</span>: u32,&nbsp;&nbsp;<span class="comment">// default bitmask for new members</span><br>
+}
+    </div>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">struct</span> <span class="ty">GroupDefaultVisValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">mode</span>: u8,&nbsp;&nbsp;<span class="comment">// default visibility mode for new contexts</span><br>
+}
+    </div>
+  </div>
+</details>
+
+<h3>Migration &amp; Nonce (0x2B–0x2C)</h3>
+<table class="schema-table">
+<thead><tr><th>Prefix</th><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sp">0x2B</td>
+  <td class="sk">GroupContextLastMigration</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x2B</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">context_id (32)</span></span></td>
+  <td class="sv">GroupContextLastMigrationValue</td>
+  <td class="sd">Last migration method applied to this context</td>
+</tr>
+<tr>
+  <td class="sp">0x2C</td>
+  <td class="sk">GroupLocalGovNonce</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x2C</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">signer (32)</span></span></td>
+  <td class="sv">u64</td>
+  <td class="sd">Per-signer monotonic nonce for replay protection</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>GroupContextLastMigrationValue definition</summary>
+  <div class="detail-body">
+    <div class="typedef">
+<span class="kw">struct</span> <span class="ty">GroupContextLastMigrationValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">method</span>: String,&nbsp;&nbsp;<span class="comment">// WASM method name used for migration</span><br>
+}
+    </div>
+  </div>
+</details>
+
+<h3>Aliases (0x2D–0x2F)</h3>
+<table class="schema-table">
+<thead><tr><th>Prefix</th><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sp">0x2D</td>
+  <td class="sk">GroupMemberAlias</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x2D</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">identity (32)</span></span></td>
+  <td class="sv">String</td>
+  <td class="sd">Human-readable member alias</td>
+</tr>
+<tr>
+  <td class="sp">0x2E</td>
+  <td class="sk">GroupAlias</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x2E</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span></span></td>
+  <td class="sv">String</td>
+  <td class="sd">Group alias (human-readable name)</td>
+</tr>
+<tr>
+  <td class="sp">0x2F</td>
+  <td class="sk">GroupContextAlias</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x2F</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">context_id (32)</span></span></td>
+  <td class="sv">String</td>
+  <td class="sd">Context alias within group</td>
+</tr>
+</tbody>
+</table>
+
+<h3>Operation Log &amp; DAG (0x30–0x31)</h3>
+<table class="schema-table">
+<thead><tr><th>Prefix</th><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sp">0x30</td>
+  <td class="sk">GroupOpLog</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x30</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-seq">seq (8 BE)</span></span></td>
+  <td class="sv">Vec&lt;u8&gt;</td>
+  <td class="sd">Serialized SignedGroupOp — the governance operation DAG</td>
+</tr>
+<tr>
+  <td class="sp">0x31</td>
+  <td class="sk">GroupOpHead</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x31</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span></span></td>
+  <td class="sv">GroupOpHeadValue</td>
+  <td class="sd">Latest sequence number + DAG heads</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+  <summary>GroupOpHeadValue definition</summary>
+  <div class="detail-body">
+    <div class="typedef">
+<span class="kw">struct</span> <span class="ty">GroupOpHeadValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sequence</span>: u64,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// latest sequence number</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">dag_heads</span>: Vec&lt;[u8; 32]&gt;,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// current DAG head op IDs</span><br>
+}
+    </div>
+    <p style="margin-top:12px;">The sequence number is stored as 8-byte big-endian in the key to enable efficient range scans in chronological order. The DAG heads track the frontier of the governance operation graph for catch-up protocol.</p>
+  </div>
+</details>
+
+<h3>Member-Context Tracking (0x32–0x33)</h3>
+<table class="schema-table">
+<thead><tr><th>Prefix</th><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sp">0x32</td>
+  <td class="sk">GroupMemberContext</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x32</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">identity (32)</span><span class="plus">+</span><span class="seg seg-id3">context_id (32)</span></span></td>
+  <td class="sv">[u8; 32]</td>
+  <td class="sd">Member-context join tracking</td>
+</tr>
+<tr>
+  <td class="sp">0x33</td>
+  <td class="sk">GroupContextMemberCap</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x33</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">context_id (32)</span><span class="plus">+</span><span class="seg seg-id3">identity (32)</span></span></td>
+  <td class="sv">u8</td>
+  <td class="sd">Per-context member capability override</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     4. KEY MODEL
+     ════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Key Model</h2>
+<p style="margin-bottom:18px;">All keys are statically typed via <span class="code">Key&lt;T&gt;</span>, a newtype over <span class="code">GenericArray&lt;u8, T::Size&gt;</span>. The <span class="code">AsKeyParts</span> / <span class="code">FromKeyParts</span> traits define how a key is decomposed into column + byte components, giving compile-time column assignment and fixed-size key guarantees.</p>
+
+<div class="g2" style="margin-bottom:20px;">
+  <div>
+    <h3>Key&lt;T&gt; struct</h3>
+    <div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">Key</span>&lt;T: KeyParts&gt;(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="ty">GenericArray</span>&lt;u8, T::Size&gt;<br>
+);<br>
+    </div>
+    <p style="margin-top:10px;">The key's byte length is determined at compile time by the associated <span class="code">Size</span> type (a <span class="code">typenum</span> unsigned integer). This means key construction is zero-allocation and key comparison is a simple <span class="code">memcmp</span>.</p>
+  </div>
+  <div>
+    <h3>Column Assignment</h3>
+    <div class="typedef">
+<span class="kw">pub trait</span> <span class="ty">AsKeyParts</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">type</span> <span class="ty">Size</span>: ArrayLength&lt;u8&gt;;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">const</span> <span class="field">COLUMN</span>: Column;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">as_key</span>(&amp;self) -&gt; Key&lt;Self&gt;;<br>
+}<br><br>
+<span class="kw">pub trait</span> <span class="ty">FromKeyParts</span>: AsKeyParts {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">from_key</span>(key: Key&lt;Self&gt;) -&gt; Self;<br>
+}
+    </div>
+    <p style="margin-top:10px;">Each key type declares its <span class="code">COLUMN</span> at the type level. The storage layer uses this to route operations to the correct RocksDB column family without runtime dispatch.</p>
+  </div>
+</div>
+
+<h3>How It Works</h3>
+<div class="g2">
+  <div class="step"><div class="n">1</div>
+    <h4>Type-Level Sizing</h4>
+    <p>A key type like <span class="code">GroupMember</span> declares <span class="code">Size = U65</span> (1 prefix + 32 group_id + 32 identity). The compiler enforces this — you can't accidentally write a 64-byte key into a 65-byte slot.</p>
+  </div>
+  <div class="step"><div class="n">2</div>
+    <h4>Column Routing</h4>
+    <p>When you call <span class="code">db.get::&lt;GroupMember&gt;(key)</span>, the <span class="code">COLUMN</span> associated constant resolves to <span class="code">Column::Group</span> at compile time. No runtime map lookups needed.</p>
+  </div>
+  <div class="step"><div class="n">3</div>
+    <h4>Prefix Scans</h4>
+    <p>For iteration within a column, the prefix byte enables efficient <span class="code">set_iterate_range</span> scans. For example, scanning all members of a group uses prefix <span class="code">0x21 || group_id</span> as the range start.</p>
+  </div>
+  <div class="step"><div class="n">4</div>
+    <h4>Codec Selection</h4>
+    <p>Values use Borsh serialization by default. State and PrivateState columns use Identity codec (raw bytes) to avoid serialization overhead for application-controlled data.</p>
+  </div>
+</div>
+
+<details style="margin-top:16px;">
+  <summary>Example: GroupMember key implementation</summary>
+  <div class="detail-body">
+    <div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">GroupMember</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">group_id</span>: [u8; 32],<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">identity</span>: [u8; 32],<br>
+}<br><br>
+<span class="kw">impl</span> <span class="ty">AsKeyParts</span> <span class="kw">for</span> <span class="ty">GroupMember</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">type</span> <span class="ty">Size</span> = U65;&nbsp;&nbsp;<span class="comment">// 1 (prefix) + 32 + 32</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">const</span> <span class="field">COLUMN</span>: Column = Column::Group;<br><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">as_key</span>(&amp;self) -&gt; Key&lt;Self&gt; {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">let mut</span> arr = GenericArray::default();<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;arr[0] = 0x21;&nbsp;&nbsp;<span class="comment">// prefix byte</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;arr[1..33].copy_from_slice(&amp;self.group_id);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;arr[33..65].copy_from_slice(&amp;self.identity);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Key(arr)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br>
+}
+    </div>
+  </div>
+</details>
+
+<details>
+  <summary>Byte layout legend</summary>
+  <div class="detail-body">
+    <p style="margin-bottom:12px;">The byte layout diagrams throughout this page use the following color scheme:</p>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;">
+      <span class="byte-layout"><span class="seg seg-prefix">prefix (1)</span></span> <span style="font-size:.82rem;color:var(--text-dim);">Single-byte namespace discriminator</span>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+      <span class="byte-layout"><span class="seg seg-id">id (32)</span></span> <span style="font-size:.82rem;color:var(--text-dim);">Primary 32-byte identifier (group, context, etc.)</span>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+      <span class="byte-layout"><span class="seg seg-id2">id2 (32)</span></span> <span style="font-size:.82rem;color:var(--text-dim);">Secondary identifier (member, context, etc.)</span>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+      <span class="byte-layout"><span class="seg seg-id3">id3 (32)</span></span> <span style="font-size:.82rem;color:var(--text-dim);">Tertiary identifier (for triple-indexed keys)</span>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+      <span class="byte-layout"><span class="seg seg-seq">seq (8 BE)</span></span> <span style="font-size:.82rem;color:var(--text-dim);">Big-endian sequence number for ordered scans</span>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+      <span class="byte-layout"><span class="seg seg-var">var</span></span> <span style="font-size:.82rem;color:var(--text-dim);">Variable-length suffix (application keys)</span>
+    </div>
+  </div>
+</details>
+</div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

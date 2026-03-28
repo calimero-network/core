@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Glossary — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.glossary-search { margin-bottom: 28px; }
+.glossary-search input {
+  width: 100%; max-width: 480px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface2); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: .88rem;
+  outline: none; transition: border-color .15s;
+}
+.glossary-search input::placeholder { color: var(--text-dim); }
+.glossary-search input:focus { border-color: var(--amber); }
+.glossary-count { font-family: 'JetBrains Mono', monospace; font-size: .72rem; color: var(--text-dim); margin-top: 6px; }
+
+.term-row {
+  display: grid; grid-template-columns: 240px 1fr; gap: 16px; padding: 12px 16px;
+  background: var(--surface2); border-radius: 10px; border: 1px solid transparent;
+  transition: border-color .15s; margin-bottom: 8px; align-items: start;
+}
+.term-row:hover { border-color: var(--border-hi); }
+.term-name { font-family: 'JetBrains Mono', monospace; font-size: .82rem; font-weight: 600; color: var(--amber); word-break: break-all; }
+.term-body { font-size: .84rem; color: var(--text-dim); line-height: 1.6; }
+.term-source { margin-top: 4px; }
+.term-source a { font-family: 'JetBrains Mono', monospace; font-size: .72rem; color: var(--blue); opacity: .7; transition: opacity .15s; }
+.term-source a:hover { opacity: 1; color: var(--amber); }
+.term-letter { font-family: 'Instrument Serif', serif; font-size: 1.4rem; color: var(--text-bright); margin: 28px 0 10px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.term-letter:first-of-type { margin-top: 0; }
+.no-results { display: none; padding: 24px; text-align: center; color: var(--text-dim); font-size: .88rem; }
+
+@media (max-width: 700px) {
+  .term-row { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Glossary</span></div>
+
+<h1><em>Glossary</em></h1>
+<p class="page-subtitle">Key terms and concepts with source links</p>
+
+<div class="glossary-search">
+  <input type="text" id="term-filter" placeholder="Filter terms…" autocomplete="off">
+  <div class="glossary-count" id="term-count"></div>
+</div>
+
+<div id="glossary-list">
+
+<!-- ─── A ─── -->
+<div class="term-letter" data-letter="A">A</div>
+
+<div class="term-row" data-term="applicationid">
+  <div class="term-name">ApplicationId</div>
+  <div class="term-body">
+    32-byte hash identifying a WASM application.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/primitives/src/application.rs" target="_blank" rel="noopener">crates/primitives/src/application.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── B ─── -->
+<div class="term-letter" data-letter="B">B</div>
+
+<div class="term-row" data-term="blobid">
+  <div class="term-name">BlobId</div>
+  <div class="term-body">
+    Content-addressed identifier for binary blobs.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/primitives/src/blobs.rs" target="_blank" rel="noopener">crates/primitives/src/blobs.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="broadcastmessage">
+  <div class="term-name">BroadcastMessage</div>
+  <div class="term-body">
+    Borsh-serialized gossipsub payload enum (StateDelta, HashHeartbeat, SignedGroupOpV1, etc.).
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/sync/snapshot.rs" target="_blank" rel="noopener">crates/node/primitives/src/sync/snapshot.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── C ─── -->
+<div class="term-letter" data-letter="C">C</div>
+
+<div class="term-row" data-term="causaldelta">
+  <div class="term-name">CausalDelta</div>
+  <div class="term-body">
+    A single DAG entry: delta_id, parents, payload, HLC, expected_root_hash.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/dag/src/lib.rs" target="_blank" rel="noopener">crates/dag/src/lib.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="column">
+  <div class="term-name">Column</div>
+  <div class="term-body">
+    Logical partition in the KV store (Meta, Config, Identity, State, Delta, Blobs, Application, Alias, Generic, Group).
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/db.rs" target="_blank" rel="noopener">crates/store/src/db.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="context">
+  <div class="term-name">Context</div>
+  <div class="term-body">
+    An instance binding a Group to an Application. Has its own identity, state DAG, and member list.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/primitives/src/context.rs" target="_blank" rel="noopener">crates/primitives/src/context.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="contextclient">
+  <div class="term-name">ContextClient</div>
+  <div class="term-body">
+    Async facade over LazyRecipient&lt;ContextMessage&gt; for invoking context operations.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/primitives/src/client.rs" target="_blank" rel="noopener">crates/context/primitives/src/client.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="contextid">
+  <div class="term-name">ContextId</div>
+  <div class="term-body">
+    32-byte hash identifying a context.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/primitives/src/context.rs" target="_blank" rel="noopener">crates/primitives/src/context.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="contextmanager">
+  <div class="term-name">ContextManager</div>
+  <div class="term-body">
+    Actix actor managing contexts, groups, governance DAGs, and application lifecycle.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/src/lib.rs" target="_blank" rel="noopener">crates/context/src/lib.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="contextmessage">
+  <div class="term-name">ContextMessage</div>
+  <div class="term-body">
+    Top-level message enum for ContextManager with 20+ variants.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/primitives/src/messages.rs" target="_blank" rel="noopener">crates/context/primitives/src/messages.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── D ─── -->
+<div class="term-letter" data-letter="D">D</div>
+
+<div class="term-row" data-term="dag directed acyclic graph">
+  <div class="term-name">DAG (Directed Acyclic Graph)</div>
+  <div class="term-body">
+    Causal ordering structure used for both application state deltas and governance operations.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/dag/src/lib.rs" target="_blank" rel="noopener">crates/dag/src/lib.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="dagstore">
+  <div class="term-name">DagStore</div>
+  <div class="term-body">
+    In-memory causal DAG with pending queue, topological ordering, and head tracking.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/dag/src/lib.rs" target="_blank" rel="noopener">crates/dag/src/lib.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="deltaapplier">
+  <div class="term-name">DeltaApplier</div>
+  <div class="term-body">
+    Async trait for applying deltas to storage. Implemented by GroupGovernanceApplier.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/dag/src/lib.rs" target="_blank" rel="noopener">crates/dag/src/lib.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="deltabuffer">
+  <div class="term-name">DeltaBuffer</div>
+  <div class="term-body">
+    Buffers incoming deltas during snapshot sync to prevent data loss.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/delta_buffer.rs" target="_blank" rel="noopener">crates/node/primitives/src/delta_buffer.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── G ─── -->
+<div class="term-letter" data-letter="G">G</div>
+
+<div class="term-row" data-term="group">
+  <div class="term-name">Group</div>
+  <div class="term-body">
+    Governance unit owning one or more Contexts. Manages membership, capabilities, visibility via signed operations.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/primitives/src/group.rs" target="_blank" rel="noopener">crates/context/primitives/src/group.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="groupgovernanceapplier">
+  <div class="term-name">GroupGovernanceApplier</div>
+  <div class="term-body">
+    DeltaApplier implementation bridging the DAG to GroupStore for governance ops.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/src/governance_dag.rs" target="_blank" rel="noopener">crates/context/src/governance_dag.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="groupmemberrole">
+  <div class="term-name">GroupMemberRole</div>
+  <div class="term-body">
+    Role within a group (e.g., admin, member).
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/key/group.rs" target="_blank" rel="noopener">crates/store/src/key/group.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="groupop">
+  <div class="term-name">GroupOp</div>
+  <div class="term-body">
+    Non-exhaustive enum of governance operations (MemberAdded, ContextRegistered, etc.). 25+ variants.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/primitives/src/local_governance.rs" target="_blank" rel="noopener">crates/context/primitives/src/local_governance.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="groupstore">
+  <div class="term-name">GroupStore</div>
+  <div class="term-body">
+    Authoritative persistence layer for group state. Handles apply, OpLog, nonces, cascades.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/src/group_store.rs" target="_blank" rel="noopener">crates/context/src/group_store.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── H ─── -->
+<div class="term-letter" data-letter="H">H</div>
+
+<div class="term-row" data-term="hashheartbeat">
+  <div class="term-name">HashHeartbeat</div>
+  <div class="term-body">
+    Periodic gossip message carrying root_hash + dag_heads for divergence detection. Part of BroadcastMessage.
+  </div>
+</div>
+
+<div class="term-row" data-term="hybridtimestamp hlc">
+  <div class="term-name">HybridTimestamp (HLC)</div>
+  <div class="term-body">
+    Logical clock combining wall-clock time with a counter for causal ordering.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/storage/src/logical_clock.rs" target="_blank" rel="noopener">crates/storage/src/logical_clock.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── I ─── -->
+<div class="term-letter" data-letter="I">I</div>
+
+<div class="term-row" data-term="initpayload">
+  <div class="term-name">InitPayload</div>
+  <div class="term-body">
+    Stream protocol init message enum (BlobShare, KeyShare, DeltaRequest, SnapshotStreamRequest, GroupDeltaRequest, etc.).
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/sync/wire.rs" target="_blank" rel="noopener">crates/node/primitives/src/sync/wire.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── L ─── -->
+<div class="term-letter" data-letter="L">L</div>
+
+<div class="term-row" data-term="lazyrecipient">
+  <div class="term-name">LazyRecipient</div>
+  <div class="term-body">
+    Deferred Actix actor address wrapper using Arc&lt;OnceCell&lt;Recipient&gt;&gt;. Breaks circular init dependencies.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/utils/actix/" target="_blank" rel="noopener">crates/utils/actix/</a></div>
+  </div>
+</div>
+
+<!-- ─── M ─── -->
+<div class="term-letter" data-letter="M">M</div>
+
+<div class="term-row" data-term="mergeable">
+  <div class="term-name">Mergeable</div>
+  <div class="term-body">
+    Trait for CRDT merge operations. Implemented by Map, Set, LwwRegister.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/storage/" target="_blank" rel="noopener">crates/storage/</a></div>
+  </div>
+</div>
+
+<!-- ─── N ─── -->
+<div class="term-letter" data-letter="N">N</div>
+
+<div class="term-row" data-term="networkclient">
+  <div class="term-name">NetworkClient</div>
+  <div class="term-body">
+    Async facade over LazyRecipient&lt;NetworkMessage&gt;.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/network/primitives/src/client.rs" target="_blank" rel="noopener">crates/network/primitives/src/client.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="networkevent">
+  <div class="term-name">NetworkEvent</div>
+  <div class="term-body">
+    Events from the libp2p swarm (ListeningOn, Subscribed, Message, StreamOpened, BlobRequested, etc.).
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/network/primitives/src/messages.rs" target="_blank" rel="noopener">crates/network/primitives/src/messages.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="networkmanager">
+  <div class="term-name">NetworkManager</div>
+  <div class="term-body">
+    Actix actor wrapping the libp2p Swarm.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/network/src/lib.rs" target="_blank" rel="noopener">crates/network/src/lib.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="nodeclient">
+  <div class="term-name">NodeClient</div>
+  <div class="term-body">
+    Async facade over LazyRecipient&lt;NodeMessage&gt;.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client.rs" target="_blank" rel="noopener">crates/node/primitives/src/client.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="nodemanager">
+  <div class="term-name">NodeManager</div>
+  <div class="term-body">
+    Central Actix actor orchestrating network events, blob cache, heartbeats.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/lib.rs" target="_blank" rel="noopener">crates/node/src/lib.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="nonce">
+  <div class="term-name">Nonce</div>
+  <div class="term-body">
+    Cryptographic nonce for replay protection. Per-signer monotonic counter in governance ops.
+  </div>
+</div>
+
+<!-- ─── O ─── -->
+<div class="term-letter" data-letter="O">O</div>
+
+<div class="term-row" data-term="oplog">
+  <div class="term-name">OpLog</div>
+  <div class="term-body">
+    Persistent log of applied SignedGroupOp entries, keyed by (group_id, sequence).
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/key/group.rs" target="_blank" rel="noopener">crates/store/src/key/group.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="ophead">
+  <div class="term-name">OpHead</div>
+  <div class="term-body">
+    Latest sequence number + current DAG heads for a group.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/key/group.rs" target="_blank" rel="noopener">crates/store/src/key/group.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── P ─── -->
+<div class="term-letter" data-letter="P">P</div>
+
+<div class="term-row" data-term="publickey">
+  <div class="term-name">PublicKey</div>
+  <div class="term-body">
+    Ed25519 public key used for identity and signing.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/primitives/src/identity.rs" target="_blank" rel="noopener">crates/primitives/src/identity.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── S ─── -->
+<div class="term-letter" data-letter="S">S</div>
+
+<div class="term-row" data-term="signedgroupop">
+  <div class="term-name">SignedGroupOp</div>
+  <div class="term-body">
+    Signed governance operation: version, group_id, parent_op_hashes, state_hash, signer, nonce, op, signature.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/primitives/src/local_governance.rs" target="_blank" rel="noopener">crates/context/primitives/src/local_governance.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="signedgroupopeninvitation">
+  <div class="term-name">SignedGroupOpenInvitation</div>
+  <div class="term-body">
+    Admin-signed invitation token for joining a group.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/primitives/src/local_governance.rs" target="_blank" rel="noopener">crates/context/primitives/src/local_governance.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="statedelta">
+  <div class="term-name">StateDelta</div>
+  <div class="term-body">
+    BroadcastMessage variant carrying encrypted state diff for a context. Part of the context DAG.
+  </div>
+</div>
+
+<div class="term-row" data-term="streammessage">
+  <div class="term-name">StreamMessage</div>
+  <div class="term-body">
+    Wire format for sync streams: Init, Message, or OpaqueError.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/sync/wire.rs" target="_blank" rel="noopener">crates/node/primitives/src/sync/wire.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="syncmanager">
+  <div class="term-name">SyncManager</div>
+  <div class="term-body">
+    Async task managing periodic sync. Selects from HashComparison, LevelWise, Snapshot, or Delta protocols.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/manager.rs" target="_blank" rel="noopener">crates/node/src/sync/manager.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── U ─── -->
+<div class="term-letter" data-letter="U">U</div>
+
+<div class="term-row" data-term="upgradepolicy">
+  <div class="term-name">UpgradePolicy</div>
+  <div class="term-body">
+    How application updates propagate: Automatic, LazyOnAccess, or Coordinated.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/primitives/src/context.rs" target="_blank" rel="noopener">crates/primitives/src/context.rs</a></div>
+  </div>
+</div>
+
+<!-- ─── V ─── -->
+<div class="term-letter" data-letter="V">V</div>
+
+<div class="term-row" data-term="vmcontext">
+  <div class="term-name">VMContext</div>
+  <div class="term-body">
+    Runtime execution context: input, context_id, executor_public_key, governance_epoch.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/runtime/src/logic.rs" target="_blank" rel="noopener">crates/runtime/src/logic.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="vmlogic">
+  <div class="term-name">VMLogic</div>
+  <div class="term-body">
+    WASM host function dispatcher. Manages registers, memory, storage, events.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/runtime/src/logic.rs" target="_blank" rel="noopener">crates/runtime/src/logic.rs</a></div>
+  </div>
+</div>
+
+</div><!-- /glossary-list -->
+
+<div class="no-results" id="no-results">No terms match your filter.</div>
+
+</div>
+</div>
+
+<script src="nav.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  arch.buildBreadcrumb([
+    { label: 'Home', href: 'index.html' },
+    { label: 'Glossary' }
+  ]);
+
+  const input = document.getElementById('term-filter');
+  const list = document.getElementById('glossary-list');
+  const rows = list.querySelectorAll('.term-row');
+  const letters = list.querySelectorAll('.term-letter');
+  const noResults = document.getElementById('no-results');
+  const countEl = document.getElementById('term-count');
+
+  function updateCount(visible) {
+    countEl.textContent = visible + ' of ' + rows.length + ' terms';
+  }
+  updateCount(rows.length);
+
+  input.addEventListener('input', () => {
+    const q = input.value.toLowerCase().trim();
+    let visible = 0;
+
+    rows.forEach(row => {
+      const term = row.dataset.term;
+      const body = row.querySelector('.term-body').textContent.toLowerCase();
+      const match = !q || term.includes(q) || body.includes(q);
+      row.style.display = match ? '' : 'none';
+      if (match) visible++;
+    });
+
+    letters.forEach(letter => {
+      let el = letter.nextElementSibling;
+      let hasVisible = false;
+      while (el && !el.classList.contains('term-letter')) {
+        if (el.style.display !== 'none') hasVisible = true;
+        el = el.nextElementSibling;
+      }
+      letter.style.display = hasVisible ? '' : 'none';
+    });
+
+    noResults.style.display = visible === 0 ? 'block' : 'none';
+    updateCount(visible);
+  });
+});
+</script>
+</body>
+</html>

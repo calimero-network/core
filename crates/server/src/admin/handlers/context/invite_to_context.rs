@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_server_primitives::admin::{InviteToContextRequest, InviteToContextResponse};
-use tracing::{error, info};
+//use rand::Rng;
 
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
@@ -13,24 +13,41 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     ValidatedJson(req): ValidatedJson<InviteToContextRequest>,
 ) -> impl IntoResponse {
-    info!(context_id=%req.context_id, invitee_id=%req.invitee_id, "Inviting member to context");
+    let salt = [0u8; 32];
 
     let result = state
         .ctx_client
-        .invite_member(&req.context_id, &req.inviter_id, &req.invitee_id)
+        .invite_member(
+            &req.context_id,
+            &req.inviter_id,
+            req.valid_for_seconds,
+            salt,
+        )
         .await;
 
     match result {
-        Ok(invitation_payload) => {
-            info!(context_id=%req.context_id, invitee_id=%req.invitee_id, "Invitation created successfully");
-            ApiResponse {
-                payload: InviteToContextResponse::new(invitation_payload),
-            }
-            .into_response()
+        Ok(ref data) => {
+            tracing::info!(
+                context_id=%req.context_id,
+                inviter_id=%req.inviter_id,
+                has_data=data.is_some(),
+                "open invitation result"
+            );
         }
-        Err(err) => {
-            error!(context_id=%req.context_id, invitee_id=%req.invitee_id, error=?err, "Failed to create invitation");
-            parse_api_error(err).into_response()
+        Err(ref err) => {
+            tracing::error!(
+                context_id=%req.context_id,
+                inviter_id=%req.inviter_id,
+                error=?err,
+                "open invitation error"
+            );
         }
+    }
+    match result {
+        Ok(signed_open_invitation) => ApiResponse {
+            payload: InviteToContextResponse::new(signed_open_invitation),
+        }
+        .into_response(),
+        Err(err) => parse_api_error(err).into_response(),
     }
 }

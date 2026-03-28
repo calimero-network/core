@@ -5,7 +5,7 @@ use core::mem::MaybeUninit;
 use core::num::NonZeroU64;
 use core::{fmt, slice};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::vec;
 
 use tracing::{debug, trace};
@@ -14,12 +14,11 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_sys as sys;
 use ouroboros::self_referencing;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::constants::{ONE_GIB, ONE_KIB, ONE_MIB};
 use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
-pub use crate::logic::traits::ContextHost;
 use crate::store::Storage;
 use crate::Constraint;
 
@@ -27,7 +26,6 @@ mod errors;
 mod host_functions;
 mod imports;
 mod registers;
-mod traits;
 
 pub use errors::VMLogicError;
 pub use host_functions::*;
@@ -49,6 +47,9 @@ pub struct VMContext<'a> {
     pub context_id: [u8; DIGEST_SIZE],
     /// The public key of the entity executing the function call/transaction.
     pub executor_public_key: [u8; DIGEST_SIZE],
+    /// Group governance DAG heads at execution time.
+    /// Embedded in the state delta for authorization provenance.
+    pub governance_epoch: Vec<[u8; 32]>,
 }
 
 impl<'a> VMContext<'a> {
@@ -60,7 +61,7 @@ impl<'a> VMContext<'a> {
     /// * `context_id` - The unique ID for the execution context.
     /// * `executor_public_key` - The public key of the executor.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         input: Cow<'a, [u8]>,
         context_id: [u8; DIGEST_SIZE],
         executor_public_key: [u8; DIGEST_SIZE],
@@ -69,6 +70,7 @@ impl<'a> VMContext<'a> {
             input,
             context_id,
             executor_public_key,
+            governance_epoch: Vec::new(),
         }
     }
 }
@@ -241,15 +243,6 @@ pub struct VMLogic<'a> {
     artifact: Vec<u8>,
     /// Tracks whether the guest has explicitly called `env.commit`.
     commit_called: bool,
-    /// A map of proposals created during execution, having proposal ID as a key.
-    proposals: BTreeMap<[u8; DIGEST_SIZE], Vec<u8>>,
-    /// A list of approvals submitted during execution.
-    approvals: Vec<[u8; DIGEST_SIZE]>,
-
-    /// A list of context configuration mutations requested by the guest.
-    context_mutations: Vec<ContextMutation>,
-    /// Interface to the host system for querying context information (e.g. membership).
-    context_host: Option<Box<dyn ContextHost>>,
 
     /// An optional client for interacting with the node's blob storage and aliases.
     node_client: Option<NodeClient>,
@@ -277,7 +270,6 @@ impl<'a> VMLogic<'a> {
         context: VMContext<'a>,
         limits: &'a VMLimits,
         node_client: Option<NodeClient>,
-        context_host: Option<Box<dyn ContextHost>>,
     ) -> Self {
         debug!(
             target: "runtime::logic",
@@ -301,12 +293,7 @@ impl<'a> VMLogic<'a> {
             root_hash: None,
             artifact: vec![],
             commit_called: false,
-            proposals: BTreeMap::new(),
-            approvals: vec![],
-            context_mutations: vec![],
-            context_host,
 
-            // Blob functionality
             node_client,
             blob_handles: HashMap::new(),
             next_blob_fd: 1,
@@ -354,28 +341,6 @@ impl<'a> VMLogic<'a> {
     }
 }
 
-/// Represents a request from the guest to modify context configuration.
-///
-/// These mutations are collected during execution and applied by the host
-/// after the WASM execution completes successfully.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ContextMutation {
-    /// Request to add a new member to the context.
-    AddMember { public_key: [u8; DIGEST_SIZE] },
-    /// Request to remove an existing member from the context.
-    RemoveMember { public_key: [u8; DIGEST_SIZE] },
-    /// Request to create a new context.
-    CreateContext {
-        protocol: String,
-        application_id: [u8; DIGEST_SIZE],
-        init_args: Vec<u8>,
-        alias: Option<String>,
-    },
-    /// Request to delete a context (locally).
-    DeleteContext { context_id: [u8; DIGEST_SIZE] },
-    // TODO: add Grant/Revoke capabilities for ACL here in the future.
-}
-
 /// Represents the final outcome of a VM execution.
 ///
 /// This struct aggregates all the results and side effects of function calls,
@@ -397,12 +362,6 @@ pub struct Outcome {
     /// The binary artifact produced if there were commits during the execution.
     //TODO: why the artifact is not an Option?
     pub artifact: Vec<u8>,
-    /// A map of proposals created during execution, having proposal ID as a key.
-    pub proposals: BTreeMap<[u8; DIGEST_SIZE], Vec<u8>>,
-    /// A list of approvals submitted during execution.
-    pub approvals: Vec<[u8; DIGEST_SIZE]>,
-    /// A list of context mutations submitted during execution.
-    pub context_mutations: Vec<ContextMutation>,
     //TODO: execution runtime (???).
     //TODO: current storage usage of the app (???).
 }
@@ -423,8 +382,6 @@ impl VMLogic<'_> {
         let log_count = self.logs.len();
         let event_count = self.events.len();
         let xcall_count = self.xcalls.len();
-        let proposal_count = self.proposals.len();
-        let approval_count = self.approvals.len();
         let has_root_hash = self.root_hash.is_some();
         let has_artifact = !self.artifact.is_empty();
 
@@ -447,8 +404,6 @@ impl VMLogic<'_> {
             log_count,
             event_count,
             xcall_count,
-            proposal_count,
-            approval_count,
             has_root_hash,
             has_artifact,
             "VMLogic::finish"
@@ -488,9 +443,6 @@ impl VMLogic<'_> {
             xcalls: self.xcalls,
             root_hash: self.root_hash,
             artifact: self.artifact,
-            proposals: self.proposals,
-            approvals: self.approvals,
-            context_mutations: self.context_mutations,
         }
     }
 }
@@ -731,8 +683,7 @@ mod tests {
             let mut store = Store::default();
             let memory =
                 wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
-            // Pass None for private_storage in tests
-            let mut logic = VMLogic::new($storage, None, context, $limits, None, None);
+            let mut logic = VMLogic::new($storage, None, context, $limits, None);
             let _ = logic.with_memory(memory);
             (logic, store)
         }};
@@ -882,8 +833,7 @@ mod tests {
         let limits = VMLimits::default();
         let context = VMContext::new(Cow::Owned(vec![]), [0u8; DIGEST_SIZE], [0u8; DIGEST_SIZE]);
 
-        // Create VMLogic without attaching memory
-        let logic = VMLogic::new(&mut storage, None, context, &limits, None, None);
+        let logic = VMLogic::new(&mut storage, None, context, &limits, None);
 
         // Verify no memory is attached
         assert!(logic.memory.is_none(), "Memory should not be attached");

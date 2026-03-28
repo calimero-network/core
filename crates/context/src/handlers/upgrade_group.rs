@@ -3,11 +3,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::group::{UpgradeGroupRequest, UpgradeGroupResponse};
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_context_primitives::messages::MigrationParams;
 use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, UpgradePolicy};
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
 use eyre::bail;
 use tracing::{debug, error, info, warn};
@@ -73,7 +74,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             .as_secs();
 
         let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
-        let migration_method_str = migration.as_ref().map(|m| m.method.clone());
 
         // Auto-store signing key ONLY when the requester IS the node's own identity
         if let (Some(sk), Some((node_pk, _))) = (signing_key, node_identity) {
@@ -93,20 +93,15 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 .ok()
                 .flatten()
         });
-        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
-        let app_meta_for_contract = if group_client_result.is_some() {
-            match (|| {
-                let handle = self.datastore.handle();
-                let key = key::ApplicationMeta::new(target_application_id);
-                handle
-                    .get(&key)?
-                    .ok_or_else(|| eyre::eyre!("target application not found"))
-            })() {
-                Ok(meta) => Some(meta),
-                Err(err) => return ActorResponse::reply(Err(err)),
-            }
-        } else {
-            None
+        let app_meta_for_contract = match (|| {
+            let handle = self.datastore.handle();
+            let key = key::ApplicationMeta::new(target_application_id);
+            handle
+                .get(&key)?
+                .ok_or_else(|| eyre::eyre!("target application not found"))
+        })() {
+            Ok(meta) => Some(meta),
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
 
         let node_client = self.node_client.clone();
@@ -123,18 +118,39 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             let datastore = self.datastore.clone();
             return ActorResponse::r#async(
                 async move {
-                    // Call contract if signing_key was provided
-                    if let (Some(client_result), Some(ref app_meta)) =
-                        (group_client_result, &app_meta_for_contract)
                     {
-                        let mut group_client = client_result?;
-                        let contract_app = super::create_group::build_contract_application(
-                            &target_application_id,
-                            app_meta,
-                        )?;
-                        group_client
-                            .set_group_target(contract_app, migration_method_str.clone())
+                        let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                            eyre::eyre!(
+                                "local group upgrade requires a signing key for the requester"
+                            )
+                        })?);
+                        let app_meta = app_meta_for_contract
+                            .as_ref()
+                            .ok_or_else(|| eyre::eyre!("target application not found"))?;
+                        let app_key = *app_meta.bytecode.blob_id().as_ref();
+                        group_store::sign_apply_and_publish(
+                            &datastore,
+                            &node_client,
+                            &group_id,
+                            &sk,
+                            GroupOp::TargetApplicationSet {
+                                app_key,
+                                target_application_id,
+                            },
+                        )
+                        .await?;
+                        if migration_bytes.is_some() {
+                            group_store::sign_apply_and_publish(
+                                &datastore,
+                                &node_client,
+                                &group_id,
+                                &sk,
+                                GroupOp::GroupMigrationSet {
+                                    migration: migration_bytes.clone(),
+                                },
+                            )
                             .await?;
+                        }
                     }
 
                     let mut meta = group_store::load_group_meta(&datastore, &group_id)?
@@ -209,7 +225,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let upgrade_value = GroupUpgradeValue {
             from_version,
             to_version,
-            migration: migration_bytes,
+            migration: migration_bytes.clone(),
             initiated_at: now,
             initiated_by: requester,
             status: initial_status.clone(),
@@ -223,6 +239,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 
         // --- Async: run canary upgrade ---
         let context_client = self.context_client.clone();
+        let datastore_for_canary = self.datastore.clone();
         let datastore = self.datastore.clone();
         let migrate_method = migration.as_ref().map(|m| m.method.clone());
 
@@ -240,20 +257,38 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let target_blob_info = app_meta_for_contract
             .as_ref()
             .map(|m| (m.bytecode.blob_id(), m.size));
-        let migration_method_for_contract = migrate_method.clone();
         let canary_task = async move {
-            // Call set_group_target on contract before canary
-            if let (Some(client_result), Some(ref app_meta)) =
-                (group_client_result, &app_meta_for_contract)
             {
-                let mut group_client = client_result?;
-                let contract_app = super::create_group::build_contract_application(
-                    &target_application_id,
-                    app_meta,
-                )?;
-                group_client
-                    .set_group_target(contract_app, migration_method_for_contract)
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!("local group upgrade requires a signing key for the requester")
+                })?);
+                let app_meta = app_meta_for_contract
+                    .as_ref()
+                    .ok_or_else(|| eyre::eyre!("target application not found"))?;
+                let app_key = *app_meta.bytecode.blob_id().as_ref();
+                group_store::sign_apply_and_publish(
+                    &datastore_for_canary,
+                    &node_client,
+                    &group_id,
+                    &sk,
+                    GroupOp::TargetApplicationSet {
+                        app_key,
+                        target_application_id,
+                    },
+                )
+                .await?;
+                if migration_bytes.is_some() {
+                    group_store::sign_apply_and_publish(
+                        &datastore_for_canary,
+                        &node_client,
+                        &group_id,
+                        &sk,
+                        GroupOp::GroupMigrationSet {
+                            migration: migration_bytes.clone(),
+                        },
+                    )
                     .await?;
+                }
             }
 
             context_client

@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WASM Runtime — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="../system-overview.html">System Overview</a><span class="sep">/</span><span>WASM Runtime</span></div>
+
+<h1>WASM <em>Runtime</em></h1>
+<p class="page-subtitle">calimero-runtime</p>
+
+<div class="g4" style="margin-bottom:36px;">
+  <div class="stat"><div class="v">50+</div><div class="l">host functions</div></div>
+  <div class="stat"><div class="v">Wasmer</div><div class="l">engine</div></div>
+  <div class="stat"><div class="v">Cranelift</div><div class="l">compiler</div></div>
+  <div class="stat"><div class="v">16</div><div class="l">VM limits</div></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     1. PURPOSE
+     ════════════════════════════════════════════════════════ -->
+<h2>Purpose</h2>
+<p style="margin-bottom:20px;">Wasmer-based WASM execution engine. The <span class="code">Engine</span> compiles application modules using Cranelift. <span class="code">Module::run</span> builds a <span class="code">VMLogic</span> instance with shared and private <span class="code">Storage</span>, an optional <span class="code">NodeClient</span>, and a <span class="code">ContextHost</span>. It calls the exported method, catches panics, and returns an <span class="code">Outcome</span> containing the return value, logs, events, and storage delta.</p>
+<a class="gh-link" href="https://github.com/calimero-network/core/tree/master/crates/runtime" target="_blank" rel="noopener">crates/runtime</a>
+
+<!-- ════════════════════════════════════════════════════════
+     2. EXECUTION FLOW
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Execution Flow</h2>
+<p style="margin-bottom:18px;">From SDK-generated WASM to executed outcome in a single synchronous call path.</p>
+
+<svg viewBox="0 0 1000 310" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr-pk" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#ec4899"/></marker>
+    <marker id="arr-dim" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#6b6b80"/></marker>
+  </defs>
+
+  <!-- Row 1: SDK → .wasm → Engine::compile -->
+  <rect x="20" y="20" width="130" height="55" rx="10" fill="#f9731610" stroke="#f97316" stroke-width="1.5"/>
+  <text x="85" y="43" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">SDK</text>
+  <text x="85" y="60" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Rust / TS / JS</text>
+
+  <line x1="150" y1="48" x2="185" y2="48" stroke="#ec4899" stroke-width="1.5" marker-end="url(#arr-pk)"/>
+
+  <rect x="185" y="20" width="130" height="55" rx="10" fill="#ec489910" stroke="#ec4899" stroke-width="1.5"/>
+  <text x="250" y="43" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">.wasm</text>
+  <text x="250" y="60" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">compiled module</text>
+
+  <line x1="315" y1="48" x2="355" y2="48" stroke="#ec4899" stroke-width="1.5" marker-end="url(#arr-pk)"/>
+
+  <rect x="355" y="20" width="200" height="55" rx="10" fill="#ec489915" stroke="#ec4899" stroke-width="1.8"/>
+  <text x="455" y="43" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">Engine::compile</text>
+  <text x="455" y="60" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Cranelift JIT → Module</text>
+
+  <!-- Arrow down from Engine::compile -->
+  <line x1="455" y1="75" x2="455" y2="105" stroke="#ec4899" stroke-width="1.5"/>
+  <polygon points="455,105 451,98 459,98" fill="#ec4899"/>
+
+  <!-- Row 2: Module::run box (wide) -->
+  <rect x="20" y="105" width="960" height="80" rx="12" fill="#1e1e2e" stroke="#ec4899" stroke-width="1.8"/>
+  <text x="50" y="132" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="14" font-weight="700">Module::run(method, VMContext, Storage)</text>
+
+  <!-- Internal boxes -->
+  <rect x="50" y="143" width="170" height="30" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="135" y="162" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">Storage (shared)</text>
+
+  <rect x="235" y="143" width="170" height="30" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="320" y="162" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">Storage (private)</text>
+
+  <rect x="420" y="143" width="150" height="30" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="495" y="162" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">NodeClient?</text>
+
+  <rect x="585" y="143" width="150" height="30" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="660" y="162" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">ContextHost</text>
+
+  <rect x="750" y="143" width="210" height="30" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="855" y="162" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">Wasmer Store + Imports</text>
+
+  <!-- Arrow down -->
+  <line x1="500" y1="185" x2="500" y2="215" stroke="#ec4899" stroke-width="1.5"/>
+  <polygon points="500,215 496,208 504,208" fill="#ec4899"/>
+
+  <!-- Row 3: instantiate + call → VMLogic.finish → Outcome -->
+  <rect x="140" y="215" width="260" height="55" rx="10" fill="#ec489910" stroke="#ec4899" stroke-width="1.5"/>
+  <text x="270" y="238" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">instantiate + call</text>
+  <text x="270" y="255" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">execute exported fn, catch panics</text>
+
+  <line x1="400" y1="243" x2="440" y2="243" stroke="#ec4899" stroke-width="1.5" marker-end="url(#arr-pk)"/>
+
+  <rect x="440" y="215" width="200" height="55" rx="10" fill="#ec489910" stroke="#ec4899" stroke-width="1.5"/>
+  <text x="540" y="238" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">VMLogic.finish()</text>
+  <text x="540" y="255" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">collect results + delta</text>
+
+  <line x1="640" y1="243" x2="680" y2="243" stroke="#ec4899" stroke-width="1.5" marker-end="url(#arr-pk)"/>
+
+  <rect x="680" y="215" width="200" height="55" rx="10" fill="#10b98115" stroke="#10b981" stroke-width="1.5"/>
+  <text x="780" y="238" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">Outcome</text>
+  <text x="780" y="255" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">return_value, logs, events, delta</text>
+
+  <!-- Labels on right -->
+  <text x="900" y="243" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">→ caller</text>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     3. VMCONTEXT & VMLIMITS
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>VMContext &amp; VMLimits</h2>
+<p style="margin-bottom:18px;">The VMContext carries all input data and identity information needed for a single execution. VMLimits enforces resource boundaries to prevent runaway modules.</p>
+
+<div class="g2" style="margin-bottom:18px;">
+  <div>
+    <h3>VMContext</h3>
+    <div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">VMContext</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">input</span>: Vec&lt;u8&gt;, <span class="comment">// serialized args</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">context_id</span>: <span class="ty">ContextId</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">executor_public_key</span>: <span class="ty">PublicKey</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">governance_epoch</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// group DAG heads for consistency</span><br>
+}
+    </div>
+  </div>
+  <div>
+    <h3>VMLimits</h3>
+    <div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">VMLimits</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_memory_pages</span>: u32,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_stack_size</span>: u32,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_registers</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_register_size</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_logs</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_log_size</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_events</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_event_size</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_xcalls</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_storage_key_size</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_storage_value_size</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_method_name_len</span>: u32,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">max_module_size</span>: u64,<br>
+}
+    </div>
+  </div>
+</div>
+
+<p>Limits are enforced at the host function boundary — each call checks remaining budget before proceeding. Exceeding any limit causes the method to abort with a <span class="code">LimitExceeded</span> error, and all mutations are rolled back.</p>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     4. HOST FUNCTIONS
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Host Functions</h2>
+<p style="margin-bottom:18px;">The runtime imports 50+ host functions into the WASM module. Each function is registered as a Wasmer import under the <span class="code">"env"</span> namespace. Organized by domain:</p>
+
+<details>
+  <summary>Identity &amp; I/O</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">context_id</div><div class="fd">Write the current context ID into a register</div></div>
+    <div class="fr"><div class="fp">executor_id</div><div class="fd">Write the executor's public key into a register</div></div>
+    <div class="fr"><div class="fp">input</div><div class="fd">Read the method's serialized input arguments into a register</div></div>
+    <div class="fr"><div class="fp">value_return</div><div class="fd">Set the return value for the method call</div></div>
+    <div class="fr"><div class="fp">log_utf8</div><div class="fd">Emit a UTF-8 log message (counted against max_logs)</div></div>
+    <div class="fr"><div class="fp">panic</div><div class="fd">Abort execution with an error code</div></div>
+    <div class="fr"><div class="fp">panic_utf8</div><div class="fd">Abort execution with a UTF-8 error message</div></div>
+  </div>
+</details>
+
+<details>
+  <summary>Registers</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">register_len</div><div class="fd">Get the byte length of data in a register</div></div>
+    <div class="fr"><div class="fp">read_register</div><div class="fd">Copy register contents into WASM linear memory</div></div>
+    <p style="margin-top:10px;">Registers act as a transfer buffer between host and guest. Host functions write results into numbered registers; the guest reads them out. This avoids complex multi-return calling conventions.</p>
+  </div>
+</details>
+
+<details>
+  <summary>Events &amp; Cross-Context</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">emit</div><div class="fd">Emit a typed event (broadcast to subscribed clients)</div></div>
+    <div class="fr"><div class="fp">emit_with_handler</div><div class="fd">Emit an event with a named handler method for reactive processing</div></div>
+    <div class="fr"><div class="fp">xcall</div><div class="fd">Cross-context call — invoke a method on another context (async, enqueued)</div></div>
+    <p style="margin-top:10px;">Events are accumulated in the <span class="code">Outcome</span> and broadcast to WebSocket/SSE subscribers after execution completes. Cross-context calls are queued and executed asynchronously.</p>
+  </div>
+</details>
+
+<details>
+  <summary>KV Storage (shared)</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">storage_read</div><div class="fd">Read a value by key from shared context state</div></div>
+    <div class="fr"><div class="fp">storage_write</div><div class="fd">Write a key-value pair to shared context state</div></div>
+    <div class="fr"><div class="fp">storage_remove</div><div class="fd">Delete a key from shared context state</div></div>
+    <div class="fr"><div class="fp">storage_has</div><div class="fd">Check if a key exists in shared context state</div></div>
+    <div class="fr"><div class="fp">commit</div><div class="fd">Flush pending mutations to a changeset</div></div>
+    <div class="fr"><div class="fp">persist_root_state</div><div class="fd">Compute and persist the Merkle root hash of current state</div></div>
+    <div class="fr"><div class="fp">read_root_state</div><div class="fd">Read the last computed root state hash</div></div>
+    <div class="fr"><div class="fp">apply_storage_delta</div><div class="fd">Apply a remote delta to local storage (used during sync)</div></div>
+    <div class="fr"><div class="fp">flush_delta</div><div class="fd">Flush accumulated storage changes as a CausalDelta</div></div>
+  </div>
+</details>
+
+<details>
+  <summary>Private Storage</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">private_storage_read</div><div class="fd">Read from node-local private state (never synced to peers)</div></div>
+    <div class="fr"><div class="fp">private_storage_write</div><div class="fd">Write to node-local private state</div></div>
+    <div class="fr"><div class="fp">private_storage_remove</div><div class="fd">Delete from node-local private state</div></div>
+    <p style="margin-top:10px;">Private storage is scoped to the local node. Use cases include caching, local preferences, and derived data that doesn't need to be replicated.</p>
+  </div>
+</details>
+
+<details>
+  <summary>CRDT / JS Bridge Collections</summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">These host functions back the SDK's CRDT collection types. The <span class="code">js_std_d_*</span> prefix indicates they implement the JavaScript SDK's distributed data structures.</p>
+
+    <h4 style="margin-top:14px;">Map operations</h4>
+    <div class="fr"><div class="fp">js_std_d_map_new</div><div class="fd">Create a new distributed map</div></div>
+    <div class="fr"><div class="fp">js_std_d_map_get / set / delete</div><div class="fd">Read, write, and remove entries</div></div>
+    <div class="fr"><div class="fp">js_std_d_map_entries / keys / values</div><div class="fd">Iterate over map contents</div></div>
+
+    <h4 style="margin-top:14px;">Set operations</h4>
+    <div class="fr"><div class="fp">js_std_d_set_new</div><div class="fd">Create a new distributed set</div></div>
+    <div class="fr"><div class="fp">js_std_d_set_add / delete / has</div><div class="fd">Mutate and query set membership</div></div>
+
+    <h4 style="margin-top:14px;">Vector &amp; RGA operations</h4>
+    <div class="fr"><div class="fp">js_std_d_vector_new / push / get</div><div class="fd">Distributed vector (append-mostly)</div></div>
+    <div class="fr"><div class="fp">js_std_d_rga_*</div><div class="fd">Replicated Growable Array for ordered sequences</div></div>
+
+    <h4 style="margin-top:14px;">User &amp; Frozen storage</h4>
+    <div class="fr"><div class="fp">user_storage_*</div><div class="fd">Higher-level user-facing storage API</div></div>
+    <div class="fr"><div class="fp">frozen_storage_*</div><div class="fd">Read-only snapshot of storage at a specific point</div></div>
+  </div>
+</details>
+
+<details>
+  <summary>Blobs</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">blob_bytes</div><div class="fd">Read blob content by ID (returns data into register)</div></div>
+    <div class="fr"><div class="fp">blob_exists</div><div class="fd">Check if a blob exists in the local store</div></div>
+    <div class="fr"><div class="fp">blob_create</div><div class="fd">Store new blob content (content-addressed, returns BlobId)</div></div>
+    <div class="fr"><div class="fp">blob_available</div><div class="fd">Check if a blob is locally available (may need to fetch from peers)</div></div>
+  </div>
+</details>
+
+<details>
+  <summary>Merge Registration</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">__calimero_register_merge</div><div class="fd">Register a WASM-exported merge function for custom CRDT conflict resolution</div></div>
+    <p style="margin-top:10px;">Applications can export a custom <span class="code">merge</span> function. When the runtime applies a remote delta and detects a conflict, it invokes the registered merge function instead of using the default strategy. This enables application-specific conflict resolution beyond LWW.</p>
+  </div>
+</details>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     5. STORAGE INTERFACE
+     ════════════════════════════════════════════════════════ -->
+<h2>Storage Interface</h2>
+<p style="margin-bottom:18px;">The runtime uses a simple KV <span class="code">Storage</span> trait that abstracts over the actual storage backend. This allows test isolation via <span class="code">InMemoryStorage</span>.</p>
+
+<div class="g2" style="margin-top:18px;">
+  <div>
+    <div class="typedef">
+<span class="kw">pub trait</span> <span class="ty">Storage</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">get</span>(&amp;self, key: &amp;[u8]) -&gt; <span class="ty">Option</span>&lt;Vec&lt;u8&gt;&gt;;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">set</span>(&amp;mut self, key: Vec&lt;u8&gt;, value: Vec&lt;u8&gt;);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">remove</span>(&amp;mut self, key: &amp;[u8]) -&gt; <span class="ty">Option</span>&lt;Vec&lt;u8&gt;&gt;;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">has</span>(&amp;self, key: &amp;[u8]) -&gt; bool;<br>
+}
+    </div>
+  </div>
+  <div>
+    <div class="cb">
+      <h4 style="color:#ec4899;">InMemoryStorage</h4>
+      <p style="margin-top:8px;">A <span class="code">HashMap&lt;Vec&lt;u8&gt;, Vec&lt;u8&gt;&gt;</span> implementation used in unit tests and the SDK's local test harness. Provides identical semantics to the RocksDB-backed storage without any external dependencies.</p>
+    </div>
+    <div class="cb" style="margin-top:12px;">
+      <h4 style="color:#06b6d4;">RocksDB-backed Storage</h4>
+      <p style="margin-top:8px;">In production, the <span class="code">Storage</span> trait is implemented by a thin wrapper over the <span class="code">calimero-store</span> Database, scoped to the executing context's State / PrivateState columns.</p>
+    </div>
+  </div>
+</div>
+
+</div>
+</div>
+<script src="../nav.js"></script>
+</body>
+</html>

@@ -7,17 +7,14 @@
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
-use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
-use std::collections::BTreeSet;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use url::Url;
 
-use super::external::ExternalClient;
 use super::ContextClient;
 use crate::messages::{ContextMessage, SyncRequest};
 
@@ -27,8 +24,6 @@ impl ContextClient {
     const DEFAULT_VERSION: &str = "0.0.0";
     const MAX_BLOB_RETRIES: u32 = 20;
     const BLOB_RETRY_DELAY_MS: u64 = 1000;
-    const MEMBERS_PAGE_SIZE: usize = 100;
-
     /// Try to install application from URL (for HTTP/HTTPS sources)
     async fn try_install_from_url(
         &self,
@@ -214,277 +209,157 @@ impl ContextClient {
         }
     }
 
+    /// Synchronize context configuration and ensure context metadata is present.
+    ///
+    /// Two modes:
+    ///
+    /// * **Bootstrap** (`config: Some(...)`): The context does not exist locally
+    ///   yet. The caller supplies initial revision hints. The function installs
+    ///   the application (if not already present), writes `ContextMeta` and
+    ///   `ContextConfig`, and sends a `Sync` message to the context manager.
+    ///
+    /// * **Refresh** (`config: None`): The context already exists locally.
+    ///   Returns the stored context. Membership and application state are kept
+    ///   up-to-date through the governance DAG, so no revision polling is needed.
     pub async fn sync_context_config(
         &self,
         context_id: ContextId,
-        config: Option<ContextConfigParams<'_>>,
+        config: Option<ContextConfigParams>,
     ) -> eyre::Result<Context> {
         let mut handle = self.datastore.handle();
 
         let context = handle.get(&key::ContextMeta::new(context_id))?;
 
-        let (mut config, mut should_save_config) = config.map_or_else(
-            || {
-                let Some(config) = handle.get(&key::ContextConfig::new(context_id))? else {
-                    eyre::bail!("context config not found")
-                };
+        // Refresh path: context already exists, return stored metadata.
+        // Membership and application updates propagate through the governance
+        // DAG, so there is no external source to poll for revision changes.
+        let Some(config) = config else {
+            let meta = context.ok_or_else(|| {
+                eyre::eyre!("sync_context_config called with config: None but context {context_id} not found")
+            })?;
 
-                let config = ContextConfigParams {
-                    protocol: config.protocol.into_string().into(),
-                    network_id: config.network.into_string().into(),
-                    contract_id: config.contract.into_string().into(),
-                    proxy_contract: config.proxy_contract.into_string().into(),
-                    application_revision: config.application_revision,
-                    members_revision: config.members_revision,
-                };
-
-                Ok((config, false))
-            },
-            |config| Ok((config, true)),
-        )?;
-
-        // Fetch the LATEST revision from the blockchain
-        let remote_members_revision = {
-            let external_client = self.external_client(&context_id, &config)?;
-            external_client.config().members_revision().await?
-        };
-
-        // Check members revision and sync members, if needed
-        if context.is_none() || remote_members_revision != config.members_revision {
-            tracing::info!(
+            debug!(
                 %context_id,
-                local_members_revision = config.members_revision,
-                remote_members_revision,
-                "Members revision changed, synchronizing member list...",
+                application_id = %meta.application.application_id(),
+                dag_heads_count = meta.dag_heads.len(),
+                "context already exists, returning stored metadata"
             );
 
-            should_save_config = true;
-            config.members_revision = remote_members_revision;
+            return Ok(Context::with_dag_heads(
+                context_id,
+                meta.application.application_id(),
+                meta.root_hash.into(),
+                meta.dag_heads.clone(),
+            ));
+        };
 
-            // Perform the sync of the members.
-            let external_client = self.external_client(&context_id, &config)?;
-            self.sync_members(context_id, &external_client).await?;
+        // Bootstrap path: resolve application and create store entries.
+        //
+        // The application_id is supplied by the caller (looked up from the
+        // group store) because `ContextMeta` has not been written yet — it is
+        // created below.  If the application is already installed locally we
+        // run the full installation checks; otherwise we write the metadata
+        // and let blob-sharing + sync retries deliver the binary later.
+
+        let application_id = if let Some(ctx) = &context {
+            ctx.application.application_id()
+        } else if let Some(id) = config.application_id {
+            id
         } else {
             debug!(
                 %context_id,
-                local_members_revision = config.members_revision,
-                remote_members_revision,
-                "Members revision was not changed, skipping sync",
+                "bootstrap: no application_id available yet; \
+                 writing placeholder — sync will populate it"
             );
-        }
-
-        let application_revision = {
-            let external_client = self.external_client(&context_id, &config)?;
-            let config_client = external_client.config();
-            config_client.application_revision().await?
+            ApplicationId::from([0u8; 32])
         };
 
-        let mut application_id = None;
-
-        if context.is_none() || application_revision != config.application_revision {
-            should_save_config = true;
-            config.application_revision = application_revision;
-
-            let external_client = self.external_client(&context_id, &config)?;
-            let config_client = external_client.config();
-            let application = config_client.application().await?;
-
-            application_id = Some(application.id);
-
-            if !self.node_client.has_application(&application.id)? {
+        if let Some(application) = self.node_client().get_application(&application_id)? {
+            let is_stub = application.source.to_string().starts_with("calimero://");
+            if !self.node_client.has_application(&application_id)? && !is_stub {
                 let source: Url = application.source.into();
                 let metadata = application.metadata.clone();
                 let blob_id = application.blob.bytecode;
 
                 let derived_application_id = {
-                    // Try URL installation first (for HTTP/HTTPS sources)
                     if let Some(app_id) = self.try_install_from_url(&source, &metadata).await? {
                         app_id
+                    } else if self.node_client.has_blob(&blob_id)? {
+                        self.install_from_existing_blob(
+                            &blob_id,
+                            &source,
+                            application.size,
+                            &metadata,
+                        )
+                        .await?
                     } else {
-                        // URL installation failed or not applicable
-                        // Check if blob exists locally (might have been received via blob sharing)
-                        if self.node_client.has_blob(&blob_id)? {
-                            self.install_from_existing_blob(
-                                &blob_id,
-                                &source,
-                                application.size,
-                                &metadata,
-                            )
-                            .await?
-                        } else {
-                            self.install_when_blob_missing(
-                                &blob_id,
-                                &source,
-                                application.size,
-                                &metadata,
-                                application.id,
-                            )
-                            .await?
-                        }
+                        self.install_when_blob_missing(
+                            &blob_id,
+                            &source,
+                            application.size,
+                            &metadata,
+                            application_id,
+                        )
+                        .await?
                     }
                 };
 
-                if application.id != derived_application_id {
+                if application_id != derived_application_id {
                     eyre::bail!(
                         "application mismatch: expected {}, got {}",
-                        application.id,
+                        application_id,
                         derived_application_id
                     )
                 }
             }
+        } else {
+            debug!(
+                %context_id,
+                %application_id,
+                "application not available locally during bootstrap; \
+                 writing metadata — blob sharing will deliver it"
+            );
         }
 
-        if should_save_config {
-            // todo! we shouldn't be reallocating here
-            // todo! but store requires ContextConfig: 'static
-            let config = config.clone();
+        handle.put(
+            &key::ContextConfig::new(context_id),
+            &types::ContextConfig::new(config.application_revision, config.members_revision),
+        )?;
 
-            handle.put(
-                &key::ContextConfig::new(context_id),
-                &types::ContextConfig::new(
-                    config.protocol.into_owned().into_boxed_str(),
-                    config.network_id.into_owned().into_boxed_str(),
-                    config.contract_id.into_owned().into_boxed_str(),
-                    config.proxy_contract.into_owned().into_boxed_str(),
-                    config.application_revision,
-                    config.members_revision,
-                ),
-            )?;
-        }
-
-        let (should_save, application_id, root_hash, dag_heads) = context.map_or_else(
-            || {
-                (
-                    true,
-                    application_id.expect("must've been defined if context doesn't exist"),
-                    Hash::default(),
-                    vec![],
-                )
-            },
-            |meta| {
-                (
-                    application_id.is_some(),
-                    application_id.unwrap_or_else(|| meta.application.application_id()),
-                    meta.root_hash.into(),
-                    meta.dag_heads.clone(),
-                )
-            },
+        let (root_hash, dag_heads) = context.map_or_else(
+            || (Hash::default(), vec![]),
+            |meta| (meta.root_hash.into(), meta.dag_heads.clone()),
         );
 
-        if should_save {
-            handle.put(
-                &key::ContextMeta::new(context_id),
-                &types::ContextMeta::new(
-                    key::ApplicationMeta::new(application_id),
-                    *root_hash,
-                    dag_heads.clone(),
-                ),
-            )?;
+        handle.put(
+            &key::ContextMeta::new(context_id),
+            &types::ContextMeta::new(
+                key::ApplicationMeta::new(application_id),
+                *root_hash,
+                dag_heads.clone(),
+            ),
+        )?;
 
-            let (sender, receiver) = oneshot::channel();
+        let (sender, receiver) = oneshot::channel();
 
-            self.context_manager
-                .send(ContextMessage::Sync {
-                    request: SyncRequest {
-                        context_id,
-                        application_id,
-                    },
-                    outcome: sender,
-                })
-                .await
-                .expect("Mailbox not to be dropped");
+        self.context_manager
+            .send(ContextMessage::Sync {
+                request: SyncRequest {
+                    context_id,
+                    application_id,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
 
-            receiver.await.expect("Mailbox not to be dropped");
-        }
+        receiver.await.expect("Mailbox not to be dropped");
 
-        let context = Context::with_dag_heads(context_id, application_id, root_hash, dag_heads);
-
-        Ok(context)
-    }
-
-    /// Synchronizes the local member list with the authoritative state from the blockchain.
-    ///
-    /// These actions are performed:
-    /// 1. Fetch the complete list of members from the external contract.
-    /// 2. Adds any missing members to the local `datastore`.
-    /// 3. Prunes (deletes) any local members that are no longer present in the external contract.
-    async fn sync_members(
-        &self,
-        context_id: ContextId,
-        external_client: &ExternalClient<'_>,
-    ) -> eyre::Result<()> {
-        let mut handle = self.datastore.handle();
-        let config_client = external_client.config();
-
-        let mut external_members = BTreeSet::new();
-
-        // Fetch ALL remote members
-        for (offset, length) in (0..).map(|i| {
-            (
-                Self::MEMBERS_PAGE_SIZE.saturating_mul(i),
-                Self::MEMBERS_PAGE_SIZE,
-            )
-        }) {
-            let members = config_client.members(offset, length).await?;
-            if members.is_empty() {
-                break;
-            }
-
-            for member in members {
-                external_members.insert(member);
-
-                // Upsert: add to local DB if missing
-                let key = key::ContextIdentity::new(context_id, member);
-                if !handle.has(&key)? {
-                    handle.put(
-                        &key,
-                        &types::ContextIdentity {
-                            private_key: None,
-                            sender_key: None,
-                        },
-                    )?;
-                }
-            }
-        }
-
-        // PRUNING stage.
-        // Identify members that exist locally but NOT remotely.
-        let mut members_to_remove = Vec::new();
-
-        // Create a scope for the iterator to avoid borrowing issues
-        {
-            if let Ok(mut iter) = handle.iter::<key::ContextIdentity>() {
-                let start_key = key::ContextIdentity::new(context_id, [0u8; DIGEST_SIZE].into());
-
-                // Capture the first element from seek() and chain with the rest to avoid skipping the first member
-                let first = iter.seek(start_key).ok().flatten();
-
-                // Iterate over the first item + the rest of the keys
-                for k in first.into_iter().chain(iter.keys().flatten()) {
-                    // Stop if we drifted to another context
-                    if k.context_id() != context_id {
-                        break;
-                    }
-
-                    // If local member is missing from external set -> Mark for removal
-                    if !external_members.contains(&k.public_key()) {
-                        members_to_remove.push(*k.public_key());
-                    }
-                }
-            }
-        }
-
-        // Execute deletions of members that exist in the local DB, but don't exist remotely anymore
-        for member in members_to_remove {
-            let member_public_key = member.into();
-            debug!(%context_id, %member_public_key, "Trying to prune member from local store (it was removed from the contract)");
-
-            let key = key::ContextIdentity::new(context_id, member_public_key);
-            handle.delete(&key)?;
-
-            info!(%context_id, %member_public_key, "Pruned member from local store (it was removed from the contract)");
-        }
-
-        Ok(())
+        Ok(Context::with_dag_heads(
+            context_id,
+            application_id,
+            root_hash,
+            dag_heads,
+        ))
     }
 }

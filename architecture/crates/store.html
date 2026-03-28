@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Storage Layer — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="../system-overview.html">System Overview</a><span class="sep">/</span><span>Storage Layer</span></div>
+
+<h1><em>Storage</em> Layer</h1>
+<p class="page-subtitle">calimero-store + calimero-store-rocksdb + calimero-dag + calimero-storage</p>
+
+<div class="g4" style="margin-bottom:36px;">
+  <div class="stat"><div class="v">10</div><div class="l">column families</div></div>
+  <div class="stat"><div class="v">20+</div><div class="l">group key prefixes</div></div>
+  <div class="stat"><div class="v">4</div><div class="l">crates</div></div>
+  <div class="stat"><div class="v">AES-GCM</div><div class="l">optional encryption</div></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     1. PURPOSE
+     ════════════════════════════════════════════════════════ -->
+<h2>Purpose</h2>
+<p style="margin-bottom:20px;">The storage layer provides a column-family key-value abstraction over RocksDB. The core <span class="code">Database</span> trait exposes <span class="code">has</span>, <span class="code">get</span>, <span class="code">put</span>, <span class="code">delete</span>, <span class="code">iter</span>, and <span class="code">apply(Transaction)</span>. Keys are typed via <span class="code">generic_array</span>, giving compile-time guarantees on key size and column assignment. An optional AES-GCM encryption layer transparently encrypts values at rest.</p>
+
+<div class="typedef">
+<span class="kw">pub trait</span> <span class="ty">Database</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">has</span>(&amp;self, col: Column, key: &amp;[u8]) -&gt; <span class="ty">Result</span>&lt;bool&gt;;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">get</span>(&amp;self, col: Column, key: &amp;[u8]) -&gt; <span class="ty">Result</span>&lt;Option&lt;Slice&gt;&gt;;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">put</span>(&amp;self, col: Column, key: &amp;[u8], value: &amp;[u8]) -&gt; <span class="ty">Result</span>&lt;()&gt;;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">delete</span>(&amp;self, col: Column, key: &amp;[u8]) -&gt; <span class="ty">Result</span>&lt;()&gt;;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">iter</span>(&amp;self, col: Column) -&gt; <span class="ty">Result</span>&lt;DBIterator&gt;;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">apply</span>(&amp;self, tx: Transaction) -&gt; <span class="ty">Result</span>&lt;()&gt;;<br>
+}
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     2. COLUMN ARCHITECTURE
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Column Architecture</h2>
+<p style="margin-bottom:18px;">All persistent data is partitioned into 10 column families. Each maps to a dedicated RocksDB column family with independent compaction and bloom filters. The <span class="code">Group</span> column is the most complex, containing 20+ logical key prefixes for governance state.</p>
+
+<svg viewBox="0 0 1000 520" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="glow-cy"><feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#06b6d4" flood-opacity="0.3"/></filter>
+  </defs>
+
+  <!-- Title -->
+  <text x="500" y="28" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="14" font-weight="700">Column Families (10 total)</text>
+
+  <!-- Row 1: First 5 columns -->
+  <rect x="20" y="48" width="180" height="60" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="110" y="73" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Meta</text>
+  <text x="110" y="93" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">schema version, node id</text>
+
+  <rect x="212" y="48" width="180" height="60" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="302" y="73" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Config</text>
+  <text x="302" y="93" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">node configuration</text>
+
+  <rect x="404" y="48" width="180" height="60" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="494" y="73" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Identity</text>
+  <text x="494" y="93" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">keypairs, public keys</text>
+
+  <rect x="596" y="48" width="180" height="60" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="686" y="73" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">State</text>
+  <text x="686" y="93" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">shared context state KV</text>
+
+  <rect x="788" y="48" width="192" height="60" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="884" y="73" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">PrivateState</text>
+  <text x="884" y="93" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">per-node private KV</text>
+
+  <!-- Row 2: Next 4 columns -->
+  <rect x="20" y="124" width="180" height="60" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="110" y="149" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Delta</text>
+  <text x="110" y="169" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">causal deltas (DAG)</text>
+
+  <rect x="212" y="124" width="180" height="60" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="302" y="149" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Blobs</text>
+  <text x="302" y="169" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">binary content store</text>
+
+  <rect x="404" y="124" width="180" height="60" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="494" y="149" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Application</text>
+  <text x="494" y="169" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">WASM binaries, metadata</text>
+
+  <rect x="596" y="124" width="180" height="60" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="686" y="149" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Alias</text>
+  <text x="686" y="169" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">human-readable aliases</text>
+
+  <!-- Row 2 cont: Generic -->
+  <rect x="788" y="124" width="192" height="60" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="884" y="149" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">Generic</text>
+  <text x="884" y="169" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">uncategorized data</text>
+
+  <!-- Connector arrow to Group expansion -->
+  <line x="500" y1="195" x2="500" y2="218" stroke="#06b6d4" stroke-width="1.5"/>
+  <polygon points="500,218 496,211 504,211" fill="#06b6d4"/>
+
+  <!-- Group column expanded -->
+  <rect x="20" y="220" width="960" height="285" rx="14" fill="#06b6d408" stroke="#06b6d4" stroke-width="1.8" filter="url(#glow-cy)"/>
+  <text x="500" y="248" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="15" font-weight="700">Group Column — Prefix-Partitioned Keys</text>
+  <text x="500" y="268" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">Each prefix isolates a logical namespace within the single Group column family</text>
+
+  <!-- Prefix grid: 4 columns x 5 rows -->
+  <!-- Col 1 -->
+  <rect x="40" y="283" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="55" y="303" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::info</text>
+  <text x="175" y="303" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">group metadata</text>
+
+  <rect x="40" y="321" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="55" y="341" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::member</text>
+  <text x="195" y="341" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">members</text>
+
+  <rect x="40" y="359" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="55" y="379" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::role</text>
+  <text x="180" y="379" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">role assignments</text>
+
+  <rect x="40" y="397" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="55" y="417" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::cap</text>
+  <text x="170" y="417" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">capabilities</text>
+
+  <rect x="40" y="435" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="55" y="455" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::alias</text>
+  <text x="175" y="455" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">member aliases</text>
+
+  <!-- Col 2 -->
+  <rect x="275" y="283" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="290" y="303" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::context</text>
+  <text x="420" y="303" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">linked contexts</text>
+
+  <rect x="275" y="321" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="290" y="341" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::invite</text>
+  <text x="415" y="341" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">invitations</text>
+
+  <rect x="275" y="359" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="290" y="379" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::signing_key</text>
+  <text x="460" y="379" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">keys</text>
+
+  <rect x="275" y="397" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="290" y="417" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::visibility</text>
+  <text x="450" y="417" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">access</text>
+
+  <rect x="275" y="435" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="290" y="455" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::allowlist</text>
+  <text x="445" y="455" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">allow</text>
+
+  <!-- Col 3 -->
+  <rect x="510" y="283" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="525" y="303" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::oplog</text>
+  <text x="660" y="303" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">operation log</text>
+
+  <rect x="510" y="321" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="525" y="341" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::oplog_head</text>
+  <text x="695" y="341" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">DAG heads</text>
+
+  <rect x="510" y="359" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="525" y="379" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::state_hash</text>
+  <text x="700" y="379" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">root hash</text>
+
+  <rect x="510" y="397" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="525" y="417" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::nonce</text>
+  <text x="670" y="417" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">monotonic</text>
+
+  <rect x="510" y="435" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="525" y="455" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::settings</text>
+  <text x="680" y="455" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">config</text>
+
+  <!-- Col 4 -->
+  <rect x="745" y="283" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="760" y="303" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::upgrade</text>
+  <text x="905" y="303" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">app upgrades</text>
+
+  <rect x="745" y="321" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="760" y="341" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::epoch</text>
+  <text x="900" y="341" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">governance epoch</text>
+
+  <rect x="745" y="359" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="760" y="379" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::sync_state</text>
+  <text x="920" y="379" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">sync</text>
+
+  <rect x="745" y="397" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="760" y="417" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::pending_op</text>
+  <text x="920" y="417" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">queued</text>
+
+  <rect x="745" y="435" width="220" height="32" rx="6" fill="#0f0f16" stroke="#252538"/>
+  <text x="760" y="455" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">group::applied_op</text>
+  <text x="920" y="455" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">applied</text>
+</svg>
+
+<div class="legend">
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>Membership</div>
+  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>Resources</div>
+  <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>OpLog / Hashing</div>
+  <div class="legend-item"><div class="ld" style="background:#ec4899"></div>Lifecycle</div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     3. KEY MODEL
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Key Model</h2>
+<p style="margin-bottom:18px;">All keys are statically typed via <span class="code">Key&lt;T&gt;</span>, a newtype over <span class="code">GenericArray&lt;u8, T::Size&gt;</span>. The <span class="code">AsKeyParts</span> / <span class="code">FromKeyParts</span> traits define how a key is decomposed into column + byte components, giving compile-time column assignment.</p>
+
+<div class="typedef" style="margin-bottom:16px;">
+<span class="kw">pub struct</span> <span class="ty">Key</span>&lt;T: KeyParts&gt;(<span class="ty">GenericArray</span>&lt;u8, T::Size&gt;);<br><br>
+<span class="kw">pub trait</span> <span class="ty">AsKeyParts</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">type</span> <span class="ty">Size</span>: ArrayLength&lt;u8&gt;;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">const</span> <span class="field">COLUMN</span>: Column;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">as_key</span>(&amp;self) -&gt; Key&lt;Self&gt;;<br>
+}<br><br>
+<span class="kw">pub trait</span> <span class="ty">FromKeyParts</span>: AsKeyParts {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">from_key</span>(key: Key&lt;Self&gt;) -&gt; Self;<br>
+}
+</div>
+
+<h3>Key Types by Column</h3>
+
+<div class="fr"><div class="fp">Meta</div><div class="fd"><span class="code">SchemaVersionKey</span>, <span class="code">NodeIdKey</span> — fixed singleton keys</div></div>
+<div class="fr"><div class="fp">Config</div><div class="fd"><span class="code">NodeConfigKey</span> — serialized node configuration</div></div>
+<div class="fr"><div class="fp">Identity</div><div class="fd"><span class="code">ContextIdentityKey(ContextId)</span> — maps context → keypair</div></div>
+<div class="fr"><div class="fp">State</div><div class="fd"><span class="code">ContextStateKey(ContextId, [u8])</span> — shared KV scoped to context</div></div>
+<div class="fr"><div class="fp">PrivateState</div><div class="fd"><span class="code">PrivateStateKey(ContextId, [u8])</span> — private KV (never synced)</div></div>
+<div class="fr"><div class="fp">Delta</div><div class="fd"><span class="code">DeltaKey(ContextId, DeltaId)</span> — stores CausalDelta payload</div></div>
+<div class="fr"><div class="fp">Blobs</div><div class="fd"><span class="code">BlobKey(BlobId)</span> — content-addressed binary data</div></div>
+<div class="fr"><div class="fp">Application</div><div class="fd"><span class="code">ApplicationKey(ApplicationId)</span>, <span class="code">ApplicationBlobKey</span> — WASM binary + metadata</div></div>
+<div class="fr"><div class="fp">Alias</div><div class="fd"><span class="code">AliasKey(scope, name)</span> — human-readable name → id mapping</div></div>
+<div class="fr"><div class="fp">Group</div><div class="fd"><span class="code">GroupInfoKey</span>, <span class="code">GroupMemberKey</span>, <span class="code">GroupRoleKey</span>, <span class="code">GroupCapKey</span>, <span class="code">GroupOpLogKey</span>, etc. — prefix-partitioned (see above)</div></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     4. CALIMERO-DAG
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>calimero-dag</h2>
+<p style="margin-bottom:18px;">A generic, in-memory causal DAG used for both context state deltas and governance operation logs. Provides topological ordering, pending queues for out-of-order delivery, and missing-parent detection for catch-up.</p>
+<a class="gh-link" href="https://github.com/calimero-network/core/tree/master/crates/dag" target="_blank" rel="noopener">crates/dag</a>
+
+<div class="g2" style="margin-top:18px;margin-bottom:18px;">
+  <div>
+    <h3>CausalDelta&lt;T&gt;</h3>
+    <div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">CausalDelta</span>&lt;T&gt; {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">id</span>: <span class="ty">DeltaId</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">parents</span>: Vec&lt;<span class="ty">DeltaId</span>&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">payload</span>: T,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">timestamp</span>: <span class="ty">HLC</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">expected_root_hash</span>: <span class="ty">Hash</span>,<br>
+}
+    </div>
+    <p style="margin-top:10px;">Each delta records its causal parents, forming a partial order. The <span class="code">expected_root_hash</span> enables fast consistency checks — a peer can verify it arrived at the same state after applying a delta.</p>
+  </div>
+  <div>
+    <h3>DagStore&lt;T&gt;</h3>
+    <div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">DagStore</span>&lt;T&gt; {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">deltas</span>: HashMap&lt;DeltaId, CausalDelta&lt;T&gt;&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">applied</span>: HashSet&lt;DeltaId&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">pending</span>: Vec&lt;CausalDelta&lt;T&gt;&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">heads</span>: HashSet&lt;DeltaId&gt;,<br>
+}
+    </div>
+    <p style="margin-top:10px;">Tracks all known deltas, which have been applied, which are pending (missing parents), and the current DAG head set. New deltas promote heads automatically.</p>
+  </div>
+</div>
+
+<h3>DeltaApplier&lt;T&gt; trait</h3>
+<div class="typedef" style="margin-bottom:14px;">
+<span class="kw">pub trait</span> <span class="ty">DeltaApplier</span>&lt;T&gt; {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">apply_delta</span>(&amp;mut self, delta: &amp;CausalDelta&lt;T&gt;) -&gt; <span class="ty">Result</span>&lt;()&gt;;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">restore_applied_delta</span>(&amp;mut self, delta: &amp;CausalDelta&lt;T&gt;) -&gt; <span class="ty">Result</span>&lt;()&gt;;<br>
+}
+</div>
+
+<h3>Key Operations</h3>
+<div class="g2">
+  <div class="step"><div class="n">1</div>
+    <h4>Topological Ordering</h4>
+    <p>Before applying, all pending deltas are sorted in topological order (parents before children). This ensures deterministic replay regardless of arrival order.</p>
+  </div>
+  <div class="step"><div class="n">2</div>
+    <h4>Pending Queue</h4>
+    <p>If a delta's parents haven't been seen yet, it enters the pending queue. When missing parents arrive, queued deltas are automatically drained and applied.</p>
+  </div>
+  <div class="step"><div class="n">3</div>
+    <h4>restore_applied_delta</h4>
+    <p>Used during node restart to rebuild the in-memory DAG from persisted deltas without re-executing the payload (state is already in storage).</p>
+  </div>
+  <div class="step"><div class="n">4</div>
+    <h4>get_missing_parents</h4>
+    <p>Returns the set of delta IDs referenced as parents but not yet received. Used by the sync protocol to request specific deltas from peers.</p>
+  </div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     5. CALIMERO-STORAGE (CRDTs)
+     ════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>calimero-storage</h2>
+<p style="margin-bottom:18px;">Provides CRDT collections used by the WASM runtime for conflict-free replicated state. Each collection implements the <span class="code">Mergeable</span> trait for automatic conflict resolution during sync.</p>
+<a class="gh-link" href="https://github.com/calimero-network/core/tree/master/crates/storage" target="_blank" rel="noopener">crates/storage</a>
+
+<div class="g3" style="margin-top:18px;margin-bottom:18px;">
+  <div class="cb">
+    <h4 style="color:#06b6d4;">Map</h4>
+    <p style="margin-top:8px;">Observed-remove map. Concurrent puts to the same key are resolved by LWW using <span class="code">HybridTimestamp</span>. Deletions are tracked as tombstones until causally stable.</p>
+  </div>
+  <div class="cb">
+    <h4 style="color:#06b6d4;">Set</h4>
+    <p style="margin-top:8px;">Observed-remove set. Add/remove conflicts resolved in favor of add (add-wins semantics). Internally backed by a Map with unit values.</p>
+  </div>
+  <div class="cb">
+    <h4 style="color:#06b6d4;">LwwRegister</h4>
+    <p style="margin-top:8px;">Last-writer-wins register. Stores a single value with a <span class="code">HybridTimestamp</span>. On merge, the value with the highest timestamp wins.</p>
+  </div>
+</div>
+
+<h3>Core Traits</h3>
+<div class="typedef" style="margin-bottom:14px;">
+<span class="kw">pub struct</span> <span class="ty">HybridTimestamp</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">wall_clock</span>: u64,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">logical</span>: u32,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">node_id</span>: <span class="ty">NodeId</span>, <span class="comment">// tiebreaker</span><br>
+}<br><br>
+<span class="kw">pub trait</span> <span class="ty">Mergeable</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">merge</span>(&amp;mut self, other: &amp;Self);<br>
+}
+</div>
+
+<p>The <span class="code">Mergeable</span> trait is the fundamental building block — any type that implements it can be used as a CRDT value in the storage layer. The runtime's host functions call <span class="code">merge</span> when applying remote deltas.</p>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     6. ROCKSDB IMPLEMENTATION
+     ════════════════════════════════════════════════════════ -->
+<h2>RocksDB Implementation</h2>
+<p style="margin-bottom:18px;">The <span class="code">calimero-store-rocksdb</span> crate provides the concrete <span class="code">Database</span> implementation backed by RocksDB.</p>
+<a class="gh-link" href="https://github.com/calimero-network/core/tree/master/crates/store/rocksdb" target="_blank" rel="noopener">crates/store/rocksdb</a>
+
+<div class="g2" style="margin-top:18px;">
+  <div class="cb">
+    <h4>Column Family Mapping</h4>
+    <p style="margin-top:8px;">Each <span class="code">Column</span> enum variant maps 1:1 to a RocksDB column family. CFs are created at DB open time. Each has independent compaction, bloom filters (10 bits/key), and block cache partitions.</p>
+  </div>
+  <div class="cb">
+    <h4>WriteBatch Transactions</h4>
+    <p style="margin-top:8px;">The <span class="code">Transaction</span> type accumulates puts and deletes, then is atomically committed via <span class="code">WriteBatch</span>. Guarantees all-or-nothing semantics for multi-key operations like delta application.</p>
+  </div>
+  <div class="cb">
+    <h4>Snapshot Iteration</h4>
+    <p style="margin-top:8px;">Iterators are backed by RocksDB snapshots for consistent point-in-time reads. Prefix iteration uses <span class="code">set_iterate_range</span> for efficient scans within a column family.</p>
+  </div>
+  <div class="cb">
+    <h4>Pinned Gets</h4>
+    <p style="margin-top:8px;">Uses <span class="code">get_pinned_cf</span> for zero-copy reads where possible. The returned <span class="code">Slice</span> borrows directly from the block cache, avoiding allocation for large values.</p>
+  </div>
+</div>
+
+</div>
+</div>
+<script src="../nav.js"></script>
+</body>
+</html>

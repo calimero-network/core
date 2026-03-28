@@ -1,16 +1,9 @@
 use std::collections::BTreeMap;
 
-use calimero_context_config::repr::Repr;
-use calimero_context_config::types::{
-    BlockHeight, Capability, ContextIdentity, ContextStorageEntry, SignedGroupOpenInvitation,
-    SignedOpenInvitation,
-};
-use calimero_context_config::{Proposal, ProposalWithApprovals};
+use calimero_context_config::types::{Capability, SignedGroupOpenInvitation, SignedOpenInvitation};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{
-    Context, ContextId, ContextInvitationPayload, GroupMemberRole, UpgradePolicy,
-};
+use calimero_primitives::context::{Context, ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey, WalletType};
 use camino::Utf8PathBuf;
@@ -220,7 +213,6 @@ impl GetApplicationResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextRequest {
-    pub protocol: String,
     pub application_id: ApplicationId,
     pub context_seed: Option<Hash>,
     pub initialization_params: Vec<u8>,
@@ -232,7 +224,6 @@ pub struct CreateContextRequest {
 
 impl CreateContextRequest {
     pub const fn new(
-        protocol: String,
         application_id: ApplicationId,
         context_seed: Option<Hash>,
         initialization_params: Vec<u8>,
@@ -240,7 +231,6 @@ impl CreateContextRequest {
         identity_secret: Option<String>,
     ) -> Self {
         Self {
-            protocol,
             application_id,
             context_seed,
             initialization_params,
@@ -422,20 +412,20 @@ impl GetContextsResponse {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Copy, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InviteToContextRequest {
     pub context_id: ContextId,
     pub inviter_id: PublicKey,
-    pub invitee_id: PublicKey,
+    pub valid_for_seconds: u64,
 }
 
 impl InviteToContextRequest {
-    pub const fn new(context_id: ContextId, inviter_id: PublicKey, invitee_id: PublicKey) -> Self {
+    pub const fn new(context_id: ContextId, inviter_id: PublicKey, valid_for_seconds: u64) -> Self {
         Self {
             context_id,
             inviter_id,
-            invitee_id,
+            valid_for_seconds,
         }
     }
 }
@@ -443,46 +433,10 @@ impl InviteToContextRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InviteToContextResponse {
-    pub data: Option<ContextInvitationPayload>,
-}
-
-impl InviteToContextResponse {
-    pub const fn new(payload: Option<ContextInvitationPayload>) -> Self {
-        Self { data: payload }
-    }
-}
-
-// TODO: refactor `InviteToContextRequest` with an optional `invitee_id` field to serve both
-// types of requests.
-#[derive(Debug, Deserialize, Copy, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteToContextOpenInvitationRequest {
-    pub context_id: ContextId,
-    pub inviter_id: PublicKey,
-    pub valid_for_blocks: BlockHeight,
-}
-
-impl InviteToContextOpenInvitationRequest {
-    pub const fn new(
-        context_id: ContextId,
-        inviter_id: PublicKey,
-        valid_for_blocks: BlockHeight,
-    ) -> Self {
-        Self {
-            context_id,
-            inviter_id,
-            valid_for_blocks,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteToContextOpenInvitationResponse {
     pub data: Option<SignedOpenInvitation>,
 }
 
-impl InviteToContextOpenInvitationResponse {
+impl InviteToContextResponse {
     pub const fn new(signed_open_invitation: Option<SignedOpenInvitation>) -> Self {
         Self {
             data: signed_open_invitation,
@@ -532,23 +486,11 @@ impl InviteSpecializedNodeResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JoinContextRequest {
-    pub invitation_payload: ContextInvitationPayload,
-}
-
-impl JoinContextRequest {
-    pub const fn new(invitation_payload: ContextInvitationPayload) -> Self {
-        Self { invitation_payload }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JoinContextByOpenInvitationRequest {
     pub invitation: SignedOpenInvitation,
     pub new_member_public_key: PublicKey,
 }
 
-impl JoinContextByOpenInvitationRequest {
+impl JoinContextRequest {
     pub const fn new(invitation: SignedOpenInvitation, new_member_public_key: PublicKey) -> Self {
         Self {
             invitation,
@@ -931,76 +873,6 @@ impl NodeChallengeMessage {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GetProposalsResponse {
-    pub data: Vec<Proposal>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProposalResponse {
-    pub data: Proposal,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProxyContractResponse {
-    pub data: String,
-}
-
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProposalsRequest {
-    pub offset: usize,
-    pub limit: usize,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextValueRequest {
-    pub key: String,
-}
-
-#[derive(Debug, Deserialize, Serialize, Copy, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextStorageEntriesRequest {
-    pub offset: usize,
-    pub limit: usize,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextValueResponse {
-    pub data: Vec<u8>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextStorageEntriesResponse {
-    pub data: Vec<ContextStorageEntry>,
-}
-
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetNumberOfActiveProposalsResponse {
-    pub data: u16,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProposalApproversResponse {
-    // fixme! this is wrong, ContextIdentity is an implementation
-    // fixme! detail it should be PublicKey instead
-    pub data: Vec<Repr<ContextIdentity>>,
-}
-
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetNumberOfProposalApprovalsResponse {
-    pub data: ProposalWithApprovals,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct GrantPermissionRequest {
     pub context_id: ContextId,
     pub granter_id: PublicKey,
@@ -1070,44 +942,6 @@ pub struct RevokePermissionResponse {
 impl RevokePermissionResponse {
     pub const fn new() -> Self {
         Self { data: Empty {} }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAndApproveProposalRequest {
-    pub signer_id: PublicKey,
-    pub proposal: Proposal,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAndApproveProposalResponse {
-    pub data: Option<ProposalWithApprovals>,
-}
-
-impl CreateAndApproveProposalResponse {
-    pub const fn new(data: Option<ProposalWithApprovals>) -> Self {
-        Self { data }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApproveProposalRequest {
-    pub signer_id: PublicKey,
-    pub proposal_id: calimero_context_config::types::ProposalId,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApproveProposalResponse {
-    pub data: Option<ProposalWithApprovals>,
-}
-
-impl ApproveProposalResponse {
-    pub const fn new(data: Option<ProposalWithApprovals>) -> Self {
-        Self { data }
     }
 }
 
@@ -1306,7 +1140,7 @@ impl TryFrom<tdx_quote::Quote> for Quote {
                         _ => {
                             return Err(
                                 "Unknown CertificationDataInner variant encountered".to_string()
-                            )
+                            );
                         }
                     };
 
@@ -1442,7 +1276,7 @@ impl TeeVerifyQuoteResponse {
 // ====================
 // These implementations focus on validating user-controlled string fields and size limits.
 //
-// Types like `ContextId`, `PublicKey`, `ApplicationId`, and `ProposalId` are validated during
+// Types like `ContextId`, `PublicKey`, and `ApplicationId` are validated during
 // serde deserialization - they implement `FromStr` which performs format validation (e.g.,
 // base58 decoding, length checks). If deserialization succeeds, the type is guaranteed valid.
 //
@@ -1456,13 +1290,12 @@ impl TeeVerifyQuoteResponse {
 
 use crate::validation::{
     helpers::{
-        validate_bytes_size, validate_hex_string, validate_limit, validate_offset,
-        validate_optional_hex_string, validate_optional_string_length, validate_string_length,
-        validate_url,
+        validate_bytes_size, validate_hex_string, validate_optional_hex_string,
+        validate_optional_string_length, validate_string_length, validate_url,
     },
-    Validate, ValidationError, MAX_CONTEXT_KEY_LENGTH, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE,
-    MAX_METHOD_NAME_LENGTH, MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH,
-    MAX_PROTOCOL_LENGTH, MAX_QUOTE_B64_LENGTH, MAX_VALID_FOR_BLOCKS, MAX_VERSION_LENGTH,
+    Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_METHOD_NAME_LENGTH,
+    MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH, MAX_QUOTE_B64_LENGTH,
+    MAX_VALID_FOR_SECONDS, MAX_VERSION_LENGTH,
 };
 
 impl Validate for InstallApplicationRequest {
@@ -1529,14 +1362,6 @@ impl Validate for CreateContextRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
 
-        if let Some(e) = validate_string_length(&self.protocol, "protocol", MAX_PROTOCOL_LENGTH) {
-            errors.push(e);
-        }
-
-        if self.protocol.is_empty() {
-            errors.push(ValidationError::EmptyField { field: "protocol" });
-        }
-
         if let Some(e) = validate_bytes_size(
             &self.initialization_params,
             "initialization_params",
@@ -1551,22 +1376,13 @@ impl Validate for CreateContextRequest {
 
 impl Validate for InviteToContextRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        // Fields: context_id (ContextId), inviter_id (PublicKey), invitee_id (PublicKey)
-        // All fields are validated during serde deserialization via FromStr implementations.
-        // ContextId and PublicKey validate format (base58, length) at parse time.
-        Vec::new()
-    }
-}
-
-impl Validate for InviteToContextOpenInvitationRequest {
-    fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
 
-        if self.valid_for_blocks > MAX_VALID_FOR_BLOCKS {
+        if self.valid_for_seconds > MAX_VALID_FOR_SECONDS {
             errors.push(ValidationError::ValueTooLarge {
-                field: "valid_for_blocks",
-                max: MAX_VALID_FOR_BLOCKS,
-                actual: self.valid_for_blocks,
+                field: "valid_for_seconds",
+                max: MAX_VALID_FOR_SECONDS,
+                actual: self.valid_for_seconds,
             });
         }
 
@@ -1582,13 +1398,6 @@ impl Validate for InviteSpecializedNodeRequest {
 }
 
 impl Validate for JoinContextRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // ContextInvitationPayload is a typed structure with its own validation
-        Vec::new()
-    }
-}
-
-impl Validate for JoinContextByOpenInvitationRequest {
     fn validate(&self) -> Vec<ValidationError> {
         // All fields are typed (SignedOpenInvitation, PublicKey) which have their own validation
         Vec::new()
@@ -1629,68 +1438,6 @@ impl Validate for GrantPermissionRequest {
 impl Validate for RevokePermissionRequest {
     fn validate(&self) -> Vec<ValidationError> {
         // All fields are typed which have their own validation
-        Vec::new()
-    }
-}
-
-impl Validate for GetProposalsRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        if let Some(e) = validate_offset(self.offset, "offset") {
-            errors.push(e);
-        }
-
-        if let Some(e) = validate_limit(self.limit, "limit") {
-            errors.push(e);
-        }
-
-        errors
-    }
-}
-
-impl Validate for GetContextValueRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        if let Some(e) = validate_string_length(&self.key, "key", MAX_CONTEXT_KEY_LENGTH) {
-            errors.push(e);
-        }
-
-        if self.key.is_empty() {
-            errors.push(ValidationError::EmptyField { field: "key" });
-        }
-
-        errors
-    }
-}
-
-impl Validate for GetContextStorageEntriesRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        if let Some(e) = validate_offset(self.offset, "offset") {
-            errors.push(e);
-        }
-
-        if let Some(e) = validate_limit(self.limit, "limit") {
-            errors.push(e);
-        }
-
-        errors
-    }
-}
-
-impl Validate for CreateAndApproveProposalRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed (PublicKey, Proposal) which have their own validation
-        Vec::new()
-    }
-}
-
-impl Validate for ApproveProposalRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed (PublicKey, ProposalId) which have their own validation
         Vec::new()
     }
 }
@@ -2060,10 +1807,10 @@ impl Validate for RetryGroupUpgradeApiRequest {
 pub struct CreateGroupInvitationApiRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
-    /// On-chain block height after which the invitation commitment expires.
-    /// Defaults to 999_999_999 when not provided (backward-compatible).
+    /// Duration in seconds for the invitation validity.
+    /// Defaults to 1 year when not provided.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expiration_block_height: Option<u64>,
+    pub expiration_timestamp: Option<u64>,
 }
 
 impl Validate for CreateGroupInvitationApiRequest {
@@ -2246,12 +1993,6 @@ pub struct RegisterGroupSigningKeyApiResponseData {
 pub struct SyncGroupApiRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub protocol: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub network_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub contract_id: Option<String>,
 }
 
 impl Validate for SyncGroupApiRequest {

@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Node — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="../system-overview.html">System Overview</a><span class="sep">/</span><span>Node</span></div>
+
+<h1><em>Node</em> Crate</h1>
+<p class="page-subtitle">calimero-node + calimero-node-primitives</p>
+
+<!-- ════════════════════════════════════════════════════════
+     1. PURPOSE
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Purpose</h2>
+<p style="margin-bottom:14px;"><strong style="color:var(--text-bright);">NodeManager</strong> is an Actix actor that orchestrates the entire node. It receives network events via a dedicated channel bridge, manages blob caching, periodic heartbeats, delta handling, and routes streams to the sync manager.</p>
+<p style="margin-bottom:14px;">It does <strong>not</strong> run libp2p directly — <span class="code">NetworkManager</span> does that. NodeManager communicates with the network through <span class="code">NodeClient</span>, which wraps a <span class="code">LazyRecipient&lt;NodeMessage&gt;</span> and a <span class="code">NetworkClient</span> handle. The crate also contains the <span class="code">SyncManager</span> (a long-lived async task, not an Actix actor) and a <span class="code">GarbageCollector</span> actor for storage tombstone cleanup.</p>
+
+<div class="g4" style="margin-top:20px;">
+  <div class="stat"><div class="v" style="color:#3b82f6;">2</div><div class="l">crates</div></div>
+  <div class="stat"><div class="v" style="color:#3b82f6;">30+</div><div class="l">source files</div></div>
+  <div class="stat"><div class="v" style="color:#3b82f6;">3</div><div class="l">actors / tasks</div></div>
+  <div class="stat"><div class="v" style="color:#3b82f6;">4</div><div class="l">sync protocols</div></div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     2. MODULE STRUCTURE
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Module Structure</h2>
+<p style="margin-bottom:16px;">File layout across the two crates. Each handler lives in its own focused file following the Single Responsibility Principle.</p>
+
+<h3>calimero-node</h3>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/lib.rs" target="_blank" rel="noopener">src/lib.rs</a></div><div class="fd">NodeManager actor definition, NodeClients, NodeManagers, NodeState, SyncSession, CachedBlob</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/run.rs" target="_blank" rel="noopener">src/run.rs</a></div><div class="fd"><span class="code">start()</span> entry point, NodeConfig, wires Store / BlobManager / actors / server / GC</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers.rs" target="_blank" rel="noopener">src/handlers.rs</a></div><div class="fd"><span class="code">Handler&lt;NodeMessage&gt;</span> dispatch — routes GetBlobBytes, specialized node invites</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/network_event.rs" target="_blank" rel="noopener">handlers/network_event.rs</a></div><div class="fd"><span class="code">Handler&lt;NetworkEvent&gt;</span> — gossip, stream, subscription, broadcast message routing</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/state_delta.rs" target="_blank" rel="noopener">handlers/state_delta.rs</a></div><div class="fd"><span class="code">handle_state_delta</span> — DeltaStore buffering, context routing, sync session awareness</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/stream_opened.rs" target="_blank" rel="noopener">handlers/stream_opened.rs</a></div><div class="fd">Blob vs sync stream routing based on <span class="code">/calimero/blob/</span> vs <span class="code">/calimero/stream/</span> protocol prefix</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/blob_protocol.rs" target="_blank" rel="noopener">handlers/blob_protocol.rs</a></div><div class="fd">Blob transfer handler — serves blob data to requesting peers</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/network_event_channel.rs" target="_blank" rel="noopener">src/network_event_channel.rs</a></div><div class="fd">Reliable mpsc channel replacing <span class="code">LazyRecipient&lt;NetworkEvent&gt;</span> to avoid cross-arbiter loss</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/network_event_processor.rs" target="_blank" rel="noopener">src/network_event_processor.rs</a></div><div class="fd">NetworkEventBridge — tokio task that bridges the channel to the NodeManager actor</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/delta_store.rs" target="_blank" rel="noopener">src/delta_store.rs</a></div><div class="fd">Per-context delta buffering for out-of-order delta arrival</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/gc.rs" target="_blank" rel="noopener">src/gc.rs</a></div><div class="fd">GarbageCollector actor — periodic tombstone cleanup across all contexts</div></div>
+
+<h3 style="margin-top:24px;">calimero-node / sync</h3>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/mod.rs" target="_blank" rel="noopener">sync/mod.rs</a></div><div class="fd">SyncManager, SyncConfig, protocol re-exports, metrics collector traits</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/manager.rs" target="_blank" rel="noopener">sync/manager.rs</a></div><div class="fd">Periodic sync loop, protocol selection, stream handling, peer tracking</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/hash_comparison_protocol.rs" target="_blank" rel="noopener">sync/hash_comparison_protocol.rs</a></div><div class="fd">Merkle DFS traversal — cheapest sync protocol</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/level_sync.rs" target="_blank" rel="noopener">sync/level_sync.rs</a></div><div class="fd">BFS level-wise sync for wide trees</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/snapshot.rs" target="_blank" rel="noopener">sync/snapshot.rs</a></div><div class="fd">Full snapshot transfer — heaviest fallback protocol</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/blobs.rs" target="_blank" rel="noopener">sync/blobs.rs</a></div><div class="fd">Blob sharing protocol</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/key.rs" target="_blank" rel="noopener">sync/key.rs</a></div><div class="fd">Key sharing / challenge domain constants</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/tracking.rs" target="_blank" rel="noopener">sync/tracking.rs</a></div><div class="fd">Per-peer sync history tracking</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/metrics.rs" target="_blank" rel="noopener">sync/metrics.rs</a></div><div class="fd">SyncMetricsCollector trait, PhaseTimer, NoOpMetrics</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync/prometheus_metrics.rs" target="_blank" rel="noopener">sync/prometheus_metrics.rs</a></div><div class="fd">Production Prometheus metric implementation</div></div>
+
+<h3 style="margin-top:24px;">calimero-node-primitives</h3>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client.rs" target="_blank" rel="noopener">primitives/src/client.rs</a></div><div class="fd">NodeClient façade — subscribe, broadcast, heartbeat, group ops, sync trigger</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client/application.rs" target="_blank" rel="noopener">client/application.rs</a></div><div class="fd">Application install / uninstall / list / bundle operations</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client/blob.rs" target="_blank" rel="noopener">client/blob.rs</a></div><div class="fd">Blob add / get / delete / list / auth operations</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client/alias.rs" target="_blank" rel="noopener">client/alias.rs</a></div><div class="fd">Generic alias create / delete / lookup / resolve / list</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/messages.rs" target="_blank" rel="noopener">primitives/src/messages.rs</a></div><div class="fd">NodeMessage enum — GetBlobBytes, RegisterPendingSpecializedNodeInvite, etc.</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/sync.rs" target="_blank" rel="noopener">primitives/src/sync.rs</a></div><div class="fd">BroadcastMessage, sync wire types, protocol traits, state machine</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/delta_buffer.rs" target="_blank" rel="noopener">primitives/src/delta_buffer.rs</a></div><div class="fd">DeltaBuffer — bounded buffer for deltas received during snapshot sync</div></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     3. KEY TYPES
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Key Types</h2>
+<p style="margin-bottom:16px;">Central structs in the node crate. NodeManager is the actor; its fields are split into three injected concerns: clients, managers, and mutable state.</p>
+
+<h3>NodeManager</h3>
+<div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">NodeManager</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">clients</span>: <span class="ty">NodeClients</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// context + node façades</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">managers</span>: <span class="ty">NodeManagers</span>,&nbsp;&nbsp;&nbsp;<span class="comment">// blobstore + sync</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">state</span>: <span class="ty">NodeState</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// mutable runtime state</span><br>
+}
+</div>
+
+<div class="g2" style="margin-top:16px;">
+<div>
+<h3>NodeClients</h3>
+<div class="typedef">
+<span class="kw">struct</span> <span class="ty">NodeClients</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">context</span>: <span class="ty">ContextClient</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">node</span>: <span class="ty">NodeClient</span>,<br>
+}
+</div>
+
+<h3>NodeManagers</h3>
+<div class="typedef">
+<span class="kw">struct</span> <span class="ty">NodeManagers</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">blobstore</span>: <span class="ty">BlobManager</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sync</span>: <span class="ty">SyncManager</span>,<br>
+}
+</div>
+</div>
+<div>
+<h3>NodeState</h3>
+<div class="typedef">
+<span class="kw">struct</span> <span class="ty">NodeState</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">blob_cache</span>: Arc&lt;DashMap&lt;<span class="ty">BlobId</span>, <span class="ty">CachedBlob</span>&gt;&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">delta_stores</span>: Arc&lt;DashMap&lt;<span class="ty">ContextId</span>, <span class="ty">DeltaStore</span>&gt;&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">pending_specialized_node_invites</span>: <span class="ty">PendingSpecializedNodeInvites</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">accept_mock_tee</span>: bool,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">node_mode</span>: <span class="ty">NodeMode</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sync_sessions</span>: Arc&lt;DashMap&lt;<span class="ty">ContextId</span>, <span class="ty">SyncSession</span>&gt;&gt;,<br>
+}
+</div>
+</div>
+</div>
+
+<h3 style="margin-top:20px;">NodeConfig</h3>
+<div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">NodeConfig</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">home</span>: <span class="ty">Utf8PathBuf</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">identity</span>: <span class="ty">Keypair</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">group_identity</span>: Option&lt;<span class="ty">GroupIdentityConfig</span>&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">network</span>: <span class="ty">NetworkConfig</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sync</span>: <span class="ty">SyncConfig</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">datastore</span>: <span class="ty">StoreConfig</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">blobstore</span>: <span class="ty">BlobStoreConfig</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">context</span>: <span class="ty">ContextConfig</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">server</span>: <span class="ty">ServerConfig</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">gc_interval_secs</span>: Option&lt;u64&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">mode</span>: <span class="ty">NodeMode</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">specialized_node</span>: <span class="ty">SpecializedNodeConfig</span>,<br>
+}
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     4. NODECLIENT
+     ════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>NodeClient <span class="tag tag-types">primitives</span></h2>
+<p style="margin-bottom:14px;">Thin async façade in <span class="code">calimero-node-primitives</span>. Used by Server and ContextManager to interact with node-level concerns. Wraps a <span class="code">Store</span>, <span class="code">BlobManager</span>, <span class="code">NetworkClient</span>, and a <span class="code">LazyRecipient&lt;NodeMessage&gt;</span>.</p>
+
+<div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">NodeClient</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">datastore</span>: <span class="ty">Store</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">blobstore</span>: <span class="ty">BlobManager</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">network_client</span>: <span class="ty">NetworkClient</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">node_manager</span>: LazyRecipient&lt;<span class="ty">NodeMessage</span>&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">event_sender</span>: broadcast::Sender&lt;<span class="ty">NodeEvent</span>&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">ctx_sync_tx</span>: mpsc::Sender&lt;(Option&lt;<span class="ty">ContextId</span>&gt;, Option&lt;<span class="ty">PeerId</span>&gt;)&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">specialized_node_invite_topic</span>: String,<br>
+}
+</div>
+
+<h3>Context &amp; Group Subscriptions</h3>
+<div class="g2" style="margin-bottom:16px;">
+<div>
+  <div class="step"><div class="n" style="background:#3b82f6;">fn</div>
+    <h4><span class="code">subscribe(context_id)</span></h4>
+    <p>Subscribe to a context's gossipsub topic via NetworkClient</p>
+  </div>
+  <div class="step"><div class="n" style="background:#3b82f6;">fn</div>
+    <h4><span class="code">unsubscribe(context_id)</span></h4>
+    <p>Unsubscribe from a context topic</p>
+  </div>
+  <div class="step"><div class="n" style="background:#3b82f6;">fn</div>
+    <h4><span class="code">subscribe_group(group_id)</span></h4>
+    <p>Subscribe to <span class="code">group/{hex}</span> topic</p>
+  </div>
+  <div class="step"><div class="n" style="background:#3b82f6;">fn</div>
+    <h4><span class="code">unsubscribe_group(group_id)</span></h4>
+    <p>Unsubscribe from group topic</p>
+  </div>
+</div>
+<div>
+  <div class="step"><div class="n" style="background:#3b82f6;">fn</div>
+    <h4><span class="code">broadcast(context, sender, artifact, …)</span></h4>
+    <p>Publish a StateDelta on the context's gossipsub topic</p>
+  </div>
+  <div class="step"><div class="n" style="background:#3b82f6;">fn</div>
+    <h4><span class="code">publish_signed_group_op(group_id, op)</span></h4>
+    <p>Publish a SignedGroupOpV1 on the group topic</p>
+  </div>
+  <div class="step"><div class="n" style="background:#3b82f6;">fn</div>
+    <h4><span class="code">publish_group_heartbeat(group_id, …)</span></h4>
+    <p>Broadcast GroupStateHeartbeat for catch-up detection</p>
+  </div>
+  <div class="step"><div class="n" style="background:#3b82f6;">fn</div>
+    <h4><span class="code">get_peers_count(context)</span></h4>
+    <p>Global peer count or per-topic mesh peers</p>
+  </div>
+</div>
+</div>
+
+<h3>Application &amp; Blob Management</h3>
+<p style="margin-bottom:12px;">NodeClient also exposes application lifecycle and blob storage through sub-modules:</p>
+<div class="g3">
+  <div class="cb">
+    <h4 style="color:#3b82f6;">Applications</h4>
+    <ul>
+      <li><span class="code">install_application()</span></li>
+      <li><span class="code">install_from_path()</span></li>
+      <li><span class="code">install_from_url()</span></li>
+      <li><span class="code">install_from_bundle_blob()</span></li>
+      <li><span class="code">uninstall_application()</span></li>
+      <li><span class="code">list_applications()</span></li>
+      <li><span class="code">list_packages()</span></li>
+    </ul>
+  </div>
+  <div class="cb">
+    <h4 style="color:#3b82f6;">Blobs</h4>
+    <ul>
+      <li><span class="code">add_blob()</span></li>
+      <li><span class="code">get_blob()</span> / <span class="code">get_blob_bytes()</span></li>
+      <li><span class="code">delete_blob()</span></li>
+      <li><span class="code">list_blobs()</span></li>
+      <li><span class="code">find_blob_providers()</span></li>
+      <li><span class="code">announce_blob_to_network()</span></li>
+      <li><span class="code">create_blob_auth()</span></li>
+    </ul>
+  </div>
+  <div class="cb">
+    <h4 style="color:#3b82f6;">Aliases</h4>
+    <ul>
+      <li><span class="code">create_alias()</span></li>
+      <li><span class="code">delete_alias()</span></li>
+      <li><span class="code">lookup_alias()</span></li>
+      <li><span class="code">resolve_alias()</span></li>
+      <li><span class="code">list_aliases()</span></li>
+    </ul>
+  </div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     5. STARTUP FLOW
+     ════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Startup Flow</h2>
+<p style="margin-bottom:18px;">The <span class="code">start()</span> function in <span class="code">run.rs</span> bootstraps the entire node. Each component is initialized in dependency order, with LazyRecipients breaking circular initialization.</p>
+
+<svg viewBox="0 0 1060 520" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="n-arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#3b82f6"/></marker>
+    <marker id="n-arr-dim" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#6b6b80"/></marker>
+  </defs>
+
+  <!-- Step 1: merod run -->
+  <rect x="30" y="20" width="160" height="48" rx="10" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="110" y="40" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">merod run</text>
+  <text x="110" y="56" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">CLI entry point</text>
+
+  <line x1="190" y1="44" x2="230" y2="44" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#n-arr)"/>
+
+  <!-- Step 2: start() -->
+  <rect x="230" y="20" width="160" height="48" rx="10" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="310" y="40" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">start()</text>
+  <text x="310" y="56" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">run.rs entry</text>
+
+  <line x1="390" y1="44" x2="430" y2="44" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#n-arr)"/>
+
+  <!-- Step 3: Store open -->
+  <rect x="430" y="20" width="180" height="48" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="520" y="40" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">Store open</text>
+  <text x="520" y="56" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">RocksDB + optional encryption</text>
+
+  <line x1="610" y1="44" x2="650" y2="44" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#n-arr)"/>
+
+  <!-- Step 4: BlobManager -->
+  <rect x="650" y="20" width="160" height="48" rx="10" fill="#06b6d410" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="730" y="40" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">BlobManager</text>
+  <text x="730" y="56" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">filesystem backend</text>
+
+  <!-- Arrow down from BlobManager -->
+  <line x1="730" y1="68" x2="730" y2="105" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#n-arr)"/>
+
+  <!-- Row 2 -->
+  <!-- Step 5: NetworkManager -->
+  <rect x="560" y="105" width="200" height="48" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="660" y="125" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">NetworkManager</text>
+  <text x="660" y="141" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">actor · libp2p swarm</text>
+
+  <line x1="560" y1="129" x2="510" y2="129" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#n-arr)"/>
+
+  <!-- Step 6: NetworkClient + event channel -->
+  <rect x="280" y="105" width="230" height="48" rx="10" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1.2"/>
+  <text x="395" y="125" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">NetworkClient + EventChannel</text>
+  <text x="395" y="141" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">mpsc(1000) · 80% warning</text>
+
+  <line x1="395" y1="153" x2="395" y2="190" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#n-arr)"/>
+
+  <!-- Step 7: NodeClient -->
+  <rect x="280" y="190" width="230" height="48" rx="10" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="395" y="210" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">NodeClient</text>
+  <text x="395" y="226" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">store + blob + network + events</text>
+
+  <line x1="395" y1="238" x2="395" y2="275" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#n-arr)"/>
+
+  <!-- Step 8: ContextManager actor -->
+  <rect x="560" y="190" width="200" height="48" rx="10" fill="#10b98110" stroke="#10b981" stroke-width="1.5"/>
+  <text x="660" y="210" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">ContextManager</text>
+  <text x="660" y="226" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">actor · context_recipient</text>
+
+  <line x1="510" y1="214" x2="560" y2="214" stroke="#6b6b80" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#n-arr-dim)"/>
+
+  <!-- Step 9: NodeManager actor -->
+  <rect x="280" y="275" width="230" height="48" rx="10" fill="#3b82f615" stroke="#3b82f6" stroke-width="2"/>
+  <text x="395" y="295" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">NodeManager</text>
+  <text x="395" y="311" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">actor · node_recipient</text>
+
+  <line x1="395" y1="323" x2="395" y2="360" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#n-arr)"/>
+
+  <!-- Step 10: NetworkEventBridge -->
+  <rect x="280" y="360" width="230" height="48" rx="10" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.2"/>
+  <text x="395" y="380" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">NetworkEventBridge</text>
+  <text x="395" y="396" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">tokio::spawn · channel → actor</text>
+
+  <!-- Arrow right to SyncManager -->
+  <line x1="510" y1="384" x2="560" y2="384" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#n-arr)"/>
+
+  <!-- Step 11: SyncManager.start() -->
+  <rect x="560" y="360" width="200" height="48" rx="10" fill="#f59e0b10" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="660" y="380" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">SyncManager.start()</text>
+  <text x="660" y="396" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">async task · periodic loop</text>
+
+  <!-- Arrow down from bridge -->
+  <line x1="395" y1="408" x2="395" y2="445" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#n-arr)"/>
+
+  <!-- Step 12: Server -->
+  <rect x="280" y="445" width="140" height="48" rx="10" fill="#f9731610" stroke="#f97316" stroke-width="1.5"/>
+  <text x="350" y="465" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">Server</text>
+  <text x="350" y="481" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">tokio::spawn · Axum</text>
+
+  <!-- Step 13: GC Actor -->
+  <rect x="450" y="445" width="140" height="48" rx="10" fill="#ef444410" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="520" y="465" text-anchor="middle" fill="#ef4444" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">GC Actor</text>
+  <text x="520" y="481" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">12h default interval</text>
+
+  <!-- Step labels on the left -->
+  <text x="250" y="48" text-anchor="end" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="8" opacity="0.5">1</text>
+  <text x="250" y="133" text-anchor="end" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="8" opacity="0.5">2</text>
+  <text x="250" y="218" text-anchor="end" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="8" opacity="0.5">3</text>
+  <text x="250" y="299" text-anchor="end" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="8" opacity="0.5">4</text>
+  <text x="250" y="384" text-anchor="end" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="8" opacity="0.5">5</text>
+  <text x="250" y="469" text-anchor="end" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="8" opacity="0.5">6</text>
+
+  <!-- tokio::select! loop label -->
+  <rect x="620" y="455" width="200" height="30" rx="6" fill="#1e1e2e" stroke="#252538" stroke-width="1"/>
+  <text x="720" y="474" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="9">tokio::select! { sync, server, bridge }</text>
+
+  <line x1="590" y1="470" x2="620" y2="470" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2"/>
+
+  <!-- Legend -->
+  <line x1="30" y1="510" x2="1030" y2="510" stroke="#252538" stroke-width="1"/>
+  <rect x="30" y="500" width="8" height="8" rx="2" fill="#3b82f6"/>
+  <text x="44" y="508" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Node</text>
+  <rect x="90" y="500" width="8" height="8" rx="2" fill="#8b5cf6"/>
+  <text x="104" y="508" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Network</text>
+  <rect x="165" y="500" width="8" height="8" rx="2" fill="#10b981"/>
+  <text x="179" y="508" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Context</text>
+  <rect x="240" y="500" width="8" height="8" rx="2" fill="#06b6d4"/>
+  <text x="254" y="508" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Storage</text>
+  <rect x="315" y="500" width="8" height="8" rx="2" fill="#f59e0b"/>
+  <text x="329" y="508" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Sync</text>
+  <rect x="370" y="500" width="8" height="8" rx="2" fill="#f97316"/>
+  <text x="384" y="508" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Server</text>
+  <rect x="435" y="500" width="8" height="8" rx="2" fill="#ef4444"/>
+  <text x="449" y="508" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">GC</text>
+</svg>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     6. EVENT HANDLING
+     ════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Event Handling</h2>
+<p style="margin-bottom:18px;">NodeManager implements <span class="code">Handler&lt;NetworkEvent&gt;</span> (via the bridge) and <span class="code">Handler&lt;NodeMessage&gt;</span>. Network events arrive through a dedicated mpsc channel to avoid cross-arbiter message loss.</p>
+
+<details>
+  <summary>BroadcastMessage Dispatch</summary>
+  <div class="detail-body">
+    <p style="margin-bottom:12px;">When a gossipsub message arrives, NodeManager deserializes it as a <span class="code">BroadcastMessage</span> variant and routes accordingly:</p>
+    <div class="g2">
+      <div>
+        <div class="step"><div class="n" style="background:#3b82f6;">1</div>
+          <h4><span class="code">StateDelta</span></h4>
+          <p>Routed to <span class="code">handle_state_delta</span> which checks sync session state. If a snapshot sync is active, the delta is buffered; otherwise forwarded to ContextManager for application.</p>
+        </div>
+        <div class="step"><div class="n" style="background:#3b82f6;">2</div>
+          <h4><span class="code">HashHeartbeat</span></h4>
+          <p>Periodic root hash announcement. Compared with local state; mismatches trigger sync via <span class="code">ctx_sync_tx</span> channel.</p>
+        </div>
+        <div class="step"><div class="n" style="background:#3b82f6;">3</div>
+          <h4><span class="code">SignedGroupOpV1</span></h4>
+          <p>Forwarded to ContextManager's group operation handler. Signature verified, then applied to the local GroupStore DAG.</p>
+        </div>
+      </div>
+      <div>
+        <div class="step"><div class="n" style="background:#3b82f6;">4</div>
+          <h4><span class="code">GroupStateHeartbeat</span></h4>
+          <p>Group-level hash heartbeat for governance DAG catch-up detection.</p>
+        </div>
+        <div class="step"><div class="n" style="background:#3b82f6;">5</div>
+          <h4><span class="code">GroupGovernanceDelta</span></h4>
+          <p>Governance state delta. Routed to ContextManager for DAG ingestion.</p>
+        </div>
+        <div class="step"><div class="n" style="background:#3b82f6;">6</div>
+          <h4><span class="code">GroupMutationNotification</span></h4>
+          <p>Notification of group membership changes. Triggers re-evaluation of subscriptions and capabilities.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</details>
+
+<details>
+  <summary>Stream Routing</summary>
+  <div class="detail-body">
+    <p style="margin-bottom:12px;">When a peer opens a stream, <span class="code">stream_opened.rs</span> inspects the protocol prefix to route:</p>
+    <div class="g2">
+      <div class="cb">
+        <h4 style="color:#3b82f6;">/calimero/stream/…</h4>
+        <p style="margin-top:6px;">Sync protocol streams — handed off to SyncManager for hash comparison, level-wise sync, snapshot transfer, or key sharing.</p>
+      </div>
+      <div class="cb">
+        <h4 style="color:#3b82f6;">/calimero/blob/…</h4>
+        <p style="margin-top:6px;">Blob transfer protocol — handled by <span class="code">blob_protocol.rs</span>. Serves blob data from BlobManager to requesting peers.</p>
+      </div>
+    </div>
+  </div>
+</details>
+
+<details>
+  <summary>Subscription Lifecycle</summary>
+  <div class="detail-body">
+    <p style="margin-bottom:12px;">NodeManager manages gossipsub subscriptions for both <strong>context topics</strong> (one per context) and <strong>group topics</strong> (<span class="code">group/{hex32}</span>).</p>
+    <div class="step" style="margin-bottom:8px;"><div class="n" style="background:#10b981;">ctx</div>
+      <h4>Context Topics</h4>
+      <p>Subscribed when a context is joined/created via NodeClient. Carries StateDelta and HashHeartbeat messages. Unsubscribed on context leave.</p>
+    </div>
+    <div class="step"><div class="n" style="background:#f59e0b;">grp</div>
+      <h4>Group Topics</h4>
+      <p>Subscribed for each group the node participates in. Carries SignedGroupOpV1, GroupStateHeartbeat, and GroupGovernanceDelta. On peer subscription events, the node auto-triggers group sync and alias re-broadcast.</p>
+    </div>
+  </div>
+</details>
+
+<details>
+  <summary>Periodic Tasks</summary>
+  <div class="detail-body">
+    <div class="g2">
+      <div>
+        <div class="step"><div class="n" style="background:#f59e0b;">⏱</div>
+          <h4>Heartbeats</h4>
+          <p>SyncManager periodically broadcasts <span class="code">HashHeartbeat</span> per context and <span class="code">GroupStateHeartbeat</span> per group. Interval is configurable via <span class="code">SyncConfig</span>.</p>
+        </div>
+        <div class="step"><div class="n" style="background:#ef4444;">⏱</div>
+          <h4>Tombstone GC</h4>
+          <p>GarbageCollector actor runs every <span class="code">gc_interval_secs</span> (default 12 hours). Scans all contexts for expired CRDT tombstones past <span class="code">TOMBSTONE_RETENTION_NANOS</span> and deletes them.</p>
+        </div>
+      </div>
+      <div>
+        <div class="step"><div class="n" style="background:#3b82f6;">⏱</div>
+          <h4>Blob Eviction</h4>
+          <p>Cached blobs in <span class="code">NodeState::blob_cache</span> are evicted based on <span class="code">last_accessed</span> timestamps. The <span class="code">CachedBlob::touch()</span> method refreshes access time on read.</p>
+        </div>
+        <div class="step"><div class="n" style="background:#8b5cf6;">⏱</div>
+          <h4>Sync Loop</h4>
+          <p>SyncManager runs a continuous async loop: listen for sync triggers from <span class="code">ctx_sync_rx</span>, select the cheapest applicable protocol (hash comparison → level-wise → snapshot), execute, and track results per peer.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</details>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     7. DEPENDENCIES
+     ════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Dependencies</h2>
+<p style="margin-bottom:16px;">What the node crate depends on and what depends on it.</p>
+
+<h3>calimero-node depends on</h3>
+<div class="fr"><div class="fp" style="color:#10b981;">calimero-context</div><div class="fd">ContextManager actor — started by node during bootstrap</div></div>
+<div class="fr"><div class="fp" style="color:#10b981;">calimero-context-primitives</div><div class="fd">ContextClient façade for sending messages to ContextManager</div></div>
+<div class="fr"><div class="fp" style="color:#10b981;">calimero-context-config</div><div class="fd">ContextGroupId, group configuration types</div></div>
+<div class="fr"><div class="fp" style="color:#8b5cf6;">calimero-network</div><div class="fd">NetworkManager actor — started by node, runs libp2p swarm</div></div>
+<div class="fr"><div class="fp" style="color:#8b5cf6;">calimero-network-primitives</div><div class="fd">NetworkClient, NetworkEvent, NetworkConfig, specialized invite types</div></div>
+<div class="fr"><div class="fp" style="color:#3b82f6;">calimero-node-primitives</div><div class="fd">NodeClient, NodeMessage, BroadcastMessage, sync wire types, DeltaBuffer</div></div>
+<div class="fr"><div class="fp" style="color:#06b6d4;">calimero-store</div><div class="fd">Store handle, typed keys, column families</div></div>
+<div class="fr"><div class="fp" style="color:#06b6d4;">calimero-store-rocksdb</div><div class="fd">RocksDB backend for Store</div></div>
+<div class="fr"><div class="fp" style="color:#06b6d4;">calimero-store-encryption</div><div class="fd">Optional AES encryption layer for the datastore</div></div>
+<div class="fr"><div class="fp" style="color:#06b6d4;">calimero-storage</div><div class="fd">CRDT storage engine, tombstone constants, EntityIndex</div></div>
+<div class="fr"><div class="fp" style="color:#06b6d4;">calimero-blobstore</div><div class="fd">BlobManager for binary object storage</div></div>
+<div class="fr"><div class="fp" style="color:#f97316;">calimero-server</div><div class="fd">Axum HTTP server, started by node as tokio task</div></div>
+<div class="fr"><div class="fp" style="color:#f59e0b;">calimero-primitives</div><div class="fd">Core types: ContextId, BlobId, PublicKey, events</div></div>
+<div class="fr"><div class="fp" style="color:#f59e0b;">calimero-crypto</div><div class="fd">SharedKey for encrypted sync handshakes</div></div>
+<div class="fr"><div class="fp" style="color:#f59e0b;">calimero-dag</div><div class="fd">DAG operations used by sync protocols</div></div>
+<div class="fr"><div class="fp" style="color:#ec4899;">calimero-tee-attestation</div><div class="fd">TEE attestation verification for specialized node invites</div></div>
+<div class="fr"><div class="fp" style="color:#6b6b80;">calimero-utils-actix</div><div class="fd">LazyRecipient, ActorExt, Actix utilities</div></div>
+
+<h3 style="margin-top:24px;">Depended on by</h3>
+<div class="fr"><div class="fp" style="color:#f59e0b;">merod</div><div class="fd">Binary crate — calls <span class="code">calimero_node::start()</span> from <span class="code">merod run</span> command</div></div>
+<div class="fr"><div class="fp" style="color:#f97316;">calimero-server</div><div class="fd">Uses NodeClient (from primitives) for blob and application operations</div></div>
+<div class="fr"><div class="fp" style="color:#10b981;">calimero-context</div><div class="fd">Uses NodeClient (from primitives) for broadcast, subscribe, and sync triggers</div></div>
+
+<div class="legend" style="margin-top:20px;">
+  <div class="legend-item"><div class="ld" style="background:#3b82f6"></div>Node</div>
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>Context</div>
+  <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>Network</div>
+  <div class="legend-item"><div class="ld" style="background:#06b6d4"></div>Storage</div>
+  <div class="legend-item"><div class="ld" style="background:#f97316"></div>Server</div>
+  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>Shared / Primitives</div>
+  <div class="legend-item"><div class="ld" style="background:#ec4899"></div>TEE</div>
+</div>
+</div>
+
+</div>
+</div>
+<script src="../nav.js"></script>
+</body>
+</html>

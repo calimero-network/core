@@ -89,7 +89,8 @@ pub use snapshot::{
     SnapshotBoundaryResponse, SnapshotComplete, SnapshotCursor, SnapshotEntity, SnapshotEntityPage,
     SnapshotError, SnapshotPage, SnapshotRequest, SnapshotStreamRequest, SnapshotVerifyResult,
     DEFAULT_SNAPSHOT_PAGE_SIZE, MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS, MAX_ENTITIES_PER_PAGE,
-    MAX_ENTITY_DATA_SIZE, MAX_SNAPSHOT_PAGES, MAX_SNAPSHOT_PAGE_SIZE,
+    MAX_ENTITY_DATA_SIZE, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES, MAX_SNAPSHOT_PAGES,
+    MAX_SNAPSHOT_PAGE_SIZE,
 };
 
 // Subtree prefetch types

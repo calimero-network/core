@@ -613,3 +613,6 @@ impl Actor for NodeManager {
         );
     }
 }
+
+#[cfg(test)]
+mod local_governance_node_e2e;

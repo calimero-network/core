@@ -1,6 +1,4 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_config::repr::ReprTransmute;
-use calimero_context_config::types as config_types;
 use calimero_context_config::types::AppKey;
 use calimero_context_primitives::group::{CreateGroupRequest, CreateGroupResponse};
 use calimero_primitives::context::GroupMemberRole;
@@ -58,11 +56,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
             return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
         }
 
-        // Load application meta to build contract Application type
-        let app_meta = match load_app_meta(&self.datastore, &application_id) {
-            Ok(meta) => meta,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
+        if let Err(err) = load_app_meta(&self.datastore, &application_id) {
+            return ActorResponse::reply(Err(err));
+        }
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
@@ -78,25 +74,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
             );
         }
 
-        // Build group_client if signing_key available, falling back to stored key
-        let effective_signing_key = signing_key.or_else(|| {
-            group_store::get_group_signing_key(&self.datastore, &group_id, &admin_identity)
-                .ok()
-                .flatten()
-        });
-        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
-
         ActorResponse::r#async(
             async move {
-                // Call contract if signing_key was provided
-                if let Some(client_result) = group_client_result {
-                    let mut group_client = client_result?;
-
-                    let contract_app = build_contract_application(&application_id, &app_meta)?;
-
-                    group_client.create_group(app_key, contract_app).await?;
-                }
-
                 // Local cache write
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -110,6 +89,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     created_at: now,
                     admin_identity: admin_identity.into(),
                     migration: None,
+                    auto_join: true,
                 };
 
                 group_store::save_group_meta(&datastore, &group_id, &meta)?;
@@ -144,19 +124,4 @@ fn load_app_meta(
     handle
         .get(&key)?
         .ok_or_else(|| eyre::eyre!("application '{application_id}' not found"))
-}
-
-pub(crate) fn build_contract_application(
-    application_id: &calimero_primitives::application::ApplicationId,
-    app_meta: &calimero_store::types::ApplicationMeta,
-) -> eyre::Result<config_types::Application<'static>> {
-    Ok(config_types::Application::new(
-        application_id.rt()?,
-        app_meta.bytecode.blob_id().rt()?,
-        app_meta.size,
-        config_types::ApplicationSource(app_meta.source.to_string().into()),
-        config_types::ApplicationMetadata(calimero_context_config::repr::Repr::new(
-            app_meta.metadata.to_vec().into(),
-        )),
-    ))
 }

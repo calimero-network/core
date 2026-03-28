@@ -1,7 +1,8 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::group::SetMemberCapabilitiesRequest;
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_node_primitives::sync::GroupMutationKind;
+use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
@@ -53,8 +54,6 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
                 bail!("identity is not a member of group '{group_id:?}'");
             }
 
-            group_store::set_member_capability(&self.datastore, &group_id, &member, capabilities)?;
-
             Ok(())
         })() {
             return ActorResponse::reply(Err(err));
@@ -65,25 +64,30 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
                 group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
         }
 
+        let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
                 .flatten()
         });
-        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
 
         ActorResponse::r#async(
             async move {
-                if let Some(client_result) = group_client_result {
-                    let mut group_client = client_result?;
-                    let signer_id: calimero_context_config::types::SignerId = member.rt()?;
-                    group_client
-                        .set_member_capabilities(signer_id, capabilities)
-                        .await?;
-                }
-
-                info!(?group_id, %member, capabilities, "member capabilities updated");
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!("local group governance requires a signing key for the requester")
+                })?);
+                group_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &group_id,
+                    &sk,
+                    GroupOp::MemberCapabilitySet {
+                        member,
+                        capabilities,
+                    },
+                )
+                .await?;
 
                 let _ = node_client
                     .broadcast_group_mutation(
@@ -94,6 +98,8 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
                         },
                     )
                     .await;
+
+                info!(?group_id, %member, capabilities, "member capabilities updated");
 
                 Ok(())
             }

@@ -1,6 +1,8 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::SetDefaultCapabilitiesRequest;
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_node_primitives::sync::GroupMutationKind;
+use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
@@ -47,12 +49,6 @@ impl Handler<SetDefaultCapabilitiesRequest> for ContextManager {
                 group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
             }
 
-            group_store::set_default_capabilities(
-                &self.datastore,
-                &group_id,
-                default_capabilities,
-            )?;
-
             Ok(())
         })() {
             return ActorResponse::reply(Err(err));
@@ -63,27 +59,29 @@ impl Handler<SetDefaultCapabilitiesRequest> for ContextManager {
                 group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
         }
 
+        let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
                 .flatten()
         });
-        let group_client_result = effective_signing_key.map(|sk| self.group_client(group_id, sk));
 
         ActorResponse::r#async(
             async move {
-                if let Some(client_result) = group_client_result {
-                    let mut group_client = client_result?;
-                    group_client
-                        .set_default_capabilities(default_capabilities)
-                        .await?;
-                }
-
-                info!(
-                    ?group_id,
-                    default_capabilities, "default member capabilities updated"
-                );
+                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                    eyre::eyre!("local group governance requires a signing key for the requester")
+                })?);
+                group_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &group_id,
+                    &sk,
+                    GroupOp::DefaultCapabilitiesSet {
+                        capabilities: default_capabilities,
+                    },
+                )
+                .await?;
 
                 let _ = node_client
                     .broadcast_group_mutation(
@@ -93,6 +91,11 @@ impl Handler<SetDefaultCapabilitiesRequest> for ContextManager {
                         },
                     )
                     .await;
+
+                info!(
+                    ?group_id,
+                    default_capabilities, "default member capabilities updated"
+                );
 
                 Ok(())
             }

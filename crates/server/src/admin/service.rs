@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
-use axum::routing::{get, patch, post, put};
+use axum::routing::{get, post, put};
 use axum::{Extension, Router};
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
@@ -17,13 +17,6 @@ use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
 use super::handlers::context::{grant_capabilities, revoke_capabilities};
-use super::handlers::proposals::{
-    approve_proposal_handler, create_and_approve_proposal_handler,
-    get_context_storage_entries_handler, get_context_value_handler,
-    get_number_of_active_proposals_handler, get_number_of_proposal_approvals_handler,
-    get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler,
-    get_proxy_contract_handler,
-};
 use super::handlers::{alias, blob, groups, tee};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
@@ -34,8 +27,7 @@ use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_group, get_context_identities,
     get_context_ids, get_context_storage, get_contexts_for_application,
     get_contexts_with_executors_for_application, invite_specialized_node, invite_to_context,
-    invite_to_context_open_invitation, join_context, join_context_open_invitation, sync,
-    update_context_application,
+    join_context, sync, update_context_application,
 };
 use crate::admin::handlers::identity::generate_context_identity;
 use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
@@ -116,10 +108,8 @@ pub(crate) fn setup(
             get(get_context_ids::handler).post(create_context::handler),
         )
         .route("/contexts/invite", post(invite_to_context::handler))
-        .route("/contexts/invite_by_open_invitation", post(invite_to_context_open_invitation::handler))
         .route("/contexts/invite-specialized-node", post(invite_specialized_node::handler))
         .route("/contexts/join", post(join_context::handler))
-        .route("/contexts/join_by_open_invitation", post(join_context_open_invitation::handler))
         .route(
             "/contexts/:context_id",
             get(get_context::handler).delete(delete_context::handler),
@@ -164,47 +154,6 @@ pub(crate) fn setup(
         .route(
             "/identity/context",
             post(generate_context_identity::handler),
-        )
-        // Proposals
-        .route(
-            "/contexts/:context_id/proposals/:proposal_id/approvals/count",
-            get(get_number_of_proposal_approvals_handler),
-        )
-        .route(
-            "/contexts/:context_id/proposals/:proposal_id/approvals/users",
-            get(get_proposal_approvers_handler),
-        )
-        .route(
-            "/contexts/:context_id/proposals/count",
-            get(get_number_of_active_proposals_handler),
-        )
-        .route(
-            "/contexts/:context_id/proposals",
-            post(get_proposals_handler),
-        )
-        .route(
-            "/contexts/:context_id/proposals/create-and-approve",
-            post(create_and_approve_proposal_handler),
-        )
-        .route(
-            "/contexts/:context_id/proposals/approve",
-            post(approve_proposal_handler),
-        )
-        .route(
-            "/contexts/:context_id/proposals/:proposal_id",
-            get(get_proposal_handler),
-        )
-        .route(
-            "/contexts/:context_id/proposals/get-context-value",
-            post(get_context_value_handler),
-        )
-        .route(
-            "/contexts/:context_id/proposals/context-storage-entries",
-            post(get_context_storage_entries_handler),
-        )
-        .route(
-            "/contexts/:context_id/proxy-contract",
-            get(get_proxy_contract_handler),
         )
         .nest(
             "/contexts/sync",

@@ -7,10 +7,6 @@ use std::sync::Arc;
 
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
-use calimero_context_config::client::{
-    config::{ClientConfig, ClientRelayerSigner, ClientSigner, LocalConfig},
-    AnyTransport, Client as ExternalClient,
-};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::messages::NodeMessage;
@@ -22,7 +18,6 @@ use calimero_store::key;
 use calimero_store::types::ContextMeta;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
-use std::collections::BTreeMap;
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
 
@@ -58,23 +53,8 @@ async fn setup_test_context_client() -> (ContextClient, TempDir) {
         String::new(), // Not used in tests
     );
 
-    // 5. Setup ExternalClient
-    let client_config = ClientConfig {
-        params: BTreeMap::new(),
-        signer: ClientSigner {
-            relayer: ClientRelayerSigner {
-                url: "http://127.0.0.1:3030".parse().unwrap(),
-            },
-            local: LocalConfig {
-                protocols: BTreeMap::new(),
-            },
-        },
-    };
-    let external_client = ExternalClient::from_config(&client_config);
-
-    // 6. Construct ContextClient
     let context_manager = LazyRecipient::new();
-    let context_client = ContextClient::new(store, node_client, external_client, context_manager);
+    let context_client = ContextClient::new(store, node_client, context_manager);
 
     (context_client, tmp_dir)
 }

@@ -95,9 +95,6 @@ jobs:
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
 
-      - name: Download Contracts
-        uses: ./.github/actions/download-contracts
-
       - name: Run e2e-kv-store Workflow
         id: run_e2e_kv_store
         run: |

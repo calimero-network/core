@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auth Service — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="../system-overview.html">System Overview</a><span class="sep">/</span><span>Auth Service</span></div>
+
+<h1><em>Auth</em> Service</h1>
+<p class="page-subtitle">mero-auth</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     1. PURPOSE
+     ═══════════════════════════════════════════════════════════════════ -->
+<h2>Purpose</h2>
+<p style="margin-bottom:32px;">Forward authentication service for the Calimero node. Handles JWT issuing and verification, pluggable authentication providers (NEAR, Ethereum, custom), a challenge/nonce flow for wallet-based auth, and key management. Can run embedded in the Axum server or behind an external reverse proxy.</p>
+
+<div class="g4" style="margin-bottom:36px;">
+  <div class="stat"><div class="v" style="color:#84cc16;">JWT</div><div class="l">token system</div></div>
+  <div class="stat"><div class="v" style="color:#84cc16;">2</div><div class="l">auth modes</div></div>
+  <div class="stat"><div class="v" style="color:#84cc16;">N</div><div class="l">pluggable providers</div></div>
+  <div class="stat"><div class="v" style="color:#84cc16;">Ed25519</div><div class="l">key management</div></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     2. ARCHITECTURE
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Architecture</h2>
+<p style="margin-bottom:18px;">The AuthService coordinates four subsystems: token management, provider routing, key storage, and secret management. Incoming token requests are routed by <span class="code">auth_method</span> to the appropriate provider.</p>
+
+<svg viewBox="0 0 960 480" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="auth-arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#84cc16"/></marker>
+    <marker id="auth-arr-dim" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6Z" fill="#6b6b80"/></marker>
+    <filter id="glow-lime"><feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#84cc16" flood-opacity="0.25"/></filter>
+  </defs>
+
+  <!-- Incoming request -->
+  <rect x="20" y="30" width="200" height="55" rx="10" fill="#f9731610" stroke="#f97316" stroke-width="1.5"/>
+  <text x="120" y="52" text-anchor="middle" fill="#f97316" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">TokenRequest</text>
+  <text x="120" y="70" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">auth_method + credentials</text>
+
+  <line x1="220" y1="57" x2="280" y2="57" stroke="#84cc16" stroke-width="1.8" marker-end="url(#auth-arr)"/>
+
+  <!-- AuthService main box -->
+  <rect x="280" y="10" width="400" height="440" rx="14" fill="#84cc1605" stroke="#84cc16" stroke-width="2" filter="url(#glow-lime)"/>
+  <text x="480" y="38" text-anchor="middle" fill="#84cc16" font-family="JetBrains Mono, monospace" font-size="16" font-weight="700">AuthService</text>
+
+  <!-- TokenManager -->
+  <rect x="310" y="60" width="340" height="80" rx="10" fill="#0f0f16" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="480" y="85" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">TokenManager</text>
+  <text x="480" y="105" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">encode / decode with jsonwebtoken</text>
+  <text x="480" y="122" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">JwtConfig · Access + Refresh tokens</text>
+
+  <!-- AuthProviders -->
+  <rect x="310" y="160" width="340" height="120" rx="10" fill="#0f0f16" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="480" y="185" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">AuthProviders</text>
+  <text x="480" y="205" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">pluggable · route by auth_method</text>
+
+  <rect x="330" y="218" width="90" height="30" rx="6" fill="#3b82f610" stroke="#3b82f6" stroke-width="1"/>
+  <text x="375" y="237" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono, monospace" font-size="9">NEAR</text>
+
+  <rect x="435" y="218" width="90" height="30" rx="6" fill="#8b5cf610" stroke="#8b5cf6" stroke-width="1"/>
+  <text x="480" y="237" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="9">Ethereum</text>
+
+  <rect x="540" y="218" width="90" height="30" rx="6" fill="#06b6d410" stroke="#06b6d4" stroke-width="1"/>
+  <text x="585" y="237" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="9">Custom</text>
+
+  <!-- KeyManager -->
+  <rect x="310" y="300" width="160" height="70" rx="10" fill="#0f0f16" stroke="#10b981" stroke-width="1.5"/>
+  <text x="390" y="325" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">KeyManager</text>
+  <text x="390" y="345" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">signing keys</text>
+  <text x="390" y="360" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Ed25519 · rotation</text>
+
+  <!-- SecretManager -->
+  <rect x="490" y="300" width="160" height="70" rx="10" fill="#0f0f16" stroke="#ec4899" stroke-width="1.5"/>
+  <text x="570" y="325" text-anchor="middle" fill="#ec4899" font-family="JetBrains Mono, monospace" font-size="12" font-weight="700">SecretManager</text>
+  <text x="570" y="345" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">JWT secrets</text>
+  <text x="570" y="360" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">HMAC · rotation</text>
+
+  <!-- Internal arrows -->
+  <line x1="480" y1="140" x2="480" y2="160" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="430" y1="280" x2="390" y2="300" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="530" y1="280" x2="570" y2="300" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2"/>
+
+  <!-- Storage -->
+  <rect x="310" y="395" width="340" height="40" rx="8" fill="#06b6d408" stroke="#06b6d4" stroke-width="1.2"/>
+  <text x="480" y="420" text-anchor="middle" fill="#06b6d4" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600">RocksDB / In-Memory Store</text>
+
+  <line x1="390" y1="370" x2="420" y2="395" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="570" y1="370" x2="540" y2="395" stroke="#6b6b80" stroke-width="1" stroke-dasharray="3 2"/>
+
+  <!-- Output -->
+  <rect x="720" y="30" width="210" height="55" rx="10" fill="#84cc1610" stroke="#84cc16" stroke-width="1.5"/>
+  <text x="825" y="52" text-anchor="middle" fill="#84cc16" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700">TokenResponse</text>
+  <text x="825" y="70" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">access_token + refresh_token</text>
+
+  <line x1="680" y1="57" x2="720" y2="57" stroke="#84cc16" stroke-width="1.8" marker-end="url(#auth-arr)"/>
+
+  <!-- Challenge flow (side) -->
+  <rect x="720" y="160" width="210" height="90" rx="10" fill="#f59e0b08" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="5 4"/>
+  <text x="825" y="185" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">Challenge Flow</text>
+  <text x="825" y="206" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">1. Request challenge nonce</text>
+  <text x="825" y="222" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">2. Sign with wallet key</text>
+  <text x="825" y="238" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">3. Submit signed challenge</text>
+
+  <line x1="650" y1="200" x2="720" y2="200" stroke="#f59e0b" stroke-width="1" stroke-dasharray="4 3"/>
+
+  <!-- Flow label -->
+  <text x="480" y="470" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">Token requests routed by auth_method to pluggable providers — challenge/nonce for wallet-based authentication</text>
+</svg>
+
+<div class="legend">
+  <div class="legend-item"><div class="ld" style="background:#84cc16"></div>AuthService boundary</div>
+  <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>Token management</div>
+  <div class="legend-item"><div class="ld" style="background:#3b82f6"></div>Provider routing</div>
+  <div class="legend-item"><div class="ld" style="background:#10b981"></div>Key management</div>
+  <div class="legend-item"><div class="ld" style="background:#ec4899"></div>Secret management</div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     3. JWT DETAILS
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>JWT Details</h2>
+<p style="margin-bottom:18px;">Token structure, claims schema, and the challenge-based authentication flow.</p>
+
+<div class="g2" style="margin-bottom:16px;">
+  <div class="cb">
+    <h4 style="color:#f59e0b;">TokenManager</h4>
+    <p style="margin-top:8px;">Encodes and decodes JWTs using the <span class="code">jsonwebtoken</span> crate. Configured via <span class="code">JwtConfig</span> which specifies algorithm (HS256/HS384), secret rotation policy, and expiration windows for access and refresh tokens.</p>
+    <div class="fr" style="margin-top:10px;">
+      <div class="fp">encode()</div>
+      <div class="fd">Claims → signed JWT string</div>
+    </div>
+    <div class="fr">
+      <div class="fp">decode()</div>
+      <div class="fd">JWT string → validated Claims</div>
+    </div>
+    <div class="fr">
+      <div class="fp">refresh()</div>
+      <div class="fd">Refresh token → new access token</div>
+    </div>
+  </div>
+  <div class="cb">
+    <h4 style="color:#8b5cf6;">TokenType</h4>
+    <p style="margin-top:8px;">Two token variants with different lifetimes and permissions scope.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">pub enum</span> <span class="ty">TokenType</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Access</span>,&nbsp;&nbsp;<span class="comment">// short-lived, carries permissions</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">Refresh</span>, <span class="comment">// long-lived, exchange for new access</span><br>
+}
+    </div>
+  </div>
+</div>
+
+<h3>Claims Schema</h3>
+<div class="typedef" style="margin-bottom:16px;">
+<span class="kw">pub struct</span> <span class="ty">Claims</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sub</span>: String,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// key id (public key hash)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">iss</span>: String,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// issuer (node identity)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">aud</span>: String,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// audience</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">exp</span>: u64,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// expiration timestamp</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">iat</span>: u64,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// issued at</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">jti</span>: String,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// unique token id (UUID)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">permissions</span>: Vec&lt;String&gt;, <span class="comment">// granted permissions</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">node_url</span>: Option&lt;String&gt;, <span class="comment">// optional node URL</span><br>
+}
+</div>
+
+<h3>ChallengeClaims</h3>
+<div class="typedef">
+<span class="kw">pub struct</span> <span class="ty">ChallengeClaims</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">challenge</span>: String, <span class="comment">// random nonce string</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">exp</span>: u64,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// challenge expiration (short TTL)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">iat</span>: u64,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// issued at</span><br>
+}
+</div>
+
+<details style="margin-top:16px;">
+  <summary>Challenge / Nonce Authentication Flow</summary>
+  <div class="detail-body">
+    <div class="step"><div class="n">1</div>
+      <h4>Request Challenge</h4>
+      <p>Client calls the challenge endpoint. The AuthService generates a random nonce, wraps it in <span class="code">ChallengeClaims</span>, and returns a short-lived challenge JWT (e.g. 5-minute TTL).</p>
+    </div>
+    <div class="step"><div class="n">2</div>
+      <h4>Sign Challenge</h4>
+      <p>Client signs the challenge nonce with their wallet key (NEAR Ed25519, Ethereum secp256k1, etc.). The signature proves ownership of the corresponding public key without revealing the private key.</p>
+    </div>
+    <div class="step"><div class="n">3</div>
+      <h4>Submit Signed Challenge</h4>
+      <p>Client sends the signed challenge back along with their public key and <span class="code">auth_method</span>. The appropriate AuthProvider verifies the signature against the public key and challenge nonce.</p>
+    </div>
+    <div class="step"><div class="n">4</div>
+      <h4>Issue Tokens</h4>
+      <p>On successful verification, TokenManager generates an access token and refresh token with the authenticated key ID as <span class="code">sub</span> claim. Tokens are returned to the client for subsequent API calls.</p>
+    </div>
+  </div>
+</details>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     4. AUTH MODES
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Auth Modes</h2>
+<p style="margin-bottom:18px;">Two operational modes that determine how authentication is enforced on incoming requests.</p>
+
+<div class="g2">
+  <div class="cb">
+    <h4 style="color:#8b5cf6;">Proxy Mode</h4>
+    <span class="tag tag-types">external</span>
+    <p style="margin-top:10px;">No in-process JWT verification. Authentication is handled by an external reverse proxy (nginx, Envoy, etc.) that sits in front of the Calimero node. The proxy validates tokens and forwards authenticated requests with identity headers.</p>
+    <p style="margin-top:8px;">The node trusts the proxy's identity injection and does not perform any token validation itself. Suitable for enterprise deployments with existing auth infrastructure.</p>
+    <div class="typedef" style="margin-top:12px;">
+<span class="comment">// Proxy mode config</span><br>
+<span class="kw">struct</span> <span class="ty">ProxyConfig</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">trusted_header</span>: String, <span class="comment">// e.g. "X-Auth-Key"</span><br>
+}
+    </div>
+  </div>
+  <div class="cb">
+    <h4 style="color:#84cc16;">Embedded Mode</h4>
+    <span class="tag tag-done">recommended</span>
+    <p style="margin-top:10px;">Full JWT lifecycle managed in-process. The <span class="code">AuthGuardLayer</span> middleware intercepts every request, extracts the token from the <span class="code">Authorization: Bearer</span> header or <span class="code">?token=</span> query parameter, and verifies it against the local secret.</p>
+    <p style="margin-top:8px;">On successful verification, an <span class="code">AuthenticatedKey</span> is injected into the Axum request extensions, making the caller's identity available to all downstream handlers.</p>
+    <div class="typedef" style="margin-top:12px;">
+<span class="comment">// Embedded mode middleware</span><br>
+<span class="kw">struct</span> <span class="ty">AuthGuardLayer</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">token_manager</span>: Arc&lt;TokenManager&gt;,<br>
+}<br><br>
+<span class="comment">// Injected into request extensions</span><br>
+<span class="kw">struct</span> <span class="ty">AuthenticatedKey</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">key_id</span>: String,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">permissions</span>: Vec&lt;String&gt;,<br>
+}
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     5. STORAGE
+     ═══════════════════════════════════════════════════════════════════ -->
+<h2>Storage</h2>
+<p style="margin-bottom:18px;">Auth state can be persisted in RocksDB (production) or held in-memory (development/testing). The storage backend is selected at initialization and abstracted behind a trait interface.</p>
+
+<div class="g2" style="margin-bottom:32px;">
+  <div class="cb">
+    <h4 style="color:#06b6d4;">RocksDB Backend</h4>
+    <p style="margin-top:8px;">Persistent storage for signing keys, refresh token metadata, and revocation lists. Uses a dedicated column family within the node's RocksDB instance. Survives node restarts.</p>
+  </div>
+  <div class="cb">
+    <h4 style="color:#f59e0b;">In-Memory Backend</h4>
+    <p style="margin-top:8px;">Ephemeral storage for development and testing. All auth state is lost on restart. Useful for local development where persistent tokens are unnecessary.</p>
+  </div>
+</div>
+
+<a class="gh-link" href="https://github.com/calimero-network/core/tree/master/crates/mero-auth" target="_blank" rel="noopener">crates/mero-auth</a>
+
+</div>
+</div>
+<script src="../nav.js"></script>
+</body>
+</html>

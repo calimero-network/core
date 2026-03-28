@@ -39,7 +39,7 @@ use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtoc
 use super::level_sync::{LevelWiseConfig, LevelWiseProtocol};
 use calimero_node_primitives::sync::{
     build_handshake_from_raw, estimate_entity_count, estimate_max_depth, select_protocol,
-    SyncHandshake, SyncProtocol, SyncProtocolExecutor, SyncTransport,
+    SyncHandshake, SyncProtocol, SyncProtocolExecutor,
 };
 
 /// Network synchronization manager.
@@ -668,15 +668,10 @@ impl SyncManager {
             Ok((app.blob.bytecode, None))
         } else {
             // Application not found - get blob_id from context config
-            let context_config = self
+            let app_config = self
                 .context_client
-                .context_config(context_id)?
-                .ok_or_else(|| eyre::eyre!("context config not found"))?;
-            let external_client = self
-                .context_client
-                .external_client(context_id, &context_config)?;
-            let config_client = external_client.config();
-            let app_config = config_client.application().await?;
+                .get_context_application(context_id)
+                .await?;
             Ok((app_config.blob.bytecode, Some(app_config)))
         }
     }
@@ -693,15 +688,10 @@ impl SyncManager {
         } else if let Some(ref app_config) = app_config_opt {
             Ok(app_config.size)
         } else {
-            let context_config = self
+            let app_config = self
                 .context_client
-                .context_config(context_id)?
-                .ok_or_else(|| eyre::eyre!("context config not found"))?;
-            let external_client = self
-                .context_client
-                .external_client(context_id, &context_config)?;
-            let config_client = external_client.config();
-            let app_config = config_client.application().await?;
+                .get_context_application(context_id)
+                .await?;
             Ok(app_config.size)
         }
     }
@@ -715,15 +705,10 @@ impl SyncManager {
         if let Some(ref app_config) = app_config_opt {
             Ok(app_config.source.clone())
         } else {
-            let context_config = self
+            let app_config = self
                 .context_client
-                .context_config(context_id)?
-                .ok_or_else(|| eyre::eyre!("context config not found"))?;
-            let external_client = self
-                .context_client
-                .external_client(context_id, &context_config)?;
-            let config_client = external_client.config();
-            let app_config = config_client.application().await?;
+                .get_context_application(context_id)
+                .await?;
             Ok(app_config.source.clone())
         }
     }
@@ -757,27 +742,46 @@ impl SyncManager {
             tokio::task::spawn_blocking(move || NodeClient::is_bundle_blob(&blob_bytes_clone))
                 .await?;
 
-        if !is_bundle {
-            return Ok(());
-        }
-
         // Get source from context config (use cached if available, otherwise fetch)
         let source = self
             .get_application_source(context_id, app_config_opt)
             .await?;
 
-        // Install bundle
-        let installed_app_id = self
-            .node_client
-            .install_application_from_bundle_blob(blob_id, &source)
-            .await
-            .map_err(|e| {
-                eyre::eyre!(
-                    "Failed to install bundle application from blob {}: {}",
-                    blob_id,
-                    e
-                )
-            })?;
+        let installed_app_id = if is_bundle {
+            self.node_client
+                .install_application_from_bundle_blob(blob_id, &source)
+                .await
+                .map_err(|e| {
+                    eyre::eyre!(
+                        "Failed to install bundle application from blob {}: {}",
+                        blob_id,
+                        e
+                    )
+                })?
+        } else {
+            // For non-bundle apps, write ApplicationMeta directly under the
+            // known application_id rather than re-deriving it via
+            // install_application (which hashes source+metadata and would
+            // produce a different ID than the original installer used).
+            let size = blob_bytes.len() as u64;
+            let mut handle = self.context_client.datastore_handle();
+            handle.put(
+                &calimero_store::key::ApplicationMeta::new(context.application_id),
+                &calimero_store::types::ApplicationMeta::new(
+                    calimero_store::key::BlobMeta::new(*blob_id),
+                    size,
+                    source.to_string().into_boxed_str(),
+                    Box::default(),
+                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
+                        [0u8; 32],
+                    )),
+                    "unknown".to_owned().into_boxed_str(),
+                    "0.0.0".to_owned().into_boxed_str(),
+                    String::new().into_boxed_str(),
+                ),
+            )?;
+            context.application_id
+        };
 
         // Verify installation succeeded by fetching the installed application
         let installed_application = self
@@ -1442,7 +1446,10 @@ impl SyncManager {
             );
 
             // After blob sharing, try to install application if it doesn't exist
-            if application.is_none() {
+            // or if we only have a stub (size==0 from join_context bootstrap)
+            let needs_install =
+                application.is_none() || application.as_ref().is_some_and(|app| app.size == 0);
+            if needs_install {
                 self.install_bundle_after_blob_sharing(
                     &context_id,
                     &blob_id,
@@ -2044,6 +2051,15 @@ impl SyncManager {
             }
         };
 
+        // Group delta requests are group-scoped, not context-scoped; bypass
+        // context membership checks since the initiator sends a zero
+        // context_id placeholder.
+        if let InitPayload::GroupDeltaRequest { group_id, delta_id } = &payload {
+            self.handle_group_delta_request(*group_id, *delta_id, stream, nonce)
+                .await?;
+            return Ok(Some(()));
+        }
+
         let Some(context) = self.context_client.get_context(&context_id)? else {
             bail!("context not found: {}", context_id);
         };
@@ -2064,11 +2080,25 @@ impl SyncManager {
                 .context_client
                 .has_member(&context_id, &their_identity)?
             {
-                bail!(
-                    "unknown context member {} in context {}",
-                    their_identity,
-                    context_id
+                // The joiner may have just published a governance op announcing
+                // their membership. Wait briefly for gossip propagation and retry.
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    "member not found yet, waiting for governance gossip"
                 );
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                if !self
+                    .context_client
+                    .has_member(&context_id, &their_identity)?
+                {
+                    bail!(
+                        "unknown context member {} in context {}",
+                        their_identity,
+                        context_id
+                    );
+                }
             }
         }
 
@@ -2207,9 +2237,59 @@ impl SyncManager {
                 // HashComparison session. Log and ignore.
                 warn!("Received EntityPush outside of HashComparison session, ignoring");
             }
+            InitPayload::GroupDeltaRequest { .. } => {
+                unreachable!("handled by early return above")
+            }
         };
 
         Ok(Some(()))
+    }
+}
+
+impl SyncManager {
+    async fn handle_group_delta_request(
+        &self,
+        group_id: [u8; 32],
+        delta_id: [u8; 32],
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use calimero_context::group_store;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_context_primitives::local_governance::SignedGroupOp;
+
+        let gid = ContextGroupId::from(group_id);
+        let store = self.context_client.datastore_handle().into_inner();
+        let entries =
+            group_store::read_op_log_after(&store, &gid, 0, usize::MAX).unwrap_or_default();
+
+        for (_seq, op_bytes) in &entries {
+            if let Ok(op) = borsh::from_slice::<SignedGroupOp>(op_bytes) {
+                if let Ok(hash) = op.content_hash() {
+                    if hash == delta_id {
+                        let msg = StreamMessage::Message {
+                            sequence_id: 0,
+                            payload: MessagePayload::GroupDeltaResponse {
+                                delta_id,
+                                parent_ids: op.parent_op_hashes.clone(),
+                                payload: op_bytes.clone(),
+                            },
+                            next_nonce: nonce,
+                        };
+                        super::stream::send(stream, &msg, None).await?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::GroupDeltaNotFound,
+            next_nonce: nonce,
+        };
+        super::stream::send(stream, &msg, None).await?;
+        Ok(())
     }
 }
 

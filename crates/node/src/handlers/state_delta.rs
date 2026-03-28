@@ -47,6 +47,7 @@ pub async fn handle_state_delta(
     artifact: Vec<u8>,
     nonce: Nonce,
     events: Option<Vec<u8>>,
+    governance_epoch: Vec<[u8; 32]>,
 ) -> Result<()> {
     let Some(context) = node_clients.context.get_context(&context_id)? else {
         bail!("context '{}' not found", context_id);
@@ -59,6 +60,7 @@ pub async fn handle_state_delta(
         parent_count = parent_ids.len(),
         expected_root_hash = %root_hash,
         current_root_hash = %context.root_hash,
+        governance_epoch_heads = governance_epoch.len(),
         "Received state delta"
     );
 

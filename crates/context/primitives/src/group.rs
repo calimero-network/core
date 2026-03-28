@@ -203,9 +203,9 @@ impl Message for RetryGroupUpgradeRequest {
 pub struct CreateGroupInvitationRequest {
     pub group_id: ContextGroupId,
     pub requester: Option<PublicKey>,
-    /// On-chain block height after which the invitation commitment expires.
-    /// Defaults to 999_999_999 when not provided (backward-compatible).
-    pub expiration_block_height: Option<u64>,
+    /// Duration in seconds for the invitation validity.
+    /// Defaults to 1 year when not provided.
+    pub expiration_timestamp: Option<u64>,
 }
 
 impl Message for CreateGroupInvitationRequest {
@@ -301,11 +301,6 @@ impl Message for GetGroupForContextRequest {
 pub struct SyncGroupRequest {
     pub group_id: ContextGroupId,
     pub requester: Option<PublicKey>,
-    /// Optional contract coordinates. If not provided, uses the node's
-    /// configured "near" protocol params.
-    pub protocol: Option<String>,
-    pub network_id: Option<String>,
-    pub contract_id: Option<String>,
 }
 
 impl Message for SyncGroupRequest {

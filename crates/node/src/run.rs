@@ -12,7 +12,6 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
-use calimero_context_config::client::Client as ExternalClient;
 use calimero_context_primitives::client::ContextClient;
 use calimero_network::NetworkManager;
 use calimero_network_primitives::client::NetworkClient;
@@ -144,12 +143,9 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         config.specialized_node.invite_topic.clone(),
     );
 
-    let external_client = ExternalClient::from_config(&config.context.client);
-
     let context_client = ContextClient::new(
         datastore.clone(),
         node_client.clone(),
-        external_client,
         context_recipient.clone(),
     );
 
@@ -157,7 +153,6 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         datastore.clone(),
         node_client.clone(),
         context_client.clone(),
-        config.context.client.clone(),
         config.group_identity.clone(),
         Some(&mut registry),
     );

@@ -182,16 +182,11 @@ mod tests {
     use super::*;
     use crate::client::ContextClient;
     use calimero_blobstore::{config::BlobStoreConfig, BlobManager, FileSystem};
-    use calimero_context_config::client::{
-        config::{ClientConfig, ClientRelayerSigner, ClientSigner, LocalConfig},
-        Client as ExternalClient,
-    };
     use calimero_network_primitives::client::NetworkClient;
     use calimero_node_primitives::{client::NodeClient, messages::NodeMessage};
     use calimero_primitives::common::DIGEST_SIZE;
     use calimero_store::{db::InMemoryDB, key, types, Store};
     use calimero_utils_actix::LazyRecipient;
-    use std::collections::BTreeMap;
     use std::sync::Arc;
     use tokio;
     use tokio::sync::{broadcast, mpsc};
@@ -226,26 +221,9 @@ mod tests {
             String::new(), // Not used in tests
         );
 
-        // 5. Create a minimal, valid ClientConfig.
-        let client_config = ClientConfig {
-            params: BTreeMap::new(),
-            signer: ClientSigner {
-                relayer: ClientRelayerSigner {
-                    url: "http://127.0.0.1:3030".parse().unwrap(),
-                },
-                local: LocalConfig {
-                    protocols: BTreeMap::new(),
-                },
-            },
-        };
-
-        // 6. Construct the ExternalClient using the intended public API.
-        // This is much cleaner and more robust than manual construction.
-        let external_client = ExternalClient::from_config(&client_config);
-
-        // 7. Construct the final ContextClient.
+        // 5. Construct the final ContextClient.
         let context_manager = LazyRecipient::new();
-        ContextClient::new(store, node_client, external_client, context_manager)
+        ContextClient::new(store, node_client, context_manager)
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ use thiserror::Error as ThisError;
 
 use crate::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
 
-pub type BlockHeight = u64;
+pub type ExpirationTimestamp = u64;
 pub type Revision = u64;
 
 #[derive(
@@ -447,64 +447,6 @@ impl ReprBytes for Signature {
     }
 }
 
-#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
-pub struct ProposalId(Identity);
-
-impl ReprBytes for ProposalId {
-    type EncodeBytes<'a> = [u8; 32];
-    type DecodeBytes = [u8; 32];
-
-    type Error = LengthMismatch;
-
-    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0.as_bytes()
-    }
-
-    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
-    where
-        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
-    {
-        ReprBytes::from_bytes(f).map(Self)
-    }
-}
-
-impl Serialize for ProposalId {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let encoded = bs58::encode(self.as_bytes()).into_string();
-        serializer.serialize_str(&encoded)
-    }
-}
-
-impl<'de> Deserialize<'de> for ProposalId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct ProposalIdVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for ProposalIdVisitor {
-            type Value = ProposalId;
-
-            fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a base58-encoded ProposalId string")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                ProposalId::from_bytes(|bytes| bs58::decode(value).onto(bytes))
-                    .map_err(|e| E::custom(format!("invalid ProposalId: {}", e)))
-            }
-        }
-
-        deserializer.deserialize_str(ProposalIdVisitor)
-    }
-}
-
 #[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum VerificationKeyParseError {
@@ -644,33 +586,41 @@ pub struct InvitationFromMember {
     pub inviter_identity: ContextIdentity,
     /// Context ID for the invitation.
     pub context_id: ContextId,
-    /// The height at which the invitation becomes expired.
-    pub expiration_height: BlockHeight,
+    /// Unix timestamp (seconds) at which the invitation expires.
+    pub expiration_timestamp: ExpirationTimestamp,
     /// Secret salt.
     pub secret_salt: [u8; 32],
-    // The protocol ID to prevent reusing the same invitation on different blockchains.
-    // TODO(opt): utilize the integer for the protocol, and possibly a compressed integer
-    // representation of protocol+network.
-    pub protocol: String,
-    // The protocol network (e.g. "mainnet", "testnet", etc.)
-    pub network: String,
-    // The contract ID for the config context contract on the target protocol.
-    pub contract_id: String,
 }
 
 /// A container for an open invitation and the inviter's signature over it.
 /// This is the object that an existing member (Alice) would generate and send
 /// to a new member (Bob).
-#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
+/// The fields below `inviter_signature` are **not** covered by the signature.
+/// They are populated by the inviter from local state so the joiner can
+/// bootstrap the application without an external source of truth.
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SignedOpenInvitation {
     /// An open invitation to the context
     pub invitation: InvitationFromMember,
     /// Inviter's signature for the invitation payload (hex-encoded)
     pub inviter_signature: String,
+    /// Application ID for the context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<[u8; 32]>,
+    /// Bytecode blob ID for the application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_id: Option<[u8; 32]>,
+    /// Application source URL (registry URL, HTTP URL, or calimero:// stub).
+    /// Enables the joiner to re-download from the registry if blob sharing fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Group ID that owns this context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<[u8; 32]>,
 }
 
 // The full payload Bob reveals in the second transaction
-#[derive(BorshSerialize, BorshDeserialize, Debug, Deserialize, Clone, Serialize)]
+#[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct RevealPayloadData {
     /// Signed open invitation
     pub signed_open_invitation: SignedOpenInvitation,
@@ -681,7 +631,7 @@ pub struct RevealPayloadData {
 }
 
 // This is the final object submitted to the `reveal` method.
-#[derive(BorshSerialize, BorshDeserialize, Debug, Deserialize, Clone, Serialize)]
+#[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct SignedRevealPayload {
     /// The data that is needed to join the context.
     pub data: RevealPayloadData,
@@ -697,16 +647,10 @@ pub struct GroupInvitationFromAdmin {
     pub inviter_identity: SignerId,
     /// The group being invited to.
     pub group_id: ContextGroupId,
-    /// The block height at which the invitation expires.
-    pub expiration_height: BlockHeight,
+    /// Unix timestamp (seconds) at which the invitation expires.
+    pub expiration_timestamp: ExpirationTimestamp,
     /// Secret salt for MEV protection.
     pub secret_salt: [u8; 32],
-    /// The protocol ID (e.g. "near").
-    pub protocol: String,
-    /// The protocol network (e.g. "testnet").
-    pub network: String,
-    /// The contract ID on the target protocol.
-    pub contract_id: String,
 }
 
 /// A container for a group invitation and the admin's signature over it.
@@ -749,11 +693,8 @@ mod tests {
         let invitation = InvitationFromMember {
             inviter_identity: inviter_identity_bytes.into(),
             context_id: context_id_bytes.into(),
-            expiration_height: 1000,
+            expiration_timestamp: 1000,
             secret_salt: salt,
-            protocol: "near".to_string(),
-            network: "devnet".to_string(),
-            contract_id: "".to_string(),
         };
         let invitation_borsh =
             borsh::to_vec(&invitation).expect("Failed to Borsh serialize the invitation");
@@ -766,12 +707,83 @@ mod tests {
         );
         assert_eq!(invitation.context_id, invitation_deserialized.context_id);
         assert_eq!(
-            invitation.expiration_height,
-            invitation_deserialized.expiration_height
+            invitation.expiration_timestamp,
+            invitation_deserialized.expiration_timestamp
         );
         assert_eq!(invitation.secret_salt, invitation_deserialized.secret_salt);
-        assert_eq!(invitation.protocol, invitation_deserialized.protocol);
-        assert_eq!(invitation.network, invitation_deserialized.network);
-        assert_eq!(invitation.contract_id, invitation_deserialized.contract_id);
+    }
+
+    #[test]
+    fn signed_open_invitation_serde_roundtrip_with_app_fields() {
+        let invitation = InvitationFromMember {
+            inviter_identity: [0x11; 32].into(),
+            context_id: [0x22; 32].into(),
+            expiration_timestamp: 1_700_000_000,
+            secret_salt: [0x33; 32],
+        };
+
+        let signed = SignedOpenInvitation {
+            invitation,
+            inviter_signature: "deadbeef".to_string(),
+            application_id: Some([0x44; 32]),
+            blob_id: Some([0x55; 32]),
+            source: Some("https://registry.example.com/apps/my-app".to_string()),
+            group_id: Some([0x66; 32]),
+        };
+
+        let json = serde_json::to_string(&signed).expect("serialize");
+        let decoded: SignedOpenInvitation = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(decoded.inviter_signature, "deadbeef");
+        assert_eq!(decoded.application_id, Some([0x44; 32]));
+        assert_eq!(decoded.blob_id, Some([0x55; 32]));
+        assert_eq!(
+            decoded.source.as_deref(),
+            Some("https://registry.example.com/apps/my-app")
+        );
+    }
+
+    #[test]
+    fn signed_open_invitation_serde_backward_compat() {
+        let json = r#"{
+            "invitation": {
+                "inviter_identity": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                "context_id": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                "expiration_timestamp": 1000,
+                "secret_salt": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+            },
+            "inviter_signature": "abc123"
+        }"#;
+
+        let decoded: SignedOpenInvitation =
+            serde_json::from_str(json).expect("deserialize old format");
+        assert_eq!(decoded.inviter_signature, "abc123");
+        assert_eq!(decoded.application_id, None);
+        assert_eq!(decoded.blob_id, None);
+        assert_eq!(decoded.source, None);
+    }
+
+    #[test]
+    fn signed_open_invitation_none_fields_omitted_in_json() {
+        let invitation = InvitationFromMember {
+            inviter_identity: [0; 32].into(),
+            context_id: [0; 32].into(),
+            expiration_timestamp: 0,
+            secret_salt: [0; 32],
+        };
+
+        let signed = SignedOpenInvitation {
+            invitation,
+            inviter_signature: "sig".to_string(),
+            application_id: None,
+            blob_id: None,
+            source: None,
+            group_id: None,
+        };
+
+        let json = serde_json::to_string(&signed).expect("serialize");
+        assert!(!json.contains("application_id"));
+        assert!(!json.contains("blob_id"));
+        assert!(!json.contains("source"));
     }
 }
