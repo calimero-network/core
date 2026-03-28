@@ -635,7 +635,6 @@ mod wasm_integration_tests {
                     &mut storage,
                     None, // No private storage for tests
                     None,
-                    None,
                 )
                 .expect("Failed to run module");
 
@@ -704,7 +703,6 @@ mod wasm_integration_tests {
                     &[],
                     &mut storage,
                     None, // No private storage for tests
-                    None,
                     None,
                 )
                 .expect("Failed to run module");
