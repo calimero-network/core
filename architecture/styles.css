@@ -457,6 +457,7 @@ details .detail-body {
  padding: 14px 16px; margin-bottom: 10px;
  font-family: var(--font-mono); font-size: .77rem;
  line-height: 1.8; color: var(--text); overflow-x: auto;
+ white-space: pre-wrap; word-break: break-word;
 }
 .typedef .kw { color: var(--violet); }
 .typedef .ty { color: var(--amber); }

@@ -141,9 +141,9 @@ app::emit!((Event::ItemSet { key: &amp;k, value: &amp;v }, "on_item_set"));
 </details>
 
 <details>
-<summary>#[app::private] &mdash; internal-only methods</summary>
+<summary>#[app::private] &mdash; internal helper methods</summary>
 <div class="detail-body">
-<p>Excludes a method from the ABI and JSON-RPC. Used for helper logic that should not be callable externally.</p>
+<p>Marks a method as internal to the application. Private methods are not exported as WASM entry points and cannot be called via the admin API or JSON-RPC. They can only be called by other methods within the same <span class="code">impl</span> block. Useful for shared validation, computation, or state access helpers.</p>
 <div class="typedef">
 <span class="kw">#[app::logic]</span>
 <span class="kw">impl</span> <span class="ty">MyApp</span> {
