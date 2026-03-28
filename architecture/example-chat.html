@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Example: Chat App — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Example: Chat App</span></div>
+<h1>Example: <em>Chat</em> App</h1>
+<p class="page-subtitle">Slack-like messaging with subgroups, ReadOnly channels, and cross-context mentions</p>
+
+<div class="card ga">
+<h2>Group Hierarchy</h2>
+<p style="color:var(--text-dim);margin-bottom:14px;">Org tree for <strong>Acme Corp</strong>. Subgroups nest under the root; each group owns its own contexts and governance topic.</p>
+<div class="typedef">
+<span class="ty">Acme Corp</span> <span class="comment">root</span><br>
+├── <span class="ty">Engineering</span><br>
+│&nbsp;&nbsp;&nbsp;├── <span class="ty">Platform Team</span><br>
+│&nbsp;&nbsp;&nbsp;└── <span class="ty">Frontend Team</span><br>
+├── <span class="ty">Marketing</span><br>
+└── <span class="ty">Leadership</span><br>
+</div>
+<p style="margin-top:16px;"><strong>Membership</strong> flows downward: anyone in a parent group is treated as a member of descendant groups (with direct child membership overriding inheritance where applicable).</p>
+<p><strong>Admin authority is structural, not access-based.</strong> A root admin can create or delete subgroups, manage members at the org level, and perform other governance ops on the tree &mdash; but they do <em>not</em> automatically get into <span class="code">Restricted</span> contexts in child groups. Reading private channels still requires allowlist membership managed by that group&rsquo;s <strong>direct</strong> admins (or the context creator).</p>
+<div class="g2" style="margin-top:18px;">
+<div>
+<h4>Flows down</h4>
+<p style="color:var(--text-dim);margin:0;">Member of Acme Corp is a member of Engineering, Platform Team, and Marketing for <em>eligibility</em> checks (join Open contexts, receive inherited roles).</p>
+</div>
+<div>
+<h4>Stops at Restricted</h4>
+<p style="color:var(--text-dim);margin:0;">Allowlists for Restricted contexts are evaluated in the <strong>owning</strong> group. Parent admins do not get a backdoor into child private channels.</p>
+</div>
+</div>
+</div>
+
+<div class="card gb">
+<h2>Context Layout</h2>
+<p style="color:var(--text-dim);margin-bottom:14px;"><span class="code">Open</span> contexts: any group member can join. <span class="code">Restricted</span>: only allowlisted keys; no inherited-admin bypass. <span class="code">ReadOnly</span> role: can join allowed contexts and read, but mutations are rejected by the platform &mdash; ideal for company-wide announcements and auditors.</p>
+
+<h3>Root (Acme Corp)</h3>
+<div class="fr"><div class="fp">profiles</div><div class="fd"><span class="tag tag-done">Open</span> &middot; <span class="code">auto_join</span> &mdash; DMs, @mentions, notification sink</div></div>
+<div class="fr"><div class="fp">general</div><div class="fd"><span class="tag tag-done">Open</span> &mdash; public lobby</div></div>
+<div class="fr"><div class="fp">announcements</div><div class="fd"><span class="tag tag-done">Restricted</span> &mdash; Leadership = Member; company-wide channel = <span class="code">ReadOnly</span> for everyone else</div></div>
+
+<h3 style="margin-top:18px;">Engineering</h3>
+<div class="fr"><div class="fp">eng-general</div><div class="fd"><span class="tag tag-done">Open</span></div></div>
+<div class="fr"><div class="fp">incidents</div><div class="fd"><span class="tag tag-done">Open</span></div></div>
+<div class="fr"><div class="fp">eng-hiring</div><div class="fd"><span class="tag tag-done">Restricted</span> &mdash; eng leads only (allowlist)</div></div>
+
+<h3 style="margin-top:18px;">Platform Team</h3>
+<div class="fr"><div class="fp">platform</div><div class="fd"><span class="tag tag-done">Open</span></div></div>
+<div class="fr"><div class="fp">on-call</div><div class="fd"><span class="tag tag-done">Restricted</span> &mdash; paging roster</div></div>
+
+<h3 style="margin-top:18px;">Frontend Team</h3>
+<div class="fr"><div class="fp">fe-general</div><div class="fd"><span class="tag tag-done">Open</span> &mdash; design + UI discussion</div></div>
+<div class="fr"><div class="fp">design-crit</div><div class="fd"><span class="tag tag-done">Restricted</span> &mdash; invite-only critique</div></div>
+
+<h3 style="margin-top:18px;">Marketing</h3>
+<div class="fr"><div class="fp">campaigns</div><div class="fd"><span class="tag tag-done">Open</span></div></div>
+<div class="fr"><div class="fp">brand-review</div><div class="fd"><span class="tag tag-done">Restricted</span> &mdash; brand council</div></div>
+
+<p style="margin-top:16px;">For <strong>announcements</strong>, post in a Restricted context where Leadership has full write access; grant all other members <span class="code">ReadOnly</span> on that context so the whole org sees updates without chat noise or edits.</p>
+<details style="margin-top:14px;">
+<summary>Cross-context mentions</summary>
+<div class="detail-body">
+<p>When a user types <span class="code">@alice</span> in <span class="code">eng-general</span>, the chat WASM can issue an <strong>xcall</strong> into the <span class="code">profiles</span> context (same org, Open with <span class="code">auto_join</span>) to increment Alice&rsquo;s <span class="code">mention_counts</span> counter. Alice&rsquo;s client subscribes to <span class="code">profiles</span> for notification badges without exposing other Restricted rooms.</p>
+</div>
+</details>
+</div>
+
+<div class="card gc">
+<h2>WASM State Design</h2>
+<p style="color:var(--text-dim);margin-bottom:14px;">Chat app state is CRDT-backed so offline edits merge cleanly. Types mirror Calimero&rsquo;s WASM data primitives.</p>
+<div class="g2" style="margin-bottom:16px;">
+<div>
+<h3>ChatChannel</h3>
+<div class="typedef">
+<span class="kw">struct</span> <span class="ty">ChatChannel</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">messages</span>: <span class="ty">Vector</span>&lt;<span class="ty">Message</span>&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">topic</span>: <span class="ty">LwwRegister</span>&lt;<span class="ty">String</span>&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">pinned</span>: <span class="ty">UnorderedMap</span>&lt;<span class="ty">String</span>, <span class="ty">LwwRegister</span>&lt;<span class="ty">bool</span>&gt;&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">reactions</span>: <span class="ty">UnorderedMap</span>&lt;<span class="ty">String</span>, <span class="ty">UnorderedMap</span>&lt;<span class="ty">String</span>, <span class="ty">Counter</span>&gt;&gt;,<br>
+}<br>
+</div>
+</div>
+<div>
+<h3>Message</h3>
+<div class="typedef">
+<span class="kw">struct</span> <span class="ty">Message</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">id</span>: <span class="ty">String</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">author</span>: <span class="ty">String</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">content</span>: <span class="ty">String</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">timestamp</span>: <span class="ty">u64</span>,<br>
+}<br>
+</div>
+<h3 style="margin-top:14px;">UserProfiles <span class="comment">(profiles context)</span></h3>
+<div class="typedef">
+<span class="kw">struct</span> <span class="ty">UserProfiles</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">profiles</span>: <span class="ty">UnorderedMap</span>&lt;<span class="ty">String</span>, <span class="ty">LwwRegister</span>&lt;<span class="ty">String</span>&gt;&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">status</span>: <span class="ty">UnorderedMap</span>&lt;<span class="ty">String</span>, <span class="ty">LwwRegister</span>&lt;<span class="ty">String</span>&gt;&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">mention_counts</span>: <span class="ty">UnorderedMap</span>&lt;<span class="ty">String</span>, <span class="ty">Counter</span>&gt;,<br>
+}<br>
+</div>
+</div>
+</div>
+<ul style="line-height:1.65;color:var(--text-dim);margin:0;padding-left:1.2rem;">
+<li><span class="code">Vector</span> for <strong>messages</strong> &mdash; ordered log; concurrent sends get deterministic merge.</li>
+<li><span class="code">LwwRegister</span> for <strong>topic</strong> and <strong>pinned</strong> flags &mdash; single winner per key; last writer wins with tie-break.</li>
+<li><span class="code">Counter</span> for <strong>reactions</strong> and <strong>mention_counts</strong> &mdash; additive; safe concurrent increments from many clients.</li>
+<li><span class="code">UnorderedMap</span> for keyed maps &mdash; per-message reaction bags and profile fields merge by key.</li>
+</ul>
+<details style="margin-top:14px;">
+<summary>Why not a CRDT for message text edits?</summary>
+<div class="detail-body">
+<p>This sketch treats each <span class="code">Message</span> as immutable once assigned an <span class="code">id</span>. Edits could be modeled as new tombstone-aware entries or a separate <span class="code">LwwRegister</span> per message id if the product needs Slack-style &ldquo;edited&rdquo; labels.</p>
+</div>
+</details>
+</div>
+
+<div class="card ga">
+<h2>Permission Matrix</h2>
+<p style="color:var(--text-dim);margin-bottom:14px;">How five personas interact with the Acme tree. Structural power &ne; read access to child Restricted contexts.</p>
+<div class="fr"><div class="fp">CEO</div><div class="fd">Acme Corp <strong>Admin</strong> &mdash; structural control everywhere (subgroups, org members). <em>Cannot</em> read <span class="code">eng-hiring</span> or other child Restricted contexts without explicit allowlist.</div></div>
+<div class="fr"><div class="fp">VP Engineering</div><div class="fd">Engineering <strong>Admin</strong> &mdash; full governance under Engineering, Platform Team, Frontend Team; manages eng allowlists.</div></div>
+<div class="fr"><div class="fp">Senior engineer</div><div class="fd">Engineering <strong>Member</strong> + <span class="code">CAN_CREATE_CONTEXT</span> + <span class="code">CAN_INVITE_MEMBERS</span> &mdash; can spin up channels and invite, subject to group policy.</div></div>
+<div class="fr"><div class="fp">External auditor</div><div class="fd">Acme Corp <strong>ReadOnly</strong> + <span class="code">CAN_JOIN_OPEN_CONTEXTS</span> &mdash; reads Open channels and ReadOnly announcement stream; no writes.</div></div>
+<div class="fr"><div class="fp">Board observer</div><div class="fd">Leadership <strong>ReadOnly</strong>; on allowlist for <span class="code">board-updates</span> only &mdash; no automatic access to other Leadership Restricted rooms.</div></div>
+</div>
+
+<div class="card gb">
+<h2>Platform Features Used</h2>
+<div class="g3">
+<div class="cb"><h4 style="color:var(--orange);">Subgroups</h4><p>Org hierarchy under one root; membership inherited down the tree so engineers automatically exist in Platform / Frontend subgroups.</p></div>
+<div class="cb"><h4 style="color:var(--cyan);">ReadOnly</h4><p>Announcements and auditor feeds: join + read without mutating application state.</p></div>
+<div class="cb"><h4 style="color:#a78bfa;">Capabilities</h4><p><span class="code">CAN_CREATE_CONTEXT</span> lets trusted members create new channels without full admin.</p></div>
+<div class="cb"><h4 style="color:#34d399;">Context visibility</h4><p><strong>Open</strong> = public to group members. <strong>Restricted</strong> = private / DM-style rooms gated by allowlist.</p></div>
+<div class="cb"><h4 style="color:#38bdf8;">xcall</h4><p>Cross-context calls to bump <span class="code">mention_counts</span> in <span class="code">profiles</span> when someone is @mentioned from any channel.</p></div>
+<div class="cb"><h4 style="color:#f472b6;">CRDTs</h4><p><span class="code">Vector</span> messages, <span class="code">Counter</span> reactions &amp; mentions, <span class="code">LwwRegister</span> topic and pins.</p></div>
+</div>
+</div>
+
+<div class="card gc">
+<h2>Privacy Boundary</h2>
+<p>The important invariant: <strong>the CEO can delete the Engineering subgroup but cannot read <span class="code">eng-hiring</span>.</strong> Restricted access is enforced per context; only Engineering&rsquo;s <em>direct</em> admins (or the context creator) curate that allowlist. Inherited parent admins are intentionally excluded from allowlist management in child groups.</p>
+<p style="margin-top:12px;">If executive oversight is required, the CEO must be added by an Engineering admin &mdash; or policy can require a separate compliance context with its own governance. The platform keeps structural hierarchy and confidentiality orthogonal by design.</p>
+</div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

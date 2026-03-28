@@ -40,6 +40,9 @@
     { label: 'Release Process', href: 'release.html', dot: '#10b981' },
     { label: 'TEE Mode', href: 'tee-mode.html', dot: '#ec4899' },
     { label: 'Glossary', href: 'glossary.html', dot: '#d4d4dc' },
+    { section: 'Example Apps' },
+    { label: 'Chat (Slack-like)', href: 'example-chat.html', dot: '#10b981' },
+    { label: 'Collaborative Docs', href: 'example-docs.html', dot: '#3b82f6' },
   ];
 
   function currentPage() {
