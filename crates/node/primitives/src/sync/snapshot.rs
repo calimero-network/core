@@ -659,19 +659,6 @@ pub enum BroadcastMessage<'a> {
         payload: Vec<u8>,
     },
 
-    /// TEE node announces its attestation to join a group.
-    /// Broadcast on the group gossip topic by fleet nodes after being assigned by the gatekeeper.
-    TeeAttestationAnnounce {
-        /// TDX attestation quote bytes
-        quote_bytes: Vec<u8>,
-        /// The announcing node's identity public key
-        public_key: PublicKey,
-        /// Group DAG head hash for freshness binding
-        nonce: [u8; 32],
-        /// Type of specialized node
-        node_type: SpecializedNodeType,
-    },
-
     /// DAG-aware group governance delta with causal metadata.
     ///
     /// Replaces [`SignedGroupOpV1`] for nodes running schema v2.
@@ -695,6 +682,19 @@ pub enum BroadcastMessage<'a> {
         dag_heads: Vec<[u8; 32]>,
         /// Number of members in the group (sanity check).
         member_count: u32,
+    },
+
+    /// TEE node announces its attestation to join a group.
+    /// Broadcast on the group gossip topic by fleet nodes after being assigned by the gatekeeper.
+    TeeAttestationAnnounce {
+        /// TDX attestation quote bytes
+        quote_bytes: Vec<u8>,
+        /// The announcing node's identity public key
+        public_key: PublicKey,
+        /// Group DAG head hash for freshness binding
+        nonce: [u8; 32],
+        /// Type of specialized node
+        node_type: SpecializedNodeType,
     },
 }
 
