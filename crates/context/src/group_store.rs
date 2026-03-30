@@ -3338,3 +3338,34 @@ pub fn read_tee_admission_policy(
     }
 }
 
+/// Check whether a TEE attestation quote hash has already been used in a
+/// `MemberJoinedViaTeeAttestation` op for this group. Prevents replay of
+/// the same TDX quote.
+pub fn is_quote_hash_used(
+    store: &Store,
+    group_id: &ContextGroupId,
+    quote_hash: &[u8; 32],
+) -> EyreResult<bool> {
+    let handle = store.handle();
+    let start = GroupOpLog::new(group_id.to_bytes(), 0);
+
+    for entry in handle.iter::<GroupOpLog>(&start)? {
+        let (key, value) = entry?;
+        if key.group_id() != group_id.to_bytes() {
+            break;
+        }
+        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(&value.op_bytes) {
+            if let GroupOp::MemberJoinedViaTeeAttestation {
+                quote_hash: existing_hash,
+                ..
+            } = &op.op
+            {
+                if existing_hash == quote_hash {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+
+    Ok(false)
+}

@@ -96,6 +96,21 @@ pub async fn handle_tee_attestation_announce(
     }
 
     let quote_hash: [u8; 32] = Sha256::digest(&quote_bytes).into();
+
+    if calimero_context::group_store::check_group_membership(datastore, &group_id, &public_key)? {
+        debug!(%source, %public_key, ?group_id, "TEE node already a group member, skipping");
+        return Ok(());
+    }
+
+    if calimero_context::group_store::is_quote_hash_used(datastore, &group_id, &quote_hash)? {
+        warn!(
+            %source,
+            quote_hash = %hex::encode(quote_hash),
+            "TEE attestation quote already used (replay), rejecting"
+        );
+        return Ok(());
+    }
+
     let mrtd = verification_result
         .quote
         .as_ref()
