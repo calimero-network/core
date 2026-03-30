@@ -1,12 +1,22 @@
 # Changelog
 
-## [Unreleased]
+## [0.10.1-rc.9] - 2026-03-25
 
-### Changed
+### Added
 
 - **Local group governance** replaces all blockchain/NEAR/relayer infrastructure for context management. Group membership, context registration, and member capabilities are now managed via signed gossip ops and a local `group_store`. The external client, proxy client, proposal system, relayer crate, and all NEAR protocol dependencies have been removed from core.
 - **`merod init`** now produces a local-only config; the `--group-governance` flag and relayer signer are no longer applicable.
 - **`calimero-context-config`** has been simplified — the `client`, `client-base`, and `near_client` Cargo features and associated NEAR/relayer transport code have been removed.
+- **JWT authentication via query parameters** - Server now accepts JWT tokens passed as `?token=` query parameter in addition to the `Authorization` header ([#2079])
+  - Enables WebSocket and EventSource connections from browser clients (which cannot set custom headers)
+  - Header takes precedence — if `Authorization` is present it is validated exclusively, never falling back to the query param
+  - Applies to both embedded auth service and server-level auth middleware
+
+### Fixed
+
+- **meroctl auth flow** - Improved reliability and UX of the browser-based authentication flow ([#2068])
+  - Reduced auth timeout from 300s to 120s
+  - Clearer messaging: informs users they have 2 minutes to complete sign-in in the browser
 
 ## [0.10.1-rc.8] - 2026-03-24
 
