@@ -140,7 +140,6 @@ pub enum GroupOp {
         allowed_rtmr3: Vec<String>,
         allowed_tcb_statuses: Vec<String>,
         accept_mock: bool,
-        max_replicas: u32,
     },
     /// A TEE node was admitted via attestation that matched the group's policy.
     /// Signed by an existing member who verified the attestation.

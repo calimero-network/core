@@ -24,7 +24,7 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    info!(group_id=%group_id_str, max_replicas=req.max_replicas, "Setting TEE admission policy");
+    info!(group_id=%group_id_str, "Setting TEE admission policy");
 
     let result = state
         .ctx_client
@@ -37,7 +37,6 @@ pub async fn handler(
             allowed_rtmr3: req.allowed_rtmr3,
             allowed_tcb_statuses: req.allowed_tcb_statuses,
             accept_mock: req.accept_mock,
-            max_replicas: req.max_replicas,
             requester: auth_key.map(|Extension(k)| k.0).or(req.requester),
         })
         .await

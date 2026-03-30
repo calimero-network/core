@@ -892,10 +892,6 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             {
                 bail!("MemberJoinedViaTeeAttestation rejected: TCB status not in policy allowlist");
             }
-            let tee_count = count_tee_attestation_members(store, &group_id)?;
-            if tee_count >= policy.max_replicas as usize {
-                bail!("MemberJoinedViaTeeAttestation rejected: max_replicas ({}) reached", policy.max_replicas);
-            }
             if !check_group_membership(store, &group_id, member)? {
                 add_group_member(store, &group_id, member, *role)?;
             }
@@ -3280,7 +3276,6 @@ pub struct TeeAdmissionPolicy {
     pub allowed_rtmr3: Vec<String>,
     pub allowed_tcb_statuses: Vec<String>,
     pub accept_mock: bool,
-    pub max_replicas: u32,
 }
 
 /// Read the most recent `TeeAdmissionPolicySet` from the group's governance op log.
@@ -3327,7 +3322,6 @@ pub fn read_tee_admission_policy(
         allowed_rtmr3,
         allowed_tcb_statuses,
         accept_mock,
-        max_replicas,
     } = op.op
     {
         Ok(Some(TeeAdmissionPolicy {
@@ -3338,34 +3332,9 @@ pub fn read_tee_admission_policy(
             allowed_rtmr3,
             allowed_tcb_statuses,
             accept_mock,
-            max_replicas,
         }))
     } else {
         Ok(None)
     }
 }
 
-/// Count the number of TEE-attested members in a group by scanning the op log
-/// for `MemberJoinedViaTeeAttestation` ops.
-pub fn count_tee_attestation_members(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<usize> {
-    let handle = store.handle();
-    let start = GroupOpLog::new(group_id.to_bytes(), 0);
-    let mut count = 0usize;
-
-    for entry in handle.iter::<GroupOpLog>(&start)? {
-        let (key, value) = entry?;
-        if key.group_id() != group_id.to_bytes() {
-            break;
-        }
-        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(&value.op_bytes) {
-            if matches!(op.op, GroupOp::MemberJoinedViaTeeAttestation { .. }) {
-                count += 1;
-            }
-        }
-    }
-
-    Ok(count)
-}

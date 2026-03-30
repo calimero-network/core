@@ -23,7 +23,6 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
             allowed_rtmr3,
             allowed_tcb_statuses,
             accept_mock,
-            max_replicas,
             requester,
         }: SetTeeAdmissionPolicyRequest,
         _ctx: &mut Self::Context,
@@ -95,7 +94,6 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                         allowed_rtmr3: allowed_rtmr3.clone(),
                         allowed_tcb_statuses: allowed_tcb_statuses.clone(),
                         accept_mock,
-                        max_replicas,
                     },
                 )
                 .await?;
@@ -109,7 +107,6 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
 
                 info!(
                     ?group_id,
-                    max_replicas,
                     accept_mock,
                     "TEE admission policy updated"
                 );

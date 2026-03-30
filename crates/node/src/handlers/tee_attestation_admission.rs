@@ -17,10 +17,9 @@ use tracing::{debug, info, warn};
 /// Handle a `TeeAttestationAnnounce` broadcast on a group gossip topic.
 ///
 /// 1. Loads the group's TEE admission policy from the governance DAG
-/// 2. Checks replica capacity (`max_replicas`)
-/// 3. Verifies the TDX quote (or mock) against the policy
-/// 4. Validates measurements (MRTD, RTMR0-3) and TCB status against allowlists
-/// 5. If valid, signs and publishes `MemberJoinedViaTeeAttestation` governance op
+/// 2. Verifies the TDX quote (or mock) against the policy
+/// 3. Validates measurements (MRTD, RTMR0-3) and TCB status against allowlists
+/// 4. If valid, signs and publishes `MemberJoinedViaTeeAttestation` governance op
 pub async fn handle_tee_attestation_announce(
     datastore: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
@@ -40,18 +39,6 @@ pub async fn handle_tee_attestation_announce(
             return Ok(());
         }
     };
-
-    let current_tee_members =
-        calimero_context::group_store::count_tee_attestation_members(datastore, &group_id)?;
-    if current_tee_members >= policy.max_replicas as usize {
-        debug!(
-            ?group_id,
-            current_tee_members,
-            max_replicas = policy.max_replicas,
-            "TEE replica limit reached, ignoring TeeAttestationAnnounce"
-        );
-        return Ok(());
-    }
 
     let is_mock = is_mock_quote(&quote_bytes);
     if is_mock && !policy.accept_mock && !accept_mock_tee_config {

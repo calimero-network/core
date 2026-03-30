@@ -2240,7 +2240,6 @@ pub struct SetTeeAdmissionPolicyApiRequest {
     pub allowed_tcb_statuses: Vec<String>,
     #[serde(default)]
     pub accept_mock: bool,
-    pub max_replicas: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
 }

@@ -434,7 +434,6 @@ pub struct SetTeeAdmissionPolicyRequest {
     pub allowed_rtmr3: Vec<String>,
     pub allowed_tcb_statuses: Vec<String>,
     pub accept_mock: bool,
-    pub max_replicas: u32,
     pub requester: Option<PublicKey>,
 }
 
