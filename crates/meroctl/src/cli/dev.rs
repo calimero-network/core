@@ -314,22 +314,23 @@ fn find_wasm_in_project(project_dir: &Path) -> Result<Utf8PathBuf> {
     }
 
     bail!(
-        "No .wasm file found in {}/res/ or {}/target/wasm32-unknown-unknown/release/",
+        "No .wasm file found. Checked:\n  - {}/res/\n  - {}/target/wasm32-unknown-unknown/release/",
         project_dir.display(),
         project_dir.display()
     )
 }
 
 fn find_first_wasm_in(dir: &Path) -> Result<Option<Utf8PathBuf>> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
-            let utf8 = Utf8PathBuf::try_from(path)?;
-            return Ok(Some(utf8));
-        }
+    let mut wasm_files: Vec<_> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("wasm"))
+        .collect();
+    wasm_files.sort();
+    match wasm_files.into_iter().next() {
+        Some(path) => Ok(Some(Utf8PathBuf::try_from(path)?)),
+        None => Ok(None),
     }
-    Ok(None)
 }
 
 async fn watch_and_reload(
@@ -354,13 +355,12 @@ async fn watch_and_reload(
         watch_target.clone()
     };
 
-    let (tx, mut rx) = mpsc::channel(1);
+    let (tx, mut rx) = mpsc::channel(32);
 
-    let handle = Handle::current();
     let mut watcher = notify::recommended_watcher(move |evt| {
-        handle.block_on(async {
-            drop(tx.send(evt).await);
-        });
+        if tx.try_send(evt).is_err() {
+            eprintln!("  (file watcher event dropped — build in progress)");
+        }
     })?;
 
     let recursive = if is_project {
@@ -389,6 +389,10 @@ async fn watch_and_reload(
                 continue
             }
         }
+
+        // Debounce: drain any additional events that arrive within 500ms
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        while rx.try_recv().is_ok() {}
 
         let start = Instant::now();
 

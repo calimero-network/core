@@ -16,6 +16,19 @@ use tracing::{debug, info, warn};
 
 use crate::config::ServerConfig;
 
+/// Build a 401 response, adding `X-Auth-Error: token_expired` if the error
+/// indicates an expired token. Centralises the logic so the Bearer and
+/// query-param paths stay in sync.
+fn unauthorized_response(err: &dyn std::fmt::Display) -> Response {
+    let mut resp = StatusCode::UNAUTHORIZED.into_response();
+    let msg = err.to_string();
+    if msg.contains("expired") {
+        resp.headers_mut()
+            .insert("X-Auth-Error", "token_expired".parse().unwrap());
+    }
+    resp
+}
+
 /// The authenticated requester's public key, injected into request extensions
 /// by [`AuthGuardService`] after token verification.
 ///
@@ -127,23 +140,13 @@ where
                             Ok(resp) => resp,
                             Err(e) => {
                                 debug!(error = ?e, "Bearer token validation failed");
-                                let err_str = format!("{e}");
-                                let mut resp = StatusCode::UNAUTHORIZED.into_response();
-                                if err_str.contains("expired") {
-                                    resp.headers_mut().insert(
-                                        "X-Auth-Error",
-                                        "token_expired".parse().unwrap(),
-                                    );
-                                }
-                                return Ok(resp);
+                                return Ok(unauthorized_response(&e));
                             }
                         }
                     } else {
                         // No Authorization header — try the ?token= query parameter.
                         // Browser WebSocket and EventSource APIs cannot set custom
                         // headers, so the JS client passes the JWT as a query param.
-                        // JWT tokens are base64url-encoded (A-Za-z0-9._-) so no
-                        // URL-decoding is required.
                         let token = uri.query().and_then(|q| {
                             q.split('&').find_map(|pair| {
                                 let (key, value) = pair.split_once('=')?;
@@ -156,15 +159,7 @@ where
                                     Ok(resp) => resp,
                                     Err(e) => {
                                         debug!(error = ?e, "Query param token validation failed");
-                                        let err_str = format!("{e}");
-                                        let mut resp = StatusCode::UNAUTHORIZED.into_response();
-                                        if err_str.contains("expired") {
-                                            resp.headers_mut().insert(
-                                                "X-Auth-Error",
-                                                "token_expired".parse().unwrap(),
-                                            );
-                                        }
-                                        return Ok(resp);
+                                        return Ok(unauthorized_response(&e));
                                     }
                                 }
                             }

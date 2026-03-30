@@ -9,9 +9,7 @@ use std::collections::BTreeMap;
 
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
-use thiserror::Error;
 
 #[app::state]
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -26,13 +24,6 @@ pub struct SyncTest {
     invitations: UnorderedMap<String, LwwRegister<String>>,
 }
 
-#[derive(Debug, Error, Serialize)]
-#[serde(crate = "calimero_sdk::serde")]
-#[serde(tag = "kind", content = "data")]
-pub enum Error<'a> {
-    #[error("key not found: {0}")]
-    NotFound(&'a str),
-}
 
 #[app::logic]
 impl SyncTest {
@@ -66,6 +57,15 @@ impl SyncTest {
     pub fn snapshot(&self) -> app::Result<BTreeMap<String, String>> {
         Ok(self
             .entries
+            .entries()?
+            .map(|(k, v)| (k, v.get().clone()))
+            .collect())
+    }
+
+    /// Get all writer records — used to verify which node wrote each key.
+    pub fn get_writers(&self) -> app::Result<BTreeMap<String, String>> {
+        Ok(self
+            .writers
             .entries()?
             .map(|(k, v)| (k, v.get().clone()))
             .collect())
