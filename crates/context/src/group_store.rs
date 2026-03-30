@@ -872,6 +872,10 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             member,
             quote_hash: _,
             mrtd,
+            rtmr0,
+            rtmr1,
+            rtmr2,
+            rtmr3,
             tcb_status,
             role,
         } => {
@@ -889,6 +893,18 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 && !policy.allowed_tcb_statuses.iter().any(|a| a == tcb_status)
             {
                 bail!("MemberJoinedViaTeeAttestation rejected: TCB status not in policy allowlist");
+            }
+            for (allowlist, actual, label) in [
+                (&policy.allowed_rtmr0, rtmr0, "RTMR0"),
+                (&policy.allowed_rtmr1, rtmr1, "RTMR1"),
+                (&policy.allowed_rtmr2, rtmr2, "RTMR2"),
+                (&policy.allowed_rtmr3, rtmr3, "RTMR3"),
+            ] {
+                if !allowlist.is_empty() && !allowlist.iter().any(|a| a == actual) {
+                    bail!(
+                        "MemberJoinedViaTeeAttestation rejected: {label} not in policy allowlist"
+                    );
+                }
             }
             if !check_group_membership(store, &group_id, member)? {
                 add_group_member(store, &group_id, member, role.clone())?;

@@ -447,6 +447,10 @@ pub struct AdmitTeeNodeRequest {
     pub member: PublicKey,
     pub quote_hash: [u8; 32],
     pub mrtd: String,
+    pub rtmr0: String,
+    pub rtmr1: String,
+    pub rtmr2: String,
+    pub rtmr3: String,
     pub tcb_status: String,
     pub is_mock: bool,
 }

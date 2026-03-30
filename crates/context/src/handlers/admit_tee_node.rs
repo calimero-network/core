@@ -3,8 +3,7 @@ use calimero_context_primitives::group::AdmitTeeNodeRequest;
 use calimero_context_primitives::local_governance::GroupOp;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
-use eyre::bail;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use crate::group_store;
 use crate::ContextManager;
@@ -19,6 +18,10 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             member,
             quote_hash,
             mrtd,
+            rtmr0,
+            rtmr1,
+            rtmr2,
+            rtmr3,
             tcb_status,
             is_mock,
         }: AdmitTeeNodeRequest,
@@ -37,37 +40,55 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
 
         let node_sk = node_identity.map(|(_, sk)| sk);
 
-        if let Err(err) = (|| -> eyre::Result<()> {
-            let policy = group_store::read_tee_admission_policy(&self.datastore, &group_id)?
-                .ok_or_else(|| eyre::eyre!("no TeeAdmissionPolicy set for group"))?;
-
-            if is_mock && !policy.accept_mock {
-                bail!("mock attestation rejected by group policy");
+        let policy = match group_store::read_tee_admission_policy(&self.datastore, &group_id) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "no TeeAdmissionPolicy set for group"
+                )))
             }
+            Err(e) => return ActorResponse::reply(Err(e)),
+        };
 
-            // Empty allowlist = accept any value
-            if !policy.allowed_mrtd.is_empty() && !policy.allowed_mrtd.iter().any(|a| a == &mrtd) {
-                bail!("MRTD not in policy allowlist");
-            }
-            if !policy.allowed_tcb_statuses.is_empty()
-                && !policy.allowed_tcb_statuses.iter().any(|a| a == &tcb_status)
-            {
-                bail!("TCB status not in policy allowlist");
-            }
+        if is_mock && !policy.accept_mock {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "mock attestation rejected by group policy"
+            )));
+        }
 
-            if group_store::check_group_membership(&self.datastore, &group_id, &member)? {
-                debug!(%member, "TEE node already a group member, skipping");
-                return Ok(());
-            }
+        if !policy.allowed_mrtd.is_empty() && !policy.allowed_mrtd.iter().any(|a| a == &mrtd) {
+            return ActorResponse::reply(Err(eyre::eyre!("MRTD not in policy allowlist")));
+        }
+        if !policy.allowed_tcb_statuses.is_empty()
+            && !policy.allowed_tcb_statuses.iter().any(|a| a == &tcb_status)
+        {
+            return ActorResponse::reply(Err(eyre::eyre!("TCB status not in policy allowlist")));
+        }
+        if !policy.allowed_rtmr0.is_empty() && !policy.allowed_rtmr0.iter().any(|a| a == &rtmr0) {
+            return ActorResponse::reply(Err(eyre::eyre!("RTMR0 not in policy allowlist")));
+        }
+        if !policy.allowed_rtmr1.is_empty() && !policy.allowed_rtmr1.iter().any(|a| a == &rtmr1) {
+            return ActorResponse::reply(Err(eyre::eyre!("RTMR1 not in policy allowlist")));
+        }
+        if !policy.allowed_rtmr2.is_empty() && !policy.allowed_rtmr2.iter().any(|a| a == &rtmr2) {
+            return ActorResponse::reply(Err(eyre::eyre!("RTMR2 not in policy allowlist")));
+        }
+        if !policy.allowed_rtmr3.is_empty() && !policy.allowed_rtmr3.iter().any(|a| a == &rtmr3) {
+            return ActorResponse::reply(Err(eyre::eyre!("RTMR3 not in policy allowlist")));
+        }
 
-            if group_store::is_quote_hash_used(&self.datastore, &group_id, &quote_hash)? {
-                warn!(quote_hash = %hex::encode(quote_hash), "quote already used (replay)");
-                bail!("TEE attestation quote already used");
-            }
+        match group_store::check_group_membership(&self.datastore, &group_id, &member) {
+            Ok(true) => return ActorResponse::reply(Ok(())),
+            Ok(false) => {}
+            Err(e) => return ActorResponse::reply(Err(e)),
+        }
 
-            Ok(())
-        })() {
-            return ActorResponse::reply(Err(err));
+        match group_store::is_quote_hash_used(&self.datastore, &group_id, &quote_hash) {
+            Ok(true) => {
+                return ActorResponse::reply(Err(eyre::eyre!("TEE attestation quote already used")))
+            }
+            Ok(false) => {}
+            Err(e) => return ActorResponse::reply(Err(e)),
         }
 
         if let Some(ref sk) = node_sk {
@@ -101,6 +122,10 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                         member,
                         quote_hash,
                         mrtd,
+                        rtmr0,
+                        rtmr1,
+                        rtmr2,
+                        rtmr3,
                         tcb_status,
                         role: GroupMemberRole::Member,
                     },

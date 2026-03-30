@@ -8,12 +8,10 @@
 //! delegated to `calimero_context::group_store` via the `ContextClient`.
 
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_primitives::local_governance::GroupOp;
-use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_tee_attestation::{is_mock_quote, verify_attestation, verify_mock_attestation};
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Handle a `TeeAttestationAnnounce` broadcast on a group gossip topic.
 ///
@@ -31,11 +29,13 @@ pub async fn handle_tee_attestation_announce(
 
     let is_mock = is_mock_quote(&quote_bytes);
 
+    let pk_hash: [u8; 32] = Sha256::digest(&*public_key).into();
+
     let verification_result = if is_mock {
         warn!("Verifying MOCK attestation for TEE admission");
-        verify_mock_attestation(&quote_bytes, &nonce, None)?
+        verify_mock_attestation(&quote_bytes, &nonce, Some(&pk_hash))?
     } else {
-        verify_attestation(&quote_bytes, &nonce, None).await?
+        verify_attestation(&quote_bytes, &nonce, Some(&pk_hash)).await?
     };
 
     if !verification_result.is_valid() {
@@ -52,6 +52,10 @@ pub async fn handle_tee_attestation_announce(
 
     // Extract measurements from the verified quote
     let mrtd = verification_result.quote.body.mrtd.clone();
+    let rtmr0 = verification_result.quote.body.rtmr0.clone();
+    let rtmr1 = verification_result.quote.body.rtmr1.clone();
+    let rtmr2 = verification_result.quote.body.rtmr2.clone();
+    let rtmr3 = verification_result.quote.body.rtmr3.clone();
     let tcb_status = verification_result
         .tcb_status
         .clone()
@@ -73,6 +77,10 @@ pub async fn handle_tee_attestation_announce(
             member: public_key,
             quote_hash,
             mrtd,
+            rtmr0,
+            rtmr1,
+            rtmr2,
+            rtmr3,
             tcb_status,
             is_mock,
         })
