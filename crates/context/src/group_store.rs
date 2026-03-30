@@ -3264,13 +3264,16 @@ pub struct TeeAdmissionPolicy {
 }
 
 /// Read the most recent `TeeAdmissionPolicySet` from the group's governance op log.
+///
+/// Scans the log tracking only the sequence number of the latest policy op,
+/// then clones its data once at the end to avoid intermediate allocations.
 pub fn read_tee_admission_policy(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<Option<TeeAdmissionPolicy>> {
     let handle = store.handle();
     let start = GroupOpLog::new(group_id.to_bytes(), 0);
-    let mut latest_policy = None;
+    let mut latest_seq: Option<u64> = None;
 
     for entry in handle.iter::<GroupOpLog>(&start)? {
         let (key, value) = entry?;
@@ -3278,30 +3281,71 @@ pub fn read_tee_admission_policy(
             break;
         }
         if let Ok(op) = borsh::from_slice::<SignedGroupOp>(&value.op_bytes) {
-            if let GroupOp::TeeAdmissionPolicySet {
-                ref allowed_mrtd,
-                ref allowed_rtmr0,
-                ref allowed_rtmr1,
-                ref allowed_rtmr2,
-                ref allowed_rtmr3,
-                ref allowed_tcb_statuses,
-                accept_mock,
-                max_replicas,
-            } = op.op
-            {
-                latest_policy = Some(TeeAdmissionPolicy {
-                    allowed_mrtd: allowed_mrtd.clone(),
-                    allowed_rtmr0: allowed_rtmr0.clone(),
-                    allowed_rtmr1: allowed_rtmr1.clone(),
-                    allowed_rtmr2: allowed_rtmr2.clone(),
-                    allowed_rtmr3: allowed_rtmr3.clone(),
-                    allowed_tcb_statuses: allowed_tcb_statuses.clone(),
-                    accept_mock,
-                    max_replicas,
-                });
+            if matches!(op.op, GroupOp::TeeAdmissionPolicySet { .. }) {
+                latest_seq = Some(key.sequence());
             }
         }
     }
 
-    Ok(latest_policy)
+    let seq = match latest_seq {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+
+    let key = GroupOpLog::new(group_id.to_bytes(), seq);
+    let value = handle
+        .get(&key)?
+        .ok_or_else(|| eyre::eyre!("op log entry disappeared"))?;
+    let op = borsh::from_slice::<SignedGroupOp>(&value.op_bytes)
+        .map_err(|e| eyre::eyre!("borsh: {e}"))?;
+
+    if let GroupOp::TeeAdmissionPolicySet {
+        allowed_mrtd,
+        allowed_rtmr0,
+        allowed_rtmr1,
+        allowed_rtmr2,
+        allowed_rtmr3,
+        allowed_tcb_statuses,
+        accept_mock,
+        max_replicas,
+    } = op.op
+    {
+        Ok(Some(TeeAdmissionPolicy {
+            allowed_mrtd,
+            allowed_rtmr0,
+            allowed_rtmr1,
+            allowed_rtmr2,
+            allowed_rtmr3,
+            allowed_tcb_statuses,
+            accept_mock,
+            max_replicas,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Count the number of TEE-attested members in a group by scanning the op log
+/// for `MemberJoinedViaTeeAttestation` ops.
+pub fn count_tee_attestation_members(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<usize> {
+    let handle = store.handle();
+    let start = GroupOpLog::new(group_id.to_bytes(), 0);
+    let mut count = 0usize;
+
+    for entry in handle.iter::<GroupOpLog>(&start)? {
+        let (key, value) = entry?;
+        if key.group_id() != group_id.to_bytes() {
+            break;
+        }
+        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(&value.op_bytes) {
+            if matches!(op.op, GroupOp::MemberJoinedViaTeeAttestation { .. }) {
+                count += 1;
+            }
+        }
+    }
+
+    Ok(count)
 }

@@ -362,10 +362,27 @@ impl Handler<NetworkEvent> for NodeManager {
                         nonce,
                         node_type: _,
                     } => {
+                        let topic_str = topic.as_str();
+                        let group_id_bytes = match topic_str.strip_prefix("group/") {
+                            Some(hex) => {
+                                let mut bytes = [0u8; 32];
+                                if hex::decode_to_slice(hex, &mut bytes).is_err() {
+                                    warn!(%source, topic = %topic_str, "Invalid group topic hex in TeeAttestationAnnounce");
+                                    return;
+                                }
+                                bytes
+                            }
+                            None => {
+                                warn!(%source, topic = %topic_str, "TeeAttestationAnnounce received on non-group topic");
+                                return;
+                            }
+                        };
+
                         info!(
                             %source,
                             %public_key,
                             nonce = %hex::encode(nonce),
+                            group_id = %hex::encode(group_id_bytes),
                             "Received TEE attestation announce on group topic"
                         );
 
@@ -384,7 +401,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                         quote_bytes,
                                         public_key,
                                         nonce,
-                                        [0u8; 32], // group_id extracted from topic
+                                        group_id_bytes,
                                     )
                                     .await
                                 {

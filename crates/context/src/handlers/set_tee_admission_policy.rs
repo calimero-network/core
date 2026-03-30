@@ -62,8 +62,11 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
         }
 
         if let Some(ref sk) = signing_key {
-            let _ =
-                group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
+            if let Err(err) =
+                group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk)
+            {
+                tracing::warn!(?group_id, %requester, error = %err, "Failed to persist group signing key");
+            }
         }
 
         let datastore = self.datastore.clone();

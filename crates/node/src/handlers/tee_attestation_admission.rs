@@ -17,9 +17,10 @@ use tracing::{debug, info, warn};
 /// Handle a `TeeAttestationAnnounce` broadcast on a group gossip topic.
 ///
 /// 1. Loads the group's TEE admission policy from the governance DAG
-/// 2. Checks replica capacity
+/// 2. Checks replica capacity (`max_replicas`)
 /// 3. Verifies the TDX quote (or mock) against the policy
-/// 4. If valid, signs and publishes `MemberJoinedViaTeeAttestation` governance op
+/// 4. Validates measurements (MRTD, RTMR0-3) and TCB status against allowlists
+/// 5. If valid, signs and publishes `MemberJoinedViaTeeAttestation` governance op
 pub async fn handle_tee_attestation_announce(
     datastore: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
@@ -32,13 +33,25 @@ pub async fn handle_tee_attestation_announce(
 ) -> eyre::Result<()> {
     let group_id = ContextGroupId::from(group_id_bytes);
 
-    let policy = match read_tee_admission_policy_from_dag(datastore, &group_id)? {
+    let policy = match calimero_context::group_store::read_tee_admission_policy(datastore, &group_id)? {
         Some(p) => p,
         None => {
             debug!(?group_id, "No TEE admission policy, ignoring TeeAttestationAnnounce");
             return Ok(());
         }
     };
+
+    let current_tee_members =
+        calimero_context::group_store::count_tee_attestation_members(datastore, &group_id)?;
+    if current_tee_members >= policy.max_replicas as usize {
+        debug!(
+            ?group_id,
+            current_tee_members,
+            max_replicas = policy.max_replicas,
+            "TEE replica limit reached, ignoring TeeAttestationAnnounce"
+        );
+        return Ok(());
+    }
 
     let is_mock = is_mock_quote(&quote_bytes);
     if is_mock && !policy.accept_mock && !accept_mock_tee_config {
@@ -72,10 +85,28 @@ pub async fn handle_tee_attestation_announce(
             (&policy.allowed_rtmr3, &quote.body.rtmr3, "RTMR3"),
         ] {
             if !allowlist.is_empty() && !allowlist.iter().any(|a| a == actual) {
-                warn!(%source, register = label, "Measurement not in policy allowlist");
+                warn!(%source, register = label, actual_value = actual, "Measurement not in policy allowlist");
                 return Ok(());
             }
         }
+    }
+
+    let tcb_status = verification_result
+        .tcb_status
+        .as_ref()
+        .map(|s| format!("{s:?}"))
+        .unwrap_or_else(|| "Unknown".to_owned());
+
+    if !policy.allowed_tcb_statuses.is_empty()
+        && !policy.allowed_tcb_statuses.iter().any(|s| s == &tcb_status)
+    {
+        warn!(
+            %source,
+            %tcb_status,
+            allowed = ?policy.allowed_tcb_statuses,
+            "TCB status not in policy allowlist"
+        );
+        return Ok(());
     }
 
     let quote_hash: [u8; 32] = Sha256::digest(&quote_bytes).into();
@@ -84,19 +115,12 @@ pub async fn handle_tee_attestation_announce(
         .as_ref()
         .map(|q| q.body.mrtd.clone())
         .unwrap_or_default();
-    let tcb_status = verification_result
-        .tcb_status
-        .as_ref()
-        .map(|s| format!("{s:?}"))
-        .unwrap_or_else(|| "Unknown".to_owned());
 
     info!(
         %source, %public_key, ?group_id, %mrtd, %tcb_status, is_mock,
         "TEE attestation verified, publishing MemberJoinedViaTeeAttestation"
     );
 
-    // Sign and publish the governance op via the group store.
-    // The node must have a group signing key configured for this group.
     use calimero_primitives::identity::PrivateKey;
 
     let signing_key = get_group_signing_key(datastore, &group_id)?;
@@ -121,17 +145,14 @@ pub async fn handle_tee_attestation_announce(
     Ok(())
 }
 
-/// Retrieve the signing key for this node in the given group.
 fn get_group_signing_key(
     datastore: &Store,
     group_id: &ContextGroupId,
 ) -> eyre::Result<[u8; 32]> {
-    use calimero_store::key::{GroupSigningKey, GROUP_SIGNING_KEY_PREFIX};
+    use calimero_store::key::GroupSigningKey;
 
     let handle = datastore.handle();
 
-    // Scan for any signing key belonging to this group.
-    // In practice the node has one identity per group.
     for entry in handle.iter::<GroupSigningKey>(&GroupSigningKey::new(group_id.to_bytes(), [0; 32]))?
     {
         let (key, value) = entry?;
@@ -142,16 +163,4 @@ fn get_group_signing_key(
     }
 
     eyre::bail!("no signing key found for group {group_id:?} — node must be a group member")
-}
-
-/// Read the TEE admission policy for a group.
-///
-/// Delegates to `calimero_context::group_store` which has access to the
-/// governance DAG op log. The policy is the most recent `TeeAdmissionPolicySet`
-/// op in the group's governance DAG.
-fn read_tee_admission_policy_from_dag(
-    datastore: &Store,
-    group_id: &ContextGroupId,
-) -> eyre::Result<Option<TeeAdmissionPolicy>> {
-    calimero_context::group_store::read_tee_admission_policy(datastore, group_id)
 }
