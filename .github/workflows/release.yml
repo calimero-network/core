@@ -105,6 +105,12 @@ jobs:
       CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
+      - name: Free disk space
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          df -h /
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
@@ -139,8 +145,31 @@ jobs:
 
           binaries+=("${auth_binaries[@]}")
 
+          echo "=== Disk usage before cleanup ==="
+          df -h .
+
+          # Remove intermediate build artifacts to free disk for tar/gzip
+          find target/${{ matrix.target }}/release -maxdepth 1 \
+            ! -name 'merod' ! -name 'meroctl' ! -name 'mero-abi' ! -name 'mero-auth' \
+            -type f -delete 2>/dev/null || true
+          rm -rf target/${{ matrix.target }}/release/{build,deps,.fingerprint,incremental,examples} 2>/dev/null || true
+
+          sync
+          echo "=== Disk usage after cleanup ==="
+          df -h .
+
           for binary in "${binaries[@]}"; do
-            tar -czf artifacts/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release "$binary"
+            src="target/${{ matrix.target }}/release/$binary"
+            dst="artifacts/${binary}_${{ matrix.target }}.tar.gz"
+
+            echo "Archiving $binary ($(stat --format='%s' "$src" 2>/dev/null || stat -f'%z' "$src") bytes)"
+            tar -czf "$dst" -C "target/${{ matrix.target }}/release" "$binary"
+
+            if ! gzip -t "$dst" 2>/dev/null; then
+              echo "ERROR: $dst failed gzip integrity check"
+              exit 1
+            fi
+            echo "Verified $dst ($(stat --format='%s' "$dst" 2>/dev/null || stat -f'%z' "$dst") bytes)"
           done
 
       - name: Build profiling binaries (with frame pointers and debug symbols)
