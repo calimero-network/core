@@ -2225,6 +2225,34 @@ pub struct SetDefaultCapabilitiesApiResponse;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SetTeeAdmissionPolicyApiRequest {
+    #[serde(default)]
+    pub allowed_mrtd: Vec<String>,
+    #[serde(default)]
+    pub allowed_rtmr0: Vec<String>,
+    #[serde(default)]
+    pub allowed_rtmr1: Vec<String>,
+    #[serde(default)]
+    pub allowed_rtmr2: Vec<String>,
+    #[serde(default)]
+    pub allowed_rtmr3: Vec<String>,
+    #[serde(default)]
+    pub allowed_tcb_statuses: Vec<String>,
+    #[serde(default)]
+    pub accept_mock: bool,
+    pub max_replicas: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetTeeAdmissionPolicyApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetDefaultVisibilityApiRequest {
     pub default_visibility: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

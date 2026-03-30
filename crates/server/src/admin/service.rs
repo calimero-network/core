@@ -248,6 +248,10 @@ pub(crate) fn setup(
             put(groups::set_default_capabilities::handler),
         )
         .route(
+            "/groups/:group_id/settings/tee-admission-policy",
+            put(groups::set_tee_admission_policy::handler),
+        )
+        .route(
             "/groups/:group_id/settings/default-visibility",
             put(groups::set_default_visibility::handler),
         )

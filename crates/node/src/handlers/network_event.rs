@@ -356,6 +356,48 @@ impl Handler<NetworkEvent> for NodeManager {
                             .into_actor(self),
                         );
                     }
+                    BroadcastMessage::TeeAttestationAnnounce {
+                        quote_bytes,
+                        public_key,
+                        nonce,
+                        node_type: _,
+                    } => {
+                        info!(
+                            %source,
+                            %public_key,
+                            nonce = %hex::encode(nonce),
+                            "Received TEE attestation announce on group topic"
+                        );
+
+                        let datastore = self.managers.sync.datastore.clone();
+                        let node_client = self.clients.node.clone();
+                        let accept_mock = self.state.accept_mock_tee;
+
+                        let _ignored = ctx.spawn(
+                            async move {
+                                if let Err(err) =
+                                    super::tee_attestation_admission::handle_tee_attestation_announce(
+                                        &datastore,
+                                        &node_client,
+                                        accept_mock,
+                                        source,
+                                        quote_bytes,
+                                        public_key,
+                                        nonce,
+                                        [0u8; 32], // group_id extracted from topic
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        %source,
+                                        error = %err,
+                                        "Failed to handle TEE attestation announce"
+                                    );
+                                }
+                            }
+                            .into_actor(self),
+                        );
+                    }
                     BroadcastMessage::SpecializedNodeJoinConfirmation { nonce } => {
                         // Standard nodes receive this confirmation on context topics
                         // when a specialized node successfully joins

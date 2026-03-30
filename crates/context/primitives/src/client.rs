@@ -31,6 +31,7 @@ use crate::group::{
     ManageContextAllowlistRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
     RevokeContextCapabilitiesRequest, SetContextVisibilityRequest, SetDefaultCapabilitiesRequest,
     SetDefaultVisibilityRequest, SetGroupAliasRequest, SetMemberAliasRequest,
+    SetTeeAdmissionPolicyRequest,
     SetMemberCapabilitiesRequest, StoreContextAliasRequest, StoreContextAllowlistRequest,
     StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
     StoreGroupAliasRequest, StoreGroupContextRequest, StoreMemberAliasRequest,
@@ -1554,6 +1555,23 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::SetDefaultCapabilities {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn set_tee_admission_policy(
+        &self,
+        request: SetTeeAdmissionPolicyRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::SetTeeAdmissionPolicy {
                 request,
                 outcome: sender,
             })

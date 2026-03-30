@@ -19,6 +19,7 @@ use crate::group::{
     ManageContextAllowlistRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
     RevokeContextCapabilitiesRequest, SetContextVisibilityRequest, SetDefaultCapabilitiesRequest,
     SetDefaultVisibilityRequest, SetGroupAliasRequest, SetMemberAliasRequest,
+    SetTeeAdmissionPolicyRequest,
     SetMemberCapabilitiesRequest, StoreContextAliasRequest, StoreContextAllowlistRequest,
     StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
     StoreGroupAliasRequest, StoreGroupContextRequest, StoreMemberAliasRequest,
@@ -309,6 +310,10 @@ pub enum ContextMessage {
     SetDefaultCapabilities {
         request: SetDefaultCapabilitiesRequest,
         outcome: oneshot::Sender<<SetDefaultCapabilitiesRequest as Message>::Result>,
+    },
+    SetTeeAdmissionPolicy {
+        request: SetTeeAdmissionPolicyRequest,
+        outcome: oneshot::Sender<<SetTeeAdmissionPolicyRequest as Message>::Result>,
     },
     SetDefaultVisibility {
         request: SetDefaultVisibilityRequest,

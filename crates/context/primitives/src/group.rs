@@ -425,6 +425,24 @@ impl Message for SetDefaultCapabilitiesRequest {
 }
 
 #[derive(Debug)]
+pub struct SetTeeAdmissionPolicyRequest {
+    pub group_id: ContextGroupId,
+    pub allowed_mrtd: Vec<String>,
+    pub allowed_rtmr0: Vec<String>,
+    pub allowed_rtmr1: Vec<String>,
+    pub allowed_rtmr2: Vec<String>,
+    pub allowed_rtmr3: Vec<String>,
+    pub allowed_tcb_statuses: Vec<String>,
+    pub accept_mock: bool,
+    pub max_replicas: u32,
+    pub requester: Option<PublicKey>,
+}
+
+impl Message for SetTeeAdmissionPolicyRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
 pub struct SetDefaultVisibilityRequest {
     pub group_id: ContextGroupId,
     pub default_visibility: calimero_context_config::VisibilityMode,

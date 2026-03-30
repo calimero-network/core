@@ -863,6 +863,23 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             }
             remove_parent_group(store, &child_gid)?;
         }
+        GroupOp::TeeAdmissionPolicySet { .. } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            // Policy is persisted in the governance DAG itself (via op log).
+            // Peers read TeeAdmissionPolicySet ops from the DAG to reconstruct policy.
+        }
+        GroupOp::MemberJoinedViaTeeAttestation {
+            member,
+            role,
+            ..
+        } => {
+            if !check_group_membership(store, &group_id, &op.signer)? {
+                bail!("TEE attestation verifier must be a group member");
+            }
+            if !check_group_membership(store, &group_id, member)? {
+                add_group_member(store, &group_id, member, *role)?;
+            }
+        }
         #[allow(unreachable_patterns)]
         _ => bail!("unsupported group op variant for local apply"),
     }
@@ -3227,4 +3244,64 @@ mod tests {
         assert_eq!(get_default_visibility(&store, &g1).unwrap().unwrap(), 0);
         assert_eq!(get_default_visibility(&store, &g2).unwrap().unwrap(), 1);
     }
+}
+
+// ---------------------------------------------------------------------------
+// TEE admission policy helpers
+// ---------------------------------------------------------------------------
+
+/// Reconstructed TEE admission policy from the governance DAG.
+#[derive(Debug)]
+pub struct TeeAdmissionPolicy {
+    pub allowed_mrtd: Vec<String>,
+    pub allowed_rtmr0: Vec<String>,
+    pub allowed_rtmr1: Vec<String>,
+    pub allowed_rtmr2: Vec<String>,
+    pub allowed_rtmr3: Vec<String>,
+    pub allowed_tcb_statuses: Vec<String>,
+    pub accept_mock: bool,
+    pub max_replicas: u32,
+}
+
+/// Read the most recent `TeeAdmissionPolicySet` from the group's governance op log.
+pub fn read_tee_admission_policy(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<TeeAdmissionPolicy>> {
+    let handle = store.handle();
+    let start = GroupOpLog::new(group_id.to_bytes(), 0);
+    let mut latest_policy = None;
+
+    for entry in handle.iter::<GroupOpLog>(&start)? {
+        let (key, value) = entry?;
+        if key.group_id() != group_id.to_bytes() {
+            break;
+        }
+        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(&value.op_bytes) {
+            if let GroupOp::TeeAdmissionPolicySet {
+                ref allowed_mrtd,
+                ref allowed_rtmr0,
+                ref allowed_rtmr1,
+                ref allowed_rtmr2,
+                ref allowed_rtmr3,
+                ref allowed_tcb_statuses,
+                accept_mock,
+                max_replicas,
+            } = op.op
+            {
+                latest_policy = Some(TeeAdmissionPolicy {
+                    allowed_mrtd: allowed_mrtd.clone(),
+                    allowed_rtmr0: allowed_rtmr0.clone(),
+                    allowed_rtmr1: allowed_rtmr1.clone(),
+                    allowed_rtmr2: allowed_rtmr2.clone(),
+                    allowed_rtmr3: allowed_rtmr3.clone(),
+                    allowed_tcb_statuses: allowed_tcb_statuses.clone(),
+                    accept_mock,
+                    max_replicas,
+                });
+            }
+        }
+    }
+
+    Ok(latest_policy)
 }

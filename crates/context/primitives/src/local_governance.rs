@@ -130,6 +130,27 @@ pub enum GroupOp {
         /// Hex-encoded inviter signature over the invitation payload.
         inviter_signature: String,
     },
+    /// TEE admission policy: defines which TEE nodes can auto-join the group.
+    /// Only admins can set this policy.
+    TeeAdmissionPolicySet {
+        allowed_mrtd: Vec<String>,
+        allowed_rtmr0: Vec<String>,
+        allowed_rtmr1: Vec<String>,
+        allowed_rtmr2: Vec<String>,
+        allowed_rtmr3: Vec<String>,
+        allowed_tcb_statuses: Vec<String>,
+        accept_mock: bool,
+        max_replicas: u32,
+    },
+    /// A TEE node was admitted via attestation that matched the group's policy.
+    /// Signed by an existing member who verified the attestation.
+    MemberJoinedViaTeeAttestation {
+        member: PublicKey,
+        quote_hash: [u8; 32],
+        mrtd: String,
+        tcb_status: String,
+        role: GroupMemberRole,
+    },
 }
 
 /// Payload that is actually signed (everything except the signature bytes).

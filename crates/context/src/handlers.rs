@@ -35,6 +35,7 @@ pub mod revoke_context_capabilities;
 pub mod set_context_visibility;
 pub mod set_default_capabilities;
 pub mod set_default_visibility;
+pub mod set_tee_admission_policy;
 pub mod set_group_alias;
 pub mod set_member_alias;
 pub mod set_member_capabilities;
@@ -156,6 +157,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetDefaultCapabilities { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::SetTeeAdmissionPolicy { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetDefaultVisibility { request, outcome } => {
