@@ -23,7 +23,6 @@ use tracing::{debug, info, warn};
 pub async fn handle_tee_attestation_announce(
     datastore: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
-    accept_mock_tee_config: bool,
     source: libp2p::PeerId,
     quote_bytes: Vec<u8>,
     public_key: PublicKey,
@@ -41,7 +40,7 @@ pub async fn handle_tee_attestation_announce(
     };
 
     let is_mock = is_mock_quote(&quote_bytes);
-    if is_mock && !policy.accept_mock && !accept_mock_tee_config {
+    if is_mock && !policy.accept_mock {
         warn!("Mock TEE attestation rejected by policy");
         return Ok(());
     }

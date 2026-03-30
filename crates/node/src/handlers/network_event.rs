@@ -388,7 +388,6 @@ impl Handler<NetworkEvent> for NodeManager {
 
                         let datastore = self.managers.sync.datastore.clone();
                         let node_client = self.clients.node.clone();
-                        let accept_mock = self.state.accept_mock_tee;
 
                         let _ignored = ctx.spawn(
                             async move {
@@ -396,7 +395,6 @@ impl Handler<NetworkEvent> for NodeManager {
                                     super::tee_attestation_admission::handle_tee_attestation_announce(
                                         &datastore,
                                         &node_client,
-                                        accept_mock,
                                         source,
                                         quote_bytes,
                                         public_key,
