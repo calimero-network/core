@@ -46,9 +46,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             }
 
             // Empty allowlist = accept any value
-            if !policy.allowed_mrtd.is_empty()
-                && !policy.allowed_mrtd.iter().any(|a| a == &mrtd)
-            {
+            if !policy.allowed_mrtd.is_empty() && !policy.allowed_mrtd.iter().any(|a| a == &mrtd) {
                 bail!("MRTD not in policy allowlist");
             }
             if !policy.allowed_tcb_statuses.is_empty()
@@ -90,9 +88,10 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                    eyre::eyre!("no signing key available for TEE admission")
-                })?);
+                let sk =
+                    PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                        eyre::eyre!("no signing key available for TEE admission")
+                    })?);
                 group_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,

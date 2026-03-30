@@ -882,9 +882,7 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 .ok_or_else(|| eyre::eyre!(
                     "MemberJoinedViaTeeAttestation rejected: no TeeAdmissionPolicySet exists for group"
                 ))?;
-            if !policy.allowed_mrtd.is_empty()
-                && !policy.allowed_mrtd.iter().any(|a| a == mrtd)
-            {
+            if !policy.allowed_mrtd.is_empty() && !policy.allowed_mrtd.iter().any(|a| a == mrtd) {
                 bail!("MemberJoinedViaTeeAttestation rejected: MRTD not in policy allowlist");
             }
             if !policy.allowed_tcb_statuses.is_empty()

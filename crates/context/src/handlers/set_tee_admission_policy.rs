@@ -105,11 +105,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                     )
                     .await;
 
-                info!(
-                    ?group_id,
-                    accept_mock,
-                    "TEE admission policy updated"
-                );
+                info!(?group_id, accept_mock, "TEE admission policy updated");
 
                 Ok(())
             }
