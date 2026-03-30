@@ -10,20 +10,20 @@ use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AddGroupMembersRequest, BroadcastGroupAliasesRequest, BroadcastGroupLocalStateRequest,
-    CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest,
-    DetachContextFromGroupRequest, GetContextAllowlistRequest, GetContextVisibilityRequest,
-    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
-    GetMemberCapabilitiesRequest, GrantContextCapabilitiesRequest, JoinGroupContextRequest,
-    JoinGroupRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
-    ManageContextAllowlistRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
-    RevokeContextCapabilitiesRequest, SetContextVisibilityRequest, SetDefaultCapabilitiesRequest,
-    SetDefaultVisibilityRequest, SetGroupAliasRequest, SetMemberAliasRequest,
-    SetMemberCapabilitiesRequest, StoreContextAliasRequest, StoreContextAllowlistRequest,
-    StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
-    StoreGroupAliasRequest, StoreGroupContextRequest, StoreMemberAliasRequest,
-    StoreMemberCapabilityRequest, SyncGroupRequest, UpdateGroupSettingsRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest,
+    AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupAliasesRequest,
+    BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
+    DeleteGroupRequest, DetachContextFromGroupRequest, GetContextAllowlistRequest,
+    GetContextVisibilityRequest, GetGroupForContextRequest, GetGroupInfoRequest,
+    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GrantContextCapabilitiesRequest,
+    JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest, ListGroupContextsRequest,
+    ListGroupMembersRequest, ManageContextAllowlistRequest, RemoveGroupMembersRequest,
+    RetryGroupUpgradeRequest, RevokeContextCapabilitiesRequest, SetContextVisibilityRequest,
+    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetGroupAliasRequest,
+    SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
+    StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
+    StoreGroupContextRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest,
+    SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -309,6 +309,14 @@ pub enum ContextMessage {
     SetDefaultCapabilities {
         request: SetDefaultCapabilitiesRequest,
         outcome: oneshot::Sender<<SetDefaultCapabilitiesRequest as Message>::Result>,
+    },
+    SetTeeAdmissionPolicy {
+        request: SetTeeAdmissionPolicyRequest,
+        outcome: oneshot::Sender<<SetTeeAdmissionPolicyRequest as Message>::Result>,
+    },
+    AdmitTeeNode {
+        request: AdmitTeeNodeRequest,
+        outcome: oneshot::Sender<<AdmitTeeNodeRequest as Message>::Result>,
     },
     SetDefaultVisibility {
         request: SetDefaultVisibilityRequest,

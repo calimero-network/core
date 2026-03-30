@@ -863,6 +863,53 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             }
             remove_parent_group(store, &child_gid)?;
         }
+        GroupOp::TeeAdmissionPolicySet { .. } => {
+            require_group_admin(store, &group_id, &op.signer)?;
+            // Policy is persisted in the governance DAG itself (via op log).
+            // Peers read TeeAdmissionPolicySet ops from the DAG to reconstruct policy.
+        }
+        GroupOp::MemberJoinedViaTeeAttestation {
+            member,
+            quote_hash: _,
+            mrtd,
+            rtmr0,
+            rtmr1,
+            rtmr2,
+            rtmr3,
+            tcb_status,
+            role,
+        } => {
+            if !check_group_membership(store, &group_id, &op.signer)? {
+                bail!("TEE attestation verifier must be a group member");
+            }
+            let policy = read_tee_admission_policy(store, &group_id)?
+                .ok_or_else(|| eyre::eyre!(
+                    "MemberJoinedViaTeeAttestation rejected: no TeeAdmissionPolicySet exists for group"
+                ))?;
+            if !policy.allowed_mrtd.is_empty() && !policy.allowed_mrtd.iter().any(|a| a == mrtd) {
+                bail!("MemberJoinedViaTeeAttestation rejected: MRTD not in policy allowlist");
+            }
+            if !policy.allowed_tcb_statuses.is_empty()
+                && !policy.allowed_tcb_statuses.iter().any(|a| a == tcb_status)
+            {
+                bail!("MemberJoinedViaTeeAttestation rejected: TCB status not in policy allowlist");
+            }
+            for (allowlist, actual, label) in [
+                (&policy.allowed_rtmr0, rtmr0, "RTMR0"),
+                (&policy.allowed_rtmr1, rtmr1, "RTMR1"),
+                (&policy.allowed_rtmr2, rtmr2, "RTMR2"),
+                (&policy.allowed_rtmr3, rtmr3, "RTMR3"),
+            ] {
+                if !allowlist.is_empty() && !allowlist.iter().any(|a| a == actual) {
+                    bail!(
+                        "MemberJoinedViaTeeAttestation rejected: {label} not in policy allowlist"
+                    );
+                }
+            }
+            if !check_group_membership(store, &group_id, member)? {
+                add_group_member(store, &group_id, member, role.clone())?;
+            }
+        }
         #[allow(unreachable_patterns)]
         _ => bail!("unsupported group op variant for local apply"),
     }
@@ -3227,4 +3274,82 @@ mod tests {
         assert_eq!(get_default_visibility(&store, &g1).unwrap().unwrap(), 0);
         assert_eq!(get_default_visibility(&store, &g2).unwrap().unwrap(), 1);
     }
+}
+
+// ---------------------------------------------------------------------------
+// TEE admission policy helpers
+// ---------------------------------------------------------------------------
+
+/// Reconstructed TEE admission policy from the governance DAG.
+#[derive(Debug)]
+pub struct TeeAdmissionPolicy {
+    pub allowed_mrtd: Vec<String>,
+    pub allowed_rtmr0: Vec<String>,
+    pub allowed_rtmr1: Vec<String>,
+    pub allowed_rtmr2: Vec<String>,
+    pub allowed_rtmr3: Vec<String>,
+    pub allowed_tcb_statuses: Vec<String>,
+    pub accept_mock: bool,
+}
+
+/// Read the most recent `TeeAdmissionPolicySet` from the group's governance op log.
+pub fn read_tee_admission_policy(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<TeeAdmissionPolicy>> {
+    let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
+    let mut latest: Option<TeeAdmissionPolicy> = None;
+
+    for (_seq, bytes) in &entries {
+        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
+            if let GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd,
+                allowed_rtmr0,
+                allowed_rtmr1,
+                allowed_rtmr2,
+                allowed_rtmr3,
+                allowed_tcb_statuses,
+                accept_mock,
+            } = op.op
+            {
+                latest = Some(TeeAdmissionPolicy {
+                    allowed_mrtd,
+                    allowed_rtmr0,
+                    allowed_rtmr1,
+                    allowed_rtmr2,
+                    allowed_rtmr3,
+                    allowed_tcb_statuses,
+                    accept_mock,
+                });
+            }
+        }
+    }
+
+    Ok(latest)
+}
+
+/// Check whether a TEE attestation quote hash has already been used in a
+/// `MemberJoinedViaTeeAttestation` op for this group.
+pub fn is_quote_hash_used(
+    store: &Store,
+    group_id: &ContextGroupId,
+    quote_hash: &[u8; 32],
+) -> EyreResult<bool> {
+    let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
+
+    for (_seq, bytes) in &entries {
+        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
+            if let GroupOp::MemberJoinedViaTeeAttestation {
+                quote_hash: ref existing_hash,
+                ..
+            } = op.op
+            {
+                if existing_hash == quote_hash {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+
+    Ok(false)
 }

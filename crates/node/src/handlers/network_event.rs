@@ -356,6 +356,61 @@ impl Handler<NetworkEvent> for NodeManager {
                             .into_actor(self),
                         );
                     }
+                    BroadcastMessage::TeeAttestationAnnounce {
+                        quote_bytes,
+                        public_key,
+                        nonce,
+                        node_type: _,
+                    } => {
+                        let topic_str = topic.as_str();
+                        let group_id_bytes = match topic_str.strip_prefix("group/") {
+                            Some(hex) => {
+                                let mut bytes = [0u8; 32];
+                                if hex::decode_to_slice(hex, &mut bytes).is_err() {
+                                    warn!(%source, topic = %topic_str, "Invalid group topic hex in TeeAttestationAnnounce");
+                                    return;
+                                }
+                                bytes
+                            }
+                            None => {
+                                warn!(%source, topic = %topic_str, "TeeAttestationAnnounce received on non-group topic");
+                                return;
+                            }
+                        };
+
+                        info!(
+                            %source,
+                            %public_key,
+                            nonce = %hex::encode(nonce),
+                            group_id = %hex::encode(group_id_bytes),
+                            "Received TEE attestation announce on group topic"
+                        );
+
+                        let context_client = self.clients.context.clone();
+
+                        let _ignored = ctx.spawn(
+                            async move {
+                                if let Err(err) =
+                                    super::tee_attestation_admission::handle_tee_attestation_announce(
+                                        &context_client,
+                                        source,
+                                        quote_bytes,
+                                        public_key,
+                                        nonce,
+                                        group_id_bytes,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        %source,
+                                        error = %err,
+                                        "Failed to handle TEE attestation announce"
+                                    );
+                                }
+                            }
+                            .into_actor(self),
+                        );
+                    }
                     BroadcastMessage::SpecializedNodeJoinConfirmation { nonce } => {
                         // Standard nodes receive this confirmation on context topics
                         // when a specialized node successfully joins

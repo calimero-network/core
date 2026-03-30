@@ -19,23 +19,24 @@ use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AddGroupMembersRequest, BroadcastGroupAliasesRequest, BroadcastGroupLocalStateRequest,
-    CreateGroupInvitationRequest, CreateGroupInvitationResponse, CreateGroupRequest,
-    CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse, DetachContextFromGroupRequest,
-    GetContextAllowlistRequest, GetContextVisibilityRequest, GetContextVisibilityResponse,
-    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
-    GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse, GrantContextCapabilitiesRequest,
-    GroupContextEntry, GroupInfoResponse, GroupSummary, GroupUpgradeInfo, JoinGroupContextRequest,
-    JoinGroupContextResponse, JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
-    ManageContextAllowlistRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
-    RevokeContextCapabilitiesRequest, SetContextVisibilityRequest, SetDefaultCapabilitiesRequest,
-    SetDefaultVisibilityRequest, SetGroupAliasRequest, SetMemberAliasRequest,
-    SetMemberCapabilitiesRequest, StoreContextAliasRequest, StoreContextAllowlistRequest,
-    StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
-    StoreGroupAliasRequest, StoreGroupContextRequest, StoreMemberAliasRequest,
-    StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupAliasesRequest,
+    BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
+    CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
+    DetachContextFromGroupRequest, GetContextAllowlistRequest, GetContextVisibilityRequest,
+    GetContextVisibilityResponse, GetGroupForContextRequest, GetGroupInfoRequest,
+    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
+    GrantContextCapabilitiesRequest, GroupContextEntry, GroupInfoResponse, GroupSummary,
+    GroupUpgradeInfo, JoinGroupContextRequest, JoinGroupContextResponse, JoinGroupRequest,
+    JoinGroupResponse, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    ListGroupMembersResponse, ManageContextAllowlistRequest, RemoveGroupMembersRequest,
+    RetryGroupUpgradeRequest, RevokeContextCapabilitiesRequest, SetContextVisibilityRequest,
+    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetGroupAliasRequest,
+    SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
+    StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
+    StoreGroupContextRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest,
+    SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
+    UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ApplySignedGroupOpRequest, ContextMessage, CreateContextRequest, CreateContextResponse,
@@ -1554,6 +1555,37 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::SetDefaultCapabilities {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn set_tee_admission_policy(
+        &self,
+        request: SetTeeAdmissionPolicyRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::SetTeeAdmissionPolicy {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn admit_tee_node(&self, request: AdmitTeeNodeRequest) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::AdmitTeeNode {
                 request,
                 outcome: sender,
             })

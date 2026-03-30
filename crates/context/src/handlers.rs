@@ -5,6 +5,7 @@ use calimero_utils_actix::adapters::ActorExt;
 use crate::ContextManager;
 
 pub mod add_group_members;
+pub mod admit_tee_node;
 pub mod apply_signed_group_op;
 pub mod broadcast_group_aliases;
 pub mod broadcast_group_local_state;
@@ -38,6 +39,7 @@ pub mod set_default_visibility;
 pub mod set_group_alias;
 pub mod set_member_alias;
 pub mod set_member_capabilities;
+pub mod set_tee_admission_policy;
 pub mod store_context_alias;
 pub mod store_context_allowlist;
 pub mod store_context_visibility;
@@ -156,6 +158,12 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetDefaultCapabilities { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::SetTeeAdmissionPolicy { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::AdmitTeeNode { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetDefaultVisibility { request, outcome } => {
