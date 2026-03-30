@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.10.1-rc.10] - 2026-03-30
+
+### Added
+
+- **TEE admission policy governance op** - Group admins can set a `TeeAdmissionPolicySet` governance op defining allowed TDX measurements (MRTD, RTMR0-3, TCB statuses) for attestation-based auto-admission of fleet TEE nodes ([#2086])
+- **Attestation-based group admission** - Fleet TEE nodes announce their TDX attestation on the group gossip topic; existing peers verify via DCAP and auto-admit valid nodes through a `MemberJoinedViaTeeAttestation` governance op ([#2086])
+- **Admin API endpoint** - `PUT /groups/:group_id/settings/tee-admission-policy` to configure TEE admission policy ([#2086])
+- **`TeeAttestationAnnounce` gossip message** - New broadcast message type for fleet TEE node attestation announcements ([#2086])
+- **Quote replay protection** - `is_quote_hash_used()` prevents the same TDX quote from being used to admit multiple identities ([#2086])
+- **Public key binding** - Announced public key is cryptographically bound to the TDX quote via `report_data[32..64]` ([#2086])
+
 ## [0.10.1-rc.9] - 2026-03-25
 
 ### Added
