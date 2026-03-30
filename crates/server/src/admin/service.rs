@@ -276,10 +276,8 @@ pub(crate) fn setup(
 
     let public_routes = Router::new()
         .route("/health", get(health_check_handler))
-        // Dummy endpoint used to figure out if we are running behind auth or not
         .route("/is-authed", get(is_authed_handler))
         .route("/certificate", get(certificate_handler))
-        // TEE attestation (public endpoints)
         .nest("/tee", tee::service())
         .layer(Extension(shared_state));
 
