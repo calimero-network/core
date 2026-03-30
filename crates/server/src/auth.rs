@@ -127,7 +127,15 @@ where
                             Ok(resp) => resp,
                             Err(e) => {
                                 debug!(error = ?e, "Bearer token validation failed");
-                                return Ok(StatusCode::UNAUTHORIZED.into_response());
+                                let err_str = format!("{e}");
+                                let mut resp = StatusCode::UNAUTHORIZED.into_response();
+                                if err_str.contains("expired") {
+                                    resp.headers_mut().insert(
+                                        "X-Auth-Error",
+                                        "token_expired".parse().unwrap(),
+                                    );
+                                }
+                                return Ok(resp);
                             }
                         }
                     } else {
@@ -148,7 +156,15 @@ where
                                     Ok(resp) => resp,
                                     Err(e) => {
                                         debug!(error = ?e, "Query param token validation failed");
-                                        return Ok(StatusCode::UNAUTHORIZED.into_response());
+                                        let err_str = format!("{e}");
+                                        let mut resp = StatusCode::UNAUTHORIZED.into_response();
+                                        if err_str.contains("expired") {
+                                            resp.headers_mut().insert(
+                                                "X-Auth-Error",
+                                                "token_expired".parse().unwrap(),
+                                            );
+                                        }
+                                        return Ok(resp);
                                     }
                                 }
                             }
