@@ -893,7 +893,7 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 bail!("MemberJoinedViaTeeAttestation rejected: TCB status not in policy allowlist");
             }
             if !check_group_membership(store, &group_id, member)? {
-                add_group_member(store, &group_id, member, *role)?;
+                add_group_member(store, &group_id, member, role.clone())?;
             }
         }
         #[allow(unreachable_patterns)]
@@ -3279,86 +3279,56 @@ pub struct TeeAdmissionPolicy {
 }
 
 /// Read the most recent `TeeAdmissionPolicySet` from the group's governance op log.
-///
-/// Scans the log tracking only the sequence number of the latest policy op,
-/// then clones its data once at the end to avoid intermediate allocations.
 pub fn read_tee_admission_policy(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<Option<TeeAdmissionPolicy>> {
-    let handle = store.handle();
-    let start = GroupOpLog::new(group_id.to_bytes(), 0);
-    let mut latest_seq: Option<u64> = None;
+    let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
+    let mut latest: Option<TeeAdmissionPolicy> = None;
 
-    for entry in handle.iter::<GroupOpLog>(&start)? {
-        let (key, value) = entry?;
-        if key.group_id() != group_id.to_bytes() {
-            break;
-        }
-        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(&value.op_bytes) {
-            if matches!(op.op, GroupOp::TeeAdmissionPolicySet { .. }) {
-                latest_seq = Some(key.sequence());
+    for (_seq, bytes) in &entries {
+        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
+            if let GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd,
+                allowed_rtmr0,
+                allowed_rtmr1,
+                allowed_rtmr2,
+                allowed_rtmr3,
+                allowed_tcb_statuses,
+                accept_mock,
+            } = op.op
+            {
+                latest = Some(TeeAdmissionPolicy {
+                    allowed_mrtd,
+                    allowed_rtmr0,
+                    allowed_rtmr1,
+                    allowed_rtmr2,
+                    allowed_rtmr3,
+                    allowed_tcb_statuses,
+                    accept_mock,
+                });
             }
         }
     }
 
-    let seq = match latest_seq {
-        Some(s) => s,
-        None => return Ok(None),
-    };
-
-    let key = GroupOpLog::new(group_id.to_bytes(), seq);
-    let value = handle
-        .get(&key)?
-        .ok_or_else(|| eyre::eyre!("op log entry disappeared"))?;
-    let op = borsh::from_slice::<SignedGroupOp>(&value.op_bytes)
-        .map_err(|e| eyre::eyre!("borsh: {e}"))?;
-
-    if let GroupOp::TeeAdmissionPolicySet {
-        allowed_mrtd,
-        allowed_rtmr0,
-        allowed_rtmr1,
-        allowed_rtmr2,
-        allowed_rtmr3,
-        allowed_tcb_statuses,
-        accept_mock,
-    } = op.op
-    {
-        Ok(Some(TeeAdmissionPolicy {
-            allowed_mrtd,
-            allowed_rtmr0,
-            allowed_rtmr1,
-            allowed_rtmr2,
-            allowed_rtmr3,
-            allowed_tcb_statuses,
-            accept_mock,
-        }))
-    } else {
-        Ok(None)
-    }
+    Ok(latest)
 }
 
 /// Check whether a TEE attestation quote hash has already been used in a
-/// `MemberJoinedViaTeeAttestation` op for this group. Prevents replay of
-/// the same TDX quote.
+/// `MemberJoinedViaTeeAttestation` op for this group.
 pub fn is_quote_hash_used(
     store: &Store,
     group_id: &ContextGroupId,
     quote_hash: &[u8; 32],
 ) -> EyreResult<bool> {
-    let handle = store.handle();
-    let start = GroupOpLog::new(group_id.to_bytes(), 0);
+    let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
 
-    for entry in handle.iter::<GroupOpLog>(&start)? {
-        let (key, value) = entry?;
-        if key.group_id() != group_id.to_bytes() {
-            break;
-        }
-        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(&value.op_bytes) {
+    for (_seq, bytes) in &entries {
+        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
             if let GroupOp::MemberJoinedViaTeeAttestation {
-                quote_hash: existing_hash,
+                quote_hash: ref existing_hash,
                 ..
-            } = &op.op
+            } = op.op
             {
                 if existing_hash == quote_hash {
                     return Ok(true);
