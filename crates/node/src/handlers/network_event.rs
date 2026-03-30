@@ -386,15 +386,13 @@ impl Handler<NetworkEvent> for NodeManager {
                             "Received TEE attestation announce on group topic"
                         );
 
-                        let datastore = self.managers.sync.datastore.clone();
-                        let node_client = self.clients.node.clone();
+                        let context_client = self.clients.context.clone();
 
                         let _ignored = ctx.spawn(
                             async move {
                                 if let Err(err) =
                                     super::tee_attestation_admission::handle_tee_attestation_announce(
-                                        &datastore,
-                                        &node_client,
+                                        &context_client,
                                         source,
                                         quote_bytes,
                                         public_key,

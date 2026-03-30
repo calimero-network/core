@@ -442,6 +442,20 @@ impl Message for SetTeeAdmissionPolicyRequest {
 }
 
 #[derive(Debug)]
+pub struct AdmitTeeNodeRequest {
+    pub group_id: ContextGroupId,
+    pub member: PublicKey,
+    pub quote_hash: [u8; 32],
+    pub mrtd: String,
+    pub tcb_status: String,
+    pub is_mock: bool,
+}
+
+impl Message for AdmitTeeNodeRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
 pub struct SetDefaultVisibilityRequest {
     pub group_id: ContextGroupId,
     pub default_visibility: calimero_context_config::VisibilityMode,

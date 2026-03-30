@@ -31,7 +31,7 @@ use crate::group::{
     ManageContextAllowlistRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
     RevokeContextCapabilitiesRequest, SetContextVisibilityRequest, SetDefaultCapabilitiesRequest,
     SetDefaultVisibilityRequest, SetGroupAliasRequest, SetMemberAliasRequest,
-    SetTeeAdmissionPolicyRequest,
+    AdmitTeeNodeRequest, SetTeeAdmissionPolicyRequest,
     SetMemberCapabilitiesRequest, StoreContextAliasRequest, StoreContextAllowlistRequest,
     StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
     StoreGroupAliasRequest, StoreGroupContextRequest, StoreMemberAliasRequest,
@@ -1572,6 +1572,23 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::SetTeeAdmissionPolicy {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn admit_tee_node(
+        &self,
+        request: AdmitTeeNodeRequest,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::AdmitTeeNode {
                 request,
                 outcome: sender,
             })
