@@ -870,11 +870,31 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         }
         GroupOp::MemberJoinedViaTeeAttestation {
             member,
+            quote_hash: _,
+            mrtd,
+            tcb_status,
             role,
-            ..
         } => {
             if !check_group_membership(store, &group_id, &op.signer)? {
                 bail!("TEE attestation verifier must be a group member");
+            }
+            let policy = read_tee_admission_policy(store, &group_id)?
+                .ok_or_else(|| eyre::eyre!(
+                    "MemberJoinedViaTeeAttestation rejected: no TeeAdmissionPolicySet exists for group"
+                ))?;
+            if !policy.allowed_mrtd.is_empty()
+                && !policy.allowed_mrtd.iter().any(|a| a == mrtd)
+            {
+                bail!("MemberJoinedViaTeeAttestation rejected: MRTD not in policy allowlist");
+            }
+            if !policy.allowed_tcb_statuses.is_empty()
+                && !policy.allowed_tcb_statuses.iter().any(|a| a == tcb_status)
+            {
+                bail!("MemberJoinedViaTeeAttestation rejected: TCB status not in policy allowlist");
+            }
+            let tee_count = count_tee_attestation_members(store, &group_id)?;
+            if tee_count >= policy.max_replicas as usize {
+                bail!("MemberJoinedViaTeeAttestation rejected: max_replicas ({}) reached", policy.max_replicas);
             }
             if !check_group_membership(store, &group_id, member)? {
                 add_group_member(store, &group_id, member, *role)?;
