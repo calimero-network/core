@@ -1190,10 +1190,16 @@ pub struct FleetJoinRequest {
 impl Validate for FleetJoinRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
-        if self.group_id.len() != 64 || hex::decode(&self.group_id).is_err() {
-            errors.push(ValidationError::InvalidValue {
-                field: "group_id".to_owned(),
-                message: "must be 64 hex characters (32 bytes)".to_owned(),
+        if self.group_id.len() != 64 {
+            errors.push(ValidationError::InvalidLength {
+                field: "group_id",
+                expected: 64,
+                actual: self.group_id.len(),
+            });
+        } else if hex::decode(&self.group_id).is_err() {
+            errors.push(ValidationError::InvalidHexEncoding {
+                field: "group_id",
+                reason: "not valid hex".to_owned(),
             });
         }
         errors
