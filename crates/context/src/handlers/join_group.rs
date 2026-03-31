@@ -2,7 +2,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_config::types::{GroupRevealPayloadData, SignerId};
 use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::group::{JoinGroupRequest, JoinGroupResponse};
-use calimero_context_primitives::local_governance::GroupOp;
+use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key;
@@ -68,10 +68,38 @@ impl Handler<JoinGroupRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 if group_not_found_locally {
-                    bail!(
-                        "group metadata is missing locally; wait for group state to replicate \
-                         before joining (local governance)"
-                    );
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    group_store::save_group_meta(
+                        &datastore,
+                        &group_id,
+                        &key::GroupMetaValue {
+                            app_key: [0u8; 32],
+                            target_application_id:
+                                calimero_primitives::application::ApplicationId::from([0u8; 32]),
+                            upgrade_policy:
+                                calimero_primitives::context::UpgradePolicy::default(),
+                            created_at: now,
+                            admin_identity: inviter_identity,
+                            migration: None,
+                            auto_join: true,
+                        },
+                    )?;
+                    if !group_store::check_group_membership(
+                        &datastore,
+                        &group_id,
+                        &inviter_identity,
+                    )? {
+                        group_store::add_group_member(
+                            &datastore,
+                            &group_id,
+                            &inviter_identity,
+                            GroupMemberRole::Admin,
+                        )?;
+                    }
+                    let _ = node_client.subscribe_group(group_id.to_bytes()).await;
                 }
 
                 if !group_store::is_group_admin_or_has_capability(
@@ -101,17 +129,65 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     .map_err(|e| eyre::eyre!("signing reveal payload failed: {e}"))?;
                 let invitee_signature_hex = hex::encode(signature.to_bytes());
 
-                group_store::sign_apply_and_publish(
-                    &datastore,
-                    &node_client,
-                    &group_id,
-                    &sk,
-                    GroupOp::JoinWithInvitationClaim {
-                        signed_invitation: invitation,
-                        invitee_signature_hex,
-                    },
-                )
-                .await?;
+                let governance_op = GroupOp::JoinWithInvitationClaim {
+                    signed_invitation: invitation,
+                    invitee_signature_hex,
+                };
+
+                if group_not_found_locally {
+                    // Bootstrapped stub metadata — use zero state hash so the
+                    // admin's node (which has the real metadata) will accept
+                    // the op without a state-hash mismatch.
+                    let nonce = group_store::get_local_gov_nonce(
+                        &datastore,
+                        &group_id,
+                        &joiner_identity,
+                    )?
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or_else(|| eyre::eyre!("nonce overflow"))?;
+                    let parent_hashes = group_store::get_op_head(&datastore, &group_id)?
+                        .map(|h| h.dag_heads.clone())
+                        .unwrap_or_default();
+
+                    let signed_op = SignedGroupOp::sign(
+                        &sk,
+                        group_id.to_bytes(),
+                        parent_hashes,
+                        [0u8; 32],
+                        nonce,
+                        governance_op,
+                    )
+                    .map_err(|e| eyre::eyre!("signing governance op failed: {e}"))?;
+
+                    if let Err(e) =
+                        group_store::apply_local_signed_group_op(&datastore, &signed_op)
+                    {
+                        warn!(%joiner_identity, %e, "failed to apply JoinWithInvitationClaim locally (bootstrapped)");
+                    }
+                    let delta_id = signed_op
+                        .content_hash()
+                        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+                    let parent_ids = signed_op.parent_op_hashes.clone();
+                    let bytes = borsh::to_vec(&signed_op)?;
+                    node_client
+                        .publish_signed_group_op(
+                            group_id.to_bytes(),
+                            delta_id,
+                            parent_ids,
+                            bytes,
+                        )
+                        .await?;
+                } else {
+                    group_store::sign_apply_and_publish(
+                        &datastore,
+                        &node_client,
+                        &group_id,
+                        &sk,
+                        governance_op,
+                    )
+                    .await?;
+                }
 
                 // Upgrade the GroupMember entry with local private + sender keys
                 // so the sync key-share can use them for all contexts in the group.
