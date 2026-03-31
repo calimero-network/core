@@ -1181,6 +1181,25 @@ impl TeeAttestRequest {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetJoinRequest {
+    pub group_id: String,
+}
+
+impl Validate for FleetJoinRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.group_id.len() != 64 || hex::decode(&self.group_id).is_err() {
+            errors.push(ValidationError::InvalidValue {
+                field: "group_id".to_owned(),
+                message: "must be 64 hex characters (32 bytes)".to_owned(),
+            });
+        }
+        errors
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeeInfoResponseData {
