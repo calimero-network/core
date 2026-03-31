@@ -98,13 +98,6 @@ impl NodeClient {
         Ok(())
     }
 
-    pub async fn publish_on_group(&self, group_id: [u8; 32], payload: Vec<u8>) -> eyre::Result<()> {
-        let topic_str = format!("group/{}", hex::encode(group_id));
-        let topic = TopicHash::from_raw(topic_str);
-        let _ignored = self.network_client.publish(topic, payload).await?;
-        Ok(())
-    }
-
     pub async fn get_peers_count(&self, context: Option<&ContextId>) -> usize {
         let Some(context) = context else {
             return self.network_client.peer_count().await;
