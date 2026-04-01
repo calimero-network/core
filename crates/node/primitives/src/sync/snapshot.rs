@@ -748,7 +748,9 @@ pub enum GroupMutationKind {
     TeeAdmissionPolicySet,
     /// Bootstrap group metadata to a new peer (broadcast on subscription).
     /// Payload is borsh-serialized `GroupMetaValue`.
-    GroupMetaSet { meta_payload: Vec<u8> },
+    GroupMetaSet {
+        meta_payload: Vec<u8>,
+    },
 }
 
 // Wire protocol types (StreamMessage, InitPayload, MessagePayload) are in wire.rs

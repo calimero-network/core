@@ -23,8 +23,8 @@ use crate::group::{
     StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
     StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
     StoreGroupContextRequest, StoreGroupMetaRequest, StoreMemberAliasRequest,
-    StoreMemberCapabilityRequest,
-    SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    StoreMemberCapabilityRequest, SyncGroupRequest, UpdateGroupSettingsRequest,
+    UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 

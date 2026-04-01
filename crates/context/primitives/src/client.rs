@@ -35,9 +35,8 @@ use crate::group::{
     StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
     StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
     StoreGroupContextRequest, StoreGroupMetaRequest, StoreMemberAliasRequest,
-    StoreMemberCapabilityRequest,
-    SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
-    UpgradeGroupRequest, UpgradeGroupResponse,
+    StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest,
+    UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ApplySignedGroupOpRequest, ContextMessage, CreateContextRequest, CreateContextResponse,
