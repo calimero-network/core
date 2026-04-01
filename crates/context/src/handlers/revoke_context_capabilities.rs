@@ -13,23 +13,13 @@ impl Handler<RevokeContextCapabilitiesRequest> for ContextManager {
     fn handle(
         &mut self,
         RevokeContextCapabilitiesRequest {
+            group_id,
             context_id,
             capabilities,
             signer_id,
         }: RevokeContextCapabilitiesRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let group_id = match group_store::get_group_for_context(&self.datastore, &context_id) {
-            Ok(Some(gid)) => gid,
-            Ok(None) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "context '{}' is not registered in any group",
-                    context_id
-                )));
-            }
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
-
         let node_identity = self.node_namespace_identity(&group_id);
         let node_sk = node_identity.map(|(_, sk)| sk);
         let signing_key = node_sk;

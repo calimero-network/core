@@ -13,6 +13,7 @@ use calimero_server_primitives::validation::{
 use serde::Deserialize;
 use tracing::{error, info};
 
+use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
@@ -38,11 +39,16 @@ impl Validate for RevokeCapabilitiesRequest {
 }
 
 pub async fn handler(
-    Path(context_id): Path<ContextId>,
+    Path((group_id_str, context_id)): Path<(String, ContextId)>,
     Extension(state): Extension<Arc<AdminState>>,
     ValidatedJson(request): ValidatedJson<RevokeCapabilitiesRequest>,
 ) -> impl IntoResponse {
-    info!(context_id=%context_id, signer_id=%request.signer_id, count=%request.capabilities.len(), "Revoking capabilities");
+    let group_id = match parse_group_id(&group_id_str) {
+        Ok(id) => id,
+        Err(err) => return err.into_response(),
+    };
+
+    info!(group_id=%group_id_str, context_id=%context_id, signer_id=%request.signer_id, count=%request.capabilities.len(), "Revoking capabilities");
 
     let caps: Vec<(PublicKey, u8)> = request
         .capabilities
@@ -53,6 +59,7 @@ pub async fn handler(
     let result = state
         .ctx_client
         .revoke_context_capabilities(RevokeContextCapabilitiesRequest {
+            group_id,
             context_id,
             capabilities: caps,
             signer_id: request.signer_id,
@@ -61,11 +68,11 @@ pub async fn handler(
 
     match result {
         Ok(()) => {
-            info!(context_id=%context_id, signer_id=%request.signer_id, "Capabilities revoked successfully");
+            info!(group_id=%group_id_str, context_id=%context_id, signer_id=%request.signer_id, "Capabilities revoked successfully");
             ApiResponse { payload: () }.into_response()
         }
         Err(err) => {
-            error!(context_id=%context_id, signer_id=%request.signer_id, error=?err, "Failed to revoke capabilities");
+            error!(group_id=%group_id_str, context_id=%context_id, signer_id=%request.signer_id, error=?err, "Failed to revoke capabilities");
             parse_api_error(err).into_response()
         }
     }

@@ -143,11 +143,11 @@ pub(crate) fn setup(
             get(get_context_group::handler),
         )
         .route(
-            "/contexts/:context_id/capabilities/grant",
+            "/groups/:group_id/contexts/:context_id/capabilities/grant",
             post(grant_capabilities::handler),
         )
         .route(
-            "/contexts/:context_id/capabilities/revoke",
+            "/groups/:group_id/contexts/:context_id/capabilities/revoke",
             post(revoke_capabilities::handler),
         )
         // Identity management

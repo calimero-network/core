@@ -69,7 +69,7 @@ fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiDat
     }
 }
 
-fn parse_group_id(s: &str) -> Result<ContextGroupId, ApiError> {
+pub fn parse_group_id(s: &str) -> Result<ContextGroupId, ApiError> {
     let bytes = hex::decode(s).map_err(|_| ApiError {
         status_code: StatusCode::BAD_REQUEST,
         message: "Invalid group id format: expected hex-encoded 32 bytes".into(),
