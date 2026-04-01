@@ -249,16 +249,11 @@ impl NodeClient {
         version: &str,
         signer_id: Option<&str>,
         is_bundle: bool,
+        services: Vec<types::ServiceMeta>,
     ) -> eyre::Result<ApplicationId> {
-        // For bundles: signer_id is required
-        // For non-bundles: signer_id is optional (backwards compatibility)
-        // Note: Empty string is used as a sentinel value for non-bundle applications.
-        // This distinguishes 'no signer' (non-bundle) from 'has signer' (bundle) cases.
-        // Non-bundle installations cannot be upgraded to signed bundle installations
-        // without re-installation.
         let signer_id_str = signer_id.unwrap_or("");
 
-        let application = types::ApplicationMeta::new(
+        let mut application = types::ApplicationMeta::new(
             key::BlobMeta::new(*blob_id),
             size,
             source.to_string().into_boxed_str(),
@@ -268,16 +263,12 @@ impl NodeClient {
             version.to_owned().into_boxed_str(),
             signer_id_str.to_owned().into_boxed_str(),
         );
+        application.services = services;
 
         let application_id = if is_bundle {
-            // For bundles: use package and signer_id for deterministic ApplicationId
-            // This creates a stable application identity based on who signed the bundle,
-            // allowing version upgrades while maintaining the same ApplicationId
             let components = (&application.package, &application.signer_id);
             ApplicationId::from(*Hash::hash_borsh(&components)?)
         } else {
-            // For single WASM: use current logic (blob_id, size, source, metadata)
-            // Maintains backward compatibility for non-bundle installations
             let components = (
                 application.bytecode,
                 application.size,
@@ -373,6 +364,7 @@ impl NodeClient {
             version,
             None,  // signer_id: None for non-bundle installations
             false, // is_bundle: false for single WASM
+            Vec::new(), // services: empty for single WASM
         )
     }
 
@@ -558,6 +550,7 @@ impl NodeClient {
                 version,
                 Some(&signer_id), // signer_id from manifest verification
                 true,             // is_bundle: true for bundles
+            Vec::new(), // services: populated from manifest when multi-service
             );
         }
 
@@ -581,6 +574,7 @@ impl NodeClient {
             &blob_id, size, &uri, metadata, package, version,
             None,  // signer_id: None for non-bundle installations
             false, // is_bundle: false for single WASM
+            Vec::new(), // services: empty for single WASM
         )
     }
 
@@ -749,6 +743,7 @@ impl NodeClient {
             version,
             Some(&signer_id), // signer_id from manifest verification
             true,             // is_bundle: true for bundles
+            Vec::new(), // services: populated from manifest when multi-service
         )?;
 
         Ok(application_id)
@@ -1116,6 +1111,7 @@ impl NodeClient {
             version,
             Some(&signer_id), // signer_id from manifest verification
             true,             // is_bundle: true for bundles
+            Vec::new(), // services: populated from manifest when multi-service
         )
     }
 
