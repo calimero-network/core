@@ -113,3 +113,8 @@ impl PredefinedEntry for key::GroupChildIndex {
     type Codec = Borsh;
     type DataType<'a> = ();
 }
+
+impl PredefinedEntry for key::NamespaceIdentity {
+    type Codec = Borsh;
+    type DataType<'a> = key::NamespaceIdentityValue;
+}

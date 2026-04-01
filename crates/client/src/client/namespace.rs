@@ -1,13 +1,15 @@
 use calimero_server_primitives::admin::{
     ListNamespacesApiResponse, NamespaceIdentityApiResponse,
 };
+use eyre::Result;
 
-use crate::client::Client;
-use crate::ClientError;
+use super::{ClientAuthenticator, ClientStorage};
 
-type Result<T> = std::result::Result<T, ClientError>;
-
-impl Client {
+impl<A, S> super::Client<A, S>
+where
+    A: ClientAuthenticator + Clone + Send + Sync,
+    S: ClientStorage + Clone + Send + Sync,
+{
     pub async fn list_namespaces(&self) -> Result<ListNamespacesApiResponse> {
         let response = self.connection.get("admin-api/namespaces").await?;
         Ok(response)
