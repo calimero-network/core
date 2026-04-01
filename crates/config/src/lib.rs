@@ -16,28 +16,24 @@ use url::Url;
 
 use mero_auth::config::AuthConfig;
 
-pub use calimero_node_primitives::{GroupIdentityConfig, NodeMode};
+pub use calimero_node_primitives::NodeMode;
 
 pub const CONFIG_FILE: &str = "config.toml";
 
-/// Node identity configuration containing the libp2p network identity and
-/// an optional ed25519 group identity for group contract operations.
+/// Node identity configuration containing the libp2p network identity.
 ///
-/// Serialized as the `[identity]` TOML section with `peer_id`, `keypair`,
-/// and an optional `[identity.group]` sub-table.
+/// Serialized as the `[identity]` TOML section with `peer_id` and `keypair`.
+/// Group/namespace identities are now stored per-namespace in the datastore.
 #[derive(Debug)]
 pub struct IdentityConfig {
     /// Libp2p network identity keypair.
     pub keypair: libp2p_identity::Keypair,
-    /// Group identity for signing group contract mutations.
-    pub group: Option<GroupIdentityConfig>,
 }
 
 impl IdentityConfig {
     fn generate_default() -> Self {
         Self {
             keypair: libp2p_identity::Keypair::generate_ed25519(),
-            group: None,
         }
     }
 }
@@ -535,14 +531,13 @@ pub mod serde_identity {
     use serde::ser::{self, SerializeMap};
     use serde::{Deserializer, Serializer};
 
-    use super::{GroupIdentityConfig, IdentityConfig};
+    use super::IdentityConfig;
 
     pub fn serialize<S>(config: &IdentityConfig, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let entry_count = if config.group.is_some() { 3 } else { 2 };
-        let mut map = serializer.serialize_map(Some(entry_count))?;
+        let mut map = serializer.serialize_map(Some(2))?;
         map.serialize_entry("peer_id", &config.keypair.public().to_peer_id().to_base58())?;
         map.serialize_entry(
             "keypair",
@@ -554,9 +549,6 @@ pub mod serde_identity {
             )
             .into_string(),
         )?;
-        if let Some(group) = &config.group {
-            map.serialize_entry("group", group)?;
-        }
         map.end()
     }
 
@@ -570,9 +562,7 @@ pub mod serde_identity {
             type Value = IdentityConfig;
 
             fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-                formatter.write_str(
-                    "an identity configuration with peer_id, keypair, and optional group",
-                )
+                formatter.write_str("an identity configuration with peer_id and keypair")
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -581,13 +571,11 @@ pub mod serde_identity {
             {
                 let mut peer_id = None::<String>;
                 let mut priv_key = None::<String>;
-                let mut group = None::<GroupIdentityConfig>;
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "peer_id" => peer_id = Some(map.next_value()?),
                         "keypair" => priv_key = Some(map.next_value()?),
-                        "group" => group = Some(map.next_value()?),
                         _ => {
                             drop(map.next_value::<de::IgnoredAny>());
                         }
@@ -608,13 +596,13 @@ pub mod serde_identity {
                     return Err(de::Error::custom("Peer ID does not match public key"));
                 }
 
-                Ok(IdentityConfig { keypair, group })
+                Ok(IdentityConfig { keypair })
             }
         }
 
         deserializer.deserialize_struct(
             "IdentityConfig",
-            &["peer_id", "keypair", "group"],
+            &["peer_id", "keypair"],
             IdentityVisitor,
         )
     }

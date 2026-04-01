@@ -53,7 +53,6 @@ pub struct SpecializedNodeConfig {
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
-    pub group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
     pub network: NetworkConfig,
     pub sync: SyncConfig,
     pub datastore: StoreConfig,

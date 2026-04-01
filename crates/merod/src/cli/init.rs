@@ -1,6 +1,6 @@
 use calimero_config::{
-    BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, GroupIdentityConfig,
-    IdentityConfig, NetworkConfig, NodeMode, ServerConfig, SyncConfig,
+    BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, IdentityConfig, NetworkConfig,
+    NodeMode, ServerConfig, SyncConfig,
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client_config::{ClientConfig, ClientSigner, LocalConfig};
@@ -187,20 +187,6 @@ impl InitCommand {
         let identity = Keypair::generate_ed25519();
         info!("Generated identity: {:?}", identity.public().to_peer_id());
 
-        let group_sk = ed25519_consensus::SigningKey::new(rand::thread_rng());
-        let group_vk = group_sk.verification_key();
-        let group_identity = GroupIdentityConfig {
-            public_key: format!(
-                "ed25519:{}",
-                bs58::encode(group_vk.as_bytes()).into_string()
-            ),
-            secret_key: format!(
-                "ed25519:{}",
-                bs58::encode(group_sk.as_bytes()).into_string()
-            ),
-        };
-        info!("Generated group identity: {}", group_identity.public_key);
-
         let mut listen: Vec<Multiaddr> = vec![];
 
         for host in self.swarm_host {
@@ -277,7 +263,6 @@ impl InitCommand {
         let config = ConfigFile::new(
             IdentityConfig {
                 keypair: identity,
-                group: Some(group_identity),
             },
             self.mode,
             NetworkConfig::new(
