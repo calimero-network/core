@@ -55,8 +55,9 @@ impl ContextClient {
             metadata.to_vec(),
             Self::DEFAULT_PACKAGE,
             Self::DEFAULT_VERSION,
-            None,  // signer_id: None for non-bundle installations
-            false, // is_bundle: false
+            None,
+            false,
+            Vec::new(),
         )
     }
 
