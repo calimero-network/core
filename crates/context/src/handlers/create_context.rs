@@ -89,9 +89,10 @@ impl Handler<CreateContextRequest> for ContextManager {
             .try_lock_owned()
             .expect("logically exclusive");
 
-        let context_meta = context.meta.clone();
+        let mut context_meta = context.meta.clone();
+        context_meta.service_name = service_name;
 
-        let module_task = self.get_module(application.id, None);
+        let module_task = self.get_module(application.id, context_meta.service_name.clone());
 
         let context_meta_for_map_ok = context_meta.clone();
         let context_meta_for_map_err = context_meta.clone();
@@ -310,8 +311,7 @@ impl Prepared<'_> {
             btree_map::Entry::Occupied(occupied) => occupied.into_mut(),
         };
 
-        let mut meta = Context::new(context_id, effective_app_id, Hash::default());
-        meta.service_name = service_name;
+        let meta = Context::new(context_id, effective_app_id, Hash::default());
 
         let context = entry.insert(ContextMeta {
             meta,
