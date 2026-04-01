@@ -98,6 +98,33 @@ impl NodeClient {
         Ok(())
     }
 
+    pub async fn publish_on_group(&self, group_id: [u8; 32], payload: Vec<u8>) -> eyre::Result<()> {
+        let topic_str = format!("group/{}", hex::encode(group_id));
+        let topic = TopicHash::from_raw(topic_str);
+
+        const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+        let deadline = tokio::time::Instant::now() + MAX_WAIT;
+        loop {
+            let peers = self.network_client.mesh_peer_count(topic.clone()).await;
+            if peers > 0 {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                warn!(
+                    ?group_id,
+                    "no mesh peers after {MAX_WAIT:?}, publishing anyway"
+                );
+                break;
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+
+        let _ignored = self.network_client.publish(topic, payload).await?;
+        Ok(())
+    }
+
     pub async fn get_peers_count(&self, context: Option<&ContextId>) -> usize {
         let Some(context) = context else {
             return self.network_client.peer_count().await;

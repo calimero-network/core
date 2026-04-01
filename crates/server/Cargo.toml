@@ -30,8 +30,12 @@ tower-http = { workspace = true, features = ["cors", "fs", "trace"] }
 tower-sessions = { workspace = true }
 tracing.workspace = true
 
+borsh.workspace = true
+sha2.workspace = true
+
 calimero-context-config.workspace = true
 calimero-context-primitives.workspace = true
+calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true

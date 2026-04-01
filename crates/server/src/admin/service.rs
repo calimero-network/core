@@ -269,6 +269,8 @@ pub(crate) fn setup(
             "/groups/join",
             post(groups::join_group::handler),
         )
+        // TEE protected endpoints
+        .nest("/tee", tee::protected_service())
         // Alias management
         .nest("/alias", alias::service())
         .layer(Extension(Arc::clone(&shared_state)))
