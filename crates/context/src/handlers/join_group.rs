@@ -12,6 +12,11 @@ use tracing::{info, warn};
 
 use crate::{group_store, ContextManager};
 
+/// Maximum number of attempts to poll for group metadata arrival.
+const META_POLL_MAX_ATTEMPTS: u32 = 10;
+/// Interval between metadata polling attempts.
+const META_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 impl Handler<JoinGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <JoinGroupRequest as Message>::Result>;
 
@@ -42,37 +47,46 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
         let inviter_identity = PublicKey::from(inv.inviter_identity.to_bytes());
 
-        let group_not_found_locally = group_store::load_group_meta(&self.datastore, &group_id)
-            .map(|opt| opt.is_none())
-            .unwrap_or(true);
-
-        if let Some(ref sk) = signing_key {
-            let _ = group_store::store_group_signing_key(
-                &self.datastore,
-                &group_id,
-                &joiner_identity,
-                sk,
-            );
-        }
-
-        let effective_signing_key = signing_key.or_else(|| {
-            group_store::get_group_signing_key(&self.datastore, &group_id, &joiner_identity)
-                .ok()
-                .flatten()
-        });
-
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let invitation = invitation;
 
         ActorResponse::r#async(
             async move {
-                if group_not_found_locally {
+                // Subscribe to the group topic first so the existing member
+                // broadcasts group metadata to us via gossipsub.
+                let _ = node_client.subscribe_group(group_id.to_bytes()).await;
+
+                // Poll for group metadata to arrive from the peer broadcast.
+                let mut meta_found = false;
+                for _ in 0..META_POLL_MAX_ATTEMPTS {
+                    if group_store::load_group_meta(&datastore, &group_id)?.is_some() {
+                        meta_found = true;
+                        break;
+                    }
+                    tokio::time::sleep(META_POLL_INTERVAL).await;
+                }
+                if !meta_found {
                     bail!(
-                        "group metadata is missing locally; wait for group state to replicate \
-                         before joining (local governance)"
+                        "group metadata is missing locally; timed out waiting for group state \
+                         to replicate before joining (local governance)"
                     );
                 }
+
+                if let Some(ref sk) = signing_key {
+                    let _ = group_store::store_group_signing_key(
+                        &datastore,
+                        &group_id,
+                        &joiner_identity,
+                        sk,
+                    );
+                }
+
+                let effective_signing_key = signing_key.or_else(|| {
+                    group_store::get_group_signing_key(&datastore, &group_id, &joiner_identity)
+                        .ok()
+                        .flatten()
+                });
 
                 if !group_store::is_group_admin_or_has_capability(
                     &datastore,
@@ -128,8 +142,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 if let Some(ref alias_str) = group_alias {
                     group_store::set_group_alias(&datastore, &group_id, alias_str)?;
                 }
-
-                let _ = node_client.subscribe_group(group_id.to_bytes()).await;
 
                 // Auto-subscribe to all visible contexts if auto_join is set,
                 // including contexts in child subgroups (membership inherits down).

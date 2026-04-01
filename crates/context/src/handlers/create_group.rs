@@ -117,6 +117,13 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     GroupMemberRole::Admin,
                 )?;
 
+                // Set default capabilities so new members can join open contexts
+                group_store::set_default_capabilities(
+                    &datastore,
+                    &group_id,
+                    calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_CONTEXTS,
+                )?;
+
                 if let Some(ref alias_str) = alias {
                     group_store::set_group_alias(&datastore, &group_id, alias_str)?;
                 }

@@ -1,0 +1,223 @@
+name: E2E KV Store - Group Lifecycle Tests
+description: >
+  Tests group creation, group invitation, join group, join group context,
+  multi-context groups, and context invitation within groups.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- SCENARIO 1: Full group lifecycle ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create group on node-1
+    type: create_group
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      group_id: groupId
+
+  - name: Assert group created
+    type: assert
+    statements:
+      - "is_set({{group_id_e2e-node-1}})"
+
+  - name: Create context 1 in group on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{group_id_e2e-node-1}}'
+    outputs:
+      ctx1_id: contextId
+      ctx1_key_node1: memberPublicKey
+
+  - name: Create group invitation on node-1
+    type: create_group_invitation
+    node: e2e-node-1
+    group_id: '{{group_id_e2e-node-1}}'
+
+  - name: Node-2 joins group
+    type: join_group
+    node: e2e-node-2
+    invitation: '{{group_invitation_e2e-node-1}}'
+
+  - name: Node-2 joins context 1 via group
+    type: join_group_context
+    node: e2e-node-2
+    group_id: '{{group_id_e2e-node-1}}'
+    context_id: '{{ctx1_id}}'
+    outputs:
+      ctx1_id_n2: contextId
+      ctx1_key_node2: memberPublicKey
+
+  - name: Node-1 writes to context 1
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx1_id}}'
+    executor_public_key: '{{ctx1_key_node1}}'
+    method: set
+    args:
+      key: "group_key1"
+      value: "from_node1"
+
+  - name: Wait for sync - context 1
+    type: wait_for_sync
+    context_id: '{{ctx1_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads from context 1
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx1_id}}'
+    executor_public_key: '{{ctx1_key_node2}}'
+    method: get
+    args:
+      key: "group_key1"
+    outputs:
+      get_result_1: result
+
+  - name: Assert node-1 value synced to node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{get_result_1}}, {"output": "from_node1"})'
+
+  - name: Node-2 writes to context 1
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx1_id}}'
+    executor_public_key: '{{ctx1_key_node2}}'
+    method: set
+    args:
+      key: "group_key2"
+      value: "from_node2"
+
+  - name: Wait for sync - context 1 reverse
+    type: wait_for_sync
+    context_id: '{{ctx1_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-1 reads node-2 value
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx1_id}}'
+    executor_public_key: '{{ctx1_key_node1}}'
+    method: get
+    args:
+      key: "group_key2"
+    outputs:
+      get_result_2: result
+
+  - name: Assert node-2 value synced to node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{get_result_2}}, {"output": "from_node2"})'
+
+
+  # --- SCENARIO 2 : Context invitation within group ---
+
+  - name: Create context 3 in same group
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{group_id_e2e-node-1}}'
+    outputs:
+      ctx3_id: contextId
+      ctx3_key_node1: memberPublicKey
+
+  - name: Create identity on node-2 for invite flow
+    type: create_identity
+    node: e2e-node-2
+    outputs:
+      identity_node2_ctx3: publicKey
+
+  - name: Create context invitation on node-1
+    type: invite
+    node: e2e-node-1
+    context_id: '{{ctx3_id}}'
+    granter_id: '{{ctx3_key_node1}}'
+    valid_for_seconds: 3600
+    outputs:
+      ctx3_invitation: invitation
+
+  - name: Node-2 joins context 3 via context invitation
+    type: join
+    node: e2e-node-2
+    invitee_id: '{{identity_node2_ctx3}}'
+    invitation: '{{ctx3_invitation}}'
+    outputs:
+      ctx3_key_node2: memberPublicKey
+
+  - name: Wait for sync - context 3
+    type: wait_for_sync
+    context_id: '{{ctx3_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 writes to context 3
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx3_id}}'
+    executor_public_key: '{{ctx3_key_node2}}'
+    method: set
+    args:
+      key: "ctx3_test"
+      value: "invite_join_works"
+
+  - name: Wait for sync - context 3 write
+    type: wait_for_sync
+    context_id: '{{ctx3_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-1 reads from context 3
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx3_id}}'
+    executor_public_key: '{{ctx3_key_node1}}'
+    method: get
+    args:
+      key: "ctx3_test"
+    outputs:
+      ctx3_get_result: result
+
+  - name: Assert context invitation join works
+    type: json_assert
+    statements:
+      - 'json_equal({{ctx3_get_result}}, {"output": "invite_join_works"})'
+
+stop_all_nodes: false

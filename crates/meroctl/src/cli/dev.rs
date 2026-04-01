@@ -220,23 +220,23 @@ async fn find_or_create_context(
         .data
         .contexts
         .iter()
-        .find(|c| c.application_id == application_id);
+        .find(|c| c.context.application_id == application_id);
 
     if let Some(ctx) = existing {
         eprintln!("Found existing context, updating application...");
-        let identities = client.get_context_identities(&ctx.id, true).await?;
+        let identities = client.get_context_identities(&ctx.context.id, true).await?;
         let member_pk = *identities
             .data
             .identities
             .first()
-            .ok_or_else(|| eyre::eyre!("No owned identity in context {}", ctx.id))?;
+            .ok_or_else(|| eyre::eyre!("No owned identity in context {}", ctx.context.id))?;
 
         let update_request = UpdateContextApplicationRequest::new(application_id, member_pk);
         let _update_response = client
-            .update_context_application(&ctx.id, update_request)
+            .update_context_application(&ctx.context.id, update_request)
             .await?;
 
-        Ok((ctx.id, member_pk, true))
+        Ok((ctx.context.id, member_pk, true))
     } else {
         eprintln!("No existing context found, creating new one...");
         let request = CreateContextRequest::new(
