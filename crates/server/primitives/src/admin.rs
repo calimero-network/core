@@ -241,25 +241,31 @@ impl CreateContextRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextResponseData {
     pub context_id: ContextId,
     pub member_public_key: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    #[serde(default)]
+    pub group_created: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextResponse {
     pub data: CreateContextResponseData,
 }
 
 impl CreateContextResponse {
-    pub const fn new(context_id: ContextId, member_public_key: PublicKey) -> Self {
+    pub fn new(context_id: ContextId, member_public_key: PublicKey) -> Self {
         Self {
             data: CreateContextResponseData {
                 context_id,
                 member_public_key,
+                group_id: None,
+                group_created: false,
             },
         }
     }
@@ -2298,3 +2304,62 @@ impl Validate for SetDefaultVisibilityApiRequest {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct SetDefaultVisibilityApiResponse;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_context_response_serializes_with_group_info() {
+        let context_id = ContextId::from([0xAA; 32]);
+        let member_pk = PublicKey::from([0xBB; 32]);
+        let group_id_hex = hex::encode([0xCC; 32]);
+
+        let resp = CreateContextResponseData {
+            context_id,
+            member_public_key: member_pk,
+            group_id: Some(group_id_hex.clone()),
+            group_created: true,
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["groupId"], group_id_hex);
+        assert_eq!(json["groupCreated"], true);
+        assert!(json["contextId"].is_string());
+        assert!(json["memberPublicKey"].is_string());
+    }
+
+    #[test]
+    fn create_context_response_omits_group_id_when_none() {
+        let context_id = ContextId::from([0xAA; 32]);
+        let member_pk = PublicKey::from([0xBB; 32]);
+
+        let resp = CreateContextResponseData {
+            context_id,
+            member_public_key: member_pk,
+            group_id: None,
+            group_created: false,
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        // groupId should be omitted (skip_serializing_if = "Option::is_none")
+        assert!(json.get("groupId").is_none());
+        assert_eq!(json["groupCreated"], false);
+    }
+
+    #[test]
+    fn create_context_response_deserializes_without_group_fields() {
+        // Backwards compatibility: old responses without groupId/groupCreated
+        // Use valid base58 IDs (ContextId and PublicKey serialize as base58)
+        let context_id = ContextId::from([0xAA; 32]);
+        let member_pk = PublicKey::from([0xBB; 32]);
+        let json = serde_json::json!({
+            "contextId": serde_json::to_value(&context_id).unwrap(),
+            "memberPublicKey": serde_json::to_value(&member_pk).unwrap()
+        });
+
+        let resp: CreateContextResponseData = serde_json::from_value(json).unwrap();
+        assert!(resp.group_id.is_none());
+        assert!(!resp.group_created);
+    }
+}

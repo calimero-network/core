@@ -3274,6 +3274,99 @@ mod tests {
         assert_eq!(get_default_visibility(&store, &g1).unwrap().unwrap(), 0);
         assert_eq!(get_default_visibility(&store, &g2).unwrap().unwrap(), 1);
     }
+
+    // -----------------------------------------------------------------------
+    // Auto-group: node identity as admin (regression test for fix)
+    // -----------------------------------------------------------------------
+
+    /// When an auto-group is created, the node's identity (not a random one)
+    /// should be added as Admin. This test verifies that after
+    /// `add_group_member_with_keys` the identity is a member and admin of the
+    /// group — the same check that `listGroupMembers` and `joinGroupContext`
+    /// perform via `check_group_membership`.
+    #[test]
+    fn auto_group_node_identity_is_admin_member() {
+        use calimero_primitives::identity::PrivateKey;
+        use rand::rngs::OsRng;
+
+        let store = test_store();
+        let context_id = ContextId::from([0xDD; 32]);
+        let auto_group_id = ContextGroupId::from(*context_id.as_ref());
+
+        // Simulate what create_context does: use node's group identity
+        let node_sk = PrivateKey::random(&mut OsRng);
+        let node_pk = node_sk.public_key();
+        let sender_key = PrivateKey::random(&mut OsRng);
+
+        // Save group meta (as create_context does for auto-groups)
+        save_group_meta(
+            &store,
+            &auto_group_id,
+            &GroupMetaValue {
+                app_key: [0u8; 32],
+                target_application_id: ApplicationId::from([0xCC; 32]),
+                upgrade_policy: UpgradePolicy::Automatic,
+                created_at: 1_700_000_000,
+                admin_identity: node_pk,
+                migration: None,
+                auto_join: true,
+            },
+        )
+        .unwrap();
+
+        // Add node identity as admin with keys (as create_context does)
+        add_group_member_with_keys(
+            &store,
+            &auto_group_id,
+            &node_pk,
+            GroupMemberRole::Admin,
+            Some(*node_sk),
+            Some(*sender_key),
+        )
+        .unwrap();
+
+        // Register the context in the group
+        register_context_in_group(&store, &auto_group_id, &context_id).unwrap();
+
+        // The node's identity should be recognized as a group member
+        assert!(check_group_membership(&store, &auto_group_id, &node_pk).unwrap());
+        assert!(is_group_admin(&store, &auto_group_id, &node_pk).unwrap());
+
+        // The group should have exactly 1 member
+        assert_eq!(count_group_members(&store, &auto_group_id).unwrap(), 1);
+
+        // The context should be registered in the group
+        assert_eq!(
+            get_group_for_context(&store, &context_id).unwrap().unwrap(),
+            auto_group_id
+        );
+    }
+
+    /// A random identity that is NOT the node's group identity should NOT
+    /// pass membership checks — this is the bug scenario before the fix.
+    #[test]
+    fn auto_group_random_identity_not_found_by_node_check() {
+        use calimero_primitives::identity::PrivateKey;
+        use rand::rngs::OsRng;
+
+        let store = test_store();
+        let auto_group_id = ContextGroupId::from([0xEE; 32]);
+
+        // A random creator identity was added as admin
+        let random_sk = PrivateKey::random(&mut OsRng);
+        let random_pk = random_sk.public_key();
+        add_group_member(&store, &auto_group_id, &random_pk, GroupMemberRole::Admin).unwrap();
+
+        // The node's ACTUAL group identity is different
+        let node_sk = PrivateKey::random(&mut OsRng);
+        let node_pk = node_sk.public_key();
+
+        // The random identity IS a member
+        assert!(check_group_membership(&store, &auto_group_id, &random_pk).unwrap());
+
+        // But the node's identity is NOT a member — this is the bug
+        assert!(!check_group_membership(&store, &auto_group_id, &node_pk).unwrap());
+    }
 }
 
 // ---------------------------------------------------------------------------
