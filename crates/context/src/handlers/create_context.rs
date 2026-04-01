@@ -37,6 +37,7 @@ impl Handler<CreateContextRequest> for ContextManager {
         CreateContextRequest {
             seed,
             application_id,
+            service_name,
             identity_secret,
             init_params,
             group_id,
@@ -90,7 +91,7 @@ impl Handler<CreateContextRequest> for ContextManager {
 
         let context_meta = context.meta.clone();
 
-        let module_task = self.get_module(application.id);
+        let module_task = self.get_module(application.id, None);
 
         let context_meta_for_map_ok = context_meta.clone();
         let context_meta_for_map_err = context_meta.clone();
@@ -309,7 +310,8 @@ impl Prepared<'_> {
             btree_map::Entry::Occupied(occupied) => occupied.into_mut(),
         };
 
-        let meta = Context::new(context_id, effective_app_id, Hash::default());
+        let mut meta = Context::new(context_id, effective_app_id, Hash::default());
+        meta.service_name = service_name;
 
         let context = entry.insert(ContextMeta {
             meta,

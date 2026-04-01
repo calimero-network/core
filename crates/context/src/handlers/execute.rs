@@ -243,7 +243,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         let migration_params = MigrationParams { method: method.clone() };
                         // Migration: load the WASM module via get_module (actor-aware cache),
                         // then call update_application_with_migration directly — no mailbox.
-                        act.get_module(target_app)
+                        act.get_module(target_app, None)
                             .then(move |module_result, act, _ctx| {
                                 // Re-read cached values; they may have been refreshed during load
                                 let context_meta =
@@ -352,7 +352,7 @@ impl Handler<ExecuteRequest> for ContextManager {
         );
 
         let module_task = context_task.and_then(move |(guard, context), act, _ctx| {
-            act.get_module(context.application_id)
+            act.get_module(context.application_id, context.service_name.clone())
                 .map_ok(move |module, _act, _ctx| (guard, context, module))
         });
 
@@ -761,6 +761,7 @@ impl ContextManager {
     pub fn get_module(
         &self,
         application_id: ApplicationId,
+        service_name: Option<String>,
     ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
         let blob_task = async {}.into_actor(self).map(move |_, act, _ctx| {
             let blob = match act.applications.entry(application_id) {
@@ -773,6 +774,12 @@ impl ContextManager {
                 }
                 btree_map::Entry::Occupied(occupied) => occupied.into_mut().blob,
             };
+
+            // For multi-service: resolve the specific service's blob
+            // For now, service resolution uses ApplicationMeta.resolve_service()
+            // which returns the correct bytecode/compiled pair.
+            // TODO: When services have their own blob IDs, resolve from ServiceMeta here.
+            let _ = service_name; // Will be used when per-service blobs are stored
 
             Ok(blob)
         });

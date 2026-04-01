@@ -95,7 +95,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             let migration_params = migration_params.clone();
 
             // Load the (fresh) module
-            let module_task = self.get_module(application_id);
+            let module_task = self.get_module(application_id, None);
 
             let task = module_task.and_then(move |module, act, _ctx| {
                 let datastore = datastore.clone();
