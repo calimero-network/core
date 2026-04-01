@@ -25,7 +25,7 @@ use crate::group::{
     DetachContextFromGroupRequest, GetContextAllowlistRequest, GetContextVisibilityRequest,
     GetContextVisibilityResponse, GetGroupForContextRequest, GetGroupInfoRequest,
     GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
-    GetNamespaceIdentityRequest, GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse,
+    GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse,
     GroupSummary, GroupUpgradeInfo, JoinGroupContextRequest, JoinGroupContextResponse,
     JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,

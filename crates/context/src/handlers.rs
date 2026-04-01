@@ -213,12 +213,6 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::StoreGroupMeta { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::GrantContextCapabilities { request, outcome } => {
-                self.forward_handler(ctx, request, outcome)
-            }
-            ContextMessage::RevokeContextCapabilities { request, outcome } => {
-                self.forward_handler(ctx, request, outcome)
-            }
             ContextMessage::ListNamespaces { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
