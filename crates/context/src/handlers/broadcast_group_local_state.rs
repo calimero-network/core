@@ -69,102 +69,73 @@ impl Handler<BroadcastGroupLocalStateRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
+                let broadcast = |kind: GroupMutationKind| {
+                    let client = &node_client;
+                    async move {
+                        if let Err(err) =
+                            client.broadcast_group_mutation(group_id_bytes, kind).await
+                        {
+                            warn!(?err, "failed to broadcast group mutation");
+                        }
+                    }
+                };
+
                 // Broadcast group metadata first so new peers can bootstrap
                 if let Some(meta_payload) = group_meta_payload {
-                    let _ = node_client
-                        .broadcast_group_mutation(
-                            group_id_bytes,
-                            GroupMutationKind::GroupMetaSet { meta_payload },
-                        )
-                        .await;
+                    broadcast(GroupMutationKind::GroupMetaSet { meta_payload }).await;
                 }
 
                 for (member, capabilities) in member_caps {
-                    let _ = node_client
-                        .broadcast_group_mutation(
-                            group_id_bytes,
-                            GroupMutationKind::MemberCapabilitySet {
-                                member: *member,
-                                capabilities,
-                            },
-                        )
-                        .await;
+                    broadcast(GroupMutationKind::MemberCapabilitySet {
+                        member: *member,
+                        capabilities,
+                    })
+                    .await;
                 }
 
                 if let Some(capabilities) = default_caps {
-                    let _ = node_client
-                        .broadcast_group_mutation(
-                            group_id_bytes,
-                            GroupMutationKind::DefaultCapabilitiesSet { capabilities },
-                        )
-                        .await;
+                    broadcast(GroupMutationKind::DefaultCapabilitiesSet { capabilities }).await;
                 }
 
                 for (context_id, mode, creator) in context_vis {
-                    let _ = node_client
-                        .broadcast_group_mutation(
-                            group_id_bytes,
-                            GroupMutationKind::ContextVisibilitySet {
-                                context_id: *context_id,
-                                mode,
-                                creator,
-                            },
-                        )
-                        .await;
+                    broadcast(GroupMutationKind::ContextVisibilitySet {
+                        context_id: *context_id,
+                        mode,
+                        creator,
+                    })
+                    .await;
                 }
 
                 if let Some(mode) = default_vis {
-                    let _ = node_client
-                        .broadcast_group_mutation(
-                            group_id_bytes,
-                            GroupMutationKind::DefaultVisibilitySet { mode },
-                        )
-                        .await;
+                    broadcast(GroupMutationKind::DefaultVisibilitySet { mode }).await;
                 }
 
                 for (context_id, members) in allowlists {
                     let members_raw: Vec<[u8; 32]> = members.iter().map(|pk| **pk).collect();
-                    let _ = node_client
-                        .broadcast_group_mutation(
-                            group_id_bytes,
-                            GroupMutationKind::ContextAllowlistSet {
-                                context_id: *context_id,
-                                members: members_raw,
-                            },
-                        )
-                        .await;
+                    broadcast(GroupMutationKind::ContextAllowlistSet {
+                        context_id: *context_id,
+                        members: members_raw,
+                    })
+                    .await;
                 }
 
                 for (member, alias) in member_aliases {
-                    let _ = node_client
-                        .broadcast_group_mutation(
-                            group_id_bytes,
-                            GroupMutationKind::MemberAliasSet {
-                                member: *member,
-                                alias,
-                            },
-                        )
-                        .await;
+                    broadcast(GroupMutationKind::MemberAliasSet {
+                        member: *member,
+                        alias,
+                    })
+                    .await;
                 }
 
                 if let Some(alias) = group_alias {
-                    let _ = node_client
-                        .broadcast_group_mutation(
-                            group_id_bytes,
-                            GroupMutationKind::GroupAliasSet { alias },
-                        )
-                        .await;
+                    broadcast(GroupMutationKind::GroupAliasSet { alias }).await;
                 }
 
                 for context_id in contexts {
-                    let _ = node_client
-                        .broadcast_group_mutation(
-                            group_id_bytes,
-                            GroupMutationKind::ContextRegistered {
-                                context_id: *context_id,
-                            },
-                        )
-                        .await;
+                    broadcast(GroupMutationKind::ContextRegistered {
+                        context_id: *context_id,
+                    })
+                    .await;
                 }
 
                 Ok(())

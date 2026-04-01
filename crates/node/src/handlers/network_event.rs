@@ -695,27 +695,36 @@ impl Handler<NetworkEvent> for NodeManager {
                             calimero_node_primitives::sync::GroupMutationKind::GroupMetaSet {
                                 meta_payload,
                             } => {
-                                let _ignored = ctx.spawn(
-                                    async move {
-                                        use calimero_context_config::types::ContextGroupId;
-                                        use calimero_context_primitives::group::StoreGroupMetaRequest;
+                                const MAX_GROUP_META_PAYLOAD_BYTES: usize = 64 * 1024;
+                                if meta_payload.len() > MAX_GROUP_META_PAYLOAD_BYTES {
+                                    warn!(
+                                        payload_len = meta_payload.len(),
+                                        max = MAX_GROUP_META_PAYLOAD_BYTES,
+                                        "Rejecting oversized GroupMetaSet payload"
+                                    );
+                                } else {
+                                    let _ignored = ctx.spawn(
+                                        async move {
+                                            use calimero_context_config::types::ContextGroupId;
+                                            use calimero_context_primitives::group::StoreGroupMetaRequest;
 
-                                        let group_id = ContextGroupId::from(group_id);
-                                        if let Err(err) = context_client
-                                            .store_group_meta(StoreGroupMetaRequest {
-                                                group_id,
-                                                meta_payload,
-                                            })
-                                            .await
-                                        {
-                                            warn!(
-                                                ?err,
-                                                "Failed to store group metadata from gossip"
-                                            );
+                                            let group_id = ContextGroupId::from(group_id);
+                                            if let Err(err) = context_client
+                                                .store_group_meta(StoreGroupMetaRequest {
+                                                    group_id,
+                                                    meta_payload,
+                                                })
+                                                .await
+                                            {
+                                                warn!(
+                                                    ?err,
+                                                    "Failed to store group metadata from gossip"
+                                                );
+                                            }
                                         }
-                                    }
-                                    .into_actor(self),
-                                );
+                                        .into_actor(self),
+                                    );
+                                }
                             }
                             _ => {
                                 let _ignored = ctx.spawn(

@@ -8,7 +8,7 @@ use calimero_context_primitives::group::GetGroupForContextRequest;
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{ContextWithGroup, GetContextsResponse};
 use futures_util::TryStreamExt;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
@@ -36,13 +36,17 @@ pub async fn handler(
             Ok(Some(context)) => {
                 // Filter contexts by application_id
                 if context.application_id == application_id {
-                    let group_id = state
+                    let group_id = match state
                         .ctx_client
                         .get_group_for_context(GetGroupForContextRequest { context_id })
                         .await
-                        .ok()
-                        .flatten()
-                        .map(|gid| hex::encode(gid.to_bytes()));
+                    {
+                        Ok(gid) => gid.map(|g| hex::encode(g.to_bytes())),
+                        Err(err) => {
+                            warn!(context_id=%context_id, error=?err, "Failed to resolve group for context");
+                            None
+                        }
+                    };
                     contexts.push(ContextWithGroup { context, group_id });
                 }
             }

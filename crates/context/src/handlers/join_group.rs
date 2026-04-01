@@ -12,6 +12,11 @@ use tracing::{info, warn};
 
 use crate::{group_store, ContextManager};
 
+/// Maximum number of attempts to poll for group metadata arrival.
+const META_POLL_MAX_ATTEMPTS: u32 = 10;
+/// Interval between metadata polling attempts.
+const META_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 impl Handler<JoinGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <JoinGroupRequest as Message>::Result>;
 
@@ -54,12 +59,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                 // Poll for group metadata to arrive from the peer broadcast.
                 let mut meta_found = false;
-                for _ in 0..10 {
+                for _ in 0..META_POLL_MAX_ATTEMPTS {
                     if group_store::load_group_meta(&datastore, &group_id)?.is_some() {
                         meta_found = true;
                         break;
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(META_POLL_INTERVAL).await;
                 }
                 if !meta_found {
                     bail!(
