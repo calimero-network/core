@@ -23,6 +23,7 @@ mod call;
 mod context;
 mod dev;
 mod group;
+mod namespace;
 mod node;
 mod peers;
 pub mod validation;
@@ -33,6 +34,7 @@ use call::CallCommand;
 use context::ContextCommand;
 use dev::DevCommand;
 use group::GroupCommand;
+use namespace::NamespaceCommand;
 use node::NodeCommand;
 use peers::PeersCommand;
 
@@ -86,6 +88,8 @@ pub enum SubCommands {
     Context(ContextCommand),
     Dev(DevCommand),
     Group(GroupCommand),
+    #[command(alias = "ns")]
+    Namespace(NamespaceCommand),
     Call(CallCommand),
     Peers(PeersCommand),
     #[command(subcommand)]
@@ -159,6 +163,7 @@ impl RootCommand {
             SubCommands::Context(context) => context.run(&mut environment).await,
             SubCommands::Dev(dev) => dev.run(&mut environment).await,
             SubCommands::Group(group) => group.run(&mut environment).await,
+            SubCommands::Namespace(ns) => ns.run(&mut environment).await,
             SubCommands::Call(call) => call.run(&mut environment).await,
             SubCommands::Peers(peers) => peers.run(&mut environment).await,
             SubCommands::Node(node) => {

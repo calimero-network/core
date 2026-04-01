@@ -38,6 +38,7 @@ use crate::connection::ConnectionInfo;
 use crate::traits::{ClientAuthenticator, ClientStorage};
 
 mod group;
+mod namespace;
 
 pub trait UrlFragment: ScopedAlias + AliasKind {
     const KIND: &'static str;
