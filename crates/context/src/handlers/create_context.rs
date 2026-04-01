@@ -292,8 +292,8 @@ impl Prepared<'_> {
                 datastore,
                 &auto_group_id,
                 &identity,
-                &identity_secret,
-                &sender_key,
+                &*identity_secret,
+                &*sender_key,
             )?;
             auto_group_id
         };
