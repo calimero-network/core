@@ -25,6 +25,17 @@ impl Handler<CreateGroupRequest> for ContextManager {
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        // Resolve app_key: use provided value or generate random
+        let app_key = app_key.unwrap_or_else(|| {
+            let bytes: [u8; 32] = rand::thread_rng().gen();
+            AppKey::from(bytes)
+        });
+
+        let group_id = group_id.unwrap_or_else(|| {
+            let bytes: [u8; 32] = rand::thread_rng().gen();
+            bytes.into()
+        });
+
         let (_, admin_identity, sk_bytes, _sender) = match self.get_or_create_namespace_identity(&group_id) {
             Ok(result) => result,
             Err(err) => {
@@ -34,19 +45,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             }
         };
 
-        // Resolve app_key: use provided value or generate random
-        let app_key = app_key.unwrap_or_else(|| {
-            let bytes: [u8; 32] = rand::thread_rng().gen();
-            AppKey::from(bytes)
-        });
-
         let signing_key = Some(sk_bytes);
-
-        // Sync validation
-        let group_id = group_id.unwrap_or_else(|| {
-            let bytes: [u8; 32] = rand::thread_rng().gen();
-            bytes.into()
-        });
 
         if let Ok(Some(_)) = group_store::load_group_meta(&self.datastore, &group_id) {
             return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
