@@ -57,6 +57,8 @@ pub async fn handler(
                     data: CreateContextResponseData {
                         context_id: context.context_id,
                         member_public_key: context.identity,
+                        group_id: context.group_id.map(|g| hex::encode(g.to_bytes())),
+                        group_created: context.group_created,
                     },
                 },
             }

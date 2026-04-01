@@ -42,10 +42,12 @@ impl Message for CreateContextRequest {
     type Result = eyre::Result<CreateContextResponse>;
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct CreateContextResponse {
     pub context_id: ContextId,
     pub identity: PublicKey,
+    pub group_id: Option<calimero_context_config::types::ContextGroupId>,
+    pub group_created: bool,
 }
 
 #[derive(Copy, Clone, Debug)]

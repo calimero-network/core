@@ -74,8 +74,11 @@ impl Handler<CreateContextRequest> for ContextManager {
             identity_secret,
             sender_key,
             group_id,
+            group_created,
             alias,
         } = prepared;
+
+        let group_id_for_response = group_id;
 
         let guard = context
             .lock
@@ -107,7 +110,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         sender_key,
                         init_params,
                         guard,
-                        group_id,
+                        group_id_for_response,
                         alias,
                     )
                     .into_actor(act)
@@ -124,6 +127,8 @@ impl Handler<CreateContextRequest> for ContextManager {
                     CreateContextResponse {
                         context_id: context_meta_for_map_ok.id,
                         identity,
+                        group_id: Some(group_id_for_response),
+                        group_created,
                     }
                 })
                 .map_err(move |err, act, _ctx| {
@@ -144,6 +149,7 @@ struct Prepared<'a> {
     identity_secret: PrivateKey,
     sender_key: PrivateKey,
     group_id: ContextGroupId,
+    group_created: bool,
     alias: Option<String>,
 }
 
@@ -250,6 +256,7 @@ impl Prepared<'_> {
         let identity = identity_secret.public_key();
 
         // Auto-create a single-member group when no explicit group_id was provided.
+        let group_created = group_id.is_none();
         let group_id = if let Some(gid) = group_id {
             gid
         } else {
@@ -310,6 +317,7 @@ impl Prepared<'_> {
             identity_secret,
             sender_key,
             group_id,
+            group_created,
             alias,
         })
     }

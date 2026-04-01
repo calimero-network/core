@@ -241,25 +241,31 @@ impl CreateContextRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextResponseData {
     pub context_id: ContextId,
     pub member_public_key: PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    #[serde(default)]
+    pub group_created: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextResponse {
     pub data: CreateContextResponseData,
 }
 
 impl CreateContextResponse {
-    pub const fn new(context_id: ContextId, member_public_key: PublicKey) -> Self {
+    pub fn new(context_id: ContextId, member_public_key: PublicKey) -> Self {
         Self {
             data: CreateContextResponseData {
                 context_id,
                 member_public_key,
+                group_id: None,
+                group_created: false,
             },
         }
     }
