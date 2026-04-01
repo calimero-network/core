@@ -65,7 +65,10 @@ pub struct CreateCommand {
     #[clap(long = "name", help = "Create an alias for the context")]
     pub context: Option<Alias<ContextId>>,
 
-    #[clap(long, help = "Service name from the application bundle (for multi-service apps)")]
+    #[clap(
+        long,
+        help = "Service name from the application bundle (for multi-service apps)"
+    )]
     pub service: Option<String>,
 
     #[clap(long, help = "Group ID (hex) to attach this context to")]

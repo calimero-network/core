@@ -139,7 +139,12 @@ impl ContextManager {
     pub fn get_or_create_namespace_identity(
         &self,
         group_id: &ContextGroupId,
-    ) -> eyre::Result<(ContextGroupId, calimero_primitives::identity::PublicKey, [u8; 32], [u8; 32])> {
+    ) -> eyre::Result<(
+        ContextGroupId,
+        calimero_primitives::identity::PublicKey,
+        [u8; 32],
+        [u8; 32],
+    )> {
         group_store::get_or_create_namespace_identity(&self.datastore, group_id)
     }
 }

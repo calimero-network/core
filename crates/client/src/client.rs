@@ -23,8 +23,8 @@ use calimero_server_primitives::admin::{
     InviteSpecializedNodeRequest, InviteSpecializedNodeResponse, InviteToContextRequest,
     InviteToContextResponse, JoinContextRequest, JoinContextResponse, ListAliasesResponse,
     ListApplicationsResponse, ListPackagesResponse, ListVersionsResponse, LookupAliasResponse,
-    SyncContextResponse, UninstallApplicationResponse,
-    UpdateContextApplicationRequest, UpdateContextApplicationResponse,
+    SyncContextResponse, UninstallApplicationResponse, UpdateContextApplicationRequest,
+    UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
 use calimero_server_primitives::jsonrpc::{Request, Response};

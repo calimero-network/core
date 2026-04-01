@@ -36,14 +36,15 @@ impl Handler<CreateGroupRequest> for ContextManager {
             bytes.into()
         });
 
-        let (_, admin_identity, sk_bytes, _sender) = match self.get_or_create_namespace_identity(&group_id) {
-            Ok(result) => result,
-            Err(err) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "failed to resolve namespace identity: {err}"
-                )))
-            }
-        };
+        let (_, admin_identity, sk_bytes, _sender) =
+            match self.get_or_create_namespace_identity(&group_id) {
+                Ok(result) => result,
+                Err(err) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "failed to resolve namespace identity: {err}"
+                    )))
+                }
+            };
 
         let signing_key = Some(sk_bytes);
 

@@ -37,12 +37,15 @@ impl Handler<ListNamespacesRequest> for ContextManager {
                     .flatten();
                 let member_count =
                     group_store::count_group_members(&self.datastore, &group_id).unwrap_or(0);
-                let contexts =
-                    group_store::enumerate_group_contexts(&self.datastore, &group_id, 0, usize::MAX)
-                        .unwrap_or_default();
-                let children =
-                    group_store::enumerate_child_groups(&self.datastore, &group_id)
-                        .unwrap_or_default();
+                let contexts = group_store::enumerate_group_contexts(
+                    &self.datastore,
+                    &group_id,
+                    0,
+                    usize::MAX,
+                )
+                .unwrap_or_default();
+                let children = group_store::enumerate_child_groups(&self.datastore, &group_id)
+                    .unwrap_or_default();
 
                 namespaces.push(NamespaceSummary {
                     namespace_id: group_id,

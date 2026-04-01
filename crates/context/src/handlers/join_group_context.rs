@@ -18,14 +18,15 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         // Resolve joiner identity from node group identity.
-        let (joiner_identity, _effective_signing_key) = match self.node_namespace_identity(&group_id) {
-            Some((pk, sk)) => (pk, Some(sk)),
-            None => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "joiner_identity not provided and node has no configured group identity"
-                )));
-            }
-        };
+        let (joiner_identity, _effective_signing_key) =
+            match self.node_namespace_identity(&group_id) {
+                Some((pk, sk)) => (pk, Some(sk)),
+                None => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "joiner_identity not provided and node has no configured group identity"
+                    )));
+                }
+            };
 
         // Validate: group exists, joiner is a member, and has permission to join this context.
         if let Err(err) = (|| -> eyre::Result<()> {

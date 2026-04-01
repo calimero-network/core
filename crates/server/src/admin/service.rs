@@ -141,7 +141,6 @@ pub(crate) fn setup(
             "/contexts/:context_id/group",
             get(get_context_group::handler),
         )
-        
         // Identity management
         .route(
             "/identity/context",

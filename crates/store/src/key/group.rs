@@ -1481,9 +1481,8 @@ pub struct NamespaceIdentity(Key<(GroupPrefix, GroupIdComponent)>);
 impl NamespaceIdentity {
     #[must_use]
     pub fn new(namespace_id: [u8; 32]) -> Self {
-        Self(Key(
-            GenericArray::from([NAMESPACE_IDENTITY_PREFIX]).concat(GenericArray::from(namespace_id)),
-        ))
+        Self(Key(GenericArray::from([NAMESPACE_IDENTITY_PREFIX])
+            .concat(GenericArray::from(namespace_id))))
     }
 
     #[must_use]

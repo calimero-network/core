@@ -600,11 +600,7 @@ pub mod serde_identity {
             }
         }
 
-        deserializer.deserialize_struct(
-            "IdentityConfig",
-            &["peer_id", "keypair"],
-            IdentityVisitor,
-        )
+        deserializer.deserialize_struct("IdentityConfig", &["peer_id", "keypair"], IdentityVisitor)
     }
 }
 

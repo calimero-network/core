@@ -1,6 +1,4 @@
-use calimero_server_primitives::admin::{
-    ListNamespacesApiResponse, NamespaceIdentityApiResponse,
-};
+use calimero_server_primitives::admin::{ListNamespacesApiResponse, NamespaceIdentityApiResponse};
 use eyre::Result;
 
 use super::{ClientAuthenticator, ClientStorage};

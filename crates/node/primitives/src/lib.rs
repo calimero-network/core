@@ -17,4 +17,3 @@ pub enum NodeMode {
     /// Read-only mode - disables JSON-RPC execution, used for TEE observer nodes
     ReadOnly,
 }
-

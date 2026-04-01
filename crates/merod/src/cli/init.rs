@@ -261,9 +261,7 @@ impl InitCommand {
         );
 
         let config = ConfigFile::new(
-            IdentityConfig {
-                keypair: identity,
-            },
+            IdentityConfig { keypair: identity },
             self.mode,
             NetworkConfig::new(
                 SwarmConfig::new(listen),

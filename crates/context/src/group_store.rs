@@ -1108,10 +1108,7 @@ const MAX_NAMESPACE_DEPTH: usize = 16;
 
 /// Walk the parent chain to find the root group (namespace).
 /// Returns the root group id (the one with no parent).
-pub fn resolve_namespace(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<ContextGroupId> {
+pub fn resolve_namespace(store: &Store, group_id: &ContextGroupId) -> EyreResult<ContextGroupId> {
     let mut current = *group_id;
     for _ in 0..MAX_NAMESPACE_DEPTH {
         match get_parent_group(store, &current)? {

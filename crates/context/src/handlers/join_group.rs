@@ -31,14 +31,15 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let inv = &invitation.invitation;
         let group_id = inv.group_id;
 
-        let (_, joiner_identity, sk_bytes, _sender) = match self.get_or_create_namespace_identity(&group_id) {
-            Ok(result) => result,
-            Err(err) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "failed to resolve namespace identity for join: {err}"
-                )));
-            }
-        };
+        let (_, joiner_identity, sk_bytes, _sender) =
+            match self.get_or_create_namespace_identity(&group_id) {
+                Ok(result) => result,
+                Err(err) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "failed to resolve namespace identity for join: {err}"
+                    )));
+                }
+            };
 
         let signing_key = Some(sk_bytes);
 

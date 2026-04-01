@@ -362,8 +362,8 @@ impl NodeClient {
             metadata,
             package,
             version,
-            None,  // signer_id: None for non-bundle installations
-            false, // is_bundle: false for single WASM
+            None,       // signer_id: None for non-bundle installations
+            false,      // is_bundle: false for single WASM
             Vec::new(), // services: empty for single WASM
         )
     }
@@ -550,7 +550,7 @@ impl NodeClient {
                 version,
                 Some(&signer_id), // signer_id from manifest verification
                 true,             // is_bundle: true for bundles
-            Vec::new(), // services: populated from manifest when multi-service
+                Vec::new(),       // services: populated from manifest when multi-service
             );
         }
 
@@ -571,9 +571,14 @@ impl NodeClient {
             .await?;
 
         self.install_application(
-            &blob_id, size, &uri, metadata, package, version,
-            None,  // signer_id: None for non-bundle installations
-            false, // is_bundle: false for single WASM
+            &blob_id,
+            size,
+            &uri,
+            metadata,
+            package,
+            version,
+            None,       // signer_id: None for non-bundle installations
+            false,      // is_bundle: false for single WASM
             Vec::new(), // services: empty for single WASM
         )
     }
@@ -743,7 +748,7 @@ impl NodeClient {
             version,
             Some(&signer_id), // signer_id from manifest verification
             true,             // is_bundle: true for bundles
-            Vec::new(), // services: populated from manifest when multi-service
+            Vec::new(),       // services: populated from manifest when multi-service
         )?;
 
         Ok(application_id)
@@ -1111,7 +1116,7 @@ impl NodeClient {
             version,
             Some(&signer_id), // signer_id from manifest verification
             true,             // is_bundle: true for bundles
-            Vec::new(), // services: populated from manifest when multi-service
+            Vec::new(),       // services: populated from manifest when multi-service
         )
     }
 

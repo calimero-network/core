@@ -8,7 +8,9 @@ use super::Capability;
 use crate::cli::Environment;
 
 #[derive(Copy, Clone, Debug, Parser)]
-#[command(about = "Revoke capabilities from a member (use 'meroctl group members set-caps' for group-level capabilities)")]
+#[command(
+    about = "Revoke capabilities from a member (use 'meroctl group members set-caps' for group-level capabilities)"
+)]
 pub struct RevokePermissionCommand {
     #[arg(help = "The context ID")]
     #[arg(long, short, default_value = "default")]

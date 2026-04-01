@@ -56,7 +56,10 @@ impl ApplicationMeta {
     /// Resolve a service's bytecode blob by name.
     /// Returns None if not found. For single-service apps, returns
     /// the default bytecode when service_name is None.
-    pub fn resolve_service(&self, service_name: Option<&str>) -> Option<(key::BlobMeta, key::BlobMeta)> {
+    pub fn resolve_service(
+        &self,
+        service_name: Option<&str>,
+    ) -> Option<(key::BlobMeta, key::BlobMeta)> {
         match service_name {
             None if self.services.is_empty() => Some((self.bytecode, self.compiled)),
             None if self.services.len() == 1 => {
@@ -64,7 +67,11 @@ impl ApplicationMeta {
                 Some((svc.bytecode, svc.compiled))
             }
             None => None,
-            Some(name) => self.services.iter().find(|s| &*s.name == name).map(|s| (s.bytecode, s.compiled)),
+            Some(name) => self
+                .services
+                .iter()
+                .find(|s| &*s.name == name)
+                .map(|s| (s.bytecode, s.compiled)),
         }
     }
 }
