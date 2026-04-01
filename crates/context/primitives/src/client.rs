@@ -34,7 +34,8 @@ use crate::group::{
     SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest,
     StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
     StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
-    StoreGroupContextRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest,
+    StoreGroupContextRequest, StoreGroupMetaRequest, StoreMemberAliasRequest,
+    StoreMemberCapabilityRequest,
     SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
     UpgradeGroupRequest, UpgradeGroupResponse,
 };
@@ -1224,6 +1225,20 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::StoreGroupContext {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn store_group_meta(&self, request: StoreGroupMetaRequest) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::StoreGroupMeta {
                 request,
                 outcome: sender,
             })

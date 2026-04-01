@@ -1,6 +1,7 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::BroadcastGroupLocalStateRequest;
 use calimero_node_primitives::sync::GroupMutationKind;
+use tracing::warn;
 
 use crate::{group_store, ContextManager};
 
@@ -54,11 +55,30 @@ impl Handler<BroadcastGroupLocalStateRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
+        let group_meta_payload = group_store::load_group_meta(&self.datastore, &group_id)
+            .ok()
+            .flatten()
+            .and_then(|m| {
+                borsh::to_vec(&m)
+                    .map_err(|e| warn!(?e, "failed to serialize group meta for broadcast"))
+                    .ok()
+            });
+
         let node_client = self.node_client.clone();
         let group_id_bytes = group_id.to_bytes();
 
         ActorResponse::r#async(
             async move {
+                // Broadcast group metadata first so new peers can bootstrap
+                if let Some(meta_payload) = group_meta_payload {
+                    let _ = node_client
+                        .broadcast_group_mutation(
+                            group_id_bytes,
+                            GroupMutationKind::GroupMetaSet { meta_payload },
+                        )
+                        .await;
+                }
+
                 for (member, capabilities) in member_caps {
                     let _ = node_client
                         .broadcast_group_mutation(

@@ -22,7 +22,8 @@ use crate::group::{
     SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest,
     StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
     StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
-    StoreGroupContextRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest,
+    StoreGroupContextRequest, StoreGroupMetaRequest, StoreMemberAliasRequest,
+    StoreMemberCapabilityRequest,
     SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
@@ -375,6 +376,10 @@ pub enum ContextMessage {
     StoreGroupContext {
         request: StoreGroupContextRequest,
         outcome: oneshot::Sender<<StoreGroupContextRequest as Message>::Result>,
+    },
+    StoreGroupMeta {
+        request: StoreGroupMetaRequest,
+        outcome: oneshot::Sender<<StoreGroupMetaRequest as Message>::Result>,
     },
     GrantContextCapabilities {
         request: GrantContextCapabilitiesRequest,

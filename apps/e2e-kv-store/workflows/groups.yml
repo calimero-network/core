@@ -53,10 +53,6 @@ steps:
     node: e2e-node-1
     group_id: '{{group_id_e2e-node-1}}'
 
-  - name: Wait for group gossip propagation
-    type: wait
-    seconds: 5
-
   - name: Node-2 joins group
     type: join_group
     node: e2e-node-2

@@ -543,6 +543,17 @@ impl Message for StoreGroupContextRequest {
 }
 
 #[derive(Debug)]
+pub struct StoreGroupMetaRequest {
+    pub group_id: ContextGroupId,
+    /// Borsh-serialized `GroupMetaValue`.
+    pub meta_payload: Vec<u8>,
+}
+
+impl Message for StoreGroupMetaRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
 pub struct StoreMemberCapabilityRequest {
     pub group_id: ContextGroupId,
     pub member: PublicKey,
