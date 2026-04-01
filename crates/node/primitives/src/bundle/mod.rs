@@ -65,7 +65,23 @@ pub struct BundleSignature {
     pub signed_at: Option<String>,
 }
 
-/// Bundle manifest describing the contents of a bundle archive
+/// A named service within a multi-service bundle.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleService {
+    pub name: String,
+    pub wasm: BundleArtifact,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abi: Option<BundleArtifact>,
+}
+
+/// Bundle manifest describing the contents of a bundle archive.
+///
+/// Supports two formats:
+/// - **Single-service** (backward compat): `wasm` + optional `abi` fields
+/// - **Multi-service**: `services` array with named WASM modules
+///
+/// If `services` is present and non-empty, it takes priority over `wasm`/`abi`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleManifest {
@@ -73,18 +89,9 @@ pub struct BundleManifest {
     pub package: String,
     pub app_version: String,
 
-    /// The signerId (did:key) derived from the signing public key.
-    ///
-    /// This field is **required** for all bundle manifests. Both `signer_id` and `signature`
-    /// must be present for bundle installation. The `signer_id` must match the signerId derived
-    /// from the signature's public key during verification.
-    ///
-    /// The field is `Option<String>` at the type level for deserialization flexibility, but
-    /// `verify_manifest_signature` will reject manifests where this field is `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signer_id: Option<String>,
 
-    /// Minimum required runtime version (semver).
     pub min_runtime_version: String,
 
     #[serde(default)]
@@ -93,8 +100,15 @@ pub struct BundleManifest {
     #[serde(default)]
     pub interfaces: Option<BundleInterfaces>,
 
+    /// Single-service WASM (backward compat). Ignored when `services` is non-empty.
     pub wasm: Option<BundleArtifact>,
+    /// Single-service ABI (backward compat). Ignored when `services` is non-empty.
     pub abi: Option<BundleArtifact>,
+
+    /// Named services. When present, each context specifies which service it runs.
+    /// If empty/absent, the bundle is single-service and uses `wasm`/`abi` above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub services: Option<Vec<BundleService>>,
 
     #[serde(default)]
     pub migrations: Vec<BundleArtifact>,
@@ -104,4 +118,20 @@ pub struct BundleManifest {
 
     #[serde(default)]
     pub signature: Option<BundleSignature>,
+}
+
+impl BundleManifest {
+    /// Returns the list of service names in this bundle.
+    /// For single-service bundles, returns an empty vec (no named services).
+    pub fn service_names(&self) -> Vec<&str> {
+        match &self.services {
+            Some(svcs) if !svcs.is_empty() => svcs.iter().map(|s| s.name.as_str()).collect(),
+            _ => vec![],
+        }
+    }
+
+    /// Returns true if this is a multi-service bundle.
+    pub fn is_multi_service(&self) -> bool {
+        matches!(&self.services, Some(svcs) if svcs.len() > 1)
+    }
 }
