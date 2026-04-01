@@ -132,10 +132,7 @@ pub async fn handler(
         }
         Err(err) => {
             warn!(error=?err, "Failed to broadcast, unsubscribing from group");
-            let _ = state
-                .node_client
-                .unsubscribe_group(group_id_bytes)
-                .await;
+            let _ = state.node_client.unsubscribe_group(group_id_bytes).await;
             ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
                 message: "Failed to broadcast attestation".to_owned(),

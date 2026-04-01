@@ -112,7 +112,10 @@ impl NodeClient {
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
-                warn!(?group_id, "no mesh peers after {MAX_WAIT:?}, publishing anyway");
+                warn!(
+                    ?group_id,
+                    "no mesh peers after {MAX_WAIT:?}, publishing anyway"
+                );
                 break;
             }
             tokio::time::sleep(POLL_INTERVAL).await;
