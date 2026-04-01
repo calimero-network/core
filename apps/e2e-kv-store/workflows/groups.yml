@@ -62,7 +62,7 @@ steps:
     type: join_group_context
     node: e2e-node-2
     group_id: '{{group_id_e2e-node-1}}'
-    context_id: '{{ctx1_id_e2e-node-1}}'
+    context_id: '{{ctx1_id}}'
     outputs:
       ctx1_id_n2: contextId
       ctx1_key_node2: memberPublicKey
@@ -70,7 +70,7 @@ steps:
   - name: Node-1 writes to context 1
     type: call
     node: e2e-node-1
-    context_id: '{{ctx1_id_e2e-node-1}}'
+    context_id: '{{ctx1_id}}'
     executor_public_key: '{{ctx1_key_node1}}'
     method: set
     args:
@@ -79,7 +79,7 @@ steps:
 
   - name: Wait for sync - context 1
     type: wait_for_sync
-    context_id: '{{ctx1_id_e2e-node-1}}'
+    context_id: '{{ctx1_id}}'
     nodes:
       - e2e-node-1
       - e2e-node-2
@@ -90,7 +90,7 @@ steps:
   - name: Node-2 reads from context 1
     type: call
     node: e2e-node-2
-    context_id: '{{ctx1_id_e2e-node-1}}'
+    context_id: '{{ctx1_id}}'
     executor_public_key: '{{ctx1_key_node2}}'
     method: get
     args:
@@ -106,7 +106,7 @@ steps:
   - name: Node-2 writes to context 1
     type: call
     node: e2e-node-2
-    context_id: '{{ctx1_id_e2e-node-1}}'
+    context_id: '{{ctx1_id}}'
     executor_public_key: '{{ctx1_key_node2}}'
     method: set
     args:
@@ -115,7 +115,7 @@ steps:
 
   - name: Wait for sync - context 1 reverse
     type: wait_for_sync
-    context_id: '{{ctx1_id_e2e-node-1}}'
+    context_id: '{{ctx1_id}}'
     nodes:
       - e2e-node-1
       - e2e-node-2
@@ -126,7 +126,7 @@ steps:
   - name: Node-1 reads node-2 value
     type: call
     node: e2e-node-1
-    context_id: '{{ctx1_id_e2e-node-1}}'
+    context_id: '{{ctx1_id}}'
     executor_public_key: '{{ctx1_key_node1}}'
     method: get
     args:
@@ -154,7 +154,7 @@ steps:
     type: join_group_context
     node: e2e-node-2
     group_id: '{{group_id_e2e-node-1}}'
-    context_id: '{{ctx2_id_e2e-node-1}}'
+    context_id: '{{ctx2_id}}'
     outputs:
       ctx2_id_n2: contextId
       ctx2_key_node2: memberPublicKey
@@ -162,7 +162,7 @@ steps:
   - name: Node-1 writes to context 2
     type: call
     node: e2e-node-1
-    context_id: '{{ctx2_id_e2e-node-1}}'
+    context_id: '{{ctx2_id}}'
     executor_public_key: '{{ctx2_key_node1}}'
     method: set
     args:
@@ -171,7 +171,7 @@ steps:
 
   - name: Wait for sync - context 2
     type: wait_for_sync
-    context_id: '{{ctx2_id_e2e-node-1}}'
+    context_id: '{{ctx2_id}}'
     nodes:
       - e2e-node-1
       - e2e-node-2
@@ -182,7 +182,7 @@ steps:
   - name: Node-2 reads from context 2
     type: call
     node: e2e-node-2
-    context_id: '{{ctx2_id_e2e-node-1}}'
+    context_id: '{{ctx2_id}}'
     executor_public_key: '{{ctx2_key_node2}}'
     method: get
     args:
@@ -198,7 +198,7 @@ steps:
   - name: Verify context isolation - ctx2 key not in ctx1
     type: call
     node: e2e-node-2
-    context_id: '{{ctx1_id_e2e-node-1}}'
+    context_id: '{{ctx1_id}}'
     executor_public_key: '{{ctx1_key_node2}}'
     method: get
     args:
@@ -231,7 +231,7 @@ steps:
   - name: Create context invitation on node-1
     type: invite
     node: e2e-node-1
-    context_id: '{{ctx3_id_e2e-node-1}}'
+    context_id: '{{ctx3_id}}'
     granter_id: '{{ctx3_key_node1}}'
     valid_for_seconds: 3600
     outputs:
@@ -247,7 +247,7 @@ steps:
 
   - name: Wait for sync - context 3
     type: wait_for_sync
-    context_id: '{{ctx3_id_e2e-node-1}}'
+    context_id: '{{ctx3_id}}'
     nodes:
       - e2e-node-1
       - e2e-node-2
@@ -258,7 +258,7 @@ steps:
   - name: Node-2 writes to context 3
     type: call
     node: e2e-node-2
-    context_id: '{{ctx3_id_e2e-node-1}}'
+    context_id: '{{ctx3_id}}'
     executor_public_key: '{{ctx3_key_node2}}'
     method: set
     args:
@@ -267,7 +267,7 @@ steps:
 
   - name: Wait for sync - context 3 write
     type: wait_for_sync
-    context_id: '{{ctx3_id_e2e-node-1}}'
+    context_id: '{{ctx3_id}}'
     nodes:
       - e2e-node-1
       - e2e-node-2
@@ -278,7 +278,7 @@ steps:
   - name: Node-1 reads from context 3
     type: call
     node: e2e-node-1
-    context_id: '{{ctx3_id_e2e-node-1}}'
+    context_id: '{{ctx3_id}}'
     executor_public_key: '{{ctx3_key_node1}}'
     method: get
     args:
