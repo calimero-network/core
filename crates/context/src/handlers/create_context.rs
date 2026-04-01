@@ -279,13 +279,21 @@ impl Prepared<'_> {
                     auto_join: true,
                 },
             )?;
+            let sender_key = PrivateKey::random(&mut rng);
             group_store::add_group_member_with_keys(
                 datastore,
                 &auto_group_id,
                 &identity,
                 GroupMemberRole::Admin,
                 Some(*identity_secret),
-                Some(*PrivateKey::random(&mut rng)),
+                Some(*sender_key),
+            )?;
+            group_store::store_namespace_identity(
+                datastore,
+                &auto_group_id,
+                &identity,
+                &identity_secret,
+                &sender_key,
             )?;
             auto_group_id
         };

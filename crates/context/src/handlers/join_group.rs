@@ -31,19 +31,16 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let inv = &invitation.invitation;
         let group_id = inv.group_id;
 
-        let node_identity = self.node_namespace_identity(&group_id);
-
-        let joiner_identity = match node_identity {
-            Some((pk, _)) => pk,
-            None => {
+        let (_, joiner_identity, sk_bytes, _sender) = match self.get_or_create_namespace_identity(&group_id) {
+            Ok(result) => result,
+            Err(err) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
-                    "joiner_identity not provided and node has no namespace identity"
+                    "failed to resolve namespace identity for join: {err}"
                 )));
             }
         };
 
-        let node_sk = node_identity.map(|(_, sk)| sk);
-        let signing_key = node_sk;
+        let signing_key = Some(sk_bytes);
 
         let inviter_identity = PublicKey::from(inv.inviter_identity.to_bytes());
 

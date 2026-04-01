@@ -25,14 +25,11 @@ impl Handler<CreateGroupRequest> for ContextManager {
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_namespace_identity(&group_id);
-
-        // Resolve admin_identity from node group identity
-        let admin_identity = match node_identity {
-            Some((pk, _)) => pk,
-            None => {
+        let (_, admin_identity, sk_bytes, _sender) = match self.get_or_create_namespace_identity(&group_id) {
+            Ok(result) => result,
+            Err(err) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
-                    "admin_identity not provided and node has no configured group identity"
+                    "failed to resolve namespace identity: {err}"
                 )))
             }
         };
@@ -43,9 +40,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             AppKey::from(bytes)
         });
 
-        // Resolve signing_key: node identity key or stored key
-        let node_sk = node_identity.map(|(_, sk)| sk);
-        let signing_key = node_sk;
+        let signing_key = Some(sk_bytes);
 
         // Sync validation
         let group_id = group_id.unwrap_or_else(|| {
