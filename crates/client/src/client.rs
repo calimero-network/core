@@ -18,12 +18,12 @@ use calimero_server_primitives::admin::{
     DeleteAliasResponse, DeleteContextApiRequest, DeleteContextResponse,
     GenerateContextIdentityResponse, GetApplicationResponse, GetContextClientKeysResponse,
     GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
-    GetContextsResponse, GetLatestVersionResponse, GetPeersCountResponse, GrantPermissionResponse,
+    GetContextsResponse, GetLatestVersionResponse, GetPeersCountResponse,
     InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
     InviteSpecializedNodeRequest, InviteSpecializedNodeResponse, InviteToContextRequest,
     InviteToContextResponse, JoinContextRequest, JoinContextResponse, ListAliasesResponse,
     ListApplicationsResponse, ListPackagesResponse, ListVersionsResponse, LookupAliasResponse,
-    RevokePermissionResponse, SyncContextResponse, UninstallApplicationResponse,
+    SyncContextResponse, UninstallApplicationResponse,
     UpdateContextApplicationRequest, UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
@@ -309,36 +309,6 @@ where
             serde_json::to_string_pretty(&response)?
         );
 
-        Ok(response)
-    }
-
-    pub async fn grant_permissions(
-        &self,
-        context_id: &ContextId,
-        request: Vec<(PublicKey, calimero_context_config::types::Capability)>,
-    ) -> Result<GrantPermissionResponse> {
-        let response = self
-            .connection
-            .post(
-                &format!("admin-api/contexts/{}/capabilities/grant", context_id),
-                request,
-            )
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn revoke_permissions(
-        &self,
-        context_id: &ContextId,
-        request: Vec<(PublicKey, calimero_context_config::types::Capability)>,
-    ) -> Result<RevokePermissionResponse> {
-        let response = self
-            .connection
-            .post(
-                &format!("admin-api/contexts/{}/capabilities/revoke", context_id),
-                request,
-            )
-            .await?;
         Ok(response)
     }
 
