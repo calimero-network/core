@@ -260,10 +260,18 @@
   </div>
 </div>
 
+<div class="term-row" data-term="namespace">
+  <div class="term-name">Namespace</div>
+  <div class="term-body">
+    A root group (no parent) that serves as the application instance boundary and identity scope. Each namespace gets its own Ed25519 keypair. Subgroups and contexts within the namespace share that identity. Different namespaces have different keys. Subgroups inherit the namespace's target_application_id.
+    <div class="term-source">Store key: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/key/group.rs" target="_blank" rel="noopener">NamespaceIdentity (0x36)</a> &bull; API: <code>GET /admin-api/namespaces</code></div>
+  </div>
+</div>
+
 <div class="term-row" data-term="group">
   <div class="term-name">Group</div>
   <div class="term-body">
-    Governance unit owning one or more Contexts. Manages membership, capabilities, visibility via signed operations.
+    Governance unit within a namespace, owning one or more Contexts. Manages membership, capabilities, visibility via signed operations. Subgroups inherit the root group's application.
     <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/primitives/src/group.rs" target="_blank" rel="noopener">crates/context/primitives/src/group.rs</a></div>
   </div>
 </div>

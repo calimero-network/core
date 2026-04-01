@@ -12,9 +12,21 @@
 <h1>Core <em>Concepts</em></h1>
 <p class="page-subtitle">Groups, contexts, roles, capabilities, and CRDTs for app builders</p>
 
+<div class="card gc">
+<h2>Namespaces</h2>
+<p>A <strong>namespace</strong> is a root group (a group with no parent). It is the <strong>application instance boundary</strong> and the <strong>identity scope</strong> for a node.</p>
+<ul>
+<li>Each namespace gets its own Ed25519 keypair, auto-generated on first use and persisted in the datastore.</li>
+<li>All subgroups and contexts within the namespace share the same node identity.</li>
+<li>Different namespaces have different keys &mdash; identity isolation across application instances.</li>
+<li>Subgroups inherit the namespace&rsquo;s <code>target_application_id</code>; upgrading the root upgrades the entire tree.</li>
+<li>The admin API exposes <code>GET /admin-api/namespaces</code> to list, query, and inspect namespace identity.</li>
+</ul>
+</div>
+
 <div class="card ga">
 <h2>Groups</h2>
-<p>A <strong>group</strong> is the top-level governance boundary. It has members, an application, and one or more contexts. All membership management, access control, and upgrades happen at the group level via signed governance operations that propagate via P2P gossip.</p>
+<p>A <strong>group</strong> is a governance boundary within a namespace. It has members, an application (inherited from the namespace root), and one or more contexts. All membership management, access control, and upgrades happen at the group level via signed governance operations that propagate via P2P gossip.</p>
 <ul>
 <li>Think of the group as where you vote, invite people, and upgrade the app.</li>
 <li>Contexts live <em>inside</em> a group; they do not replace group governance.</li>

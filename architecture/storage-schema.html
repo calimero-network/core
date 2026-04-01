@@ -204,7 +204,7 @@
      ════════════════════════════════════════════════════════ -->
 <div class="card gc">
 <h2>Group Column Detail</h2>
-<p style="margin-bottom:18px;">The Group column uses a single-byte prefix to partition 20 logical sub-namespaces within one RocksDB column family. Each prefix isolates a governance concern — membership, capabilities, operations log, upgrades, and aliases.</p>
+<p style="margin-bottom:18px;">The Group column uses a single-byte prefix to partition logical sub-namespaces within one RocksDB column family. Each prefix isolates a governance concern — membership, capabilities, operations log, upgrades, aliases, and namespace identity.</p>
 
 <h3>Membership &amp; Metadata (0x20–0x23)</h3>
 <table class="schema-table">
@@ -494,6 +494,31 @@
 </tr>
 </tbody>
 </table>
+</div>
+
+<h3>Namespace Identity (0x36)</h3>
+<table class="schema-table">
+<thead><tr><th>Prefix</th><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sp">0x36</td>
+  <td class="sk">NamespaceIdentity</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x36</span><span class="plus">+</span><span class="seg seg-id">namespace_id (32)</span></span></td>
+  <td class="sv">NamespaceIdentityValue</td>
+  <td class="sd">Node's Ed25519 keypair for this namespace (root group). Auto-generated on first create/join, shared across all subgroups and contexts in the namespace.</td>
+</tr>
+</tbody>
+</table>
+
+<details open><summary>NamespaceIdentityValue fields</summary>
+<div class="typedef">
+<span class="kw">struct</span> <span class="tp">NamespaceIdentityValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">public_key</span>: [u8; 32],<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">private_key</span>: [u8; 32],<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sender_key</span>: [u8; 32],<br>
+}
+</div>
+</details>
 </div>
 
 <!-- ════════════════════════════════════════════════════════
