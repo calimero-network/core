@@ -148,8 +148,6 @@ pub async fn handler(
     let deadline = tokio::time::Instant::now() + MAX_ADMISSION_WAIT;
 
     while tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(ADMISSION_POLL).await;
-
         match state
             .ctx_client
             .list_group_contexts(ListGroupContextsRequest {
@@ -194,7 +192,10 @@ pub async fn handler(
                 }
                 break;
             }
-            Err(_) => {}
+            Err(err) => {
+                tracing::debug!(error=?err, "Admission check not yet successful, retrying...");
+                tokio::time::sleep(ADMISSION_POLL).await;
+            }
         }
     }
 

@@ -607,8 +607,6 @@ impl Message for StoreContextAllowlistRequest {
     type Result = eyre::Result<()>;
 }
 
-#[derive(Debug)]
-
 // ---------------------------------------------------------------------------
 // Namespace queries
 // ---------------------------------------------------------------------------

@@ -1119,7 +1119,9 @@ pub fn resolve_namespace(
             None => return Ok(current),
         }
     }
-    Ok(current)
+    eyre::bail!(
+        "namespace resolution exceeded max depth ({MAX_NAMESPACE_DEPTH}), possible circular reference"
+    )
 }
 
 /// Read this node's identity for a namespace from the store.
@@ -1200,7 +1202,7 @@ fn cascade_target_application(
     let mut queue = vec![*group_id];
     let mut depth = 0u8;
 
-    while !queue.is_empty() && depth < 16 {
+    while !queue.is_empty() && (depth as usize) < MAX_NAMESPACE_DEPTH {
         let mut next_queue = Vec::new();
         for gid in &queue {
             let children = enumerate_child_groups(store, gid)?;

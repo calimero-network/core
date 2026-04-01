@@ -3,12 +3,12 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::group::GetNamespaceIdentityRequest;
 use calimero_server_primitives::admin::NamespaceIdentityApiResponse;
 use reqwest::StatusCode;
 use tracing::{error, info};
 
+use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::service::{ApiError, ApiResponse};
 use crate::AdminState;
 
@@ -16,7 +16,7 @@ pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let group_id = match parse_namespace_id(&namespace_id_str) {
+    let group_id = match parse_group_id(&namespace_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
@@ -51,14 +51,3 @@ pub async fn handler(
     }
 }
 
-fn parse_namespace_id(s: &str) -> Result<ContextGroupId, ApiError> {
-    let bytes = hex::decode(s).map_err(|_| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid namespace id: expected hex-encoded 32 bytes".into(),
-    })?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|_| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid namespace id: must be exactly 32 bytes".into(),
-    })?;
-    Ok(ContextGroupId::from(arr))
-}
