@@ -34,6 +34,8 @@ pub struct CreateContextRequest {
     pub protocol: String,
     pub seed: Option<[u8; 32]>,
     pub application_id: ApplicationId,
+    /// Which service from the bundle to run. None for single-service apps.
+    pub service_name: Option<String>,
     pub identity_secret: Option<PrivateKey>,
     pub init_params: Vec<u8>,
     pub group_id: Option<ContextGroupId>,

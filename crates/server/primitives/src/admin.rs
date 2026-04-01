@@ -214,6 +214,9 @@ impl GetApplicationResponse {
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextRequest {
     pub application_id: ApplicationId,
+    /// Which service from the application bundle to run. Optional for single-service apps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_name: Option<String>,
     pub context_seed: Option<Hash>,
     pub initialization_params: Vec<u8>,
     pub group_id: Option<String>,
@@ -232,6 +235,7 @@ impl CreateContextRequest {
     ) -> Self {
         Self {
             application_id,
+            service_name: None,
             context_seed,
             initialization_params,
             group_id,

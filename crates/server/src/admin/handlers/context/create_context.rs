@@ -40,6 +40,7 @@ pub async fn handler(
         .create_context(
             "local".to_owned(),
             &req.application_id,
+            req.service_name,
             identity_secret,
             req.initialization_params,
             req.context_seed.map(Into::into),
