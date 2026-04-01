@@ -28,7 +28,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         }: UpgradeGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_group_identity();
+        let node_identity = self.node_namespace_identity(&group_id);
 
         // Resolve requester: use provided value or fall back to node group identity
         let requester = match requester {

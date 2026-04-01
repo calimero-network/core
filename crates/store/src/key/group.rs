@@ -1068,6 +1068,8 @@ pub const GROUP_MEMBER_CONTEXT_PREFIX: u8 = 0x32;
 pub const GROUP_CONTEXT_MEMBER_CAP_PREFIX: u8 = 0x33;
 pub const GROUP_PARENT_REF_PREFIX: u8 = 0x34;
 pub const GROUP_CHILD_INDEX_PREFIX: u8 = 0x35;
+/// Per-namespace (root group) node identity keypair.
+pub const NAMESPACE_IDENTITY_PREFIX: u8 = 0x36;
 
 /// Stores the latest applied op sequence and content hash for a group.
 /// Key: `prefix(1) + group_id(32)` → `GroupOpHeadValue`.
@@ -1463,6 +1465,71 @@ impl Debug for GroupChildIndex {
             .field("child_group_id", &self.child_group_id())
             .finish()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Namespace identity: per-root-group keypair for this node
+// ---------------------------------------------------------------------------
+
+/// Store key for the node's identity within a namespace (root group).
+/// Key layout: `NAMESPACE_IDENTITY_PREFIX (1 byte) + namespace_id (32 bytes)`.
+/// The namespace_id is the root group's ContextGroupId.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NamespaceIdentity(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl NamespaceIdentity {
+    #[must_use]
+    pub fn new(namespace_id: [u8; 32]) -> Self {
+        Self(Key(
+            GenericArray::from([NAMESPACE_IDENTITY_PREFIX]).concat(GenericArray::from(namespace_id)),
+        ))
+    }
+
+    #[must_use]
+    pub fn namespace_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for NamespaceIdentity {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NamespaceIdentity {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NamespaceIdentity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NamespaceIdentity")
+            .field("namespace_id", &self.namespace_id())
+            .finish()
+    }
+}
+
+/// Value for [`NamespaceIdentity`]. The Ed25519 keypair this node uses as its
+/// member identity within the namespace, plus a sender key for encrypted sync.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NamespaceIdentityValue {
+    pub public_key: [u8; 32],
+    pub private_key: [u8; 32],
+    pub sender_key: [u8; 32],
 }
 
 #[cfg(test)]

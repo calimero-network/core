@@ -18,7 +18,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 bail!("group '{group_id:?}' not found");
             };
 
-            let Some((node_identity, _)) = self.node_group_identity() else {
+            let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
                 bail!("node has no group identity configured");
             };
             if !group_store::check_group_membership(&self.datastore, &group_id, &node_identity)? {

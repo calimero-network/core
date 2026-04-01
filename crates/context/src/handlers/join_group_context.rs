@@ -18,7 +18,7 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         // Resolve joiner identity from node group identity.
-        let (joiner_identity, _effective_signing_key) = match self.node_group_identity() {
+        let (joiner_identity, _effective_signing_key) = match self.node_namespace_identity(&group_id) {
             Some((pk, sk)) => (pk, Some(sk)),
             None => {
                 return ActorResponse::reply(Err(eyre::eyre!(

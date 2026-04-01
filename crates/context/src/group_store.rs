@@ -14,7 +14,8 @@ use calimero_store::key::{
     GroupMemberCapabilityValue, GroupMemberContext, GroupMemberValue, GroupMeta, GroupMetaValue,
     GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupSigningKey,
     GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
-    GROUP_CHILD_INDEX_PREFIX, GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
+    NamespaceIdentity, NamespaceIdentityValue, GROUP_CHILD_INDEX_PREFIX,
+    GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
     GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
     GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX,
     GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX, GROUP_SIGNING_KEY_PREFIX,
@@ -1095,6 +1096,96 @@ pub fn remove_parent_group(store: &Store, child_group_id: &ContextGroupId) -> Ey
         handle.delete(&idx_key)?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Namespace identity: per-root-group node keypair
+// ---------------------------------------------------------------------------
+
+const MAX_NAMESPACE_DEPTH: usize = 16;
+
+/// Walk the parent chain to find the root group (namespace).
+/// Returns the root group id (the one with no parent).
+pub fn resolve_namespace(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<ContextGroupId> {
+    let mut current = *group_id;
+    for _ in 0..MAX_NAMESPACE_DEPTH {
+        match get_parent_group(store, &current)? {
+            Some(parent) => current = parent,
+            None => return Ok(current),
+        }
+    }
+    Ok(current)
+}
+
+/// Read this node's identity for a namespace from the store.
+pub fn get_namespace_identity(
+    store: &Store,
+    namespace_id: &ContextGroupId,
+) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+    let handle = store.handle();
+    let key = NamespaceIdentity::new(namespace_id.to_bytes());
+    match handle.get(&key)? {
+        Some(val) => Ok(Some((
+            PublicKey::from(val.public_key),
+            val.private_key,
+            val.sender_key,
+        ))),
+        None => Ok(None),
+    }
+}
+
+/// Store this node's identity for a namespace.
+pub fn store_namespace_identity(
+    store: &Store,
+    namespace_id: &ContextGroupId,
+    public_key: &PublicKey,
+    private_key: &[u8; 32],
+    sender_key: &[u8; 32],
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = NamespaceIdentity::new(namespace_id.to_bytes());
+    handle.put(
+        &key,
+        &NamespaceIdentityValue {
+            public_key: **public_key,
+            private_key: *private_key,
+            sender_key: *sender_key,
+        },
+    )?;
+    Ok(())
+}
+
+/// Resolve the namespace for a group and return this node's identity.
+/// Returns None if no identity has been stored for that namespace.
+pub fn resolve_namespace_identity(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+    let ns_id = resolve_namespace(store, group_id)?;
+    get_namespace_identity(store, &ns_id)
+}
+
+/// Resolve the namespace for a group and return this node's identity,
+/// generating and storing a new keypair if none exists.
+pub fn get_or_create_namespace_identity(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
+    let ns_id = resolve_namespace(store, group_id)?;
+    if let Some((pk, sk, sender)) = get_namespace_identity(store, &ns_id)? {
+        return Ok((ns_id, pk, sk, sender));
+    }
+
+    let private_key = calimero_primitives::identity::PrivateKey::random(&mut rand::thread_rng());
+    let public_key = private_key.public_key();
+    let sender_key = calimero_primitives::identity::PrivateKey::random(&mut rand::thread_rng());
+
+    store_namespace_identity(store, &ns_id, &public_key, &private_key, &sender_key)?;
+
+    Ok((ns_id, public_key, *private_key, *sender_key))
 }
 
 fn has_direct_member(

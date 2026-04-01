@@ -27,7 +27,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         }: AdmitTeeNodeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_group_identity();
+        let node_identity = self.node_namespace_identity(&group_id);
 
         let requester = match node_identity {
             Some((pk, _)) => pk,

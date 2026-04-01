@@ -94,7 +94,6 @@ async fn network_message_signed_group_op_applies_via_node_manager() {
         store.clone(),
         node_client.clone(),
         context_client.clone(),
-        None,
         Some(&mut registry),
     );
 

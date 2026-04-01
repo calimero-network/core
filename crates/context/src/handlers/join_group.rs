@@ -28,22 +28,22 @@ impl Handler<JoinGroupRequest> for ContextManager {
         }: JoinGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_group_identity();
+        let inv = &invitation.invitation;
+        let group_id = inv.group_id;
+
+        let node_identity = self.node_namespace_identity(&group_id);
 
         let joiner_identity = match node_identity {
             Some((pk, _)) => pk,
             None => {
                 return ActorResponse::reply(Err(eyre::eyre!(
-                    "joiner_identity not provided and node has no configured group identity"
+                    "joiner_identity not provided and node has no namespace identity"
                 )));
             }
         };
 
         let node_sk = node_identity.map(|(_, sk)| sk);
         let signing_key = node_sk;
-
-        let inv = &invitation.invitation;
-        let group_id = inv.group_id;
 
         let inviter_identity = PublicKey::from(inv.inviter_identity.to_bytes());
 

@@ -55,9 +55,6 @@ pub struct ContextManager {
     /// for interacting with the datastore.
     context_client: ContextClient,
 
-    /// Dedicated group identity keypair for signed P2P group operations.
-    group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
-
     /// An in-memory cache of active contexts (`ContextId` -> `ContextMeta`).
     /// This serves as a hot cache to avoid expensive disk I/O for frequently accessed contexts.
     // todo! potentially make this a dashmap::DashMap
@@ -105,14 +102,12 @@ impl ContextManager {
         datastore: Store,
         node_client: NodeClient,
         context_client: ContextClient,
-        group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
         Self {
             datastore,
             node_client,
             context_client,
-            group_identity,
 
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
@@ -123,45 +118,29 @@ impl ContextManager {
         }
     }
 
-    pub fn node_group_identity(
+    /// Get this node's identity for the namespace (root group) that contains `group_id`.
+    /// Returns `None` if no identity has been stored for that namespace yet.
+    pub fn node_namespace_identity(
         &self,
+        group_id: &ContextGroupId,
     ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
-        let gi = self.group_identity.as_ref()?;
-
-        let pk_str = gi.public_key.strip_prefix("ed25519:").or_else(|| {
-            tracing::warn!("node group identity: public_key missing 'ed25519:' prefix");
-            None
-        })?;
-        let sk_str = gi.secret_key.strip_prefix("ed25519:").or_else(|| {
-            tracing::warn!("node group identity: secret_key missing 'ed25519:' prefix");
-            None
-        })?;
-
-        let pk_bytes: [u8; 32] = bs58::decode(pk_str)
-            .into_vec()
-            .ok()
-            .and_then(|v| v.try_into().ok())
-            .or_else(|| {
-                tracing::warn!(
-                    "node group identity: failed to decode public_key (bad base58 or wrong length)"
-                );
+        match group_store::resolve_namespace_identity(&self.datastore, group_id) {
+            Ok(Some((pk, sk, _sender))) => Some((pk, sk)),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(?group_id, error=?e, "failed to resolve namespace identity");
                 None
-            })?;
-        let sk_bytes: [u8; 32] = bs58::decode(sk_str)
-            .into_vec()
-            .ok()
-            .and_then(|v| v.try_into().ok())
-            .or_else(|| {
-                tracing::warn!(
-                    "node group identity: failed to decode secret_key (bad base58 or wrong length)"
-                );
-                None
-            })?;
+            }
+        }
+    }
 
-        Some((
-            calimero_primitives::identity::PublicKey::from(pk_bytes),
-            sk_bytes,
-        ))
+    /// Get or create this node's identity for the namespace containing `group_id`.
+    /// Generates a new keypair if none exists. Returns (namespace_id, public_key, private_key, sender_key).
+    pub fn get_or_create_namespace_identity(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> eyre::Result<(ContextGroupId, calimero_primitives::identity::PublicKey, [u8; 32], [u8; 32])> {
+        group_store::get_or_create_namespace_identity(&self.datastore, group_id)
     }
 }
 

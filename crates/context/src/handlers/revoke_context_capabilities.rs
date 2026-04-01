@@ -19,10 +19,6 @@ impl Handler<RevokeContextCapabilitiesRequest> for ContextManager {
         }: RevokeContextCapabilitiesRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_group_identity();
-        let node_sk = node_identity.map(|(_, sk)| sk);
-        let signing_key = node_sk;
-
         let group_id = match group_store::get_group_for_context(&self.datastore, &context_id) {
             Ok(Some(gid)) => gid,
             Ok(None) => {
@@ -33,6 +29,10 @@ impl Handler<RevokeContextCapabilitiesRequest> for ContextManager {
             }
             Err(err) => return ActorResponse::reply(Err(err)),
         };
+
+        let node_identity = self.node_namespace_identity(&group_id);
+        let node_sk = node_identity.map(|(_, sk)| sk);
+        let signing_key = node_sk;
 
         if let Err(err) = (|| -> eyre::Result<()> {
             if signing_key.is_none() {

@@ -23,7 +23,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
         }: RemoveGroupMembersRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_group_identity();
+        let node_identity = self.node_namespace_identity(&group_id);
 
         // Resolve requester: use provided value or fall back to node group identity
         let requester = match requester {
@@ -72,7 +72,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                 group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
         }
 
-        let self_identity = self.node_group_identity().map(|(pk, _)| pk);
+        let self_identity = self.node_namespace_identity(&group_id).map(|(pk, _)| pk);
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let context_client = self.context_client.clone();
