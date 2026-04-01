@@ -649,6 +649,8 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             meta.app_key = *app_key;
             meta.target_application_id = *target_application_id;
             save_group_meta(store, &group_id, &meta)?;
+
+            cascade_target_application(store, &group_id, target_application_id, app_key)?;
         }
         GroupOp::ContextRegistered { context_id } => {
             if !is_group_admin_or_has_capability(
@@ -1186,6 +1188,35 @@ pub fn get_or_create_namespace_identity(
     store_namespace_identity(store, &ns_id, &public_key, &private_key, &sender_key)?;
 
     Ok((ns_id, public_key, *private_key, *sender_key))
+}
+
+/// Cascade target_application_id to all descendant subgroups (breadth-first, max depth 16).
+fn cascade_target_application(
+    store: &Store,
+    group_id: &ContextGroupId,
+    target_application_id: &calimero_primitives::application::ApplicationId,
+    app_key: &[u8; 32],
+) -> EyreResult<()> {
+    let mut queue = vec![*group_id];
+    let mut depth = 0u8;
+
+    while !queue.is_empty() && depth < 16 {
+        let mut next_queue = Vec::new();
+        for gid in &queue {
+            let children = enumerate_child_groups(store, gid)?;
+            for child_id in children {
+                if let Some(mut child_meta) = load_group_meta(store, &child_id)? {
+                    child_meta.target_application_id = *target_application_id;
+                    child_meta.app_key = *app_key;
+                    save_group_meta(store, &child_id, &child_meta)?;
+                    next_queue.push(child_id);
+                }
+            }
+        }
+        queue = next_queue;
+        depth += 1;
+    }
+    Ok(())
 }
 
 fn has_direct_member(

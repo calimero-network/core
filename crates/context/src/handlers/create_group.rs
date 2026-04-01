@@ -51,23 +51,27 @@ impl Handler<CreateGroupRequest> for ContextManager {
             return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
         }
 
-        if let Some(ref parent_id) = parent_group_id {
-            match group_store::load_group_meta(&self.datastore, parent_id) {
-                Ok(Some(_)) => {}
+        // Subgroups inherit target_application_id from the parent (namespace root owns the app).
+        let effective_application_id = if let Some(ref parent_id) = parent_group_id {
+            let parent_meta = match group_store::load_group_meta(&self.datastore, parent_id) {
+                Ok(Some(m)) => m,
                 _ => {
                     return ActorResponse::reply(Err(eyre::eyre!(
                         "parent group '{parent_id:?}' not found"
                     )));
                 }
-            }
+            };
             if let Err(err) =
                 group_store::require_group_admin(&self.datastore, parent_id, &admin_identity)
             {
                 return ActorResponse::reply(Err(err));
             }
-        }
+            parent_meta.target_application_id
+        } else {
+            application_id
+        };
 
-        if let Err(err) = load_app_meta(&self.datastore, &application_id) {
+        if let Err(err) = load_app_meta(&self.datastore, &effective_application_id) {
             return ActorResponse::reply(Err(err));
         }
 
@@ -95,7 +99,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
                 let meta = GroupMetaValue {
                     app_key: app_key.to_bytes(),
-                    target_application_id: application_id,
+                    target_application_id: effective_application_id,
                     upgrade_policy,
                     created_at: now,
                     admin_identity: admin_identity.into(),
