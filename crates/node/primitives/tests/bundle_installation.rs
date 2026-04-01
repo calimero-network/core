@@ -80,6 +80,7 @@ fn create_test_bundle(
             )
             .collect(),
         links: None,
+        services: None,
         signature: None,
     };
 
@@ -541,6 +542,7 @@ fn create_test_bundle_custom_wasm_path(
         abi: None,
         migrations: vec![],
         links: None,
+        services: None,
         signature: None,
     };
 
@@ -1672,6 +1674,7 @@ fn create_test_bundle_with_key(
         abi: None,
         migrations: vec![],
         links: None,
+        services: None,
         signature: None,
     })
     .unwrap();
