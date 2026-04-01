@@ -17,7 +17,7 @@ use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
 use super::handlers::context::{grant_capabilities, revoke_capabilities};
-use super::handlers::{alias, blob, groups, tee};
+use super::handlers::{alias, blob, groups, namespaces, tee};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
     get_application, install_application, install_dev_application, list_applications,
@@ -268,6 +268,16 @@ pub(crate) fn setup(
         .route(
             "/groups/join",
             post(groups::join_group::handler),
+        )
+        // Namespace management
+        .route("/namespaces", get(namespaces::list::handler))
+        .route(
+            "/namespaces/:namespace_id/identity",
+            get(namespaces::get_identity::handler),
+        )
+        .route(
+            "/namespaces/for-application/:application_id",
+            get(namespaces::list_for_application::handler),
         )
         // TEE protected endpoints
         .nest("/tee", tee::protected_service())

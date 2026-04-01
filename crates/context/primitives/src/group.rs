@@ -629,6 +629,53 @@ impl Message for RevokeContextCapabilitiesRequest {
     type Result = eyre::Result<()>;
 }
 
+// ---------------------------------------------------------------------------
+// Namespace queries
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct NamespaceSummary {
+    pub namespace_id: ContextGroupId,
+    pub app_key: AppKey,
+    pub target_application_id: ApplicationId,
+    pub upgrade_policy: UpgradePolicy,
+    pub created_at: u64,
+    pub alias: Option<String>,
+    pub member_count: usize,
+    pub context_count: usize,
+    pub subgroup_count: usize,
+}
+
+#[derive(Debug)]
+pub struct ListNamespacesRequest {
+    pub offset: usize,
+    pub limit: usize,
+}
+
+impl Message for ListNamespacesRequest {
+    type Result = eyre::Result<Vec<NamespaceSummary>>;
+}
+
+#[derive(Debug)]
+pub struct GetNamespaceIdentityRequest {
+    pub group_id: ContextGroupId,
+}
+
+impl Message for GetNamespaceIdentityRequest {
+    type Result = eyre::Result<Option<(ContextGroupId, PublicKey)>>;
+}
+
+#[derive(Debug)]
+pub struct ListNamespacesForApplicationRequest {
+    pub application_id: ApplicationId,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+impl Message for ListNamespacesForApplicationRequest {
+    type Result = eyre::Result<Vec<NamespaceSummary>>;
+}
+
 impl From<calimero_store::key::GroupUpgradeValue> for GroupUpgradeInfo {
     fn from(v: calimero_store::key::GroupUpgradeValue) -> Self {
         Self {

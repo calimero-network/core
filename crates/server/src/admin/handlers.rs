@@ -5,6 +5,7 @@ pub mod context;
 pub mod get_latest_version;
 pub mod groups;
 pub mod identity;
+pub mod namespaces;
 pub mod list_packages;
 pub mod list_versions;
 pub mod packages;

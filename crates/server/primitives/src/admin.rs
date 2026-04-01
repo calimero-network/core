@@ -2372,3 +2372,49 @@ mod tests {
         assert!(!resp.group_created);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Namespace API types
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceApiResponse {
+    pub namespace_id: String,
+    pub app_key: String,
+    pub target_application_id: String,
+    pub upgrade_policy: String,
+    pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    pub member_count: usize,
+    pub context_count: usize,
+    pub subgroup_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListNamespacesApiResponse {
+    pub data: Vec<NamespaceApiResponse>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceIdentityApiResponse {
+    pub namespace_id: String,
+    pub public_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListNamespacesQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListNamespacesForApplicationQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}

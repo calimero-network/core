@@ -23,8 +23,9 @@ use crate::group::{
     StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
     StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
     StoreGroupContextRequest, StoreGroupMetaRequest, StoreMemberAliasRequest,
-    StoreMemberCapabilityRequest, SyncGroupRequest, UpdateGroupSettingsRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest,
+    StoreMemberCapabilityRequest, GetNamespaceIdentityRequest,
+    ListNamespacesForApplicationRequest, ListNamespacesRequest, SyncGroupRequest,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -388,5 +389,17 @@ pub enum ContextMessage {
     RevokeContextCapabilities {
         request: RevokeContextCapabilitiesRequest,
         outcome: oneshot::Sender<<RevokeContextCapabilitiesRequest as Message>::Result>,
+    },
+    ListNamespaces {
+        request: ListNamespacesRequest,
+        outcome: oneshot::Sender<<ListNamespacesRequest as Message>::Result>,
+    },
+    GetNamespaceIdentity {
+        request: GetNamespaceIdentityRequest,
+        outcome: oneshot::Sender<<GetNamespaceIdentityRequest as Message>::Result>,
+    },
+    ListNamespacesForApplication {
+        request: ListNamespacesForApplicationRequest,
+        outcome: oneshot::Sender<<ListNamespacesForApplicationRequest as Message>::Result>,
     },
 }

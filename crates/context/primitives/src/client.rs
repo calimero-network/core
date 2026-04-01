@@ -35,7 +35,9 @@ use crate::group::{
     StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
     StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
     StoreGroupContextRequest, StoreGroupMetaRequest, StoreMemberAliasRequest,
-    StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest,
+    StoreMemberCapabilityRequest, GetNamespaceIdentityRequest,
+    ListNamespacesForApplicationRequest, ListNamespacesRequest, NamespaceSummary,
+    SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest,
     UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
@@ -1651,6 +1653,57 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::RevokeContextCapabilities {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> eyre::Result<Vec<NamespaceSummary>> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::ListNamespaces {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn get_namespace_identity(
+        &self,
+        request: GetNamespaceIdentityRequest,
+    ) -> eyre::Result<Option<(ContextGroupId, PublicKey)>> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::GetNamespaceIdentity {
+                request,
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn list_namespaces_for_application(
+        &self,
+        request: ListNamespacesForApplicationRequest,
+    ) -> eyre::Result<Vec<NamespaceSummary>> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::ListNamespacesForApplication {
                 request,
                 outcome: sender,
             })

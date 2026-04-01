@@ -26,9 +26,12 @@ pub mod grant_context_capabilities;
 pub mod join_context;
 pub mod join_group;
 pub mod join_group_context;
+pub mod get_namespace_identity;
 pub mod list_all_groups;
 pub mod list_group_contexts;
 pub mod list_group_members;
+pub mod list_namespaces;
+pub mod list_namespaces_for_application;
 pub mod manage_context_allowlist;
 pub mod remove_group_members;
 pub mod retry_group_upgrade;
@@ -216,6 +219,15 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RevokeContextCapabilities { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ListNamespaces { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetNamespaceIdentity { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ListNamespacesForApplication { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }
