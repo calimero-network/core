@@ -25,11 +25,11 @@ use crate::group::{
     DetachContextFromGroupRequest, GetContextAllowlistRequest, GetContextVisibilityRequest,
     GetContextVisibilityResponse, GetGroupForContextRequest, GetGroupInfoRequest,
     GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
-    GrantContextCapabilitiesRequest, GroupContextEntry, GroupInfoResponse, GroupSummary,
+    GroupContextEntry, GroupInfoResponse, GroupSummary,
     GroupUpgradeInfo, JoinGroupContextRequest, JoinGroupContextResponse, JoinGroupRequest,
     JoinGroupResponse, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
     ListGroupMembersResponse, ManageContextAllowlistRequest, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, RevokeContextCapabilitiesRequest, SetContextVisibilityRequest,
+    RetryGroupUpgradeRequest, SetContextVisibilityRequest,
     SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetGroupAliasRequest,
     SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest,
     StoreContextAliasRequest, StoreContextAllowlistRequest, StoreContextVisibilityRequest,
@@ -1619,40 +1619,6 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::SetDefaultVisibility {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn grant_context_capabilities(
-        &self,
-        request: GrantContextCapabilitiesRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::GrantContextCapabilities {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn revoke_context_capabilities(
-        &self,
-        request: RevokeContextCapabilitiesRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::RevokeContextCapabilities {
                 request,
                 outcome: sender,
             })

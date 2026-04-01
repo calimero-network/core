@@ -608,28 +608,6 @@ impl Message for StoreContextAllowlistRequest {
 }
 
 #[derive(Debug)]
-pub struct GrantContextCapabilitiesRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-    pub capabilities: Vec<(PublicKey, u8)>,
-    pub signer_id: PublicKey,
-}
-
-impl Message for GrantContextCapabilitiesRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
-pub struct RevokeContextCapabilitiesRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-    pub capabilities: Vec<(PublicKey, u8)>,
-    pub signer_id: PublicKey,
-}
-
-impl Message for RevokeContextCapabilitiesRequest {
-    type Result = eyre::Result<()>;
-}
 
 // ---------------------------------------------------------------------------
 // Namespace queries

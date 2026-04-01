@@ -16,7 +16,6 @@ use serde_json::{json, to_string as to_json_string};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
-use super::handlers::context::{grant_capabilities, revoke_capabilities};
 use super::handlers::{alias, blob, groups, namespaces, tee};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
@@ -142,14 +141,7 @@ pub(crate) fn setup(
             "/contexts/:context_id/group",
             get(get_context_group::handler),
         )
-        .route(
-            "/groups/:group_id/contexts/:context_id/capabilities/grant",
-            post(grant_capabilities::handler),
-        )
-        .route(
-            "/groups/:group_id/contexts/:context_id/capabilities/revoke",
-            post(revoke_capabilities::handler),
-        )
+        
         // Identity management
         .route(
             "/identity/context",
