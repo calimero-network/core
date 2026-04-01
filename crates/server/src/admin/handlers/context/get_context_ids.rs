@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_server_primitives::admin::GetContextsResponse;
+use calimero_context_primitives::group::GetGroupForContextRequest;
+use calimero_server_primitives::admin::{ContextWithGroup, GetContextsResponse};
 use futures_util::TryStreamExt;
 use tracing::{error, info};
 
@@ -28,7 +29,16 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
 
         match state.ctx_client.get_context(&context_id) {
             Ok(None) => {}
-            Ok(Some(context)) => contexts.push(context),
+            Ok(Some(context)) => {
+                let group_id = state
+                    .ctx_client
+                    .get_group_for_context(GetGroupForContextRequest { context_id })
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|gid| hex::encode(gid.to_bytes()));
+                contexts.push(ContextWithGroup { context, group_id });
+            }
             Err(err) => {
                 error!(context_id=%context_id, error=?err, "Failed to get context");
                 return parse_api_error(err).into_response();

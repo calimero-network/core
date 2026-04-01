@@ -400,8 +400,17 @@ impl GetContextUsersResponse {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContextWithGroup {
+    #[serde(flatten)]
+    pub context: Context,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetContextsResponseData {
-    pub contexts: Vec<Context>,
+    pub contexts: Vec<ContextWithGroup>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -411,7 +420,7 @@ pub struct GetContextsResponse {
 }
 
 impl GetContextsResponse {
-    pub const fn new(contexts: Vec<Context>) -> Self {
+    pub const fn new(contexts: Vec<ContextWithGroup>) -> Self {
         Self {
             data: GetContextsResponseData { contexts },
         }

@@ -26,6 +26,7 @@ impl Handler<JoinContextRequest> for ContextManager {
         let node_client = self.node_client.clone();
         let context_client = self.context_client.clone();
         let datastore = self.datastore.clone();
+        let node_group_identity = self.node_group_identity();
 
         let task = async move {
             let (context_id, invitee_id) = join_context(
@@ -34,6 +35,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                 datastore,
                 invitation,
                 new_member_public_key,
+                node_group_identity,
             )
             .await?;
 
@@ -53,6 +55,7 @@ async fn join_context(
     datastore: Store,
     signed_invitation: SignedOpenInvitation,
     new_member_public_key: PublicKey,
+    node_group_identity: Option<(PublicKey, [u8; 32])>,
 ) -> eyre::Result<(ContextId, PublicKey)> {
     let invitation = &signed_invitation.invitation;
     let context_id: ContextId = invitation.context_id.to_bytes().into();
@@ -312,6 +315,23 @@ async fn join_context(
             Some(*identity_secret),
             Some(*sender_key),
         )?;
+
+        // Also register the node's group identity so that joinGroupContext
+        // (which checks node_group_identity()) can find this node as a member.
+        if let Some((node_gid_pk, _node_gid_sk)) = node_group_identity {
+            if node_gid_pk != invitee_id
+                && !group_store::check_group_membership(&datastore, &gid, &node_gid_pk)?
+            {
+                group_store::add_group_member_with_keys(
+                    &datastore,
+                    &gid,
+                    &node_gid_pk,
+                    calimero_primitives::context::GroupMemberRole::Member,
+                    None, // no context private key for the node group identity
+                    None,
+                )?;
+            }
+        }
     }
 
     tracing::info!(%context_id, %invitee_id, "join_context: subscribing and syncing");

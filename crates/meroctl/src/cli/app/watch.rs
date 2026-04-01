@@ -285,8 +285,8 @@ async fn get_contexts_using_application(
         .data
         .contexts
         .into_iter()
-        .filter(|context| context.application_id == *app_id)
-        .map(|context| context.id)
+        .filter(|entry| entry.context.application_id == *app_id)
+        .map(|entry| entry.context.id)
         .collect();
     Ok(target_contexts)
 }

@@ -5,7 +5,8 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_primitives::application::ApplicationId;
-use calimero_server_primitives::admin::GetContextsResponse;
+use calimero_context_primitives::group::GetGroupForContextRequest;
+use calimero_server_primitives::admin::{ContextWithGroup, GetContextsResponse};
 use futures_util::TryStreamExt;
 use tracing::{error, info};
 
@@ -35,7 +36,14 @@ pub async fn handler(
             Ok(Some(context)) => {
                 // Filter contexts by application_id
                 if context.application_id == application_id {
-                    contexts.push(context);
+                    let group_id = state
+                        .ctx_client
+                        .get_group_for_context(GetGroupForContextRequest { context_id })
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|gid| hex::encode(gid.to_bytes()));
+                    contexts.push(ContextWithGroup { context, group_id });
                 }
             }
             Ok(None) => {

@@ -151,11 +151,11 @@ impl Report for GetContextsResponse {
                 Cell::new("Root Hash").fg(Color::Blue),
             ]);
 
-            for context in &self.data.contexts {
+            for entry in &self.data.contexts {
                 let _ = table.add_row(vec![
-                    context.id.to_string(),
-                    context.application_id.to_string(),
-                    format!("{:?}", context.root_hash),
+                    entry.context.id.to_string(),
+                    entry.context.application_id.to_string(),
+                    format!("{:?}", entry.context.root_hash),
                 ]);
             }
 
