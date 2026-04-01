@@ -139,7 +139,78 @@ steps:
     statements:
       - 'json_equal({{get_result_2}}, {"output": "from_node2"})'
 
-  
+  # --- SCENARIO 2: Multiple contexts in same group ---
+
+  - name: Create context 2 in same group
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{group_id_e2e-node-1}}'
+    outputs:
+      ctx2_id: contextId
+      ctx2_key_node1: memberPublicKey
+
+  - name: Node-2 joins context 2 via group
+    type: join_group_context
+    node: e2e-node-2
+    group_id: '{{group_id_e2e-node-1}}'
+    context_id: '{{ctx2_id}}'
+    outputs:
+      ctx2_id_n2: contextId
+      ctx2_key_node2: memberPublicKey
+
+  - name: Node-1 writes to context 2
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx2_id}}'
+    executor_public_key: '{{ctx2_key_node1}}'
+    method: set
+    args:
+      key: "ctx2_key"
+      value: "context2_value"
+
+  - name: Wait for sync - context 2
+    type: wait_for_sync
+    context_id: '{{ctx2_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads from context 2
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx2_id}}'
+    executor_public_key: '{{ctx2_key_node2}}'
+    method: get
+    args:
+      key: "ctx2_key"
+    outputs:
+      ctx2_get_result: result
+
+  - name: Assert context 2 value synced
+    type: json_assert
+    statements:
+      - 'json_equal({{ctx2_get_result}}, {"output": "context2_value"})'
+
+  - name: Verify context isolation - ctx2 key not in ctx1
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx1_id}}'
+    executor_public_key: '{{ctx1_key_node2}}'
+    method: get
+    args:
+      key: "ctx2_key"
+    outputs:
+      isolation_check: result
+
+  - name: Assert context isolation
+    type: json_assert
+    statements:
+      - 'json_equal({{isolation_check}}, {"output": null})'
+
   # --- SCENARIO 3: Context invitation within group ---
 
   - name: Create context 3 in same group

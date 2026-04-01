@@ -9,6 +9,7 @@ use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::local_governance::GroupOp;
 use calimero_context_primitives::messages::{CreateContextRequest, CreateContextResponse};
 use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{
     Context, ContextConfigParams, ContextId, GroupMemberRole, UpgradePolicy,
@@ -490,6 +491,29 @@ async fn create_context(
             },
         )
         .await?;
+
+        // Also broadcast via the notification path so peers already
+        // subscribed to the group topic receive the info immediately,
+        // without waiting for the governance DAG to catch up.
+        let group_id_bytes = group_id.to_bytes();
+        let _ = node_client
+            .broadcast_group_mutation(
+                group_id_bytes,
+                GroupMutationKind::ContextRegistered {
+                    context_id: *context.id,
+                },
+            )
+            .await;
+        let _ = node_client
+            .broadcast_group_mutation(
+                group_id_bytes,
+                GroupMutationKind::ContextVisibilitySet {
+                    context_id: *context.id,
+                    mode: vis_mode,
+                    creator: *identity,
+                },
+            )
+            .await;
     }
 
     // Write ContextIdentity so the sync key-share can find keys for this context.

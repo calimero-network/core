@@ -233,6 +233,11 @@ async fn join_context(
                     auto_join: true,
                 },
             )?;
+            group_store::set_default_capabilities(
+                &datastore,
+                &gid,
+                calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_CONTEXTS,
+            )?;
         }
 
         group_store::register_context_in_group(&datastore, &gid, &context_id)?;
