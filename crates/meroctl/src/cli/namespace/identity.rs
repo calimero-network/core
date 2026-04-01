@@ -11,13 +11,13 @@ pub struct IdentityCommand {
 }
 
 impl IdentityCommand {
-    pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let client = environment.client()?;
+    pub async fn run(self, _environment: &mut Environment) -> Result<()> {
+        let client = _environment.client()?;
         let response = client
             .get_namespace_identity(&self.namespace_id)
             .await?;
 
-        environment.output.write(&response);
+        println!("{}", serde_json::to_string_pretty(&response)?);
 
         Ok(())
     }
