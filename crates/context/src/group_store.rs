@@ -7,19 +7,16 @@ use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupChildIndex, GroupContextAlias,
-    GroupContextAllowlist, GroupContextIndex, GroupContextLastMigration,
-    GroupContextLastMigrationValue, GroupContextMemberCap, GroupContextVisibility,
-    GroupContextVisibilityValue, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
+    GroupContextIndex, GroupContextLastMigration, GroupContextLastMigrationValue,
+    GroupContextMemberCap, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
     GroupDefaultVisValue, GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMemberContext, GroupMemberValue, GroupMeta, GroupMetaValue,
     GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupSigningKey,
     GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
     NamespaceIdentity, NamespaceIdentityValue, GROUP_CHILD_INDEX_PREFIX,
-    GROUP_CONTEXT_ALLOWLIST_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
-    GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_CONTEXT_VISIBILITY_PREFIX,
-    GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX,
-    GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX, GROUP_SIGNING_KEY_PREFIX,
-    GROUP_UPGRADE_PREFIX,
+    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_MEMBER_ALIAS_PREFIX,
+    GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_PREFIX,
+    GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -415,13 +412,6 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     Ok(())
 }
 
-fn validate_visibility_mode(mode: u8) -> EyreResult<()> {
-    if mode > 1 {
-        bail!("visibility mode must be 0 (Open) or 1 (Restricted), got {mode}");
-    }
-    Ok(())
-}
-
 fn ensure_not_last_admin_removal(
     store: &Store,
     group_id: &ContextGroupId,
@@ -675,66 +665,13 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         }
         GroupOp::DefaultVisibilitySet { mode } => {
             require_group_admin(store, &group_id, &op.signer)?;
-            validate_visibility_mode(*mode)?;
+            if *mode > 1 {
+                bail!("visibility mode must be 0 (Open) or 1 (Restricted), got {mode}");
+            }
             set_default_visibility(store, &group_id, *mode)?;
         }
-        GroupOp::ContextVisibilitySet {
-            context_id,
-            mode,
-            creator,
-        } => {
-            let is_direct_admin = is_direct_group_admin(store, &group_id, &op.signer)?;
-            if !is_direct_admin && op.signer != *creator {
-                bail!(
-                    "only a direct group admin or context creator can set context visibility \
-                     (inherited parent admin authority does not apply)"
-                );
-            }
-            validate_visibility_mode(*mode)?;
-            set_context_visibility(store, &group_id, context_id, *mode, *creator.as_ref())?;
-            if *mode == 1 {
-                if !check_context_allowlist(store, &group_id, context_id, creator)? {
-                    add_to_context_allowlist(store, &group_id, context_id, creator)?;
-                }
-            }
-        }
-        GroupOp::ContextAllowlistReplaced {
-            context_id,
-            members,
-        } => {
-            let is_direct_admin = is_direct_group_admin(store, &group_id, &op.signer)?;
-            if !is_direct_admin {
-                if let Some((_, creator_bytes)) =
-                    get_context_visibility(store, &group_id, context_id)?
-                {
-                    if creator_bytes != *op.signer {
-                        bail!(
-                            "only a direct group admin or context creator can manage allowlists \
-                             (inherited parent admin authority does not apply)"
-                        );
-                    }
-                } else {
-                    bail!("context visibility not found for context in group");
-                }
-            }
-            clear_context_allowlist(store, &group_id, context_id)?;
-            for m in members {
-                add_to_context_allowlist(store, &group_id, context_id, m)?;
-            }
-        }
         GroupOp::ContextAliasSet { context_id, alias } => {
-            let is_admin = is_group_admin(store, &group_id, &op.signer)?;
-            if !is_admin {
-                if let Some((_, creator_bytes)) =
-                    get_context_visibility(store, &group_id, context_id)?
-                {
-                    if creator_bytes != *op.signer {
-                        bail!("only admin or context creator can set context alias");
-                    }
-                } else {
-                    bail!("context visibility not found for context in group");
-                }
-            }
+            require_group_admin(store, &group_id, &op.signer)?;
             set_context_alias(store, &group_id, context_id, alias)?;
         }
         GroupOp::MemberAliasSet { member, alias } => {
@@ -823,35 +760,6 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 member,
                 current & !capability,
             )?;
-        }
-        GroupOp::MemberJoinedViaContextInvitation {
-            context_id: _,
-            inviter_id,
-            invitation_payload,
-            inviter_signature,
-        } => {
-            if !is_group_admin_or_has_capability(
-                store,
-                &group_id,
-                inviter_id,
-                MemberCapabilities::CAN_INVITE_MEMBERS,
-            )? {
-                bail!("context invitation inviter lacks permission (not admin and missing CAN_INVITE_MEMBERS)");
-            }
-            let inv_hash = Sha256::digest(invitation_payload);
-            let sig_hex = inviter_signature.trim_start_matches("0x");
-            let sig_bytes_vec =
-                hex::decode(sig_hex).map_err(|e| eyre::eyre!("inviter sig hex: {e}"))?;
-            let sig_bytes: [u8; 64] = sig_bytes_vec
-                .try_into()
-                .map_err(|_| eyre::eyre!("inviter signature must be 64 bytes"))?;
-            inviter_id
-                .verify_raw_signature(&inv_hash, &sig_bytes)
-                .map_err(|e| eyre::eyre!("context invitation inviter signature invalid: {e}"))?;
-
-            if !check_group_membership(store, &group_id, &op.signer)? {
-                add_group_member(store, &group_id, &op.signer, GroupMemberRole::Member)?;
-            }
         }
         GroupOp::SubgroupCreated { child_group_id } => {
             require_group_admin(store, &group_id, &op.signer)?;
@@ -2000,125 +1908,6 @@ pub fn set_member_capability(
     Ok(())
 }
 
-/// Returns (mode, creator_pk). mode: 0 = Open, 1 = Restricted.
-pub fn get_context_visibility(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-) -> EyreResult<Option<(u8, [u8; 32])>> {
-    let handle = store.handle();
-    let key = GroupContextVisibility::new(group_id.to_bytes(), *context_id);
-    let value = handle.get(&key)?;
-    Ok(value.map(|v| (v.mode, v.creator)))
-}
-
-pub fn set_context_visibility(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-    mode: u8,
-    creator: [u8; 32],
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupContextVisibility::new(group_id.to_bytes(), *context_id);
-    handle.put(&key, &GroupContextVisibilityValue { mode, creator })?;
-    Ok(())
-}
-
-pub fn check_context_allowlist(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-    member: &PublicKey,
-) -> EyreResult<bool> {
-    let handle = store.handle();
-    let key = GroupContextAllowlist::new(group_id.to_bytes(), *context_id, *member);
-    // If the key exists (even with unit value), the member is on the allowlist
-    let value: Option<()> = handle.get(&key)?;
-    Ok(value.is_some())
-}
-
-pub fn add_to_context_allowlist(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-    member: &PublicKey,
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupContextAllowlist::new(group_id.to_bytes(), *context_id, *member);
-    handle.put(&key, &())?;
-    Ok(())
-}
-
-pub fn remove_from_context_allowlist(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-    member: &PublicKey,
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupContextAllowlist::new(group_id.to_bytes(), *context_id, *member);
-    handle.delete(&key)?;
-    Ok(())
-}
-
-pub fn list_context_allowlist(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-) -> EyreResult<Vec<PublicKey>> {
-    let handle = store.handle();
-    let group_id_bytes: [u8; 32] = group_id.to_bytes();
-    let start_key =
-        GroupContextAllowlist::new(group_id_bytes, *context_id, PublicKey::from([0u8; 32]));
-    let mut iter = handle.iter::<GroupContextAllowlist>()?;
-    let first = iter.seek(start_key).transpose();
-    let mut results = Vec::new();
-
-    for entry in first.into_iter().chain(iter.keys()) {
-        let key = entry?;
-
-        if key.as_key().as_bytes()[0] != GROUP_CONTEXT_ALLOWLIST_PREFIX {
-            break;
-        }
-
-        if key.group_id() != group_id_bytes {
-            break;
-        }
-
-        if key.context_id() != *context_id {
-            break;
-        }
-
-        results.push(PublicKey::from(*key.member()));
-    }
-
-    Ok(results)
-}
-
-pub fn delete_context_visibility(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupContextVisibility::new(group_id.to_bytes(), *context_id);
-    handle.delete(&key)?;
-    Ok(())
-}
-
-pub fn clear_context_allowlist(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-) -> EyreResult<()> {
-    let members = list_context_allowlist(store, group_id, context_id)?;
-    for member in &members {
-        remove_from_context_allowlist(store, group_id, context_id, member)?;
-    }
-    Ok(())
-}
-
 pub fn enumerate_member_capabilities(
     store: &Store,
     group_id: &ContextGroupId,
@@ -2146,55 +1935,6 @@ pub fn enumerate_member_capabilities(
         };
 
         results.push((PublicKey::from(*key.identity()), val.capabilities));
-    }
-
-    Ok(results)
-}
-
-pub fn enumerate_context_visibilities(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Vec<(ContextId, u8, [u8; 32])>> {
-    let handle = store.handle();
-    let group_id_bytes: [u8; 32] = group_id.to_bytes();
-    let start_key = GroupContextVisibility::new(group_id_bytes, ContextId::from([0u8; 32]));
-    let mut iter = handle.iter::<GroupContextVisibility>()?;
-    let first = iter.seek(start_key).transpose();
-    let mut results = Vec::new();
-
-    for key_result in first.into_iter().chain(iter.keys()) {
-        let key = key_result?;
-
-        if key.as_key().as_bytes()[0] != GROUP_CONTEXT_VISIBILITY_PREFIX {
-            break;
-        }
-
-        if key.group_id() != group_id_bytes {
-            break;
-        }
-
-        let Some(val) = handle.get(&key)? else {
-            continue;
-        };
-
-        results.push((ContextId::from(*key.context_id()), val.mode, val.creator));
-    }
-
-    Ok(results)
-}
-
-pub fn enumerate_contexts_with_allowlists(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Vec<(ContextId, Vec<PublicKey>)>> {
-    let context_ids = enumerate_group_contexts(store, group_id, 0, usize::MAX)?;
-    let mut results = Vec::new();
-
-    for context_id in context_ids {
-        let members = list_context_allowlist(store, group_id, &context_id)?;
-        if !members.is_empty() {
-            results.push((context_id, members));
-        }
     }
 
     Ok(results)
@@ -2704,9 +2444,7 @@ mod tests {
         .unwrap();
         apply_local_signed_group_op(&store, &op_reg).unwrap();
 
-        set_context_visibility(&store, &gid, &context_id, 0, *creator_pk).unwrap();
-
-        let op_alias = SignedGroupOp::sign(
+        let op_creator_alias = SignedGroupOp::sign(
             &creator_sk,
             gid_bytes,
             vec![],
@@ -2718,35 +2456,10 @@ mod tests {
             },
         )
         .unwrap();
-        apply_local_signed_group_op(&store, &op_alias).unwrap();
-        assert_eq!(
-            get_context_alias(&store, &gid, &context_id)
-                .unwrap()
-                .as_deref(),
-            Some("from-creator")
+        assert!(
+            apply_local_signed_group_op(&store, &op_creator_alias).is_err(),
+            "non-admin creator should be rejected"
         );
-
-        let stranger_sk = PrivateKey::random(&mut rng);
-        add_group_member(
-            &store,
-            &gid,
-            &stranger_sk.public_key(),
-            GroupMemberRole::Member,
-        )
-        .unwrap();
-        let op_bad = SignedGroupOp::sign(
-            &stranger_sk,
-            gid_bytes,
-            vec![],
-            [0u8; 32],
-            1,
-            GroupOp::ContextAliasSet {
-                context_id,
-                alias: "hijack".to_owned(),
-            },
-        )
-        .unwrap();
-        assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
 
         let op_admin = SignedGroupOp::sign(
             &admin_sk,
@@ -3265,133 +2978,6 @@ mod tests {
             get_member_capability(&store, &gid, &bob).unwrap().unwrap(),
             0b110
         );
-    }
-
-    // -----------------------------------------------------------------------
-    // Context visibility tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn set_and_get_context_visibility() {
-        let store = test_store();
-        let gid = test_group_id();
-        let ctx = ContextId::from([0x20; 32]);
-        let creator: [u8; 32] = [0x01; 32];
-
-        // No visibility stored yet
-        assert!(get_context_visibility(&store, &gid, &ctx)
-            .unwrap()
-            .is_none());
-
-        // Set to Open (0)
-        set_context_visibility(&store, &gid, &ctx, 0, creator).unwrap();
-        let (mode, stored_creator) = get_context_visibility(&store, &gid, &ctx).unwrap().unwrap();
-        assert_eq!(mode, 0);
-        assert_eq!(stored_creator, creator);
-
-        // Update to Restricted (1)
-        set_context_visibility(&store, &gid, &ctx, 1, creator).unwrap();
-        let (mode, _) = get_context_visibility(&store, &gid, &ctx).unwrap().unwrap();
-        assert_eq!(mode, 1);
-    }
-
-    #[test]
-    fn visibility_isolated_per_context() {
-        let store = test_store();
-        let gid = test_group_id();
-        let ctx1 = ContextId::from([0x21; 32]);
-        let ctx2 = ContextId::from([0x22; 32]);
-        let creator: [u8; 32] = [0x01; 32];
-
-        set_context_visibility(&store, &gid, &ctx1, 0, creator).unwrap();
-        set_context_visibility(&store, &gid, &ctx2, 1, creator).unwrap();
-
-        let (mode1, _) = get_context_visibility(&store, &gid, &ctx1)
-            .unwrap()
-            .unwrap();
-        let (mode2, _) = get_context_visibility(&store, &gid, &ctx2)
-            .unwrap()
-            .unwrap();
-        assert_eq!(mode1, 0);
-        assert_eq!(mode2, 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // Context allowlist tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn add_check_remove_context_allowlist() {
-        let store = test_store();
-        let gid = test_group_id();
-        let ctx = ContextId::from([0x30; 32]);
-        let member = PublicKey::from([0x31; 32]);
-
-        // Not on allowlist initially
-        assert!(!check_context_allowlist(&store, &gid, &ctx, &member).unwrap());
-
-        // Add to allowlist
-        add_to_context_allowlist(&store, &gid, &ctx, &member).unwrap();
-        assert!(check_context_allowlist(&store, &gid, &ctx, &member).unwrap());
-
-        // Remove from allowlist
-        remove_from_context_allowlist(&store, &gid, &ctx, &member).unwrap();
-        assert!(!check_context_allowlist(&store, &gid, &ctx, &member).unwrap());
-    }
-
-    #[test]
-    fn list_context_allowlist_returns_all_members() {
-        let store = test_store();
-        let gid = test_group_id();
-        let ctx = ContextId::from([0x32; 32]);
-        let m1 = PublicKey::from([0x33; 32]);
-        let m2 = PublicKey::from([0x34; 32]);
-        let m3 = PublicKey::from([0x35; 32]);
-
-        add_to_context_allowlist(&store, &gid, &ctx, &m1).unwrap();
-        add_to_context_allowlist(&store, &gid, &ctx, &m2).unwrap();
-        add_to_context_allowlist(&store, &gid, &ctx, &m3).unwrap();
-
-        let members = list_context_allowlist(&store, &gid, &ctx).unwrap();
-        assert_eq!(members.len(), 3);
-        assert!(members.contains(&m1));
-        assert!(members.contains(&m2));
-        assert!(members.contains(&m3));
-    }
-
-    #[test]
-    fn list_context_allowlist_isolated_per_context() {
-        let store = test_store();
-        let gid = test_group_id();
-        let ctx1 = ContextId::from([0x36; 32]);
-        let ctx2 = ContextId::from([0x37; 32]);
-        let m1 = PublicKey::from([0x38; 32]);
-        let m2 = PublicKey::from([0x39; 32]);
-
-        add_to_context_allowlist(&store, &gid, &ctx1, &m1).unwrap();
-        add_to_context_allowlist(&store, &gid, &ctx2, &m2).unwrap();
-
-        let ctx1_members = list_context_allowlist(&store, &gid, &ctx1).unwrap();
-        assert_eq!(ctx1_members.len(), 1);
-        assert!(ctx1_members.contains(&m1));
-
-        let ctx2_members = list_context_allowlist(&store, &gid, &ctx2).unwrap();
-        assert_eq!(ctx2_members.len(), 1);
-        assert!(ctx2_members.contains(&m2));
-    }
-
-    #[test]
-    fn allowlist_add_idempotent() {
-        let store = test_store();
-        let gid = test_group_id();
-        let ctx = ContextId::from([0x3A; 32]);
-        let member = PublicKey::from([0x3B; 32]);
-
-        add_to_context_allowlist(&store, &gid, &ctx, &member).unwrap();
-        add_to_context_allowlist(&store, &gid, &ctx, &member).unwrap();
-
-        let members = list_context_allowlist(&store, &gid, &ctx).unwrap();
-        assert_eq!(members.len(), 1);
     }
 
     // -----------------------------------------------------------------------

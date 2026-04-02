@@ -16,14 +16,11 @@ pub mod delete_context;
 pub mod delete_group;
 pub mod detach_context_from_group;
 pub mod execute;
-pub mod get_context_allowlist;
-pub mod get_context_visibility;
 pub mod get_group_for_context;
 pub mod get_group_info;
 pub mod get_group_upgrade_status;
 pub mod get_member_capabilities;
 pub mod get_namespace_identity;
-pub mod join_context;
 pub mod join_group;
 pub mod join_group_context;
 pub mod list_all_groups;
@@ -31,10 +28,8 @@ pub mod list_group_contexts;
 pub mod list_group_members;
 pub mod list_namespaces;
 pub mod list_namespaces_for_application;
-pub mod manage_context_allowlist;
 pub mod remove_group_members;
 pub mod retry_group_upgrade;
-pub mod set_context_visibility;
 pub mod set_default_capabilities;
 pub mod set_default_visibility;
 pub mod set_group_alias;
@@ -42,8 +37,6 @@ pub mod set_member_alias;
 pub mod set_member_capabilities;
 pub mod set_tee_admission_policy;
 pub mod store_context_alias;
-pub mod store_context_allowlist;
-pub mod store_context_visibility;
 pub mod store_default_capabilities;
 pub mod store_default_visibility;
 pub mod store_group_alias;
@@ -73,9 +66,6 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::DeleteContext { request, outcome } => {
-                self.forward_handler(ctx, request, outcome)
-            }
-            ContextMessage::JoinContext { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::Sync { request, outcome } => {
@@ -147,18 +137,6 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::GetMemberCapabilities { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::SetContextVisibility { request, outcome } => {
-                self.forward_handler(ctx, request, outcome)
-            }
-            ContextMessage::GetContextVisibility { request, outcome } => {
-                self.forward_handler(ctx, request, outcome)
-            }
-            ContextMessage::ManageContextAllowlist { request, outcome } => {
-                self.forward_handler(ctx, request, outcome)
-            }
-            ContextMessage::GetContextAllowlist { request, outcome } => {
-                self.forward_handler(ctx, request, outcome)
-            }
             ContextMessage::SetDefaultCapabilities { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
@@ -186,13 +164,7 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::StoreDefaultCapabilities { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::StoreContextVisibility { request, outcome } => {
-                self.forward_handler(ctx, request, outcome)
-            }
             ContextMessage::StoreDefaultVisibility { request, outcome } => {
-                self.forward_handler(ctx, request, outcome)
-            }
-            ContextMessage::StoreContextAllowlist { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetMemberAlias { request, outcome } => {

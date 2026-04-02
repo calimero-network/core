@@ -23,8 +23,6 @@ const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
 pub const GROUP_UPGRADE_PREFIX: u8 = 0x24;
 pub const GROUP_SIGNING_KEY_PREFIX: u8 = 0x25;
 pub const GROUP_MEMBER_CAPABILITY_PREFIX: u8 = 0x26;
-pub const GROUP_CONTEXT_VISIBILITY_PREFIX: u8 = 0x27;
-pub const GROUP_CONTEXT_ALLOWLIST_PREFIX: u8 = 0x28;
 pub const GROUP_DEFAULT_CAPS_PREFIX: u8 = 0x29;
 pub const GROUP_DEFAULT_VIS_PREFIX: u8 = 0x2A;
 pub const GROUP_CONTEXT_LAST_MIGRATION_PREFIX: u8 = 0x2B;
@@ -486,155 +484,6 @@ impl Debug for GroupMemberCapability {
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupMemberCapabilityValue {
     pub capabilities: u32,
-}
-
-/// Key for context visibility info: prefix + group_id + context_id.
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupContextVisibility(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
-
-impl GroupContextVisibility {
-    #[must_use]
-    pub fn new(group_id: [u8; 32], context_id: PrimitiveContextId) -> Self {
-        Self(Key(GenericArray::from([GROUP_CONTEXT_VISIBILITY_PREFIX])
-            .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*context_id))))
-    }
-
-    #[must_use]
-    pub fn group_id(&self) -> [u8; 32] {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
-        id
-    }
-
-    #[must_use]
-    pub fn context_id(&self) -> PrimitiveContextId {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
-        id.into()
-    }
-}
-
-impl AsKeyParts for GroupContextVisibility {
-    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
-
-    fn column() -> Column {
-        Column::Group
-    }
-
-    fn as_key(&self) -> &Key<Self::Components> {
-        &self.0
-    }
-}
-
-impl FromKeyParts for GroupContextVisibility {
-    type Error = Infallible;
-
-    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
-        Ok(Self(parts))
-    }
-}
-
-impl Debug for GroupContextVisibility {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupContextVisibility")
-            .field("group_id", &self.group_id())
-            .field("context_id", &self.context_id())
-            .finish()
-    }
-}
-
-/// Value for [`GroupContextVisibility`].
-/// `mode`: 0 = Open, 1 = Restricted.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupContextVisibilityValue {
-    pub mode: u8,
-    pub creator: [u8; 32],
-}
-
-/// Key for context allowlist entry: prefix + group_id + context_id + member_pk.
-/// Uses a 97-byte key (1 + 32 + 32 + 32).
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupContextAllowlist(
-    Key<(
-        GroupPrefix,
-        GroupIdComponent,
-        GroupIdComponent,
-        GroupIdComponent,
-    )>,
-);
-
-impl GroupContextAllowlist {
-    #[must_use]
-    pub fn new(
-        group_id: [u8; 32],
-        context_id: PrimitiveContextId,
-        member: PrimitivePublicKey,
-    ) -> Self {
-        Self(Key(GenericArray::from([GROUP_CONTEXT_ALLOWLIST_PREFIX])
-            .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*context_id))
-            .concat(GenericArray::from(*member))))
-    }
-
-    #[must_use]
-    pub fn group_id(&self) -> [u8; 32] {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[1..33]);
-        id
-    }
-
-    #[must_use]
-    pub fn context_id(&self) -> PrimitiveContextId {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
-        id.into()
-    }
-
-    #[must_use]
-    pub fn member(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..]);
-        pk.into()
-    }
-}
-
-impl AsKeyParts for GroupContextAllowlist {
-    type Components = (
-        GroupPrefix,
-        GroupIdComponent,
-        GroupIdComponent,
-        GroupIdComponent,
-    );
-
-    fn column() -> Column {
-        Column::Group
-    }
-
-    fn as_key(&self) -> &Key<Self::Components> {
-        &self.0
-    }
-}
-
-impl FromKeyParts for GroupContextAllowlist {
-    type Error = Infallible;
-
-    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
-        Ok(Self(parts))
-    }
-}
-
-impl Debug for GroupContextAllowlist {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupContextAllowlist")
-            .field("group_id", &self.group_id())
-            .field("context_id", &self.context_id())
-            .field("member", &self.member())
-            .finish()
-    }
 }
 
 /// Key for group default capabilities: prefix + group_id.
@@ -1605,8 +1454,6 @@ mod tests {
             GROUP_UPGRADE_PREFIX,
             GROUP_SIGNING_KEY_PREFIX,
             GROUP_MEMBER_CAPABILITY_PREFIX,
-            GROUP_CONTEXT_VISIBILITY_PREFIX,
-            GROUP_CONTEXT_ALLOWLIST_PREFIX,
             GROUP_DEFAULT_CAPS_PREFIX,
             GROUP_DEFAULT_VIS_PREFIX,
             GROUP_CONTEXT_LAST_MIGRATION_PREFIX,

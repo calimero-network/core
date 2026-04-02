@@ -12,8 +12,6 @@ use calimero_server_primitives::admin::DeleteGroupApiRequest;
 use calimero_server_primitives::admin::DeleteGroupApiResponse;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use calimero_server_primitives::admin::DetachContextFromGroupApiResponse;
-use calimero_server_primitives::admin::GetContextAllowlistApiResponse;
-use calimero_server_primitives::admin::GetContextVisibilityApiResponse;
 use calimero_server_primitives::admin::GetGroupUpgradeStatusApiResponse;
 use calimero_server_primitives::admin::GetMemberCapabilitiesApiResponse;
 use calimero_server_primitives::admin::GroupInfoApiResponse;
@@ -24,15 +22,11 @@ use calimero_server_primitives::admin::JoinGroupContextApiResponse;
 use calimero_server_primitives::admin::ListAllGroupsApiResponse;
 use calimero_server_primitives::admin::ListGroupContextsApiResponse;
 use calimero_server_primitives::admin::ListGroupMembersApiResponse;
-use calimero_server_primitives::admin::ManageContextAllowlistApiRequest;
-use calimero_server_primitives::admin::ManageContextAllowlistApiResponse;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiRequest;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiResponse;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiResponse;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
-use calimero_server_primitives::admin::SetContextVisibilityApiRequest;
-use calimero_server_primitives::admin::SetContextVisibilityApiResponse;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiResponse;
 use calimero_server_primitives::admin::SetDefaultVisibilityApiRequest;
@@ -303,66 +297,6 @@ where
             .connection
             .get(&format!(
                 "admin-api/groups/{group_id}/members/{identity_hex}/capabilities"
-            ))
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn set_context_visibility(
-        &self,
-        group_id: &str,
-        context_id: &str,
-        request: SetContextVisibilityApiRequest,
-    ) -> Result<SetContextVisibilityApiResponse> {
-        let response = self
-            .connection
-            .put_json(
-                &format!("admin-api/groups/{group_id}/contexts/{context_id}/visibility"),
-                request,
-            )
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn get_context_visibility(
-        &self,
-        group_id: &str,
-        context_id: &str,
-    ) -> Result<GetContextVisibilityApiResponse> {
-        let response = self
-            .connection
-            .get(&format!(
-                "admin-api/groups/{group_id}/contexts/{context_id}/visibility"
-            ))
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn manage_context_allowlist(
-        &self,
-        group_id: &str,
-        context_id: &str,
-        request: ManageContextAllowlistApiRequest,
-    ) -> Result<ManageContextAllowlistApiResponse> {
-        let response = self
-            .connection
-            .post(
-                &format!("admin-api/groups/{group_id}/contexts/{context_id}/allowlist"),
-                request,
-            )
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn get_context_allowlist(
-        &self,
-        group_id: &str,
-        context_id: &str,
-    ) -> Result<GetContextAllowlistApiResponse> {
-        let response = self
-            .connection
-            .get(&format!(
-                "admin-api/groups/{group_id}/contexts/{context_id}/allowlist"
             ))
             .await?;
         Ok(response)

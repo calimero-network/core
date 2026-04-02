@@ -1,14 +1,12 @@
 use calimero_server_primitives::admin::{
     AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
-    DeleteGroupApiResponse, DetachContextFromGroupApiResponse, GetContextAllowlistApiResponse,
-    GetContextVisibilityApiResponse, GetGroupUpgradeStatusApiResponse,
+    DeleteGroupApiResponse, DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
     GetMemberCapabilitiesApiResponse, GroupInfoApiResponse, JoinGroupApiResponse,
     JoinGroupContextApiResponse, ListAllGroupsApiResponse, ListGroupContextsApiResponse,
-    ListGroupMembersApiResponse, ManageContextAllowlistApiResponse,
-    RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse,
-    SetContextVisibilityApiResponse, SetDefaultCapabilitiesApiResponse,
-    SetDefaultVisibilityApiResponse, SetMemberCapabilitiesApiResponse, SyncGroupApiResponse,
-    UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    ListGroupMembersApiResponse, RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse,
+    SetDefaultCapabilitiesApiResponse, SetDefaultVisibilityApiResponse,
+    SetMemberCapabilitiesApiResponse, SyncGroupApiResponse, UpdateGroupSettingsApiResponse,
+    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -336,46 +334,6 @@ impl Report for GetMemberCapabilitiesApiResponse {
             format!("{caps} (0b{caps:03b})"),
         ]);
         println!("{table}");
-    }
-}
-
-impl Report for SetContextVisibilityApiResponse {
-    fn report(&self) {
-        println!("{}", "Context visibility updated successfully".green());
-    }
-}
-
-impl Report for GetContextVisibilityApiResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![
-            Cell::new("Field").fg(Color::Blue),
-            Cell::new("Value").fg(Color::Blue),
-        ]);
-        let _ = table.add_row(vec!["Mode", &self.data.mode]);
-        let _ = table.add_row(vec!["Creator", &self.data.creator.to_string()]);
-        println!("{table}");
-    }
-}
-
-impl Report for ManageContextAllowlistApiResponse {
-    fn report(&self) {
-        println!("{}", "Context allowlist updated successfully".green());
-    }
-}
-
-impl Report for GetContextAllowlistApiResponse {
-    fn report(&self) {
-        if self.data.is_empty() {
-            println!("Allowlist is empty");
-        } else {
-            let mut table = Table::new();
-            let _ = table.set_header(vec![Cell::new("Allowed Member").fg(Color::Blue)]);
-            for member in &self.data {
-                let _ = table.add_row(vec![member.to_string()]);
-            }
-            println!("{table}");
-        }
     }
 }
 

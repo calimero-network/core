@@ -33,11 +33,9 @@ use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use calimero_server_primitives::admin::GroupMemberApiInput;
 use calimero_server_primitives::admin::JoinGroupApiRequest;
 use calimero_server_primitives::admin::JoinGroupContextApiRequest;
-use calimero_server_primitives::admin::ManageContextAllowlistApiRequest;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
-use calimero_server_primitives::admin::SetContextVisibilityApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultVisibilityApiRequest;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
@@ -650,102 +648,6 @@ async fn get_member_capabilities() {
     let resp = client.get_member_capabilities(GID, IDENT).await.unwrap();
 
     assert_eq!(resp.data.capabilities, 42);
-}
-
-#[tokio::test]
-async fn set_context_visibility() {
-    let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .and(path(format!(
-            "/admin-api/groups/{GID}/contexts/{CID}/visibility"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    client
-        .set_context_visibility(
-            GID,
-            CID,
-            SetContextVisibilityApiRequest {
-                mode: "open".to_string(),
-                requester: None,
-            },
-        )
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn get_context_visibility() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(format!(
-            "/admin-api/groups/{GID}/contexts/{CID}/visibility"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "data": {
-                "mode": "open",
-                "creator": ZERO_BS58
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    let resp = client.get_context_visibility(GID, CID).await.unwrap();
-
-    assert_eq!(resp.data.mode, "open");
-}
-
-// ---- Allowlist ----
-
-#[tokio::test]
-async fn manage_context_allowlist() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(format!(
-            "/admin-api/groups/{GID}/contexts/{CID}/allowlist"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    client
-        .manage_context_allowlist(
-            GID,
-            CID,
-            ManageContextAllowlistApiRequest {
-                add: vec![],
-                remove: vec![],
-                requester: None,
-            },
-        )
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn get_context_allowlist() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(format!(
-            "/admin-api/groups/{GID}/contexts/{CID}/allowlist"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    let resp = client.get_context_allowlist(GID, CID).await.unwrap();
-
-    assert!(resp.data.is_empty());
 }
 
 // ---- Group Settings ----

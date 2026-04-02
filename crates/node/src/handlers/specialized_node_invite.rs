@@ -386,36 +386,18 @@ pub async fn handle_specialized_node_invitation_response(
         }
     };
 
-    info!(
+    // Per-context invitations have been removed in favor of group-based joining.
+    // Specialized nodes should join via the group/fleet flow instead.
+    // For now, log a warning and skip -- the TEE fleet_join handler is the
+    // proper entry point for specialized node admission.
+    warn!(
         %peer_id,
         %our_public_key,
-        "Joining context via specialized node open invitation"
+        %context_id,
+        "Specialized node context invitation ignored -- use group-based fleet join instead"
     );
-
-    match context_client
-        .join_context(signed_invitation, &our_public_key)
-        .await
     {
-        Ok(Some(join_response)) => {
-            info!(
-                %peer_id,
-                context_id = %join_response.context_id,
-                member_public_key = %join_response.member_public_key,
-                "Successfully joined context via specialized node invitation"
-            );
-            Ok(Some(join_response.context_id))
-        }
-        Ok(None) => {
-            info!(%peer_id, %context_id, "Context already exists locally, skipping join");
-            Ok(Some(context_id))
-        }
-        Err(err) => {
-            error!(
-                %peer_id,
-                error = %err,
-                "Failed to join context via specialized node invitation"
-            );
-            Ok(None)
-        }
+        let _ = &signed_invitation;
+        Ok(Some(context_id))
     }
 }

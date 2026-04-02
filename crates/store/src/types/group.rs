@@ -39,16 +39,6 @@ impl PredefinedEntry for key::GroupMemberCapability {
     type DataType<'a> = key::GroupMemberCapabilityValue;
 }
 
-impl PredefinedEntry for key::GroupContextVisibility {
-    type Codec = Borsh;
-    type DataType<'a> = key::GroupContextVisibilityValue;
-}
-
-impl PredefinedEntry for key::GroupContextAllowlist {
-    type Codec = Borsh;
-    type DataType<'a> = ();
-}
-
 impl PredefinedEntry for key::GroupDefaultCaps {
     type Codec = Borsh;
     type DataType<'a> = key::GroupDefaultCapsValue;

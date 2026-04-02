@@ -522,40 +522,6 @@ impl Handler<NetworkEvent> for NodeManager {
                                     .into_actor(self),
                                 );
                             }
-                            calimero_node_primitives::sync::GroupMutationKind::ContextVisibilitySet {
-                                context_id,
-                                mode,
-                                creator,
-                            } => {
-                                let _ignored = ctx.spawn(
-                                    async move {
-                                        use calimero_context_config::types::ContextGroupId;
-                                        use calimero_context_primitives::group::StoreContextVisibilityRequest;
-                                        use calimero_primitives::context::ContextId;
-                                        use calimero_primitives::identity::PublicKey;
-
-                                        let group_id = ContextGroupId::from(group_id);
-                                        let context_id = ContextId::from(context_id);
-                                        if let Err(err) = context_client
-                                            .store_context_visibility(
-                                                StoreContextVisibilityRequest {
-                                                    group_id,
-                                                    context_id,
-                                                    mode,
-                                                    creator: PublicKey::from(creator),
-                                                },
-                                            )
-                                            .await
-                                        {
-                                            warn!(
-                                                ?err,
-                                                "Failed to store context visibility from gossip"
-                                            );
-                                        }
-                                    }
-                                    .into_actor(self),
-                                );
-                            }
                             calimero_node_primitives::sync::GroupMutationKind::DefaultVisibilitySet {
                                 mode,
                             } => {
@@ -574,38 +540,6 @@ impl Handler<NetworkEvent> for NodeManager {
                                             warn!(
                                                 ?err,
                                                 "Failed to store default visibility from gossip"
-                                            );
-                                        }
-                                    }
-                                    .into_actor(self),
-                                );
-                            }
-                            calimero_node_primitives::sync::GroupMutationKind::ContextAllowlistSet {
-                                context_id,
-                                members,
-                            } => {
-                                let _ignored = ctx.spawn(
-                                    async move {
-                                        use calimero_context_config::types::ContextGroupId;
-                                        use calimero_context_primitives::group::StoreContextAllowlistRequest;
-                                        use calimero_primitives::context::ContextId;
-                                        use calimero_primitives::identity::PublicKey;
-
-                                        let group_id = ContextGroupId::from(group_id);
-                                        let context_id = ContextId::from(context_id);
-                                        let members: Vec<PublicKey> =
-                                            members.into_iter().map(PublicKey::from).collect();
-                                        if let Err(err) = context_client
-                                            .store_context_allowlist(StoreContextAllowlistRequest {
-                                                group_id,
-                                                context_id,
-                                                members,
-                                            })
-                                            .await
-                                        {
-                                            warn!(
-                                                ?err,
-                                                "Failed to store context allowlist from gossip"
                                             );
                                         }
                                     }

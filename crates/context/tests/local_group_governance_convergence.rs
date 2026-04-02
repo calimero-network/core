@@ -261,152 +261,8 @@ fn two_nodes_converge_on_join_with_invitation_claim() {
     assert!(group_store::check_group_membership(&store_b, &gid, &joiner_pk).unwrap());
 }
 
-/// Same op order as `create_context` under local governance when default visibility is set:
-/// `ContextRegistered` → `ContextVisibilitySet` (group default applied to new context).
 #[test]
-fn two_nodes_converge_on_context_visibility_after_create() {
-    let mut rng = OsRng;
-    let gid = sample_group_id();
-    let gid_bytes = gid.to_bytes();
-
-    let store_a = empty_store();
-    let store_b = empty_store();
-
-    let admin_pk = PrivateKey::random(&mut rng).public_key();
-    let creator_sk = PrivateKey::random(&mut rng);
-    let creator_pk = creator_sk.public_key();
-
-    let context_id = ContextId::from([0xCD; 32]);
-
-    for store in [&store_a, &store_b] {
-        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
-        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-        add_group_member(store, &gid, &creator_pk, GroupMemberRole::Member).unwrap();
-        group_store::set_member_capability(
-            store,
-            &gid,
-            &creator_pk,
-            MemberCapabilities::CAN_CREATE_CONTEXT,
-        )
-        .unwrap();
-        group_store::set_default_visibility(store, &gid, 0).unwrap();
-    }
-
-    let op1 = SignedGroupOp::sign(
-        &creator_sk,
-        gid_bytes,
-        vec![],
-        [0u8; 32],
-        1,
-        GroupOp::ContextRegistered { context_id },
-    )
-    .expect("sign ContextRegistered");
-    let op2 = SignedGroupOp::sign(
-        &creator_sk,
-        gid_bytes,
-        vec![],
-        [0u8; 32],
-        2,
-        GroupOp::ContextVisibilitySet {
-            context_id,
-            mode: 0,
-            creator: creator_pk,
-        },
-    )
-    .expect("sign ContextVisibilitySet");
-
-    for payload in [
-        borsh_to_vec(&op1).expect("encode op1"),
-        borsh_to_vec(&op2).expect("encode op2"),
-    ] {
-        apply_wire_payload(&store_a, &payload);
-        apply_wire_payload(&store_b, &payload);
-    }
-
-    let vis_a = group_store::get_context_visibility(&store_a, &gid, &context_id)
-        .unwrap()
-        .expect("visibility on a");
-    let vis_b = group_store::get_context_visibility(&store_b, &gid, &context_id)
-        .unwrap()
-        .expect("visibility on b");
-    assert_eq!(vis_a, vis_b);
-    assert_eq!(vis_a.0, 0);
-    assert_eq!(vis_a.1, *creator_pk);
-}
-
-/// `create_context` uses **Open (0)** when the group has no `GroupDefaultVis`; same wire shape.
-#[test]
-fn two_nodes_converge_on_context_visibility_without_group_default() {
-    let mut rng = OsRng;
-    let gid = sample_group_id();
-    let gid_bytes = gid.to_bytes();
-
-    let store_a = empty_store();
-    let store_b = empty_store();
-
-    let admin_pk = PrivateKey::random(&mut rng).public_key();
-    let creator_sk = PrivateKey::random(&mut rng);
-    let creator_pk = creator_sk.public_key();
-
-    let context_id = ContextId::from([0xCE; 32]);
-
-    for store in [&store_a, &store_b] {
-        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
-        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-        add_group_member(store, &gid, &creator_pk, GroupMemberRole::Member).unwrap();
-        group_store::set_member_capability(
-            store,
-            &gid,
-            &creator_pk,
-            MemberCapabilities::CAN_CREATE_CONTEXT,
-        )
-        .unwrap();
-    }
-
-    let op1 = SignedGroupOp::sign(
-        &creator_sk,
-        gid_bytes,
-        vec![],
-        [0u8; 32],
-        1,
-        GroupOp::ContextRegistered { context_id },
-    )
-    .expect("sign ContextRegistered");
-    let op2 = SignedGroupOp::sign(
-        &creator_sk,
-        gid_bytes,
-        vec![],
-        [0u8; 32],
-        2,
-        GroupOp::ContextVisibilitySet {
-            context_id,
-            mode: 0,
-            creator: creator_pk,
-        },
-    )
-    .expect("sign ContextVisibilitySet");
-
-    for payload in [
-        borsh_to_vec(&op1).expect("encode op1"),
-        borsh_to_vec(&op2).expect("encode op2"),
-    ] {
-        apply_wire_payload(&store_a, &payload);
-        apply_wire_payload(&store_b, &payload);
-    }
-
-    let vis_a = group_store::get_context_visibility(&store_a, &gid, &context_id)
-        .unwrap()
-        .expect("visibility on a");
-    let vis_b = group_store::get_context_visibility(&store_b, &gid, &context_id)
-        .unwrap()
-        .expect("visibility on b");
-    assert_eq!(vis_a, vis_b);
-    assert_eq!(vis_a.0, 0);
-    assert_eq!(vis_a.1, *creator_pk);
-}
-
-#[test]
-fn two_nodes_converge_on_context_alias_as_creator() {
+fn two_nodes_converge_on_context_alias_as_admin() {
     let mut rng = OsRng;
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
@@ -444,24 +300,11 @@ fn two_nodes_converge_on_context_alias_as_creator() {
     )
     .expect("sign ContextRegistered");
     let op2 = SignedGroupOp::sign(
-        &creator_sk,
+        &admin_sk,
         gid_bytes,
         vec![],
         [0u8; 32],
-        2,
-        GroupOp::ContextVisibilitySet {
-            context_id,
-            mode: 0,
-            creator: creator_pk,
-        },
-    )
-    .expect("sign ContextVisibilitySet");
-    let op3 = SignedGroupOp::sign(
-        &creator_sk,
-        gid_bytes,
-        vec![],
-        [0u8; 32],
-        3,
+        1,
         GroupOp::ContextAliasSet {
             context_id,
             alias: "wire-alias".to_owned(),
@@ -472,7 +315,6 @@ fn two_nodes_converge_on_context_alias_as_creator() {
     for payload in [
         borsh_to_vec(&op1).expect("encode op1"),
         borsh_to_vec(&op2).expect("encode op2"),
-        borsh_to_vec(&op3).expect("encode op3"),
     ] {
         apply_wire_payload(&store_a, &payload);
         apply_wire_payload(&store_b, &payload);

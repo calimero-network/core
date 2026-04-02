@@ -68,20 +68,8 @@ pub enum GroupOp {
     ContextDetached { context_id: ContextId },
     /// Default visibility for new contexts (`0` = Open, `1` = Restricted).
     DefaultVisibilitySet { mode: u8 },
-    /// Per-context visibility and creator pubkey.
-    ContextVisibilitySet {
-        context_id: ContextId,
-        /// `0` = Open, `1` = Restricted.
-        mode: u8,
-        creator: PublicKey,
-    },
-    /// Replace the full allowlist for a restricted context.
-    ContextAllowlistReplaced {
-        context_id: ContextId,
-        members: Vec<PublicKey>,
-    },
     /// Human-readable alias for a context within the group.
-    /// **Signer:** group admin, or the context creator (must match `GroupContextVisibility.creator`).
+    /// **Signer:** group admin.
     ContextAliasSet {
         context_id: ContextId,
         alias: String,
@@ -117,19 +105,6 @@ pub enum GroupOp {
     /// Unlink a child group from this group (admin only).
     /// Does not delete the child group or its members/contexts.
     SubgroupRemoved { child_group_id: [u8; 32] },
-    /// Join a group via a context-level open invitation.
-    /// The inviter signature proves an admin created the invitation;
-    /// the outer `SignedGroupOp` signature proves the joiner's identity.
-    MemberJoinedViaContextInvitation {
-        /// Context ID from the invitation.
-        context_id: ContextId,
-        /// The inviter's public key (must be a group admin).
-        inviter_id: PublicKey,
-        /// Borsh-serialized `InvitationFromMember` (needed for signature verification).
-        invitation_payload: Vec<u8>,
-        /// Hex-encoded inviter signature over the invitation payload.
-        inviter_signature: String,
-    },
     /// TEE admission policy: defines which TEE nodes can auto-join the group.
     /// Only admins can set this policy.
     TeeAdmissionPolicySet {

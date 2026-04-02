@@ -20,8 +20,7 @@ use calimero_server_primitives::admin::{
     GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
     GetContextsResponse, GetLatestVersionResponse, GetPeersCountResponse,
     InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
-    InviteSpecializedNodeRequest, InviteSpecializedNodeResponse, InviteToContextRequest,
-    InviteToContextResponse, JoinContextRequest, JoinContextResponse, ListAliasesResponse,
+    InviteSpecializedNodeRequest, InviteSpecializedNodeResponse, ListAliasesResponse,
     ListApplicationsResponse, ListPackagesResponse, ListVersionsResponse, LookupAliasResponse,
     SyncContextResponse, UninstallApplicationResponse, UpdateContextApplicationRequest,
     UpdateContextApplicationResponse,
@@ -312,17 +311,6 @@ where
         Ok(response)
     }
 
-    pub async fn invite_to_context(
-        &self,
-        request: InviteToContextRequest,
-    ) -> Result<InviteToContextResponse> {
-        let response = self
-            .connection
-            .post("admin-api/contexts/invite", request)
-            .await?;
-        Ok(response)
-    }
-
     /// Invite specialized nodes (e.g., read-only TEE nodes) to join a context.
     ///
     /// This broadcasts a specialized node discovery request to the global invite topic.
@@ -385,14 +373,6 @@ where
                 &format!("admin-api/contexts/{context_id}"),
                 DeleteContextApiRequest { requester },
             )
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn join_context(&self, request: JoinContextRequest) -> Result<JoinContextResponse> {
-        let response = self
-            .connection
-            .post("admin-api/contexts/join", request)
             .await?;
         Ok(response)
     }

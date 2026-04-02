@@ -1,5 +1,5 @@
 use actix::Message;
-use calimero_context_config::types::{ContextGroupId, SignedOpenInvitation};
+use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
@@ -12,16 +12,14 @@ use tokio::sync::oneshot;
 use crate::group::{
     AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupAliasesRequest,
     BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
-    DeleteGroupRequest, DetachContextFromGroupRequest, GetContextAllowlistRequest,
-    GetContextVisibilityRequest, GetGroupForContextRequest, GetGroupInfoRequest,
-    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetNamespaceIdentityRequest,
-    JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest, ListGroupContextsRequest,
-    ListGroupMembersRequest, ListNamespacesForApplicationRequest, ListNamespacesRequest,
-    ManageContextAllowlistRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
-    SetContextVisibilityRequest, SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest,
-    SetGroupAliasRequest, SetMemberAliasRequest, SetMemberCapabilitiesRequest,
-    SetTeeAdmissionPolicyRequest, StoreContextAliasRequest, StoreContextAllowlistRequest,
-    StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
+    DeleteGroupRequest, DetachContextFromGroupRequest, GetGroupForContextRequest,
+    GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
+    GetNamespaceIdentityRequest, JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
+    ListNamespacesRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
+    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetGroupAliasRequest,
+    SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextAliasRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
     StoreGroupAliasRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
     StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest,
     UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
@@ -120,22 +118,6 @@ pub enum ExecuteError {
     AliasResolutionFailed { alias: Alias<PublicKey> },
 }
 
-#[derive(Debug)]
-pub struct JoinContextRequest {
-    pub invitation: SignedOpenInvitation,
-    pub new_member_public_key: PublicKey,
-}
-
-impl Message for JoinContextRequest {
-    type Result = eyre::Result<JoinContextResponse>;
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct JoinContextResponse {
-    pub context_id: ContextId,
-    pub member_public_key: PublicKey,
-}
-
 #[derive(Copy, Clone, Debug)]
 pub struct SyncRequest {
     pub context_id: ContextId,
@@ -194,10 +176,6 @@ pub enum ContextMessage {
     DeleteContext {
         request: DeleteContextRequest,
         outcome: oneshot::Sender<<DeleteContextRequest as Message>::Result>,
-    },
-    JoinContext {
-        request: JoinContextRequest,
-        outcome: oneshot::Sender<<JoinContextRequest as Message>::Result>,
     },
     UpdateApplication {
         request: UpdateApplicationRequest,
@@ -295,22 +273,6 @@ pub enum ContextMessage {
         request: GetMemberCapabilitiesRequest,
         outcome: oneshot::Sender<<GetMemberCapabilitiesRequest as Message>::Result>,
     },
-    SetContextVisibility {
-        request: SetContextVisibilityRequest,
-        outcome: oneshot::Sender<<SetContextVisibilityRequest as Message>::Result>,
-    },
-    GetContextVisibility {
-        request: GetContextVisibilityRequest,
-        outcome: oneshot::Sender<<GetContextVisibilityRequest as Message>::Result>,
-    },
-    ManageContextAllowlist {
-        request: ManageContextAllowlistRequest,
-        outcome: oneshot::Sender<<ManageContextAllowlistRequest as Message>::Result>,
-    },
-    GetContextAllowlist {
-        request: GetContextAllowlistRequest,
-        outcome: oneshot::Sender<<GetContextAllowlistRequest as Message>::Result>,
-    },
     SetDefaultCapabilities {
         request: SetDefaultCapabilitiesRequest,
         outcome: oneshot::Sender<<SetDefaultCapabilitiesRequest as Message>::Result>,
@@ -347,17 +309,9 @@ pub enum ContextMessage {
         request: StoreDefaultCapabilitiesRequest,
         outcome: oneshot::Sender<<StoreDefaultCapabilitiesRequest as Message>::Result>,
     },
-    StoreContextVisibility {
-        request: StoreContextVisibilityRequest,
-        outcome: oneshot::Sender<<StoreContextVisibilityRequest as Message>::Result>,
-    },
     StoreDefaultVisibility {
         request: StoreDefaultVisibilityRequest,
         outcome: oneshot::Sender<<StoreDefaultVisibilityRequest as Message>::Result>,
-    },
-    StoreContextAllowlist {
-        request: StoreContextAllowlistRequest,
-        outcome: oneshot::Sender<<StoreContextAllowlistRequest as Message>::Result>,
     },
     SetMemberAlias {
         request: SetMemberAliasRequest,

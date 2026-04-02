@@ -22,20 +22,6 @@ impl Handler<BroadcastGroupLocalStateRequest> for ContextManager {
             Ok(v) => v,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
-        let context_vis =
-            match group_store::enumerate_context_visibilities(&self.datastore, &group_id) {
-                Ok(v) => v,
-                Err(err) => return ActorResponse::reply(Err(err)),
-            };
-        let default_vis = match group_store::get_default_visibility(&self.datastore, &group_id) {
-            Ok(v) => v,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
-        let allowlists =
-            match group_store::enumerate_contexts_with_allowlists(&self.datastore, &group_id) {
-                Ok(v) => v,
-                Err(err) => return ActorResponse::reply(Err(err)),
-            };
         let member_aliases = match group_store::enumerate_member_aliases(&self.datastore, &group_id)
         {
             Ok(v) => v,
@@ -95,28 +81,6 @@ impl Handler<BroadcastGroupLocalStateRequest> for ContextManager {
 
                 if let Some(capabilities) = default_caps {
                     broadcast(GroupMutationKind::DefaultCapabilitiesSet { capabilities }).await;
-                }
-
-                for (context_id, mode, creator) in context_vis {
-                    broadcast(GroupMutationKind::ContextVisibilitySet {
-                        context_id: *context_id,
-                        mode,
-                        creator,
-                    })
-                    .await;
-                }
-
-                if let Some(mode) = default_vis {
-                    broadcast(GroupMutationKind::DefaultVisibilitySet { mode }).await;
-                }
-
-                for (context_id, members) in allowlists {
-                    let members_raw: Vec<[u8; 32]> = members.iter().map(|pk| **pk).collect();
-                    broadcast(GroupMutationKind::ContextAllowlistSet {
-                        context_id: *context_id,
-                        members: members_raw,
-                    })
-                    .await;
                 }
 
                 for (member, alias) in member_aliases {

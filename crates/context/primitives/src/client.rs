@@ -22,27 +22,24 @@ use crate::group::{
     AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupAliasesRequest,
     BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
     CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
-    DetachContextFromGroupRequest, GetContextAllowlistRequest, GetContextVisibilityRequest,
-    GetContextVisibilityResponse, GetGroupForContextRequest, GetGroupInfoRequest,
+    DetachContextFromGroupRequest, GetGroupForContextRequest, GetGroupInfoRequest,
     GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
     GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse, GroupSummary,
     GroupUpgradeInfo, JoinGroupContextRequest, JoinGroupContextResponse, JoinGroupRequest,
     JoinGroupResponse, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
     ListGroupMembersResponse, ListNamespacesForApplicationRequest, ListNamespacesRequest,
-    ManageContextAllowlistRequest, NamespaceSummary, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, SetContextVisibilityRequest, SetDefaultCapabilitiesRequest,
-    SetDefaultVisibilityRequest, SetGroupAliasRequest, SetMemberAliasRequest,
-    SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest, StoreContextAliasRequest,
-    StoreContextAllowlistRequest, StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest,
-    StoreDefaultVisibilityRequest, StoreGroupAliasRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest,
-    SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
-    UpgradeGroupResponse,
+    NamespaceSummary, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
+    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetGroupAliasRequest,
+    SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextAliasRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
+    StoreGroupAliasRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
+    StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ApplySignedGroupOpRequest, ContextMessage, CreateContextRequest, CreateContextResponse,
     DeleteContextRequest, DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse,
-    JoinContextRequest, JoinContextResponse, MigrationParams, UpdateApplicationRequest,
+    MigrationParams, UpdateApplicationRequest,
 };
 use crate::ContextAtomic;
 
@@ -251,43 +248,6 @@ impl ContextClient {
             source,
             group_id,
         }))
-    }
-
-    /// Sends a request to join a context using a signed open invitation.
-    ///
-    /// This is an asynchronous operation handled by the `ContextManager` actor. The actor
-    /// will parse the payload, validate the information, and configure the local node
-    /// to participate in the specified context.
-    ///
-    /// # Arguments
-    ///
-    /// * `signed_invitation` - The `SignedOpenInvitation` received from an inviter.
-    /// * `new_member_public_key` - The public key of the identity that will join.
-    ///
-    /// # Returns
-    ///
-    /// * A `Result` containing the `JoinContextResponse` from the actor upon completion.
-    /// * Returns `Ok(None)` if the context already exists locally.
-    pub async fn join_context(
-        &self,
-        signed_invitation: SignedOpenInvitation,
-        new_member_public_key: &PublicKey,
-    ) -> eyre::Result<Option<JoinContextResponse>> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::JoinContext {
-                request: JoinContextRequest {
-                    invitation: signed_invitation,
-                    new_member_public_key: *new_member_public_key,
-                },
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        let response = receiver.await.expect("Mailbox not to be dropped")?;
-        Ok(Some(response))
     }
 
     /// Checks if a context's metadata exists in the local datastore.
@@ -1116,23 +1076,6 @@ impl ContextClient {
         receiver.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn store_context_visibility(
-        &self,
-        request: StoreContextVisibilityRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::StoreContextVisibility {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
     pub async fn store_default_visibility(
         &self,
         request: StoreDefaultVisibilityRequest,
@@ -1141,23 +1084,6 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::StoreDefaultVisibility {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn store_context_allowlist(
-        &self,
-        request: StoreContextAllowlistRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::StoreContextAllowlist {
                 request,
                 outcome: sender,
             })
@@ -1488,74 +1414,6 @@ impl ContextClient {
 
         self.context_manager
             .send(ContextMessage::GetMemberCapabilities {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn set_context_visibility(
-        &self,
-        request: SetContextVisibilityRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::SetContextVisibility {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn get_context_visibility(
-        &self,
-        request: GetContextVisibilityRequest,
-    ) -> eyre::Result<GetContextVisibilityResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::GetContextVisibility {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn manage_context_allowlist(
-        &self,
-        request: ManageContextAllowlistRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::ManageContextAllowlist {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn get_context_allowlist(
-        &self,
-        request: GetContextAllowlistRequest,
-    ) -> eyre::Result<Vec<PublicKey>> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::GetContextAllowlist {
                 request,
                 outcome: sender,
             })

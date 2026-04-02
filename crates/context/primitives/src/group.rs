@@ -363,57 +363,6 @@ pub struct GetMemberCapabilitiesResponse {
 }
 
 #[derive(Debug)]
-pub struct SetContextVisibilityRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-    pub mode: calimero_context_config::VisibilityMode,
-    pub requester: Option<PublicKey>,
-}
-
-impl Message for SetContextVisibilityRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
-pub struct GetContextVisibilityRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-}
-
-impl Message for GetContextVisibilityRequest {
-    type Result = eyre::Result<GetContextVisibilityResponse>;
-}
-
-#[derive(Clone, Debug)]
-pub struct GetContextVisibilityResponse {
-    pub mode: calimero_context_config::VisibilityMode,
-    pub creator: PublicKey,
-}
-
-#[derive(Debug)]
-pub struct ManageContextAllowlistRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-    pub add: Vec<PublicKey>,
-    pub remove: Vec<PublicKey>,
-    pub requester: Option<PublicKey>,
-}
-
-impl Message for ManageContextAllowlistRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
-pub struct GetContextAllowlistRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-}
-
-impl Message for GetContextAllowlistRequest {
-    type Result = eyre::Result<Vec<PublicKey>>;
-}
-
-#[derive(Debug)]
 pub struct SetDefaultCapabilitiesRequest {
     pub group_id: ContextGroupId,
     pub default_capabilities: u32,
@@ -467,6 +416,16 @@ pub struct SetDefaultVisibilityRequest {
 }
 
 impl Message for SetDefaultVisibilityRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct StoreDefaultVisibilityRequest {
+    pub group_id: ContextGroupId,
+    pub mode: u8,
+}
+
+impl Message for StoreDefaultVisibilityRequest {
     type Result = eyre::Result<()>;
 }
 
@@ -571,39 +530,6 @@ pub struct StoreDefaultCapabilitiesRequest {
 }
 
 impl Message for StoreDefaultCapabilitiesRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
-pub struct StoreContextVisibilityRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-    pub mode: u8,
-    pub creator: PublicKey,
-}
-
-impl Message for StoreContextVisibilityRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
-pub struct StoreDefaultVisibilityRequest {
-    pub group_id: ContextGroupId,
-    pub mode: u8,
-}
-
-impl Message for StoreDefaultVisibilityRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
-pub struct StoreContextAllowlistRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-    pub members: Vec<PublicKey>,
-}
-
-impl Message for StoreContextAllowlistRequest {
     type Result = eyre::Result<()>;
 }
 

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use calimero_context_config::types::{Capability, SignedGroupOpenInvitation, SignedOpenInvitation};
+use calimero_context_config::types::{Capability, SignedGroupOpenInvitation};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, GroupMemberRole, UpgradePolicy};
@@ -431,38 +431,6 @@ impl GetContextsResponse {
     }
 }
 
-#[derive(Debug, Deserialize, Copy, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteToContextRequest {
-    pub context_id: ContextId,
-    pub inviter_id: PublicKey,
-    pub valid_for_seconds: u64,
-}
-
-impl InviteToContextRequest {
-    pub const fn new(context_id: ContextId, inviter_id: PublicKey, valid_for_seconds: u64) -> Self {
-        Self {
-            context_id,
-            inviter_id,
-            valid_for_seconds,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteToContextResponse {
-    pub data: Option<SignedOpenInvitation>,
-}
-
-impl InviteToContextResponse {
-    pub const fn new(signed_open_invitation: Option<SignedOpenInvitation>) -> Self {
-        Self {
-            data: signed_open_invitation,
-        }
-    }
-}
-
 /// Request to invite specialized nodes (e.g., read-only TEE nodes) to join a context
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -498,46 +466,6 @@ impl InviteSpecializedNodeResponse {
     pub fn new(nonce: String) -> Self {
         Self {
             data: InviteSpecializedNodeResponseData { nonce },
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JoinContextRequest {
-    pub invitation: SignedOpenInvitation,
-    pub new_member_public_key: PublicKey,
-}
-
-impl JoinContextRequest {
-    pub const fn new(invitation: SignedOpenInvitation, new_member_public_key: PublicKey) -> Self {
-        Self {
-            invitation,
-            new_member_public_key,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JoinContextResponseData {
-    pub context_id: ContextId,
-    pub member_public_key: PublicKey,
-}
-
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JoinContextResponse {
-    pub data: Option<JoinContextResponseData>,
-}
-
-impl JoinContextResponse {
-    pub fn new(data: Option<(ContextId, PublicKey)>) -> Self {
-        Self {
-            data: data.map(|(context_id, member_public_key)| JoinContextResponseData {
-                context_id,
-                member_public_key,
-            }),
         }
     }
 }
@@ -1339,7 +1267,7 @@ use crate::validation::{
     },
     Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_METHOD_NAME_LENGTH,
     MAX_NONCE_LENGTH, MAX_PACKAGE_NAME_LENGTH, MAX_PATH_LENGTH, MAX_QUOTE_B64_LENGTH,
-    MAX_VALID_FOR_SECONDS, MAX_VERSION_LENGTH,
+    MAX_VERSION_LENGTH,
 };
 
 impl Validate for InstallApplicationRequest {
@@ -1418,32 +1346,9 @@ impl Validate for CreateContextRequest {
     }
 }
 
-impl Validate for InviteToContextRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        if self.valid_for_seconds > MAX_VALID_FOR_SECONDS {
-            errors.push(ValidationError::ValueTooLarge {
-                field: "valid_for_seconds",
-                max: MAX_VALID_FOR_SECONDS,
-                actual: self.valid_for_seconds,
-            });
-        }
-
-        errors
-    }
-}
-
 impl Validate for InviteSpecializedNodeRequest {
     fn validate(&self) -> Vec<ValidationError> {
         // All fields are typed (ContextId, Option<PublicKey>) which have their own validation
-        Vec::new()
-    }
-}
-
-impl Validate for JoinContextRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed (SignedOpenInvitation, PublicKey) which have their own validation
         Vec::new()
     }
 }
@@ -2179,75 +2084,6 @@ pub struct GetMemberCapabilitiesApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct GetMemberCapabilitiesApiData {
     pub capabilities: u32,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetContextVisibilityApiRequest {
-    pub mode: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
-}
-
-impl Validate for SetContextVisibilityApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-        if self.mode != "open" && self.mode != "restricted" {
-            errors.push(ValidationError::InvalidFormat {
-                field: "mode",
-                reason: "must be 'open' or 'restricted'".into(),
-            });
-        }
-        errors
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct SetContextVisibilityApiResponse;
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextVisibilityApiResponse {
-    pub data: GetContextVisibilityApiData,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextVisibilityApiData {
-    pub mode: String,
-    pub creator: PublicKey,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ManageContextAllowlistApiRequest {
-    #[serde(default)]
-    pub add: Vec<PublicKey>,
-    #[serde(default)]
-    pub remove: Vec<PublicKey>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
-}
-
-impl Validate for ManageContextAllowlistApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-        if self.add.is_empty() && self.remove.is_empty() {
-            errors.push(ValidationError::EmptyField {
-                field: "add/remove",
-            });
-        }
-        errors
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct ManageContextAllowlistApiResponse;
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextAllowlistApiResponse {
-    pub data: Vec<PublicKey>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

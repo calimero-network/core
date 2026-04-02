@@ -83,23 +83,6 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
                 )
                 .await?;
 
-                if let Err(err) =
-                    group_store::delete_context_visibility(&datastore, &group_id, &context_id)
-                {
-                    warn!(
-                        ?group_id, %context_id, %err,
-                        "failed to clean up context visibility on detach"
-                    );
-                }
-                if let Err(err) =
-                    group_store::clear_context_allowlist(&datastore, &group_id, &context_id)
-                {
-                    warn!(
-                        ?group_id, %context_id, %err,
-                        "failed to clean up context allowlist on detach"
-                    );
-                }
-
                 let _ = node_client
                     .broadcast_group_mutation(
                         group_id.to_bytes(),

@@ -490,39 +490,15 @@ async fn create_context(
         )
         .await?;
 
-        let vis_mode = group_store::get_default_visibility(&datastore, &group_id)?.unwrap_or(0u8);
-        group_store::sign_apply_and_publish(
-            &datastore,
-            &node_client,
-            &group_id,
-            &sk,
-            GroupOp::ContextVisibilitySet {
-                context_id: context.id,
-                mode: vis_mode,
-                creator: identity,
-            },
-        )
-        .await?;
-
-        // Also broadcast via the notification path so peers already
-        // subscribed to the group topic receive the info immediately,
-        // without waiting for the governance DAG to catch up.
+        // Broadcast via the notification path so peers already subscribed
+        // to the group topic receive the info immediately, without waiting
+        // for the governance DAG to catch up.
         let group_id_bytes = group_id.to_bytes();
         let _ = node_client
             .broadcast_group_mutation(
                 group_id_bytes,
                 GroupMutationKind::ContextRegistered {
                     context_id: *context.id,
-                },
-            )
-            .await;
-        let _ = node_client
-            .broadcast_group_mutation(
-                group_id_bytes,
-                GroupMutationKind::ContextVisibilitySet {
-                    context_id: *context.id,
-                    mode: vis_mode,
-                    creator: *identity,
                 },
             )
             .await;

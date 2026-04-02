@@ -17,61 +17,25 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
         }: JoinGroupContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Resolve joiner identity from node group identity.
-        let (joiner_identity, _effective_signing_key) =
-            match self.node_namespace_identity(&group_id) {
-                Some((pk, sk)) => (pk, Some(sk)),
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "joiner_identity not provided and node has no configured group identity"
-                    )));
-                }
-            };
+        // Resolve joiner identity from node namespace identity.
+        let (joiner_identity, _) = match self.node_namespace_identity(&group_id) {
+            Some(id) => id,
+            None => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "node has no namespace identity for this group; join the group first"
+                )));
+            }
+        };
 
-        // Validate: group exists, joiner is a member, and has permission to join this context.
+        // Group membership already verified above. All contexts in a group
+        // a member has access to are joinable. Restricted access is handled
+        // at the subgroup level (admin must explicitly add member to the subgroup).
         if let Err(err) = (|| -> eyre::Result<()> {
             if group_store::load_group_meta(&self.datastore, &group_id)?.is_none() {
                 bail!("group not found");
             }
             if !group_store::check_group_membership(&self.datastore, &group_id, &joiner_identity)? {
                 bail!("identity is not a member of the group");
-            }
-            match group_store::get_context_visibility(&self.datastore, &group_id, &context_id)? {
-                Some((0, _)) => {
-                    if !group_store::is_group_admin_or_has_capability(
-                        &self.datastore,
-                        &group_id,
-                        &joiner_identity,
-                        calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_CONTEXTS,
-                    )? {
-                        bail!(
-                            "identity lacks permission to join open context '{context_id:?}' \
-                             (not an admin and CAN_JOIN_OPEN_CONTEXTS is not set)"
-                        );
-                    }
-                }
-                Some((1, _)) => {
-                    if !group_store::check_context_allowlist(
-                        &self.datastore,
-                        &group_id,
-                        &context_id,
-                        &joiner_identity,
-                    )? {
-                        bail!(
-                            "identity is not on the allowlist for restricted context \
-                             '{context_id:?}' (admins must be explicitly allowlisted too)"
-                        );
-                    }
-                }
-                Some((mode, _)) => bail!("unknown context visibility mode: {mode}"),
-                None => {
-                    if !group_store::is_group_admin(&self.datastore, &group_id, &joiner_identity)? {
-                        bail!(
-                            "context visibility not found for '{context_id:?}'; \
-                             only admins may join"
-                        );
-                    }
-                }
             }
             Ok(())
         })() {

@@ -8,7 +8,5 @@ pub mod get_context_storage;
 pub mod get_contexts_for_application;
 pub mod get_contexts_with_executors_for_application;
 pub mod invite_specialized_node;
-pub mod invite_to_context;
-pub mod join_context;
 pub mod sync;
 pub mod update_context_application;

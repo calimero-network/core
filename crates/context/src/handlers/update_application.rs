@@ -94,9 +94,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             let context_client = self.context_client.clone();
             let migration_params = migration_params.clone();
 
-            let service_name = context_meta
-                .as_ref()
-                .and_then(|c| c.service_name.clone());
+            let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
 
             // Load the (fresh) module
             let module_task = self.get_module(application_id, service_name);
