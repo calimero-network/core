@@ -60,21 +60,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // 1. Subscribe to namespace topic — mesh already has existing members.
                 let _ = node_client.subscribe_namespace(namespace_id).await;
 
-                // 2. Poll for group metadata to arrive via gossip.
-                let mut meta_found = false;
-                for _ in 0..META_POLL_MAX_ATTEMPTS {
-                    if group_store::load_group_meta(&datastore, &group_id)?.is_some() {
-                        meta_found = true;
-                        break;
-                    }
-                    tokio::time::sleep(META_POLL_INTERVAL).await;
-                }
-                if !meta_found {
-                    bail!(
-                        "group metadata not found locally; timed out waiting for \
-                         namespace state to replicate before joining"
-                    );
-                }
+                // 2. Brief pause for gossipsub mesh to form with existing peers.
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
                 // 3. Store the signing key so we can sign namespace ops.
                 let sk = PrivateKey::from(sk_bytes);
