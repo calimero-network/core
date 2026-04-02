@@ -764,22 +764,35 @@ impl ContextManager {
         service_name: Option<String>,
     ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
         let blob_task = async {}.into_actor(self).map(move |_, act, _ctx| {
-            let blob = match act.applications.entry(application_id) {
+            let app = match act.applications.entry(application_id) {
                 btree_map::Entry::Vacant(vacant) => {
                     let Some(app) = act.node_client.get_application(&application_id)? else {
                         bail!(ExecuteError::ApplicationNotInstalled { application_id });
                     };
 
-                    vacant.insert(app).blob
+                    vacant.insert(app)
                 }
-                btree_map::Entry::Occupied(occupied) => occupied.into_mut().blob,
+                btree_map::Entry::Occupied(occupied) => occupied.into_mut(),
             };
 
-            // For multi-service: resolve the specific service's blob
-            // For now, service resolution uses ApplicationMeta.resolve_service()
-            // which returns the correct bytecode/compiled pair.
-            // TODO: When services have their own blob IDs, resolve from ServiceMeta here.
-            let _ = service_name; // Will be used when per-service blobs are stored
+            let blob = app
+                .resolve_service_blob(service_name.as_deref())
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "service '{}' not found in application {} (available: {})",
+                        service_name.as_deref().unwrap_or("<none>"),
+                        application_id,
+                        if app.services.is_empty() {
+                            "<single-service>".to_owned()
+                        } else {
+                            app.services
+                                .iter()
+                                .map(|s| s.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }
+                    )
+                })?;
 
             Ok(blob)
         });

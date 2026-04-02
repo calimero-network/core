@@ -39,7 +39,19 @@ impl NodeClient {
             return Ok(None);
         };
 
-        let application = Application::new(
+        let services = application
+            .services
+            .iter()
+            .map(|s| calimero_primitives::application::ApplicationService {
+                name: s.name.to_string(),
+                blob: ApplicationBlob {
+                    bytecode: s.bytecode.blob_id(),
+                    compiled: s.compiled.blob_id(),
+                },
+            })
+            .collect();
+
+        let mut app = Application::new(
             *application_id,
             ApplicationBlob {
                 bytecode: application.bytecode.blob_id(),
@@ -54,8 +66,9 @@ impl NodeClient {
             application.package.to_string(),
             application.version.to_string(),
         );
+        app.services = services;
 
-        Ok(Some(application))
+        Ok(Some(app))
     }
 
     pub async fn get_application_bytes(
