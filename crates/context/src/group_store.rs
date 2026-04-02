@@ -1444,6 +1444,44 @@ pub async fn sign_apply_and_publish_namespace_op(
         .await
 }
 
+/// Sign and publish a namespace op WITHOUT applying locally.
+///
+/// Used by the joiner in the `MemberJoined` flow: the joiner doesn't have
+/// the full membership state to verify the inviter, so it just signs and
+/// publishes. Other nodes verify and apply when they receive via gossip.
+pub async fn sign_and_publish_namespace_op(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    namespace_id: [u8; 32],
+    signer_sk: &PrivateKey,
+    op: NamespaceOp,
+) -> EyreResult<()> {
+    let ns_head_key = calimero_store::key::NamespaceGovHead::new(namespace_id);
+    let handle = store.handle();
+    let head = handle.get(&ns_head_key)?;
+    drop(handle);
+
+    let parent_hashes = head
+        .as_ref()
+        .map(|h| h.dag_heads.clone())
+        .unwrap_or_default();
+    let nonce = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
+
+    let signed = SignedNamespaceOp::sign(signer_sk, namespace_id, parent_hashes, [0u8; 32], nonce, op)?;
+    let delta_id = signed
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    let parent_ids = signed.parent_op_hashes.clone();
+
+    // Store for backfill but don't apply.
+    store_namespace_gov_op(store, &signed)?;
+
+    let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+    node_client
+        .publish_signed_namespace_op(namespace_id, delta_id, parent_ids, bytes)
+        .await
+}
+
 /// Collect delta IDs from namespace governance skeletons that belong to a
 /// specific group. These are ops we stored as opaque skeletons because we
 /// didn't hold the group's sender key at the time; now that we've joined

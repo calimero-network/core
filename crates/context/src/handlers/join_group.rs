@@ -92,12 +92,17 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     _ => GroupMemberRole::Member,
                 };
 
+                // Sign and publish MemberJoined to the namespace topic.
+                // We do NOT apply locally here — the joiner's node doesn't have
+                // the full membership state to verify the inviter's permissions.
+                // Other nodes verify when they receive and apply via gossip.
+                // The joiner adds itself to local membership directly below.
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoined {
                     member: joiner_identity,
                     signed_invitation: invitation.clone(),
                 });
 
-                group_store::sign_apply_and_publish_namespace_op(
+                group_store::sign_and_publish_namespace_op(
                     &datastore,
                     &node_client,
                     namespace_id,
