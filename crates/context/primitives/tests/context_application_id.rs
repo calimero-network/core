@@ -72,6 +72,7 @@ fn create_test_context(
         key::ApplicationMeta::new(application_id),
         *Hash::default(),
         vec![],
+        None,
     );
 
     handle.put(&key, &meta)?;

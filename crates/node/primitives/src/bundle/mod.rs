@@ -120,6 +120,15 @@ pub struct BundleManifest {
     pub signature: Option<BundleSignature>,
 }
 
+/// A WASM artifact within a bundle, abstracting over single-service and
+/// multi-service layouts so callers never need to check both shapes.
+pub struct WasmArtifact<'a> {
+    /// Service name. `None` for single-service bundles.
+    pub name: Option<&'a str>,
+    pub wasm: &'a BundleArtifact,
+    pub abi: Option<&'a BundleArtifact>,
+}
+
 impl BundleManifest {
     /// Returns the list of service names in this bundle.
     /// For single-service bundles, returns an empty vec (no named services).
@@ -133,5 +142,93 @@ impl BundleManifest {
     /// Returns true if this is a multi-service bundle.
     pub fn is_multi_service(&self) -> bool {
         matches!(&self.services, Some(svcs) if svcs.len() > 1)
+    }
+
+    /// Iterate all WASM artifacts uniformly, regardless of single/multi-service.
+    ///
+    /// - Multi-service (`services` non-empty): yields one `WasmArtifact` per service.
+    /// - Single-service: yields one `WasmArtifact` with `name: None` from the
+    ///   top-level `wasm`/`abi` fields.
+    pub fn wasm_artifacts(&self) -> Vec<WasmArtifact<'_>> {
+        match &self.services {
+            Some(svcs) if !svcs.is_empty() => svcs
+                .iter()
+                .map(|s| WasmArtifact {
+                    name: Some(&s.name),
+                    wasm: &s.wasm,
+                    abi: s.abi.as_ref(),
+                })
+                .collect(),
+            _ => self
+                .wasm
+                .as_ref()
+                .map(|w| {
+                    vec![WasmArtifact {
+                        name: None,
+                        wasm: w,
+                        abi: self.abi.as_ref(),
+                    }]
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Serialize the manifest's display metadata to JSON bytes for storage.
+    ///
+    /// Extracts `package`, `version`, `metadata.*`, and `links.*` into a flat
+    /// JSON object. This replaces the ~70-line inline blocks that were
+    /// copy-pasted across the three bundle install paths.
+    pub fn to_metadata_json(&self) -> eyre::Result<Vec<u8>> {
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "package".into(),
+            serde_json::Value::String(self.package.clone()),
+        );
+        obj.insert(
+            "version".into(),
+            serde_json::Value::String(self.app_version.clone()),
+        );
+
+        if let Some(ref m) = self.metadata {
+            obj.insert("name".into(), serde_json::Value::String(m.name.clone()));
+            if let Some(ref v) = m.description {
+                obj.insert("description".into(), serde_json::Value::String(v.clone()));
+            }
+            if let Some(ref v) = m.icon {
+                obj.insert("icon".into(), serde_json::Value::String(v.clone()));
+            }
+            if !m.tags.is_empty() {
+                obj.insert(
+                    "tags".into(),
+                    serde_json::Value::Array(
+                        m.tags
+                            .iter()
+                            .map(|t| serde_json::Value::String(t.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+            if let Some(ref v) = m.license {
+                obj.insert("license".into(), serde_json::Value::String(v.clone()));
+            }
+        }
+
+        if let Some(ref l) = self.links {
+            let mut links_obj = serde_json::Map::new();
+            if let Some(ref v) = l.frontend {
+                links_obj.insert("frontend".into(), serde_json::Value::String(v.clone()));
+            }
+            if let Some(ref v) = l.github {
+                links_obj.insert("github".into(), serde_json::Value::String(v.clone()));
+            }
+            if let Some(ref v) = l.docs {
+                links_obj.insert("docs".into(), serde_json::Value::String(v.clone()));
+            }
+            if !links_obj.is_empty() {
+                obj.insert("links".into(), serde_json::Value::Object(links_obj));
+            }
+        }
+
+        Ok(serde_json::to_vec(&serde_json::Value::Object(obj))?)
     }
 }

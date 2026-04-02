@@ -1558,6 +1558,7 @@ dependencies = [
  "borsh",
  "bytes",
  "cached-path",
+ "calimero-context",
  "calimero-context-config",
  "calimero-context-primitives",
  "calimero-network-primitives",

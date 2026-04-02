@@ -325,11 +325,12 @@ impl ContextClient {
             return Ok(None);
         };
 
-        let context = Context::with_dag_heads(
+        let context = Context::with_service(
             *context_id,
             meta.application.application_id(),
             meta.root_hash.into(),
             meta.dag_heads.clone(),
+            meta.service_name.as_deref().map(String::from),
         );
 
         tracing::debug!(

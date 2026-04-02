@@ -1094,6 +1094,7 @@ async fn internal_execute(
                 key::ApplicationMeta::new(context.application_id),
                 *context.root_hash,
                 context.dag_heads.clone(),
+                context.service_name.as_deref().map(Box::from),
             ),
         )?;
 

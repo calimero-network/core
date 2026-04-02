@@ -451,6 +451,7 @@ async fn create_context(
             key::ApplicationMeta::new(application.id),
             *context.root_hash,
             context.dag_heads.clone(),
+            context.service_name.as_deref().map(Box::from),
         ),
     )?;
 

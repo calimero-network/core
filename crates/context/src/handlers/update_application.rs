@@ -94,8 +94,12 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             let context_client = self.context_client.clone();
             let migration_params = migration_params.clone();
 
+            let service_name = context_meta
+                .as_ref()
+                .and_then(|c| c.service_name.clone());
+
             // Load the (fresh) module
-            let module_task = self.get_module(application_id, None);
+            let module_task = self.get_module(application_id, service_name);
 
             let task = module_task.and_then(move |module, act, _ctx| {
                 let datastore = datastore.clone();
@@ -137,6 +141,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                             new_root = ?updated_context.root_hash,
                             "Updating cached context after migration"
                         );
+                        // service_name is preserved: we only refresh application_id (and state fields).
                         cached.meta.application_id = application_id;
                         cached.meta.root_hash = updated_context.root_hash;
                         cached.meta.dag_heads = updated_context.dag_heads;
@@ -164,6 +169,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                 .or_insert(application);
 
             if let Some(context) = act.contexts.get_mut(&context_id) {
+                // service_name is preserved: we only update application_id (not service_name).
                 context.meta.application_id = application_id;
             }
         }))
@@ -236,6 +242,7 @@ async fn finalize_application_update(
             key::ApplicationMeta::new(application.id),
             *context.root_hash,
             context.dag_heads.clone(),
+            context.service_name.as_deref().map(Box::from),
         ),
     )?;
 
@@ -1389,6 +1396,7 @@ mod tests {
             key::ApplicationMeta::new(old_app_id),
             *original_root_hash,
             vec![],
+            None,
         );
 
         // Store applications and context metadata

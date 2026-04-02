@@ -2,6 +2,8 @@
 #[path = "tests/application.rs"]
 mod tests;
 
+use std::collections::BTreeMap;
+
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 use core::str::FromStr;
@@ -408,13 +410,6 @@ pub struct ApplicationBlob {
     pub compiled: BlobId,
 }
 
-/// A named service within a multi-service application.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ApplicationService {
-    pub name: String,
-    pub blob: ApplicationBlob,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct Application {
@@ -429,8 +424,10 @@ pub struct Application {
     pub package: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub version: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub services: Vec<ApplicationService>,
+    /// Named services. Key = service name, value = WASM blob.
+    /// Empty for single-service apps (use `blob` field instead).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub services: BTreeMap<String, ApplicationBlob>,
 }
 
 impl Application {
@@ -451,7 +448,7 @@ impl Application {
             signer_id: String::new(),
             package: String::new(),
             version: String::new(),
-            services: Vec::new(),
+            services: BTreeMap::new(),
         }
     }
 
@@ -460,13 +457,9 @@ impl Application {
     pub fn resolve_service_blob(&self, service_name: Option<&str>) -> Option<ApplicationBlob> {
         match service_name {
             None if self.services.is_empty() => Some(self.blob),
-            None if self.services.len() == 1 => Some(self.services[0].blob),
+            None if self.services.len() == 1 => self.services.values().next().copied(),
             None => None,
-            Some(name) => self
-                .services
-                .iter()
-                .find(|s| s.name == name)
-                .map(|s| s.blob),
+            Some(name) => self.services.get(name).copied(),
         }
     }
 

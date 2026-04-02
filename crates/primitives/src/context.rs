@@ -156,6 +156,24 @@ impl Context {
             dag_heads,
         }
     }
+
+    /// Constructs a new `Context` with an optional service name.
+    #[must_use]
+    pub fn with_service(
+        id: ContextId,
+        application_id: ApplicationId,
+        root_hash: Hash,
+        dag_heads: Vec<[u8; 32]>,
+        service_name: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            application_id,
+            service_name,
+            root_hash,
+            dag_heads,
+        }
+    }
 }
 
 /// A collection of configuration parameters for a Context.

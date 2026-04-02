@@ -48,16 +48,13 @@ impl ContextClient {
         source: &Url,
         metadata: &[u8],
     ) -> eyre::Result<ApplicationId> {
-        self.node_client.install_application(
+        self.node_client.install_raw_wasm(
             blob_id,
             size,
             &source.clone().into(),
             metadata.to_vec(),
             Self::DEFAULT_PACKAGE,
             Self::DEFAULT_VERSION,
-            None,
-            false,
-            Vec::new(),
         )
     }
 
@@ -246,11 +243,12 @@ impl ContextClient {
                 "context already exists, returning stored metadata"
             );
 
-            return Ok(Context::with_dag_heads(
+            return Ok(Context::with_service(
                 context_id,
                 meta.application.application_id(),
                 meta.root_hash.into(),
                 meta.dag_heads.clone(),
+                meta.service_name.as_deref().map(String::from),
             ));
         };
 
@@ -338,6 +336,7 @@ impl ContextClient {
                 key::ApplicationMeta::new(application_id),
                 *root_hash,
                 dag_heads.clone(),
+                None,
             ),
         )?;
 
@@ -356,11 +355,12 @@ impl ContextClient {
 
         receiver.await.expect("Mailbox not to be dropped");
 
-        Ok(Context::with_dag_heads(
+        Ok(Context::with_service(
             context_id,
             application_id,
             root_hash,
             dag_heads,
+            None,
         ))
     }
 }
