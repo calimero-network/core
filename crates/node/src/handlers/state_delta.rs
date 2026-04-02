@@ -1752,12 +1752,11 @@ async fn catch_up_governance_if_needed(
         return;
     };
 
-    let local_heads: std::collections::HashSet<[u8; 32]> =
-        group_store::get_op_head(store, &gid)
-            .ok()
-            .flatten()
-            .map(|h| h.dag_heads.into_iter().collect())
-            .unwrap_or_default();
+    let local_heads: std::collections::HashSet<[u8; 32]> = group_store::get_op_head(store, &gid)
+        .ok()
+        .flatten()
+        .map(|h| h.dag_heads.into_iter().collect())
+        .unwrap_or_default();
 
     let missing: Vec<[u8; 32]> = governance_epoch
         .iter()
@@ -1819,8 +1818,7 @@ async fn catch_up_governance_if_needed(
                 }
             }
             Ok(Some(calimero_node_primitives::sync::StreamMessage::Message {
-                payload:
-                    calimero_node_primitives::sync::MessagePayload::GroupDeltaNotFound,
+                payload: calimero_node_primitives::sync::MessagePayload::GroupDeltaNotFound,
                 ..
             })) => {
                 debug!(
