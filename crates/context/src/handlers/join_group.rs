@@ -4,7 +4,6 @@ use calimero_context_primitives::local_governance::{NamespaceOp, RootOp};
 use calimero_primitives::context::{ContextConfigParams, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::key;
-use eyre::bail;
 use tracing::{info, warn};
 
 use crate::{group_store, ContextManager};
@@ -34,7 +33,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
             }
         }
 
-        let (ns_id, joiner_identity, sk_bytes, _sender) =
+        let (ns_id, joiner_identity, sk_bytes, sender_key_bytes) =
             match self.get_or_create_namespace_identity(&group_id) {
                 Ok(result) => result,
                 Err(err) => {
@@ -88,9 +87,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     group_store::save_group_meta(&datastore, &group_id, &meta)?;
                 }
 
-                // Store membership with sender_key so the decrypt path in
-                // apply_signed_namespace_op can find it during sync.
-                let sender_key = PrivateKey::random(&mut rand::thread_rng());
+                // Store membership with the namespace identity sender_key so
+                // encrypted namespace Group ops can be decrypted deterministically.
+                let sender_key = PrivateKey::from(sender_key_bytes);
                 group_store::add_group_member_with_keys(
                     &datastore,
                     &group_id,
