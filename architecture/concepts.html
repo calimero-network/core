@@ -39,8 +39,21 @@
 <p>A <strong>context</strong> is a running instance of a WASM application with its own isolated state. State stays in sync across context members automatically, using CRDT-based replication.</p>
 <ul>
 <li>Each context belongs to exactly one group.</li>
-<li>Multiple contexts can run the same application with independent state.</li>
+<li>Multiple contexts can run the same application (or different services from the same bundle) with independent state.</li>
 <li>Joining a context is separate from joining the group; visibility rules apply (see below).</li>
+<li>For multi-service applications, each context specifies which <strong>service</strong> it runs via an optional <code>service_name</code>.</li>
+</ul>
+</div>
+
+<div class="card ga">
+<h2>Services (multi-WASM bundles)</h2>
+<p>An <strong>application bundle</strong> (<code>.mpk</code>) can contain multiple named <strong>services</strong>, each with its own WASM binary and optional ABI.</p>
+<ul>
+<li>Single-service bundles (one <code>wasm</code> field in the manifest) work as before &mdash; no service name needed.</li>
+<li>Multi-service bundles declare a <code>services</code> array in the manifest, each with a name and WASM path.</li>
+<li>When creating a context for a multi-service app, specify <code>service_name</code> to choose which WASM to run.</li>
+<li>All services in a bundle share the same <code>ApplicationId</code> and upgrade atomically.</li>
+<li>Example: a chat application with services <code>user-mgmt</code>, <code>chat</code>, and <code>storage</code> &mdash; each running in its own context with independent state.</li>
 </ul>
 </div>
 

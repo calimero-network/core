@@ -293,7 +293,7 @@
 <!-- 6a. Create Context -->
 <div class="card gb">
 <h2>Create Context Flow</h2>
-<div class="step"><div class="n">1</div><h4>Admin calls create_context</h4><p>API receives <span class="code">group_id</span> (or auto-creates group). Uses node's group identity keypair if no explicit secret provided.</p></div>
+<div class="step"><div class="n">1</div><h4>Admin calls create_context</h4><p>API receives <span class="code">group_id</span> (or auto-creates group). Uses the node's namespace identity keypair (from the datastore) if no explicit secret provided.</p></div>
 <div class="step"><div class="n">2</div><h4>Handler signs GroupOps</h4><p>Emits a sequence: <span class="code">ContextRegistered</span> &rarr; <span class="code">ContextVisibilitySet</span> &rarr; optional <span class="code">ContextAliasSet</span>. Each is a <span class="code">SignedGroupOp</span> applied locally and published via gossip.</p></div>
 <div class="step"><div class="n">3</div><h4>Local apply + OpLog</h4><p><span class="code">group_store::apply_local_signed_group_op</span> verifies signature, checks state_hash, updates KV rows, appends to op log, recomputes DAG heads.</p></div>
 <div class="step"><div class="n">4</div><h4>Gossip propagation</h4><p>Published on <span class="code">group/&lt;hex&gt;</span> topic. Remote nodes receive via <span class="code">SignedGroupOpV1</span> broadcast, verify, and apply the same ops.</p></div>

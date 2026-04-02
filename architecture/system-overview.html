@@ -521,7 +521,7 @@
     </div>
     <div class="step"><div class="n">2</div>
       <h4>Sign + Apply Locally</h4>
-      <p>The operation is signed with the node's <strong>Ed25519</strong> key, producing a <span class="code">SignedGroupOpV1</span>. Includes: <span class="code">state_hash</span> (current group state), <span class="code">nonce</span> (monotonic), and parent hash. The op is applied to local GroupStore and appended to the <span class="code">OpLog</span> DAG.</p>
+      <p>The operation is signed with the node's <strong>namespace identity</strong> (Ed25519 keypair stored per root group in the datastore), producing a <span class="code">SignedGroupOpV1</span>. Includes: <span class="code">state_hash</span> (current group state), <span class="code">nonce</span> (monotonic), and parent hash. The op is applied to local GroupStore and appended to the <span class="code">OpLog</span> DAG.</p>
     </div>
     <div class="step"><div class="n">3</div>
       <h4>Gossip Broadcast</h4>

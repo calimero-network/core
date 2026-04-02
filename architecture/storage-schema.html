@@ -103,7 +103,7 @@
 
 <div class="typedef">
 <span class="kw">struct</span> <span class="ty">ContextMetaValue</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">application</span>: <span class="ty">ApplicationMeta</span>,&nbsp;&nbsp;<span class="comment">// app_id + version</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">application</span>: <span class="ty">ApplicationMeta</span>,&nbsp;&nbsp;<span class="comment">// app_id + version + services</span><br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">root_hash</span>: <span class="ty">Hash</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// Merkle root of context state</span><br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">dag_heads</span>: Vec&lt;[u8; 32]&gt;,&nbsp;&nbsp;&nbsp;<span class="comment">// current DAG head delta IDs</span><br>
 }
@@ -516,6 +516,18 @@
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">public_key</span>: [u8; 32],<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">private_key</span>: [u8; 32],<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sender_key</span>: [u8; 32],<br>
+}
+</div>
+</details>
+
+<h3>Application Services (ApplicationMeta extension)</h3>
+<p style="margin-bottom:12px;"><code>ApplicationMeta</code> now includes a <code>services: Vec&lt;ServiceMeta&gt;</code> field for multi-service bundles. When empty, the application is single-service (backward compat) and uses the top-level <code>bytecode</code>/<code>compiled</code> fields.</p>
+<details open><summary>ServiceMeta fields</summary>
+<div class="typedef">
+<span class="kw">struct</span> <span class="tp">ServiceMeta</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">name</span>: Box&lt;str&gt;,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// e.g. "chat", "user-mgmt"</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">bytecode</span>: BlobMeta,&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// WASM blob for this service</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">compiled</span>: BlobMeta,&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// precompiled WASM blob</span><br>
 }
 </div>
 </details>
