@@ -3,7 +3,7 @@ use calimero_context_config::types::{GroupRevealPayloadData, SignerId};
 use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::group::{JoinGroupRequest, JoinGroupResponse};
 use calimero_context_primitives::local_governance::GroupOp;
-use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::context::{ContextConfigParams, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key;
 use eyre::bail;
@@ -47,6 +47,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let context_client = self.context_client.clone();
         let invitation = invitation;
 
         ActorResponse::r#async(
@@ -169,12 +170,44 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                 }
                                 drop(handle);
 
+                                let config = if !context_client.has_context(context_id)? {
+                                    let app_id = group_store::load_group_meta(&datastore, &gid)?
+                                        .map(|m| m.target_application_id);
+                                    Some(ContextConfigParams {
+                                        application_id: app_id,
+                                        application_revision: 0,
+                                        members_revision: 0,
+                                    })
+                                } else {
+                                    None
+                                };
+
+                                if let Err(e) = context_client
+                                    .sync_context_config(*context_id, config)
+                                    .await
+                                {
+                                    warn!(
+                                        ?gid,
+                                        %context_id,
+                                        ?e,
+                                        "failed to sync context config during auto-join"
+                                    );
+                                }
+
                                 if let Err(e) = node_client.subscribe(context_id).await {
                                     warn!(
                                         ?gid,
                                         %context_id,
                                         ?e,
                                         "failed to auto-subscribe to context"
+                                    );
+                                }
+                                if let Err(e) = node_client.sync(Some(context_id), None).await {
+                                    warn!(
+                                        ?gid,
+                                        %context_id,
+                                        ?e,
+                                        "failed to trigger sync after auto-join"
                                     );
                                 }
                             }
