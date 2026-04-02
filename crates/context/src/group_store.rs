@@ -114,6 +114,87 @@ pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> Eyr
     Ok(hasher.finalize().into())
 }
 
+/// Compute a single hash covering the governance DAG heads of the entire
+/// group ancestry chain for a given context.
+///
+/// Walks from the context's owning group up through parent groups (max 16
+/// levels) and hashes all DAG heads together.  Two nodes with identical
+/// governance state across the whole chain will produce the same hash.
+///
+/// Returns `[0u8; 32]` if the context has no owning group or no governance
+/// state, so callers can cheaply detect "no governance".
+pub fn compute_governance_ancestry_hash(
+    store: &Store,
+    context_id: &ContextId,
+) -> EyreResult<[u8; 32]> {
+    let Some(owning_gid) = get_group_for_context(store, context_id)? else {
+        return Ok([0u8; 32]);
+    };
+
+    let mut hasher = Sha256::new();
+    let mut current = Some(owning_gid);
+    let mut depth = 0u8;
+    let mut any_heads = false;
+
+    while let Some(gid) = current {
+        if depth >= MAX_SUBGROUP_DEPTH as u8 {
+            break;
+        }
+
+        if let Some(head) = get_op_head(store, &gid)? {
+            hasher.update(gid.to_bytes());
+            let mut heads = head.dag_heads;
+            heads.sort();
+            for h in &heads {
+                hasher.update(h);
+            }
+            any_heads = true;
+        }
+
+        current = get_parent_group(store, &gid)?;
+        depth += 1;
+    }
+
+    if !any_heads {
+        return Ok([0u8; 32]);
+    }
+
+    Ok(hasher.finalize().into())
+}
+
+/// Walk the ancestry chain for a context and return per-group DAG heads.
+///
+/// Used by the catch-up logic to determine which specific group(s) are
+/// behind when the ancestry hash doesn't match.
+pub fn collect_governance_ancestry_heads(
+    store: &Store,
+    context_id: &ContextId,
+) -> EyreResult<Vec<(ContextGroupId, Vec<[u8; 32]>)>> {
+    let Some(owning_gid) = get_group_for_context(store, context_id)? else {
+        return Ok(Vec::new());
+    };
+
+    let mut result = Vec::new();
+    let mut current = Some(owning_gid);
+    let mut depth = 0u8;
+
+    while let Some(gid) = current {
+        if depth >= MAX_SUBGROUP_DEPTH as u8 {
+            break;
+        }
+
+        let heads = get_op_head(store, &gid)?
+            .map(|h| h.dag_heads)
+            .unwrap_or_default();
+        result.push((gid, heads));
+
+        current = get_parent_group(store, &gid)?;
+        depth += 1;
+    }
+
+    Ok(result)
+}
+
 // ---------------------------------------------------------------------------
 // Group member helpers
 // ---------------------------------------------------------------------------
