@@ -440,7 +440,8 @@ async fn join_group() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": {
                 "groupId": GID,
-                "memberIdentity": ZERO_BS58
+                "memberIdentity": ZERO_BS58,
+                "governanceOp": "deadbeef"
             }
         })))
         .expect(1)
