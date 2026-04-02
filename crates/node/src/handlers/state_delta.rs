@@ -79,6 +79,21 @@ pub async fn handle_state_delta(
         "Received state delta"
     );
 
+    // If the delta carries governance epoch heads we don't have locally,
+    // request the missing governance ops from the source peer.  This is
+    // fire-and-forget so it doesn't block delta processing.
+    if !governance_epoch.is_empty() {
+        catch_up_governance_if_needed(
+            &node_clients.context,
+            &network_client,
+            sync_timeout,
+            source,
+            &context_id,
+            &governance_epoch,
+        )
+        .await;
+    }
+
     // Check if we should buffer this delta:
     // 1. During snapshot sync (sync session active)
     // 2. When context is uninitialized (can't decrypt without sender key)
@@ -1709,4 +1724,113 @@ pub async fn replay_buffered_delta(
     .await?;
 
     Ok(add_result.applied)
+}
+
+/// Check whether any governance epoch heads from an incoming state delta are
+/// missing from our local governance DAG.  If so, request them from the
+/// source peer using the existing `GroupDeltaRequest` stream protocol.
+///
+/// This is the primary mechanism that ties state sync to governance sync:
+/// every state delta carries the governance epoch it was authorized under,
+/// and if we're behind on governance we catch up immediately rather than
+/// waiting for periodic heartbeats.
+async fn catch_up_governance_if_needed(
+    context_client: &ContextClient,
+    network_client: &calimero_network_primitives::client::NetworkClient,
+    sync_timeout: std::time::Duration,
+    source: PeerId,
+    context_id: &ContextId,
+    governance_epoch: &[[u8; 32]],
+) {
+    use calimero_context::group_store;
+
+    let store = context_client.datastore();
+    let Some(gid) = group_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+
+    let local_heads: std::collections::HashSet<[u8; 32]> =
+        group_store::get_op_head(store, &gid)
+            .ok()
+            .flatten()
+            .map(|h| h.dag_heads.into_iter().collect())
+            .unwrap_or_default();
+
+    let missing: Vec<[u8; 32]> = governance_epoch
+        .iter()
+        .filter(|h| !local_heads.contains(*h))
+        .copied()
+        .collect();
+
+    if missing.is_empty() {
+        return;
+    }
+
+    info!(
+        %context_id,
+        group_id = %hex::encode(gid.to_bytes()),
+        missing_count = missing.len(),
+        %source,
+        "State delta references unknown governance epoch heads, requesting catch-up"
+    );
+
+    let group_id = gid.to_bytes();
+    let Ok(mut stream) = network_client.open_stream(source).await else {
+        debug!(%source, "failed to open stream for governance catch-up from state delta");
+        return;
+    };
+
+    for delta_id in missing {
+        let msg = calimero_node_primitives::sync::StreamMessage::Init {
+            context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
+            party_id: calimero_primitives::identity::PublicKey::from([0u8; 32]),
+            payload: calimero_node_primitives::sync::InitPayload::GroupDeltaRequest {
+                group_id,
+                delta_id,
+            },
+            next_nonce: {
+                use rand::Rng;
+                rand::thread_rng().gen()
+            },
+        };
+
+        if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {
+            debug!(%err, "failed to send GroupDeltaRequest for governance catch-up");
+            break;
+        }
+
+        match crate::sync::stream::recv(&mut stream, None, sync_timeout).await {
+            Ok(Some(calimero_node_primitives::sync::StreamMessage::Message {
+                payload:
+                    calimero_node_primitives::sync::MessagePayload::GroupDeltaResponse {
+                        payload: op_bytes,
+                        ..
+                    },
+                ..
+            })) => {
+                if let Ok(op) = borsh::from_slice::<
+                    calimero_context_primitives::local_governance::SignedGroupOp,
+                >(&op_bytes)
+                {
+                    let _ = context_client.apply_signed_group_op(op).await;
+                }
+            }
+            Ok(Some(calimero_node_primitives::sync::StreamMessage::Message {
+                payload:
+                    calimero_node_primitives::sync::MessagePayload::GroupDeltaNotFound,
+                ..
+            })) => {
+                debug!(
+                    delta = %hex::encode(delta_id),
+                    "peer does not have requested governance delta"
+                );
+            }
+            _ => {
+                break;
+            }
+        }
+    }
 }
