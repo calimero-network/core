@@ -82,6 +82,12 @@ pub enum GroupOp {
     GroupDelete,
     /// Update group migration bytes in [`GroupMetaValue`] (admin).
     GroupMigrationSet { migration: Option<Vec<u8>> },
+    /// Commit an invitation hash before the invitee can claim it.
+    /// Published by the inviter so the claim can be verified against it.
+    InvitationCommitted {
+        commitment_hash: [u8; 32],
+        expiration_timestamp: u64,
+    },
     /// Join a group using an admin-signed open invitation plus joiner proof (see `join_group`).
     JoinWithInvitationClaim {
         signed_invitation: SignedGroupOpenInvitation,

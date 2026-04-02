@@ -108,3 +108,8 @@ impl PredefinedEntry for key::NamespaceIdentity {
     type Codec = Borsh;
     type DataType<'a> = key::NamespaceIdentityValue;
 }
+
+impl PredefinedEntry for key::GroupInvitationCommitment {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupInvitationCommitmentValue;
+}

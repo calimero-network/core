@@ -4,6 +4,8 @@ use eyre::Result;
 
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::AddGroupMembersApiResponse;
+use calimero_server_primitives::admin::ClaimGroupInvitationApiRequest;
+use calimero_server_primitives::admin::ClaimGroupInvitationApiResponse;
 use calimero_server_primitives::admin::CreateGroupApiRequest;
 use calimero_server_primitives::admin::CreateGroupApiResponse;
 use calimero_server_primitives::admin::CreateGroupInvitationApiRequest;
@@ -188,6 +190,17 @@ where
         let response = self
             .connection
             .post("admin-api/groups/join", request)
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn claim_group_invitation(
+        &self,
+        request: ClaimGroupInvitationApiRequest,
+    ) -> Result<ClaimGroupInvitationApiResponse> {
+        let response = self
+            .connection
+            .post("admin-api/groups/claim-invitation", request)
             .await?;
         Ok(response)
     }

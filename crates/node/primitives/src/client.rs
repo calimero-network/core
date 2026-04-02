@@ -222,23 +222,13 @@ impl NodeClient {
         let topic_str = format!("group/{}", hex::encode(group_id));
         let topic = TopicHash::from_raw(topic_str);
 
-        const MAX_MESH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-        const MESH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
-
-        let deadline = tokio::time::Instant::now() + MAX_MESH_WAIT;
-        loop {
-            let peers = self.network_client.mesh_peer_count(topic.clone()).await;
-            if peers > 0 {
-                break;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                debug!(
-                    ?mutation_kind,
-                    "no mesh peers after {MAX_MESH_WAIT:?}, publishing mutation anyway"
-                );
-                break;
-            }
-            tokio::time::sleep(MESH_POLL_INTERVAL).await;
+        let peers = self.network_client.mesh_peer_count(topic.clone()).await;
+        if peers == 0 {
+            debug!(
+                ?mutation_kind,
+                "no peers on group topic, skipping broadcast"
+            );
+            return Ok(());
         }
 
         let payload = BroadcastMessage::GroupMutationNotification {
@@ -280,23 +270,12 @@ impl NodeClient {
         let topic_str = format!("group/{}", hex::encode(group_id));
         let topic = TopicHash::from_raw(topic_str);
 
-        const MAX_MESH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-        const MESH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
-
-        let deadline = tokio::time::Instant::now() + MAX_MESH_WAIT;
-        loop {
-            let peers = self.network_client.mesh_peer_count(topic.clone()).await;
-            if peers > 0 {
-                break;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                warn!(
-                    ?group_id,
-                    "no mesh peers after {MAX_MESH_WAIT:?}, publishing governance op anyway"
-                );
-                break;
-            }
-            tokio::time::sleep(MESH_POLL_INTERVAL).await;
+        let peers = self.network_client.mesh_peer_count(topic.clone()).await;
+        if peers == 0 {
+            warn!(
+                ?group_id,
+                "no mesh peers on group topic, governance op publish is best-effort"
+            );
         }
 
         let payload = BroadcastMessage::GroupGovernanceDelta {

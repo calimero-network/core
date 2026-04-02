@@ -248,6 +248,10 @@ pub(crate) fn setup(
             "/groups/join",
             post(groups::join_group::handler),
         )
+        .route(
+            "/groups/claim-invitation",
+            post(groups::claim_invitation::handler),
+        )
         // Namespace management
         .route("/namespaces", get(namespaces::list::handler))
         .route(

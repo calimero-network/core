@@ -1,4 +1,5 @@
 pub mod add_group_members;
+pub mod claim_invitation;
 pub mod create_group;
 pub mod create_group_invitation;
 pub mod delete_group;

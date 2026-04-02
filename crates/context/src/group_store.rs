@@ -9,7 +9,8 @@ use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupChildIndex, GroupContextAlias,
     GroupContextIndex, GroupContextLastMigration, GroupContextLastMigrationValue,
     GroupContextMemberCap, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
-    GroupDefaultVisValue, GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
+    GroupDefaultVisValue, GroupInvitationCommitment, GroupInvitationCommitmentValue,
+    GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMemberContext, GroupMemberValue, GroupMeta, GroupMetaValue,
     GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupSigningKey,
     GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
@@ -573,6 +574,10 @@ fn apply_join_with_invitation_claim(
         .verify_raw_signature(&reveal_hash, &join_sig_bytes)
         .map_err(|e| eyre::eyre!("invitee signature verification failed: {e}"))?;
 
+    // Verify and consume the pre-committed invitation hash (commit-reveal).
+    let commitment_hash: [u8; 32] = Sha256::digest(&inv_bytes).into();
+    check_and_consume_commitment(store, group_id, &commitment_hash)?;
+
     if check_group_membership(store, group_id, joiner)? {
         bail!("identity is already a member of this group");
     }
@@ -785,6 +790,19 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 .ok_or_else(|| eyre::eyre!("group metadata not found"))?;
             meta.migration = migration.clone();
             save_group_meta(store, &group_id, &meta)?;
+        }
+        GroupOp::InvitationCommitted {
+            commitment_hash,
+            expiration_timestamp,
+        } => {
+            require_group_admin_or_capability(
+                store,
+                &group_id,
+                &op.signer,
+                MemberCapabilities::CAN_INVITE_MEMBERS,
+                "commit invitation",
+            )?;
+            store_invitation_commitment(store, &group_id, commitment_hash, *expiration_timestamp)?;
         }
         GroupOp::JoinWithInvitationClaim {
             signed_invitation,
@@ -1195,6 +1213,51 @@ pub fn get_or_create_namespace_identity(
 /// descendant's metadata is updated in a separate write. If the process is
 /// interrupted mid-cascade, some descendants may still reference the old
 /// application -- the next upgrade attempt will bring them up to date.
+// ---------------------------------------------------------------------------
+// Invitation commitment helpers
+// ---------------------------------------------------------------------------
+
+pub fn store_invitation_commitment(
+    store: &Store,
+    group_id: &ContextGroupId,
+    commitment_hash: &[u8; 32],
+    expiration_timestamp: u64,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupInvitationCommitment::new(group_id.to_bytes(), *commitment_hash);
+    handle.put(
+        &key,
+        &GroupInvitationCommitmentValue {
+            expiration_timestamp,
+        },
+    )?;
+    Ok(())
+}
+
+pub fn check_and_consume_commitment(
+    store: &Store,
+    group_id: &ContextGroupId,
+    commitment_hash: &[u8; 32],
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupInvitationCommitment::new(group_id.to_bytes(), *commitment_hash);
+    let Some(value) = handle.get(&key)? else {
+        bail!("no matching invitation commitment found for this group");
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if now > value.expiration_timestamp {
+        handle.delete(&key)?;
+        bail!("invitation commitment has expired");
+    }
+
+    handle.delete(&key)?;
+    Ok(())
+}
+
 ///
 /// Skips descendants that already have the target application to avoid
 /// redundant writes.

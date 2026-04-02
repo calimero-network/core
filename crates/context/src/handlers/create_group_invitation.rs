@@ -1,4 +1,4 @@
-use actix::{ActorResponse, Handler, Message};
+use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_config::types::{
     GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
@@ -6,6 +6,7 @@ use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::group::{
     CreateGroupInvitationRequest, CreateGroupInvitationResponse,
 };
+use calimero_context_primitives::local_governance::GroupOp;
 use calimero_primitives::identity::PrivateKey;
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -26,7 +27,6 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
     ) -> Self::Result {
         let node_identity = self.node_namespace_identity(&group_id);
 
-        // Resolve requester: use provided value or fall back to node group identity
         let requester = match requester {
             Some(pk) => pk,
             None => match node_identity {
@@ -39,7 +39,6 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             },
         };
 
-        // Auto-store node signing key ONLY when the requester IS the node's own identity
         if let Some((node_pk, node_sk)) = node_identity {
             if requester == node_pk {
                 let _ = group_store::store_group_signing_key(
@@ -51,26 +50,25 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             }
         }
 
-        let result = (|| {
-            // 1. Group must exist
-            let _meta = group_store::load_group_meta(&self.datastore, &group_id)?
+        let datastore = self.datastore.clone();
+        let node_client = self.node_client.clone();
+
+        let result = (|| -> eyre::Result<_> {
+            let _meta = group_store::load_group_meta(&datastore, &group_id)?
                 .ok_or_else(|| eyre::eyre!("group not found"))?;
 
-            // 2. Requester must be admin or hold CAN_INVITE_MEMBERS capability
             group_store::require_group_admin_or_capability(
-                &self.datastore,
+                &datastore,
                 &group_id,
                 &requester,
                 MemberCapabilities::CAN_INVITE_MEMBERS,
                 "create group invitation",
             )?;
 
-            // 3. Verify node holds the requester's signing key
-            group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
+            group_store::require_group_signing_key(&datastore, &group_id, &requester)?;
 
-            // 4. Fetch admin signing key and construct + sign the invitation
             let signing_key_bytes =
-                group_store::get_group_signing_key(&self.datastore, &group_id, &requester)?
+                group_store::get_group_signing_key(&datastore, &group_id, &requester)?
                     .ok_or_else(|| eyre::eyre!("signing key not found for requester"))?;
             let private_key = PrivateKey::from(signing_key_bytes);
 
@@ -93,7 +91,6 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 secret_salt,
             };
 
-            // Sign: borsh-serialize → SHA256 → ed25519_sign
             let invitation_bytes = borsh::to_vec(&invitation)
                 .map_err(|e| eyre::eyre!("failed to serialize invitation: {e}"))?;
             let hash = Sha256::digest(&invitation_bytes);
@@ -102,17 +99,48 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 .map_err(|e| eyre::eyre!("signing failed: {e}"))?;
             let inviter_signature = hex::encode(signature.to_bytes());
 
-            let group_alias = group_store::get_group_alias(&self.datastore, &group_id)?;
+            let commitment_hash: [u8; 32] = Sha256::digest(&invitation_bytes).into();
 
-            Ok(CreateGroupInvitationResponse {
-                invitation: SignedGroupOpenInvitation {
+            let group_alias = group_store::get_group_alias(&datastore, &group_id)?;
+
+            Ok((
+                SignedGroupOpenInvitation {
                     invitation,
                     inviter_signature,
                 },
+                commitment_hash,
+                expiration_timestamp,
+                private_key,
                 group_alias,
-            })
+            ))
         })();
 
-        ActorResponse::reply(result)
+        let (signed_invitation, commitment_hash, expiration_timestamp, private_key, group_alias) =
+            match result {
+                Ok(v) => v,
+                Err(e) => return ActorResponse::reply(Err(e)),
+            };
+
+        ActorResponse::r#async(
+            async move {
+                group_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &group_id,
+                    &private_key,
+                    GroupOp::InvitationCommitted {
+                        commitment_hash,
+                        expiration_timestamp,
+                    },
+                )
+                .await?;
+
+                Ok(CreateGroupInvitationResponse {
+                    invitation: signed_invitation,
+                    group_alias,
+                })
+            }
+            .into_actor(self),
+        )
     }
 }

@@ -114,17 +114,26 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     .map_err(|e| eyre::eyre!("signing reveal payload failed: {e}"))?;
                 let invitee_signature_hex = hex::encode(signature.to_bytes());
 
-                group_store::sign_apply_and_publish(
+                let signed_op_output = group_store::sign_apply_local_group_op_borsh(
                     &datastore,
-                    &node_client,
                     &group_id,
                     &sk,
                     GroupOp::JoinWithInvitationClaim {
                         signed_invitation: invitation,
                         invitee_signature_hex,
                     },
-                )
-                .await?;
+                )?;
+                let governance_op_bytes = signed_op_output.bytes;
+
+                // Best-effort gossipsub publish (may fail if mesh not formed)
+                let _ = node_client
+                    .publish_signed_group_op(
+                        group_id.to_bytes(),
+                        signed_op_output.delta_id,
+                        signed_op_output.parent_ids,
+                        governance_op_bytes.clone(),
+                    )
+                    .await;
 
                 // Upgrade the GroupMember entry with local private + sender keys
                 // so the sync key-share can use them for all contexts in the group.
@@ -237,6 +246,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 Ok(JoinGroupResponse {
                     group_id,
                     member_identity: joiner_identity,
+                    governance_op_bytes,
                 })
             }
             .into_actor(self),

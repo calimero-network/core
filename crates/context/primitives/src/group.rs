@@ -233,6 +233,10 @@ impl Message for JoinGroupRequest {
 pub struct JoinGroupResponse {
     pub group_id: ContextGroupId,
     pub member_identity: PublicKey,
+    /// Serialized `SignedGroupOp` (borsh) containing the `JoinWithInvitationClaim`.
+    /// The orchestrator must relay this to the inviting node's claim-invitation
+    /// endpoint so the member is registered on the remote side.
+    pub governance_op_bytes: Vec<u8>,
 }
 
 #[derive(Debug)]
