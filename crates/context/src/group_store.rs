@@ -948,7 +948,7 @@ pub fn apply_signed_namespace_op(store: &Store, op: &SignedNamespaceOp) -> EyreR
                     Ok(())
                 }
                 None => {
-                    store_opaque_skeleton(store, op)?;
+                    store_namespace_gov_op(store, op)?;
                     Ok(())
                 }
             }
@@ -999,7 +999,7 @@ fn decrypt_and_apply_group_op(
     apply_group_op_inner(store, group_id, &ns_op.signer, ns_op.nonce, &signed_group_op.op)?;
 
     // Also store the full op in the namespace gov log for persistence.
-    store_opaque_skeleton(store, ns_op)?;
+    store_namespace_gov_op(store, ns_op)?;
 
     Ok(())
 }
@@ -1101,10 +1101,24 @@ fn apply_group_op_inner(
     Ok(())
 }
 
+/// Check that the signer is an admin of the namespace (root group).
+fn require_namespace_admin(store: &Store, namespace_id: [u8; 32], signer: &PublicKey) -> EyreResult<()> {
+    let ns_gid = ContextGroupId::from(namespace_id);
+    if !is_group_admin(store, &ns_gid, signer)? {
+        bail!(
+            "signer {} is not an admin of namespace {}",
+            signer,
+            hex::encode(namespace_id)
+        );
+    }
+    Ok(())
+}
+
 /// Apply a cleartext root operation to the store.
 fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreResult<()> {
     match root {
         RootOp::GroupCreated { group_id } => {
+            require_namespace_admin(store, op.namespace_id, &op.signer)?;
             let gid = ContextGroupId::from(*group_id);
             if load_group_meta(store, &gid)?.is_some() {
                 tracing::debug!(
@@ -1126,6 +1140,7 @@ fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreRe
             Ok(())
         }
         RootOp::GroupDeleted { group_id } => {
+            require_namespace_admin(store, op.namespace_id, &op.signer)?;
             let gid = ContextGroupId::from(*group_id);
             if count_group_contexts(store, &gid)? > 0 {
                 bail!("cannot delete group: contexts still registered");
@@ -1134,6 +1149,7 @@ fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreRe
             Ok(())
         }
         RootOp::AdminChanged { new_admin } => {
+            require_namespace_admin(store, op.namespace_id, &op.signer)?;
             let ns_id = op.namespace_id;
             let ns_gid = ContextGroupId::from(ns_id);
             let mut meta = load_group_meta(store, &ns_gid)?
@@ -1143,6 +1159,7 @@ fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreRe
             Ok(())
         }
         RootOp::PolicyUpdated { .. } => {
+            require_namespace_admin(store, op.namespace_id, &op.signer)?;
             tracing::debug!("PolicyUpdated: stored in DAG log, no additional state mutation");
             Ok(())
         }
@@ -1150,6 +1167,7 @@ fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreRe
             parent_group_id,
             child_group_id,
         } => {
+            require_namespace_admin(store, op.namespace_id, &op.signer)?;
             let parent = ContextGroupId::from(*parent_group_id);
             let child = ContextGroupId::from(*child_group_id);
             if load_group_meta(store, &parent)?.is_none() {
@@ -1170,6 +1188,7 @@ fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreRe
             parent_group_id,
             child_group_id,
         } => {
+            require_namespace_admin(store, op.namespace_id, &op.signer)?;
             let parent = ContextGroupId::from(*parent_group_id);
             let child = ContextGroupId::from(*child_group_id);
             unnest_group(store, &parent, &child)?;
@@ -1259,27 +1278,16 @@ fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreRe
     }
 }
 
-/// Store an opaque skeleton for a namespace op we cannot (or need not) decrypt.
-fn store_opaque_skeleton(store: &Store, op: &SignedNamespaceOp) -> EyreResult<()> {
+/// Persist a namespace op in the governance store. Stores the full
+/// borsh-encoded [`SignedNamespaceOp`] so backfill can serve it to peers.
+fn store_namespace_gov_op(store: &Store, op: &SignedNamespaceOp) -> EyreResult<()> {
     let delta_id = op
         .content_hash()
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
 
-    let group_id = match &op.op {
-        NamespaceOp::Group { group_id, .. } => *group_id,
-        NamespaceOp::Root(_) => op.namespace_id,
-    };
-
-    let skeleton = OpaqueSkeleton {
-        delta_id,
-        parent_op_hashes: op.parent_op_hashes.clone(),
-        group_id,
-        signer: op.signer,
-    };
-
     let key = calimero_store::key::NamespaceGovOp::new(op.namespace_id, delta_id);
     let value = calimero_store::key::NamespaceGovOpValue {
-        skeleton_bytes: borsh::to_vec(&skeleton).map_err(|e| eyre::eyre!("borsh: {e}"))?,
+        skeleton_bytes: borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh: {e}"))?,
     };
     let mut handle = store.handle();
     handle.put(&key, &value)?;
@@ -2265,7 +2273,7 @@ pub fn build_namespace_summary(
     let context_count = enumerate_group_contexts(store, group_id, 0, usize::MAX)
         .unwrap_or_default()
         .len();
-    let subgroup_count = 0;
+    let subgroup_count = list_child_groups(store, group_id).unwrap_or_default().len();
 
     Ok(Some(calimero_context_primitives::group::NamespaceSummary {
         namespace_id: *group_id,

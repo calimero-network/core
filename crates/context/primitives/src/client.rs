@@ -716,37 +716,6 @@ impl ContextClient {
         Ok(false)
     }
 
-    /// Namespace-aware membership check (Phase 2 rewrite).
-    ///
-    /// 1. Check `ContextIdentity` (fast path, same as before).
-    /// 2. Find context's group via `ContextGroupRef`.
-    /// 3. Check `GroupMember` directly (no parent chain walk).
-    ///
-    /// This replaces the old parent-chain-walking version. The namespace
-    /// model ensures all authorization is flat within the namespace DAG.
-    pub fn has_member_ns(
-        &self,
-        context_id: &ContextId,
-        public_key: &PublicKey,
-    ) -> eyre::Result<bool> {
-        let handle = self.datastore.handle();
-
-        let ci_key = key::ContextIdentity::new(*context_id, *public_key);
-        if handle.has(&ci_key)? {
-            return Ok(true);
-        }
-
-        let ref_key = key::ContextGroupRef::new(*context_id);
-        if let Some(group_id_bytes) = handle.get(&ref_key)? {
-            let gm_key = key::GroupMember::new(group_id_bytes, *public_key);
-            if handle.has(&gm_key)? {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
-    }
-
     /// Retrieves and returns a stream of all members of a given context.
     ///
     /// # Arguments
