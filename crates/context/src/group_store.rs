@@ -898,8 +898,48 @@ pub async fn sign_apply_and_publish(
         }
     };
 
+    // Sign and publish the namespace op WITHOUT re-applying locally
+    // (we already applied the GroupOp above via sign_apply_local_group_op_borsh).
     let ns_sk = calimero_primitives::identity::PrivateKey::from(ns_sk_bytes);
-    sign_apply_and_publish_namespace_op(store, node_client, ns_bytes, &ns_sk, ns_op).await
+
+    let ns_head_key = calimero_store::key::NamespaceGovHead::new(ns_bytes);
+    let handle = store.handle();
+    let head = handle.get(&ns_head_key)?;
+    drop(handle);
+
+    let parent_hashes = head.as_ref().map(|h| h.dag_heads.clone()).unwrap_or_default();
+    let nonce = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
+
+    let signed = SignedNamespaceOp::sign(&ns_sk, ns_bytes, parent_hashes, [0u8; 32], nonce, ns_op)?;
+    let delta_id = signed.content_hash().map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    let parent_ids = signed.parent_op_hashes.clone();
+
+    // Store the op for backfill but DON'T re-apply via apply_signed_namespace_op.
+    store_namespace_gov_op(store, &signed)?;
+
+    // Update namespace DAG head.
+    let mut new_heads: Vec<[u8; 32]> = head
+        .map(|h| h.dag_heads)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|h| !parent_ids.contains(h))
+        .collect();
+    new_heads.push(delta_id);
+
+    let mut wh = store.handle();
+    wh.put(
+        &calimero_store::key::NamespaceGovHead::new(ns_bytes),
+        &calimero_store::key::NamespaceGovHeadValue {
+            sequence: nonce,
+            dag_heads: new_heads,
+        },
+    )?;
+    drop(wh);
+
+    let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+    node_client
+        .publish_signed_namespace_op(ns_bytes, delta_id, parent_ids, bytes)
+        .await
 }
 
 // ---------------------------------------------------------------------------
@@ -945,15 +985,13 @@ pub fn apply_signed_namespace_op(store: &Store, op: &SignedNamespaceOp) -> EyreR
         .map_err(|e| eyre::eyre!("signed namespace op: {e}"))?;
 
     match &op.op {
-        NamespaceOp::Root(root) => apply_root_op(store, op, root),
+        NamespaceOp::Root(root) => apply_root_op(store, op, root)?,
         NamespaceOp::Group {
             group_id,
             encrypted,
         } => {
             let group_id_typed = ContextGroupId::from(*group_id);
 
-            // Try to find a sender_key for this group by looking up the local
-            // node's namespace identity and checking its group membership.
             let ns_id = ContextGroupId::from(op.namespace_id);
             let sender_key_bytes = get_namespace_identity(store, &ns_id)?
                 .and_then(|(local_pk, _, _)| {
@@ -966,15 +1004,48 @@ pub fn apply_signed_namespace_op(store: &Store, op: &SignedNamespaceOp) -> EyreR
             match sender_key_bytes {
                 Some(sk_bytes) => {
                     decrypt_and_apply_group_op(store, op, &group_id_typed, &sk_bytes, encrypted)?;
-                    Ok(())
                 }
                 None => {
                     store_namespace_gov_op(store, op)?;
-                    Ok(())
                 }
             }
         }
     }
+
+    // Update namespace DAG heads so receiving nodes track divergence.
+    let delta_id = op
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    let ns_head_key = calimero_store::key::NamespaceGovHead::new(op.namespace_id);
+    let handle = store.handle();
+    let head = handle.get(&ns_head_key)?;
+    drop(handle);
+
+    let parent_set: std::collections::HashSet<[u8; 32]> =
+        op.parent_op_hashes.iter().copied().collect();
+    let mut new_heads: Vec<[u8; 32]> = head
+        .as_ref()
+        .map(|h| h.dag_heads.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|h| !parent_set.contains(h))
+        .collect();
+    new_heads.push(delta_id);
+
+    let seq = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
+    let mut wh = store.handle();
+    wh.put(
+        &ns_head_key,
+        &calimero_store::key::NamespaceGovHeadValue {
+            sequence: seq,
+            dag_heads: new_heads,
+        },
+    )?;
+
+    // Persist the op for backfill.
+    store_namespace_gov_op(store, op)?;
+
+    Ok(())
 }
 
 /// Decrypt an [`EncryptedGroupOp`] and apply the inner [`GroupOp`] via the
@@ -1251,10 +1322,15 @@ fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreRe
                 .verify_raw_signature(&hash, &sig_arr)
                 .map_err(|e| eyre::eyre!("invalid invitation signature: {e}"))?;
 
-            // 3. Verify the inviter is an admin of the target group.
-            if !is_group_admin(store, &group_id, &inviter_pk)? {
+            // 3. Verify the inviter has invite permission (admin or CAN_INVITE_MEMBERS).
+            if !is_group_admin_or_has_capability(
+                store,
+                &group_id,
+                &inviter_pk,
+                calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS,
+            )? {
                 bail!(
-                    "invitation inviter {} is not an admin of group {:?}",
+                    "invitation inviter {} lacks permission for group {:?}",
                     inviter_pk,
                     group_id
                 );
