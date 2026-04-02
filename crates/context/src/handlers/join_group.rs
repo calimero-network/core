@@ -98,7 +98,27 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 )
                 .await?;
 
-                // 5. Store local membership with private + sender keys.
+                // 5. Ensure group metadata exists locally. In the namespace
+                //    model, metadata doesn't broadcast via gossip — the joiner
+                //    creates a stub that will be updated by governance ops.
+                if group_store::load_group_meta(&datastore, &group_id)?.is_none() {
+                    let meta = calimero_store::key::GroupMetaValue {
+                        admin_identity: calimero_primitives::identity::PublicKey::from(
+                            invitation.invitation.inviter_identity.to_bytes(),
+                        ),
+                        target_application_id:
+                            calimero_primitives::application::ApplicationId::from([0u8; 32]),
+                        app_key: [0u8; 32],
+                        upgrade_policy:
+                            calimero_primitives::context::UpgradePolicy::default(),
+                        migration: None,
+                        created_at: 0,
+                        auto_join: true,
+                    };
+                    group_store::save_group_meta(&datastore, &group_id, &meta)?;
+                }
+
+                // 6. Store local membership with private + sender keys.
                 let sender_key = PrivateKey::random(&mut rand::thread_rng());
                 group_store::add_group_member_with_keys(
                     &datastore,
@@ -113,7 +133,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     group_store::set_group_alias(&datastore, &group_id, alias_str)?;
                 }
 
-                // 6. Auto-subscribe to visible contexts if auto_join is set.
+                // 7. Auto-subscribe to visible contexts if auto_join is set.
                 if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
                     if meta.auto_join {
                         let contexts = group_store::enumerate_group_contexts(
@@ -164,6 +184,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             }
                         }
                     }
+                }
+
+                // 8. Trigger a global sync so the joiner discovers contexts
+                //    from peers (group context index isn't replicated via gossip).
+                if let Err(e) = node_client.sync(None, None).await {
+                    warn!(?e, "failed to trigger sync after group join");
                 }
 
                 info!(
