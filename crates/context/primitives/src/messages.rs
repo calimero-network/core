@@ -15,15 +15,15 @@ use crate::group::{
     DeleteGroupRequest, DetachContextFromGroupRequest, GetContextAllowlistRequest,
     GetContextVisibilityRequest, GetGroupForContextRequest, GetGroupInfoRequest,
     GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetNamespaceIdentityRequest,
-    GetNamespaceIdentityRequest, JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, ManageContextAllowlistRequest, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, SetContextVisibilityRequest, SetDefaultCapabilitiesRequest,
-    SetDefaultVisibilityRequest, SetGroupAliasRequest, SetMemberAliasRequest,
-    SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest, StoreContextAliasRequest,
-    StoreContextAllowlistRequest, StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest,
-    StoreDefaultVisibilityRequest, StoreGroupAliasRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest,
+    JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest, ListGroupContextsRequest,
+    ListGroupMembersRequest, ListNamespacesForApplicationRequest, ListNamespacesRequest,
+    ManageContextAllowlistRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
+    SetContextVisibilityRequest, SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest,
+    SetGroupAliasRequest, SetMemberAliasRequest, SetMemberCapabilitiesRequest,
+    SetTeeAdmissionPolicyRequest, StoreContextAliasRequest, StoreContextAllowlistRequest,
+    StoreContextVisibilityRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
+    StoreGroupAliasRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
+    StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest,
     UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
@@ -382,14 +382,6 @@ pub enum ContextMessage {
     StoreGroupMeta {
         request: StoreGroupMetaRequest,
         outcome: oneshot::Sender<<StoreGroupMetaRequest as Message>::Result>,
-    },
-    GrantContextCapabilities {
-        request: GrantContextCapabilitiesRequest,
-        outcome: oneshot::Sender<<GrantContextCapabilitiesRequest as Message>::Result>,
-    },
-    RevokeContextCapabilities {
-        request: RevokeContextCapabilitiesRequest,
-        outcome: oneshot::Sender<<RevokeContextCapabilitiesRequest as Message>::Result>,
     },
     ListNamespaces {
         request: ListNamespacesRequest,
