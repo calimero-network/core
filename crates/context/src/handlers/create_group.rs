@@ -36,6 +36,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
             bytes.into()
         });
 
+        if let Ok(Some(_)) = group_store::load_group_meta(&self.datastore, &group_id) {
+            return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
+        }
+
         let (_, admin_identity, sk_bytes, _sender) =
             match self.get_or_create_namespace_identity(&group_id) {
                 Ok(result) => result,
@@ -47,10 +51,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
             };
 
         let signing_key = Some(sk_bytes);
-
-        if let Ok(Some(_)) = group_store::load_group_meta(&self.datastore, &group_id) {
-            return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
-        }
 
         // Subgroups inherit target_application_id from the parent (namespace root owns the app).
         let effective_application_id = if let Some(ref parent_id) = parent_group_id {

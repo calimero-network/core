@@ -1171,6 +1171,15 @@ pub fn resolve_namespace_identity(
 
 /// Resolve the namespace for a group and return this node's identity,
 /// generating and storing a new keypair if none exists.
+///
+/// # Concurrency
+///
+/// The read-then-write pattern here is intentionally non-atomic. All callers
+/// within the node run through the `ContextManager` actix actor, whose
+/// single-threaded mailbox serializes message processing -- so concurrent
+/// calls from different handlers never race. The one external call site
+/// (`fleet_join.rs`) operates on a group that hasn't been admitted yet, so
+/// no other handler is operating on the same namespace concurrently.
 pub fn get_or_create_namespace_identity(
     store: &Store,
     group_id: &ContextGroupId,
@@ -1189,7 +1198,17 @@ pub fn get_or_create_namespace_identity(
     Ok((ns_id, public_key, *private_key, *sender_key))
 }
 
-/// Cascade target_application_id to all descendant subgroups (breadth-first, max depth 16).
+/// Cascade `target_application_id` and `app_key` to all descendant subgroups
+/// starting from `group_id` downward (breadth-first, bounded by
+/// `MAX_NAMESPACE_DEPTH`).
+///
+/// Called when a group's application is upgraded via governance. Each
+/// descendant's metadata is updated in a separate write. If the process is
+/// interrupted mid-cascade, some descendants may still reference the old
+/// application -- the next upgrade attempt will bring them up to date.
+///
+/// Skips descendants that already have the target application to avoid
+/// redundant writes.
 fn cascade_target_application(
     store: &Store,
     group_id: &ContextGroupId,
@@ -1205,6 +1224,10 @@ fn cascade_target_application(
             let children = enumerate_child_groups(store, gid)?;
             for child_id in children {
                 if let Some(mut child_meta) = load_group_meta(store, &child_id)? {
+                    if child_meta.target_application_id == *target_application_id {
+                        next_queue.push(child_id);
+                        continue;
+                    }
                     child_meta.target_application_id = *target_application_id;
                     child_meta.app_key = *app_key;
                     save_group_meta(store, &child_id, &child_meta)?;
@@ -1766,6 +1789,45 @@ pub fn set_group_alias(store: &Store, group_id: &ContextGroupId, alias: &str) ->
     let mut handle = store.handle();
     handle.put(&GroupAlias::new(group_id.to_bytes()), &alias.to_owned())?;
     Ok(())
+}
+
+/// Build a `NamespaceSummary` for a root group, fetching counts from the store.
+///
+/// Returns `None` if the group has a parent (not a namespace root) or if
+/// `node_identity` is not a member.
+pub fn build_namespace_summary(
+    store: &Store,
+    group_id: &ContextGroupId,
+    meta: &GroupMetaValue,
+    node_identity: &PublicKey,
+) -> EyreResult<Option<calimero_context_primitives::group::NamespaceSummary>> {
+    if get_parent_group(store, group_id)?.is_some() {
+        return Ok(None);
+    }
+    if !check_group_membership(store, group_id, node_identity)? {
+        return Ok(None);
+    }
+
+    let alias = get_group_alias(store, group_id).ok().flatten();
+    let member_count = count_group_members(store, group_id).unwrap_or(0);
+    let context_count = enumerate_group_contexts(store, group_id, 0, usize::MAX)
+        .unwrap_or_default()
+        .len();
+    let subgroup_count = enumerate_child_groups(store, group_id)
+        .unwrap_or_default()
+        .len();
+
+    Ok(Some(calimero_context_primitives::group::NamespaceSummary {
+        namespace_id: *group_id,
+        app_key: meta.app_key.into(),
+        target_application_id: meta.target_application_id,
+        upgrade_policy: meta.upgrade_policy,
+        created_at: meta.created_at,
+        alias,
+        member_count,
+        context_count,
+        subgroup_count,
+    }))
 }
 
 /// Returns the alias for a group, if one was set.
