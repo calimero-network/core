@@ -131,6 +131,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let (event_sender, _) = broadcast::channel(256);
 
     let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(64);
+    let (ns_sync_tx, ns_sync_rx) = mpsc::channel(16);
 
     let node_client = NodeClient::new(
         datastore.clone(),
@@ -139,6 +140,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_recipient.clone(),
         event_sender,
         ctx_sync_tx,
+        ns_sync_tx,
         config.specialized_node.invite_topic.clone(),
     );
 
@@ -169,6 +171,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         network_client.clone(),
         node_state.clone(),
         ctx_sync_rx,
+        ns_sync_rx,
     );
 
     let node_manager = NodeManager::new(

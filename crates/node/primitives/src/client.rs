@@ -39,6 +39,7 @@ pub struct NodeClient {
     node_manager: LazyRecipient<NodeMessage>,
     event_sender: broadcast::Sender<NodeEvent>,
     ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
+    ns_sync_tx: mpsc::Sender<[u8; 32]>,
     specialized_node_invite_topic: String,
 }
 
@@ -51,6 +52,7 @@ impl NodeClient {
         node_manager: LazyRecipient<NodeMessage>,
         event_sender: broadcast::Sender<NodeEvent>,
         ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
+        ns_sync_tx: mpsc::Sender<[u8; 32]>,
         specialized_node_invite_topic: String,
     ) -> Self {
         Self {
@@ -60,6 +62,7 @@ impl NodeClient {
             node_manager,
             event_sender,
             ctx_sync_tx,
+            ns_sync_tx,
             specialized_node_invite_topic,
         }
     }
@@ -402,6 +405,16 @@ impl NodeClient {
             .send((context_id.copied(), peer_id.copied()))
             .await?;
 
+        Ok(())
+    }
+
+    /// Request a full namespace governance sync from any available peer.
+    ///
+    /// Opens a stream to a mesh peer on the namespace topic and pulls
+    /// all governance ops via `NamespaceBackfillRequest`. The ops are
+    /// applied locally via `apply_signed_namespace_op`.
+    pub async fn sync_namespace(&self, namespace_id: [u8; 32]) -> eyre::Result<()> {
+        self.ns_sync_tx.send(namespace_id).await?;
         Ok(())
     }
 }

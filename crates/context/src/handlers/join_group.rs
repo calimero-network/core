@@ -60,16 +60,16 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // 1. Subscribe to namespace topic — mesh already has existing members.
                 let _ = node_client.subscribe_namespace(namespace_id).await;
 
-                // 2. Wait for gossipsub mesh + namespace heartbeat cycle (5s)
-                //    to deliver missed governance ops from peers.
-                //    Publish a heartbeat with our (empty) heads to speed up
-                //    divergence detection by peers.
+                // 2. Wait for mesh to form, then pull all namespace governance
+                //    ops from a peer (ContextRegistered etc. published before
+                //    the joiner subscribed). This is a direct stream-based sync,
+                //    same pattern as context state sync.
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                let _ = node_client
-                    .publish_namespace_heartbeat(namespace_id, vec![])
-                    .await;
-                // Wait for peer heartbeat to arrive and trigger backfill.
-                tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                if let Err(e) = node_client.sync_namespace(namespace_id).await {
+                    warn!(?e, "namespace sync request failed");
+                }
+                // Brief pause for sync to complete asynchronously.
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
                 // 3. Store the signing key so we can sign namespace ops.
                 let sk = PrivateKey::from(sk_bytes);

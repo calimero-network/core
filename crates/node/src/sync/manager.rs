@@ -55,6 +55,7 @@ pub struct SyncManager {
     pub(super) node_state: crate::NodeState,
 
     pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
+    pub(super) ns_sync_rx: Option<mpsc::Receiver<[u8; 32]>>,
 }
 
 impl Clone for SyncManager {
@@ -65,7 +66,8 @@ impl Clone for SyncManager {
             context_client: self.context_client.clone(),
             network_client: self.network_client.clone(),
             node_state: self.node_state.clone(),
-            ctx_sync_rx: None, // Receiver can't be cloned
+            ctx_sync_rx: None,
+            ns_sync_rx: None,
         }
     }
 }
@@ -78,6 +80,7 @@ impl SyncManager {
         network_client: NetworkClient,
         node_state: crate::NodeState,
         ctx_sync_rx: mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>,
+        ns_sync_rx: mpsc::Receiver<[u8; 32]>,
     ) -> Self {
         Self {
             sync_config,
@@ -86,6 +89,7 @@ impl SyncManager {
             network_client,
             node_state,
             ctx_sync_rx: Some(ctx_sync_rx),
+            ns_sync_rx: Some(ns_sync_rx),
         }
     }
 
@@ -235,9 +239,12 @@ impl SyncManager {
 
         let Some(mut ctx_sync_rx) = self.ctx_sync_rx.take() else {
             error!("SyncManager can only be run once");
-
             return;
         };
+        let mut ns_sync_rx = self.ns_sync_rx.take().unwrap_or_else(|| {
+            let (_tx, rx) = mpsc::channel(1);
+            rx
+        });
 
         loop {
             tokio::select! {
@@ -247,6 +254,14 @@ impl SyncManager {
                 Some(()) = async {
                     loop { advance(&mut futs, &mut state).await? }
                 } => {},
+                Some(namespace_id) = ns_sync_rx.recv() => {
+                    info!(
+                        namespace_id = %hex::encode(namespace_id),
+                        "Performing namespace governance sync"
+                    );
+                    self.sync_namespace_from_peer(namespace_id).await;
+                    continue;
+                }
                 Some((ctx, peer)) = ctx_sync_rx.recv() => {
                     info!(?ctx, ?peer, "Received sync request");
 
@@ -2306,6 +2321,69 @@ impl SyncManager {
         };
         super::stream::send(stream, &msg, None).await?;
         Ok(())
+    }
+
+    /// Pull all namespace governance ops from a mesh peer.
+    async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) {
+        use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+
+        let topic =
+            libp2p::gossipsub::TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)));
+        let peers = self.network_client.mesh_peers(topic).await;
+        let Some(peer) = peers.first() else {
+            debug!(
+                namespace_id = %hex::encode(namespace_id),
+                "no mesh peers for namespace sync"
+            );
+            return;
+        };
+
+        let Ok(mut stream) = self.network_client.open_stream(*peer).await else {
+            debug!("failed to open stream for namespace sync");
+            return;
+        };
+
+        let msg = StreamMessage::Init {
+            context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
+            party_id: calimero_primitives::identity::PublicKey::from([0u8; 32]),
+            payload: InitPayload::NamespaceBackfillRequest {
+                namespace_id,
+                delta_ids: vec![],
+            },
+            next_nonce: {
+                use rand::Rng;
+                rand::thread_rng().gen()
+            },
+        };
+
+        if let Err(err) = super::stream::send(&mut stream, &msg, None).await {
+            debug!(%err, "failed to send NamespaceBackfillRequest");
+            return;
+        }
+
+        match super::stream::recv(&mut stream, None, self.sync_config.timeout).await {
+            Ok(Some(StreamMessage::Message {
+                payload: MessagePayload::NamespaceBackfillResponse { deltas },
+                ..
+            })) => {
+                info!(
+                    namespace_id = %hex::encode(namespace_id),
+                    ops = deltas.len(),
+                    "received namespace governance ops from peer"
+                );
+                for (_delta_id, op_bytes) in deltas {
+                    if let Ok(op) = borsh::from_slice::<
+                        calimero_context_primitives::local_governance::SignedNamespaceOp,
+                    >(&op_bytes)
+                    {
+                        let _ = self.context_client.apply_signed_namespace_op(op).await;
+                    }
+                }
+            }
+            _ => {
+                debug!("unexpected response to namespace sync request");
+            }
+        }
     }
 }
 
