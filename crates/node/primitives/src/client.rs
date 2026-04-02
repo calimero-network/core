@@ -222,13 +222,23 @@ impl NodeClient {
         let topic_str = format!("group/{}", hex::encode(group_id));
         let topic = TopicHash::from_raw(topic_str);
 
-        let peers = self.network_client.mesh_peer_count(topic.clone()).await;
-        if peers == 0 {
-            debug!(
-                ?mutation_kind,
-                "no peers on group topic, skipping broadcast"
-            );
-            return Ok(());
+        const MAX_MESH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+        const MESH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+        let deadline = tokio::time::Instant::now() + MAX_MESH_WAIT;
+        loop {
+            let peers = self.network_client.mesh_peer_count(topic.clone()).await;
+            if peers > 0 {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                debug!(
+                    ?mutation_kind,
+                    "no mesh peers after {MAX_MESH_WAIT:?}, publishing mutation anyway"
+                );
+                break;
+            }
+            tokio::time::sleep(MESH_POLL_INTERVAL).await;
         }
 
         let payload = BroadcastMessage::GroupMutationNotification {
@@ -249,8 +259,9 @@ impl NodeClient {
     ///
     /// Enforces [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`] on `signed_op_borsh`.
     ///
-    /// If there are no mesh peers on the group topic, the publish is skipped and a **warn** is
-    /// logged (silent skips make ops easy to miss in production).
+    /// Waits up to 10 seconds for the gossipsub mesh to include at least one
+    /// peer before publishing. If no peers appear within the window the message
+    /// is published anyway (gossipsub flood-publish can still reach subscribers).
     pub async fn publish_signed_group_op(
         &self,
         group_id: [u8; 32],
@@ -269,13 +280,23 @@ impl NodeClient {
         let topic_str = format!("group/{}", hex::encode(group_id));
         let topic = TopicHash::from_raw(topic_str);
 
-        let peers = self.network_client.mesh_peer_count(topic.clone()).await;
-        if peers == 0 {
-            warn!(
-                ?group_id,
-                "no peers on group topic, skipping signed group op broadcast"
-            );
-            return Ok(());
+        const MAX_MESH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+        const MESH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+        let deadline = tokio::time::Instant::now() + MAX_MESH_WAIT;
+        loop {
+            let peers = self.network_client.mesh_peer_count(topic.clone()).await;
+            if peers > 0 {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                warn!(
+                    ?group_id,
+                    "no mesh peers after {MAX_MESH_WAIT:?}, publishing governance op anyway"
+                );
+                break;
+            }
+            tokio::time::sleep(MESH_POLL_INTERVAL).await;
         }
 
         let payload = BroadcastMessage::GroupGovernanceDelta {
