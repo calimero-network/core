@@ -7,15 +7,14 @@ use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupChildIndex, GroupContextAlias,
     GroupContextIndex, GroupContextLastMigration, GroupContextLastMigrationValue,
     GroupContextMemberCap, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
-    GroupDefaultVisValue,
-    GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
+    GroupDefaultVisValue, GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMemberContext, GroupMemberValue, GroupMeta, GroupMetaValue,
     GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupSigningKey,
     GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
     NamespaceIdentity, NamespaceIdentityValue, GROUP_CONTEXT_INDEX_PREFIX,
-    GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_MEMBER_ALIAS_PREFIX,
-    GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_PREFIX,
-    GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
+    GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
+    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX,
+    GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -878,8 +877,8 @@ pub async fn sign_apply_and_publish(
 
     // Look up the group sender_key for encryption.
     let local_pk = calimero_primitives::identity::PrivateKey::from(ns_sk_bytes).public_key();
-    let sender_key_bytes = get_group_member_value(store, group_id, &local_pk)?
-        .and_then(|v| v.sender_key);
+    let sender_key_bytes =
+        get_group_member_value(store, group_id, &local_pk)?.and_then(|v| v.sender_key);
 
     let ns_op = match sender_key_bytes {
         Some(sk) => {
@@ -907,11 +906,16 @@ pub async fn sign_apply_and_publish(
     let head = handle.get(&ns_head_key)?;
     drop(handle);
 
-    let parent_hashes = head.as_ref().map(|h| h.dag_heads.clone()).unwrap_or_default();
+    let parent_hashes = head
+        .as_ref()
+        .map(|h| h.dag_heads.clone())
+        .unwrap_or_default();
     let nonce = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
 
     let signed = SignedNamespaceOp::sign(&ns_sk, ns_bytes, parent_hashes, [0u8; 32], nonce, ns_op)?;
-    let delta_id = signed.content_hash().map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    let delta_id = signed
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
     let parent_ids = signed.parent_op_hashes.clone();
 
     // Store the op for backfill but DON'T re-apply via apply_signed_namespace_op.
@@ -952,10 +956,7 @@ use calimero_context_primitives::local_governance::{
 
 /// Encrypt a [`GroupOp`] with the group's sender key to produce an
 /// [`EncryptedGroupOp`] for inclusion in a [`NamespaceOp::Group`].
-pub fn encrypt_group_op(
-    sender_key_bytes: &[u8; 32],
-    op: &GroupOp,
-) -> EyreResult<EncryptedGroupOp> {
+pub fn encrypt_group_op(sender_key_bytes: &[u8; 32], op: &GroupOp) -> EyreResult<EncryptedGroupOp> {
     use calimero_crypto::SharedKey;
 
     let plaintext = borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh encode GroupOp: {e}"))?;
@@ -1063,8 +1064,8 @@ fn decrypt_and_apply_group_op(
         .decrypt(encrypted.ciphertext.clone(), encrypted.nonce)
         .ok_or_else(|| eyre::eyre!("failed to decrypt group op (bad sender_key or corrupt)"))?;
 
-    let inner_op: GroupOp =
-        borsh::from_slice(&plaintext).map_err(|e| eyre::eyre!("borsh decode inner GroupOp: {e}"))?;
+    let inner_op: GroupOp = borsh::from_slice(&plaintext)
+        .map_err(|e| eyre::eyre!("borsh decode inner GroupOp: {e}"))?;
 
     // Build a synthetic SignedGroupOp so the existing apply path works.
     // The signature was already verified on the outer SignedNamespaceOp.
@@ -1083,7 +1084,13 @@ fn decrypt_and_apply_group_op(
     // verification inside apply_local_signed_group_op because the version
     // field won't match (it's a namespace op version, not group). Instead
     // we apply the inner mutation directly.
-    apply_group_op_inner(store, group_id, &ns_op.signer, ns_op.nonce, &signed_group_op.op)?;
+    apply_group_op_inner(
+        store,
+        group_id,
+        &ns_op.signer,
+        ns_op.nonce,
+        &signed_group_op.op,
+    )?;
 
     // Caller (apply_signed_namespace_op) handles persistence + head update.
     Ok(())
@@ -1138,8 +1145,7 @@ fn apply_group_op_inner(
                 MemberCapabilities::MANAGE_MEMBERS,
                 "remove member",
             )?;
-            if is_group_admin(store, group_id, member)?
-                && !is_group_admin(store, group_id, signer)?
+            if is_group_admin(store, group_id, member)? && !is_group_admin(store, group_id, signer)?
             {
                 bail!("only admins can remove other admins");
             }
@@ -1187,7 +1193,11 @@ fn apply_group_op_inner(
 }
 
 /// Check that the signer is an admin of the namespace (root group).
-fn require_namespace_admin(store: &Store, namespace_id: [u8; 32], signer: &PublicKey) -> EyreResult<()> {
+fn require_namespace_admin(
+    store: &Store,
+    namespace_id: [u8; 32],
+    signer: &PublicKey,
+) -> EyreResult<()> {
     let ns_gid = ContextGroupId::from(namespace_id);
     if !is_group_admin(store, &ns_gid, signer)? {
         bail!(
@@ -1214,7 +1224,9 @@ fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreRe
             }
             let meta = GroupMetaValue {
                 admin_identity: op.signer,
-                target_application_id: calimero_primitives::application::ApplicationId::from([0u8; 32]),
+                target_application_id: calimero_primitives::application::ApplicationId::from(
+                    [0u8; 32],
+                ),
                 app_key: [0u8; 32],
                 upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
                 migration: None,
@@ -1303,8 +1315,7 @@ fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreRe
 
             // 2. Verify the admin's signature on the invitation.
             let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
-            let invitation_bytes =
-                borsh::to_vec(&inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+            let invitation_bytes = borsh::to_vec(&inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;
             let hash = sha2::Sha256::digest(&invitation_bytes);
             let sig_bytes = hex::decode(&signed_invitation.inviter_signature)
                 .map_err(|e| eyre::eyre!("bad invitation signature hex: {e}"))?;
@@ -1416,7 +1427,8 @@ pub async fn sign_apply_and_publish_namespace_op(
         .unwrap_or_default();
     let nonce = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
 
-    let signed = SignedNamespaceOp::sign(signer_sk, namespace_id, parent_hashes, [0u8; 32], nonce, op)?;
+    let signed =
+        SignedNamespaceOp::sign(signer_sk, namespace_id, parent_hashes, [0u8; 32], nonce, op)?;
     let delta_id = signed
         .content_hash()
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
@@ -1454,7 +1466,8 @@ pub async fn sign_and_publish_namespace_op(
         .unwrap_or_default();
     let nonce = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
 
-    let signed = SignedNamespaceOp::sign(signer_sk, namespace_id, parent_hashes, [0u8; 32], nonce, op)?;
+    let signed =
+        SignedNamespaceOp::sign(signer_sk, namespace_id, parent_hashes, [0u8; 32], nonce, op)?;
     let delta_id = signed
         .content_hash()
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
@@ -1509,9 +1522,7 @@ pub fn collect_skeleton_delta_ids_for_group(
             break;
         }
         if let Some(value) = handle.get(&key)? {
-            if let Ok(skeleton) =
-                borsh::from_slice::<OpaqueSkeleton>(&value.skeleton_bytes)
-            {
+            if let Ok(skeleton) = borsh::from_slice::<OpaqueSkeleton>(&value.skeleton_bytes) {
                 if skeleton.group_id == group_id {
                     delta_ids.push(skeleton.delta_id);
                 }
@@ -1688,7 +1699,12 @@ pub fn create_recursive_invitations(
     inviter_sk: &PrivateKey,
     expiration_secs: u64,
     invited_role: u8,
-) -> EyreResult<Vec<(ContextGroupId, calimero_context_config::types::SignedGroupOpenInvitation)>> {
+) -> EyreResult<
+    Vec<(
+        ContextGroupId,
+        calimero_context_config::types::SignedGroupOpenInvitation,
+    )>,
+> {
     use calimero_context_config::types::{
         GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -1718,8 +1734,7 @@ pub fn create_recursive_invitations(
             invited_role,
         };
 
-        let inv_bytes =
-            borsh::to_vec(&invitation).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+        let inv_bytes = borsh::to_vec(&invitation).map_err(|e| eyre::eyre!("borsh: {e}"))?;
         let hash = sha2::Sha256::digest(&inv_bytes);
         let sig = inviter_sk
             .sign(&hash)
@@ -1868,7 +1883,6 @@ pub fn get_or_create_namespace_identity(
 // ---------------------------------------------------------------------------
 // Invitation commitment helpers
 // ---------------------------------------------------------------------------
-
 
 /// In the namespace model, application cascading to child groups is handled
 /// at the namespace governance level rather than via tree traversal.

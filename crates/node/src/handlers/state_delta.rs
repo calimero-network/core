@@ -1721,4 +1721,3 @@ pub async fn replay_buffered_delta(
 
     Ok(add_result.applied)
 }
-

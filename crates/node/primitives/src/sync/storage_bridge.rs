@@ -34,7 +34,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::env::RuntimeEnv;
 use calimero_storage::store::Key;
-use calimero_store::{Store, key, types};
+use calimero_store::{key, types, Store};
 use tracing::warn;
 
 /// Create a `RuntimeEnv` that bridges `calimero-storage` to a `Store`.

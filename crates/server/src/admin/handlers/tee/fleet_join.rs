@@ -124,7 +124,10 @@ pub async fn handler(
         .await
     {
         warn!(error=?err, "Failed to broadcast, unsubscribing from namespace");
-        let _ = state.node_client.unsubscribe_namespace(group_id_bytes).await;
+        let _ = state
+            .node_client
+            .unsubscribe_namespace(group_id_bytes)
+            .await;
         return ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,
             message: "Failed to broadcast attestation".to_owned(),

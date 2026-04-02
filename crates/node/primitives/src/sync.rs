@@ -53,64 +53,64 @@ pub mod wire;
 
 // Handshake types
 pub use handshake::{
-    SYNC_PROTOCOL_VERSION, SyncCapabilities, SyncHandshake, SyncHandshakeResponse,
+    SyncCapabilities, SyncHandshake, SyncHandshakeResponse, SYNC_PROTOCOL_VERSION,
 };
 
 // Protocol types and selection
 pub use protocol::{
-    ProtocolSelection, SyncProtocol, SyncProtocolKind, calculate_divergence, is_protocol_supported,
-    select_protocol, select_protocol_with_fallback,
+    calculate_divergence, is_protocol_supported, select_protocol, select_protocol_with_fallback,
+    ProtocolSelection, SyncProtocol, SyncProtocolKind,
 };
 
 // Delta sync types
 pub use delta::{
-    DEFAULT_DELTA_SYNC_THRESHOLD, DeltaApplyResult, DeltaPayload, DeltaSyncRequest,
-    DeltaSyncResponse,
+    DeltaApplyResult, DeltaPayload, DeltaSyncRequest, DeltaSyncResponse,
+    DEFAULT_DELTA_SYNC_THRESHOLD,
 };
 
 // Hash comparison types
 pub use hash_comparison::{
-    CrdtType, LeafMetadata, MAX_CHILDREN_PER_NODE, MAX_LEAF_VALUE_SIZE, MAX_NODES_PER_RESPONSE,
-    MAX_TREE_DEPTH, TreeCompareResult, TreeLeafData, TreeNode, TreeNodeRequest, TreeNodeResponse,
-    compare_tree_nodes,
+    compare_tree_nodes, CrdtType, LeafMetadata, TreeCompareResult, TreeLeafData, TreeNode,
+    TreeNodeRequest, TreeNodeResponse, MAX_CHILDREN_PER_NODE, MAX_LEAF_VALUE_SIZE,
+    MAX_NODES_PER_RESPONSE, MAX_TREE_DEPTH,
 };
 
 // Bloom filter types
 pub use bloom_filter::{
-    BloomFilterRequest, BloomFilterResponse, DEFAULT_BLOOM_FP_RATE, DeltaIdBloomFilter,
+    BloomFilterRequest, BloomFilterResponse, DeltaIdBloomFilter, DEFAULT_BLOOM_FP_RATE,
 };
 
 // Wire protocol types (used by all sync protocols)
-pub use wire::{InitPayload, MAX_TREE_REQUEST_DEPTH, MessagePayload, StreamMessage};
+pub use wire::{InitPayload, MessagePayload, StreamMessage, MAX_TREE_REQUEST_DEPTH};
 
 // Snapshot types
 pub use snapshot::{
-    BroadcastMessage, DEFAULT_SNAPSHOT_PAGE_SIZE, MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS,
-    MAX_ENTITIES_PER_PAGE, MAX_ENTITY_DATA_SIZE, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES,
-    MAX_SNAPSHOT_PAGE_SIZE, MAX_SNAPSHOT_PAGES, SnapshotBoundaryRequest, SnapshotBoundaryResponse,
+    check_snapshot_safety, BroadcastMessage, SnapshotBoundaryRequest, SnapshotBoundaryResponse,
     SnapshotComplete, SnapshotCursor, SnapshotEntity, SnapshotEntityPage, SnapshotError,
     SnapshotPage, SnapshotRequest, SnapshotStreamRequest, SnapshotVerifyResult,
-    check_snapshot_safety,
+    DEFAULT_SNAPSHOT_PAGE_SIZE, MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS, MAX_ENTITIES_PER_PAGE,
+    MAX_ENTITY_DATA_SIZE, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES, MAX_SNAPSHOT_PAGES,
+    MAX_SNAPSHOT_PAGE_SIZE,
 };
 
 // Subtree prefetch types
 pub use subtree::{
+    should_use_subtree_prefetch, SubtreeData, SubtreePrefetchRequest, SubtreePrefetchResponse,
     DEEP_TREE_THRESHOLD, DEFAULT_SUBTREE_MAX_DEPTH, MAX_CLUSTERED_SUBTREES, MAX_DIVERGENCE_RATIO,
-    MAX_ENTITIES_PER_SUBTREE, MAX_SUBTREE_DEPTH, MAX_SUBTREES_PER_REQUEST, MAX_TOTAL_ENTITIES,
-    SubtreeData, SubtreePrefetchRequest, SubtreePrefetchResponse, should_use_subtree_prefetch,
+    MAX_ENTITIES_PER_SUBTREE, MAX_SUBTREES_PER_REQUEST, MAX_SUBTREE_DEPTH, MAX_TOTAL_ENTITIES,
 };
 
 // LevelWise sync types
 pub use levelwise::{
-    LevelCompareResult, LevelNode, LevelWiseRequest, LevelWiseResponse, MAX_LEVELWISE_DEPTH,
-    MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST, MAX_REQUESTS_PER_SESSION, compare_level_nodes,
-    should_use_levelwise,
+    compare_level_nodes, should_use_levelwise, LevelCompareResult, LevelNode, LevelWiseRequest,
+    LevelWiseResponse, MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST,
+    MAX_REQUESTS_PER_SESSION,
 };
 
 // State machine types (shared between SyncManager and SimNode)
 pub use state_machine::{
-    LocalSyncState, build_handshake, build_handshake_from_raw, estimate_entity_count,
-    estimate_max_depth,
+    build_handshake, build_handshake_from_raw, estimate_entity_count, estimate_max_depth,
+    LocalSyncState,
 };
 
 // Transport abstraction (for production streams and simulation)

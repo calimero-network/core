@@ -36,15 +36,15 @@ pub use group::{
     GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMemberContext, GroupMemberValue, GroupMeta, GroupMetaValue,
     GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupSigningKey,
-    GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
-    NamespaceGovHead, NamespaceGovHeadValue, NamespaceGovOp, NamespaceGovOpValue,
-    NamespaceIdentity, NamespaceIdentityValue, GROUP_ALIAS_PREFIX, GROUP_CHILD_INDEX_PREFIX,
+    GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, NamespaceGovHead,
+    NamespaceGovHeadValue, NamespaceGovOp, NamespaceGovOpValue, NamespaceIdentity,
+    NamespaceIdentityValue, GROUP_ALIAS_PREFIX, GROUP_CHILD_INDEX_PREFIX,
     GROUP_CONTEXT_ALIAS_PREFIX, GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
     GROUP_CONTEXT_MEMBER_CAP_PREFIX, GROUP_DEFAULT_CAPS_PREFIX, GROUP_DEFAULT_VIS_PREFIX,
     GROUP_LOCAL_GOV_NONCE_PREFIX, GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
-    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX,
-    NAMESPACE_GOV_HEAD_PREFIX, NAMESPACE_GOV_OP_PREFIX, GROUP_OP_HEAD_PREFIX,
+    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_OP_HEAD_PREFIX,
     GROUP_OP_LOG_PREFIX, GROUP_PARENT_REF_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
+    NAMESPACE_GOV_HEAD_PREFIX, NAMESPACE_GOV_OP_PREFIX,
 };
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);

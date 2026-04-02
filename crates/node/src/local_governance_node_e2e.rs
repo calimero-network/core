@@ -16,8 +16,8 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
 use calimero_network_primitives::client::NetworkClient;
-use calimero_node_primitives::messages::NodeMessage;
 use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::messages::NodeMessage;
 use calimero_node_primitives::NodeMode;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
@@ -150,7 +150,11 @@ async fn apply_signed_group_op_via_context_client() {
     )
     .expect("sign op");
 
-    match context_client.apply_signed_group_op(op).await.expect("apply") {
+    match context_client
+        .apply_signed_group_op(op)
+        .await
+        .expect("apply")
+    {
         true => {}
         false => panic!("expected op applied immediately (no pending parents)"),
     }

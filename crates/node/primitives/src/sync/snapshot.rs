@@ -1416,45 +1416,35 @@ mod tests {
     fn test_snapshot_verify_result_all_variants_behavior() {
         // Test is_valid returns correctly for all variants
         assert!(SnapshotVerifyResult::Valid.is_valid());
-        assert!(
-            !SnapshotVerifyResult::RootHashMismatch {
-                expected: [1; 32],
-                computed: [2; 32]
-            }
-            .is_valid()
-        );
-        assert!(
-            !SnapshotVerifyResult::EntityCountMismatch {
-                expected: 100,
-                actual: 50
-            }
-            .is_valid()
-        );
+        assert!(!SnapshotVerifyResult::RootHashMismatch {
+            expected: [1; 32],
+            computed: [2; 32]
+        }
+        .is_valid());
+        assert!(!SnapshotVerifyResult::EntityCountMismatch {
+            expected: 100,
+            actual: 50
+        }
+        .is_valid());
         assert!(!SnapshotVerifyResult::MissingPages { missing: vec![1] }.is_valid());
 
         // Test to_error returns None only for Valid
         assert!(SnapshotVerifyResult::Valid.to_error().is_none());
-        assert!(
-            SnapshotVerifyResult::RootHashMismatch {
-                expected: [1; 32],
-                computed: [2; 32]
-            }
+        assert!(SnapshotVerifyResult::RootHashMismatch {
+            expected: [1; 32],
+            computed: [2; 32]
+        }
+        .to_error()
+        .is_some());
+        assert!(SnapshotVerifyResult::EntityCountMismatch {
+            expected: 100,
+            actual: 50
+        }
+        .to_error()
+        .is_some());
+        assert!(SnapshotVerifyResult::MissingPages { missing: vec![1] }
             .to_error()
-            .is_some()
-        );
-        assert!(
-            SnapshotVerifyResult::EntityCountMismatch {
-                expected: 100,
-                actual: 50
-            }
-            .to_error()
-            .is_some()
-        );
-        assert!(
-            SnapshotVerifyResult::MissingPages { missing: vec![1] }
-                .to_error()
-                .is_some()
-        );
+            .is_some());
     }
 
     // =========================================================================

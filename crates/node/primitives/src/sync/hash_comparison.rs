@@ -688,14 +688,12 @@ mod tests {
         assert!(!TreeCompareResult::Equal.needs_sync());
         assert!(!TreeCompareResult::RemoteMissing.needs_sync());
         assert!(TreeCompareResult::LocalMissing.needs_sync());
-        assert!(
-            TreeCompareResult::Different {
-                remote_only_children: vec![],
-                local_only_children: vec![],
-                common_children: vec![],
-            }
-            .needs_sync()
-        );
+        assert!(TreeCompareResult::Different {
+            remote_only_children: vec![],
+            local_only_children: vec![],
+            common_children: vec![],
+        }
+        .needs_sync());
     }
 
     #[test]

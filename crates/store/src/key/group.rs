@@ -1399,11 +1399,9 @@ pub struct NamespaceGovOp(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>
 impl NamespaceGovOp {
     #[must_use]
     pub fn new(namespace_id: [u8; 32], delta_id: [u8; 32]) -> Self {
-        Self(Key(
-            GenericArray::from([NAMESPACE_GOV_OP_PREFIX])
-                .concat(GenericArray::from(namespace_id))
-                .concat(GenericArray::from(delta_id)),
-        ))
+        Self(Key(GenericArray::from([NAMESPACE_GOV_OP_PREFIX])
+            .concat(GenericArray::from(namespace_id))
+            .concat(GenericArray::from(delta_id))))
     }
 
     #[must_use]
@@ -1466,9 +1464,8 @@ pub struct NamespaceGovHead(Key<(GroupPrefix, GroupIdComponent)>);
 impl NamespaceGovHead {
     #[must_use]
     pub fn new(namespace_id: [u8; 32]) -> Self {
-        Self(Key(
-            GenericArray::from([NAMESPACE_GOV_HEAD_PREFIX]).concat(GenericArray::from(namespace_id)),
-        ))
+        Self(Key(GenericArray::from([NAMESPACE_GOV_HEAD_PREFIX])
+            .concat(GenericArray::from(namespace_id))))
     }
 
     #[must_use]
