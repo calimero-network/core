@@ -1001,13 +1001,8 @@ pub fn apply_signed_namespace_op(store: &Store, op: &SignedNamespaceOp) -> EyreR
                 })
                 .and_then(|member_val| member_val.sender_key);
 
-            match sender_key_bytes {
-                Some(sk_bytes) => {
-                    decrypt_and_apply_group_op(store, op, &group_id_typed, &sk_bytes, encrypted)?;
-                }
-                None => {
-                    store_namespace_gov_op(store, op)?;
-                }
+            if let Some(sk_bytes) = sender_key_bytes {
+                decrypt_and_apply_group_op(store, op, &group_id_typed, &sk_bytes, encrypted)?;
             }
         }
     }
@@ -1090,9 +1085,7 @@ fn decrypt_and_apply_group_op(
     // we apply the inner mutation directly.
     apply_group_op_inner(store, group_id, &ns_op.signer, ns_op.nonce, &signed_group_op.op)?;
 
-    // Also store the full op in the namespace gov log for persistence.
-    store_namespace_gov_op(store, ns_op)?;
-
+    // Caller (apply_signed_namespace_op) handles persistence + head update.
     Ok(())
 }
 
@@ -1358,6 +1351,19 @@ fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreRe
                 _ => calimero_primitives::context::GroupMemberRole::Member,
             };
 
+            // Only admins can grant Admin role via invitation.
+            if role == calimero_primitives::context::GroupMemberRole::Admin
+                && !is_group_admin(store, &group_id, &inviter_pk)?
+            {
+                bail!("only admins can invite new admins");
+            }
+
+            // 7. Verify group belongs to this namespace.
+            let resolved_ns = resolve_namespace(store, &group_id)?;
+            if resolved_ns.to_bytes() != op.namespace_id {
+                bail!("group does not belong to this namespace");
+            }
+
             add_group_member(store, &group_id, member, role)?;
 
             tracing::info!(
@@ -1416,27 +1422,8 @@ pub async fn sign_apply_and_publish_namespace_op(
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
     let parent_ids = signed.parent_op_hashes.clone();
 
+    // apply_signed_namespace_op handles head update + op persistence.
     apply_signed_namespace_op(store, &signed)?;
-
-    // Update namespace DAG head
-    let mut new_heads: Vec<[u8; 32]> = head
-        .map(|h| h.dag_heads)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|h| !parent_ids.contains(h))
-        .collect();
-    new_heads.push(delta_id);
-
-    let mut wh = store.handle();
-    let ns_head_key = calimero_store::key::NamespaceGovHead::new(namespace_id);
-    wh.put(
-        &ns_head_key,
-        &calimero_store::key::NamespaceGovHeadValue {
-            sequence: nonce,
-            dag_heads: new_heads,
-        },
-    )?;
-    drop(wh);
 
     let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
     node_client
@@ -1473,8 +1460,27 @@ pub async fn sign_and_publish_namespace_op(
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
     let parent_ids = signed.parent_op_hashes.clone();
 
-    // Store for backfill but don't apply.
+    // Store for backfill but don't apply the governance logic.
     store_namespace_gov_op(store, &signed)?;
+
+    // Update DAG heads so subsequent ops are causally linked.
+    let mut new_heads: Vec<[u8; 32]> = head
+        .map(|h| h.dag_heads)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|h| !parent_ids.contains(h))
+        .collect();
+    new_heads.push(delta_id);
+
+    let mut wh = store.handle();
+    wh.put(
+        &calimero_store::key::NamespaceGovHead::new(namespace_id),
+        &calimero_store::key::NamespaceGovHeadValue {
+            sequence: nonce,
+            dag_heads: new_heads,
+        },
+    )?;
+    drop(wh);
 
     let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
     node_client
