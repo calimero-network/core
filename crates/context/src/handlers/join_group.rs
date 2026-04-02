@@ -60,8 +60,16 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // 1. Subscribe to namespace topic — mesh already has existing members.
                 let _ = node_client.subscribe_namespace(namespace_id).await;
 
-                // 2. Brief pause for gossipsub mesh to form with existing peers.
+                // 2. Wait for gossipsub mesh + namespace heartbeat cycle (5s)
+                //    to deliver missed governance ops from peers.
+                //    Publish a heartbeat with our (empty) heads to speed up
+                //    divergence detection by peers.
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let _ = node_client
+                    .publish_namespace_heartbeat(namespace_id, vec![])
+                    .await;
+                // Wait for peer heartbeat to arrive and trigger backfill.
+                tokio::time::sleep(std::time::Duration::from_secs(6)).await;
 
                 // 3. Store the signing key so we can sign namespace ops.
                 let sk = PrivateKey::from(sk_bytes);

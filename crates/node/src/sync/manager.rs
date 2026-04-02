@@ -2262,22 +2262,40 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         use calimero_context_primitives::local_governance::SignedNamespaceOp;
+        use calimero_store::key::AsKeyParts;
 
         let store = self.context_client.datastore_handle().into_inner();
         let handle = store.handle();
         let mut found = Vec::new();
 
-        for delta_id in delta_ids {
-            let key = calimero_store::key::NamespaceGovOp::new(namespace_id, *delta_id);
-            if let Ok(Some(value)) = handle.get(&key) {
-                // The skeleton_bytes field stores either an OpaqueSkeleton or
-                // can be the borsh-encoded SignedNamespaceOp if we stored the
-                // full op. Try to decode as SignedNamespaceOp first.
-                if borsh::from_slice::<SignedNamespaceOp>(&value.skeleton_bytes).is_ok() {
-                    found.push((*delta_id, value.skeleton_bytes));
+        if delta_ids.is_empty() {
+            // Empty request = "give me everything for this namespace".
+            let start = calimero_store::key::NamespaceGovOp::new(namespace_id, [0u8; 32]);
+            let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
+            let first = iter.seek(start).transpose();
+
+            for entry in first.into_iter().chain(iter.keys()) {
+                let key = match entry {
+                    Ok(k) => k,
+                    Err(_) => break,
+                };
+                if key.namespace_id() != namespace_id {
+                    break;
                 }
-                // If it's just a skeleton, we can't provide the full payload.
-                // The requester will need to ask another peer.
+                if let Ok(Some(value)) = handle.get(&key) {
+                    if borsh::from_slice::<SignedNamespaceOp>(&value.skeleton_bytes).is_ok() {
+                        found.push((key.delta_id(), value.skeleton_bytes));
+                    }
+                }
+            }
+        } else {
+            for delta_id in delta_ids {
+                let key = calimero_store::key::NamespaceGovOp::new(namespace_id, *delta_id);
+                if let Ok(Some(value)) = handle.get(&key) {
+                    if borsh::from_slice::<SignedNamespaceOp>(&value.skeleton_bytes).is_ok() {
+                        found.push((*delta_id, value.skeleton_bytes));
+                    }
+                }
             }
         }
 

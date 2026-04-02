@@ -493,15 +493,59 @@ impl Handler<NetworkEvent> for NodeManager {
                                     };
                                 drop(handle);
 
-                                let missing: Vec<[u8; 32]> = peer_heads
+                                // Check what peer has that we don't.
+                                let we_need: Vec<[u8; 32]> = peer_heads
                                     .iter()
                                     .filter(|h| !local_heads.contains(*h))
                                     .copied()
                                     .collect();
 
-                                if missing.is_empty() {
+                                // Check what we have that peer doesn't — if the
+                                // peer sent empty heads (new joiner), re-publish
+                                // all our namespace ops so they receive them.
+                                let peer_head_set: std::collections::HashSet<[u8; 32]> =
+                                    peer_heads.iter().copied().collect();
+                                let peer_needs: Vec<[u8; 32]> = local_heads
+                                    .iter()
+                                    .filter(|h| !peer_head_set.contains(*h))
+                                    .copied()
+                                    .collect();
+
+                                if !peer_needs.is_empty() {
+                                    // Re-publish our namespace ops so the peer
+                                    // (who may have just joined) receives them.
+                                    let store_inner =
+                                        context_client.datastore_handle().into_inner();
+                                    let handle_inner = store_inner.handle();
+                                    for delta_id in &peer_needs {
+                                        let key = calimero_store::key::NamespaceGovOp::new(
+                                            namespace_id,
+                                            *delta_id,
+                                        );
+                                        if let Ok(Some(value)) = handle_inner.get(&key) {
+                                            let payload =
+                                                BroadcastMessage::NamespaceGovernanceDelta {
+                                                    namespace_id,
+                                                    delta_id: *delta_id,
+                                                    parent_ids: vec![],
+                                                    payload: value.skeleton_bytes,
+                                                };
+                                            if let Ok(bytes) = borsh::to_vec(&payload) {
+                                                let topic = libp2p::gossipsub::TopicHash::from_raw(
+                                                    format!("ns/{}", hex::encode(namespace_id)),
+                                                );
+                                                let _ = network_client
+                                                    .publish(topic, bytes)
+                                                    .await;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if we_need.is_empty() {
                                     return;
                                 }
+                                let missing = we_need;
 
                                 info!(
                                     namespace_id = %hex::encode(namespace_id),
