@@ -248,10 +248,6 @@ pub(crate) fn setup(
             "/groups/join",
             post(groups::join_group::handler),
         )
-        .route(
-            "/groups/claim-invitation",
-            post(groups::claim_invitation::handler),
-        )
         // Namespace management
         .route("/namespaces", get(namespaces::list::handler))
         .route(
@@ -261,6 +257,15 @@ pub(crate) fn setup(
         .route(
             "/namespaces/for-application/:application_id",
             get(namespaces::list_for_application::handler),
+        )
+        // Namespace governance (Phase 2)
+        .route(
+            "/namespaces/:namespace_id/groups",
+            post(namespaces::create_group_in_namespace::handler),
+        )
+        .route(
+            "/namespaces/:namespace_id/subscribe",
+            post(namespaces::subscribe_namespace::handler),
         )
         // TEE protected endpoints
         .nest("/tee", tee::protected_service())

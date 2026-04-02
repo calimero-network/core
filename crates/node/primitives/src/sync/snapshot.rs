@@ -696,6 +696,25 @@ pub enum BroadcastMessage<'a> {
         /// Type of specialized node
         node_type: SpecializedNodeType,
     },
+
+    /// Signed namespace governance operation (Phase 2 rewrite).
+    ///
+    /// Published on the `ns/<hex(namespace_id)>` topic. Contains a
+    /// `SignedNamespaceOp` which may be a cleartext root op or an encrypted
+    /// group-scoped op.
+    NamespaceGovernanceDelta {
+        namespace_id: [u8; 32],
+        delta_id: [u8; 32],
+        parent_ids: Vec<[u8; 32]>,
+        /// `borsh(SignedNamespaceOp)` — must be ≤ [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`].
+        payload: Vec<u8>,
+    },
+
+    /// Periodic heartbeat for namespace governance DAG divergence detection.
+    NamespaceStateHeartbeat {
+        namespace_id: [u8; 32],
+        dag_heads: Vec<[u8; 32]>,
+    },
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]

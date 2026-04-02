@@ -196,10 +196,14 @@ fn two_nodes_converge_on_target_application_and_migration() {
 }
 
 #[test]
-fn two_nodes_converge_on_join_with_invitation_claim() {
+fn two_nodes_converge_on_namespace_member_joined() {
+    use calimero_context_primitives::local_governance::{
+        NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+
     let mut rng = OsRng;
     let gid = sample_group_id();
-    let gid_bytes = gid.to_bytes();
+    let ns_id = gid.to_bytes();
 
     let store_a = empty_store();
     let store_b = empty_store();
@@ -217,8 +221,9 @@ fn two_nodes_converge_on_join_with_invitation_claim() {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_pk.digest()),
         group_id: gid,
-        expiration_timestamp: 9_999_999,
+        expiration_timestamp: 9_999_999_999,
         secret_salt: [0x42; 32],
+        invited_role: 1,
     };
 
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
@@ -229,36 +234,143 @@ fn two_nodes_converge_on_join_with_invitation_claim() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
     };
 
-    let reveal = GroupRevealPayloadData {
-        signed_open_invitation: signed_invitation.clone(),
-        new_member_identity: SignerId::from(*joiner_pk.digest()),
-    };
-    let reveal_bytes = borsh::to_vec(&reveal).expect("borsh reveal");
-    let reveal_hash = Sha256::digest(&reveal_bytes);
-    let join_sig = joiner_sk.sign(&reveal_hash).expect("sign reveal");
-    let invitee_signature_hex = hex::encode(join_sig.to_bytes());
-
-    let op = SignedGroupOp::sign(
+    let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
-        gid_bytes,
+        ns_id,
         vec![],
         [0u8; 32],
         1,
-        GroupOp::JoinWithInvitationClaim {
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: joiner_pk,
             signed_invitation,
-            invitee_signature_hex,
-        },
+        }),
     )
-    .expect("sign JoinWithInvitationClaim");
+    .expect("sign MemberJoined");
 
-    let payload = borsh_to_vec(&op).expect("encode join op");
+    group_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
+    group_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
 
-    apply_wire_payload(&store_a, &payload);
-    apply_wire_payload(&store_b, &payload);
-
-    assert_same_group_view(&store_a, &store_b, &gid);
     assert!(group_store::check_group_membership(&store_a, &gid, &joiner_pk).unwrap());
     assert!(group_store::check_group_membership(&store_b, &gid, &joiner_pk).unwrap());
+}
+
+#[test]
+fn recursive_invite_joins_all_descendant_groups() {
+    use calimero_context_primitives::local_governance::{
+        NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+
+    let mut rng = OsRng;
+    let ns_id = sample_group_id();
+    let child_a = ContextGroupId::from([0xAA; 32]);
+    let child_b = ContextGroupId::from([0xBB; 32]);
+    let grandchild = ContextGroupId::from([0xCC; 32]);
+
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner_pk = joiner_sk.public_key();
+
+    // Setup: create namespace root + child groups, add admin to all
+    for gid in [&ns_id, &child_a, &child_b, &grandchild] {
+        save_group_meta(&store, gid, &sample_meta(admin_pk)).unwrap();
+        add_group_member(&store, gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    }
+
+    // Setup nesting: ns_id → child_a → grandchild, ns_id → child_b
+    group_store::nest_group(&store, &ns_id, &child_a).unwrap();
+    group_store::nest_group(&store, &ns_id, &child_b).unwrap();
+    group_store::nest_group(&store, &child_a, &grandchild).unwrap();
+
+    // Verify tree structure
+    let children = group_store::list_child_groups(&store, &ns_id).unwrap();
+    assert_eq!(children.len(), 2);
+    let descendants = group_store::collect_descendant_groups(&store, &ns_id).unwrap();
+    assert_eq!(descendants.len(), 3); // child_a, child_b, grandchild
+
+    // Recursive invite for ns_id (covers all 4 groups including ns_id itself)
+    let invitations = group_store::create_recursive_invitations(
+        &store,
+        &ns_id,
+        &admin_sk,
+        365 * 24 * 3600,
+        1, // Member
+    )
+    .unwrap();
+
+    assert_eq!(invitations.len(), 4); // ns_id + child_a + child_b + grandchild
+
+    // Joiner publishes MemberJoined for each invitation
+    for (i, (_gid, signed_inv)) in invitations.iter().enumerate() {
+        let ns_op = SignedNamespaceOp::sign(
+            &joiner_sk,
+            ns_id.to_bytes(),
+            vec![],
+            [0u8; 32],
+            (i + 1) as u64,
+            NamespaceOp::Root(RootOp::MemberJoined {
+                member: joiner_pk,
+                signed_invitation: signed_inv.clone(),
+            }),
+        )
+        .expect("sign MemberJoined");
+
+        group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+    }
+
+    // Verify joiner is member of ALL groups
+    assert!(group_store::check_group_membership(&store, &ns_id, &joiner_pk).unwrap());
+    assert!(group_store::check_group_membership(&store, &child_a, &joiner_pk).unwrap());
+    assert!(group_store::check_group_membership(&store, &child_b, &joiner_pk).unwrap());
+    assert!(group_store::check_group_membership(&store, &grandchild, &joiner_pk).unwrap());
+
+    // Recursive remove from ns_id (should remove from all 4)
+    let removed = group_store::recursive_remove_member(&store, &ns_id, &joiner_pk).unwrap();
+    assert_eq!(removed.len(), 4);
+
+    assert!(!group_store::check_group_membership(&store, &ns_id, &joiner_pk).unwrap());
+    assert!(!group_store::check_group_membership(&store, &child_a, &joiner_pk).unwrap());
+    assert!(!group_store::check_group_membership(&store, &child_b, &joiner_pk).unwrap());
+    assert!(!group_store::check_group_membership(&store, &grandchild, &joiner_pk).unwrap());
+}
+
+#[test]
+fn nest_group_rejects_cycles() {
+    let store = empty_store();
+
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+
+    let group_a = ContextGroupId::from([0xA0; 32]);
+    let group_b = ContextGroupId::from([0xB0; 32]);
+    let group_c = ContextGroupId::from([0xC0; 32]);
+
+    for gid in [&group_a, &group_b, &group_c] {
+        save_group_meta(&store, gid, &sample_meta(admin_pk)).unwrap();
+    }
+
+    // A → B → C
+    group_store::nest_group(&store, &group_a, &group_b).unwrap();
+    group_store::nest_group(&store, &group_b, &group_c).unwrap();
+
+    // C → A would create A → B → C → A cycle
+    let result = group_store::nest_group(&store, &group_c, &group_a);
+    assert!(result.is_err(), "should reject cycle");
+    assert!(
+        result.unwrap_err().to_string().contains("cycle"),
+        "error should mention cycle"
+    );
+
+    // Self-nesting
+    let result = group_store::nest_group(&store, &group_a, &group_a);
+    assert!(result.is_err(), "should reject self-nesting");
+
+    // B already has a parent (A), can't give it a second
+    let result = group_store::nest_group(&store, &group_c, &group_b);
+    assert!(result.is_err(), "should reject double-parent");
 }
 
 #[test]

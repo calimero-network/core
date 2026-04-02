@@ -1,4 +1,4 @@
-use actix::{ActorResponse, Handler, Message, WrapFuture};
+use actix::{ActorResponse, Handler, Message};
 use calimero_context_config::types::{
     GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
@@ -6,7 +6,6 @@ use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::group::{
     CreateGroupInvitationRequest, CreateGroupInvitationResponse,
 };
-use calimero_context_primitives::local_governance::GroupOp;
 use calimero_primitives::identity::PrivateKey;
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -51,7 +50,6 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         }
 
         let datastore = self.datastore.clone();
-        let node_client = self.node_client.clone();
 
         let result = (|| -> eyre::Result<_> {
             let _meta = group_store::load_group_meta(&datastore, &group_id)?
@@ -89,6 +87,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 group_id,
                 expiration_timestamp,
                 secret_salt,
+                invited_role: 1, // Member
             };
 
             let invitation_bytes = borsh::to_vec(&invitation)
@@ -99,8 +98,6 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 .map_err(|e| eyre::eyre!("signing failed: {e}"))?;
             let inviter_signature = hex::encode(signature.to_bytes());
 
-            let commitment_hash: [u8; 32] = Sha256::digest(&invitation_bytes).into();
-
             let group_alias = group_store::get_group_alias(&datastore, &group_id)?;
 
             Ok((
@@ -108,39 +105,21 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     invitation,
                     inviter_signature,
                 },
-                commitment_hash,
-                expiration_timestamp,
-                private_key,
                 group_alias,
             ))
         })();
 
-        let (signed_invitation, commitment_hash, expiration_timestamp, private_key, group_alias) =
-            match result {
-                Ok(v) => v,
-                Err(e) => return ActorResponse::reply(Err(e)),
-            };
+        let (signed_invitation, group_alias) = match result {
+            Ok(v) => v,
+            Err(e) => return ActorResponse::reply(Err(e)),
+        };
 
-        ActorResponse::r#async(
-            async move {
-                group_store::sign_apply_and_publish(
-                    &datastore,
-                    &node_client,
-                    &group_id,
-                    &private_key,
-                    GroupOp::InvitationCommitted {
-                        commitment_hash,
-                        expiration_timestamp,
-                    },
-                )
-                .await?;
-
-                Ok(CreateGroupInvitationResponse {
-                    invitation: signed_invitation,
-                    group_alias,
-                })
-            }
-            .into_actor(self),
-        )
+        // No commitment publishing needed — the signed invitation is a
+        // self-contained bearer credential. The joiner will present it
+        // in a RootOp::MemberJoined on the namespace topic.
+        ActorResponse::reply(Ok(CreateGroupInvitationResponse {
+            invitation: signed_invitation,
+            group_alias,
+        }))
     }
 }

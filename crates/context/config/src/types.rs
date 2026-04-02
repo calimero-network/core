@@ -659,6 +659,15 @@ pub struct GroupInvitationFromAdmin {
     pub expiration_timestamp: ExpirationTimestamp,
     /// Secret salt for MEV protection.
     pub secret_salt: [u8; 32],
+    /// The role the invitee should be granted (0 = Admin, 1 = Member,
+    /// 2 = ReadOnly). Covered by the admin's signature so the joiner
+    /// cannot escalate. Defaults to 1 (Member) for backward compat.
+    #[serde(default = "default_invited_role")]
+    pub invited_role: u8,
+}
+
+fn default_invited_role() -> u8 {
+    1 // Member
 }
 
 /// A container for a group invitation and the admin's signature over it.

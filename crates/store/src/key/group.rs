@@ -1450,6 +1450,141 @@ pub struct GroupInvitationCommitmentValue {
     pub expiration_timestamp: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Namespace governance op storage (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// Prefix for namespace governance op entries.
+pub const NAMESPACE_GOV_OP_PREFIX: u8 = 0x38;
+
+/// Prefix for namespace governance DAG head entries.
+pub const NAMESPACE_GOV_HEAD_PREFIX: u8 = 0x39;
+
+/// Stores a namespace governance op (full decrypted or opaque skeleton).
+/// Key layout: `prefix(1) + namespace_id(32) + delta_id(32)`.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NamespaceGovOp(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl NamespaceGovOp {
+    #[must_use]
+    pub fn new(namespace_id: [u8; 32], delta_id: [u8; 32]) -> Self {
+        Self(Key(
+            GenericArray::from([NAMESPACE_GOV_OP_PREFIX])
+                .concat(GenericArray::from(namespace_id))
+                .concat(GenericArray::from(delta_id)),
+        ))
+    }
+
+    #[must_use]
+    pub fn namespace_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn delta_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..65]);
+        id
+    }
+}
+
+impl AsKeyParts for NamespaceGovOp {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NamespaceGovOp {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NamespaceGovOp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NamespaceGovOp")
+            .field("namespace_id", &self.namespace_id())
+            .field("delta_id", &self.delta_id())
+            .finish()
+    }
+}
+
+/// Value for [`NamespaceGovOp`]. Contains borsh-encoded skeleton or full op.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NamespaceGovOpValue {
+    pub skeleton_bytes: Vec<u8>,
+}
+
+/// Stores the current namespace governance DAG heads.
+/// Key layout: `prefix(1) + namespace_id(32)`.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NamespaceGovHead(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl NamespaceGovHead {
+    #[must_use]
+    pub fn new(namespace_id: [u8; 32]) -> Self {
+        Self(Key(
+            GenericArray::from([NAMESPACE_GOV_HEAD_PREFIX]).concat(GenericArray::from(namespace_id)),
+        ))
+    }
+
+    #[must_use]
+    pub fn namespace_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for NamespaceGovHead {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NamespaceGovHead {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NamespaceGovHead {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NamespaceGovHead")
+            .field("namespace_id", &self.namespace_id())
+            .finish()
+    }
+}
+
+/// Value for [`NamespaceGovHead`].
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NamespaceGovHeadValue {
+    pub sequence: u64,
+    pub dag_heads: Vec<[u8; 32]>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1535,6 +1670,12 @@ mod tests {
             GROUP_OP_HEAD_PREFIX,
             GROUP_MEMBER_CONTEXT_PREFIX,
             GROUP_CONTEXT_MEMBER_CAP_PREFIX,
+            GROUP_PARENT_REF_PREFIX,
+            GROUP_CHILD_INDEX_PREFIX,
+            NAMESPACE_IDENTITY_PREFIX,
+            GROUP_INVITATION_COMMITMENT_PREFIX,
+            NAMESPACE_GOV_OP_PREFIX,
+            NAMESPACE_GOV_HEAD_PREFIX,
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {

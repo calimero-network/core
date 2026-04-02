@@ -2060,6 +2060,16 @@ impl SyncManager {
             return Ok(Some(()));
         }
 
+        if let InitPayload::NamespaceBackfillRequest {
+            namespace_id,
+            delta_ids,
+        } = &payload
+        {
+            self.handle_namespace_backfill_request(*namespace_id, delta_ids, stream, nonce)
+                .await?;
+            return Ok(Some(()));
+        }
+
         let Some(context) = self.context_client.get_context(&context_id)? else {
             bail!("context not found: {}", context_id);
         };
@@ -2240,6 +2250,9 @@ impl SyncManager {
             InitPayload::GroupDeltaRequest { .. } => {
                 unreachable!("handled by early return above")
             }
+            InitPayload::NamespaceBackfillRequest { .. } => {
+                unreachable!("handled by early return above")
+            }
         };
 
         Ok(Some(()))
@@ -2286,6 +2299,48 @@ impl SyncManager {
         let msg = StreamMessage::Message {
             sequence_id: 0,
             payload: MessagePayload::GroupDeltaNotFound,
+            next_nonce: nonce,
+        };
+        super::stream::send(stream, &msg, None).await?;
+        Ok(())
+    }
+
+    /// Handle a namespace backfill request: look up full `SignedNamespaceOp`
+    /// payloads for the requested delta IDs and send them back.
+    ///
+    /// We scan the namespace governance op store for matching delta IDs.
+    /// For each requested delta, if we have the full op (stored when we were
+    /// a member at apply time), we include it in the response.
+    async fn handle_namespace_backfill_request(
+        &self,
+        namespace_id: [u8; 32],
+        delta_ids: &[[u8; 32]],
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use calimero_context_primitives::local_governance::SignedNamespaceOp;
+
+        let store = self.context_client.datastore_handle().into_inner();
+        let handle = store.handle();
+        let mut found = Vec::new();
+
+        for delta_id in delta_ids {
+            let key = calimero_store::key::NamespaceGovOp::new(namespace_id, *delta_id);
+            if let Ok(Some(value)) = handle.get(&key) {
+                // The skeleton_bytes field stores either an OpaqueSkeleton or
+                // can be the borsh-encoded SignedNamespaceOp if we stored the
+                // full op. Try to decode as SignedNamespaceOp first.
+                if borsh::from_slice::<SignedNamespaceOp>(&value.skeleton_bytes).is_ok() {
+                    found.push((*delta_id, value.skeleton_bytes));
+                }
+                // If it's just a skeleton, we can't provide the full payload.
+                // The requester will need to ask another peer.
+            }
+        }
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::NamespaceBackfillResponse { deltas: found },
             next_nonce: nonce,
         };
         super::stream::send(stream, &msg, None).await?;

@@ -137,6 +137,15 @@ impl Message for ApplySignedGroupOpRequest {
     type Result = eyre::Result<bool>;
 }
 
+#[derive(Debug, Clone)]
+pub struct ApplySignedNamespaceOpRequest {
+    pub op: crate::local_governance::SignedNamespaceOp,
+}
+
+impl Message for ApplySignedNamespaceOpRequest {
+    type Result = eyre::Result<()>;
+}
+
 /// Parameters for executing a state migration during application update.
 ///
 /// When updating a context's application, an optional migration function can be
@@ -200,6 +209,10 @@ pub enum ContextMessage {
     ApplySignedGroupOp {
         request: ApplySignedGroupOpRequest,
         outcome: oneshot::Sender<<ApplySignedGroupOpRequest as Message>::Result>,
+    },
+    ApplySignedNamespaceOp {
+        request: ApplySignedNamespaceOpRequest,
+        outcome: oneshot::Sender<<ApplySignedNamespaceOpRequest as Message>::Result>,
     },
     RemoveGroupMembers {
         request: RemoveGroupMembersRequest,

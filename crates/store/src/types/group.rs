@@ -113,3 +113,13 @@ impl PredefinedEntry for key::GroupInvitationCommitment {
     type Codec = Borsh;
     type DataType<'a> = key::GroupInvitationCommitmentValue;
 }
+
+impl PredefinedEntry for key::NamespaceGovOp {
+    type Codec = Borsh;
+    type DataType<'a> = key::NamespaceGovOpValue;
+}
+
+impl PredefinedEntry for key::NamespaceGovHead {
+    type Codec = Borsh;
+    type DataType<'a> = key::NamespaceGovHeadValue;
+}
