@@ -24,46 +24,46 @@
 └── <span class="ty">Leadership</span><br>
 </div>
 <p style="margin-top:16px;"><strong>Membership</strong> flows downward: anyone in a parent group is treated as a member of descendant groups (with direct child membership overriding inheritance where applicable).</p>
-<p><strong>Admin authority is structural, not access-based.</strong> A root admin can create or delete subgroups, manage members at the org level, and perform other governance ops on the tree &mdash; but they do <em>not</em> automatically get into <span class="code">Restricted</span> contexts in child groups. Reading private channels still requires allowlist membership managed by that group&rsquo;s <strong>direct</strong> admins (or the context creator).</p>
+<p><strong>Admin authority is structural, not access-based.</strong> A root admin can create or delete subgroups, manage members at the org level, and perform other governance ops on the tree &mdash; but to access contexts in a child subgroup, they must be a member of that subgroup. Private channels are placed in dedicated subgroups with restricted membership.</p>
 <div class="g2" style="margin-top:18px;">
 <div>
 <h4>Flows down</h4>
-<p style="color:var(--text-dim);margin:0;">Member of Acme Corp is a member of Engineering, Platform Team, and Marketing for <em>eligibility</em> checks (join Open contexts, receive inherited roles).</p>
+<p style="color:var(--text-dim);margin:0;">Member of Acme Corp is a member of Engineering, Platform Team, and Marketing. With <code>auto_join</code> (default), all contexts in those groups are accessible.</p>
 </div>
 <div>
-<h4>Stops at Restricted</h4>
-<p style="color:var(--text-dim);margin:0;">Allowlists for Restricted contexts are evaluated in the <strong>owning</strong> group. Parent admins do not get a backdoor into child private channels.</p>
+<h4>Restricting access</h4>
+<p style="color:var(--text-dim);margin:0;">Private channels live in dedicated subgroups with restricted membership. Only members explicitly added to the subgroup can access its contexts.</p>
 </div>
 </div>
 </div>
 
 <div class="card gb">
 <h2>Context Layout</h2>
-<p style="color:var(--text-dim);margin-bottom:14px;"><span class="code">Open</span> contexts: any group member can join. <span class="code">Restricted</span>: only allowlisted keys; no inherited-admin bypass. <span class="code">ReadOnly</span> role: can join allowed contexts and read, but mutations are rejected by the platform &mdash; ideal for company-wide announcements and auditors.</p>
+<p style="color:var(--text-dim);margin-bottom:14px;">Any group member can join contexts in that group. <span class="code">ReadOnly</span> role: can join contexts and read, but mutations are rejected by the platform &mdash; ideal for company-wide announcements and auditors. Private channels are placed in dedicated subgroups with restricted membership.</p>
 
 <h3>Root (Acme Corp)</h3>
-<div class="fr"><div class="fp">profiles</div><div class="fd"><span class="tag tag-done">Open</span> &middot; <span class="code">auto_join</span> &mdash; DMs, @mentions, notification sink</div></div>
-<div class="fr"><div class="fp">general</div><div class="fd"><span class="tag tag-done">Open</span> &mdash; public lobby</div></div>
-<div class="fr"><div class="fp">announcements</div><div class="fd"><span class="tag tag-done">Restricted</span> &mdash; Leadership = Member; company-wide channel = <span class="code">ReadOnly</span> for everyone else</div></div>
+<div class="fr"><div class="fp">profiles</div><div class="fd"><span class="code">auto_join</span> &mdash; DMs, @mentions, notification sink</div></div>
+<div class="fr"><div class="fp">general</div><div class="fd">Group context &mdash; public lobby</div></div>
+<div class="fr"><div class="fp">announcements</div><div class="fd">Owned by Leadership subgroup; company-wide <span class="code">ReadOnly</span> access granted at root level</div></div>
 
 <h3 style="margin-top:18px;">Engineering</h3>
-<div class="fr"><div class="fp">eng-general</div><div class="fd"><span class="tag tag-done">Open</span></div></div>
-<div class="fr"><div class="fp">incidents</div><div class="fd"><span class="tag tag-done">Open</span></div></div>
-<div class="fr"><div class="fp">eng-hiring</div><div class="fd"><span class="tag tag-done">Restricted</span> &mdash; eng leads only (allowlist)</div></div>
+<div class="fr"><div class="fp">eng-general</div><div class="fd">Group context</div></div>
+<div class="fr"><div class="fp">incidents</div><div class="fd">Group context</div></div>
+<div class="fr"><div class="fp">eng-hiring</div><div class="fd">In a dedicated subgroup &mdash; eng leads only (subgroup membership)</div></div>
 
 <h3 style="margin-top:18px;">Platform Team</h3>
-<div class="fr"><div class="fp">platform</div><div class="fd"><span class="tag tag-done">Open</span></div></div>
-<div class="fr"><div class="fp">on-call</div><div class="fd"><span class="tag tag-done">Restricted</span> &mdash; paging roster</div></div>
+<div class="fr"><div class="fp">platform</div><div class="fd">Group context</div></div>
+<div class="fr"><div class="fp">on-call</div><div class="fd">In a dedicated subgroup &mdash; paging roster</div></div>
 
 <h3 style="margin-top:18px;">Frontend Team</h3>
-<div class="fr"><div class="fp">fe-general</div><div class="fd"><span class="tag tag-done">Open</span> &mdash; design + UI discussion</div></div>
-<div class="fr"><div class="fp">design-crit</div><div class="fd"><span class="tag tag-done">Restricted</span> &mdash; invite-only critique</div></div>
+<div class="fr"><div class="fp">fe-general</div><div class="fd">Group context &mdash; design + UI discussion</div></div>
+<div class="fr"><div class="fp">design-crit</div><div class="fd">In a dedicated subgroup &mdash; invite-only critique</div></div>
 
 <h3 style="margin-top:18px;">Marketing</h3>
-<div class="fr"><div class="fp">campaigns</div><div class="fd"><span class="tag tag-done">Open</span></div></div>
-<div class="fr"><div class="fp">brand-review</div><div class="fd"><span class="tag tag-done">Restricted</span> &mdash; brand council</div></div>
+<div class="fr"><div class="fp">campaigns</div><div class="fd">Group context</div></div>
+<div class="fr"><div class="fp">brand-review</div><div class="fd">In a dedicated subgroup &mdash; brand council</div></div>
 
-<p style="margin-top:16px;">For <strong>announcements</strong>, post in a Restricted context where Leadership has full write access; grant all other members <span class="code">ReadOnly</span> on that context so the whole org sees updates without chat noise or edits.</p>
+<p style="margin-top:16px;">For <strong>announcements</strong>, the context lives in the Leadership subgroup where members have full write access. The root group grants <span class="code">ReadOnly</span> role so the whole org sees updates without chat noise or edits.</p>
 <details style="margin-top:14px;">
 <summary>Cross-context mentions</summary>
 <div class="detail-body">
@@ -124,11 +124,11 @@
 <div class="card ga">
 <h2>Permission Matrix</h2>
 <p style="color:var(--text-dim);margin-bottom:14px;">How five personas interact with the Acme tree. Structural power &ne; read access to child Restricted contexts.</p>
-<div class="fr"><div class="fp">CEO</div><div class="fd">Acme Corp <strong>Admin</strong> &mdash; structural control everywhere (subgroups, org members). <em>Cannot</em> read <span class="code">eng-hiring</span> or other child Restricted contexts without explicit allowlist.</div></div>
-<div class="fr"><div class="fp">VP Engineering</div><div class="fd">Engineering <strong>Admin</strong> &mdash; full governance under Engineering, Platform Team, Frontend Team; manages eng allowlists.</div></div>
+<div class="fr"><div class="fp">CEO</div><div class="fd">Acme Corp <strong>Admin</strong> &mdash; structural control everywhere (subgroups, org members). <em>Cannot</em> access <span class="code">eng-hiring</span> or other private subgroup contexts without being added to those subgroups.</div></div>
+<div class="fr"><div class="fp">VP Engineering</div><div class="fd">Engineering <strong>Admin</strong> &mdash; full governance under Engineering, Platform Team, Frontend Team; manages eng subgroup membership.</div></div>
 <div class="fr"><div class="fp">Senior engineer</div><div class="fd">Engineering <strong>Member</strong> + <span class="code">CAN_CREATE_CONTEXT</span> + <span class="code">CAN_INVITE_MEMBERS</span> &mdash; can spin up channels and invite, subject to group policy.</div></div>
-<div class="fr"><div class="fp">External auditor</div><div class="fd">Acme Corp <strong>ReadOnly</strong> + <span class="code">CAN_JOIN_OPEN_CONTEXTS</span> &mdash; reads Open channels and ReadOnly announcement stream; no writes.</div></div>
-<div class="fr"><div class="fp">Board observer</div><div class="fd">Leadership <strong>ReadOnly</strong>; on allowlist for <span class="code">board-updates</span> only &mdash; no automatic access to other Leadership Restricted rooms.</div></div>
+<div class="fr"><div class="fp">External auditor</div><div class="fd">Acme Corp <strong>ReadOnly</strong> &mdash; reads channels in groups they belong to; no writes.</div></div>
+<div class="fr"><div class="fp">Board observer</div><div class="fd">Leadership <strong>ReadOnly</strong>; added to specific subgroups for <span class="code">board-updates</span> only &mdash; no automatic access to other Leadership channels.</div></div>
 </div>
 
 <div class="card gb">
@@ -137,7 +137,7 @@
 <div class="cb"><h4 style="color:var(--orange);">Subgroups</h4><p>Org hierarchy under one root; membership inherited down the tree so engineers automatically exist in Platform / Frontend subgroups.</p></div>
 <div class="cb"><h4 style="color:var(--cyan);">ReadOnly</h4><p>Announcements and auditor feeds: join + read without mutating application state.</p></div>
 <div class="cb"><h4 style="color:#a78bfa;">Capabilities</h4><p><span class="code">CAN_CREATE_CONTEXT</span> lets trusted members create new channels without full admin.</p></div>
-<div class="cb"><h4 style="color:#34d399;">Context visibility</h4><p><strong>Open</strong> = public to group members. <strong>Restricted</strong> = private / DM-style rooms gated by allowlist.</p></div>
+<div class="cb"><h4 style="color:#34d399;">Subgroup access control</h4><p>Private channels live in dedicated subgroups with controlled membership. Group membership = context access.</p></div>
 <div class="cb"><h4 style="color:#38bdf8;">xcall</h4><p>Cross-context calls to bump <span class="code">mention_counts</span> in <span class="code">profiles</span> when someone is @mentioned from any channel.</p></div>
 <div class="cb"><h4 style="color:#f472b6;">CRDTs</h4><p><span class="code">Vector</span> messages, <span class="code">Counter</span> reactions &amp; mentions, <span class="code">LwwRegister</span> topic and pins.</p></div>
 </div>
@@ -145,8 +145,8 @@
 
 <div class="card gc">
 <h2>Privacy Boundary</h2>
-<p>The important invariant: <strong>the CEO can delete the Engineering subgroup but cannot read <span class="code">eng-hiring</span>.</strong> Restricted access is enforced per context; only Engineering&rsquo;s <em>direct</em> admins (or the context creator) curate that allowlist. Inherited parent admins are intentionally excluded from allowlist management in child groups.</p>
-<p style="margin-top:12px;">If executive oversight is required, the CEO must be added by an Engineering admin &mdash; or policy can require a separate compliance context with its own governance. The platform keeps structural hierarchy and confidentiality orthogonal by design.</p>
+<p>The important invariant: <strong>the CEO can delete the Engineering subgroup but cannot access <span class="code">eng-hiring</span> contexts.</strong> Access is enforced by subgroup membership; the CEO must be explicitly added to the eng-hiring subgroup to access its contexts.</p>
+<p style="margin-top:12px;">If executive oversight is required, the CEO must be added to the relevant subgroup by its admin &mdash; or policy can require a separate compliance context with its own governance. The platform keeps structural hierarchy and confidentiality orthogonal by design.</p>
 </div>
 
 </div>

@@ -311,7 +311,7 @@
   </div>
 </details>
 
-<h3>Capabilities &amp; Visibility (0x26–0x2A)</h3>
+<h3>Capabilities &amp; Defaults (0x26–0x29)</h3>
 <table class="schema-table">
 <thead><tr><th>Prefix</th><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Description</th></tr></thead>
 <tbody>
@@ -323,38 +323,17 @@
   <td class="sd">Per-member capability bitmask</td>
 </tr>
 <tr>
-  <td class="sp">0x27</td>
-  <td class="sk">GroupContextVisibility</td>
-  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x27</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">context_id (32)</span></span></td>
-  <td class="sv">GroupContextVisibilityValue</td>
-  <td class="sd">Per-context visibility (mode + creator)</td>
-</tr>
-<tr>
-  <td class="sp">0x28</td>
-  <td class="sk">GroupContextAllowlist</td>
-  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x28</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">context_id (32)</span><span class="plus">+</span><span class="seg seg-id3">identity (32)</span></span></td>
-  <td class="sv">()</td>
-  <td class="sd">Allowlist entry for restricted context (presence key)</td>
-</tr>
-<tr>
   <td class="sp">0x29</td>
   <td class="sk">GroupDefaultCaps</td>
   <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x29</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span></span></td>
   <td class="sv">GroupDefaultCapsValue</td>
   <td class="sd">Default capabilities for new members</td>
 </tr>
-<tr>
-  <td class="sp">0x2A</td>
-  <td class="sk">GroupDefaultVis</td>
-  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x2A</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span></span></td>
-  <td class="sv">GroupDefaultVisValue</td>
-  <td class="sd">Default visibility for new contexts</td>
-</tr>
 </tbody>
 </table>
 
 <details>
-  <summary>Capability &amp; visibility value definitions</summary>
+  <summary>Capability value definitions</summary>
   <div class="detail-body">
     <div class="typedef">
 <span class="kw">struct</span> <span class="ty">GroupMemberCapabilityValue</span> {<br>
@@ -362,19 +341,8 @@
 }
     </div>
     <div class="typedef" style="margin-top:10px;">
-<span class="kw">struct</span> <span class="ty">GroupContextVisibilityValue</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">mode</span>: u8,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// 0 = public, 1 = restricted, 2 = private</span><br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">creator</span>: [u8; 32],&nbsp;&nbsp;<span class="comment">// identity that created the context</span><br>
-}
-    </div>
-    <div class="typedef" style="margin-top:10px;">
 <span class="kw">struct</span> <span class="ty">GroupDefaultCapsValue</span> {<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">capabilities</span>: u32,&nbsp;&nbsp;<span class="comment">// default bitmask for new members</span><br>
-}
-    </div>
-    <div class="typedef" style="margin-top:10px;">
-<span class="kw">struct</span> <span class="ty">GroupDefaultVisValue</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">mode</span>: u8,&nbsp;&nbsp;<span class="comment">// default visibility mode for new contexts</span><br>
 }
     </div>
   </div>

@@ -334,7 +334,7 @@
     <ul>
       <li><span class="code">ExecuteMethod</span> — run WASM method, produce delta</li>
       <li><span class="code">HandleGroupOp</span> — ingest governance operation</li>
-      <li><span class="code">CreateContext</span> / <span class="code">JoinContext</span></li>
+      <li><span class="code">CreateContext</span> / <span class="code">JoinGroup</span> / <span class="code">JoinGroupContext</span></li>
       <li><span class="code">UpdateApplication</span> — upgrade WASM binary</li>
     </ul>
   </div>
@@ -517,7 +517,7 @@
   <div>
     <div class="step"><div class="n">1</div>
       <h4>Admin Action</h4>
-      <p>An admin (via REST API or meroctl) submits a governance action. The server translates this into a <span class="code">GroupOp</span> variant — e.g. <span class="code">MemberAdded</span>, <span class="code">CapabilitiesSet</span>, <span class="code">VisibilitySet</span>. Includes the target group ID.</p>
+      <p>An admin (via REST API or meroctl) submits a governance action. The server translates this into a <span class="code">GroupOp</span> variant — e.g. <span class="code">MemberAdded</span>, <span class="code">CapabilitiesSet</span>, <span class="code">TargetApplicationSet</span>. Includes the target group ID.</p>
     </div>
     <div class="step"><div class="n">2</div>
       <h4>Sign + Apply Locally</h4>
@@ -606,7 +606,7 @@
     <ul>
       <li><span class="code">execute_method()</span></li>
       <li><span class="code">create_context()</span></li>
-      <li><span class="code">join_context()</span></li>
+      <li><span class="code">join_group()</span> / <span class="code">join_group_context()</span></li>
       <li><span class="code">handle_group_op()</span></li>
       <li><span class="code">update_application()</span></li>
       <li><span class="code">get_context_info()</span></li>
@@ -697,7 +697,8 @@
 <span class="kw">pub enum</span> <span class="ty">ContextMessage</span> {<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">ExecuteMethod</span> { ctx: ContextId, method: String, args: Vec&lt;u8&gt; },<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">CreateContext</span> { params: CreateParams },<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">JoinContext</span> { invitation: Invitation },<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">JoinGroup</span> { invitation: GroupInvitation },<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">JoinGroupContext</span> { group_id: GroupId, context_id: ContextId },<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">HandleGroupOp</span> { op: SignedGroupOpV1 },<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">UpdateApplication</span> { ctx: ContextId, blob: BlobId },<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// ... 15+ more variants</span><br>

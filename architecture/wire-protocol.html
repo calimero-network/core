@@ -152,7 +152,7 @@
      2. GROUP MUTATION KIND
      ═══════════════════════════════════════════════════════════ -->
 <div class="card gb">
-<h2>GroupMutationKind <span class="variant-count">18 variants</span></h2>
+<h2>GroupMutationKind <span class="variant-count">14 variants</span></h2>
 <p class="section-intro">Enum carried inside <span class="code">GroupMutationNotification</span>. Describes what kind of group mutation occurred, allowing receivers to react selectively without deserializing the full op.</p>
 
 <div class="typedef"><span class="kw">enum</span> <span class="ty">GroupMutationKind</span> {
@@ -163,14 +163,10 @@
     <span class="field">ContextDetached</span>,         <span class="comment">// context unbound from group</span>
     <span class="field">SettingsUpdated</span>,         <span class="comment">// general group settings changed</span>
     <span class="field">MemberRoleUpdated</span>,       <span class="comment">// member role changed (admin/member)</span>
-    <span class="field">VisibilityUpdated</span>,       <span class="comment">// context or default visibility changed</span>
     <span class="field">ContextAttached</span>,         <span class="comment">// new context bound to group</span>
     <span class="field">ContextAliasSet</span>,         <span class="comment">// human-readable context alias changed</span>
     <span class="field">MemberCapabilitySet</span>,     <span class="comment">// per-member capability grant/revoke</span>
     <span class="field">DefaultCapabilitiesSet</span>,  <span class="comment">// default capabilities for new members changed</span>
-    <span class="field">ContextVisibilitySet</span>,    <span class="comment">// per-context visibility changed</span>
-    <span class="field">DefaultVisibilitySet</span>,    <span class="comment">// default visibility for new contexts changed</span>
-    <span class="field">ContextAllowlistSet</span>,     <span class="comment">// per-context allowlist replaced</span>
     <span class="field">MemberAliasSet</span>,          <span class="comment">// human-readable member alias changed</span>
     <span class="field">GroupAliasSet</span>,           <span class="comment">// human-readable group alias changed</span>
     <span class="field">ContextRegistered</span>,       <span class="comment">// new context registered to group</span>
@@ -455,7 +451,7 @@
      6. GROUP OP
      ═══════════════════════════════════════════════════════════ -->
 <div class="card gb">
-<h2>GroupOp <span class="transport-badge badge-gossip">gossipsub</span> <span class="variant-count">24 variants</span></h2>
+<h2>GroupOp <span class="transport-badge badge-gossip">gossipsub</span> <span class="variant-count">20 variants</span></h2>
 <p class="section-intro">The actual governance operation inside a <span class="code">SignedGroupOp</span>. Each variant represents a specific group mutation. Applied deterministically on all nodes for convergence.</p>
 
 <details open>
@@ -497,12 +493,7 @@
     <span class="field">child_group_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// unlink a child group from its parent</span>
 }
 
-<span class="field">MemberJoinedViaContextInvitation</span> {
-    <span class="field">context_id</span>: <span class="ty">ContextId</span>,  <span class="comment">// context from the invitation</span>
-    <span class="field">inviter_id</span>: <span class="ty">PublicKey</span>,  <span class="comment">// inviter (must be group admin)</span>
-    <span class="field">invitation_payload</span>: <span class="ty">Vec&lt;u8&gt;</span>,  <span class="comment">// borsh(InvitationFromMember) for verification</span>
-    <span class="field">inviter_signature</span>: <span class="ty">String</span>,  <span class="comment">// hex signature over invitation payload</span>
-}</div>
+</div>
   </div>
 </details>
 
@@ -528,23 +519,9 @@
 </details>
 
 <details>
-  <summary>Visibility &amp; Access Control <span class="variant-count">— 5 variants</span></summary>
+  <summary>Access Control <span class="variant-count">— 2 variants</span></summary>
   <div class="detail-body">
-    <div class="typedef"><span class="field">DefaultVisibilitySet</span> {
-    <span class="field">visibility</span>: <span class="ty">Visibility</span>,  <span class="comment">// Open | Restricted — default for new contexts</span>
-}
-
-<span class="field">ContextVisibilitySet</span> {
-    <span class="field">context_id</span>: <span class="ty">ContextId</span>,   <span class="comment">// target context</span>
-    <span class="field">visibility</span>: <span class="ty">Visibility</span>,  <span class="comment">// Open | Restricted</span>
-}
-
-<span class="field">ContextAllowlistReplaced</span> {
-    <span class="field">context_id</span>: <span class="ty">ContextId</span>,        <span class="comment">// target context</span>
-    <span class="field">allowlist</span>:  <span class="ty">Vec&lt;PublicKey&gt;</span>,  <span class="comment">// full replacement allowlist</span>
-}
-
-<span class="field">ContextCapabilityGranted</span> {
+    <div class="typedef"><span class="field">ContextCapabilityGranted</span> {
     <span class="field">context_id</span>: <span class="ty">ContextId</span>,      <span class="comment">// target context</span>
     <span class="field">member_id</span>:  <span class="ty">PublicKey</span>,       <span class="comment">// target member</span>
     <span class="field">capability</span>: <span class="ty">Capability</span>,     <span class="comment">// specific capability granted</span>

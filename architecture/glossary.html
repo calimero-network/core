@@ -110,7 +110,7 @@
 <div class="term-row" data-term="capabilities">
   <div class="term-name">Capabilities</div>
   <div class="term-body">
-    Per-member u32 bitmask controlling group-level permissions (CAN_CREATE_CONTEXT, CAN_INVITE_MEMBERS, CAN_JOIN_OPEN_CONTEXTS, MANAGE_MEMBERS, MANAGE_APPLICATION).
+    Per-member u32 bitmask controlling group-level permissions (CAN_CREATE_CONTEXT, CAN_INVITE_MEMBERS, MANAGE_MEMBERS, MANAGE_APPLICATION).
   </div>
 </div>
 
@@ -279,7 +279,7 @@
 <div class="term-row" data-term="group">
   <div class="term-name">Group</div>
   <div class="term-body">
-    Governance unit within a namespace, owning one or more Contexts. Manages membership, capabilities, visibility via signed operations. Subgroups inherit the root group's application.
+    Governance unit within a namespace, owning one or more Contexts. Manages membership and capabilities via signed operations. Subgroups inherit the root group's application. Access control is group-membership-based.
     <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/primitives/src/group.rs" target="_blank" rel="noopener">crates/context/primitives/src/group.rs</a></div>
   </div>
 </div>
@@ -721,10 +721,10 @@
 <!-- ─── V ─── -->
 <div class="term-letter" data-letter="V">V</div>
 
-<div class="term-row" data-term="visibility">
-  <div class="term-name">Visibility</div>
+<div class="term-row" data-term="auto_join">
+  <div class="term-name">auto_join</div>
   <div class="term-body">
-    Per-context access mode: Open (any group member can join) or Restricted (allowlist required, no admin bypass).
+    Group join behavior flag (default: true). When enabled, joining a group automatically subscribes the node to all contexts in the group and its descendant subgroups.
   </div>
 </div>
 

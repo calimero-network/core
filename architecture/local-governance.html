@@ -35,7 +35,7 @@
   <rect x="70" y="55" width="150" height="80" rx="8" fill="#0f0f16" stroke="#f59e0b" stroke-width="1.5"/>
   <text x="145" y="78" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">GroupStore</text>
   <text x="145" y="96" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Members, capabilities</text>
-  <text x="145" y="112" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Contexts, visibility</text>
+  <text x="145" y="112" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Contexts, aliases</text>
 
   <rect x="250" y="55" width="150" height="80" rx="8" fill="#0f0f16" stroke="#8b5cf6" stroke-width="1.5"/>
   <text x="325" y="78" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">DagStore</text>
@@ -60,7 +60,7 @@
   <rect x="550" y="55" width="150" height="80" rx="8" fill="#0f0f16" stroke="#f59e0b" stroke-width="1.5"/>
   <text x="625" y="78" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">GroupStore</text>
   <text x="625" y="96" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Members, capabilities</text>
-  <text x="625" y="112" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Contexts, visibility</text>
+  <text x="625" y="112" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Contexts, aliases</text>
 
   <rect x="730" y="55" width="150" height="80" rx="8" fill="#0f0f16" stroke="#8b5cf6" stroke-width="1.5"/>
   <text x="805" y="78" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">DagStore</text>
@@ -97,7 +97,7 @@
   <!-- Group -->
   <rect x="310" y="18" width="320" height="68" rx="12" fill="#f59e0b10" stroke="#f59e0b" stroke-width="2"/>
   <text x="470" y="46" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="15" font-weight="700">Group</text>
-  <text x="470" y="68" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">admin &middot; members &middot; policies &middot; visibility</text>
+  <text x="470" y="68" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="10">admin &middot; members &middot; policies</text>
 
   <!-- Contexts -->
   <rect x="80" y="145" width="210" height="52" rx="8" fill="#3b82f610" stroke="#3b82f6" stroke-width="1.5"/>
@@ -147,28 +147,15 @@
 </div>
 <div>
 <h4>Admin Authority</h4>
-<p>Parent admins inherit <strong>structural</strong> governance over descendant groups: add/remove members, detach contexts, delete subgroups, set target application. However, parent admins do <strong>not</strong> inherit access control over Restricted contexts. Only <strong>direct</strong> group admins (or the context creator) can manage allowlists and change context visibility.</p>
+<p>Parent admins inherit <strong>structural</strong> governance over descendant groups: add/remove members, detach contexts, delete subgroups, set target application.</p>
 </div>
 </div>
 
-<h4 style="margin-top:16px;">Access Control for Restricted Contexts</h4>
-<div class="g3">
-<div class="cb">
-<h4>Joining</h4>
-<p>Admins and members alike must be on the allowlist. No admin bypass. An admin can add themselves to the allowlist (if they are a direct admin of the group), then join.</p>
-</div>
-<div class="cb">
-<h4>Allowlist Management</h4>
-<p>Only direct group admins or the context creator. Inherited parent admins cannot modify allowlists in child groups &mdash; this is a privacy boundary.</p>
-</div>
-<div class="cb">
-<h4>Visibility Changes</h4>
-<p>Only direct group admins or the context creator can change a context between Open and Restricted. Parent admins cannot flip Restricted to Open as a backdoor.</p>
-</div>
-</div>
+<h4 style="margin-top:16px;">Restricting Access via Subgroups</h4>
+<p>To restrict access to specific contexts, create a <strong>subgroup</strong> and register those contexts under it. Only members of that subgroup (direct or inherited from its parent) can join its contexts. This replaces the former per-context visibility/allowlist model with a simpler group-membership-based approach.</p>
 
 <p style="margin-top:12px;">Create a subgroup with <span class="code">--parent-group-id</span> on <span class="code">meroctl group create</span> or via the <span class="code">parentGroupId</span> field in the API. The <span class="code">SubgroupCreated</span> governance op is published on the parent group's gossip topic.</p>
-<p style="margin-top:8px;">When joining a parent group with <span class="code">auto_join</span>, the node subscribes to gossip topics and contexts in all descendant subgroups. <span class="code">MemberRemoved</span> cascades to descendant subgroup contexts (skipping child groups where the member has direct membership).</p>
+<p style="margin-top:8px;">When joining a parent group with <span class="code">auto_join</span> (default: true), the node subscribes to gossip topics and contexts in all descendant subgroups. <span class="code">MemberRemoved</span> cascades to descendant subgroup contexts (skipping child groups where the member has direct membership).</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
@@ -267,9 +254,6 @@
     <div class="fr"><div class="fp">TargetApplicationSet</div><div class="fd">Set target application for the group (admin or MANAGE_APPLICATION)</div></div>
     <div class="fr"><div class="fp">ContextRegistered</div><div class="fd">Bind a new context to the group (admin or CAN_CREATE_CONTEXT)</div></div>
     <div class="fr"><div class="fp">ContextDetached</div><div class="fd">Remove context from group (admin only)</div></div>
-    <div class="fr"><div class="fp">DefaultVisibilitySet</div><div class="fd">Set default visibility for new contexts (admin only)</div></div>
-    <div class="fr"><div class="fp">ContextVisibilitySet</div><div class="fd">Set context visibility: Open or Restricted (admin or context creator)</div></div>
-    <div class="fr"><div class="fp">ContextAllowlistReplaced</div><div class="fd">Replace per-context member allowlist (admin or context creator)</div></div>
     <div class="fr"><div class="fp">ContextAliasSet</div><div class="fd">Set human-readable context alias (admin or context creator)</div></div>
     <div class="fr"><div class="fp">MemberAliasSet</div><div class="fd">Set human-readable member alias (admin or self)</div></div>
     <div class="fr"><div class="fp">GroupAliasSet</div><div class="fd">Set human-readable group alias (admin only)</div></div>
@@ -278,7 +262,6 @@
     <div class="fr"><div class="fp">JoinWithInvitationClaim</div><div class="fd">Invitation-based group join (inviter must be admin or CAN_INVITE_MEMBERS)</div></div>
     <div class="fr"><div class="fp">ContextCapabilityGranted</div><div class="fd">Grant per-context capability to a member (admin or MANAGE_MEMBERS)</div></div>
     <div class="fr"><div class="fp">ContextCapabilityRevoked</div><div class="fd">Revoke per-context capability from a member (admin or MANAGE_MEMBERS)</div></div>
-    <div class="fr"><div class="fp">MemberJoinedViaContextInvitation</div><div class="fd">Join via context-level invitation (inviter must be admin or CAN_INVITE_MEMBERS)</div></div>
     <div class="fr"><div class="fp">SubgroupCreated</div><div class="fd">Link a child group under this group (admin only)</div></div>
     <div class="fr"><div class="fp">SubgroupRemoved</div><div class="fd">Unlink a child group from this group (admin only)</div></div>
   </div>
@@ -294,7 +277,7 @@
 <div class="card gb">
 <h2>Create Context Flow</h2>
 <div class="step"><div class="n">1</div><h4>Admin calls create_context</h4><p>API receives <span class="code">group_id</span> (or auto-creates group). Uses the node's namespace identity keypair (from the datastore) if no explicit secret provided.</p></div>
-<div class="step"><div class="n">2</div><h4>Handler signs GroupOps</h4><p>Emits a sequence: <span class="code">ContextRegistered</span> &rarr; <span class="code">ContextVisibilitySet</span> &rarr; optional <span class="code">ContextAliasSet</span>. Each is a <span class="code">SignedGroupOp</span> applied locally and published via gossip.</p></div>
+<div class="step"><div class="n">2</div><h4>Handler signs GroupOps</h4><p>Emits a sequence: <span class="code">ContextRegistered</span> &rarr; optional <span class="code">ContextAliasSet</span>. Each is a <span class="code">SignedGroupOp</span> applied locally and published via gossip.</p></div>
 <div class="step"><div class="n">3</div><h4>Local apply + OpLog</h4><p><span class="code">group_store::apply_local_signed_group_op</span> verifies signature, checks state_hash, updates KV rows, appends to op log, recomputes DAG heads.</p></div>
 <div class="step"><div class="n">4</div><h4>Gossip propagation</h4><p>Published on <span class="code">group/&lt;hex&gt;</span> topic. Remote nodes receive via <span class="code">SignedGroupOpV1</span> broadcast, verify, and apply the same ops.</p></div>
 </div>
@@ -310,9 +293,8 @@
 <!-- 6c. Join Context within Group -->
 <div class="card gc">
 <h2>Join Context (within Group)</h2>
-<div class="step"><div class="n">1</div><h4>Member calls join_group_context</h4><p>Must already be a group member. Handler checks context <strong>visibility</strong> (open vs restricted) and member <strong>capabilities</strong> (<span class="code">CAN_JOIN_OPEN_CONTEXTS</span>).</p></div>
-<div class="step"><div class="n">2</div><h4>Allowlist check (if restricted)</h4><p>For restricted-visibility contexts, the member's public key must be on the allowlist.</p></div>
-<div class="step"><div class="n">3</div><h4>Context identity created</h4><p>Adds local context membership. Context membership is implicit from group membership &mdash; no separate governance op is required.</p></div>
+<div class="step"><div class="n">1</div><h4>Member calls join_group_context</h4><p>Must already be a group member. Handler verifies group membership (simple check).</p></div>
+<div class="step"><div class="n">2</div><h4>Context identity created</h4><p>Adds local context membership. Context membership is implicit from group membership &mdash; no separate governance op is required.</p></div>
 </div>
 
 <!-- 6d. Member Removal Cascade -->
@@ -454,9 +436,9 @@
 <div class="fr"><div class="fp">node/src/sync/manager.rs</div><div class="fd">Responds to <span class="code">GroupDeltaRequest</span> by scanning op log and sending <span class="code">GroupDeltaResponse</span>.</div></div>
 
 <h3>Handlers</h3>
-<div class="fr"><div class="fp">context/src/handlers/create_context.rs</div><div class="fd">Emits ContextRegistered + VisibilitySet + optional alias as signed ops.</div></div>
+<div class="fr"><div class="fp">context/src/handlers/create_context.rs</div><div class="fd">Emits ContextRegistered + optional alias as signed ops.</div></div>
 <div class="fr"><div class="fp">context/src/handlers/join_group.rs</div><div class="fd">Invitation claim flow: validate <span class="code">SignedGroupOpenInvitation</span>, build reveal payload, submit <span class="code">JoinWithInvitationClaim</span>.</div></div>
-<div class="fr"><div class="fp">context/src/handlers/join_group_context.rs</div><div class="fd">Context membership with visibility/capability checks.</div></div>
+<div class="fr"><div class="fp">context/src/handlers/join_group_context.rs</div><div class="fd">Context membership with group membership check.</div></div>
 <div class="fr"><div class="fp">context/src/handlers/apply_signed_group_op.rs</div><div class="fd">DagStore integration: feeds op into DAG, handles pending/applied/error states.</div></div>
 <div class="fr"><div class="fp">context/src/handlers/upgrade_group.rs</div><div class="fd">Application upgrade propagation across group contexts.</div></div>
 
