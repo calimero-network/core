@@ -503,7 +503,7 @@ async fn create_context(
     drop(handle);
 
     node_client.subscribe(&context.id).await?;
-    node_client.subscribe_group(group_id.to_bytes()).await?;
+    node_client.subscribe_namespace(group_id.to_bytes()).await?;
 
     if let Some(ref alias_str) = alias {
         let sk = PrivateKey::from(*identity_secret);

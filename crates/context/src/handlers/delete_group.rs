@@ -87,7 +87,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                 )
                 .await?;
 
-                let _ = node_client.unsubscribe_group(group_id_bytes).await;
+                let _ = node_client.unsubscribe_namespace(group_id_bytes).await;
 
                 info!(?group_id, %requester, "group deleted");
 

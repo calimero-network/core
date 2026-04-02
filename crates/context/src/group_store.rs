@@ -848,19 +848,58 @@ pub fn sign_apply_local_group_op_borsh(
     })
 }
 
-/// Sign and apply a group governance op to the local store.
+/// Sign a group governance op, apply it locally, and publish it on the
+/// namespace topic as an encrypted `NamespaceOp::Group`.
 ///
-/// `node_client` is retained for call-site compatibility; legacy group-topic gossip
-/// replication variants were removed from the sync snapshot wire enum.
+/// This is the main entry point for all group mutations (add member,
+/// set capabilities, etc.) that need to reach other namespace members.
 pub async fn sign_apply_and_publish(
     store: &Store,
-    _node_client: &calimero_node_primitives::client::NodeClient,
+    node_client: &calimero_node_primitives::client::NodeClient,
     group_id: &ContextGroupId,
     signer_sk: &PrivateKey,
     op: GroupOp,
 ) -> EyreResult<()> {
-    let _output = sign_apply_local_group_op_borsh(store, group_id, signer_sk, op)?;
-    Ok(())
+    // Apply locally first.
+    let _output = sign_apply_local_group_op_borsh(store, group_id, signer_sk, op.clone())?;
+
+    // Resolve namespace and get sender_key for encryption.
+    let ns_id = resolve_namespace(store, group_id)?;
+    let ns_bytes = ns_id.to_bytes();
+
+    let ns_identity = get_namespace_identity(store, &ns_id)?;
+    let Some((_pk, ns_sk_bytes, _sender)) = ns_identity else {
+        tracing::debug!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            "no namespace identity, skipping namespace publish"
+        );
+        return Ok(());
+    };
+
+    // Look up the group sender_key for encryption.
+    let local_pk = calimero_primitives::identity::PrivateKey::from(ns_sk_bytes).public_key();
+    let sender_key_bytes = get_group_member_value(store, group_id, &local_pk)?
+        .and_then(|v| v.sender_key);
+
+    let ns_op = match sender_key_bytes {
+        Some(sk) => {
+            let encrypted = encrypt_group_op(&sk, &op)?;
+            NamespaceOp::Group {
+                group_id: group_id.to_bytes(),
+                encrypted,
+            }
+        }
+        None => {
+            tracing::debug!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                "no sender_key for group, skipping namespace publish"
+            );
+            return Ok(());
+        }
+    };
+
+    let ns_sk = calimero_primitives::identity::PrivateKey::from(ns_sk_bytes);
+    sign_apply_and_publish_namespace_op(store, node_client, ns_bytes, &ns_sk, ns_op).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1221,14 +1260,11 @@ fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreRe
                 );
             }
 
-            // 4. Check expiration.
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            if inv.expiration_timestamp != 0 && now > inv.expiration_timestamp {
-                bail!("invitation expired");
-            }
+            // 4. Expiration is NOT checked at apply time. In a DAG-replicated
+            //    system, nodes process the same op at different wall-clock times.
+            //    Checking here would cause divergence (node A accepts before
+            //    expiry, node B rejects during backfill after expiry).
+            //    Expiration is enforced at submission time in the join_group handler.
 
             // 5. Check not already a member.
             if check_group_membership(store, &group_id, member)? {

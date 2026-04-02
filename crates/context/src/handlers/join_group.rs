@@ -25,6 +25,19 @@ impl Handler<JoinGroupRequest> for ContextManager {
     ) -> Self::Result {
         let group_id = invitation.invitation.group_id;
         let invited_role = invitation.invitation.invited_role;
+        let expiration = invitation.invitation.expiration_timestamp;
+
+        // Check expiration at submission time (NOT at apply time — see
+        // apply_root_op comment for why DAG-apply-time checks cause divergence).
+        if expiration != 0 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now > expiration {
+                return ActorResponse::reply(Err(eyre::eyre!("invitation expired")));
+            }
+        }
 
         let (ns_id, joiner_identity, sk_bytes, _sender) =
             match self.get_or_create_namespace_identity(&group_id) {
@@ -46,8 +59,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
             async move {
                 // 1. Subscribe to namespace topic — mesh already has existing members.
                 let _ = node_client.subscribe_namespace(namespace_id).await;
-                // Also subscribe to old group topic for backward compat during migration.
-                let _ = node_client.subscribe_group(group_id.to_bytes()).await;
 
                 // 2. Poll for group metadata to arrive via gossip.
                 let mut meta_found = false;

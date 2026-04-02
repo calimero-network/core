@@ -129,7 +129,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
                 // In the namespace model, group hierarchy is tracked in the
                 // namespace DAG (RootOp::GroupCreated), not via parent refs.
-                let _ = node_client.subscribe_group(group_id.to_bytes()).await;
+                let _ = node_client.subscribe_namespace(group_id.to_bytes()).await;
 
                 info!(?group_id, ?parent_group_id, %admin_identity, "group created");
 
