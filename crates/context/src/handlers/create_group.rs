@@ -127,27 +127,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     group_store::set_group_alias(&datastore, &group_id, alias_str)?;
                 }
 
-                if let Some(ref parent_id) = parent_group_id {
-                    group_store::set_parent_group(&datastore, &group_id, parent_id)?;
-
-                    if let Some(ref sk) = signing_key {
-                        use calimero_context_primitives::local_governance::GroupOp;
-                        use calimero_primitives::identity::PrivateKey;
-
-                        let _ = group_store::sign_apply_and_publish(
-                            &datastore,
-                            &node_client,
-                            parent_id,
-                            &PrivateKey::from(*sk),
-                            GroupOp::SubgroupCreated {
-                                child_group_id: group_id.to_bytes(),
-                            },
-                        )
-                        .await;
-                    }
-                }
-
-                let _ = node_client.subscribe_group(group_id.to_bytes()).await;
+                // In the namespace model, group hierarchy is tracked in the
+                // namespace DAG (RootOp::GroupCreated), not via parent refs.
+                let _ = node_client.subscribe_namespace(group_id.to_bytes()).await;
 
                 info!(?group_id, ?parent_group_id, %admin_identity, "group created");
 

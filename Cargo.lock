@@ -1227,6 +1227,7 @@ dependencies = [
  "bs58 0.5.1",
  "calimero-context-config",
  "calimero-context-primitives",
+ "calimero-crypto",
  "calimero-dag",
  "calimero-node-primitives",
  "calimero-prelude",

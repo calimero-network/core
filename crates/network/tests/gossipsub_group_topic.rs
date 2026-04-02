@@ -1,7 +1,8 @@
 //! Gossipsub delivery between two Calimero swarms on a `group/<hex>` topic (same shape as local group governance).
 //!
 //! Exercises real libp2p + production [`calimero_network::behaviour::Behaviour`]. End-to-end store convergence for
-//! `SignedGroupOpV1` remains in `calimero-context` (`tests/local_group_governance_convergence.rs`).
+//! Store-level group governance convergence is covered in `calimero-context`
+//! (`tests/local_group_governance_convergence.rs`).
 
 use core::time::Duration;
 

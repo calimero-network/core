@@ -8,7 +8,7 @@ use std::sync::Arc;
 use actix::{Actor, ActorFutureExt, AsyncContext, WrapFuture};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::local_governance::SignedGroupOp;
+use calimero_context_primitives::local_governance::SignedNamespaceOp;
 use calimero_dag::DagStore;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
@@ -79,14 +79,10 @@ pub struct ContextManager {
     /// existing one is still active (e.g. sleeping in its backoff delay).
     active_propagators: HashSet<ContextGroupId>,
 
-    /// Per-group governance DAG. Tracks causal ordering of signed group ops,
-    /// with a pending queue for out-of-order delivery.
-    group_dags: HashMap<ContextGroupId, Arc<tokio::sync::Mutex<DagStore<SignedGroupOp>>>>,
-    //
-    // todo! when runtime let's us compile blobs separate from its
-    // todo! execution, we can introduce a cached::TimedSizedCache
-    // runtimes: TimedSizedCache<Exclusive<calimero_runtime::Engine>>,
-    //
+    /// Per-namespace governance DAG. Single DAG per namespace containing both
+    /// root ops and encrypted group-scoped ops.
+    namespace_dags:
+        HashMap<[u8; 32], Arc<tokio::sync::Mutex<DagStore<SignedNamespaceOp>>>>,
 }
 
 /// Creates a new `ContextManager`.
@@ -114,7 +110,7 @@ impl ContextManager {
 
             metrics: prometheus_registry.map(Metrics::new),
             active_propagators: HashSet::new(),
-            group_dags: HashMap::new(),
+            namespace_dags: HashMap::new(),
         }
     }
 
@@ -150,12 +146,12 @@ impl ContextManager {
 }
 
 impl ContextManager {
-    fn get_or_create_group_dag(
+    fn get_or_create_namespace_dag(
         &mut self,
-        group_id: &ContextGroupId,
-    ) -> Arc<tokio::sync::Mutex<DagStore<SignedGroupOp>>> {
-        self.group_dags
-            .entry(*group_id)
+        namespace_id: &[u8; 32],
+    ) -> Arc<tokio::sync::Mutex<DagStore<SignedNamespaceOp>>> {
+        self.namespace_dags
+            .entry(*namespace_id)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(DagStore::new([0u8; 32]))))
             .clone()
     }
@@ -171,8 +167,7 @@ impl Actor for ContextManager {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         self.recover_in_progress_upgrades(ctx);
-        self.reload_group_dags();
-        self.start_group_heartbeat(ctx);
+        self.start_namespace_heartbeat(ctx);
     }
 }
 
@@ -261,70 +256,7 @@ impl ContextManager {
         }
     }
 
-    /// Reloads persisted group ops into per-group DAGs so the pending queue
-    /// can correctly track causal parents for newly arriving deltas.
-    fn reload_group_dags(&mut self) {
-        let groups = match group_store::enumerate_all_groups(&self.datastore, 0, usize::MAX) {
-            Ok(g) => g,
-            Err(err) => {
-                tracing::error!(%err, "failed to enumerate groups for DAG reload");
-                return;
-            }
-        };
-
-        for (group_id_bytes, _meta) in &groups {
-            let group_id = ContextGroupId::from(*group_id_bytes);
-            let entries =
-                match group_store::read_op_log_after(&self.datastore, &group_id, 0, usize::MAX) {
-                    Ok(e) => e,
-                    Err(err) => {
-                        tracing::warn!(
-                            group_id = %hex::encode(group_id_bytes),
-                            %err,
-                            "failed to read op log for group DAG reload"
-                        );
-                        continue;
-                    }
-                };
-
-            if entries.is_empty() {
-                continue;
-            }
-
-            let dag = self.get_or_create_group_dag(&group_id);
-            let mut dag_guard = dag.try_lock().expect("DAG lock uncontended at startup");
-
-            for (_seq, op_bytes) in &entries {
-                let op: SignedGroupOp = match borsh::from_slice(op_bytes) {
-                    Ok(op) => op,
-                    Err(err) => {
-                        tracing::warn!(%err, "failed to decode persisted group op, skipping");
-                        continue;
-                    }
-                };
-                let delta = match governance_dag::signed_op_to_delta(&op) {
-                    Ok(d) => d,
-                    Err(err) => {
-                        tracing::warn!(
-                            %err,
-                            "failed to create delta from persisted op, skipping"
-                        );
-                        continue;
-                    }
-                };
-                dag_guard.restore_applied_delta(delta);
-            }
-
-            tracing::info!(
-                group_id = %hex::encode(group_id_bytes),
-                ops = entries.len(),
-                heads = dag_guard.get_heads().len(),
-                "reloaded group governance DAG"
-            );
-        }
-    }
-
-    fn start_group_heartbeat(&self, ctx: &mut actix::Context<Self>) {
+    fn start_namespace_heartbeat(&self, ctx: &mut actix::Context<Self>) {
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
 
@@ -338,16 +270,23 @@ impl ContextManager {
                     Err(_) => return,
                 };
 
-                for (group_id_bytes, _meta) in groups {
-                    let gid = ContextGroupId::from(group_id_bytes);
-                    let head = match group_store::get_op_head(&datastore, &gid) {
-                        Ok(Some(h)) => h,
-                        _ => continue,
-                    };
-
-                    let _ = node_client
-                        .publish_group_heartbeat(group_id_bytes, head.dag_heads, 0)
-                        .await;
+                // Collect unique namespaces from all groups.
+                let mut seen_ns = std::collections::HashSet::new();
+                for (group_id_bytes, _meta) in &groups {
+                    let gid = ContextGroupId::from(*group_id_bytes);
+                    if let Ok(ns_id) = group_store::resolve_namespace(&datastore, &gid) {
+                        let ns_bytes = ns_id.to_bytes();
+                        if !seen_ns.insert(ns_bytes) {
+                            continue;
+                        }
+                        let handle = datastore.handle();
+                        let ns_key = calimero_store::key::NamespaceGovHead::new(ns_bytes);
+                        if let Ok(Some(head)) = handle.get(&ns_key) {
+                            let _ = node_client
+                                .publish_namespace_heartbeat(ns_bytes, head.dag_heads)
+                                .await;
+                        }
+                    }
                 }
             });
         });

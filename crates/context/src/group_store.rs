@@ -1,6 +1,4 @@
-use calimero_context_config::types::{
-    ContextGroupId, GroupRevealPayloadData, SignedGroupOpenInvitation, SignerId,
-};
+use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -9,13 +7,13 @@ use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupChildIndex, GroupContextAlias,
     GroupContextIndex, GroupContextLastMigration, GroupContextLastMigrationValue,
     GroupContextMemberCap, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
-    GroupDefaultVisValue, GroupInvitationCommitment, GroupInvitationCommitmentValue,
+    GroupDefaultVisValue,
     GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMemberContext, GroupMemberValue, GroupMeta, GroupMetaValue,
     GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupSigningKey,
     GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
-    NamespaceIdentity, NamespaceIdentityValue, GROUP_CHILD_INDEX_PREFIX,
-    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_MEMBER_ALIAS_PREFIX,
+    NamespaceIdentity, NamespaceIdentityValue, GROUP_CONTEXT_INDEX_PREFIX,
+    GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_MEMBER_ALIAS_PREFIX,
     GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_PREFIX,
     GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
@@ -115,85 +113,30 @@ pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> Eyr
     Ok(hasher.finalize().into())
 }
 
-/// Compute a single hash covering the governance DAG heads of the entire
-/// group ancestry chain for a given context.
+/// Namespace governance epoch: just the namespace DAG heads.
 ///
-/// Walks from the context's owning group up through parent groups (max 16
-/// levels) and hashes all DAG heads together.  Two nodes with identical
-/// governance state across the whole chain will produce the same hash.
-///
-/// Returns `[0u8; 32]` if the context has no owning group or no governance
-/// state, so callers can cheaply detect "no governance".
-pub fn compute_governance_ancestry_hash(
+/// With the single-DAG model, governance epoch is simply the heads of
+/// the namespace DAG that contains this context's group.
+pub fn compute_namespace_governance_epoch(
     store: &Store,
     context_id: &ContextId,
-) -> EyreResult<[u8; 32]> {
+) -> EyreResult<Vec<[u8; 32]>> {
     let Some(owning_gid) = get_group_for_context(store, context_id)? else {
-        return Ok([0u8; 32]);
+        return Ok(vec![]);
     };
 
-    let mut hasher = Sha256::new();
-    let mut current = Some(owning_gid);
-    let mut depth = 0u8;
-    let mut any_heads = false;
-
-    while let Some(gid) = current {
-        if depth >= MAX_SUBGROUP_DEPTH as u8 {
-            break;
+    let ns_id = resolve_namespace(store, &owning_gid)?;
+    let ns_key = calimero_store::key::NamespaceGovHead::new(ns_id.to_bytes());
+    let handle = store.handle();
+    match handle.get(&ns_key)? {
+        Some(head) => Ok(head.dag_heads),
+        None => {
+            // Fall back to the old per-group DAG heads during migration.
+            get_op_head(store, &owning_gid)?
+                .map(|h| Ok(h.dag_heads))
+                .unwrap_or_else(|| Ok(vec![]))
         }
-
-        if let Some(head) = get_op_head(store, &gid)? {
-            hasher.update(gid.to_bytes());
-            let mut heads = head.dag_heads;
-            heads.sort();
-            for h in &heads {
-                hasher.update(h);
-            }
-            any_heads = true;
-        }
-
-        current = get_parent_group(store, &gid)?;
-        depth += 1;
     }
-
-    if !any_heads {
-        return Ok([0u8; 32]);
-    }
-
-    Ok(hasher.finalize().into())
-}
-
-/// Walk the ancestry chain for a context and return per-group DAG heads.
-///
-/// Used by the catch-up logic to determine which specific group(s) are
-/// behind when the ancestry hash doesn't match.
-pub fn collect_governance_ancestry_heads(
-    store: &Store,
-    context_id: &ContextId,
-) -> EyreResult<Vec<(ContextGroupId, Vec<[u8; 32]>)>> {
-    let Some(owning_gid) = get_group_for_context(store, context_id)? else {
-        return Ok(Vec::new());
-    };
-
-    let mut result = Vec::new();
-    let mut current = Some(owning_gid);
-    let mut depth = 0u8;
-
-    while let Some(gid) = current {
-        if depth >= MAX_SUBGROUP_DEPTH as u8 {
-            break;
-        }
-
-        let heads = get_op_head(store, &gid)?
-            .map(|h| h.dag_heads)
-            .unwrap_or_default();
-        result.push((gid, heads));
-
-        current = get_parent_group(store, &gid)?;
-        depth += 1;
-    }
-
-    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -526,65 +469,6 @@ fn ensure_not_last_admin_demotion(
     bail!("cannot demote the last admin of the group");
 }
 
-fn apply_join_with_invitation_claim(
-    store: &Store,
-    group_id: &ContextGroupId,
-    joiner: &PublicKey,
-    signed_invitation: &SignedGroupOpenInvitation,
-    invitee_signature_hex: &str,
-) -> EyreResult<()> {
-    let inv = &signed_invitation.invitation;
-    if inv.group_id != *group_id {
-        bail!("invitation group_id does not match operation");
-    }
-    let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
-    if !is_group_admin_or_has_capability(
-        store,
-        group_id,
-        &inviter_pk,
-        MemberCapabilities::CAN_INVITE_MEMBERS,
-    )? {
-        bail!("inviter lacks permission (not admin and missing CAN_INVITE_MEMBERS)");
-    }
-
-    let inv_bytes = borsh::to_vec(inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;
-    let inv_hash = Sha256::digest(&inv_bytes);
-    let inv_sig_hex = signed_invitation.inviter_signature.trim_start_matches("0x");
-    let inv_sig =
-        hex::decode(inv_sig_hex).map_err(|e| eyre::eyre!("inviter signature hex: {e}"))?;
-    let inv_sig_bytes: [u8; 64] = inv_sig
-        .try_into()
-        .map_err(|_| eyre::eyre!("inviter signature must be 64 bytes"))?;
-    inviter_pk
-        .verify_raw_signature(&inv_hash, &inv_sig_bytes)
-        .map_err(|e| eyre::eyre!("inviter signature verification failed: {e}"))?;
-
-    let reveal = GroupRevealPayloadData {
-        signed_open_invitation: signed_invitation.clone(),
-        new_member_identity: SignerId::from(*joiner.digest()),
-    };
-    let reveal_bytes = borsh::to_vec(&reveal).map_err(|e| eyre::eyre!("borsh: {e}"))?;
-    let reveal_hash = Sha256::digest(&reveal_bytes);
-    let join_hex = invitee_signature_hex.trim_start_matches("0x");
-    let join_sig = hex::decode(join_hex).map_err(|e| eyre::eyre!("invitee signature hex: {e}"))?;
-    let join_sig_bytes: [u8; 64] = join_sig
-        .try_into()
-        .map_err(|_| eyre::eyre!("invitee signature must be 64 bytes"))?;
-    joiner
-        .verify_raw_signature(&reveal_hash, &join_sig_bytes)
-        .map_err(|e| eyre::eyre!("invitee signature verification failed: {e}"))?;
-
-    // Verify and consume the pre-committed invitation hash (commit-reveal).
-    let commitment_hash: [u8; 32] = Sha256::digest(&inv_bytes).into();
-    check_and_consume_commitment(store, group_id, &commitment_hash)?;
-
-    if check_group_membership(store, group_id, joiner)? {
-        bail!("identity is already a member of this group");
-    }
-    add_group_member(store, group_id, joiner, GroupMemberRole::Member)?;
-    Ok(())
-}
-
 /// Maximum number of parent hashes allowed in a single [`SignedGroupOp`].
 /// Chosen to allow realistic merge breadth (multi-admin concurrent ops) while
 /// bounding memory/CPU cost during signature verification and storage.
@@ -791,31 +675,6 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             meta.migration = migration.clone();
             save_group_meta(store, &group_id, &meta)?;
         }
-        GroupOp::InvitationCommitted {
-            commitment_hash,
-            expiration_timestamp,
-        } => {
-            require_group_admin_or_capability(
-                store,
-                &group_id,
-                &op.signer,
-                MemberCapabilities::CAN_INVITE_MEMBERS,
-                "commit invitation",
-            )?;
-            store_invitation_commitment(store, &group_id, commitment_hash, *expiration_timestamp)?;
-        }
-        GroupOp::JoinWithInvitationClaim {
-            signed_invitation,
-            invitee_signature_hex,
-        } => {
-            apply_join_with_invitation_claim(
-                store,
-                &group_id,
-                &op.signer,
-                signed_invitation,
-                invitee_signature_hex,
-            )?;
-        }
         GroupOp::ContextCapabilityGranted {
             context_id,
             member,
@@ -859,19 +718,6 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 member,
                 current & !capability,
             )?;
-        }
-        GroupOp::SubgroupCreated { child_group_id } => {
-            require_group_admin(store, &group_id, &op.signer)?;
-            let child_gid = ContextGroupId::from(*child_group_id);
-            set_parent_group(store, &child_gid, &group_id)?;
-        }
-        GroupOp::SubgroupRemoved { child_group_id } => {
-            require_group_admin(store, &group_id, &op.signer)?;
-            let child_gid = ContextGroupId::from(*child_group_id);
-            if get_parent_group(store, &child_gid)?.as_ref() != Some(&group_id) {
-                bail!("child group is not a subgroup of this group");
-            }
-            remove_parent_group(store, &child_gid)?;
         }
         GroupOp::TeeAdmissionPolicySet { .. } => {
             require_group_admin(store, &group_id, &op.signer)?;
@@ -966,8 +812,7 @@ pub struct SignedOpOutput {
 }
 
 /// Sign the next monotonic [`SignedGroupOp`] for `signer_sk`, apply via [`apply_local_signed_group_op`],
-/// and return a [`SignedOpOutput`] for
-/// [`calimero_node_primitives::client::NodeClient::publish_signed_group_op`].
+/// and return a [`SignedOpOutput`] with serialized bytes and DAG metadata for callers.
 pub fn sign_apply_local_group_op_borsh(
     store: &Store,
     group_id: &ContextGroupId,
@@ -1003,9 +848,11 @@ pub fn sign_apply_local_group_op_borsh(
     })
 }
 
-/// Sign, apply locally, and publish a group op to the network in one step.
+/// Sign a group governance op, apply it locally, and publish it on the
+/// namespace topic as an encrypted `NamespaceOp::Group`.
 ///
-/// Combines [`sign_apply_local_group_op_borsh`] + [`calimero_node_primitives::client::NodeClient::publish_signed_group_op`].
+/// This is the main entry point for all group mutations (add member,
+/// set capabilities, etc.) that need to reach other namespace members.
 pub async fn sign_apply_and_publish(
     store: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
@@ -1013,15 +860,622 @@ pub async fn sign_apply_and_publish(
     signer_sk: &PrivateKey,
     op: GroupOp,
 ) -> EyreResult<()> {
-    let output = sign_apply_local_group_op_borsh(store, group_id, signer_sk, op)?;
+    // Apply locally first.
+    let _output = sign_apply_local_group_op_borsh(store, group_id, signer_sk, op.clone())?;
+
+    // Resolve namespace and get sender_key for encryption.
+    let ns_id = resolve_namespace(store, group_id)?;
+    let ns_bytes = ns_id.to_bytes();
+
+    let ns_identity = get_namespace_identity(store, &ns_id)?;
+    let Some((_pk, ns_sk_bytes, _sender)) = ns_identity else {
+        tracing::debug!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            "no namespace identity, skipping namespace publish"
+        );
+        return Ok(());
+    };
+
+    // Look up the group sender_key for encryption.
+    let local_pk = calimero_primitives::identity::PrivateKey::from(ns_sk_bytes).public_key();
+    let sender_key_bytes = get_group_member_value(store, group_id, &local_pk)?
+        .and_then(|v| v.sender_key);
+
+    let ns_op = match sender_key_bytes {
+        Some(sk) => {
+            let encrypted = encrypt_group_op(&sk, &op)?;
+            NamespaceOp::Group {
+                group_id: group_id.to_bytes(),
+                encrypted,
+            }
+        }
+        None => {
+            tracing::debug!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                "no sender_key for group, skipping namespace publish"
+            );
+            return Ok(());
+        }
+    };
+
+    // Sign and publish the namespace op WITHOUT re-applying locally
+    // (we already applied the GroupOp above via sign_apply_local_group_op_borsh).
+    let ns_sk = calimero_primitives::identity::PrivateKey::from(ns_sk_bytes);
+
+    let ns_head_key = calimero_store::key::NamespaceGovHead::new(ns_bytes);
+    let handle = store.handle();
+    let head = handle.get(&ns_head_key)?;
+    drop(handle);
+
+    let parent_hashes = head.as_ref().map(|h| h.dag_heads.clone()).unwrap_or_default();
+    let nonce = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
+
+    let signed = SignedNamespaceOp::sign(&ns_sk, ns_bytes, parent_hashes, [0u8; 32], nonce, ns_op)?;
+    let delta_id = signed.content_hash().map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    let parent_ids = signed.parent_op_hashes.clone();
+
+    // Store the op for backfill but DON'T re-apply via apply_signed_namespace_op.
+    store_namespace_gov_op(store, &signed)?;
+
+    // Update namespace DAG head.
+    let mut new_heads: Vec<[u8; 32]> = head
+        .map(|h| h.dag_heads)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|h| !parent_ids.contains(h))
+        .collect();
+    new_heads.push(delta_id);
+
+    let mut wh = store.handle();
+    wh.put(
+        &calimero_store::key::NamespaceGovHead::new(ns_bytes),
+        &calimero_store::key::NamespaceGovHeadValue {
+            sequence: nonce,
+            dag_heads: new_heads,
+        },
+    )?;
+    drop(wh);
+
+    let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
     node_client
-        .publish_signed_group_op(
-            group_id.to_bytes(),
-            output.delta_id,
-            output.parent_ids,
-            output.bytes,
-        )
+        .publish_signed_namespace_op(ns_bytes, delta_id, parent_ids, bytes)
         .await
+}
+
+// ---------------------------------------------------------------------------
+// Namespace governance ops (Phase 2)
+// ---------------------------------------------------------------------------
+
+use calimero_context_primitives::local_governance::{
+    EncryptedGroupOp, NamespaceOp, OpaqueSkeleton, RootOp, SignedNamespaceOp,
+};
+
+/// Encrypt a [`GroupOp`] with the group's sender key to produce an
+/// [`EncryptedGroupOp`] for inclusion in a [`NamespaceOp::Group`].
+pub fn encrypt_group_op(
+    sender_key_bytes: &[u8; 32],
+    op: &GroupOp,
+) -> EyreResult<EncryptedGroupOp> {
+    use calimero_crypto::SharedKey;
+
+    let plaintext = borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh encode GroupOp: {e}"))?;
+    let sk = calimero_primitives::identity::PrivateKey::from(*sender_key_bytes);
+    let shared_key = SharedKey::from_sk(&sk);
+
+    let nonce: [u8; 12] = {
+        use rand::Rng;
+        rand::thread_rng().gen()
+    };
+
+    let ciphertext = shared_key
+        .encrypt(plaintext, nonce)
+        .ok_or_else(|| eyre::eyre!("AES-GCM encryption failed"))?;
+
+    Ok(EncryptedGroupOp { nonce, ciphertext })
+}
+
+/// Apply a [`SignedNamespaceOp`] to the local store.
+///
+/// - `RootOp` variants are applied in cleartext (group creation/deletion, admin changes).
+/// - `Group { .. }` variants: if we hold the group's sender key we decrypt
+///   and delegate to the existing group-op logic; otherwise we store an
+///   [`OpaqueSkeleton`].
+pub fn apply_signed_namespace_op(store: &Store, op: &SignedNamespaceOp) -> EyreResult<()> {
+    op.verify_signature()
+        .map_err(|e| eyre::eyre!("signed namespace op: {e}"))?;
+
+    match &op.op {
+        NamespaceOp::Root(root) => apply_root_op(store, op, root)?,
+        NamespaceOp::Group {
+            group_id,
+            encrypted,
+        } => {
+            let group_id_typed = ContextGroupId::from(*group_id);
+
+            let ns_id = ContextGroupId::from(op.namespace_id);
+            let sender_key_bytes = get_namespace_identity(store, &ns_id)?
+                .and_then(|(local_pk, _, _)| {
+                    get_group_member_value(store, &group_id_typed, &local_pk)
+                        .ok()
+                        .flatten()
+                })
+                .and_then(|member_val| member_val.sender_key);
+
+            match sender_key_bytes {
+                Some(sk_bytes) => {
+                    decrypt_and_apply_group_op(store, op, &group_id_typed, &sk_bytes, encrypted)?;
+                }
+                None => {
+                    store_namespace_gov_op(store, op)?;
+                }
+            }
+        }
+    }
+
+    // Update namespace DAG heads so receiving nodes track divergence.
+    let delta_id = op
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    let ns_head_key = calimero_store::key::NamespaceGovHead::new(op.namespace_id);
+    let handle = store.handle();
+    let head = handle.get(&ns_head_key)?;
+    drop(handle);
+
+    let parent_set: std::collections::HashSet<[u8; 32]> =
+        op.parent_op_hashes.iter().copied().collect();
+    let mut new_heads: Vec<[u8; 32]> = head
+        .as_ref()
+        .map(|h| h.dag_heads.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|h| !parent_set.contains(h))
+        .collect();
+    new_heads.push(delta_id);
+
+    let seq = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
+    let mut wh = store.handle();
+    wh.put(
+        &ns_head_key,
+        &calimero_store::key::NamespaceGovHeadValue {
+            sequence: seq,
+            dag_heads: new_heads,
+        },
+    )?;
+
+    // Persist the op for backfill.
+    store_namespace_gov_op(store, op)?;
+
+    Ok(())
+}
+
+/// Decrypt an [`EncryptedGroupOp`] and apply the inner [`GroupOp`] via the
+/// existing group governance logic, then persist the op in the namespace
+/// governance log.
+fn decrypt_and_apply_group_op(
+    store: &Store,
+    ns_op: &SignedNamespaceOp,
+    group_id: &ContextGroupId,
+    sender_key_bytes: &[u8; 32],
+    encrypted: &calimero_context_primitives::local_governance::EncryptedGroupOp,
+) -> EyreResult<()> {
+    use calimero_context_primitives::local_governance::GroupOp;
+    use calimero_crypto::SharedKey;
+
+    let sk = calimero_primitives::identity::PrivateKey::from(*sender_key_bytes);
+    let shared_key = SharedKey::from_sk(&sk);
+
+    let plaintext = shared_key
+        .decrypt(encrypted.ciphertext.clone(), encrypted.nonce)
+        .ok_or_else(|| eyre::eyre!("failed to decrypt group op (bad sender_key or corrupt)"))?;
+
+    let inner_op: GroupOp =
+        borsh::from_slice(&plaintext).map_err(|e| eyre::eyre!("borsh decode inner GroupOp: {e}"))?;
+
+    // Build a synthetic SignedGroupOp so the existing apply path works.
+    // The signature was already verified on the outer SignedNamespaceOp.
+    let signed_group_op = calimero_context_primitives::local_governance::SignedGroupOp {
+        version: calimero_context_primitives::local_governance::SIGNED_GROUP_OP_SCHEMA_VERSION,
+        group_id: group_id.to_bytes(),
+        parent_op_hashes: ns_op.parent_op_hashes.clone(),
+        state_hash: ns_op.state_hash,
+        signer: ns_op.signer,
+        nonce: ns_op.nonce,
+        op: inner_op,
+        signature: ns_op.signature,
+    };
+
+    // Apply using the existing group governance logic. We skip signature
+    // verification inside apply_local_signed_group_op because the version
+    // field won't match (it's a namespace op version, not group). Instead
+    // we apply the inner mutation directly.
+    apply_group_op_inner(store, group_id, &ns_op.signer, ns_op.nonce, &signed_group_op.op)?;
+
+    // Also store the full op in the namespace gov log for persistence.
+    store_namespace_gov_op(store, ns_op)?;
+
+    Ok(())
+}
+
+/// Apply a `GroupOp` mutation to the store, extracted from
+/// `apply_local_signed_group_op` but without re-verifying the signature
+/// (already verified on the outer `SignedNamespaceOp`).
+fn apply_group_op_inner(
+    store: &Store,
+    group_id: &ContextGroupId,
+    signer: &PublicKey,
+    nonce: u64,
+    op: &calimero_context_primitives::local_governance::GroupOp,
+) -> EyreResult<()> {
+    use calimero_context_config::MemberCapabilities;
+    use calimero_context_primitives::local_governance::GroupOp;
+
+    let last = get_local_gov_nonce(store, group_id, signer)?.unwrap_or(0);
+    if nonce <= last {
+        tracing::debug!(
+            nonce,
+            last_nonce = last,
+            signer = %signer,
+            "ignoring namespace group op with already-processed nonce"
+        );
+        return Ok(());
+    }
+
+    match op {
+        GroupOp::Noop => {}
+        GroupOp::MemberAdded { member, role } => {
+            require_group_admin_or_capability(
+                store,
+                group_id,
+                signer,
+                MemberCapabilities::MANAGE_MEMBERS,
+                "add member",
+            )?;
+            if *role == calimero_primitives::context::GroupMemberRole::Admin
+                && !is_group_admin(store, group_id, signer)?
+            {
+                bail!("only admins can add new admins");
+            }
+            add_group_member(store, group_id, member, role.clone())?;
+        }
+        GroupOp::MemberRemoved { member } => {
+            require_group_admin_or_capability(
+                store,
+                group_id,
+                signer,
+                MemberCapabilities::MANAGE_MEMBERS,
+                "remove member",
+            )?;
+            if is_group_admin(store, group_id, member)?
+                && !is_group_admin(store, group_id, signer)?
+            {
+                bail!("only admins can remove other admins");
+            }
+            ensure_not_last_admin_removal(store, group_id, member)?;
+            cascade_remove_member_from_group_tree(store, group_id, member)?;
+            remove_group_member(store, group_id, member)?;
+        }
+        GroupOp::MemberRoleSet { member, role } => {
+            require_group_admin(store, group_id, signer)?;
+            ensure_not_last_admin_demotion(store, group_id, member, role)?;
+            add_group_member(store, group_id, member, role.clone())?;
+        }
+        GroupOp::ContextRegistered { context_id } => {
+            if !is_group_admin_or_has_capability(
+                store,
+                group_id,
+                signer,
+                MemberCapabilities::CAN_CREATE_CONTEXT,
+            )? {
+                bail!("only group admin or members with CAN_CREATE_CONTEXT can register a context");
+            }
+            register_context_in_group(store, group_id, context_id)?;
+        }
+        GroupOp::ContextDetached { context_id } => {
+            require_group_admin(store, group_id, signer)?;
+            match get_group_for_context(store, context_id)? {
+                Some(g) if g == *group_id => {
+                    unregister_context_from_group(store, group_id, context_id)?;
+                }
+                Some(_) => bail!("context is registered to a different group"),
+                None => bail!("context is not registered in any group"),
+            }
+        }
+        _ => {
+            tracing::debug!(
+                ?op,
+                "namespace group op variant not handled by inner apply, stored as skeleton"
+            );
+        }
+    }
+
+    set_local_gov_nonce(store, group_id, signer, nonce)?;
+
+    Ok(())
+}
+
+/// Check that the signer is an admin of the namespace (root group).
+fn require_namespace_admin(store: &Store, namespace_id: [u8; 32], signer: &PublicKey) -> EyreResult<()> {
+    let ns_gid = ContextGroupId::from(namespace_id);
+    if !is_group_admin(store, &ns_gid, signer)? {
+        bail!(
+            "signer {} is not an admin of namespace {}",
+            signer,
+            hex::encode(namespace_id)
+        );
+    }
+    Ok(())
+}
+
+/// Apply a cleartext root operation to the store.
+fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreResult<()> {
+    match root {
+        RootOp::GroupCreated { group_id } => {
+            require_namespace_admin(store, op.namespace_id, &op.signer)?;
+            let gid = ContextGroupId::from(*group_id);
+            if load_group_meta(store, &gid)?.is_some() {
+                tracing::debug!(
+                    group_id = %hex::encode(group_id),
+                    "group already exists, ignoring GroupCreated"
+                );
+                return Ok(());
+            }
+            let meta = GroupMetaValue {
+                admin_identity: op.signer,
+                target_application_id: calimero_primitives::application::ApplicationId::from([0u8; 32]),
+                app_key: [0u8; 32],
+                upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
+                migration: None,
+                created_at: 0,
+                auto_join: false,
+            };
+            save_group_meta(store, &gid, &meta)?;
+            Ok(())
+        }
+        RootOp::GroupDeleted { group_id } => {
+            require_namespace_admin(store, op.namespace_id, &op.signer)?;
+            let gid = ContextGroupId::from(*group_id);
+            if count_group_contexts(store, &gid)? > 0 {
+                bail!("cannot delete group: contexts still registered");
+            }
+            delete_group_meta(store, &gid)?;
+            Ok(())
+        }
+        RootOp::AdminChanged { new_admin } => {
+            require_namespace_admin(store, op.namespace_id, &op.signer)?;
+            let ns_id = op.namespace_id;
+            let ns_gid = ContextGroupId::from(ns_id);
+            let mut meta = load_group_meta(store, &ns_gid)?
+                .ok_or_else(|| eyre::eyre!("namespace root group not found"))?;
+            meta.admin_identity = *new_admin;
+            save_group_meta(store, &ns_gid, &meta)?;
+            Ok(())
+        }
+        RootOp::PolicyUpdated { .. } => {
+            require_namespace_admin(store, op.namespace_id, &op.signer)?;
+            tracing::debug!("PolicyUpdated: stored in DAG log, no additional state mutation");
+            Ok(())
+        }
+        RootOp::GroupNested {
+            parent_group_id,
+            child_group_id,
+        } => {
+            require_namespace_admin(store, op.namespace_id, &op.signer)?;
+            let parent = ContextGroupId::from(*parent_group_id);
+            let child = ContextGroupId::from(*child_group_id);
+            if load_group_meta(store, &parent)?.is_none() {
+                bail!("parent group not found for nesting");
+            }
+            if load_group_meta(store, &child)?.is_none() {
+                bail!("child group not found for nesting");
+            }
+            nest_group(store, &parent, &child)?;
+            tracing::info!(
+                parent = %hex::encode(parent_group_id),
+                child = %hex::encode(child_group_id),
+                "group nested"
+            );
+            Ok(())
+        }
+        RootOp::GroupUnnested {
+            parent_group_id,
+            child_group_id,
+        } => {
+            require_namespace_admin(store, op.namespace_id, &op.signer)?;
+            let parent = ContextGroupId::from(*parent_group_id);
+            let child = ContextGroupId::from(*child_group_id);
+            unnest_group(store, &parent, &child)?;
+            tracing::info!(
+                parent = %hex::encode(parent_group_id),
+                child = %hex::encode(child_group_id),
+                "group unnested"
+            );
+            Ok(())
+        }
+        RootOp::MemberJoined {
+            member,
+            signed_invitation,
+        } => {
+            let inv = &signed_invitation.invitation;
+            let group_id = inv.group_id;
+
+            // 1. The namespace op signer must be the member being added
+            //    (proves key ownership).
+            if op.signer != *member {
+                bail!(
+                    "MemberJoined signer ({}) does not match member ({})",
+                    op.signer,
+                    member
+                );
+            }
+
+            // 2. Verify the admin's signature on the invitation.
+            let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
+            let invitation_bytes =
+                borsh::to_vec(&inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+            let hash = sha2::Sha256::digest(&invitation_bytes);
+            let sig_bytes = hex::decode(&signed_invitation.inviter_signature)
+                .map_err(|e| eyre::eyre!("bad invitation signature hex: {e}"))?;
+            let sig_arr: [u8; 64] = sig_bytes
+                .try_into()
+                .map_err(|_| eyre::eyre!("invitation signature wrong length"))?;
+            inviter_pk
+                .verify_raw_signature(&hash, &sig_arr)
+                .map_err(|e| eyre::eyre!("invalid invitation signature: {e}"))?;
+
+            // 3. Verify the inviter has invite permission (admin or CAN_INVITE_MEMBERS).
+            if !is_group_admin_or_has_capability(
+                store,
+                &group_id,
+                &inviter_pk,
+                calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS,
+            )? {
+                bail!(
+                    "invitation inviter {} lacks permission for group {:?}",
+                    inviter_pk,
+                    group_id
+                );
+            }
+
+            // 4. Expiration is NOT checked at apply time. In a DAG-replicated
+            //    system, nodes process the same op at different wall-clock times.
+            //    Checking here would cause divergence (node A accepts before
+            //    expiry, node B rejects during backfill after expiry).
+            //    Expiration is enforced at submission time in the join_group handler.
+
+            // 5. Check not already a member.
+            if check_group_membership(store, &group_id, member)? {
+                tracing::debug!(
+                    member = %member,
+                    "member already in group, ignoring MemberJoined"
+                );
+                return Ok(());
+            }
+
+            // 6. Map invited_role (u8) → GroupMemberRole.
+            let role = match inv.invited_role {
+                0 => calimero_primitives::context::GroupMemberRole::Admin,
+                2 => calimero_primitives::context::GroupMemberRole::ReadOnly,
+                _ => calimero_primitives::context::GroupMemberRole::Member,
+            };
+
+            add_group_member(store, &group_id, member, role)?;
+
+            tracing::info!(
+                member = %member,
+                group_id = %hex::encode(group_id.to_bytes()),
+                invited_by = %inviter_pk,
+                "member joined group via namespace MemberJoined op"
+            );
+
+            Ok(())
+        }
+    }
+}
+
+/// Persist a namespace op in the governance store. Stores the full
+/// borsh-encoded [`SignedNamespaceOp`] so backfill can serve it to peers.
+fn store_namespace_gov_op(store: &Store, op: &SignedNamespaceOp) -> EyreResult<()> {
+    let delta_id = op
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+
+    let key = calimero_store::key::NamespaceGovOp::new(op.namespace_id, delta_id);
+    let value = calimero_store::key::NamespaceGovOpValue {
+        skeleton_bytes: borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh: {e}"))?,
+    };
+    let mut handle = store.handle();
+    handle.put(&key, &value)?;
+    Ok(())
+}
+
+/// Sign, apply locally, and publish a namespace governance op.
+///
+/// Combines signing a [`SignedNamespaceOp`], applying it to the local store,
+/// and publishing on the `ns/<id>` gossip topic.
+pub async fn sign_apply_and_publish_namespace_op(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    namespace_id: [u8; 32],
+    signer_sk: &PrivateKey,
+    op: NamespaceOp,
+) -> EyreResult<()> {
+    let ns_head_key = calimero_store::key::NamespaceGovHead::new(namespace_id);
+    let handle = store.handle();
+    let head = handle.get(&ns_head_key)?;
+    drop(handle);
+
+    let parent_hashes = head
+        .as_ref()
+        .map(|h| h.dag_heads.clone())
+        .unwrap_or_default();
+    let nonce = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
+
+    let signed = SignedNamespaceOp::sign(signer_sk, namespace_id, parent_hashes, [0u8; 32], nonce, op)?;
+    let delta_id = signed
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    let parent_ids = signed.parent_op_hashes.clone();
+
+    apply_signed_namespace_op(store, &signed)?;
+
+    // Update namespace DAG head
+    let mut new_heads: Vec<[u8; 32]> = head
+        .map(|h| h.dag_heads)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|h| !parent_ids.contains(h))
+        .collect();
+    new_heads.push(delta_id);
+
+    let mut wh = store.handle();
+    let ns_head_key = calimero_store::key::NamespaceGovHead::new(namespace_id);
+    wh.put(
+        &ns_head_key,
+        &calimero_store::key::NamespaceGovHeadValue {
+            sequence: nonce,
+            dag_heads: new_heads,
+        },
+    )?;
+    drop(wh);
+
+    let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+    node_client
+        .publish_signed_namespace_op(namespace_id, delta_id, parent_ids, bytes)
+        .await
+}
+
+/// Collect delta IDs from namespace governance skeletons that belong to a
+/// specific group. These are ops we stored as opaque skeletons because we
+/// didn't hold the group's sender key at the time; now that we've joined
+/// the group, we can request the full payloads from peers.
+pub fn collect_skeleton_delta_ids_for_group(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: [u8; 32],
+) -> EyreResult<Vec<[u8; 32]>> {
+    let handle = store.handle();
+    let start = calimero_store::key::NamespaceGovOp::new(namespace_id, [0u8; 32]);
+    let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
+    let first = iter.seek(start).transpose();
+    let mut delta_ids = Vec::new();
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+        if key.namespace_id() != namespace_id {
+            break;
+        }
+        if let Some(value) = handle.get(&key)? {
+            if let Ok(skeleton) =
+                borsh::from_slice::<OpaqueSkeleton>(&value.skeleton_bytes)
+            {
+                if skeleton.group_id == group_id {
+                    delta_ids.push(skeleton.delta_id);
+                }
+            }
+        }
+    }
+
+    Ok(delta_ids)
 }
 
 /// Returns the member's effective role, walking up the ancestor chain.
@@ -1032,17 +1486,7 @@ pub fn get_group_member_role(
     group_id: &ContextGroupId,
     identity: &PublicKey,
 ) -> EyreResult<Option<GroupMemberRole>> {
-    let mut current = *group_id;
-    for _ in 0..MAX_SUBGROUP_DEPTH {
-        if let Some(role) = get_direct_member_role(store, &current, identity)? {
-            return Ok(Some(role));
-        }
-        match get_parent_group(store, &current)? {
-            Some(parent) => current = parent,
-            None => return Ok(None),
-        }
-    }
-    Ok(None)
+    get_direct_member_role(store, group_id, identity)
 }
 
 pub fn get_group_member_value(
@@ -1072,8 +1516,7 @@ pub fn is_read_only_for_context(
     }
 }
 
-const MAX_SUBGROUP_DEPTH: usize = 16;
-
+/// Read the parent group for a given group (legacy, used by `resolve_namespace`).
 pub fn get_parent_group(
     store: &Store,
     group_id: &ContextGroupId,
@@ -1083,11 +1526,45 @@ pub fn get_parent_group(
     Ok(handle.get(&key)?.map(ContextGroupId::from))
 }
 
-pub fn set_parent_group(
+// ---------------------------------------------------------------------------
+// Group nesting (organizational metadata, no permission inheritance)
+// ---------------------------------------------------------------------------
+
+/// Record that `child` is nested inside `parent`. Both directions are stored
+/// so we can query parent→children and child→parent.
+///
+/// Rejects the operation if it would create a cycle (child is already an
+/// ancestor of parent) or if child already has a parent.
+pub fn nest_group(
     store: &Store,
-    child_group_id: &ContextGroupId,
     parent_group_id: &ContextGroupId,
+    child_group_id: &ContextGroupId,
 ) -> EyreResult<()> {
+    if parent_group_id == child_group_id {
+        bail!("cannot nest a group under itself");
+    }
+
+    if get_parent_group(store, child_group_id)?.is_some() {
+        bail!(
+            "group {:?} already has a parent; unnest it first",
+            child_group_id
+        );
+    }
+
+    // Walk up from parent to detect if child is already an ancestor of parent.
+    let mut current = *parent_group_id;
+    let mut depth = 0usize;
+    while let Some(ancestor) = get_parent_group(store, &current)? {
+        if ancestor == *child_group_id {
+            bail!("nesting would create a cycle");
+        }
+        depth += 1;
+        if depth > 256 {
+            bail!("nesting depth exceeds 256, possible data corruption");
+        }
+        current = ancestor;
+    }
+
     let mut handle = store.handle();
     let ref_key = GroupParentRef::new(child_group_id.to_bytes());
     handle.put(&ref_key, &parent_group_id.to_bytes())?;
@@ -1096,15 +1573,146 @@ pub fn set_parent_group(
     Ok(())
 }
 
-pub fn remove_parent_group(store: &Store, child_group_id: &ContextGroupId) -> EyreResult<()> {
-    if let Some(parent_id) = get_parent_group(store, child_group_id)? {
-        let mut handle = store.handle();
-        let ref_key = GroupParentRef::new(child_group_id.to_bytes());
-        handle.delete(&ref_key)?;
-        let idx_key = GroupChildIndex::new(parent_id.to_bytes(), child_group_id.to_bytes());
-        handle.delete(&idx_key)?;
-    }
+/// Remove a nesting relationship.
+pub fn unnest_group(
+    store: &Store,
+    parent_group_id: &ContextGroupId,
+    child_group_id: &ContextGroupId,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let ref_key = GroupParentRef::new(child_group_id.to_bytes());
+    handle.delete(&ref_key)?;
+    let idx_key = GroupChildIndex::new(parent_group_id.to_bytes(), child_group_id.to_bytes());
+    handle.delete(&idx_key)?;
     Ok(())
+}
+
+/// List all direct children of a group.
+pub fn list_child_groups(
+    store: &Store,
+    parent_group_id: &ContextGroupId,
+) -> EyreResult<Vec<ContextGroupId>> {
+    let handle = store.handle();
+    let parent_bytes = parent_group_id.to_bytes();
+    let start_key = GroupChildIndex::new(parent_bytes, [0u8; 32]);
+    let mut iter = handle.iter::<GroupChildIndex>()?;
+    let first = iter.seek(start_key).transpose();
+    let mut results = Vec::new();
+
+    for entry in first.into_iter().chain(iter.keys()) {
+        let key = entry?;
+        if key.as_key().as_bytes()[0] != calimero_store::key::GROUP_CHILD_INDEX_PREFIX {
+            break;
+        }
+        if key.parent_group_id() != parent_bytes {
+            break;
+        }
+        results.push(ContextGroupId::from(key.child_group_id()));
+    }
+
+    Ok(results)
+}
+
+/// Collect ALL descendant group IDs (recursive BFS). Returns them in
+/// breadth-first order, excluding the starting group itself.
+pub fn collect_descendant_groups(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Vec<ContextGroupId>> {
+    let mut descendants = Vec::new();
+    let mut queue = vec![*group_id];
+
+    while let Some(current) = queue.pop() {
+        let children = list_child_groups(store, &current)?;
+        for child in children {
+            descendants.push(child);
+            queue.push(child);
+        }
+    }
+
+    Ok(descendants)
+}
+
+/// Create invitations for a group AND all its descendant groups.
+///
+/// Returns a list of `(group_id, SignedGroupOpenInvitation)` pairs — one
+/// per group the member is being invited to. The caller publishes a
+/// `RootOp::MemberJoined` for each.
+pub fn create_recursive_invitations(
+    store: &Store,
+    root_group_id: &ContextGroupId,
+    inviter_sk: &PrivateKey,
+    expiration_secs: u64,
+    invited_role: u8,
+) -> EyreResult<Vec<(ContextGroupId, calimero_context_config::types::SignedGroupOpenInvitation)>> {
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+
+    let mut groups = vec![*root_group_id];
+    groups.extend(collect_descendant_groups(store, root_group_id)?);
+
+    let inviter_signer_id = SignerId::from(*inviter_sk.public_key());
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let expiration = now_secs + expiration_secs;
+
+    let mut result = Vec::with_capacity(groups.len());
+    for gid in groups {
+        let secret_salt: [u8; 32] = {
+            use rand::Rng;
+            rand::thread_rng().gen()
+        };
+
+        let invitation = GroupInvitationFromAdmin {
+            inviter_identity: inviter_signer_id,
+            group_id: gid,
+            expiration_timestamp: expiration,
+            secret_salt,
+            invited_role,
+        };
+
+        let inv_bytes =
+            borsh::to_vec(&invitation).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+        let hash = sha2::Sha256::digest(&inv_bytes);
+        let sig = inviter_sk
+            .sign(&hash)
+            .map_err(|e| eyre::eyre!("signing: {e}"))?;
+
+        let signed = SignedGroupOpenInvitation {
+            invitation,
+            inviter_signature: hex::encode(sig.to_bytes()),
+        };
+
+        result.push((gid, signed));
+    }
+
+    Ok(result)
+}
+
+/// Remove a member from a group AND all its descendant groups.
+///
+/// Returns the list of group IDs the member was removed from.
+pub fn recursive_remove_member(
+    store: &Store,
+    root_group_id: &ContextGroupId,
+    member: &PublicKey,
+) -> EyreResult<Vec<ContextGroupId>> {
+    let mut groups = vec![*root_group_id];
+    groups.extend(collect_descendant_groups(store, root_group_id)?);
+
+    let mut removed_from = Vec::new();
+    for gid in &groups {
+        if check_group_membership(store, gid, member)? {
+            remove_group_member(store, gid, member)?;
+            cascade_remove_member_from_group_tree(store, gid, member)?;
+            removed_from.push(*gid);
+        }
+    }
+
+    Ok(removed_from)
 }
 
 // ---------------------------------------------------------------------------
@@ -1217,79 +1825,15 @@ pub fn get_or_create_namespace_identity(
 // Invitation commitment helpers
 // ---------------------------------------------------------------------------
 
-pub fn store_invitation_commitment(
-    store: &Store,
-    group_id: &ContextGroupId,
-    commitment_hash: &[u8; 32],
-    expiration_timestamp: u64,
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupInvitationCommitment::new(group_id.to_bytes(), *commitment_hash);
-    handle.put(
-        &key,
-        &GroupInvitationCommitmentValue {
-            expiration_timestamp,
-        },
-    )?;
-    Ok(())
-}
 
-pub fn check_and_consume_commitment(
-    store: &Store,
-    group_id: &ContextGroupId,
-    commitment_hash: &[u8; 32],
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupInvitationCommitment::new(group_id.to_bytes(), *commitment_hash);
-    let Some(value) = handle.get(&key)? else {
-        bail!("no matching invitation commitment found for this group");
-    };
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    if now > value.expiration_timestamp {
-        handle.delete(&key)?;
-        bail!("invitation commitment has expired");
-    }
-
-    handle.delete(&key)?;
-    Ok(())
-}
-
-///
-/// Skips descendants that already have the target application to avoid
-/// redundant writes.
+/// In the namespace model, application cascading to child groups is handled
+/// at the namespace governance level rather than via tree traversal.
 fn cascade_target_application(
-    store: &Store,
-    group_id: &ContextGroupId,
-    target_application_id: &calimero_primitives::application::ApplicationId,
-    app_key: &[u8; 32],
+    _store: &Store,
+    _group_id: &ContextGroupId,
+    _target_application_id: &calimero_primitives::application::ApplicationId,
+    _app_key: &[u8; 32],
 ) -> EyreResult<()> {
-    let mut queue = vec![*group_id];
-    let mut depth = 0u8;
-
-    while !queue.is_empty() && (depth as usize) < MAX_NAMESPACE_DEPTH {
-        let mut next_queue = Vec::new();
-        for gid in &queue {
-            let children = enumerate_child_groups(store, gid)?;
-            for child_id in children {
-                if let Some(mut child_meta) = load_group_meta(store, &child_id)? {
-                    if child_meta.target_application_id == *target_application_id {
-                        next_queue.push(child_id);
-                        continue;
-                    }
-                    child_meta.target_application_id = *target_application_id;
-                    child_meta.app_key = *app_key;
-                    save_group_meta(store, &child_id, &child_meta)?;
-                    next_queue.push(child_id);
-                }
-            }
-        }
-        queue = next_queue;
-        depth += 1;
-    }
     Ok(())
 }
 
@@ -1318,17 +1862,7 @@ pub fn check_group_membership(
     group_id: &ContextGroupId,
     identity: &PublicKey,
 ) -> EyreResult<bool> {
-    let mut current = *group_id;
-    for _ in 0..MAX_SUBGROUP_DEPTH {
-        if has_direct_member(store, &current, identity)? {
-            return Ok(true);
-        }
-        match get_parent_group(store, &current)? {
-            Some(parent) => current = parent,
-            None => return Ok(false),
-        }
-    }
-    Ok(false)
+    has_direct_member(store, group_id, identity)
 }
 
 /// Returns `true` if `identity` is a direct admin of this specific group
@@ -1671,31 +2205,6 @@ pub fn get_group_for_context(
     Ok(value.map(ContextGroupId::from))
 }
 
-pub fn enumerate_child_groups(
-    store: &Store,
-    parent_group_id: &ContextGroupId,
-) -> EyreResult<Vec<ContextGroupId>> {
-    let handle = store.handle();
-    let parent_bytes: [u8; 32] = parent_group_id.to_bytes();
-    let start_key = GroupChildIndex::new(parent_bytes, [0u8; 32]);
-    let mut iter = handle.iter::<GroupChildIndex>()?;
-    let first = iter.seek(start_key).transpose();
-    let mut results = Vec::new();
-
-    for entry in first.into_iter().chain(iter.keys()) {
-        let key = entry?;
-        if key.as_key().as_bytes()[0] != GROUP_CHILD_INDEX_PREFIX {
-            break;
-        }
-        if key.parent_group_id() != parent_bytes {
-            break;
-        }
-        results.push(ContextGroupId::from(key.child_group_id()));
-    }
-
-    Ok(results)
-}
-
 fn cascade_remove_member_from_group_tree(
     store: &Store,
     group_id: &ContextGroupId,
@@ -1713,13 +2222,6 @@ fn cascade_remove_member_from_group_tree(
                 member = %member,
                 "cascade-removed member from context"
             );
-        }
-    }
-
-    let children = enumerate_child_groups(store, group_id)?;
-    for child_id in &children {
-        if !has_direct_member(store, child_id, member)? {
-            cascade_remove_member_from_group_tree(store, child_id, member)?;
         }
     }
 
@@ -1865,9 +2367,7 @@ pub fn build_namespace_summary(
     let context_count = enumerate_group_contexts(store, group_id, 0, usize::MAX)
         .unwrap_or_default()
         .len();
-    let subgroup_count = enumerate_child_groups(store, group_id)
-        .unwrap_or_default()
-        .len();
+    let subgroup_count = list_child_groups(store, group_id).unwrap_or_default().len();
 
     Ok(Some(calimero_context_primitives::group::NamespaceSummary {
         namespace_id: *group_id,

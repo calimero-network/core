@@ -84,22 +84,35 @@ impl NodeClient {
         Ok(())
     }
 
-    pub async fn subscribe_group(&self, group_id: [u8; 32]) -> eyre::Result<()> {
-        let topic = IdentTopic::new(format!("group/{}", hex::encode(group_id)));
+    /// Subscribe to the namespace governance topic `ns/<hex(namespace_id)>`.
+    pub async fn subscribe_namespace(&self, namespace_id: [u8; 32]) -> eyre::Result<()> {
+        let topic = IdentTopic::new(format!("ns/{}", hex::encode(namespace_id)));
         let _ignored = self.network_client.subscribe(topic).await?;
-        info!(?group_id, "Subscribed to group topic");
+        info!(
+            namespace_id = %hex::encode(namespace_id),
+            "Subscribed to namespace topic"
+        );
         Ok(())
     }
 
-    pub async fn unsubscribe_group(&self, group_id: [u8; 32]) -> eyre::Result<()> {
-        let topic = IdentTopic::new(format!("group/{}", hex::encode(group_id)));
+    /// Unsubscribe from the namespace governance topic.
+    pub async fn unsubscribe_namespace(&self, namespace_id: [u8; 32]) -> eyre::Result<()> {
+        let topic = IdentTopic::new(format!("ns/{}", hex::encode(namespace_id)));
         let _ignored = self.network_client.unsubscribe(topic).await?;
-        info!(?group_id, "Unsubscribed from group topic");
+        info!(
+            namespace_id = %hex::encode(namespace_id),
+            "Unsubscribed from namespace topic"
+        );
         Ok(())
     }
 
-    pub async fn publish_on_group(&self, group_id: [u8; 32], payload: Vec<u8>) -> eyre::Result<()> {
-        let topic_str = format!("group/{}", hex::encode(group_id));
+    /// Publish raw payload on the namespace topic `ns/<hex(namespace_id)>`.
+    pub async fn publish_on_namespace(
+        &self,
+        namespace_id: [u8; 32],
+        payload: Vec<u8>,
+    ) -> eyre::Result<()> {
+        let topic_str = format!("ns/{}", hex::encode(namespace_id));
         let topic = TopicHash::from_raw(topic_str);
 
         const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -113,7 +126,7 @@ impl NodeClient {
             }
             if tokio::time::Instant::now() >= deadline {
                 warn!(
-                    ?group_id,
+                    ?namespace_id,
                     "no mesh peers after {MAX_WAIT:?}, publishing anyway"
                 );
                 break;
@@ -214,72 +227,37 @@ impl NodeClient {
         Ok(())
     }
 
-    pub async fn broadcast_group_mutation(
-        &self,
-        group_id: [u8; 32],
-        mutation_kind: crate::sync::GroupMutationKind,
-    ) -> eyre::Result<()> {
-        let topic_str = format!("group/{}", hex::encode(group_id));
-        let topic = TopicHash::from_raw(topic_str);
-
-        let peers = self.network_client.mesh_peer_count(topic.clone()).await;
-        if peers == 0 {
-            debug!(
-                ?mutation_kind,
-                "no peers on group topic, skipping broadcast"
-            );
-            return Ok(());
-        }
-
-        let payload = BroadcastMessage::GroupMutationNotification {
-            group_id,
-            mutation_kind,
-        };
-        let payload_bytes = borsh::to_vec(&payload)?;
-
-        if let Err(err) = self.network_client.publish(topic, payload_bytes).await {
-            warn!(?group_id, %err, "failed to publish group mutation notification");
-        }
-
-        Ok(())
-    }
-
-    /// Publish a borsh-encoded `SignedGroupOp` (`calimero_context_primitives::local_governance`)
-    /// on the group gossip topic `group/<hex(group_id)>`.
+    /// Publish a borsh-encoded `SignedNamespaceOp` on the namespace topic `ns/<hex>`.
     ///
-    /// Enforces [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`] on `signed_op_borsh`.
-    ///
-    /// Waits up to 10 seconds for the gossipsub mesh to include at least one
-    /// peer before publishing. If no peers appear within the window the message
-    /// is published anyway (gossipsub flood-publish can still reach subscribers).
-    pub async fn publish_signed_group_op(
+    /// Enforces [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`] on the payload.
+    pub async fn publish_signed_namespace_op(
         &self,
-        group_id: [u8; 32],
+        namespace_id: [u8; 32],
         delta_id: [u8; 32],
         parent_ids: Vec<[u8; 32]>,
         signed_op_borsh: Vec<u8>,
     ) -> eyre::Result<()> {
         if signed_op_borsh.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
             eyre::bail!(
-                "signed group op payload exceeds max ({} > {})",
+                "signed namespace op payload exceeds max ({} > {})",
                 signed_op_borsh.len(),
                 MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES
             );
         }
 
-        let topic_str = format!("group/{}", hex::encode(group_id));
+        let topic_str = format!("ns/{}", hex::encode(namespace_id));
         let topic = TopicHash::from_raw(topic_str);
 
         let peers = self.network_client.mesh_peer_count(topic.clone()).await;
         if peers == 0 {
             warn!(
-                ?group_id,
-                "no mesh peers on group topic, governance op publish is best-effort"
+                namespace_id = %hex::encode(namespace_id),
+                "no mesh peers on namespace topic, governance op publish is best-effort"
             );
         }
 
-        let payload = BroadcastMessage::GroupGovernanceDelta {
-            group_id,
+        let payload = BroadcastMessage::NamespaceGovernanceDelta {
+            namespace_id,
             delta_id,
             parent_ids,
             payload: signed_op_borsh,
@@ -287,29 +265,36 @@ impl NodeClient {
         let payload_bytes = borsh::to_vec(&payload)?;
 
         if let Err(err) = self.network_client.publish(topic, payload_bytes).await {
-            warn!(?group_id, %err, "failed to publish signed group op");
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                %err,
+                "failed to publish signed namespace op"
+            );
         }
 
         Ok(())
     }
 
-    pub async fn publish_group_heartbeat(
+    /// Publish a namespace governance heartbeat for DAG divergence detection.
+    pub async fn publish_namespace_heartbeat(
         &self,
-        group_id: [u8; 32],
+        namespace_id: [u8; 32],
         dag_heads: Vec<[u8; 32]>,
-        member_count: u32,
     ) -> eyre::Result<()> {
-        let topic_str = format!("group/{}", hex::encode(group_id));
+        let topic_str = format!("ns/{}", hex::encode(namespace_id));
         let topic = TopicHash::from_raw(topic_str);
 
-        let payload = BroadcastMessage::GroupStateHeartbeat {
-            group_id,
+        let payload = BroadcastMessage::NamespaceStateHeartbeat {
+            namespace_id,
             dag_heads,
-            member_count,
         };
         let payload_bytes = borsh::to_vec(&payload)?;
         if let Err(err) = self.network_client.publish(topic, payload_bytes).await {
-            debug!(?group_id, %err, "failed to publish group heartbeat");
+            debug!(
+                namespace_id = %hex::encode(namespace_id),
+                %err,
+                "failed to publish namespace heartbeat"
+            );
         }
         Ok(())
     }

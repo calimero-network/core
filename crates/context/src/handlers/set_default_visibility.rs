@@ -1,7 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::SetDefaultVisibilityRequest;
 use calimero_context_primitives::local_governance::GroupOp;
-use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
@@ -85,13 +84,6 @@ impl Handler<SetDefaultVisibilityRequest> for ContextManager {
                     GroupOp::DefaultVisibilitySet { mode: mode_u8 },
                 )
                 .await?;
-
-                let _ = node_client
-                    .broadcast_group_mutation(
-                        group_id.to_bytes(),
-                        GroupMutationKind::DefaultVisibilitySet { mode: mode_u8 },
-                    )
-                    .await;
 
                 info!(
                     ?group_id,

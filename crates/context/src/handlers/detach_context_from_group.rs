@@ -1,10 +1,8 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::DetachContextFromGroupRequest;
 use calimero_context_primitives::local_governance::GroupOp;
-use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
-use tracing::warn;
 
 use crate::group_store;
 use crate::ContextManager;
@@ -82,13 +80,6 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
                     GroupOp::ContextDetached { context_id },
                 )
                 .await?;
-
-                let _ = node_client
-                    .broadcast_group_mutation(
-                        group_id.to_bytes(),
-                        GroupMutationKind::ContextDetached,
-                    )
-                    .await;
 
                 Ok(())
             }

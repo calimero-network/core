@@ -109,22 +109,22 @@ pub async fn handler(
         }
     };
 
-    if let Err(err) = state.node_client.subscribe_group(group_id_bytes).await {
-        error!(error=?err, "Failed to subscribe to group topic");
+    if let Err(err) = state.node_client.subscribe_namespace(group_id_bytes).await {
+        error!(error=?err, "Failed to subscribe to namespace topic");
         return ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "Failed to subscribe to group".to_owned(),
+            message: "Failed to subscribe to namespace".to_owned(),
         }
         .into_response();
     }
 
     if let Err(err) = state
         .node_client
-        .publish_on_group(group_id_bytes, payload)
+        .publish_on_namespace(group_id_bytes, payload)
         .await
     {
-        warn!(error=?err, "Failed to broadcast, unsubscribing from group");
-        let _ = state.node_client.unsubscribe_group(group_id_bytes).await;
+        warn!(error=?err, "Failed to broadcast, unsubscribing from namespace");
+        let _ = state.node_client.unsubscribe_namespace(group_id_bytes).await;
         return ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,
             message: "Failed to broadcast attestation".to_owned(),

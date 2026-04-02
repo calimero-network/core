@@ -487,7 +487,7 @@ impl Actor for NodeManager {
                     Ok(groups) => {
                         for group in groups {
                             if let Err(err) =
-                                node_client.subscribe_group(group.group_id.to_bytes()).await
+                                node_client.subscribe_namespace(group.group_id.to_bytes()).await
                             {
                                 error!(?group.group_id, %err, "Failed to subscribe to group topic");
                             }

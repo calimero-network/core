@@ -1,20 +1,15 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_config::types::{GroupRevealPayloadData, SignerId};
-use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::group::{JoinGroupRequest, JoinGroupResponse};
-use calimero_context_primitives::local_governance::GroupOp;
+use calimero_context_primitives::local_governance::{NamespaceOp, RootOp};
 use calimero_primitives::context::{ContextConfigParams, GroupMemberRole};
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PrivateKey;
 use calimero_store::key;
 use eyre::bail;
-use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use crate::{group_store, ContextManager};
 
-/// Maximum number of attempts to poll for group metadata arrival.
-const META_POLL_MAX_ATTEMPTS: u32 = 10;
-/// Interval between metadata polling attempts.
+const META_POLL_MAX_ATTEMPTS: u32 = 20;
 const META_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl Handler<JoinGroupRequest> for ContextManager {
@@ -28,10 +23,23 @@ impl Handler<JoinGroupRequest> for ContextManager {
         }: JoinGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let inv = &invitation.invitation;
-        let group_id = inv.group_id;
+        let group_id = invitation.invitation.group_id;
+        let invited_role = invitation.invitation.invited_role;
+        let expiration = invitation.invitation.expiration_timestamp;
 
-        let (_, joiner_identity, sk_bytes, _sender) =
+        // Check expiration at submission time (NOT at apply time — see
+        // apply_root_op comment for why DAG-apply-time checks cause divergence).
+        if expiration != 0 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now > expiration {
+                return ActorResponse::reply(Err(eyre::eyre!("invitation expired")));
+            }
+        }
+
+        let (ns_id, joiner_identity, sk_bytes, _sender) =
             match self.get_or_create_namespace_identity(&group_id) {
                 Ok(result) => result,
                 Err(err) => {
@@ -41,22 +49,18 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 }
             };
 
-        let signing_key = Some(sk_bytes);
-
-        let inviter_identity = PublicKey::from(inv.inviter_identity.to_bytes());
+        let namespace_id = ns_id.to_bytes();
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let context_client = self.context_client.clone();
-        let invitation = invitation;
 
         ActorResponse::r#async(
             async move {
-                // Subscribe to the group topic first so the existing member
-                // broadcasts group metadata to us via gossipsub.
-                let _ = node_client.subscribe_group(group_id.to_bytes()).await;
+                // 1. Subscribe to namespace topic — mesh already has existing members.
+                let _ = node_client.subscribe_namespace(namespace_id).await;
 
-                // Poll for group metadata to arrive from the peer broadcast.
+                // 2. Poll for group metadata to arrive via gossip.
                 let mut meta_found = false;
                 for _ in 0..META_POLL_MAX_ATTEMPTS {
                     if group_store::load_group_meta(&datastore, &group_id)?.is_some() {
@@ -67,82 +71,48 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 }
                 if !meta_found {
                     bail!(
-                        "group metadata is missing locally; timed out waiting for group state \
-                         to replicate before joining (local governance)"
+                        "group metadata not found locally; timed out waiting for \
+                         namespace state to replicate before joining"
                     );
                 }
 
-                if let Some(ref sk) = signing_key {
-                    let _ = group_store::store_group_signing_key(
-                        &datastore,
-                        &group_id,
-                        &joiner_identity,
-                        sk,
-                    );
-                }
+                // 3. Store the signing key so we can sign namespace ops.
+                let sk = PrivateKey::from(sk_bytes);
+                let _ = group_store::store_group_signing_key(
+                    &datastore,
+                    &group_id,
+                    &joiner_identity,
+                    &sk_bytes,
+                );
 
-                let effective_signing_key = signing_key.or_else(|| {
-                    group_store::get_group_signing_key(&datastore, &group_id, &joiner_identity)
-                        .ok()
-                        .flatten()
+                // 4. Build and publish MemberJoined on the namespace topic.
+                let role = match invited_role {
+                    0 => GroupMemberRole::Admin,
+                    2 => GroupMemberRole::ReadOnly,
+                    _ => GroupMemberRole::Member,
+                };
+
+                let member_joined_op = NamespaceOp::Root(RootOp::MemberJoined {
+                    member: joiner_identity,
+                    signed_invitation: invitation.clone(),
                 });
 
-                if !group_store::is_group_admin_or_has_capability(
+                group_store::sign_apply_and_publish_namespace_op(
                     &datastore,
-                    &group_id,
-                    &inviter_identity,
-                    MemberCapabilities::CAN_INVITE_MEMBERS,
-                )? {
-                    bail!("inviter lacks permission (not admin and missing CAN_INVITE_MEMBERS)");
-                }
-
-                if group_store::check_group_membership(&datastore, &group_id, &joiner_identity)? {
-                    bail!("identity is already a member of this group");
-                }
-
-                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                    eyre::eyre!("local group governance requires a signing key for the joiner")
-                })?);
-                let reveal_payload_data = GroupRevealPayloadData {
-                    signed_open_invitation: invitation.clone(),
-                    new_member_identity: SignerId::from(*joiner_identity.digest()),
-                };
-                let reveal_data_bytes = borsh::to_vec(&reveal_payload_data)?;
-                let hash = Sha256::digest(&reveal_data_bytes);
-                let signature = sk
-                    .sign(&hash)
-                    .map_err(|e| eyre::eyre!("signing reveal payload failed: {e}"))?;
-                let invitee_signature_hex = hex::encode(signature.to_bytes());
-
-                let signed_op_output = group_store::sign_apply_local_group_op_borsh(
-                    &datastore,
-                    &group_id,
+                    &node_client,
+                    namespace_id,
                     &sk,
-                    GroupOp::JoinWithInvitationClaim {
-                        signed_invitation: invitation,
-                        invitee_signature_hex,
-                    },
-                )?;
-                let governance_op_bytes = signed_op_output.bytes;
+                    member_joined_op,
+                )
+                .await?;
 
-                // Best-effort gossipsub publish (may fail if mesh not formed)
-                let _ = node_client
-                    .publish_signed_group_op(
-                        group_id.to_bytes(),
-                        signed_op_output.delta_id,
-                        signed_op_output.parent_ids,
-                        governance_op_bytes.clone(),
-                    )
-                    .await;
-
-                // Upgrade the GroupMember entry with local private + sender keys
-                // so the sync key-share can use them for all contexts in the group.
+                // 5. Store local membership with private + sender keys.
                 let sender_key = PrivateKey::random(&mut rand::thread_rng());
                 group_store::add_group_member_with_keys(
                     &datastore,
                     &group_id,
                     &joiner_identity,
-                    GroupMemberRole::Member,
+                    role,
                     Some(*sk),
                     Some(*sender_key),
                 )?;
@@ -151,87 +121,54 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     group_store::set_group_alias(&datastore, &group_id, alias_str)?;
                 }
 
-                // Auto-subscribe to all visible contexts if auto_join is set,
-                // including contexts in child subgroups (membership inherits down).
+                // 6. Auto-subscribe to visible contexts if auto_join is set.
                 if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
                     if meta.auto_join {
-                        let mut groups_to_visit = vec![group_id];
-                        let mut depth = 0u8;
-                        while let Some(gid) = groups_to_visit.pop() {
-                            let contexts = group_store::enumerate_group_contexts(
-                                &datastore,
-                                &gid,
-                                0,
-                                usize::MAX,
-                            )?;
-                            for context_id in &contexts {
-                                let mut handle = datastore.handle();
-                                let ci_key =
-                                    key::ContextIdentity::new(*context_id, joiner_identity);
-                                if !handle.has(&ci_key)? {
-                                    handle.put(
-                                        &ci_key,
-                                        &calimero_store::types::ContextIdentity {
-                                            private_key: Some(*sk),
-                                            sender_key: Some(*sender_key),
-                                        },
-                                    )?;
-                                }
-                                drop(handle);
-
-                                let config = if !context_client.has_context(context_id)? {
-                                    let app_id = group_store::load_group_meta(&datastore, &gid)?
-                                        .map(|m| m.target_application_id);
-                                    Some(ContextConfigParams {
-                                        application_id: app_id,
-                                        application_revision: 0,
-                                        members_revision: 0,
-                                    })
-                                } else {
-                                    None
-                                };
-
-                                if let Err(e) = context_client
-                                    .sync_context_config(*context_id, config)
-                                    .await
-                                {
-                                    warn!(
-                                        ?gid,
-                                        %context_id,
-                                        ?e,
-                                        "failed to sync context config during auto-join"
-                                    );
-                                }
-
-                                if let Err(e) = node_client.subscribe(context_id).await {
-                                    warn!(
-                                        ?gid,
-                                        %context_id,
-                                        ?e,
-                                        "failed to auto-subscribe to context"
-                                    );
-                                }
-                                if let Err(e) = node_client.sync(Some(context_id), None).await {
-                                    warn!(
-                                        ?gid,
-                                        %context_id,
-                                        ?e,
-                                        "failed to trigger sync after auto-join"
-                                    );
-                                }
+                        let contexts = group_store::enumerate_group_contexts(
+                            &datastore,
+                            &group_id,
+                            0,
+                            usize::MAX,
+                        )?;
+                        for context_id in &contexts {
+                            let mut handle = datastore.handle();
+                            let ci_key =
+                                key::ContextIdentity::new(*context_id, joiner_identity);
+                            if !handle.has(&ci_key)? {
+                                handle.put(
+                                    &ci_key,
+                                    &calimero_store::types::ContextIdentity {
+                                        private_key: Some(*sk),
+                                        sender_key: Some(*sender_key),
+                                    },
+                                )?;
                             }
+                            drop(handle);
 
-                            if depth < 16 {
-                                if let Ok(children) =
-                                    group_store::enumerate_child_groups(&datastore, &gid)
-                                {
-                                    for child_id in children {
-                                        let _ =
-                                            node_client.subscribe_group(child_id.to_bytes()).await;
-                                        groups_to_visit.push(child_id);
-                                    }
-                                }
-                                depth += 1;
+                            let config = if !context_client.has_context(context_id)? {
+                                let app_id =
+                                    group_store::load_group_meta(&datastore, &group_id)?
+                                        .map(|m| m.target_application_id);
+                                Some(ContextConfigParams {
+                                    application_id: app_id,
+                                    application_revision: 0,
+                                    members_revision: 0,
+                                })
+                            } else {
+                                None
+                            };
+
+                            if let Err(e) = context_client
+                                .sync_context_config(*context_id, config)
+                                .await
+                            {
+                                warn!(%context_id, ?e, "failed to sync context config during auto-join");
+                            }
+                            if let Err(e) = node_client.subscribe(context_id).await {
+                                warn!(%context_id, ?e, "failed to auto-subscribe to context");
+                            }
+                            if let Err(e) = node_client.sync(Some(context_id), None).await {
+                                warn!(%context_id, ?e, "failed to trigger sync after auto-join");
                             }
                         }
                     }
@@ -239,14 +176,15 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                 info!(
                     ?group_id,
+                    namespace_id = %hex::encode(namespace_id),
                     %joiner_identity,
-                    "new member joined group via invitation"
+                    "member joined group via namespace MemberJoined"
                 );
 
                 Ok(JoinGroupResponse {
                     group_id,
                     member_identity: joiner_identity,
-                    governance_op_bytes,
+                    governance_op_bytes: vec![],
                 })
             }
             .into_actor(self),

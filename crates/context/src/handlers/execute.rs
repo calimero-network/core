@@ -637,16 +637,11 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                             let governance_epoch = {
                                 let ds = context_client.datastore();
-                                let hash = crate::group_store::compute_governance_ancestry_hash(
+                                crate::group_store::compute_namespace_governance_epoch(
                                     ds,
                                     &context_id,
                                 )
-                                .unwrap_or_default();
-                                if hash == [0u8; 32] {
-                                    vec![]
-                                } else {
-                                    vec![hash]
-                                }
+                                .unwrap_or_default()
                             };
 
                             node_client

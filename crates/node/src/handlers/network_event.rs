@@ -424,393 +424,56 @@ impl Handler<NetworkEvent> for NodeManager {
                         let pending_invites = self.state.pending_specialized_node_invites.clone();
                         specialized_node_invite::handle_join_confirmation(&pending_invites, nonce);
                     }
-                    BroadcastMessage::GroupMutationNotification {
-                        group_id,
-                        mutation_kind,
-                    } => {
-                        info!(
-                            ?group_id,
-                            ?mutation_kind,
-                            %source,
-                            "Received group mutation notification"
-                        );
-
-                        let context_client = self.clients.context.clone();
-
-                        match mutation_kind {
-                            calimero_node_primitives::sync::GroupMutationKind::ContextAliasSet {
-                                context_id,
-                                alias,
-                            } => {
-                                let _ignored = ctx.spawn(
-                                    async move {
-                                        use calimero_context_config::types::ContextGroupId;
-                                        use calimero_context_primitives::group::StoreContextAliasRequest;
-                                        use calimero_primitives::context::ContextId;
-
-                                        let group_id = ContextGroupId::from(group_id);
-                                        let context_id = ContextId::from(context_id);
-                                        if let Err(err) = context_client
-                                            .store_context_alias(StoreContextAliasRequest {
-                                                group_id,
-                                                context_id,
-                                                alias,
-                                            })
-                                            .await
-                                        {
-                                            warn!(
-                                                ?err,
-                                                "Failed to store context alias from gossip"
-                                            );
-                                        }
-                                    }
-                                    .into_actor(self),
-                                );
-                            }
-                            calimero_node_primitives::sync::GroupMutationKind::MemberCapabilitySet {
-                                member,
-                                capabilities,
-                            } => {
-                                let _ignored = ctx.spawn(
-                                    async move {
-                                        use calimero_context_config::types::ContextGroupId;
-                                        use calimero_context_primitives::group::StoreMemberCapabilityRequest;
-                                        use calimero_primitives::identity::PublicKey;
-
-                                        let group_id = ContextGroupId::from(group_id);
-                                        if let Err(err) = context_client
-                                            .store_member_capability(StoreMemberCapabilityRequest {
-                                                group_id,
-                                                member: PublicKey::from(member),
-                                                capabilities,
-                                            })
-                                            .await
-                                        {
-                                            warn!(
-                                                ?err,
-                                                "Failed to store member capability from gossip"
-                                            );
-                                        }
-                                    }
-                                    .into_actor(self),
-                                );
-                            }
-                            calimero_node_primitives::sync::GroupMutationKind::DefaultCapabilitiesSet {
-                                capabilities,
-                            } => {
-                                let _ignored = ctx.spawn(
-                                    async move {
-                                        use calimero_context_config::types::ContextGroupId;
-                                        use calimero_context_primitives::group::StoreDefaultCapabilitiesRequest;
-
-                                        let group_id = ContextGroupId::from(group_id);
-                                        if let Err(err) = context_client
-                                            .store_default_capabilities(
-                                                StoreDefaultCapabilitiesRequest {
-                                                    group_id,
-                                                    capabilities,
-                                                },
-                                            )
-                                            .await
-                                        {
-                                            warn!(
-                                                ?err,
-                                                "Failed to store default capabilities from gossip"
-                                            );
-                                        }
-                                    }
-                                    .into_actor(self),
-                                );
-                            }
-                            calimero_node_primitives::sync::GroupMutationKind::DefaultVisibilitySet {
-                                mode,
-                            } => {
-                                let _ignored = ctx.spawn(
-                                    async move {
-                                        use calimero_context_config::types::ContextGroupId;
-                                        use calimero_context_primitives::group::StoreDefaultVisibilityRequest;
-
-                                        let group_id = ContextGroupId::from(group_id);
-                                        if let Err(err) = context_client
-                                            .store_default_visibility(
-                                                StoreDefaultVisibilityRequest { group_id, mode },
-                                            )
-                                            .await
-                                        {
-                                            warn!(
-                                                ?err,
-                                                "Failed to store default visibility from gossip"
-                                            );
-                                        }
-                                    }
-                                    .into_actor(self),
-                                );
-                            }
-                            calimero_node_primitives::sync::GroupMutationKind::MemberAliasSet {
-                                member,
-                                alias,
-                            } => {
-                                let _ignored = ctx.spawn(
-                                    async move {
-                                        use calimero_context_config::types::ContextGroupId;
-                                        use calimero_context_primitives::group::StoreMemberAliasRequest;
-                                        use calimero_primitives::identity::PublicKey;
-
-                                        let group_id = ContextGroupId::from(group_id);
-                                        if let Err(err) = context_client
-                                            .store_member_alias(StoreMemberAliasRequest {
-                                                group_id,
-                                                member: PublicKey::from(member),
-                                                alias,
-                                            })
-                                            .await
-                                        {
-                                            warn!(
-                                                ?err,
-                                                "Failed to store member alias from gossip"
-                                            );
-                                        }
-                                    }
-                                    .into_actor(self),
-                                );
-                            }
-                            calimero_node_primitives::sync::GroupMutationKind::GroupAliasSet {
-                                alias,
-                            } => {
-                                let _ignored = ctx.spawn(
-                                    async move {
-                                        use calimero_context_config::types::ContextGroupId;
-                                        use calimero_context_primitives::group::StoreGroupAliasRequest;
-
-                                        let group_id = ContextGroupId::from(group_id);
-                                        if let Err(err) = context_client
-                                            .store_group_alias(StoreGroupAliasRequest {
-                                                group_id,
-                                                alias,
-                                            })
-                                            .await
-                                        {
-                                            warn!(
-                                                ?err,
-                                                "Failed to store group alias from gossip"
-                                            );
-                                        }
-                                    }
-                                    .into_actor(self),
-                                );
-                            }
-                            calimero_node_primitives::sync::GroupMutationKind::ContextRegistered {
-                                context_id,
-                            } => {
-                                let _ignored = ctx.spawn(
-                                    async move {
-                                        use calimero_context_config::types::ContextGroupId;
-                                        use calimero_context_primitives::group::StoreGroupContextRequest;
-                                        use calimero_primitives::context::ContextId;
-
-                                        let group_id = ContextGroupId::from(group_id);
-                                        let context_id = ContextId::from(context_id);
-                                        if let Err(err) = context_client
-                                            .store_group_context(StoreGroupContextRequest {
-                                                group_id,
-                                                context_id,
-                                            })
-                                            .await
-                                        {
-                                            warn!(
-                                                ?err,
-                                                "Failed to store group context from gossip"
-                                            );
-                                        }
-                                    }
-                                    .into_actor(self),
-                                );
-                            }
-                            calimero_node_primitives::sync::GroupMutationKind::GroupMetaSet {
-                                meta_payload,
-                            } => {
-                                const MAX_GROUP_META_PAYLOAD_BYTES: usize = 64 * 1024;
-                                if meta_payload.len() > MAX_GROUP_META_PAYLOAD_BYTES {
-                                    warn!(
-                                        payload_len = meta_payload.len(),
-                                        max = MAX_GROUP_META_PAYLOAD_BYTES,
-                                        "Rejecting oversized GroupMetaSet payload"
-                                    );
-                                } else {
-                                    let _ignored = ctx.spawn(
-                                        async move {
-                                            use calimero_context_config::types::ContextGroupId;
-                                            use calimero_context_primitives::group::StoreGroupMetaRequest;
-
-                                            let group_id = ContextGroupId::from(group_id);
-                                            if let Err(err) = context_client
-                                                .store_group_meta(StoreGroupMetaRequest {
-                                                    group_id,
-                                                    meta_payload,
-                                                })
-                                                .await
-                                            {
-                                                warn!(
-                                                    ?err,
-                                                    "Failed to store group metadata from gossip"
-                                                );
-                                            }
-                                        }
-                                        .into_actor(self),
-                                    );
-                                }
-                            }
-                            _ => {
-                                let _ignored = ctx.spawn(
-                                    async move {
-                                        use calimero_context_config::types::ContextGroupId;
-                                        use calimero_context_primitives::group::SyncGroupRequest;
-
-                                        let group_id = ContextGroupId::from(group_id);
-
-                                        if let Err(err) = context_client
-                                            .sync_group(SyncGroupRequest {
-                                                group_id,
-                                                requester: None,
-                                            })
-                                            .await
-                                        {
-                                            warn!(
-                                                ?err,
-                                                "Failed to auto-sync group after mutation notification"
-                                            );
-                                        }
-                                    }
-                                    .into_actor(self),
-                                );
-                            }
-                        }
-                    }
-                    BroadcastMessage::SignedGroupOpV1 { payload } => {
-                        use calimero_context_primitives::local_governance::SignedGroupOp;
-                        use calimero_node_primitives::sync::MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES;
-
-                        if payload.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
-                            warn!(
-                                %source,
-                                len = payload.len(),
-                                "signed group op payload too large"
-                            );
-                            return;
-                        }
-
-                        let op: SignedGroupOp = match borsh::from_slice(&payload) {
-                            Ok(o) => o,
-                            Err(err) => {
-                                warn!(?err, %source, "failed to decode SignedGroupOp");
-                                return;
-                            }
-                        };
-
-                        let topic_str = topic.as_str();
-                        let topic_matches = topic_str
-                            .strip_prefix("group/")
-                            .and_then(|hex| {
-                                let mut bytes = [0u8; 32];
-                                hex::decode_to_slice(hex, &mut bytes).ok()?;
-                                Some(bytes == op.group_id)
-                            })
-                            .unwrap_or(false);
-
-                        if !topic_matches {
-                            warn!(
-                                %source,
-                                topic = %topic_str,
-                                op_group_id = %hex::encode(op.group_id),
-                                "signed group op gossip topic does not match group_id"
-                            );
-                            return;
-                        }
-
-                        if let Err(err) = op.verify_signature() {
-                            warn!(?err, %source, "signed group op signature invalid");
-                            return;
-                        }
-
-                        let context_client = self.clients.context.clone();
-                        let _ignored = ctx.spawn(
-                            async move {
-                                match context_client.apply_signed_group_op(op.clone()).await {
-                                    Ok(true) => {}
-                                    Ok(false) => {
-                                        debug!(
-                                            group_id = %hex::encode(op.group_id),
-                                            parents = op.parent_op_hashes.len(),
-                                            "signed group op pending, waiting for parent ops"
-                                        );
-                                    }
-                                    Err(err) => {
-                                        warn!(?err, %source, "failed to apply signed group op");
-                                    }
-                                }
-                            }
-                            .into_actor(self),
-                        );
-                    }
-                    BroadcastMessage::GroupGovernanceDelta {
-                        group_id,
+                    BroadcastMessage::NamespaceGovernanceDelta {
+                        namespace_id,
                         delta_id: _,
                         parent_ids: _,
                         payload,
                     } => {
-                        use calimero_context_primitives::local_governance::SignedGroupOp;
+                        use calimero_context_primitives::local_governance::SignedNamespaceOp;
                         use calimero_node_primitives::sync::MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES;
 
                         if payload.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
                             warn!(
                                 len = payload.len(),
-                                "oversized GroupGovernanceDelta payload"
+                                "oversized NamespaceGovernanceDelta payload"
                             );
                             return;
                         }
 
-                        let op: SignedGroupOp = match borsh::from_slice(&payload) {
+                        let op: SignedNamespaceOp = match borsh::from_slice(&payload) {
                             Ok(op) => op,
                             Err(err) => {
-                                warn!(%err, "failed to decode GroupGovernanceDelta payload");
+                                warn!(%err, "failed to decode NamespaceGovernanceDelta payload");
                                 return;
                             }
                         };
 
-                        if op.group_id != group_id {
-                            warn!("GroupGovernanceDelta group_id mismatch with topic");
+                        if op.namespace_id != namespace_id {
+                            warn!("NamespaceGovernanceDelta namespace_id mismatch with topic");
                             return;
                         }
 
                         if let Err(err) = op.verify_signature() {
-                            warn!(%err, "GroupGovernanceDelta signature verification failed");
+                            warn!(%err, "NamespaceGovernanceDelta signature verification failed");
                             return;
                         }
 
                         let context_client = self.clients.context.clone();
                         let _ignored = ctx.spawn(
                             async move {
-                                match context_client.apply_signed_group_op(op.clone()).await {
-                                    Ok(true) => {}
-                                    Ok(false) => {
-                                        debug!(
-                                            group_id = %hex::encode(op.group_id),
-                                            parents = op.parent_op_hashes.len(),
-                                            "governance delta pending, waiting for parent ops"
-                                        );
-                                    }
-                                    Err(err) => {
-                                        warn!(?err, %source, "failed to apply governance delta");
-                                    }
+                                if let Err(err) =
+                                    context_client.apply_signed_namespace_op(op.clone()).await
+                                {
+                                    warn!(?err, %source, "failed to apply namespace governance delta");
                                 }
                             }
                             .into_actor(self),
                         );
                     }
-                    BroadcastMessage::GroupStateHeartbeat {
-                        group_id,
+                    BroadcastMessage::NamespaceStateHeartbeat {
+                        namespace_id,
                         dag_heads: peer_heads,
-                        member_count: _,
                     } => {
                         let context_client = self.clients.context.clone();
                         let network_client = self.managers.sync.network_client.clone();
@@ -818,18 +481,17 @@ impl Handler<NetworkEvent> for NodeManager {
 
                         let _ignored = ctx.spawn(
                             async move {
-                                use calimero_context::group_store;
-                                use calimero_context_config::types::ContextGroupId;
-
-                                let gid = ContextGroupId::from(group_id);
+                                let store =
+                                    context_client.datastore_handle().into_inner();
+                                let ns_head_key =
+                                    calimero_store::key::NamespaceGovHead::new(namespace_id);
+                                let handle = store.handle();
                                 let local_heads: std::collections::HashSet<[u8; 32]> =
-                                    match group_store::get_op_head(
-                                        &context_client.datastore_handle().into_inner(),
-                                        &gid,
-                                    ) {
+                                    match handle.get(&ns_head_key) {
                                         Ok(Some(h)) => h.dag_heads.into_iter().collect(),
                                         _ => std::collections::HashSet::new(),
                                     };
+                                drop(handle);
 
                                 let missing: Vec<[u8; 32]> = peer_heads
                                     .iter()
@@ -842,10 +504,10 @@ impl Handler<NetworkEvent> for NodeManager {
                                 }
 
                                 info!(
-                                    group_id = %hex::encode(group_id),
+                                    namespace_id = %hex::encode(namespace_id),
                                     missing = missing.len(),
                                     %source,
-                                    "heartbeat divergence: requesting missing group deltas"
+                                    "namespace heartbeat divergence: requesting missing deltas"
                                 );
 
                                 let Ok(mut stream) =
@@ -853,84 +515,71 @@ impl Handler<NetworkEvent> for NodeManager {
                                 else {
                                     debug!(
                                         %source,
-                                        "failed to open stream for group delta catch-up"
+                                        "failed to open stream for namespace delta catch-up"
                                     );
                                     return;
                                 };
 
-                                for delta_id in missing {
-                                    let msg =
-                                        calimero_node_primitives::sync::StreamMessage::Init {
-                                            context_id:
-                                                calimero_primitives::context::ContextId::from(
-                                                    [0u8; 32],
-                                                ),
-                                            party_id:
-                                                calimero_primitives::identity::PublicKey::from(
-                                                    [0u8; 32],
-                                                ),
-                                            payload: calimero_node_primitives::sync::InitPayload::GroupDeltaRequest {
-                                                group_id,
-                                                delta_id,
-                                            },
-                                            next_nonce: {
-                                                use rand::Rng;
-                                                rand::thread_rng().gen()
-                                            },
-                                        };
+                                let msg =
+                                    calimero_node_primitives::sync::StreamMessage::Init {
+                                        context_id:
+                                            calimero_primitives::context::ContextId::from(
+                                                [0u8; 32],
+                                            ),
+                                        party_id:
+                                            calimero_primitives::identity::PublicKey::from(
+                                                [0u8; 32],
+                                            ),
+                                        payload: calimero_node_primitives::sync::InitPayload::NamespaceBackfillRequest {
+                                            namespace_id,
+                                            delta_ids: missing,
+                                        },
+                                        next_nonce: {
+                                            use rand::Rng;
+                                            rand::thread_rng().gen()
+                                        },
+                                    };
 
-                                    if let Err(err) =
-                                        crate::sync::stream::send(&mut stream, &msg, None).await
-                                    {
-                                        debug!(%err, "failed to send GroupDeltaRequest");
-                                        break;
-                                    }
+                                if let Err(err) =
+                                    crate::sync::stream::send(&mut stream, &msg, None).await
+                                {
+                                    debug!(%err, "failed to send NamespaceBackfillRequest");
+                                    return;
+                                }
 
-                                    match crate::sync::stream::recv(
-                                        &mut stream,
-                                        None,
-                                        sync_timeout,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(
-                                            calimero_node_primitives::sync::StreamMessage::Message {
-                                                payload:
-                                                    calimero_node_primitives::sync::MessagePayload::GroupDeltaResponse {
-                                                        delta_id: _,
-                                                        parent_ids: _,
-                                                        payload: op_bytes,
-                                                    },
-                                                ..
-                                            },
-                                        )) => {
+                                match crate::sync::stream::recv(
+                                    &mut stream,
+                                    None,
+                                    sync_timeout,
+                                )
+                                .await
+                                {
+                                    Ok(Some(
+                                        calimero_node_primitives::sync::StreamMessage::Message {
+                                            payload:
+                                                calimero_node_primitives::sync::MessagePayload::NamespaceBackfillResponse {
+                                                    deltas,
+                                                },
+                                            ..
+                                        },
+                                    )) => {
+                                        for (_delta_id, op_bytes) in deltas {
                                             if let Ok(op) = borsh::from_slice::<
-                                                calimero_context_primitives::local_governance::SignedGroupOp,
+                                                calimero_context_primitives::local_governance::SignedNamespaceOp,
                                             >(
                                                 &op_bytes
                                             ) {
                                                 let _ =
-                                                    context_client.apply_signed_group_op(op).await;
+                                                    context_client
+                                                        .apply_signed_namespace_op(op)
+                                                        .await;
                                             }
                                         }
-                                        Ok(Some(
-                                            calimero_node_primitives::sync::StreamMessage::Message {
-                                                payload:
-                                                    calimero_node_primitives::sync::MessagePayload::GroupDeltaNotFound,
-                                                ..
-                                            },
-                                        )) => {
-                                            debug!(
-                                                delta = %hex::encode(delta_id),
-                                                "peer does not have requested group delta"
-                                            );
-                                        }
-                                        _ => {
-                                            debug!(
-                                                "unexpected response to GroupDeltaRequest"
-                                            );
-                                            break;
-                                        }
+                                    }
+                                    _ => {
+                                        debug!(
+                                            "unexpected response to NamespaceBackfillRequest"
+                                        );
                                     }
                                 }
                             }

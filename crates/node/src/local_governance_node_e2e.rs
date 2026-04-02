@@ -1,4 +1,4 @@
-//! `NetworkEvent::Message` → [`crate::NodeManager`] → `ContextClient::apply_signed_group_op` → `group_store`.
+//! `ContextClient::apply_signed_group_op` → `group_store`.
 //!
 //! Complements `calimero-context` store-only tests and `calimero-network` gossipsub tests.
 
@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use actix::Actor;
-use borsh::to_vec as borsh_to_vec;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::group_store::{
@@ -17,10 +16,8 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
 use calimero_network_primitives::client::NetworkClient;
-use calimero_network_primitives::messages::NetworkEvent;
-use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::messages::NodeMessage;
-use calimero_node_primitives::sync::BroadcastMessage;
+use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::NodeMode;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
@@ -29,8 +26,6 @@ use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
-use libp2p::gossipsub::{IdentTopic, Message, MessageId};
-use libp2p::PeerId;
 use prometheus_client::registry::Registry;
 use rand::rngs::OsRng;
 use tokio::sync::{broadcast, mpsc};
@@ -53,7 +48,7 @@ fn sample_meta(admin: PublicKey) -> GroupMetaValue {
 }
 
 #[tokio::test]
-async fn network_message_signed_group_op_applies_via_node_manager() {
+async fn apply_signed_group_op_via_context_client() {
     let mut pool = ArbiterPool::new().await.expect("arbiter pool");
     let tmp = tempfile::tempdir().expect("tempdir");
 
@@ -123,7 +118,7 @@ async fn network_message_signed_group_op_applies_via_node_manager() {
     });
 
     let arb2 = pool.get().await.expect("arbiter 2");
-    let node_addr = Actor::start_in_arbiter(&arb2, move |ctx| {
+    let _node_addr = Actor::start_in_arbiter(&arb2, move |ctx| {
         assert!(node_recipient.init(ctx), "node recipient");
         node_manager
     });
@@ -155,35 +150,14 @@ async fn network_message_signed_group_op_applies_via_node_manager() {
     )
     .expect("sign op");
 
-    let inner = borsh_to_vec(&op).expect("borsh SignedGroupOp");
-    let broadcast = BroadcastMessage::SignedGroupOpV1 { payload: inner };
-    let broadcast_bytes = borsh_to_vec(&broadcast).expect("borsh BroadcastMessage");
-
-    let topic = IdentTopic::new(format!("group/{}", hex::encode(gid_bytes)));
-    let topic_hash = topic.hash();
-
-    let event = NetworkEvent::Message {
-        id: MessageId::new(b"e2e"),
-        message: Message {
-            source: Some(PeerId::random()),
-            data: broadcast_bytes,
-            sequence_number: Some(1),
-            topic: topic_hash,
-        },
-    };
-
-    node_addr.send(event).await.expect("send NetworkEvent");
-
-    for _ in 0..50 {
-        if check_group_membership(&store, &gid, &new_member).unwrap_or(false) {
-            break;
-        }
-        sleep(Duration::from_millis(20)).await;
+    match context_client.apply_signed_group_op(op).await.expect("apply") {
+        true => {}
+        false => panic!("expected op applied immediately (no pending parents)"),
     }
 
     assert!(
         check_group_membership(&store, &gid, &new_member).expect("check_group_membership"),
-        "member should be present after inbound gossip path"
+        "member should be present after apply_signed_group_op"
     );
     assert_eq!(
         get_local_gov_nonce(&store, &gid, &admin_pk)

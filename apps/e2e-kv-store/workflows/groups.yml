@@ -57,7 +57,6 @@ steps:
     type: join_group
     node: e2e-node-2
     invitation: '{{group_invitation_e2e-node-1}}'
-    relay_to: e2e-node-1
     outputs:
       member_identity_node2: memberIdentity
 

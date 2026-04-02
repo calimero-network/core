@@ -37,9 +37,9 @@ use crate::group::{
     UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
-    ApplySignedGroupOpRequest, ContextMessage, CreateContextRequest, CreateContextResponse,
-    DeleteContextRequest, DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse,
-    MigrationParams, UpdateApplicationRequest,
+    ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest, ContextMessage,
+    CreateContextRequest, CreateContextResponse, DeleteContextRequest, DeleteContextResponse,
+    ExecuteError, ExecuteRequest, ExecuteResponse, MigrationParams, UpdateApplicationRequest,
 };
 use crate::ContextAtomic;
 
@@ -1364,6 +1364,23 @@ impl ContextClient {
         self.context_manager
             .send(ContextMessage::ApplySignedGroupOp {
                 request: ApplySignedGroupOpRequest { op },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn apply_signed_namespace_op(
+        &self,
+        op: crate::local_governance::SignedNamespaceOp,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::ApplySignedNamespaceOp {
+                request: ApplySignedNamespaceOpRequest { op },
                 outcome: sender,
             })
             .await
