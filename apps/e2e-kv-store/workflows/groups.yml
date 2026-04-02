@@ -57,14 +57,8 @@ steps:
     type: join_group
     node: e2e-node-2
     invitation: '{{group_invitation_e2e-node-1}}'
-
-  - name: Node-2 joins context 1 via group
-    type: join_context
-    node: e2e-node-2
-    context_id: '{{ctx1_id}}'
     outputs:
-      ctx1_id_n2: contextId
-      ctx1_key_node2: memberPublicKey
+      member_identity_node2: memberIdentity
 
   - name: Node-1 writes to context 1
     type: call
@@ -90,7 +84,7 @@ steps:
     type: call
     node: e2e-node-2
     context_id: '{{ctx1_id}}'
-    executor_public_key: '{{ctx1_key_node2}}'
+    executor_public_key: '{{member_identity_node2}}'
     method: get
     args:
       key: "group_key1"
@@ -106,7 +100,7 @@ steps:
     type: call
     node: e2e-node-2
     context_id: '{{ctx1_id}}'
-    executor_public_key: '{{ctx1_key_node2}}'
+    executor_public_key: '{{member_identity_node2}}'
     method: set
     args:
       key: "group_key2"
@@ -150,12 +144,6 @@ steps:
       ctx3_id: contextId
       ctx3_key_node1: memberPublicKey
 
-  - name: Create identity on node-2 for invite flow
-    type: create_identity
-    node: e2e-node-2
-    outputs:
-      identity_node2_ctx3: publicKey
-
   - name: Create context invitation on node-1
     type: invite
     node: e2e-node-1
@@ -168,7 +156,7 @@ steps:
   - name: Node-2 joins context 3 via context invitation
     type: join
     node: e2e-node-2
-    invitee_id: '{{identity_node2_ctx3}}'
+    invitee_id: '{{member_identity_node2}}'
     invitation: '{{ctx3_invitation}}'
     outputs:
       ctx3_key_node2: memberPublicKey

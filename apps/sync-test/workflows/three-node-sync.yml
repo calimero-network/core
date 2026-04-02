@@ -52,6 +52,7 @@ steps:
     outputs:
       context_id: contextId
       fran_key: memberPublicKey
+      group_id: groupId
 
   - name: Assert context created
     type: assert
@@ -59,33 +60,20 @@ steps:
       - "is_set({{context_id}})"
       - "is_set({{fran_key}})"
 
-  # Matea creates identity and joins
-  - name: Matea creates identity
-    type: create_identity
-    node: sync-test-node-2
-    outputs:
-      matea_key: publicKey
-
-  - name: Wait for identity
-    type: wait
-    seconds: 3
-
-  - name: Fran invites Matea
-    type: invite_identity
+  # Matea joins via group invitation
+  - name: Invite Matea to Group
+    type: create_group_invitation
     node: sync-test-node-1
-    context_id: "{{context_id}}"
-    grantee_id: "{{matea_key}}"
-    granter_id: "{{fran_key}}"
-    capability: member
+    group_id: "{{group_id}}"
     outputs:
       matea_invitation: invitation
 
-  - name: Matea joins context
-    type: join_context
+  - name: Matea joins group
+    type: join_group
     node: sync-test-node-2
-    context_id: "{{context_id}}"
-    invitee_id: "{{matea_key}}"
     invitation: "{{matea_invitation}}"
+    outputs:
+      matea_key: memberIdentity
 
   - name: Wait for Matea join to sync
     type: wait_for_sync
@@ -166,32 +154,19 @@ steps:
   # Phase 3: Sandi joins AFTER existing writes
   # ============================================
 
-  - name: Sandi creates identity
-    type: create_identity
-    node: sync-test-node-3
-    outputs:
-      sandi_key: publicKey
-
-  - name: Wait for identity
-    type: wait
-    seconds: 3
-
-  - name: Fran invites Sandi
-    type: invite_identity
+  - name: Invite Sandi to Group
+    type: create_group_invitation
     node: sync-test-node-1
-    context_id: "{{context_id}}"
-    grantee_id: "{{sandi_key}}"
-    granter_id: "{{fran_key}}"
-    capability: member
+    group_id: "{{group_id}}"
     outputs:
       sandi_invitation: invitation
 
-  - name: Sandi joins context
-    type: join_context
+  - name: Sandi joins group
+    type: join_group
     node: sync-test-node-3
-    context_id: "{{context_id}}"
-    invitee_id: "{{sandi_key}}"
     invitation: "{{sandi_invitation}}"
+    outputs:
+      sandi_key: memberIdentity
 
   - name: Wait for Sandi join to sync
     type: wait_for_sync
