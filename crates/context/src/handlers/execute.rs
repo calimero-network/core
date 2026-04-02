@@ -786,8 +786,8 @@ impl ContextManager {
                             "<single-service>".to_owned()
                         } else {
                             app.services
-                                .iter()
-                                .map(|s| s.name.as_str())
+                                .keys()
+                                .map(String::as_str)
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         }
