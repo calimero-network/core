@@ -1,7 +1,7 @@
 //! Two logical nodes (separate stores) receive the same gossip payloads and converge to identical group membership.
 //!
-//! Mirrors the node path: `BroadcastMessage::SignedGroupOpV1` carries `borsh(SignedGroupOp)` bytes; each peer decodes
-//! and applies via `group_store::apply_local_signed_group_op` (see `network_event.rs` + `apply_signed_group_op` handler).
+//! Each peer applies `borsh(SignedGroupOp)` payloads via `group_store::apply_local_signed_group_op`
+//! (same path as `ContextClient::apply_signed_group_op`).
 //! Real libp2p gossip on `group/<hex>` is covered by `calimero-network` (`tests/gossipsub_group_topic.rs`).
 
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use calimero_context::group_store::{
     list_group_members, load_group_meta, read_op_log_after, save_group_meta,
 };
 use calimero_context_config::types::{
-    ContextGroupId, GroupInvitationFromAdmin, GroupRevealPayloadData, SignedGroupOpenInvitation,
+    ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
     SignerId,
 };
 use calimero_context_config::MemberCapabilities;

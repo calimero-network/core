@@ -11,7 +11,7 @@ pub mod types;
 use repr::Repr;
 use types::{
     AppKey, Application, Capability, ContextGroupId, ContextId, ContextIdentity,
-    ExpirationTimestamp, SignedGroupRevealPayload, SignedRevealPayload, SignerId,
+    ExpirationTimestamp, SignedRevealPayload, SignerId,
 };
 
 pub type Timestamp = u64;
@@ -171,13 +171,6 @@ pub enum GroupRequestKind<'a> {
     /// Must be called by a group admin before the proxy path is exercised.
     ApproveContextRegistration {
         context_id: Repr<ContextId>,
-    },
-    CommitGroupInvitation {
-        commitment_hash: String,
-        expiration_timestamp: ExpirationTimestamp,
-    },
-    RevealGroupInvitation {
-        payload: SignedGroupRevealPayload,
     },
     /// Join a context within a group using group membership as authorization.
     /// Caller must be a group member; the context must belong to the group.

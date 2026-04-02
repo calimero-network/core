@@ -1,7 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::{DeleteGroupRequest, DeleteGroupResponse};
 use calimero_context_primitives::local_governance::GroupOp;
-use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
@@ -87,10 +86,6 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                     GroupOp::GroupDelete,
                 )
                 .await?;
-
-                let _ = node_client
-                    .broadcast_group_mutation(group_id_bytes, GroupMutationKind::Deleted)
-                    .await;
 
                 let _ = node_client.unsubscribe_group(group_id_bytes).await;
 

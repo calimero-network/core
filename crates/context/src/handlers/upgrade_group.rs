@@ -5,7 +5,6 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_context_primitives::group::{UpgradeGroupRequest, UpgradeGroupResponse};
 use calimero_context_primitives::local_governance::GroupOp;
 use calimero_context_primitives::messages::MigrationParams;
-use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -186,9 +185,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         0,
                         usize::MAX,
                     )?;
-                    let _ = node_client
-                        .broadcast_group_mutation(group_id.to_bytes(), GroupMutationKind::Upgraded)
-                        .await;
 
                     // Announce target app blob on DHT for each group context so
                     // peer nodes can discover and fetch it during group sync.
@@ -362,14 +358,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         usize::MAX,
                     ) {
                         let nc = node_client_for_gossip;
-                        let gid = group_id_clone.to_bytes();
                         ctx.spawn(
                             async move {
-                                let _ = nc
-                                    .broadcast_group_mutation(gid, GroupMutationKind::Upgraded)
-                                    .await;
-
-                                // Announce target app blob on DHT for peers
                                 if let Some((blob_id, blob_size)) = target_blob_info {
                                     for context_id in &contexts {
                                         if let Err(err) = nc

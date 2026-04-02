@@ -720,9 +720,9 @@ mod tests {
         let mut bytes = Vec::new();
         // bits: Vec<u8> - length (4 bytes little-endian) + data
         bytes.extend_from_slice(&0u32.to_le_bytes()); // empty vec
-                                                      // num_bits: usize (8 bytes on 64-bit)
+        // num_bits: usize (8 bytes on 64-bit)
         bytes.extend_from_slice(&0usize.to_le_bytes()); // MALICIOUS: 0
-                                                        // num_hashes: u8
+        // num_hashes: u8
         bytes.push(4);
         // item_count: usize
         bytes.extend_from_slice(&0usize.to_le_bytes());
@@ -749,11 +749,11 @@ mod tests {
         // bits: Vec<u8>
         bytes.extend_from_slice(&8u32.to_le_bytes()); // 8 bytes
         bytes.extend_from_slice(&[0u8; 8]); // 64 bits
-                                            // num_bits: usize
+        // num_bits: usize
         bytes.extend_from_slice(&64usize.to_le_bytes());
         // num_hashes: u8
         bytes.push(0); // MALICIOUS: 0
-                       // item_count: usize
+        // item_count: usize
         bytes.extend_from_slice(&0usize.to_le_bytes());
 
         let filter: DeltaIdBloomFilter = borsh::from_slice(&bytes).expect("deserialize");
@@ -774,7 +774,7 @@ mod tests {
         // bits: Vec<u8> - only 1 byte (8 bits of actual storage)
         bytes.extend_from_slice(&1u32.to_le_bytes()); // length = 1
         bytes.push(0u8); // only 1 byte = 8 bits
-                         // num_bits: usize - MALICIOUS: claims 1 million bits!
+        // num_bits: usize - MALICIOUS: claims 1 million bits!
         bytes.extend_from_slice(&1_000_000usize.to_le_bytes());
         // num_hashes: u8
         bytes.push(4);
@@ -819,7 +819,7 @@ mod tests {
         let mut bytes = Vec::new();
         // bits: Vec<u8> - empty
         bytes.extend_from_slice(&0u32.to_le_bytes()); // empty vec
-                                                      // num_bits: usize - MALICIOUS: usize::MAX
+        // num_bits: usize - MALICIOUS: usize::MAX
         bytes.extend_from_slice(&usize::MAX.to_le_bytes());
         // num_hashes: u8
         bytes.push(4);

@@ -1380,78 +1380,8 @@ pub struct NamespaceIdentityValue {
     pub sender_key: [u8; 32],
 }
 
-/// Prefix for invitation commitment entries.
-pub const GROUP_INVITATION_COMMITMENT_PREFIX: u8 = 0x37;
-
-/// Stores a pre-committed invitation hash so the claim can be verified.
-/// Key: `prefix(1) + group_id(32) + commitment_hash(32)`.
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupInvitationCommitment(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
-
-impl GroupInvitationCommitment {
-    #[must_use]
-    pub fn new(group_id: [u8; 32], commitment_hash: [u8; 32]) -> Self {
-        Self(Key(GenericArray::from([
-            GROUP_INVITATION_COMMITMENT_PREFIX,
-        ])
-        .concat(GenericArray::from(group_id))
-        .concat(GenericArray::from(commitment_hash))))
-    }
-
-    #[must_use]
-    pub fn group_id(&self) -> [u8; 32] {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
-        id
-    }
-
-    #[must_use]
-    pub fn commitment_hash(&self) -> [u8; 32] {
-        let mut h = [0; 32];
-        h.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..65]);
-        h
-    }
-}
-
-impl AsKeyParts for GroupInvitationCommitment {
-    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
-
-    fn column() -> Column {
-        Column::Group
-    }
-
-    fn as_key(&self) -> &Key<Self::Components> {
-        &self.0
-    }
-}
-
-impl FromKeyParts for GroupInvitationCommitment {
-    type Error = Infallible;
-
-    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
-        Ok(Self(parts))
-    }
-}
-
-impl Debug for GroupInvitationCommitment {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupInvitationCommitment")
-            .field("group_id", &self.group_id())
-            .field("commitment_hash", &self.commitment_hash())
-            .finish()
-    }
-}
-
-/// Value stored with a `GroupInvitationCommitment` key.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupInvitationCommitmentValue {
-    pub expiration_timestamp: u64,
-}
-
 // ---------------------------------------------------------------------------
-// Namespace governance op storage (Phase 2)
+// Namespace governance op storage
 // ---------------------------------------------------------------------------
 
 /// Prefix for namespace governance op entries.

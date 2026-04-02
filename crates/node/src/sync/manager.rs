@@ -2051,15 +2051,6 @@ impl SyncManager {
             }
         };
 
-        // Group delta requests are group-scoped, not context-scoped; bypass
-        // context membership checks since the initiator sends a zero
-        // context_id placeholder.
-        if let InitPayload::GroupDeltaRequest { group_id, delta_id } = &payload {
-            self.handle_group_delta_request(*group_id, *delta_id, stream, nonce)
-                .await?;
-            return Ok(Some(()));
-        }
-
         if let InitPayload::NamespaceBackfillRequest {
             namespace_id,
             delta_ids,
@@ -2247,9 +2238,6 @@ impl SyncManager {
                 // HashComparison session. Log and ignore.
                 warn!("Received EntityPush outside of HashComparison session, ignoring");
             }
-            InitPayload::GroupDeltaRequest { .. } => {
-                unreachable!("handled by early return above")
-            }
             InitPayload::NamespaceBackfillRequest { .. } => {
                 unreachable!("handled by early return above")
             }
@@ -2260,51 +2248,6 @@ impl SyncManager {
 }
 
 impl SyncManager {
-    async fn handle_group_delta_request(
-        &self,
-        group_id: [u8; 32],
-        delta_id: [u8; 32],
-        stream: &mut Stream,
-        nonce: Nonce,
-    ) -> eyre::Result<()> {
-        use calimero_context::group_store;
-        use calimero_context_config::types::ContextGroupId;
-        use calimero_context_primitives::local_governance::SignedGroupOp;
-
-        let gid = ContextGroupId::from(group_id);
-        let store = self.context_client.datastore_handle().into_inner();
-        let entries =
-            group_store::read_op_log_after(&store, &gid, 0, usize::MAX).unwrap_or_default();
-
-        for (_seq, op_bytes) in &entries {
-            if let Ok(op) = borsh::from_slice::<SignedGroupOp>(op_bytes) {
-                if let Ok(hash) = op.content_hash() {
-                    if hash == delta_id {
-                        let msg = StreamMessage::Message {
-                            sequence_id: 0,
-                            payload: MessagePayload::GroupDeltaResponse {
-                                delta_id,
-                                parent_ids: op.parent_op_hashes.clone(),
-                                payload: op_bytes.clone(),
-                            },
-                            next_nonce: nonce,
-                        };
-                        super::stream::send(stream, &msg, None).await?;
-                        return Ok(());
-                    }
-                }
-            }
-        }
-
-        let msg = StreamMessage::Message {
-            sequence_id: 0,
-            payload: MessagePayload::GroupDeltaNotFound,
-            next_nonce: nonce,
-        };
-        super::stream::send(stream, &msg, None).await?;
-        Ok(())
-    }
-
     /// Handle a namespace backfill request: look up full `SignedNamespaceOp`
     /// payloads for the requested delta IDs and send them back.
     ///

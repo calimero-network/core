@@ -137,12 +137,6 @@ async fn delete_context(
             calimero_context_primitives::local_governance::GroupOp::ContextDetached { context_id },
         )
         .await?;
-        let _ = node_client
-            .broadcast_group_mutation(
-                group_id.to_bytes(),
-                calimero_node_primitives::sync::GroupMutationKind::ContextDetached,
-            )
-            .await;
     }
 
     Ok(())

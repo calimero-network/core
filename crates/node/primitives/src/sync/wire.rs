@@ -189,12 +189,6 @@ pub enum InitPayload {
         entities: Vec<super::hash_comparison::TreeLeafData>,
     },
 
-    /// Request a specific group governance delta by content hash.
-    GroupDeltaRequest {
-        group_id: [u8; 32],
-        delta_id: [u8; 32],
-    },
-
     /// Request encrypted payloads for namespace governance skeletons.
     /// Used during lazy backfill when a member joins a new group and
     /// needs to decrypt previously-stored opaque skeletons.
@@ -323,17 +317,6 @@ pub enum MessagePayload<'a> {
         /// Number of entities successfully applied via CRDT merge.
         applied_count: u32,
     },
-
-    /// Response containing a group governance delta.
-    GroupDeltaResponse {
-        delta_id: [u8; 32],
-        parent_ids: Vec<[u8; 32]>,
-        /// borsh(SignedGroupOp)
-        payload: Vec<u8>,
-    },
-
-    /// The requested group delta was not found.
-    GroupDeltaNotFound,
 
     /// Response containing namespace governance delta payloads for backfill.
     NamespaceBackfillResponse {

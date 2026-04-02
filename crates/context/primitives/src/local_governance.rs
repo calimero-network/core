@@ -91,17 +91,6 @@ pub enum GroupOp {
     GroupDelete,
     /// Update group migration bytes in [`GroupMetaValue`] (admin).
     GroupMigrationSet { migration: Option<Vec<u8>> },
-    /// Commit an invitation hash before the invitee can claim it.
-    /// Published by the inviter so the claim can be verified against it.
-    InvitationCommitted {
-        commitment_hash: [u8; 32],
-        expiration_timestamp: u64,
-    },
-    /// Join a group using an admin-signed open invitation plus joiner proof (see `join_group`).
-    JoinWithInvitationClaim {
-        signed_invitation: SignedGroupOpenInvitation,
-        invitee_signature_hex: String,
-    },
     /// Grant a capability to a member for a specific context.
     ContextCapabilityGranted {
         context_id: ContextId,
@@ -114,12 +103,6 @@ pub enum GroupOp {
         member: PublicKey,
         capability: u8,
     },
-    /// Link a child group under this group (admin only).
-    /// Published on the parent group's gossip topic.
-    SubgroupCreated { child_group_id: [u8; 32] },
-    /// Unlink a child group from this group (admin only).
-    /// Does not delete the child group or its members/contexts.
-    SubgroupRemoved { child_group_id: [u8; 32] },
     /// TEE admission policy: defines which TEE nodes can auto-join the group.
     /// Only admins can set this policy.
     TeeAdmissionPolicySet {

@@ -1,7 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::SetDefaultCapabilitiesRequest;
 use calimero_context_primitives::local_governance::GroupOp;
-use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
@@ -82,15 +81,6 @@ impl Handler<SetDefaultCapabilitiesRequest> for ContextManager {
                     },
                 )
                 .await?;
-
-                let _ = node_client
-                    .broadcast_group_mutation(
-                        group_id.to_bytes(),
-                        GroupMutationKind::DefaultCapabilitiesSet {
-                            capabilities: default_capabilities,
-                        },
-                    )
-                    .await;
 
                 info!(
                     ?group_id,

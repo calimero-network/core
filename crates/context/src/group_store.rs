@@ -1,6 +1,4 @@
-use calimero_context_config::types::{
-    ContextGroupId, GroupRevealPayloadData, SignedGroupOpenInvitation, SignerId,
-};
+use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -9,7 +7,7 @@ use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupChildIndex, GroupContextAlias,
     GroupContextIndex, GroupContextLastMigration, GroupContextLastMigrationValue,
     GroupContextMemberCap, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
-    GroupDefaultVisValue, GroupInvitationCommitment, GroupInvitationCommitmentValue,
+    GroupDefaultVisValue,
     GroupLocalGovNonce, GroupMember, GroupMemberAlias, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMemberContext, GroupMemberValue, GroupMeta, GroupMetaValue,
     GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupSigningKey,
@@ -677,12 +675,6 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
             meta.migration = migration.clone();
             save_group_meta(store, &group_id, &meta)?;
         }
-        GroupOp::InvitationCommitted { .. } | GroupOp::JoinWithInvitationClaim { .. } => {
-            tracing::debug!(
-                "InvitationCommitted/JoinWithInvitationClaim deprecated; \
-                 use RootOp::MemberJoined on namespace topic instead"
-            );
-        }
         GroupOp::ContextCapabilityGranted {
             context_id,
             member,
@@ -726,9 +718,6 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 member,
                 current & !capability,
             )?;
-        }
-        GroupOp::SubgroupCreated { .. } | GroupOp::SubgroupRemoved { .. } => {
-            tracing::debug!("SubgroupCreated/Removed ops are deprecated in namespace model");
         }
         GroupOp::TeeAdmissionPolicySet { .. } => {
             require_group_admin(store, &group_id, &op.signer)?;
@@ -823,8 +812,7 @@ pub struct SignedOpOutput {
 }
 
 /// Sign the next monotonic [`SignedGroupOp`] for `signer_sk`, apply via [`apply_local_signed_group_op`],
-/// and return a [`SignedOpOutput`] for
-/// [`calimero_node_primitives::client::NodeClient::publish_signed_group_op`].
+/// and return a [`SignedOpOutput`] with serialized bytes and DAG metadata for callers.
 pub fn sign_apply_local_group_op_borsh(
     store: &Store,
     group_id: &ContextGroupId,
@@ -860,25 +848,19 @@ pub fn sign_apply_local_group_op_borsh(
     })
 }
 
-/// Sign, apply locally, and publish a group op to the network in one step.
+/// Sign and apply a group governance op to the local store.
 ///
-/// Combines [`sign_apply_local_group_op_borsh`] + [`calimero_node_primitives::client::NodeClient::publish_signed_group_op`].
+/// `node_client` is retained for call-site compatibility; legacy group-topic gossip
+/// replication variants were removed from the sync snapshot wire enum.
 pub async fn sign_apply_and_publish(
     store: &Store,
-    node_client: &calimero_node_primitives::client::NodeClient,
+    _node_client: &calimero_node_primitives::client::NodeClient,
     group_id: &ContextGroupId,
     signer_sk: &PrivateKey,
     op: GroupOp,
 ) -> EyreResult<()> {
-    let output = sign_apply_local_group_op_borsh(store, group_id, signer_sk, op)?;
-    node_client
-        .publish_signed_group_op(
-            group_id.to_bytes(),
-            output.delta_id,
-            output.parent_ids,
-            output.bytes,
-        )
-        .await
+    let _output = sign_apply_local_group_op_borsh(store, group_id, signer_sk, op)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

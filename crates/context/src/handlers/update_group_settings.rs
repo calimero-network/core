@@ -1,7 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::UpdateGroupSettingsRequest;
 use calimero_context_primitives::local_governance::GroupOp;
-use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 
@@ -80,12 +79,6 @@ impl Handler<UpdateGroupSettingsRequest> for ContextManager {
                 )
                 .await?;
 
-                let _ = node_client
-                    .broadcast_group_mutation(
-                        group_id.to_bytes(),
-                        GroupMutationKind::SettingsUpdated,
-                    )
-                    .await;
                 Ok(())
             }
             .into_actor(self),
