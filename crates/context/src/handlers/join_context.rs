@@ -1,22 +1,31 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::{JoinGroupContextRequest, JoinGroupContextResponse};
+use calimero_context_primitives::group::{JoinContextRequest, JoinContextResponse};
 use calimero_primitives::context::ContextConfigParams;
 use eyre::bail;
 use tracing::info;
 
 use crate::{group_store, ContextManager};
 
-impl Handler<JoinGroupContextRequest> for ContextManager {
-    type Result = ActorResponse<Self, <JoinGroupContextRequest as Message>::Result>;
+impl Handler<JoinContextRequest> for ContextManager {
+    type Result = ActorResponse<Self, <JoinContextRequest as Message>::Result>;
 
     fn handle(
         &mut self,
-        JoinGroupContextRequest {
-            group_id,
-            context_id,
-        }: JoinGroupContextRequest,
+        JoinContextRequest { context_id }: JoinContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        let group_id = match group_store::get_group_for_context(&self.datastore, &context_id) {
+            Ok(Some(gid)) => gid,
+            Ok(None) => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "context does not belong to any group"
+                )));
+            }
+            Err(err) => {
+                return ActorResponse::reply(Err(err));
+            }
+        };
+
         // Resolve joiner identity from node namespace identity.
         let (joiner_identity, _) = match self.node_namespace_identity(&group_id) {
             Some(id) => id,
@@ -92,7 +101,7 @@ impl Handler<JoinGroupContextRequest> for ContextManager {
                     "joined context via group membership"
                 );
 
-                Ok(JoinGroupContextResponse {
+                Ok(JoinContextResponse {
                     context_id,
                     member_public_key: joiner_identity,
                 })

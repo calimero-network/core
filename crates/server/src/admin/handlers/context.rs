@@ -1,5 +1,6 @@
 pub mod create_context;
 pub mod delete_context;
+pub mod join_context;
 pub mod get_context;
 pub mod get_context_group;
 pub mod get_context_identities;

@@ -7,7 +7,6 @@ pub mod get_group_info;
 pub mod get_group_upgrade_status;
 pub mod get_member_capabilities;
 pub mod join_group;
-pub mod join_group_context;
 pub mod list_all_groups;
 pub mod list_group_contexts;
 pub mod list_group_members;
@@ -77,7 +76,7 @@ pub fn parse_group_id(s: &str) -> Result<ContextGroupId, ApiError> {
     Ok(ContextGroupId::from(arr))
 }
 
-fn parse_context_id(s: &str) -> Result<ContextId, ApiError> {
+pub(crate) fn parse_context_id(s: &str) -> Result<ContextId, ApiError> {
     if let Ok(context_id) = s.parse::<ContextId>() {
         return Ok(context_id);
     }

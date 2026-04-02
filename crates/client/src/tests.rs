@@ -32,7 +32,6 @@ use calimero_server_primitives::admin::DeleteGroupApiRequest;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use calimero_server_primitives::admin::GroupMemberApiInput;
 use calimero_server_primitives::admin::JoinGroupApiRequest;
-use calimero_server_primitives::admin::JoinGroupContextApiRequest;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
@@ -357,10 +356,10 @@ async fn detach_context_from_group() {
 }
 
 #[tokio::test]
-async fn join_group_context() {
+async fn join_context() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path(format!("/admin-api/groups/{GID}/join-context")))
+        .and(path(format!("/admin-api/contexts/{CID}/join")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": {
                 "contextId": ZERO_BS58,
@@ -373,12 +372,7 @@ async fn join_group_context() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client
-        .join_group_context(
-            GID,
-            JoinGroupContextApiRequest {
-                context_id: ContextId::from([0u8; 32]),
-            },
-        )
+        .join_context(CID)
         .await
         .unwrap();
 

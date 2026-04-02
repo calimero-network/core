@@ -14,7 +14,7 @@ use crate::group::{
     BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
     DeleteGroupRequest, DetachContextFromGroupRequest, GetGroupForContextRequest,
     GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
-    GetNamespaceIdentityRequest, JoinGroupContextRequest, JoinGroupRequest, ListAllGroupsRequest,
+    GetNamespaceIdentityRequest, JoinContextRequest, JoinGroupRequest, ListAllGroupsRequest,
     ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
     SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetGroupAliasRequest,
@@ -261,9 +261,9 @@ pub enum ContextMessage {
         request: SyncGroupRequest,
         outcome: oneshot::Sender<<SyncGroupRequest as Message>::Result>,
     },
-    JoinGroupContext {
-        request: JoinGroupContextRequest,
-        outcome: oneshot::Sender<<JoinGroupContextRequest as Message>::Result>,
+    JoinContext {
+        request: JoinContextRequest,
+        outcome: oneshot::Sender<<JoinContextRequest as Message>::Result>,
     },
     SetMemberCapabilities {
         request: SetMemberCapabilitiesRequest,

@@ -59,9 +59,8 @@ steps:
     invitation: '{{group_invitation_e2e-node-1}}'
 
   - name: Node-2 joins context 1 via group
-    type: join_group_context
+    type: join_context
     node: e2e-node-2
-    group_id: '{{group_id_e2e-node-1}}'
     context_id: '{{ctx1_id}}'
     outputs:
       ctx1_id_n2: contextId

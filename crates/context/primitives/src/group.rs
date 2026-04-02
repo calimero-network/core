@@ -318,17 +318,16 @@ pub struct SyncGroupResponse {
 }
 
 #[derive(Debug)]
-pub struct JoinGroupContextRequest {
-    pub group_id: ContextGroupId,
+pub struct JoinContextRequest {
     pub context_id: ContextId,
 }
 
-impl Message for JoinGroupContextRequest {
-    type Result = eyre::Result<JoinGroupContextResponse>;
+impl Message for JoinContextRequest {
+    type Result = eyre::Result<JoinContextResponse>;
 }
 
 #[derive(Clone, Debug)]
-pub struct JoinGroupContextResponse {
+pub struct JoinContextResponse {
     pub context_id: ContextId,
     pub member_public_key: PublicKey,
 }

@@ -10,7 +10,7 @@ pub mod delete;
 pub mod get;
 pub mod invite;
 pub mod join;
-pub mod join_group_context;
+pub mod join_context;
 pub mod list;
 pub mod members;
 pub mod settings;
@@ -73,8 +73,8 @@ pub enum GroupSubCommands {
     SigningKey(signing_key::SigningKeyCommand),
     Upgrade(upgrade::UpgradeCommand),
     Sync(sync::SyncCommand),
-    #[command(alias = "join-group-context")]
-    JoinGroupContext(join_group_context::JoinGroupContextCommand),
+    #[command(alias = "join-context")]
+    JoinContext(join_context::JoinContextCommand),
     Settings(settings::SettingsCommand),
 }
 
@@ -93,7 +93,7 @@ impl GroupCommand {
             GroupSubCommands::SigningKey(cmd) => cmd.run(environment).await,
             GroupSubCommands::Upgrade(cmd) => cmd.run(environment).await,
             GroupSubCommands::Sync(cmd) => cmd.run(environment).await,
-            GroupSubCommands::JoinGroupContext(cmd) => cmd.run(environment).await,
+            GroupSubCommands::JoinContext(cmd) => cmd.run(environment).await,
             GroupSubCommands::Settings(cmd) => cmd.run(environment).await,
         }
     }

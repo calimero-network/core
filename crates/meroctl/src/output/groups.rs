@@ -2,7 +2,7 @@ use calimero_server_primitives::admin::{
     AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
     DeleteGroupApiResponse, DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
     GetMemberCapabilitiesApiResponse, GroupInfoApiResponse, JoinGroupApiResponse,
-    JoinGroupContextApiResponse, ListAllGroupsApiResponse, ListGroupContextsApiResponse,
+    JoinContextApiResponse, ListAllGroupsApiResponse, ListGroupContextsApiResponse,
     ListGroupMembersApiResponse, RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse,
     SetDefaultCapabilitiesApiResponse, SetDefaultVisibilityApiResponse,
     SetMemberCapabilitiesApiResponse, SyncGroupApiResponse, UpdateGroupSettingsApiResponse,
@@ -268,7 +268,7 @@ impl Report for GetGroupUpgradeStatusApiResponse {
     }
 }
 
-impl Report for JoinGroupContextApiResponse {
+impl Report for JoinContextApiResponse {
     fn report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![

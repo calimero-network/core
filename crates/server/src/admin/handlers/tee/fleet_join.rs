@@ -4,7 +4,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context::group_store;
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_primitives::group::{JoinGroupContextRequest, ListGroupContextsRequest};
+use calimero_context_primitives::group::{JoinContextRequest, ListGroupContextsRequest};
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_server_primitives::admin::FleetJoinRequest;
@@ -168,8 +168,7 @@ pub async fn handler(
                 for entry in &entries {
                     match state
                         .ctx_client
-                        .join_group_context(JoinGroupContextRequest {
-                            group_id,
+                        .join_context(JoinContextRequest {
                             context_id: entry.context_id,
                         })
                         .await

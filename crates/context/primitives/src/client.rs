@@ -25,7 +25,7 @@ use crate::group::{
     DetachContextFromGroupRequest, GetGroupForContextRequest, GetGroupInfoRequest,
     GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
     GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse, GroupSummary,
-    GroupUpgradeInfo, JoinGroupContextRequest, JoinGroupContextResponse, JoinGroupRequest,
+    GroupUpgradeInfo, JoinContextRequest, JoinContextResponse, JoinGroupRequest,
     JoinGroupResponse, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
     ListGroupMembersResponse, ListNamespacesForApplicationRequest, ListNamespacesRequest,
     NamespaceSummary, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
@@ -1372,14 +1372,14 @@ impl ContextClient {
         receiver.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn join_group_context(
+    pub async fn join_context(
         &self,
-        request: JoinGroupContextRequest,
-    ) -> eyre::Result<JoinGroupContextResponse> {
+        request: JoinContextRequest,
+    ) -> eyre::Result<JoinContextResponse> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
-            .send(ContextMessage::JoinGroupContext {
+            .send(ContextMessage::JoinContext {
                 request,
                 outcome: sender,
             })

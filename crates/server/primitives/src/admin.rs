@@ -1968,15 +1968,15 @@ pub struct SyncGroupApiResponseData {
     pub context_count: u64,
 }
 
-// ---- Join Group Context ----
+// ---- Join Context ----
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct JoinGroupContextApiRequest {
+pub struct JoinContextApiRequest {
     pub context_id: ContextId,
 }
 
-impl Validate for JoinGroupContextApiRequest {
+impl Validate for JoinContextApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         Vec::new()
     }
@@ -1984,13 +1984,13 @@ impl Validate for JoinGroupContextApiRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct JoinGroupContextApiResponse {
-    pub data: JoinGroupContextApiResponseData,
+pub struct JoinContextApiResponse {
+    pub data: JoinContextApiResponseData,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct JoinGroupContextApiResponseData {
+pub struct JoinContextApiResponseData {
     pub context_id: ContextId,
     pub member_public_key: PublicKey,
 }

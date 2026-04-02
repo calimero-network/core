@@ -25,7 +25,7 @@ use crate::admin::handlers::applications::{
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_group, get_context_identities,
     get_context_ids, get_context_storage, get_contexts_for_application,
-    get_contexts_with_executors_for_application, invite_specialized_node, sync,
+    get_contexts_with_executors_for_application, invite_specialized_node, join_context, sync,
     update_context_application,
 };
 use crate::admin::handlers::identity::generate_context_identity;
@@ -224,8 +224,8 @@ pub(crate) fn setup(
             post(groups::create_group_invitation::handler),
         )
         .route(
-            "/groups/:group_id/join-context",
-            post(groups::join_group_context::handler),
+            "/contexts/:context_id/join",
+            post(join_context::handler),
         )
         .route(
             "/groups/:group_id/members/:identity/capabilities",
