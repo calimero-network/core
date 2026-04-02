@@ -241,9 +241,8 @@ impl Handler<ExecuteRequest> for ContextManager {
                 )) => {
                     if let Some(method) = migrate {
                         let migration_params = MigrationParams { method: method.clone() };
-                        // Migration: load the WASM module via get_module (actor-aware cache),
-                        // then call update_application_with_migration directly — no mailbox.
-                        act.get_module(target_app, None)
+                        let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
+                        act.get_module(target_app, service_name)
                             .then(move |module_result, act, _ctx| {
                                 // Re-read cached values; they may have been refreshed during load
                                 let context_meta =
