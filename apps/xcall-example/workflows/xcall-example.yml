@@ -32,6 +32,7 @@ steps:
     outputs:
       context_a_id: contextId
       context_a_member_key: memberPublicKey
+      group_id_a: groupId
 
   - name: Assert Context A created
     type: assert
@@ -47,6 +48,7 @@ steps:
     outputs:
       context_b_id: contextId
       context_b_member_key: memberPublicKey
+      group_id_b: groupId
 
   - name: Assert Context B created
     type: assert
@@ -55,7 +57,7 @@ steps:
       - "is_set({{context_b_member_key}})"
 
   # ============================================
-  # Setup Phase: Node 2 creates identities and joins both contexts
+  # Setup Phase: Node 2 joins both groups
   # ============================================
 
   # Step 4: Install app on Node 2
@@ -67,56 +69,31 @@ steps:
     outputs:
       app_id_node2: applicationId
 
-  # Step 5: Node 2 creates first identity (for Context A)
-  - name: Create Identity for Context A on Node 2
-    type: create_identity
-    node: calimero-node-2
-    outputs:
-      identity_a: publicKey
-
-  - name: Wait for first identity creation
-    type: wait
-    seconds: 5
-
-  # Step 6: Node 2 creates second identity (for Context B)
-  - name: Create Identity for Context B on Node 2
-    type: create_identity
-    node: calimero-node-2
-    outputs:
-      identity_b: publicKey
-
-  - name: Wait for second identity creation
-    type: wait
-    seconds: 5
-
-  # Step 7: Node 1 invites first identity to Context A
-  - name: Invite Identity A to Context A
-    type: invite
+  # Step 5: Create group invitation for Context A's group
+  - name: Create group invitation for Context A
+    type: create_group_invitation
     node: calimero-node-1
-    context_id: "{{context_a_id}}"
-    granter_id: "{{context_a_member_key}}"
-    valid_for_seconds: 3600
+    group_id: "{{group_id_a}}"
     outputs:
       invitation_a: invitation
 
-  # Step 8: Node 1 invites second identity to Context B
-  - name: Invite Identity B to Context B
-    type: invite
+  # Step 6: Create group invitation for Context B's group
+  - name: Create group invitation for Context B
+    type: create_group_invitation
     node: calimero-node-1
-    context_id: "{{context_b_id}}"
-    granter_id: "{{context_b_member_key}}"
-    valid_for_seconds: 3600
+    group_id: "{{group_id_b}}"
     outputs:
       invitation_b: invitation
 
-  # Step 9: Node 2 joins Context A with first identity
-  - name: Node 2 Join Context A
-    type: join
+  # Step 7: Node 2 joins group A (auto-joins all contexts in group)
+  - name: Node 2 Join Group A
+    type: join_group
     node: calimero-node-2
-    invitee_id: "{{identity_a}}"
     invitation: "{{invitation_a}}"
+    outputs:
+      identity_a: memberIdentity
 
-  - name: Wait for Context A join to propagate
+  - name: Wait for Group A join to propagate
     type: wait_for_sync
     context_id: "{{context_a_id}}"
     nodes:
@@ -126,14 +103,15 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  # Step 10: Node 2 joins Context B with second identity
-  - name: Node 2 Join Context B
-    type: join
+  # Step 8: Node 2 joins group B (auto-joins all contexts in group)
+  - name: Node 2 Join Group B
+    type: join_group
     node: calimero-node-2
-    invitee_id: "{{identity_b}}"
     invitation: "{{invitation_b}}"
+    outputs:
+      identity_b: memberIdentity
 
-  - name: Wait for Context B join to propagate
+  - name: Wait for Group B join to propagate
     type: wait_for_sync
     context_id: "{{context_b_id}}"
     nodes:

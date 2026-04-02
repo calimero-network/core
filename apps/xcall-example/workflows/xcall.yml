@@ -31,6 +31,7 @@ steps:
     outputs:
       context_a_id: contextId
       context_a_member_key: memberPublicKey
+      group_id_a: groupId
 
   - name: Create Context B
     type: create_context
@@ -39,48 +40,35 @@ steps:
     outputs:
       context_b_id: contextId
       context_b_member_key: memberPublicKey
+      group_id_b: groupId
 
-  - name: Create identity for Context A on Node 2
-    type: create_identity
-    node: rust-xcall-2
-    outputs:
-      identity_a: publicKey
-
-  - name: Create identity for Context B on Node 2
-    type: create_identity
-    node: rust-xcall-2
-    outputs:
-      identity_b: publicKey
-
-  - name: Invite identity A to Context A
-    type: invite
+  - name: Create group invitation for Context A
+    type: create_group_invitation
     node: rust-xcall-1
-    context_id: "{{context_a_id}}"
-    granter_id: "{{context_a_member_key}}"
-    valid_for_seconds: 3600
+    group_id: "{{group_id_a}}"
     outputs:
       invitation_a: invitation
 
-  - name: Invite identity B to Context B
-    type: invite
+  - name: Create group invitation for Context B
+    type: create_group_invitation
     node: rust-xcall-1
-    context_id: "{{context_b_id}}"
-    granter_id: "{{context_b_member_key}}"
-    valid_for_seconds: 3600
+    group_id: "{{group_id_b}}"
     outputs:
       invitation_b: invitation
 
-  - name: Join Context A from Node 2
-    type: join
+  - name: Node 2 joins group A
+    type: join_group
     node: rust-xcall-2
-    invitee_id: "{{identity_a}}"
     invitation: "{{invitation_a}}"
+    outputs:
+      identity_a: memberIdentity
 
-  - name: Join Context B from Node 2
-    type: join
+  - name: Node 2 joins group B
+    type: join_group
     node: rust-xcall-2
-    invitee_id: "{{identity_b}}"
     invitation: "{{invitation_b}}"
+    outputs:
+      identity_b: memberIdentity
 
   - name: Wait for memberships to propagate - Context A
     type: wait_for_sync

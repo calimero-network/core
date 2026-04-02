@@ -35,6 +35,7 @@ steps:
     outputs:
       context_id: contextId
       node1_key: memberPublicKey
+      group_id: groupId
 
   # KV OPERATIONS
 
@@ -122,28 +123,19 @@ steps:
 
   # NODE-3 OPEN INVITATION JOIN (after initial cross-node traffic)
 
-  - name: Create identity on node-3
-    type: create_identity
-    node: e2e-node-3
-    outputs:
-      public_key_3: publicKey
-
-  - name: Create open invitation for node-3
-    type: invite
+  - name: Create group invitation for node-3
+    type: create_group_invitation
     node: e2e-node-1
-    context_id: "{{context_id}}"
-    granter_id: "{{node1_key}}"
-    valid_for_seconds: 3600
+    group_id: "{{group_id}}"
     outputs:
       open_invitation_3: invitation
 
-  - name: Join via open invitation - node-3
-    type: join
+  - name: Join group - node-3
+    type: join_group
     node: e2e-node-3
-    invitee_id: "{{public_key_3}}"
     invitation: "{{open_invitation_3}}"
     outputs:
-      node3_key: memberPublicKey
+      node3_key: memberIdentity
 
   - name: Wait for sync after node-3 joins
     type: wait_for_sync
