@@ -1,8 +1,8 @@
 use calimero_server_primitives::admin::{
     AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
     DeleteGroupApiResponse, DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
-    GetMemberCapabilitiesApiResponse, GroupInfoApiResponse, JoinGroupApiResponse,
-    JoinContextApiResponse, ListAllGroupsApiResponse, ListGroupContextsApiResponse,
+    GetMemberCapabilitiesApiResponse, GroupInfoApiResponse, JoinContextApiResponse,
+    JoinGroupApiResponse, ListAllGroupsApiResponse, ListGroupContextsApiResponse,
     ListGroupMembersApiResponse, RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse,
     SetDefaultCapabilitiesApiResponse, SetDefaultVisibilityApiResponse,
     SetMemberCapabilitiesApiResponse, SyncGroupApiResponse, UpdateGroupSettingsApiResponse,

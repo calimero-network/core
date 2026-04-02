@@ -371,10 +371,7 @@ async fn join_context() {
         .await;
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
-    let resp = client
-        .join_context(CID)
-        .await
-        .unwrap();
+    let resp = client.join_context(CID).await.unwrap();
 
     assert_eq!(resp.data.member_public_key, PublicKey::from([0u8; 32]));
 }

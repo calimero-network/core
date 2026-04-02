@@ -15,9 +15,9 @@ use calimero_server_primitives::admin::DetachContextFromGroupApiResponse;
 use calimero_server_primitives::admin::GetGroupUpgradeStatusApiResponse;
 use calimero_server_primitives::admin::GetMemberCapabilitiesApiResponse;
 use calimero_server_primitives::admin::GroupInfoApiResponse;
+use calimero_server_primitives::admin::JoinContextApiResponse;
 use calimero_server_primitives::admin::JoinGroupApiRequest;
 use calimero_server_primitives::admin::JoinGroupApiResponse;
-use calimero_server_primitives::admin::JoinContextApiResponse;
 use calimero_server_primitives::admin::ListAllGroupsApiResponse;
 use calimero_server_primitives::admin::ListGroupContextsApiResponse;
 use calimero_server_primitives::admin::ListGroupMembersApiResponse;
@@ -254,10 +254,7 @@ where
         Ok(response)
     }
 
-    pub async fn join_context(
-        &self,
-        context_id: &str,
-    ) -> Result<JoinContextApiResponse> {
+    pub async fn join_context(&self, context_id: &str) -> Result<JoinContextApiResponse> {
         let response = self
             .connection
             .post_no_body(&format!("admin-api/contexts/{context_id}/join"))
