@@ -34,7 +34,7 @@ use calimero_crypto::Nonce;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 
 use super::hash_comparison::TreeNode;
 use super::levelwise::LevelNode;

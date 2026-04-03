@@ -1008,7 +1008,7 @@ async fn internal_execute(
                     actions_count = actions.len(),
                     "Received several actions. Verify if there any user actions..."
                 );
-                sign_user_actions(&mut actions, &identity_private_key)
+                sign_user_actions(&mut actions, identity_private_key)
                     .wrap_err("Failed to sign user actions")?;
 
                 // Re-serialize the *signed* actions into a new artifact

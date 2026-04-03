@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use actix::{Actor, AsyncContext, Context};
 use calimero_network_primitives::config::NetworkConfig;
-use calimero_network_primitives::messages::{NetworkEvent, NetworkEventDispatcher};
+use calimero_network_primitives::messages::NetworkEventDispatcher;
 use calimero_network_primitives::stream::{CALIMERO_BLOB_PROTOCOL, CALIMERO_STREAM_PROTOCOL};
 use calimero_utils_actix::actor;
 use eyre::Result as EyreResult;

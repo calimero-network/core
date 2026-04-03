@@ -494,8 +494,6 @@ impl<T: Clone> DagStore<T> {
     /// This allows them to be re-fetched in future syncs instead of being stuck as
     /// zombie deltas (in deltas but not in pending or applied).
     pub fn cleanup_stale(&mut self, max_age: Duration) -> usize {
-        let initial_count = self.pending.len();
-
         // Collect IDs to evict
         let to_evict: Vec<[u8; 32]> = self
             .pending

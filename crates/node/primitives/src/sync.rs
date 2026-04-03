@@ -27,8 +27,6 @@
 //! └── levelwise.rs       # LevelWiseRequest, LevelWiseResponse, etc.
 //! ```
 
-#![expect(single_use_lifetimes, reason = "borsh shenanigans")]
-
 // =============================================================================
 // Submodules
 // =============================================================================
