@@ -63,6 +63,26 @@ pub struct ContextClient {
     context_manager: LazyRecipient<ContextMessage>,
 }
 
+/// Generates a simple async send method on `ContextClient` that forwards a request
+/// to the `ContextManager` actor via `ContextMessage` and awaits the response.
+///
+/// Usage: `forward_to_actor!(method_name, VariantName, RequestType, ReturnType);`
+macro_rules! forward_to_actor {
+    ($method:ident, $variant:ident, $request_ty:ty, $return_ty:ty) => {
+        pub async fn $method(&self, request: $request_ty) -> $return_ty {
+            let (sender, receiver) = oneshot::channel();
+            self.context_manager
+                .send(ContextMessage::$variant {
+                    request,
+                    outcome: sender,
+                })
+                .await
+                .expect("Mailbox not to be dropped");
+            receiver.await.expect("Mailbox not to be dropped")
+        }
+    };
+}
+
 impl ContextClient {
     #[must_use]
     pub const fn new(
@@ -876,484 +896,49 @@ impl ContextClient {
         receiver.await.expect("Mailbox not to be dropped")
     }
 
-    // ----- Group operations -----
-
-    pub async fn create_group(
-        &self,
-        request: CreateGroupRequest,
-    ) -> eyre::Result<CreateGroupResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::CreateGroup {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn delete_group(
-        &self,
-        request: DeleteGroupRequest,
-    ) -> eyre::Result<DeleteGroupResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::DeleteGroup {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn add_group_members(&self, request: AddGroupMembersRequest) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::AddGroupMembers {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn remove_group_members(
-        &self,
-        request: RemoveGroupMembersRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::RemoveGroupMembers {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn get_group_info(
-        &self,
-        request: GetGroupInfoRequest,
-    ) -> eyre::Result<GroupInfoResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::GetGroupInfo {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn list_group_members(
-        &self,
-        request: ListGroupMembersRequest,
-    ) -> eyre::Result<ListGroupMembersResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::ListGroupMembers {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn list_group_contexts(
-        &self,
-        request: ListGroupContextsRequest,
-    ) -> eyre::Result<Vec<GroupContextEntry>> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::ListGroupContexts {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn store_context_alias(&self, request: StoreContextAliasRequest) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::StoreContextAlias {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn broadcast_group_aliases(
-        &self,
-        request: BroadcastGroupAliasesRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::BroadcastGroupAliases {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn broadcast_group_local_state(
-        &self,
-        request: BroadcastGroupLocalStateRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::BroadcastGroupLocalState {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn store_member_capability(
-        &self,
-        request: StoreMemberCapabilityRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::StoreMemberCapability {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn store_default_capabilities(
-        &self,
-        request: StoreDefaultCapabilitiesRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::StoreDefaultCapabilities {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn store_default_visibility(
-        &self,
-        request: StoreDefaultVisibilityRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::StoreDefaultVisibility {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn set_member_alias(&self, request: SetMemberAliasRequest) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::SetMemberAlias {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn store_member_alias(&self, request: StoreMemberAliasRequest) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::StoreMemberAlias {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn set_group_alias(&self, request: SetGroupAliasRequest) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::SetGroupAlias {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn store_group_alias(&self, request: StoreGroupAliasRequest) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::StoreGroupAlias {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn store_group_context(&self, request: StoreGroupContextRequest) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::StoreGroupContext {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn store_group_meta(&self, request: StoreGroupMetaRequest) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::StoreGroupMeta {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn upgrade_group(
-        &self,
-        request: UpgradeGroupRequest,
-    ) -> eyre::Result<UpgradeGroupResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::UpgradeGroup {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn get_group_upgrade_status(
-        &self,
-        request: GetGroupUpgradeStatusRequest,
-    ) -> eyre::Result<Option<GroupUpgradeInfo>> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::GetGroupUpgradeStatus {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn retry_group_upgrade(
-        &self,
-        request: RetryGroupUpgradeRequest,
-    ) -> eyre::Result<UpgradeGroupResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::RetryGroupUpgrade {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn create_group_invitation(
-        &self,
-        request: CreateGroupInvitationRequest,
-    ) -> eyre::Result<CreateGroupInvitationResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::CreateGroupInvitation {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn join_group(&self, request: JoinGroupRequest) -> eyre::Result<JoinGroupResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::JoinGroup {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn list_all_groups(
-        &self,
-        request: ListAllGroupsRequest,
-    ) -> eyre::Result<Vec<GroupSummary>> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::ListAllGroups {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn update_group_settings(
-        &self,
-        request: UpdateGroupSettingsRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::UpdateGroupSettings {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn update_member_role(&self, request: UpdateMemberRoleRequest) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::UpdateMemberRole {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn detach_context_from_group(
-        &self,
-        request: DetachContextFromGroupRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::DetachContextFromGroup {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn get_group_for_context(
-        &self,
-        request: GetGroupForContextRequest,
-    ) -> eyre::Result<Option<ContextGroupId>> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::GetGroupForContext {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn sync_group(&self, request: SyncGroupRequest) -> eyre::Result<SyncGroupResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::SyncGroup {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
+    // --- Simple forwarding methods (generated by forward_to_actor! macro) ---
+    forward_to_actor!(create_group, CreateGroup, CreateGroupRequest, eyre::Result<CreateGroupResponse>);
+    forward_to_actor!(delete_group, DeleteGroup, DeleteGroupRequest, eyre::Result<DeleteGroupResponse>);
+    forward_to_actor!(add_group_members, AddGroupMembers, AddGroupMembersRequest, eyre::Result<()>);
+    forward_to_actor!(remove_group_members, RemoveGroupMembers, RemoveGroupMembersRequest, eyre::Result<()>);
+    forward_to_actor!(get_group_info, GetGroupInfo, GetGroupInfoRequest, eyre::Result<GroupInfoResponse>);
+    forward_to_actor!(list_group_members, ListGroupMembers, ListGroupMembersRequest, eyre::Result<ListGroupMembersResponse>);
+    forward_to_actor!(list_group_contexts, ListGroupContexts, ListGroupContextsRequest, eyre::Result<Vec<GroupContextEntry>>);
+    forward_to_actor!(store_context_alias, StoreContextAlias, StoreContextAliasRequest, eyre::Result<()>);
+    forward_to_actor!(broadcast_group_aliases, BroadcastGroupAliases, BroadcastGroupAliasesRequest, eyre::Result<()>);
+    forward_to_actor!(broadcast_group_local_state, BroadcastGroupLocalState, BroadcastGroupLocalStateRequest, eyre::Result<()>);
+    forward_to_actor!(store_member_capability, StoreMemberCapability, StoreMemberCapabilityRequest, eyre::Result<()>);
+    forward_to_actor!(store_default_capabilities, StoreDefaultCapabilities, StoreDefaultCapabilitiesRequest, eyre::Result<()>);
+    forward_to_actor!(store_default_visibility, StoreDefaultVisibility, StoreDefaultVisibilityRequest, eyre::Result<()>);
+    forward_to_actor!(set_member_alias, SetMemberAlias, SetMemberAliasRequest, eyre::Result<()>);
+    forward_to_actor!(store_member_alias, StoreMemberAlias, StoreMemberAliasRequest, eyre::Result<()>);
+    forward_to_actor!(set_group_alias, SetGroupAlias, SetGroupAliasRequest, eyre::Result<()>);
+    forward_to_actor!(store_group_alias, StoreGroupAlias, StoreGroupAliasRequest, eyre::Result<()>);
+    forward_to_actor!(store_group_context, StoreGroupContext, StoreGroupContextRequest, eyre::Result<()>);
+    forward_to_actor!(store_group_meta, StoreGroupMeta, StoreGroupMetaRequest, eyre::Result<()>);
+    forward_to_actor!(upgrade_group, UpgradeGroup, UpgradeGroupRequest, eyre::Result<UpgradeGroupResponse>);
+    forward_to_actor!(get_group_upgrade_status, GetGroupUpgradeStatus, GetGroupUpgradeStatusRequest, eyre::Result<Option<GroupUpgradeInfo>>);
+    forward_to_actor!(retry_group_upgrade, RetryGroupUpgrade, RetryGroupUpgradeRequest, eyre::Result<UpgradeGroupResponse>);
+    forward_to_actor!(create_group_invitation, CreateGroupInvitation, CreateGroupInvitationRequest, eyre::Result<CreateGroupInvitationResponse>);
+    forward_to_actor!(join_group, JoinGroup, JoinGroupRequest, eyre::Result<JoinGroupResponse>);
+    forward_to_actor!(list_all_groups, ListAllGroups, ListAllGroupsRequest, eyre::Result<Vec<GroupSummary>>);
+    forward_to_actor!(update_group_settings, UpdateGroupSettings, UpdateGroupSettingsRequest, eyre::Result<()>);
+    forward_to_actor!(update_member_role, UpdateMemberRole, UpdateMemberRoleRequest, eyre::Result<()>);
+    forward_to_actor!(detach_context_from_group, DetachContextFromGroup, DetachContextFromGroupRequest, eyre::Result<()>);
+    forward_to_actor!(get_group_for_context, GetGroupForContext, GetGroupForContextRequest, eyre::Result<Option<ContextGroupId>>);
+    forward_to_actor!(sync_group, SyncGroup, SyncGroupRequest, eyre::Result<SyncGroupResponse>);
+    forward_to_actor!(join_context, JoinContext, JoinContextRequest, eyre::Result<JoinContextResponse>);
+    forward_to_actor!(set_member_capabilities, SetMemberCapabilities, SetMemberCapabilitiesRequest, eyre::Result<()>);
+    forward_to_actor!(get_member_capabilities, GetMemberCapabilities, GetMemberCapabilitiesRequest, eyre::Result<GetMemberCapabilitiesResponse>);
+    forward_to_actor!(set_default_capabilities, SetDefaultCapabilities, SetDefaultCapabilitiesRequest, eyre::Result<()>);
+    forward_to_actor!(set_tee_admission_policy, SetTeeAdmissionPolicy, SetTeeAdmissionPolicyRequest, eyre::Result<()>);
+    forward_to_actor!(admit_tee_node, AdmitTeeNode, AdmitTeeNodeRequest, eyre::Result<()>);
+    forward_to_actor!(set_default_visibility, SetDefaultVisibility, SetDefaultVisibilityRequest, eyre::Result<()>);
+    forward_to_actor!(list_namespaces, ListNamespaces, ListNamespacesRequest, eyre::Result<Vec<NamespaceSummary>>);
+    forward_to_actor!(get_namespace_identity, GetNamespaceIdentity, GetNamespaceIdentityRequest, eyre::Result<Option<(ContextGroupId, PublicKey)>>);
+    forward_to_actor!(list_namespaces_for_application, ListNamespacesForApplication, ListNamespacesForApplicationRequest, eyre::Result<Vec<NamespaceSummary>>);
+
+    // --- Methods with custom parameter handling (not suitable for forward_to_actor!) ---
 
     pub async fn apply_signed_group_op(
         &self,
@@ -1381,173 +966,6 @@ impl ContextClient {
         self.context_manager
             .send(ContextMessage::ApplySignedNamespaceOp {
                 request: ApplySignedNamespaceOpRequest { op },
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn join_context(
-        &self,
-        request: JoinContextRequest,
-    ) -> eyre::Result<JoinContextResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::JoinContext {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn set_member_capabilities(
-        &self,
-        request: SetMemberCapabilitiesRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::SetMemberCapabilities {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn get_member_capabilities(
-        &self,
-        request: GetMemberCapabilitiesRequest,
-    ) -> eyre::Result<GetMemberCapabilitiesResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::GetMemberCapabilities {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn set_default_capabilities(
-        &self,
-        request: SetDefaultCapabilitiesRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::SetDefaultCapabilities {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn set_tee_admission_policy(
-        &self,
-        request: SetTeeAdmissionPolicyRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::SetTeeAdmissionPolicy {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn admit_tee_node(&self, request: AdmitTeeNodeRequest) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::AdmitTeeNode {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn set_default_visibility(
-        &self,
-        request: SetDefaultVisibilityRequest,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::SetDefaultVisibility {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn list_namespaces(
-        &self,
-        request: ListNamespacesRequest,
-    ) -> eyre::Result<Vec<NamespaceSummary>> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::ListNamespaces {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn get_namespace_identity(
-        &self,
-        request: GetNamespaceIdentityRequest,
-    ) -> eyre::Result<Option<(ContextGroupId, PublicKey)>> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::GetNamespaceIdentity {
-                request,
-                outcome: sender,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        receiver.await.expect("Mailbox not to be dropped")
-    }
-
-    pub async fn list_namespaces_for_application(
-        &self,
-        request: ListNamespacesForApplicationRequest,
-    ) -> eyre::Result<Vec<NamespaceSummary>> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::ListNamespacesForApplication {
-                request,
                 outcome: sender,
             })
             .await
