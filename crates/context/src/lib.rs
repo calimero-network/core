@@ -144,6 +144,92 @@ impl ContextManager {
     }
 }
 
+/// Result of the governance preflight check, containing everything needed
+/// to sign and publish a governance op.
+pub struct GovernancePreflight {
+    /// The resolved requester public key.
+    pub requester: calimero_primitives::identity::PublicKey,
+    /// The signing private key (as raw bytes).
+    pub signing_key: [u8; 32],
+    /// Cloned datastore for use in async blocks.
+    pub datastore: Store,
+    /// Cloned node client for use in async blocks.
+    pub node_client: calimero_node_primitives::client::NodeClient,
+}
+
+impl GovernancePreflight {
+    /// Convenience: build a `PrivateKey` from the stored signing key bytes.
+    pub fn signer_sk(&self) -> calimero_primitives::identity::PrivateKey {
+        calimero_primitives::identity::PrivateKey::from(self.signing_key)
+    }
+}
+
+impl ContextManager {
+    /// Common preflight for governance mutation handlers.
+    ///
+    /// Resolves the requester identity, loads group metadata, checks admin
+    /// authorization, resolves or stores the signing key, and returns
+    /// everything needed for `sign_apply_and_publish`.
+    ///
+    /// Returns `Err` if the group doesn't exist, the requester isn't authorized,
+    /// or no signing key is available.
+    pub fn governance_preflight(
+        &self,
+        group_id: &ContextGroupId,
+        requester: Option<calimero_primitives::identity::PublicKey>,
+        require_admin: bool,
+    ) -> eyre::Result<GovernancePreflight> {
+        let node_identity = self.node_namespace_identity(group_id);
+
+        let requester = match requester {
+            Some(pk) => pk,
+            None => match node_identity {
+                Some((pk, _)) => pk,
+                None => {
+                    eyre::bail!(
+                        "requester not provided and node has no configured group identity"
+                    )
+                }
+            },
+        };
+
+        let node_sk = node_identity.map(|(_, sk)| sk);
+        let signing_key = node_sk;
+
+        if group_store::load_group_meta(&self.datastore, group_id)?.is_none() {
+            eyre::bail!("group '{group_id:?}' not found");
+        }
+        if require_admin {
+            group_store::require_group_admin(&self.datastore, group_id, &requester)?;
+        }
+        if signing_key.is_none() {
+            group_store::require_group_signing_key(&self.datastore, group_id, &requester)?;
+        }
+
+        if let Some(ref sk) = signing_key {
+            let _ =
+                group_store::store_group_signing_key(&self.datastore, group_id, &requester, sk);
+        }
+
+        let effective_signing_key = signing_key.or_else(|| {
+            group_store::get_group_signing_key(&self.datastore, group_id, &requester)
+                .ok()
+                .flatten()
+        });
+
+        let sk_bytes = effective_signing_key.ok_or_else(|| {
+            eyre::eyre!("local group governance requires a signing key for the requester")
+        })?;
+
+        Ok(GovernancePreflight {
+            requester,
+            signing_key: sk_bytes,
+            datastore: self.datastore.clone(),
+            node_client: self.node_client.clone(),
+        })
+    }
+}
+
 impl ContextManager {
     fn get_or_create_namespace_dag(
         &mut self,
