@@ -127,6 +127,14 @@ where
     T: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
+    /// Returns an iterator over all `(PublicKey, value)` entries.
+    ///
+    /// # Errors
+    /// Returns a `StoreError` if the storage operation fails.
+    pub fn entries(&self) -> Result<impl Iterator<Item = (PublicKey, T)> + '_, StoreError> {
+        self.inner.entries()
+    }
+
     /// Gets the data for the current executor.
     ///
     /// # Errors

@@ -1,8 +1,8 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::ListNamespacesForApplicationRequest;
-use calimero_context_config::types::ContextGroupId;
 
 use crate::group_store;
+use crate::handlers::list_namespaces::{collect_namespace_summaries, paginate_namespaces};
 use crate::ContextManager;
 
 impl Handler<ListNamespacesForApplicationRequest> for ContextManager {
@@ -19,33 +19,20 @@ impl Handler<ListNamespacesForApplicationRequest> for ContextManager {
     ) -> Self::Result {
         let result = (|| {
             let entries = group_store::enumerate_all_groups(&self.datastore, 0, usize::MAX)?;
-
-            let mut namespaces = Vec::new();
-            for (group_id_bytes, meta) in entries {
-                if meta.target_application_id != application_id {
-                    continue;
-                }
-
-                let group_id = ContextGroupId::from(group_id_bytes);
-
-                let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
-                    continue;
-                };
-
-                if let Some(ns) = group_store::build_namespace_summary(
-                    &self.datastore,
-                    &group_id,
-                    &meta,
-                    &node_identity,
-                )? {
-                    namespaces.push(ns);
-                }
-            }
-
-            let total = namespaces.len();
-            let start = offset.min(total);
-            let end = (start + limit).min(total);
-            Ok(namespaces[start..end].to_vec())
+            let namespaces = collect_namespace_summaries(
+                entries,
+                Some(application_id),
+                |group_id| self.node_namespace_identity(group_id),
+                |group_id, meta, node_identity| {
+                    group_store::build_namespace_summary(
+                        &self.datastore,
+                        group_id,
+                        meta,
+                        node_identity,
+                    )
+                },
+            )?;
+            Ok(paginate_namespaces(&namespaces, offset, limit))
         })();
 
         ActorResponse::reply(result)
