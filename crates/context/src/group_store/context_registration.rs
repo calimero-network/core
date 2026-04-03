@@ -70,17 +70,17 @@ impl<'a> ContextRegistrationService<'a> {
             return Ok(());
         }
 
-        if let Some(meta) = load_group_meta(self.store, &self.group_id)?
-            && meta.target_application_id == ZERO_APPLICATION_ID
-        {
-            let mut updated = meta;
-            updated.target_application_id = *application_id;
-            save_group_meta(self.store, &self.group_id, &updated)?;
-            tracing::info!(
-                group_id = %hex::encode(self.group_id.to_bytes()),
-                %application_id,
-                "updated group meta with real application ID from ContextRegistered"
-            );
+        if let Some(meta) = load_group_meta(self.store, &self.group_id)? {
+            if meta.target_application_id == ZERO_APPLICATION_ID {
+                let mut updated = meta;
+                updated.target_application_id = *application_id;
+                save_group_meta(self.store, &self.group_id, &updated)?;
+                tracing::info!(
+                    group_id = %hex::encode(self.group_id.to_bytes()),
+                    %application_id,
+                    "updated group meta with real application ID from ContextRegistered"
+                );
+            }
         }
 
         let ctx_meta_key = ContextMeta::new(*context_id);
