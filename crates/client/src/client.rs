@@ -25,9 +25,12 @@ use url::Url;
 use crate::connection::ConnectionInfo;
 use crate::traits::{ClientAuthenticator, ClientStorage};
 
+mod applications;
+mod blobs;
+mod contexts;
 mod group;
 mod namespace;
-mod operations;
+mod packages;
 
 pub trait UrlFragment: ScopedAlias + AliasKind {
     const KIND: &'static str;

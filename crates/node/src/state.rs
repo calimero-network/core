@@ -92,6 +92,26 @@ pub(crate) struct NodeState {
 }
 
 impl NodeState {
+    pub(crate) fn blob_cache_handle(&self) -> Arc<DashMap<BlobId, CachedBlob>> {
+        self.blob_cache.clone()
+    }
+
+    pub(crate) fn delta_stores_handle(&self) -> Arc<DashMap<ContextId, DeltaStore>> {
+        self.delta_stores.clone()
+    }
+
+    pub(crate) fn pending_specialized_node_invites_handle(&self) -> PendingSpecializedNodeInvites {
+        self.pending_specialized_node_invites.clone()
+    }
+
+    pub(crate) const fn accept_mock_tee(&self) -> bool {
+        self.accept_mock_tee
+    }
+
+    pub(crate) const fn node_mode(&self) -> NodeMode {
+        self.node_mode
+    }
+
     pub(crate) fn new(accept_mock_tee: bool, node_mode: NodeMode) -> Self {
         Self {
             blob_cache: Arc::new(DashMap::new()),
