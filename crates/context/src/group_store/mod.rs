@@ -17,6 +17,7 @@ use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
 mod aliases;
 mod capabilities;
 mod contexts;
+mod group_governance_publisher;
 mod group_keys;
 mod local_state;
 mod membership;
@@ -44,6 +45,7 @@ pub use self::contexts::{
     cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identity,
     get_group_for_context, register_context_in_group, unregister_context_from_group,
 };
+pub use self::group_governance_publisher::GroupGovernancePublisher;
 pub use self::group_keys::{
     build_key_rotation, compute_key_id, encrypt_group_op, load_current_group_key,
     load_group_key_by_id, store_group_key, unwrap_group_key, wrap_group_key_for_member,
@@ -1200,7 +1202,9 @@ pub async fn sign_apply_and_publish(
     signer_sk: &PrivateKey,
     op: GroupOp,
 ) -> EyreResult<()> {
-    sign_apply_and_publish_inner(store, node_client, group_id, signer_sk, op, None).await
+    GroupGovernancePublisher::new(store, node_client, *group_id)
+        .sign_apply_and_publish(signer_sk, op)
+        .await
 }
 
 /// Like [`sign_apply_and_publish`] but attaches a [`KeyRotation`] bundle to
@@ -1213,80 +1217,8 @@ pub async fn sign_apply_and_publish_removal(
     signer_sk: &PrivateKey,
     removed_member: &PublicKey,
 ) -> EyreResult<()> {
-    let op = GroupOp::MemberRemoved {
-        member: *removed_member,
-    };
-    sign_apply_and_publish_inner(
-        store,
-        node_client,
-        group_id,
-        signer_sk,
-        op,
-        Some(removed_member),
-    )
-    .await
-}
-
-async fn sign_apply_and_publish_inner(
-    store: &Store,
-    node_client: &calimero_node_primitives::client::NodeClient,
-    group_id: &ContextGroupId,
-    signer_sk: &PrivateKey,
-    op: GroupOp,
-    removed_member: Option<&PublicKey>,
-) -> EyreResult<()> {
-    let _output = sign_apply_local_group_op_borsh(store, group_id, signer_sk, op.clone())?;
-
-    let ns_id = resolve_namespace(store, group_id)?;
-    let ns_bytes = ns_id.to_bytes();
-
-    let ns_identity = get_namespace_identity(store, &ns_id)?;
-    let Some((_pk, ns_sk_bytes, _sender)) = ns_identity else {
-        tracing::debug!(
-            group_id = %hex::encode(group_id.to_bytes()),
-            "no namespace identity, skipping namespace publish"
-        );
-        return Ok(());
-    };
-
-    let Some((key_id, group_key)) = load_current_group_key(store, group_id)? else {
-        tracing::debug!(
-            group_id = %hex::encode(group_id.to_bytes()),
-            "no group key stored, skipping namespace publish"
-        );
-        return Ok(());
-    };
-
-    let encrypted = encrypt_group_op(&group_key, &op)?;
-
-    let key_rotation = if let Some(removed) = removed_member {
-        let new_group_key: [u8; 32] = {
-            use rand::Rng;
-            rand::thread_rng().gen()
-        };
-        let _ = store_group_key(store, group_id, &new_group_key)?;
-        Some(build_key_rotation(
-            store,
-            group_id,
-            &new_group_key,
-            signer_sk,
-            Some(removed),
-        )?)
-    } else {
-        None
-    };
-
-    let ns_op = NamespaceOp::Group {
-        group_id: group_id.to_bytes(),
-        key_id,
-        encrypted,
-        key_rotation,
-    };
-
-    let ns_sk = calimero_primitives::identity::PrivateKey::from(ns_sk_bytes);
-    let namespace_governance = NamespaceGovernance::new(store, ns_bytes);
-    namespace_governance
-        .sign_and_publish_without_apply(node_client, &ns_sk, ns_op)
+    GroupGovernancePublisher::new(store, node_client, *group_id)
+        .sign_apply_and_publish_removal(signer_sk, removed_member)
         .await
 }
 

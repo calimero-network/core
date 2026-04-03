@@ -505,145 +505,197 @@ impl<'a> NamespaceGovernance<'a> {
 
     fn apply_root_op(&self, op: &SignedNamespaceOp, root: &RootOp) -> EyreResult<()> {
         match root {
-            RootOp::GroupCreated { group_id } => {
-                self.require_namespace_admin(&op.signer)?;
-                let gid = ContextGroupId::from(*group_id);
-                if load_group_meta(self.store, &gid)?.is_some() {
-                    tracing::debug!(
-                        group_id = %hex::encode(group_id),
-                        "group already exists, ignoring GroupCreated"
-                    );
-                    return Ok(());
-                }
-                let meta = calimero_store::key::GroupMetaValue {
-                    admin_identity: op.signer,
-                    target_application_id: calimero_primitives::application::ApplicationId::from(
-                        [0u8; 32],
-                    ),
-                    app_key: [0u8; 32],
-                    upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
-                    migration: None,
-                    created_at: 0,
-                    auto_join: false,
-                };
-                save_group_meta(self.store, &gid, &meta)?;
-                Ok(())
-            }
-            RootOp::GroupDeleted { group_id } => {
-                self.require_namespace_admin(&op.signer)?;
-                let gid = ContextGroupId::from(*group_id);
-                if count_group_contexts(self.store, &gid)? > 0 {
-                    bail!("cannot delete group: contexts still registered");
-                }
-                super::delete_group_meta(self.store, &gid)?;
-                Ok(())
-            }
-            RootOp::AdminChanged { new_admin } => {
-                self.require_namespace_admin(&op.signer)?;
-                let ns_gid = ContextGroupId::from(self.namespace_id);
-                let mut meta = load_group_meta(self.store, &ns_gid)?
-                    .ok_or_else(|| eyre::eyre!("namespace root group not found"))?;
-                meta.admin_identity = *new_admin;
-                save_group_meta(self.store, &ns_gid, &meta)?;
-                Ok(())
-            }
-            RootOp::PolicyUpdated { .. } => {
-                self.require_namespace_admin(&op.signer)?;
-                tracing::debug!("PolicyUpdated: stored in DAG log, no additional state mutation");
-                Ok(())
-            }
+            RootOp::GroupCreated { group_id } => self.execute_group_created(op, *group_id),
+            RootOp::GroupDeleted { group_id } => self.execute_group_deleted(op, *group_id),
+            RootOp::AdminChanged { new_admin } => self.execute_admin_changed(op, *new_admin),
+            RootOp::PolicyUpdated { .. } => self.execute_policy_updated(op),
             RootOp::GroupNested {
                 parent_group_id,
                 child_group_id,
-            } => {
-                self.require_namespace_admin(&op.signer)?;
-                let parent = ContextGroupId::from(*parent_group_id);
-                let child = ContextGroupId::from(*child_group_id);
-                if load_group_meta(self.store, &parent)?.is_none() {
-                    bail!("parent group not found for nesting");
-                }
-                if load_group_meta(self.store, &child)?.is_none() {
-                    bail!("child group not found for nesting");
-                }
-                nest_group(self.store, &parent, &child)?;
-                Ok(())
-            }
+            } => self.execute_group_nested(op, *parent_group_id, *child_group_id),
             RootOp::GroupUnnested {
                 parent_group_id,
                 child_group_id,
-            } => {
-                self.require_namespace_admin(&op.signer)?;
-                let parent = ContextGroupId::from(*parent_group_id);
-                let child = ContextGroupId::from(*child_group_id);
-                unnest_group(self.store, &parent, &child)?;
-                Ok(())
-            }
+            } => self.execute_group_unnested(op, *parent_group_id, *child_group_id),
             RootOp::MemberJoined {
                 member,
                 signed_invitation,
-            } => {
-                let inv = &signed_invitation.invitation;
-                let group_id = inv.group_id;
-
-                if op.signer != *member {
-                    bail!(
-                        "MemberJoined signer ({}) does not match member ({})",
-                        op.signer,
-                        member
-                    );
-                }
-
-                let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
-                let invitation_bytes =
-                    borsh::to_vec(&inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;
-                let hash = sha2::Sha256::digest(&invitation_bytes);
-                let sig_bytes = hex::decode(&signed_invitation.inviter_signature)
-                    .map_err(|e| eyre::eyre!("bad invitation signature hex: {e}"))?;
-                let sig_arr: [u8; 64] = sig_bytes
-                    .try_into()
-                    .map_err(|_| eyre::eyre!("invitation signature wrong length"))?;
-                inviter_pk
-                    .verify_raw_signature(&hash, &sig_arr)
-                    .map_err(|e| eyre::eyre!("invalid invitation signature: {e}"))?;
-
-                if !is_group_admin_or_has_capability(
-                    self.store,
-                    &group_id,
-                    &inviter_pk,
-                    MemberCapabilities::CAN_INVITE_MEMBERS,
-                )? {
-                    bail!(
-                        "invitation inviter {} lacks permission for group {:?}",
-                        inviter_pk,
-                        group_id
-                    );
-                }
-
-                if check_group_membership(self.store, &group_id, member)? {
-                    return Ok(());
-                }
-
-                let role = match inv.invited_role {
-                    0 => GroupMemberRole::Admin,
-                    2 => GroupMemberRole::ReadOnly,
-                    _ => GroupMemberRole::Member,
-                };
-
-                if role == GroupMemberRole::Admin
-                    && !is_group_admin(self.store, &group_id, &inviter_pk)?
-                {
-                    bail!("only admins can invite new admins");
-                }
-
-                let resolved_ns = resolve_namespace(self.store, &group_id)?;
-                if resolved_ns.to_bytes() != self.namespace_id {
-                    bail!("group does not belong to this namespace");
-                }
-
-                add_group_member(self.store, &group_id, member, role)?;
-                Ok(())
-            }
+            } => self.execute_member_joined(op, member, signed_invitation),
             RootOp::KeyDelivery { .. } => Ok(()),
+        }
+    }
+
+    fn execute_group_created(&self, op: &SignedNamespaceOp, group_id: [u8; 32]) -> EyreResult<()> {
+        self.require_namespace_admin(&op.signer)?;
+        let gid = ContextGroupId::from(group_id);
+        if load_group_meta(self.store, &gid)?.is_some() {
+            tracing::debug!(
+                group_id = %hex::encode(group_id),
+                "group already exists, ignoring GroupCreated"
+            );
+            return Ok(());
+        }
+
+        let meta = calimero_store::key::GroupMetaValue {
+            admin_identity: op.signer,
+            target_application_id: calimero_primitives::application::ApplicationId::from([0u8; 32]),
+            app_key: [0u8; 32],
+            upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
+            migration: None,
+            created_at: 0,
+            auto_join: false,
+        };
+        save_group_meta(self.store, &gid, &meta)?;
+        Ok(())
+    }
+
+    fn execute_group_deleted(&self, op: &SignedNamespaceOp, group_id: [u8; 32]) -> EyreResult<()> {
+        self.require_namespace_admin(&op.signer)?;
+        let gid = ContextGroupId::from(group_id);
+        if count_group_contexts(self.store, &gid)? > 0 {
+            bail!("cannot delete group: contexts still registered");
+        }
+        super::delete_group_meta(self.store, &gid)?;
+        Ok(())
+    }
+
+    fn execute_admin_changed(
+        &self,
+        op: &SignedNamespaceOp,
+        new_admin: PublicKey,
+    ) -> EyreResult<()> {
+        self.require_namespace_admin(&op.signer)?;
+        let ns_gid = ContextGroupId::from(self.namespace_id);
+        let mut meta = load_group_meta(self.store, &ns_gid)?
+            .ok_or_else(|| eyre::eyre!("namespace root group not found"))?;
+        meta.admin_identity = new_admin;
+        save_group_meta(self.store, &ns_gid, &meta)?;
+        Ok(())
+    }
+
+    fn execute_policy_updated(&self, op: &SignedNamespaceOp) -> EyreResult<()> {
+        self.require_namespace_admin(&op.signer)?;
+        tracing::debug!("PolicyUpdated: stored in DAG log, no additional state mutation");
+        Ok(())
+    }
+
+    fn execute_group_nested(
+        &self,
+        op: &SignedNamespaceOp,
+        parent_group_id: [u8; 32],
+        child_group_id: [u8; 32],
+    ) -> EyreResult<()> {
+        self.require_namespace_admin(&op.signer)?;
+        let parent = ContextGroupId::from(parent_group_id);
+        let child = ContextGroupId::from(child_group_id);
+        if load_group_meta(self.store, &parent)?.is_none() {
+            bail!("parent group not found for nesting");
+        }
+        if load_group_meta(self.store, &child)?.is_none() {
+            bail!("child group not found for nesting");
+        }
+        nest_group(self.store, &parent, &child)?;
+        Ok(())
+    }
+
+    fn execute_group_unnested(
+        &self,
+        op: &SignedNamespaceOp,
+        parent_group_id: [u8; 32],
+        child_group_id: [u8; 32],
+    ) -> EyreResult<()> {
+        self.require_namespace_admin(&op.signer)?;
+        let parent = ContextGroupId::from(parent_group_id);
+        let child = ContextGroupId::from(child_group_id);
+        unnest_group(self.store, &parent, &child)?;
+        Ok(())
+    }
+
+    fn execute_member_joined(
+        &self,
+        op: &SignedNamespaceOp,
+        member: &PublicKey,
+        signed_invitation: &calimero_context_config::types::SignedGroupOpenInvitation,
+    ) -> EyreResult<()> {
+        let inv = &signed_invitation.invitation;
+        let group_id = inv.group_id;
+
+        self.verify_member_join_signature(op, member, signed_invitation)?;
+        let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
+        self.require_inviter_permission(&group_id, &inviter_pk)?;
+
+        if check_group_membership(self.store, &group_id, member)? {
+            return Ok(());
+        }
+
+        let role = self.map_invited_role(inv.invited_role);
+        if role == GroupMemberRole::Admin && !is_group_admin(self.store, &group_id, &inviter_pk)? {
+            bail!("only admins can invite new admins");
+        }
+
+        let resolved_ns = resolve_namespace(self.store, &group_id)?;
+        if resolved_ns.to_bytes() != self.namespace_id {
+            bail!("group does not belong to this namespace");
+        }
+
+        add_group_member(self.store, &group_id, member, role)?;
+        Ok(())
+    }
+
+    fn verify_member_join_signature(
+        &self,
+        op: &SignedNamespaceOp,
+        member: &PublicKey,
+        signed_invitation: &calimero_context_config::types::SignedGroupOpenInvitation,
+    ) -> EyreResult<()> {
+        if op.signer != *member {
+            bail!(
+                "MemberJoined signer ({}) does not match member ({})",
+                op.signer,
+                member
+            );
+        }
+
+        let inv = &signed_invitation.invitation;
+        let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
+        let invitation_bytes = borsh::to_vec(inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+        let hash = sha2::Sha256::digest(&invitation_bytes);
+        let sig_bytes = hex::decode(&signed_invitation.inviter_signature)
+            .map_err(|e| eyre::eyre!("bad invitation signature hex: {e}"))?;
+        let sig_arr: [u8; 64] = sig_bytes
+            .try_into()
+            .map_err(|_| eyre::eyre!("invitation signature wrong length"))?;
+        inviter_pk
+            .verify_raw_signature(&hash, &sig_arr)
+            .map_err(|e| eyre::eyre!("invalid invitation signature: {e}"))?;
+        Ok(())
+    }
+
+    fn require_inviter_permission(
+        &self,
+        group_id: &ContextGroupId,
+        inviter_pk: &PublicKey,
+    ) -> EyreResult<()> {
+        if !is_group_admin_or_has_capability(
+            self.store,
+            group_id,
+            inviter_pk,
+            MemberCapabilities::CAN_INVITE_MEMBERS,
+        )? {
+            bail!(
+                "invitation inviter {} lacks permission for group {:?}",
+                inviter_pk,
+                group_id
+            );
+        }
+        Ok(())
+    }
+
+    fn map_invited_role(&self, invited_role: u8) -> GroupMemberRole {
+        match invited_role {
+            0 => GroupMemberRole::Admin,
+            2 => GroupMemberRole::ReadOnly,
+            _ => GroupMemberRole::Member,
         }
     }
 }
