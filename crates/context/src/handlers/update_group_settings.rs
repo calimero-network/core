@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::UpdateGroupSettingsRequest;
-use calimero_context_primitives::local_governance::GroupOp;
+use calimero_context_client::group::UpdateGroupSettingsRequest;
+use calimero_context_client::local_governance::GroupOp;
 
 use crate::group_store;
 use crate::ContextManager;

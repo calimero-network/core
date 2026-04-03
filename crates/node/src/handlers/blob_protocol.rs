@@ -5,7 +5,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 use calimero_network_primitives::{
     blob_types::{BlobAuthPayload, BlobChunk, BlobRequest, BlobResponse},
     stream::{Message as StreamMessage, Stream},

@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message};
 
-use calimero_context_primitives::group::BroadcastGroupLocalStateRequest;
+use calimero_context_client::group::BroadcastGroupLocalStateRequest;
 
 use crate::ContextManager;
 

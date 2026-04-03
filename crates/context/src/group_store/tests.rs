@@ -116,7 +116,7 @@ use super::*;
 
     #[test]
     fn apply_local_signed_group_op_nonce_and_admin() {
-        use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+        use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
         use calimero_primitives::identity::PrivateKey;
         use rand::rngs::OsRng;
 
@@ -181,7 +181,7 @@ use super::*;
 
     #[test]
     fn apply_local_member_alias_member_signer_or_admin() {
-        use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+        use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
         use calimero_primitives::identity::PrivateKey;
         use rand::rngs::OsRng;
 
@@ -257,7 +257,7 @@ use super::*;
     #[test]
     fn apply_local_context_alias_admin_or_creator() {
         use calimero_context_config::MemberCapabilities;
-        use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+        use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
         use calimero_primitives::identity::PrivateKey;
         use rand::rngs::OsRng;
 
@@ -339,7 +339,7 @@ use super::*;
 
     #[test]
     fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
-        use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+        use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
         use calimero_primitives::identity::PrivateKey;
         use rand::rngs::OsRng;
 
@@ -411,7 +411,7 @@ use super::*;
 
     #[test]
     fn apply_local_signed_group_op_rejects_last_admin_removal() {
-        use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+        use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
         use calimero_primitives::identity::PrivateKey;
         use rand::rngs::OsRng;
 

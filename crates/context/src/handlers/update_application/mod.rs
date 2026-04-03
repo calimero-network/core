@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use borsh::BorshDeserialize;
-use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::messages::{MigrationParams, UpdateApplicationRequest};
+use calimero_context_client::client::ContextClient;
+use calimero_context_client::messages::{MigrationParams, UpdateApplicationRequest};
 use calimero_node_primitives::client::NodeClient;
 use calimero_prelude::ROOT_STORAGE_ENTRY_ID;
 use calimero_primitives::application::{Application, ApplicationId};

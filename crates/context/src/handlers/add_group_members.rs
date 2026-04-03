@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::AddGroupMembersRequest;
-use calimero_context_primitives::local_governance::{GroupOp, NamespaceOp, RootOp};
+use calimero_context_client::group::AddGroupMembersRequest;
+use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
 use tracing::{info, warn};
 
 use crate::group_store;

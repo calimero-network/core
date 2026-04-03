@@ -5,7 +5,7 @@ use tower as _;
 
 use axum::http::Method;
 use axum::Router;
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use config::ServerConfig;

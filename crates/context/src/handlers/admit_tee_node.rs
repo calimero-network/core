@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::AdmitTeeNodeRequest;
-use calimero_context_primitives::local_governance::GroupOp;
+use calimero_context_client::group::AdmitTeeNodeRequest;
+use calimero_context_client::local_governance::GroupOp;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use tracing::info;

@@ -57,7 +57,7 @@ impl ContextManager {
                 .migration
                 .as_ref()
                 .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
-                .map(|method| calimero_context_primitives::messages::MigrationParams { method });
+                .map(|method| calimero_context_client::messages::MigrationParams { method });
 
             let meta = match group_store::load_group_meta(&self.datastore, &group_id) {
                 Ok(Some(m)) => m,

@@ -3,7 +3,7 @@ use calimero_context_config::types::{
     GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::MemberCapabilities;
-use calimero_context_primitives::group::{
+use calimero_context_client::group::{
     CreateGroupInvitationRequest, CreateGroupInvitationResponse,
 };
 use calimero_primitives::identity::PrivateKey;

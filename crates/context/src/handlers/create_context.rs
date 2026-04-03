@@ -5,9 +5,9 @@ use std::sync::Arc;
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
-use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::local_governance::GroupOp;
-use calimero_context_primitives::messages::{CreateContextRequest, CreateContextResponse};
+use calimero_context_client::client::ContextClient;
+use calimero_context_client::local_governance::GroupOp;
+use calimero_context_client::messages::{CreateContextRequest, CreateContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{

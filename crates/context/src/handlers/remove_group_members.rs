@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::RemoveGroupMembersRequest;
+use calimero_context_client::group::RemoveGroupMembersRequest;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_primitives::group::DetachContextFromGroupRequest;
+use calimero_context_client::group::DetachContextFromGroupRequest;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use reqwest::StatusCode;
 use tracing::{error, info};

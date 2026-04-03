@@ -2,9 +2,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_primitives::group::{UpgradeGroupRequest, UpgradeGroupResponse};
-use calimero_context_primitives::local_governance::GroupOp;
-use calimero_context_primitives::messages::MigrationParams;
+use calimero_context_client::group::{UpgradeGroupRequest, UpgradeGroupResponse};
+use calimero_context_client::local_governance::GroupOp;
+use calimero_context_client::messages::MigrationParams;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -507,7 +507,7 @@ const MAX_AUTO_RETRIES: u32 = 3;
 const RETRY_BASE_DELAY_SECS: u64 = 5;
 
 pub(crate) async fn propagate_upgrade(
-    context_client: calimero_context_primitives::client::ContextClient,
+    context_client: calimero_context_client::client::ContextClient,
     datastore: calimero_store::Store,
     group_id: ContextGroupId,
     target_application_id: ApplicationId,

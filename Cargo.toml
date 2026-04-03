@@ -221,7 +221,7 @@ calimero-client = { path = "./crates/client" }
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
 calimero-context-config = { path = "./crates/context/config", default-features = false }
-calimero-context-primitives = { path = "./crates/context/primitives" }
+calimero-context-client = { path = "./crates/context/primitives" }
 calimero-crypto = { path = "./crates/crypto" }
 calimero-dag = { path = "./crates/dag" }
 calimero-network = { path = "./crates/network" }

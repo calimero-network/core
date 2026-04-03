@@ -4,7 +4,7 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_config::VisibilityMode;
-use calimero_context_primitives::group::SetDefaultVisibilityRequest;
+use calimero_context_client::group::SetDefaultVisibilityRequest;
 use calimero_server_primitives::admin::SetDefaultVisibilityApiRequest;
 use reqwest::StatusCode;
 use tracing::{error, info};

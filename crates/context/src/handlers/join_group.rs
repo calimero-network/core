@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::{JoinGroupRequest, JoinGroupResponse};
-use calimero_context_primitives::local_governance::{NamespaceOp, RootOp};
+use calimero_context_client::group::{JoinGroupRequest, JoinGroupResponse};
+use calimero_context_client::local_governance::{NamespaceOp, RootOp};
 use calimero_primitives::context::{ContextConfigParams, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::key;

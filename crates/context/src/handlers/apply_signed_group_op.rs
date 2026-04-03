@@ -1,5 +1,5 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::messages::ApplySignedGroupOpRequest;
+use calimero_context_client::messages::ApplySignedGroupOpRequest;
 
 use crate::group_store;
 use crate::ContextManager;

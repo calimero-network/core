@@ -18,7 +18,7 @@ use tracing::{info, warn};
 /// Verifies the TDX quote, checks measurements against the group's TEE admission
 /// policy, and publishes a `MemberJoinedViaTeeAttestation` governance op if valid.
 pub async fn handle_tee_attestation_announce(
-    context_client: &calimero_context_primitives::client::ContextClient,
+    context_client: &calimero_context_client::client::ContextClient,
     source: libp2p::PeerId,
     quote_bytes: Vec<u8>,
     public_key: PublicKey,
@@ -69,7 +69,7 @@ pub async fn handle_tee_attestation_announce(
 
     // Delegate policy checking and governance op publishing to the context manager.
     // The context manager has access to the store and signing keys.
-    use calimero_context_primitives::group::AdmitTeeNodeRequest;
+    use calimero_context_client::group::AdmitTeeNodeRequest;
 
     context_client
         .admit_tee_node(AdmitTeeNodeRequest {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query};
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_primitives::group::ListGroupContextsRequest;
+use calimero_context_client::group::ListGroupContextsRequest;
 use calimero_server_primitives::admin::{
     GroupContextEntryResponse, ListGroupContextsApiResponse, ListGroupContextsQuery,
 };

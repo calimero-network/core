@@ -4,7 +4,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context::group_store;
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_primitives::group::{JoinContextRequest, ListGroupContextsRequest};
+use calimero_context_client::group::{JoinContextRequest, ListGroupContextsRequest};
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_server_primitives::admin::FleetJoinRequest;

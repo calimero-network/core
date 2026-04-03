@@ -1,5 +1,5 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::messages::ApplySignedNamespaceOpRequest;
+use calimero_context_client::messages::ApplySignedNamespaceOpRequest;
 
 use crate::governance_dag::{signed_namespace_op_to_delta, NamespaceGovernanceApplier};
 use crate::ContextManager;

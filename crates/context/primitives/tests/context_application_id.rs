@@ -21,7 +21,7 @@ use calimero_utils_actix::LazyRecipient;
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
 
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 
 /// Setup a test ContextClient with in-memory storage
 async fn setup_test_context_client() -> (ContextClient, TempDir) {

@@ -13,8 +13,8 @@ use calimero_context::group_store::{
 };
 use calimero_context::ContextManager;
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+use calimero_context_client::client::ContextClient;
+use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::messages::NodeMessage;

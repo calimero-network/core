@@ -1,11 +1,11 @@
-use calimero_context_primitives::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use tracing::{info, warn};
 
 /// After applying a namespace governance op, check if it was a `MemberJoined`
 /// and we hold the group key. If so, publish a `KeyDelivery` wrapping the
 /// group key for the joiner via ECDH.
 pub async fn maybe_publish_key_delivery(
-    context_client: &calimero_context_primitives::client::ContextClient,
+    context_client: &calimero_context_client::client::ContextClient,
     node_client: &calimero_node_primitives::client::NodeClient,
     op: &SignedNamespaceOp,
 ) {

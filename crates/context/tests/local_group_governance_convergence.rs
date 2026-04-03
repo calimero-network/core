@@ -16,7 +16,7 @@ use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::MemberCapabilities;
-use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_dag::DagStore;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
@@ -196,7 +196,7 @@ fn two_nodes_converge_on_target_application_and_migration() {
 
 #[test]
 fn two_nodes_converge_on_namespace_member_joined() {
-    use calimero_context_primitives::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
     let mut rng = OsRng;
     let gid = sample_group_id();
@@ -253,7 +253,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
 
 #[test]
 fn recursive_invite_joins_all_descendant_groups() {
-    use calimero_context_primitives::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
     let mut rng = OsRng;
     let ns_id = sample_group_id();

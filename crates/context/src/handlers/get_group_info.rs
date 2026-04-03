@@ -1,5 +1,5 @@
 use actix::{ActorResponse, Handler, Message};
-use calimero_context_primitives::group::{GetGroupInfoRequest, GroupInfoResponse};
+use calimero_context_client::group::{GetGroupInfoRequest, GroupInfoResponse};
 use eyre::bail;
 
 use crate::group_store;

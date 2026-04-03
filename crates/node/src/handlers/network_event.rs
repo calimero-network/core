@@ -41,7 +41,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         let _ignored = ctx.spawn(
                             async move {
                                 use calimero_context_config::types::ContextGroupId;
-                                use calimero_context_primitives::group::SyncGroupRequest;
+                                use calimero_context_client::group::SyncGroupRequest;
 
                                 let group_id = ContextGroupId::from(bytes);
                                 if let Err(err) = context_client
@@ -64,7 +64,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         let _ignored_alias = ctx.spawn(
                             async move {
                                 use calimero_context_config::types::ContextGroupId;
-                                use calimero_context_primitives::group::BroadcastGroupAliasesRequest;
+                                use calimero_context_client::group::BroadcastGroupAliasesRequest;
 
                                 let group_id = ContextGroupId::from(bytes);
                                 if let Err(err) = context_client_alias
@@ -86,7 +86,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         let _ignored_local_state = ctx.spawn(
                             async move {
                                 use calimero_context_config::types::ContextGroupId;
-                                use calimero_context_primitives::group::BroadcastGroupLocalStateRequest;
+                                use calimero_context_client::group::BroadcastGroupLocalStateRequest;
 
                                 let group_id = ContextGroupId::from(bytes);
                                 if let Err(err) = context_client_local_state
@@ -432,7 +432,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         parent_ids: _,
                         payload,
                     } => {
-                        use calimero_context_primitives::local_governance::SignedNamespaceOp;
+                        use calimero_context_client::local_governance::SignedNamespaceOp;
                         use calimero_node_primitives::sync::MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES;
 
                         if payload.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
@@ -620,7 +620,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                     )) => {
                                         for (delta_id, op_bytes) in deltas {
                                             if let Ok(op) = borsh::from_slice::<
-                                                calimero_context_primitives::local_governance::SignedNamespaceOp,
+                                                calimero_context_client::local_governance::SignedNamespaceOp,
                                             >(
                                                 &op_bytes
                                             ) {

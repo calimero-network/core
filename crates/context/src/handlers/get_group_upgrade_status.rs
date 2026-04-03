@@ -1,5 +1,5 @@
 use actix::{ActorResponse, Handler, Message};
-use calimero_context_primitives::group::GetGroupUpgradeStatusRequest;
+use calimero_context_client::group::GetGroupUpgradeStatusRequest;
 use eyre::bail;
 
 use crate::{group_store, ContextManager};

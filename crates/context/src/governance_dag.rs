@@ -1,7 +1,7 @@
 //! DAG-based governance: applies [`SignedGroupOp`] and [`SignedNamespaceOp`]
 //! in causal order.
 
-use calimero_context_primitives::local_governance::{SignedGroupOp, SignedNamespaceOp};
+use calimero_context_client::local_governance::{SignedGroupOp, SignedNamespaceOp};
 use calimero_dag::{ApplyError, CausalDelta, DeltaApplier};
 use calimero_store::Store;
 

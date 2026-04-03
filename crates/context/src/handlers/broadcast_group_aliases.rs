@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message};
 
-use calimero_context_primitives::group::BroadcastGroupAliasesRequest;
+use calimero_context_client::group::BroadcastGroupAliasesRequest;
 
 use crate::{group_store, ContextManager};
 

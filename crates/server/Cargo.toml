@@ -35,7 +35,7 @@ sha2.workspace = true
 
 calimero-context.workspace = true
 calimero-context-config.workspace = true
-calimero-context-primitives.workspace = true
+calimero-context-client.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-primitives.workspace = true

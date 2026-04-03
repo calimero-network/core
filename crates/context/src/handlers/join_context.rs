@@ -1,5 +1,5 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::{JoinContextRequest, JoinContextResponse};
+use calimero_context_client::group::{JoinContextRequest, JoinContextResponse};
 use calimero_primitives::context::ContextConfigParams;
 use eyre::bail;
 use tracing::info;

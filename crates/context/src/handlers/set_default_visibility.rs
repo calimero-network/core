@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::SetDefaultVisibilityRequest;
-use calimero_context_primitives::local_governance::GroupOp;
+use calimero_context_client::group::SetDefaultVisibilityRequest;
+use calimero_context_client::local_governance::GroupOp;
 use tracing::info;
 
 use crate::group_store;

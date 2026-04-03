@@ -2,7 +2,7 @@
 //!
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
 
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 use calimero_crypto::Nonce;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
@@ -963,7 +963,7 @@ async fn request_missing_deltas(
 /// it returns an error.
 async fn ensure_application_available(
     node_client: &calimero_node_primitives::client::NodeClient,
-    context_client: &calimero_context_primitives::client::ContextClient,
+    context_client: &calimero_context_client::client::ContextClient,
     context_id: &ContextId,
     timeout: std::time::Duration,
 ) -> Result<()> {

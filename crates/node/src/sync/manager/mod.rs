@@ -6,7 +6,7 @@
 use std::collections::{hash_map, HashMap};
 use std::pin::pin;
 
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::stream::Stream;
@@ -2273,7 +2273,7 @@ impl SyncManager {
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
-        use calimero_context_primitives::local_governance::SignedNamespaceOp;
+        use calimero_context_client::local_governance::SignedNamespaceOp;
         use calimero_store::key::AsKeyParts;
 
         let store = self.context_client.datastore_handle().into_inner();
@@ -2370,7 +2370,7 @@ impl SyncManager {
                 );
                 for (_delta_id, op_bytes) in deltas {
                     match borsh::from_slice::<
-                        calimero_context_primitives::local_governance::SignedNamespaceOp,
+                        calimero_context_client::local_governance::SignedNamespaceOp,
                     >(&op_bytes)
                     {
                         Ok(op) => {

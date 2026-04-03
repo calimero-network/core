@@ -58,8 +58,8 @@ pub async fn handler(
 
     let signer_sk = calimero_primitives::identity::PrivateKey::from(sk_bytes);
 
-    let op = calimero_context_primitives::local_governance::NamespaceOp::Root(
-        calimero_context_primitives::local_governance::RootOp::GroupCreated { group_id },
+    let op = calimero_context_client::local_governance::NamespaceOp::Root(
+        calimero_context_client::local_governance::RootOp::GroupCreated { group_id },
     );
 
     match calimero_context::group_store::sign_apply_and_publish_namespace_op(

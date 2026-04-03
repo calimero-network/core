@@ -1,6 +1,6 @@
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
-use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -1507,7 +1507,7 @@ async fn sign_apply_and_publish_inner(
 // Group key management (envelope-based)
 // ---------------------------------------------------------------------------
 
-use calimero_context_primitives::local_governance::{
+use calimero_context_client::local_governance::{
     EncryptedGroupOp, KeyEnvelope, KeyRotation, NamespaceOp, OpaqueSkeleton, RootOp,
     SignedNamespaceOp,
 };
@@ -1902,9 +1902,9 @@ fn decrypt_and_apply_group_op(
     ns_op: &SignedNamespaceOp,
     group_id: &ContextGroupId,
     group_key: &[u8; 32],
-    encrypted: &calimero_context_primitives::local_governance::EncryptedGroupOp,
+    encrypted: &calimero_context_client::local_governance::EncryptedGroupOp,
 ) -> EyreResult<()> {
-    use calimero_context_primitives::local_governance::GroupOp;
+    use calimero_context_client::local_governance::GroupOp;
     use calimero_crypto::SharedKey;
 
     let sk = calimero_primitives::identity::PrivateKey::from(*group_key);
@@ -1919,8 +1919,8 @@ fn decrypt_and_apply_group_op(
 
     // Build a synthetic SignedGroupOp so the existing apply path works.
     // The signature was already verified on the outer SignedNamespaceOp.
-    let signed_group_op = calimero_context_primitives::local_governance::SignedGroupOp {
-        version: calimero_context_primitives::local_governance::SIGNED_GROUP_OP_SCHEMA_VERSION,
+    let signed_group_op = calimero_context_client::local_governance::SignedGroupOp {
+        version: calimero_context_client::local_governance::SIGNED_GROUP_OP_SCHEMA_VERSION,
         group_id: group_id.to_bytes(),
         parent_op_hashes: ns_op.parent_op_hashes.clone(),
         state_hash: ns_op.state_hash,
@@ -1956,7 +1956,7 @@ fn apply_group_op_inner(
     group_id: &ContextGroupId,
     signer: &PublicKey,
     nonce: u64,
-    op: &calimero_context_primitives::local_governance::GroupOp,
+    op: &calimero_context_client::local_governance::GroupOp,
 ) -> EyreResult<()> {
     let last = get_local_gov_nonce(store, group_id, signer)?.unwrap_or(0);
     if nonce <= last {
@@ -3211,7 +3211,7 @@ pub fn build_namespace_summary(
     group_id: &ContextGroupId,
     meta: &GroupMetaValue,
     node_identity: &PublicKey,
-) -> EyreResult<Option<calimero_context_primitives::group::NamespaceSummary>> {
+) -> EyreResult<Option<calimero_context_client::group::NamespaceSummary>> {
     if get_parent_group(store, group_id)?.is_some() {
         return Ok(None);
     }
@@ -3226,7 +3226,7 @@ pub fn build_namespace_summary(
         .len();
     let subgroup_count = list_child_groups(store, group_id).unwrap_or_default().len();
 
-    Ok(Some(calimero_context_primitives::group::NamespaceSummary {
+    Ok(Some(calimero_context_client::group::NamespaceSummary {
         namespace_id: *group_id,
         app_key: meta.app_key.into(),
         target_application_id: meta.target_application_id,

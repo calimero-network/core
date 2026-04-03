@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 use calimero_dag::{
     ApplyError, CausalDelta, DagStore as CoreDagStore, DeltaApplier, PendingStats,
     MAX_DELTA_QUERY_LIMIT,

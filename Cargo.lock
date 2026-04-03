@@ -1225,8 +1225,8 @@ dependencies = [
  "async-trait",
  "borsh",
  "bs58 0.5.1",
+ "calimero-context-client",
  "calimero-context-config",
- "calimero-context-primitives",
  "calimero-crypto",
  "calimero-dag",
  "calimero-node-primitives",
@@ -1253,19 +1253,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-context-config"
-version = "0.0.0"
-dependencies = [
- "borsh",
- "bs58 0.5.1",
- "ed25519-dalek",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "calimero-context-primitives"
+name = "calimero-context-client"
 version = "0.0.0"
 dependencies = [
  "actix",
@@ -1290,6 +1278,18 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "calimero-context-config"
+version = "0.0.0"
+dependencies = [
+ "borsh",
+ "bs58 0.5.1",
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1383,8 +1383,8 @@ dependencies = [
  "borsh",
  "calimero-blobstore",
  "calimero-context",
+ "calimero-context-client",
  "calimero-context-config",
- "calimero-context-primitives",
  "calimero-crypto",
  "calimero-dag",
  "calimero-network",
@@ -1560,8 +1560,8 @@ dependencies = [
  "bytes",
  "cached-path",
  "calimero-context",
+ "calimero-context-client",
  "calimero-context-config",
- "calimero-context-primitives",
  "calimero-network-primitives",
  "calimero-node-primitives",
  "calimero-primitives",
@@ -1597,8 +1597,8 @@ dependencies = [
 name = "calimero-server-primitives"
 version = "0.0.0"
 dependencies = [
+ "calimero-context-client",
  "calimero-context-config",
- "calimero-context-primitives",
  "calimero-primitives",
  "camino",
  "eyre",

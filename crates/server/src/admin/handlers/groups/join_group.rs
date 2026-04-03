@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_primitives::group::JoinGroupRequest;
+use calimero_context_client::group::JoinGroupRequest;
 use calimero_server_primitives::admin::{
     JoinGroupApiRequest, JoinGroupApiResponse, JoinGroupApiResponseData,
 };

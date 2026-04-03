@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_primitives::group::GetGroupForContextRequest;
+use calimero_context_client::group::GetGroupForContextRequest;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::GetContextGroupApiResponse;
 use tracing::{error, info};

@@ -22,7 +22,7 @@ use crate::specialized_node_invite_state::{
 };
 use actix::{Actor, AsyncContext, WrapFuture};
 use calimero_blobstore::BlobManager;
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::{blobs::BlobId, context::ContextId};
 use dashmap::DashMap;
@@ -479,7 +479,7 @@ impl Actor for NodeManager {
         let _handle = ctx.spawn(
             async move {
                 match context_client
-                    .list_all_groups(calimero_context_primitives::group::ListAllGroupsRequest {
+                    .list_all_groups(calimero_context_client::group::ListAllGroupsRequest {
                         offset: 0,
                         limit: usize::MAX,
                     })

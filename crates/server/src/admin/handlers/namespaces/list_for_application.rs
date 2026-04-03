@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query};
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_primitives::group::ListNamespacesForApplicationRequest;
+use calimero_context_client::group::ListNamespacesForApplicationRequest;
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
     ListNamespacesApiResponse, ListNamespacesForApplicationQuery, NamespaceApiResponse,

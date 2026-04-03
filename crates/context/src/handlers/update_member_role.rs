@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::UpdateMemberRoleRequest;
-use calimero_context_primitives::local_governance::GroupOp;
+use calimero_context_client::group::UpdateMemberRoleRequest;
+use calimero_context_client::local_governance::GroupOp;
 use calimero_primitives::context::GroupMemberRole;
 use eyre::bail;
 

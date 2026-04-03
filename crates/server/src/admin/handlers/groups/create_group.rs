@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_config::types::AppKey;
-use calimero_context_primitives::group::CreateGroupRequest;
+use calimero_context_client::group::CreateGroupRequest;
 use calimero_server_primitives::admin::{
     CreateGroupApiRequest, CreateGroupApiResponse, CreateGroupApiResponseData,
 };

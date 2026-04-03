@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::DetachContextFromGroupRequest;
-use calimero_context_primitives::local_governance::GroupOp;
+use calimero_context_client::group::DetachContextFromGroupRequest;
+use calimero_context_client::local_governance::GroupOp;
 use eyre::bail;
 
 use crate::group_store;

@@ -12,7 +12,7 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 use calimero_network::NetworkManager;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::config::NetworkConfig;

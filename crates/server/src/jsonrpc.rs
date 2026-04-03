@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::routing::{post, Router};
 use axum::{Extension, Json};
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 use calimero_server_primitives::jsonrpc::{
     Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody,
     ResponseBodyError, ResponseBodyResult, ServerResponseError,

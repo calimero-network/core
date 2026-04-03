@@ -1,5 +1,5 @@
 use actix::{ActorResponse, Handler, Message};
-use calimero_context_primitives::group::{GroupContextEntry, ListGroupContextsRequest};
+use calimero_context_client::group::{GroupContextEntry, ListGroupContextsRequest};
 use eyre::bail;
 
 use crate::{group_store, ContextManager};

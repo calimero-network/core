@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_primitives::group::{ListNamespacesRequest, NamespaceSummary};
+use calimero_context_client::group::{ListNamespacesRequest, NamespaceSummary};
 
 use crate::group_store;
 use crate::ContextManager;
