@@ -33,10 +33,6 @@ impl<'a> GroupKeyring<'a> {
         Self { store, group_id }
     }
 
-    pub fn group_id(&self) -> &ContextGroupId {
-        &self.group_id
-    }
-
     pub fn key_id_for(group_key: &[u8; 32]) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(group_key);

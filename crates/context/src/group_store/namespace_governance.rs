@@ -66,10 +66,6 @@ impl<'a> NamespaceGovernance<'a> {
         }
     }
 
-    pub fn namespace_id(&self) -> [u8; 32] {
-        self.namespace_id
-    }
-
     /// Returns current DAG head as parent hashes + next nonce.
     pub fn read_head_record(&self) -> EyreResult<NamespaceHead> {
         let handle = self.store.handle();

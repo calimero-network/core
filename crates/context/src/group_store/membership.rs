@@ -62,9 +62,7 @@ pub fn remove_group_member(
     Ok(())
 }
 
-/// Returns the member's effective role, walking up the ancestor chain.
-/// Direct membership takes priority; if not found, checks parent groups.
-/// Returns the most privileged role found (Admin > Member > ReadOnly).
+/// Returns the member's direct role in this group, if present.
 pub fn get_group_member_role(
     store: &Store,
     group_id: &ContextGroupId,

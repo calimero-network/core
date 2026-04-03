@@ -18,6 +18,15 @@ pub struct MembershipPolicy<'a> {
     group_id: ContextGroupId,
 }
 
+pub struct TeeAttestationFields<'a> {
+    pub mrtd: &'a str,
+    pub rtmr0: &'a str,
+    pub rtmr1: &'a str,
+    pub rtmr2: &'a str,
+    pub rtmr3: &'a str,
+    pub tcb_status: &'a str,
+}
+
 impl<'a> MembershipPolicy<'a> {
     pub fn new(store: &'a Store, group_id: ContextGroupId) -> Self {
         Self { store, group_id }
@@ -78,19 +87,42 @@ impl<'a> MembershipPolicy<'a> {
         rtmr3: &str,
         tcb_status: &str,
     ) -> EyreResult<()> {
-        if !policy.allowed_mrtd.is_empty() && !policy.allowed_mrtd.iter().any(|a| a == mrtd) {
+        self.validate_tee_attestation_allowlists_record(
+            policy,
+            &TeeAttestationFields {
+                mrtd,
+                rtmr0,
+                rtmr1,
+                rtmr2,
+                rtmr3,
+                tcb_status,
+            },
+        )
+    }
+
+    pub fn validate_tee_attestation_allowlists_record(
+        &self,
+        policy: &TeeAdmissionPolicy,
+        fields: &TeeAttestationFields<'_>,
+    ) -> EyreResult<()> {
+        // Empty allowlists are intentionally permissive (allow-all for that field).
+        if !policy.allowed_mrtd.is_empty() && !policy.allowed_mrtd.iter().any(|a| a == fields.mrtd)
+        {
             bail!("MemberJoinedViaTeeAttestation rejected: MRTD not in policy allowlist");
         }
         if !policy.allowed_tcb_statuses.is_empty()
-            && !policy.allowed_tcb_statuses.iter().any(|a| a == tcb_status)
+            && !policy
+                .allowed_tcb_statuses
+                .iter()
+                .any(|a| a == fields.tcb_status)
         {
             bail!("MemberJoinedViaTeeAttestation rejected: TCB status not in policy allowlist");
         }
         for (allowlist, actual, label) in [
-            (&policy.allowed_rtmr0, rtmr0, "RTMR0"),
-            (&policy.allowed_rtmr1, rtmr1, "RTMR1"),
-            (&policy.allowed_rtmr2, rtmr2, "RTMR2"),
-            (&policy.allowed_rtmr3, rtmr3, "RTMR3"),
+            (&policy.allowed_rtmr0, fields.rtmr0, "RTMR0"),
+            (&policy.allowed_rtmr1, fields.rtmr1, "RTMR1"),
+            (&policy.allowed_rtmr2, fields.rtmr2, "RTMR2"),
+            (&policy.allowed_rtmr3, fields.rtmr3, "RTMR3"),
         ] {
             if !allowlist.is_empty() && !allowlist.iter().any(|a| a == actual) {
                 bail!("MemberJoinedViaTeeAttestation rejected: {label} not in policy allowlist");

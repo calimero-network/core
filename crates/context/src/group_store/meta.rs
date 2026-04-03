@@ -1,7 +1,7 @@
 use calimero_context_config::types::ContextGroupId;
 use calimero_store::key::{GroupMeta, GroupMetaValue, GROUP_META_PREFIX};
 use calimero_store::Store;
-use eyre::Result as EyreResult;
+use eyre::{eyre, Result as EyreResult};
 use sha2::{Digest, Sha256};
 
 use super::{collect_keys_with_prefix, list_group_members};
@@ -74,7 +74,9 @@ pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> Eyr
     hasher.update(meta.target_application_id.as_ref());
     for (pk, role) in &members {
         hasher.update(AsRef::<[u8]>::as_ref(pk));
-        hasher.update(&borsh::to_vec(role).unwrap_or_default());
+        let role_bytes =
+            borsh::to_vec(role).map_err(|e| eyre!("role serialization failed: {e}"))?;
+        hasher.update(&role_bytes);
     }
     Ok(hasher.finalize().into())
 }

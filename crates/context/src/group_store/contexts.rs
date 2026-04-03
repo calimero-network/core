@@ -82,14 +82,16 @@ pub fn enumerate_group_contexts(
         .collect())
 }
 
+/// Internal helper intended to be used only from authorization-checked paths.
+/// Callers must enforce the relevant governance permissions.
 pub fn cascade_remove_member_from_group_tree(
     store: &Store,
     group_id: &ContextGroupId,
     member: &PublicKey,
 ) -> EyreResult<()> {
     let contexts = enumerate_group_contexts(store, group_id, 0, usize::MAX)?;
+    let mut handle = store.handle();
     for context_id in &contexts {
-        let mut handle = store.handle();
         let identity_key = ContextIdentity::new(*context_id, (*member).into());
         if handle.has(&identity_key)? {
             handle.delete(&identity_key)?;

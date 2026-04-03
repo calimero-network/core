@@ -84,7 +84,7 @@ impl<'a> ContextRegistrationService<'a> {
         }
 
         let ctx_meta_key = ContextMeta::new(*context_id);
-        let handle = self.store.handle();
+        let mut handle = self.store.handle();
         if let Ok(Some(mut ctx_meta)) = handle.get(&ctx_meta_key) {
             let ctx_meta: &mut types::ContextMeta = &mut ctx_meta;
             if ctx_meta.application.application_id() == ZERO_APPLICATION_ID {
@@ -94,9 +94,7 @@ impl<'a> ContextRegistrationService<'a> {
                     ctx_meta.dag_heads.clone(),
                     ctx_meta.service_name.clone(),
                 );
-                drop(handle);
-                let mut wh = self.store.handle();
-                wh.put(&ctx_meta_key, ctx_meta)?;
+                handle.put(&ctx_meta_key, ctx_meta)?;
             }
         }
 

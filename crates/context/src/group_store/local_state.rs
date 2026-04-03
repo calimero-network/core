@@ -55,7 +55,14 @@ fn delete_local_gov_nonces_for_listed_members(
     members: &[(PublicKey, GroupMemberRole)],
 ) -> EyreResult<()> {
     for (pk, _) in members {
-        let _ = delete_local_gov_nonce_for_signer(store, group_id, pk);
+        if let Err(err) = delete_local_gov_nonce_for_signer(store, group_id, pk) {
+            tracing::debug!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                member = %pk,
+                ?err,
+                "best-effort nonce cleanup failed"
+            );
+        }
     }
     Ok(())
 }
@@ -128,15 +135,17 @@ pub fn read_op_log_after(
 
 fn delete_op_log_and_head(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     const BATCH_SIZE: usize = 1000;
+    let mut after_sequence = 0u64;
     loop {
-        let batch = read_op_log_after(store, group_id, 0, BATCH_SIZE)?;
+        let batch = read_op_log_after(store, group_id, after_sequence, BATCH_SIZE)?;
         if batch.is_empty() {
             break;
         }
         let mut handle = store.handle();
-        for (seq, _) in &batch {
-            let key = GroupOpLog::new(group_id.to_bytes(), *seq);
+        for (seq, _) in batch {
+            let key = GroupOpLog::new(group_id.to_bytes(), seq);
             handle.delete(&key)?;
+            after_sequence = seq;
         }
     }
     let mut handle = store.handle();
@@ -205,17 +214,18 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     delete_local_gov_nonces_for_listed_members(store, group_id, &members_snapshot)?;
 
     for (pk, _) in &members_snapshot {
-        let _ = remove_all_member_context_joins(store, group_id, pk);
+        if let Err(err) = remove_all_member_context_joins(store, group_id, pk) {
+            tracing::debug!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                member = %pk,
+                ?err,
+                "best-effort member-context cleanup failed"
+            );
+        }
     }
 
-    loop {
-        let batch = list_group_members(store, group_id, 0, 500)?;
-        if batch.is_empty() {
-            break;
-        }
-        for (identity, _) in &batch {
-            remove_group_member(store, group_id, identity)?;
-        }
+    for (identity, _) in &members_snapshot {
+        remove_group_member(store, group_id, identity)?;
     }
 
     delete_all_member_capabilities(store, group_id)?;

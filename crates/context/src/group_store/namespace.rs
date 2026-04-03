@@ -7,6 +7,8 @@ use calimero_store::key::{
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
+use rand::rngs::OsRng;
+use rand::Rng;
 use sha2::Digest;
 
 use super::{
@@ -210,10 +212,7 @@ pub fn create_recursive_invitations(
 
     let mut result = Vec::with_capacity(groups.len());
     for gid in groups {
-        let secret_salt: [u8; 32] = {
-            use rand::Rng;
-            rand::thread_rng().gen()
-        };
+        let secret_salt: [u8; 32] = OsRng.gen();
 
         let invitation = GroupInvitationFromAdmin {
             inviter_identity: inviter_signer_id,
@@ -369,9 +368,9 @@ pub fn get_or_create_namespace_identity_bundle(
         });
     }
 
-    let private_key = PrivateKey::random(&mut rand::thread_rng());
+    let private_key = PrivateKey::random(&mut OsRng);
     let public_key = private_key.public_key();
-    let sender_key = PrivateKey::random(&mut rand::thread_rng());
+    let sender_key = PrivateKey::random(&mut OsRng);
 
     store_namespace_identity(store, &ns_id, &public_key, &private_key, &sender_key)?;
 

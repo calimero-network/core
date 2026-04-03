@@ -3,6 +3,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
+use rand::{rngs::OsRng, Rng};
 
 use super::{
     build_key_rotation, encrypt_group_op, get_namespace_identity_record,
@@ -85,10 +86,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         let encrypted = encrypt_group_op(&stored_key.group_key, &op)?;
 
         let key_rotation = if let Some(removed) = removed_member {
-            let new_group_key: [u8; 32] = {
-                use rand::Rng;
-                rand::thread_rng().gen()
-            };
+            let new_group_key: [u8; 32] = OsRng.gen();
             let _ = store_group_key(self.store, &self.group_id, &new_group_key)?;
             Some(build_key_rotation(
                 self.store,
