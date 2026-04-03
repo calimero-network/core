@@ -519,11 +519,11 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
 
     let retry = NamespaceRetryService::new(&store, namespace_id);
     let retryable = retry
-        .collect_retryable_group_ops(group_a.to_bytes())
+        .collect_retry_candidates_for_group(group_a.to_bytes())
         .unwrap();
 
     assert_eq!(retryable.len(), 1, "expected only one retryable op");
-    match &retryable[0].op {
+    match &retryable[0].signed_op.op {
         NamespaceOp::Group { group_id, .. } => assert_eq!(*group_id, group_a.to_bytes()),
         _ => panic!("expected group op"),
     }

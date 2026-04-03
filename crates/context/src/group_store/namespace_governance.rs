@@ -341,33 +341,30 @@ impl<'a> NamespaceGovernance<'a> {
     fn retry_encrypted_ops_for_group(&self, group_id: [u8; 32]) -> EyreResult<()> {
         let gid_typed = ContextGroupId::from(group_id);
         let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
-        let ops_to_retry = retry_service.collect_retryable_group_ops(group_id, &gid_typed)?;
+        let retry_candidates = retry_service.collect_retry_candidates_for_group(group_id)?;
 
-        for signed_op in &ops_to_retry {
-            if let NamespaceOp::Group {
-                key_id,
-                ref encrypted,
-                ..
-            } = signed_op.op
-            {
-                if let Some(group_key) = load_group_key_by_id(self.store, &gid_typed, &key_id)? {
-                    match self
-                        .decrypt_and_apply_group_op(signed_op, &gid_typed, &group_key, encrypted)
-                    {
-                        Ok(()) => {
-                            tracing::info!(
-                                group_id = %hex::encode(group_id),
-                                "retried encrypted op after KeyDelivery"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                group_id = %hex::encode(group_id),
-                                ?e,
-                                "failed to retry encrypted op after KeyDelivery"
-                            );
-                        }
-                    }
+        for candidate in &retry_candidates {
+            let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
+                continue;
+            };
+            match self.decrypt_and_apply_group_op(
+                &candidate.signed_op,
+                &gid_typed,
+                &candidate.group_key,
+                encrypted,
+            ) {
+                Ok(()) => {
+                    tracing::info!(
+                        group_id = %hex::encode(group_id),
+                        "retried encrypted op after KeyDelivery"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        group_id = %hex::encode(group_id),
+                        ?e,
+                        "failed to retry encrypted op after KeyDelivery"
+                    );
                 }
             }
         }
