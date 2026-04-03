@@ -113,6 +113,137 @@ fn require_group_admin_rejects_non_admin() {
 }
 
 #[test]
+fn permission_checker_enforces_admin_and_capability_rules() {
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x10; 32]);
+    let member = PublicKey::from([0x11; 32]);
+    let outsider = PublicKey::from([0x12; 32]);
+
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+
+    let checker = PermissionChecker::new(&store, gid);
+    assert!(checker.require_admin(&admin).is_ok());
+    assert!(checker.require_admin(&member).is_err());
+
+    assert!(checker
+        .require_manage_members(&admin, "manage members")
+        .is_ok());
+    assert!(checker
+        .require_manage_members(&member, "manage members")
+        .is_err());
+    set_member_capability(
+        &store,
+        &gid,
+        &member,
+        calimero_context_config::MemberCapabilities::MANAGE_MEMBERS,
+    )
+    .unwrap();
+    assert!(checker
+        .require_manage_members(&member, "manage members")
+        .is_ok());
+
+    assert!(checker.require_can_create_context(&admin).is_ok());
+    assert!(checker.require_can_create_context(&member).is_err());
+    set_member_capability(
+        &store,
+        &gid,
+        &member,
+        calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+    )
+    .unwrap();
+    assert!(checker.require_can_create_context(&member).is_ok());
+
+    assert!(checker.require_admin_or_self(&member, &member).is_ok());
+    assert!(checker.require_admin_or_self(&member, &outsider).is_err());
+    assert!(checker.require_admin_or_self(&admin, &outsider).is_ok());
+}
+
+#[test]
+fn membership_policy_guards_last_admin_and_tee_paths() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PrivateKey::random(&mut rng).public_key();
+    let admin2 = PrivateKey::random(&mut rng).public_key();
+    let member = PrivateKey::random(&mut rng).public_key();
+    let outsider = PrivateKey::random(&mut rng).public_key();
+
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+
+    let membership = MembershipPolicy::new(&store, gid);
+    assert!(membership.ensure_not_last_admin_removal(&admin).is_err());
+    assert!(membership
+        .ensure_not_last_admin_demotion(&admin, &GroupMemberRole::Member)
+        .is_err());
+    assert!(membership
+        .ensure_not_last_admin_demotion(&admin, &GroupMemberRole::Admin)
+        .is_ok());
+
+    add_group_member(&store, &gid, &admin2, GroupMemberRole::Admin).unwrap();
+    assert!(membership.ensure_not_last_admin_removal(&admin).is_ok());
+    assert!(membership
+        .ensure_not_last_admin_demotion(&admin, &GroupMemberRole::Member)
+        .is_ok());
+
+    assert!(membership
+        .require_tee_attestation_verifier_membership(&member)
+        .is_ok());
+    assert!(membership
+        .require_tee_attestation_verifier_membership(&outsider)
+        .is_err());
+    assert!(membership.read_required_tee_admission_policy().is_err());
+
+    let signer_sk = PrivateKey::random(&mut rng);
+    let policy_op = SignedGroupOp::sign(
+        &signer_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m1".to_owned()],
+            allowed_rtmr0: vec!["r0".to_owned()],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned()],
+            accept_mock: false,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(&store, &gid, 1, &borsh::to_vec(&policy_op).unwrap()).unwrap();
+
+    let policy = membership.read_required_tee_admission_policy().unwrap();
+    assert!(membership
+        .validate_tee_attestation_allowlists(&policy, "m1", "r0", "x", "y", "z", "ok")
+        .is_ok());
+    assert!(membership
+        .validate_tee_attestation_allowlists(&policy, "wrong", "r0", "x", "y", "z", "ok")
+        .is_err());
+    assert!(membership
+        .validate_tee_attestation_allowlists(&policy, "m1", "wrong", "x", "y", "z", "ok")
+        .is_err());
+
+    let tee_joined = PrivateKey::random(&mut rng).public_key();
+    assert!(!check_group_membership(&store, &gid, &tee_joined).unwrap());
+    membership
+        .admit_member_if_absent(&tee_joined, &GroupMemberRole::Member)
+        .unwrap();
+    assert!(check_group_membership(&store, &gid, &tee_joined).unwrap());
+    membership
+        .admit_member_if_absent(&tee_joined, &GroupMemberRole::Member)
+        .unwrap();
+    assert!(check_group_membership(&store, &gid, &tee_joined).unwrap());
+}
+
+#[test]
 fn apply_local_signed_group_op_nonce_and_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;

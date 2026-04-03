@@ -65,8 +65,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         let namespace_id = resolve_namespace(self.store, &self.group_id)?;
         let namespace_bytes = namespace_id.to_bytes();
 
-        let Some(namespace_identity) =
-            get_namespace_identity_record(self.store, &namespace_id)?
+        let Some(namespace_identity) = get_namespace_identity_record(self.store, &namespace_id)?
         else {
             tracing::debug!(
                 group_id = %hex::encode(self.group_id.to_bytes()),

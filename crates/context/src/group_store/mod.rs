@@ -1,6 +1,5 @@
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_config::MemberCapabilities;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -21,10 +20,12 @@ mod group_governance_publisher;
 mod group_keys;
 mod local_state;
 mod membership;
+mod membership_policy;
 mod meta;
 mod migrations;
 mod namespace;
 mod namespace_governance;
+mod permission_checker;
 mod signing_keys;
 mod tee;
 mod upgrades;
@@ -62,6 +63,7 @@ pub use self::membership::{
     is_group_admin, is_group_admin_or_has_capability, list_group_members, remove_group_member,
     require_group_admin, require_group_admin_or_capability,
 };
+pub use self::membership_policy::MembershipPolicy;
 pub use self::meta::{
     compute_group_state_hash, delete_group_meta, enumerate_all_groups, load_group_meta,
     save_group_meta,
@@ -72,17 +74,17 @@ pub use self::migrations::{
 pub use self::namespace::{
     collect_descendant_groups, compute_namespace_governance_epoch, create_recursive_invitations,
     get_namespace_identity, get_namespace_identity_record, get_or_create_namespace_identity,
-    get_or_create_namespace_identity_bundle, get_parent_group,
-    is_read_only_for_context, list_child_groups, nest_group, recursive_remove_member,
-    resolve_namespace, resolve_namespace_identity, resolve_namespace_identity_record,
-    store_namespace_identity, unnest_group,
-    NamespaceIdentityRecord, ResolvedNamespaceIdentity,
+    get_or_create_namespace_identity_bundle, get_parent_group, is_read_only_for_context,
+    list_child_groups, nest_group, recursive_remove_member, resolve_namespace,
+    resolve_namespace_identity, resolve_namespace_identity_record, store_namespace_identity,
+    unnest_group, NamespaceIdentityRecord, ResolvedNamespaceIdentity,
 };
 pub use self::namespace_governance::{
     apply_signed_namespace_op, collect_skeleton_delta_ids_for_group, sign_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, KeyUnwrapFailure, NamespaceGovernance,
-    NamespaceHead, PendingKeyDelivery,
+    sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, KeyUnwrapFailure,
+    NamespaceGovernance, NamespaceHead, PendingKeyDelivery,
 };
+pub use self::permission_checker::PermissionChecker;
 pub use self::signing_keys::{
     delete_all_group_signing_keys, delete_group_signing_key, get_group_signing_key,
     require_group_signing_key, store_group_signing_key,
@@ -722,38 +724,6 @@ impl<'a> GroupStoreIndex<'a> {
     }
 }
 
-fn ensure_not_last_admin_removal(
-    store: &Store,
-    group_id: &ContextGroupId,
-    member: &PublicKey,
-) -> EyreResult<()> {
-    if !is_group_admin(store, group_id, member)? {
-        return Ok(());
-    }
-    if count_group_admins(store, group_id)? > 1 {
-        return Ok(());
-    }
-    bail!(GroupStoreError::LastAdmin);
-}
-
-fn ensure_not_last_admin_demotion(
-    store: &Store,
-    group_id: &ContextGroupId,
-    member: &PublicKey,
-    new_role: &GroupMemberRole,
-) -> EyreResult<()> {
-    if *new_role == GroupMemberRole::Admin {
-        return Ok(());
-    }
-    if !is_group_admin(store, group_id, member)? {
-        return Ok(());
-    }
-    if count_group_admins(store, group_id)? > 1 {
-        return Ok(());
-    }
-    bail!(GroupStoreError::LastAdminDemotion);
-}
-
 /// Maximum number of parent hashes allowed in a single [`SignedGroupOp`].
 /// Chosen to allow realistic merge breadth (multi-admin concurrent ops) while
 /// bounding memory/CPU cost during signature verification and storage.
@@ -777,55 +747,41 @@ fn apply_group_op_mutations(
     signer: &PublicKey,
     op: &GroupOp,
 ) -> EyreResult<bool> {
+    let permissions = PermissionChecker::new(store, *group_id);
+    let membership_policy = MembershipPolicy::new(store, *group_id);
+
     match op {
         GroupOp::Noop => {}
         GroupOp::MemberAdded { member, role } => {
-            require_group_admin_or_capability(
-                store,
-                group_id,
-                signer,
-                MemberCapabilities::MANAGE_MEMBERS,
-                "add member",
-            )?;
-            if *role == GroupMemberRole::Admin && !is_group_admin(store, group_id, signer)? {
-                bail!("only admins can add new admins");
-            }
+            permissions.require_manage_members(signer, "add member")?;
+            permissions.require_admin_to_add_admin(signer, role)?;
             add_group_member(store, group_id, member, role.clone())?;
         }
         GroupOp::MemberRemoved { member } => {
-            require_group_admin_or_capability(
-                store,
-                group_id,
-                signer,
-                MemberCapabilities::MANAGE_MEMBERS,
-                "remove member",
-            )?;
-            if is_group_admin(store, group_id, member)? && !is_group_admin(store, group_id, signer)?
-            {
-                bail!("only admins can remove other admins");
-            }
-            ensure_not_last_admin_removal(store, group_id, member)?;
+            permissions.require_manage_members(signer, "remove member")?;
+            permissions.require_admin_to_remove_admin(signer, member)?;
+            membership_policy.ensure_not_last_admin_removal(member)?;
             cascade_remove_member_from_group_tree(store, group_id, member)?;
             remove_group_member(store, group_id, member)?;
         }
         GroupOp::MemberRoleSet { member, role } => {
-            require_group_admin(store, group_id, signer)?;
-            ensure_not_last_admin_demotion(store, group_id, member, role)?;
+            permissions.require_admin(signer)?;
+            membership_policy.ensure_not_last_admin_demotion(member, role)?;
             add_group_member(store, group_id, member, role.clone())?;
         }
         GroupOp::MemberCapabilitySet {
             member,
             capabilities,
         } => {
-            require_group_admin(store, group_id, signer)?;
+            permissions.require_admin(signer)?;
             set_member_capability(store, group_id, member, *capabilities)?;
         }
         GroupOp::DefaultCapabilitiesSet { capabilities } => {
-            require_group_admin(store, group_id, signer)?;
+            permissions.require_admin(signer)?;
             set_default_capabilities(store, group_id, *capabilities)?;
         }
         GroupOp::UpgradePolicySet { policy } => {
-            require_group_admin(store, group_id, signer)?;
+            permissions.require_admin(signer)?;
             let mut meta = load_group_meta(store, group_id)?
                 .ok_or_else(|| eyre::eyre!("group metadata not found"))?;
             meta.upgrade_policy = policy.clone();
@@ -835,13 +791,7 @@ fn apply_group_op_mutations(
             app_key,
             target_application_id,
         } => {
-            require_group_admin_or_capability(
-                store,
-                group_id,
-                signer,
-                MemberCapabilities::MANAGE_APPLICATION,
-                "set target application",
-            )?;
+            permissions.require_manage_application(signer, "set target application")?;
             let mut meta = load_group_meta(store, group_id)?
                 .ok_or_else(|| eyre::eyre!("group metadata not found"))?;
             meta.app_key = *app_key;
@@ -860,14 +810,7 @@ fn apply_group_op_mutations(
                 group_id = %hex::encode(group_id.to_bytes()),
                 "processing ContextRegistered governance op"
             );
-            if !is_group_admin_or_has_capability(
-                store,
-                group_id,
-                signer,
-                MemberCapabilities::CAN_CREATE_CONTEXT,
-            )? {
-                bail!("only group admin or members with CAN_CREATE_CONTEXT can register a context");
-            }
+            permissions.require_can_create_context(signer)?;
             register_context_in_group(store, group_id, context_id)?;
 
             if *application_id != ZERO_APPLICATION_ID {
@@ -903,7 +846,7 @@ fn apply_group_op_mutations(
             }
         }
         GroupOp::ContextDetached { context_id } => {
-            require_group_admin(store, group_id, signer)?;
+            permissions.require_admin(signer)?;
             match get_group_for_context(store, context_id)? {
                 Some(g) if g == *group_id => {
                     unregister_context_from_group(store, group_id, context_id)?;
@@ -913,42 +856,33 @@ fn apply_group_op_mutations(
             }
         }
         GroupOp::DefaultVisibilitySet { mode } => {
-            require_group_admin(store, group_id, signer)?;
+            permissions.require_admin(signer)?;
             if *mode > 1 {
                 bail!("visibility mode must be 0 (Open) or 1 (Restricted), got {mode}");
             }
             set_default_visibility(store, group_id, *mode)?;
         }
         GroupOp::ContextAliasSet { context_id, alias } => {
-            require_group_admin(store, group_id, signer)?;
+            permissions.require_admin(signer)?;
             set_context_alias(store, group_id, context_id, alias)?;
         }
         GroupOp::MemberAliasSet { member, alias } => {
-            let is_admin = is_group_admin(store, group_id, signer)?;
-            if !is_admin && *signer != *member {
-                bail!("only group admin or the member can set member alias");
-            }
+            permissions.require_admin_or_self(signer, member)?;
             set_member_alias(store, group_id, member, alias)?;
         }
         GroupOp::GroupAliasSet { alias } => {
-            require_group_admin(store, group_id, signer)?;
+            permissions.require_admin(signer)?;
             set_group_alias(store, group_id, alias)?;
         }
         GroupOp::GroupDelete => {
-            require_group_admin(store, group_id, signer)?;
+            permissions.require_admin(signer)?;
             if count_group_contexts(store, group_id)? > 0 {
                 bail!("cannot delete group: one or more contexts are still registered");
             }
             delete_group_local_rows(store, group_id)?;
         }
         GroupOp::GroupMigrationSet { migration } => {
-            require_group_admin_or_capability(
-                store,
-                group_id,
-                signer,
-                MemberCapabilities::MANAGE_APPLICATION,
-                "set group migration",
-            )?;
+            permissions.require_manage_application(signer, "set group migration")?;
             let mut meta = load_group_meta(store, group_id)?
                 .ok_or_else(|| eyre::eyre!("group metadata not found"))?;
             meta.migration = migration.clone();
@@ -959,13 +893,7 @@ fn apply_group_op_mutations(
             member,
             capability,
         } => {
-            require_group_admin_or_capability(
-                store,
-                group_id,
-                signer,
-                MemberCapabilities::MANAGE_MEMBERS,
-                "grant context capability",
-            )?;
+            permissions.require_manage_members(signer, "grant context capability")?;
             let current =
                 get_context_member_capability(store, group_id, context_id, member)?.unwrap_or(0);
             set_context_member_capability(
@@ -981,13 +909,7 @@ fn apply_group_op_mutations(
             member,
             capability,
         } => {
-            require_group_admin_or_capability(
-                store,
-                group_id,
-                signer,
-                MemberCapabilities::MANAGE_MEMBERS,
-                "revoke context capability",
-            )?;
+            permissions.require_manage_members(signer, "revoke context capability")?;
             let current =
                 get_context_member_capability(store, group_id, context_id, member)?.unwrap_or(0);
             set_context_member_capability(
@@ -999,7 +921,7 @@ fn apply_group_op_mutations(
             )?;
         }
         GroupOp::TeeAdmissionPolicySet { .. } => {
-            require_group_admin(store, group_id, signer)?;
+            permissions.require_admin(signer)?;
         }
         GroupOp::MemberJoinedViaTeeAttestation {
             member,
@@ -1012,36 +934,12 @@ fn apply_group_op_mutations(
             tcb_status,
             role,
         } => {
-            if !check_group_membership(store, group_id, signer)? {
-                bail!("TEE attestation verifier must be a group member");
-            }
-            let policy = read_tee_admission_policy(store, group_id)?
-                .ok_or_else(|| eyre::eyre!(
-                    "MemberJoinedViaTeeAttestation rejected: no TeeAdmissionPolicySet exists for group"
-                ))?;
-            if !policy.allowed_mrtd.is_empty() && !policy.allowed_mrtd.iter().any(|a| a == mrtd) {
-                bail!("MemberJoinedViaTeeAttestation rejected: MRTD not in policy allowlist");
-            }
-            if !policy.allowed_tcb_statuses.is_empty()
-                && !policy.allowed_tcb_statuses.iter().any(|a| a == tcb_status)
-            {
-                bail!("MemberJoinedViaTeeAttestation rejected: TCB status not in policy allowlist");
-            }
-            for (allowlist, actual, label) in [
-                (&policy.allowed_rtmr0, rtmr0, "RTMR0"),
-                (&policy.allowed_rtmr1, rtmr1, "RTMR1"),
-                (&policy.allowed_rtmr2, rtmr2, "RTMR2"),
-                (&policy.allowed_rtmr3, rtmr3, "RTMR3"),
-            ] {
-                if !allowlist.is_empty() && !allowlist.iter().any(|a| a == actual) {
-                    bail!(
-                        "MemberJoinedViaTeeAttestation rejected: {label} not in policy allowlist"
-                    );
-                }
-            }
-            if !check_group_membership(store, group_id, member)? {
-                add_group_member(store, group_id, member, role.clone())?;
-            }
+            membership_policy.require_tee_attestation_verifier_membership(signer)?;
+            let policy = membership_policy.read_required_tee_admission_policy()?;
+            membership_policy.validate_tee_attestation_allowlists(
+                &policy, mrtd, rtmr0, rtmr1, rtmr2, rtmr3, tcb_status,
+            )?;
+            membership_policy.admit_member_if_absent(member, role)?;
         }
         #[allow(unreachable_patterns)]
         _ => return Ok(false),
