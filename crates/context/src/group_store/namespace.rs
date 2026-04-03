@@ -16,6 +16,19 @@ use super::{
 
 const MAX_NAMESPACE_DEPTH: usize = 16;
 
+#[derive(Debug, Clone, Copy)]
+pub struct NamespaceIdentityRecord {
+    pub public_key: PublicKey,
+    pub private_key: [u8; 32],
+    pub sender_key: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedNamespaceIdentity {
+    pub namespace_id: ContextGroupId,
+    pub identity: NamespaceIdentityRecord,
+}
+
 /// Namespace governance epoch: just the namespace DAG heads.
 ///
 /// With the single-DAG model, governance epoch is simply the heads of
@@ -270,14 +283,22 @@ pub fn get_namespace_identity(
     store: &Store,
     namespace_id: &ContextGroupId,
 ) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+    Ok(get_namespace_identity_record(store, namespace_id)?
+        .map(|record| (record.public_key, record.private_key, record.sender_key)))
+}
+
+pub fn get_namespace_identity_record(
+    store: &Store,
+    namespace_id: &ContextGroupId,
+) -> EyreResult<Option<NamespaceIdentityRecord>> {
     let handle = store.handle();
     let key = NamespaceIdentity::new(namespace_id.to_bytes());
     match handle.get(&key)? {
-        Some(val) => Ok(Some((
-            PublicKey::from(val.public_key),
-            val.private_key,
-            val.sender_key,
-        ))),
+        Some(val) => Ok(Some(NamespaceIdentityRecord {
+            public_key: PublicKey::from(val.public_key),
+            private_key: val.private_key,
+            sender_key: val.sender_key,
+        })),
         None => Ok(None),
     }
 }
@@ -309,8 +330,16 @@ pub fn resolve_namespace_identity(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+    Ok(resolve_namespace_identity_record(store, group_id)?
+        .map(|record| (record.public_key, record.private_key, record.sender_key)))
+}
+
+pub fn resolve_namespace_identity_record(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<NamespaceIdentityRecord>> {
     let ns_id = resolve_namespace(store, group_id)?;
-    get_namespace_identity(store, &ns_id)
+    get_namespace_identity_record(store, &ns_id)
 }
 
 /// Resolve the namespace for a group and return this node's identity,
@@ -319,9 +348,25 @@ pub fn get_or_create_namespace_identity(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
+    let bundle = get_or_create_namespace_identity_bundle(store, group_id)?;
+    Ok((
+        bundle.namespace_id,
+        bundle.identity.public_key,
+        bundle.identity.private_key,
+        bundle.identity.sender_key,
+    ))
+}
+
+pub fn get_or_create_namespace_identity_bundle(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<ResolvedNamespaceIdentity> {
     let ns_id = resolve_namespace(store, group_id)?;
-    if let Some((pk, sk, sender)) = get_namespace_identity(store, &ns_id)? {
-        return Ok((ns_id, pk, sk, sender));
+    if let Some(identity) = get_namespace_identity_record(store, &ns_id)? {
+        return Ok(ResolvedNamespaceIdentity {
+            namespace_id: ns_id,
+            identity,
+        });
     }
 
     let private_key = PrivateKey::random(&mut rand::thread_rng());
@@ -330,5 +375,12 @@ pub fn get_or_create_namespace_identity(
 
     store_namespace_identity(store, &ns_id, &public_key, &private_key, &sender_key)?;
 
-    Ok((ns_id, public_key, *private_key, *sender_key))
+    Ok(ResolvedNamespaceIdentity {
+        namespace_id: ns_id,
+        identity: NamespaceIdentityRecord {
+            public_key,
+            private_key: *private_key,
+            sender_key: *sender_key,
+        },
+    })
 }

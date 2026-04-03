@@ -10,6 +10,18 @@ use sha2::{Digest, Sha256};
 
 use super::{collect_keys_with_prefix, list_group_members};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoredGroupKey {
+    pub key_id: [u8; 32],
+    pub group_key: [u8; 32],
+}
+
+impl StoredGroupKey {
+    pub fn into_tuple(self) -> ([u8; 32], [u8; 32]) {
+        (self.key_id, self.group_key)
+    }
+}
+
 /// Domain API for managing encryption keys used by group governance ops.
 pub struct GroupKeyring<'a> {
     store: &'a Store,
@@ -53,8 +65,8 @@ impl<'a> GroupKeyring<'a> {
         Ok(handle.get(&entry)?.map(|v: GroupKeyValue| v.group_key))
     }
 
-    /// Returns the latest key by `created_at` as `(key_id, group_key)`.
-    pub fn load_current_key(&self) -> EyreResult<Option<([u8; 32], [u8; 32])>> {
+    /// Returns the latest key by `created_at`.
+    pub fn load_current_key_record(&self) -> EyreResult<Option<StoredGroupKey>> {
         let gid = self.group_id.to_bytes();
         let keys = collect_keys_with_prefix(
             self.store,
@@ -63,19 +75,29 @@ impl<'a> GroupKeyring<'a> {
             |k| k.group_id() == gid,
         )?;
         let handle = self.store.handle();
-        let mut best: Option<([u8; 32], [u8; 32], u64)> = None;
+        let mut best: Option<(StoredGroupKey, u64)> = None;
 
         for key in keys {
             let Some(val): Option<GroupKeyValue> = handle.get(&key)? else {
                 continue;
             };
-            let kid = key.key_id();
-            if best.as_ref().is_none_or(|(_, _, ts)| val.created_at > *ts) {
-                best = Some((kid, val.group_key, val.created_at));
+            let current = StoredGroupKey {
+                key_id: key.key_id(),
+                group_key: val.group_key,
+            };
+            if best.as_ref().is_none_or(|(_, ts)| val.created_at > *ts) {
+                best = Some((current, val.created_at));
             }
         }
 
-        Ok(best.map(|(kid, gk, _)| (kid, gk)))
+        Ok(best.map(|(record, _)| record))
+    }
+
+    /// Backward-compatible tuple view of [`StoredGroupKey`].
+    pub fn load_current_key(&self) -> EyreResult<Option<([u8; 32], [u8; 32])>> {
+        Ok(self
+            .load_current_key_record()?
+            .map(StoredGroupKey::into_tuple))
     }
 
     pub fn encrypt_op(group_key: &[u8; 32], op: &GroupOp) -> EyreResult<EncryptedGroupOp> {
@@ -210,6 +232,13 @@ pub fn load_current_group_key(
     group_id: &ContextGroupId,
 ) -> EyreResult<Option<([u8; 32], [u8; 32])>> {
     GroupKeyring::new(store, *group_id).load_current_key()
+}
+
+pub fn load_current_group_key_record(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<StoredGroupKey>> {
+    GroupKeyring::new(store, *group_id).load_current_key_record()
 }
 
 pub fn wrap_group_key_for_member(

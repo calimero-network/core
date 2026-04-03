@@ -5,8 +5,9 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 use super::{
-    build_key_rotation, encrypt_group_op, get_namespace_identity, load_current_group_key,
-    resolve_namespace, sign_apply_local_group_op_borsh, store_group_key, NamespaceGovernance,
+    build_key_rotation, encrypt_group_op, get_namespace_identity_record,
+    load_current_group_key_record, resolve_namespace, sign_apply_local_group_op_borsh,
+    store_group_key, NamespaceGovernance,
 };
 
 /// Orchestrates local apply + encrypted namespace publish for group governance ops.
@@ -64,8 +65,8 @@ impl<'a> GroupGovernancePublisher<'a> {
         let namespace_id = resolve_namespace(self.store, &self.group_id)?;
         let namespace_bytes = namespace_id.to_bytes();
 
-        let Some((_pk, namespace_sk_bytes, _sender)) =
-            get_namespace_identity(self.store, &namespace_id)?
+        let Some(namespace_identity) =
+            get_namespace_identity_record(self.store, &namespace_id)?
         else {
             tracing::debug!(
                 group_id = %hex::encode(self.group_id.to_bytes()),
@@ -74,7 +75,7 @@ impl<'a> GroupGovernancePublisher<'a> {
             return Ok(());
         };
 
-        let Some((key_id, group_key)) = load_current_group_key(self.store, &self.group_id)? else {
+        let Some(stored_key) = load_current_group_key_record(self.store, &self.group_id)? else {
             tracing::debug!(
                 group_id = %hex::encode(self.group_id.to_bytes()),
                 "no group key stored, skipping namespace publish"
@@ -82,7 +83,7 @@ impl<'a> GroupGovernancePublisher<'a> {
             return Ok(());
         };
 
-        let encrypted = encrypt_group_op(&group_key, &op)?;
+        let encrypted = encrypt_group_op(&stored_key.group_key, &op)?;
 
         let key_rotation = if let Some(removed) = removed_member {
             let new_group_key: [u8; 32] = {
@@ -103,12 +104,12 @@ impl<'a> GroupGovernancePublisher<'a> {
 
         let namespace_op = NamespaceOp::Group {
             group_id: self.group_id.to_bytes(),
-            key_id,
+            key_id: stored_key.key_id,
             encrypted,
             key_rotation,
         };
 
-        let namespace_sk = PrivateKey::from(namespace_sk_bytes);
+        let namespace_sk = PrivateKey::from(namespace_identity.private_key);
         NamespaceGovernance::new(self.store, namespace_bytes)
             .sign_and_publish_without_apply(self.node_client, &namespace_sk, namespace_op)
             .await

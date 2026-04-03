@@ -13,9 +13,10 @@ use sha2::Digest;
 
 use super::{
     add_group_member, apply_group_op_mutations, check_group_membership, count_group_contexts,
-    get_local_gov_nonce, get_namespace_identity, is_group_admin, is_group_admin_or_has_capability,
-    load_current_group_key, load_group_key_by_id, load_group_meta, nest_group, resolve_namespace,
-    save_group_meta, set_local_gov_nonce, store_group_key, unnest_group, unwrap_group_key,
+    get_local_gov_nonce, get_namespace_identity_record, is_group_admin,
+    is_group_admin_or_has_capability, load_current_group_key_record, load_group_key_by_id,
+    load_group_meta, nest_group, resolve_namespace, save_group_meta, set_local_gov_nonce,
+    store_group_key, unnest_group, unwrap_group_key,
 };
 
 /// Side effect returned by namespace-op application when an existing
@@ -41,6 +42,19 @@ pub struct ApplyNamespaceOpResult {
     pub key_unwrap_failures: Vec<KeyUnwrapFailure>,
 }
 
+/// Namespace DAG head view used by governance workflows.
+#[derive(Debug, Clone)]
+pub struct NamespaceHead {
+    pub parent_hashes: Vec<[u8; 32]>,
+    pub next_nonce: u64,
+}
+
+impl NamespaceHead {
+    pub fn into_tuple(self) -> (Vec<[u8; 32]>, u64) {
+        (self.parent_hashes, self.next_nonce)
+    }
+}
+
 /// Domain API for namespace DAG and governance operation lifecycle.
 pub struct NamespaceGovernance<'a> {
     store: &'a Store,
@@ -59,8 +73,8 @@ impl<'a> NamespaceGovernance<'a> {
         self.namespace_id
     }
 
-    /// Returns `(parent_hashes, next_nonce)`; genesis is `(vec![], 1)`.
-    pub fn read_head(&self) -> EyreResult<(Vec<[u8; 32]>, u64)> {
+    /// Returns current DAG head as parent hashes + next nonce.
+    pub fn read_head_record(&self) -> EyreResult<NamespaceHead> {
         let handle = self.store.handle();
         let key = calimero_store::key::NamespaceGovHead::new(self.namespace_id);
         let head = handle.get(&key)?;
@@ -69,7 +83,15 @@ impl<'a> NamespaceGovernance<'a> {
             .map(|h| h.dag_heads.clone())
             .unwrap_or_default();
         let next_nonce = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
-        Ok((parent_hashes, next_nonce))
+        Ok(NamespaceHead {
+            parent_hashes,
+            next_nonce,
+        })
+    }
+
+    /// Backward-compatible tuple facade for existing call sites.
+    pub fn read_head(&self) -> EyreResult<(Vec<[u8; 32]>, u64)> {
+        Ok(self.read_head_record()?.into_tuple())
     }
 
     pub fn advance_dag_head(
@@ -160,8 +182,8 @@ impl<'a> NamespaceGovernance<'a> {
                         ref envelope,
                     } => {
                         let ns_id = ContextGroupId::from(op.namespace_id);
-                        if let Some((_pk, sk, _)) = get_namespace_identity(self.store, &ns_id)? {
-                            let recipient_sk = PrivateKey::from(sk);
+                        if let Some(identity) = get_namespace_identity_record(self.store, &ns_id)? {
+                            let recipient_sk = PrivateKey::from(identity.private_key);
                             if envelope.recipient == recipient_sk.public_key() {
                                 match unwrap_group_key(&recipient_sk, envelope) {
                                     Ok(group_key) => {
@@ -191,7 +213,7 @@ impl<'a> NamespaceGovernance<'a> {
                     } => {
                         let gid = signed_invitation.invitation.group_id;
                         let group_id_typed = ContextGroupId::from(gid);
-                        if load_current_group_key(self.store, &group_id_typed)?.is_some() {
+                        if load_current_group_key_record(self.store, &group_id_typed)?.is_some() {
                             result.pending_deliveries.push(PendingKeyDelivery {
                                 namespace_id: op.namespace_id,
                                 group_id: group_id_typed.to_bytes(),
@@ -217,8 +239,8 @@ impl<'a> NamespaceGovernance<'a> {
 
                 if let Some(rotation) = key_rotation {
                     let ns_id = ContextGroupId::from(op.namespace_id);
-                    if let Some((_pk, sk, _)) = get_namespace_identity(self.store, &ns_id)? {
-                        let recipient_sk = PrivateKey::from(sk);
+                    if let Some(identity) = get_namespace_identity_record(self.store, &ns_id)? {
+                        let recipient_sk = PrivateKey::from(identity.private_key);
                         for envelope in &rotation.envelopes {
                             if envelope.recipient == recipient_sk.public_key() {
                                 match unwrap_group_key(&recipient_sk, envelope) {
@@ -252,8 +274,8 @@ impl<'a> NamespaceGovernance<'a> {
         let delta_id = op
             .content_hash()
             .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
-        let (_, seq) = self.read_head()?;
-        self.advance_dag_head(delta_id, &op.parent_op_hashes, seq)?;
+        let head = self.read_head_record()?;
+        self.advance_dag_head(delta_id, &op.parent_op_hashes, head.next_nonce)?;
         self.store_operation(op)?;
 
         Ok(result)
@@ -265,13 +287,13 @@ impl<'a> NamespaceGovernance<'a> {
         signer_sk: &PrivateKey,
         op: NamespaceOp,
     ) -> EyreResult<()> {
-        let (parent_hashes, nonce) = self.read_head()?;
+        let head = self.read_head_record()?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
-            parent_hashes,
+            head.parent_hashes,
             [0u8; 32],
-            nonce,
+            head.next_nonce,
             op,
         )?;
         let delta_id = signed
@@ -293,13 +315,13 @@ impl<'a> NamespaceGovernance<'a> {
         signer_sk: &PrivateKey,
         op: NamespaceOp,
     ) -> EyreResult<()> {
-        let (parent_hashes, nonce) = self.read_head()?;
+        let head = self.read_head_record()?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
-            parent_hashes,
+            head.parent_hashes,
             [0u8; 32],
-            nonce,
+            head.next_nonce,
             op,
         )?;
         let delta_id = signed
@@ -308,7 +330,7 @@ impl<'a> NamespaceGovernance<'a> {
         let parent_ids = signed.parent_op_hashes.clone();
 
         self.store_operation(&signed)?;
-        self.advance_dag_head(delta_id, &parent_ids, nonce)?;
+        self.advance_dag_head(delta_id, &parent_ids, head.next_nonce)?;
 
         let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
         node_client
