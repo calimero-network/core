@@ -6,8 +6,8 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
 use super::{
-    collect_keys_with_prefix, get_member_capability, load_group_meta, GroupStoreError,
-    set_member_capability,
+    collect_keys_with_prefix, get_member_capability, load_group_meta, set_member_capability,
+    GroupStoreError,
 };
 
 pub fn add_group_member(
@@ -243,6 +243,9 @@ fn get_direct_member_role(
     Ok(handle.get(&key)?.map(|v: GroupMemberValue| v.role))
 }
 
-fn get_member_default_capabilities(store: &Store, group_id: &ContextGroupId) -> EyreResult<Option<u32>> {
+fn get_member_default_capabilities(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<u32>> {
     super::get_default_capabilities(store, group_id)
 }

@@ -947,7 +947,10 @@ fn delete_defaults_and_member_capabilities_clears_values() {
     set_default_visibility(&store, &gid, 1).unwrap();
     set_member_capability(&store, &gid, &alice, 0b001).unwrap();
     set_member_capability(&store, &gid, &bob, 0b010).unwrap();
-    assert_eq!(enumerate_member_capabilities(&store, &gid).unwrap().len(), 2);
+    assert_eq!(
+        enumerate_member_capabilities(&store, &gid).unwrap().len(),
+        2
+    );
 
     delete_default_capabilities(&store, &gid).unwrap();
     delete_default_visibility(&store, &gid).unwrap();
@@ -955,9 +958,13 @@ fn delete_defaults_and_member_capabilities_clears_values() {
 
     assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
     assert!(get_default_visibility(&store, &gid).unwrap().is_none());
-    assert!(get_member_capability(&store, &gid, &alice).unwrap().is_none());
+    assert!(get_member_capability(&store, &gid, &alice)
+        .unwrap()
+        .is_none());
     assert!(get_member_capability(&store, &gid, &bob).unwrap().is_none());
-    assert!(enumerate_member_capabilities(&store, &gid).unwrap().is_empty());
+    assert!(enumerate_member_capabilities(&store, &gid)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -967,11 +974,9 @@ fn migration_tracking_roundtrip_and_cleanup() {
     let context_a = ContextId::from([0x51; 32]);
     let context_b = ContextId::from([0x52; 32]);
 
-    assert!(
-        get_context_last_migration(&store, &gid, &context_a)
-            .unwrap()
-            .is_none()
-    );
+    assert!(get_context_last_migration(&store, &gid, &context_a)
+        .unwrap()
+        .is_none());
 
     set_context_last_migration(&store, &gid, &context_a, "migrate_v2").unwrap();
     set_context_last_migration(&store, &gid, &context_b, "migrate_v3").unwrap();
@@ -990,16 +995,12 @@ fn migration_tracking_roundtrip_and_cleanup() {
     );
 
     delete_all_context_last_migrations(&store, &gid).unwrap();
-    assert!(
-        get_context_last_migration(&store, &gid, &context_a)
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        get_context_last_migration(&store, &gid, &context_b)
-            .unwrap()
-            .is_none()
-    );
+    assert!(get_context_last_migration(&store, &gid, &context_a)
+        .unwrap()
+        .is_none());
+    assert!(get_context_last_migration(&store, &gid, &context_b)
+        .unwrap()
+        .is_none());
 }
 
 // -----------------------------------------------------------------------

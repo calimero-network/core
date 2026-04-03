@@ -34,7 +34,15 @@ impl DeltaApplier<SignedGroupOp> for GroupGovernanceApplier {
 /// `delta_id` = content hash of the op.
 /// `parents` = the op's `parent_op_hashes`.
 pub fn signed_op_to_delta(op: &SignedGroupOp) -> Result<CausalDelta<SignedGroupOp>, eyre::Error> {
-    GovernanceDeltaFactory::from_signed_group_op(op)
+    let delta_id = op
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    Ok(make_delta(
+        op,
+        op.parent_op_hashes.clone(),
+        op.state_hash,
+        delta_id,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -69,58 +77,31 @@ impl DeltaApplier<SignedNamespaceOp> for NamespaceGovernanceApplier {
 pub fn signed_namespace_op_to_delta(
     op: &SignedNamespaceOp,
 ) -> Result<CausalDelta<SignedNamespaceOp>, eyre::Error> {
-    GovernanceDeltaFactory::from_signed_namespace_op(op)
+    let delta_id = op
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    Ok(make_delta(
+        op,
+        op.parent_op_hashes.clone(),
+        op.state_hash,
+        delta_id,
+    ))
 }
 
-/// Factory for converting signed governance operations into DAG deltas.
-pub struct GovernanceDeltaFactory;
-
-impl GovernanceDeltaFactory {
-    fn make_delta<T>(
-        op: &T,
-        parents: Vec<[u8; 32]>,
-        expected_root_hash: [u8; 32],
-        delta_id: [u8; 32],
-    ) -> CausalDelta<T>
-    where
-        T: Clone,
-    {
-        CausalDelta::new(
-            delta_id,
-            parents,
-            op.clone(),
-            calimero_storage::logical_clock::HybridTimestamp::default(),
-            expected_root_hash,
-        )
-    }
-
-    /// Build a `CausalDelta` for a signed group operation.
-    pub fn from_signed_group_op(
-        op: &SignedGroupOp,
-    ) -> Result<CausalDelta<SignedGroupOp>, eyre::Error> {
-        let delta_id = op
-            .content_hash()
-            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
-        Ok(Self::make_delta(
-            op,
-            op.parent_op_hashes.clone(),
-            op.state_hash,
-            delta_id,
-        ))
-    }
-
-    /// Build a `CausalDelta` for a signed namespace operation.
-    pub fn from_signed_namespace_op(
-        op: &SignedNamespaceOp,
-    ) -> Result<CausalDelta<SignedNamespaceOp>, eyre::Error> {
-        let delta_id = op
-            .content_hash()
-            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
-        Ok(Self::make_delta(
-            op,
-            op.parent_op_hashes.clone(),
-            op.state_hash,
-            delta_id,
-        ))
-    }
+fn make_delta<T>(
+    op: &T,
+    parents: Vec<[u8; 32]>,
+    expected_root_hash: [u8; 32],
+    delta_id: [u8; 32],
+) -> CausalDelta<T>
+where
+    T: Clone,
+{
+    CausalDelta::new(
+        delta_id,
+        parents,
+        op.clone(),
+        calimero_storage::logical_clock::HybridTimestamp::default(),
+        expected_root_hash,
+    )
 }

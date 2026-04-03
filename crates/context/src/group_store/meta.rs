@@ -39,9 +39,10 @@ pub fn enumerate_all_groups(
     offset: usize,
     limit: usize,
 ) -> EyreResult<Vec<([u8; 32], GroupMetaValue)>> {
-    let keys = collect_keys_with_prefix(store, GroupMeta::new([0u8; 32]), GROUP_META_PREFIX, |_| {
-        true
-    })?;
+    let keys =
+        collect_keys_with_prefix(store, GroupMeta::new([0u8; 32]), GROUP_META_PREFIX, |_| {
+            true
+        })?;
     let handle = store.handle();
     let mut results = Vec::new();
 

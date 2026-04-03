@@ -1,8 +1,6 @@
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::{
-    GroupSigningKey, GroupSigningKeyValue, GROUP_SIGNING_KEY_PREFIX,
-};
+use calimero_store::key::{GroupSigningKey, GroupSigningKeyValue, GROUP_SIGNING_KEY_PREFIX};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 

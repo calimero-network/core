@@ -19,9 +19,9 @@ use sha2::{Digest, Sha256};
 mod aliases;
 mod capabilities;
 mod contexts;
-mod migrations;
-mod meta;
 mod membership;
+mod meta;
+mod migrations;
 mod signing_keys;
 mod upgrades;
 
@@ -40,18 +40,18 @@ pub use self::contexts::{
     cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identity,
     get_group_for_context, register_context_in_group, unregister_context_from_group,
 };
-pub use self::migrations::{
-    delete_all_context_last_migrations, get_context_last_migration, set_context_last_migration,
-};
-pub use self::meta::{
-    compute_group_state_hash, delete_group_meta, enumerate_all_groups, load_group_meta,
-    save_group_meta,
-};
 pub use self::membership::{
     add_group_member, add_group_member_with_keys, check_group_membership, count_group_admins,
     count_group_members, get_group_member_role, get_group_member_value, is_direct_group_admin,
     is_group_admin, is_group_admin_or_has_capability, list_group_members, remove_group_member,
     require_group_admin, require_group_admin_or_capability,
+};
+pub use self::meta::{
+    compute_group_state_hash, delete_group_meta, enumerate_all_groups, load_group_meta,
+    save_group_meta,
+};
+pub use self::migrations::{
+    delete_all_context_last_migrations, get_context_last_migration, set_context_last_migration,
 };
 pub use self::signing_keys::{
     delete_all_group_signing_keys, delete_group_signing_key, get_group_signing_key,
