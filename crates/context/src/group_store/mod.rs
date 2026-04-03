@@ -1,6 +1,7 @@
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
+use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
@@ -1009,10 +1010,9 @@ fn apply_group_op_mutations(
             }
             register_context_in_group(store, group_id, context_id)?;
 
-            let zero_app = calimero_primitives::application::ApplicationId::from([0u8; 32]);
-            if *application_id != zero_app {
+            if *application_id != ZERO_APPLICATION_ID {
                 if let Some(meta) = load_group_meta(store, group_id)? {
-                    if meta.target_application_id == zero_app {
+                    if meta.target_application_id == ZERO_APPLICATION_ID {
                         let mut updated = meta;
                         updated.target_application_id = *application_id;
                         save_group_meta(store, group_id, &updated)?;
@@ -1028,7 +1028,7 @@ fn apply_group_op_mutations(
                 let handle = store.handle();
                 if let Ok(Some(mut ctx_meta)) = handle.get(&ctx_meta_key) {
                     let ctx_meta: &mut calimero_store::types::ContextMeta = &mut ctx_meta;
-                    if ctx_meta.application.application_id() == zero_app {
+                    if ctx_meta.application.application_id() == ZERO_APPLICATION_ID {
                         *ctx_meta = calimero_store::types::ContextMeta::new(
                             calimero_store::key::ApplicationMeta::new(*application_id),
                             ctx_meta.root_hash,
@@ -1896,8 +1896,7 @@ fn apply_group_op_inner(
         ..
     } = op
     {
-        let zero_app = calimero_primitives::application::ApplicationId::from([0u8; 32]);
-        if *application_id != zero_app {
+        if *application_id != ZERO_APPLICATION_ID {
             let app_key = calimero_store::key::ApplicationMeta::new(*application_id);
             let handle = store.handle();
             if !handle.has(&app_key)? {

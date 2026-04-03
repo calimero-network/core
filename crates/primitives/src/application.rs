@@ -54,7 +54,16 @@ impl ApplicationId {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
+
+    /// Sentinel value: no application / uninitialized application ID (all-zero hash).
+    #[must_use]
+    pub const fn zero() -> Self {
+        Self(Hash::zero())
+    }
 }
+
+/// Sentinel value representing "no application" or an uninitialized application ID.
+pub const ZERO_APPLICATION_ID: ApplicationId = ApplicationId::zero();
 
 impl Display for ApplicationId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
