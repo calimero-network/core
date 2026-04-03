@@ -1095,3 +1095,180 @@ fn auto_group_random_identity_not_found_by_node_check() {
     // But the node's identity is NOT a member — this is the bug
     assert!(!check_group_membership(&store, &auto_group_id, &node_pk).unwrap());
 }
+
+#[test]
+fn namespace_nesting_resolve_and_read_only_checks() {
+    let store = test_store();
+    let parent = ContextGroupId::from([0xA1; 32]);
+    let child = ContextGroupId::from([0xA2; 32]);
+    let grandchild = ContextGroupId::from([0xA3; 32]);
+    let outsider = ContextGroupId::from([0xA4; 32]);
+    let context = ContextId::from([0xB1; 32]);
+    let ro_member = PublicKey::from([0xB2; 32]);
+    let rw_member = PublicKey::from([0xB3; 32]);
+
+    nest_group(&store, &parent, &child).unwrap();
+    nest_group(&store, &child, &grandchild).unwrap();
+    assert!(nest_group(&store, &grandchild, &parent).is_err());
+
+    let children = list_child_groups(&store, &parent).unwrap();
+    assert_eq!(children, vec![child]);
+    let descendants = collect_descendant_groups(&store, &parent).unwrap();
+    assert!(descendants.contains(&child));
+    assert!(descendants.contains(&grandchild));
+
+    assert_eq!(resolve_namespace(&store, &grandchild).unwrap(), parent);
+    assert_eq!(resolve_namespace(&store, &outsider).unwrap(), outsider);
+
+    register_context_in_group(&store, &child, &context).unwrap();
+    add_group_member(&store, &child, &ro_member, GroupMemberRole::ReadOnly).unwrap();
+    add_group_member(&store, &child, &rw_member, GroupMemberRole::Member).unwrap();
+    assert!(is_read_only_for_context(&store, &context, &ro_member).unwrap());
+    assert!(!is_read_only_for_context(&store, &context, &rw_member).unwrap());
+}
+
+#[test]
+fn local_state_join_tracking_and_delete_group_rows_cleanup() {
+    let store = test_store();
+    let gid = ContextGroupId::from([0xC1; 32]);
+    let context = ContextId::from([0xC2; 32]);
+    let member = PublicKey::from([0xC3; 32]);
+    let member2 = PublicKey::from([0xC4; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    set_default_capabilities(&store, &gid, 0b111).unwrap();
+    set_default_visibility(&store, &gid, 1).unwrap();
+    set_group_alias(&store, &gid, "g-alias").unwrap();
+    set_context_last_migration(&store, &gid, &context, "v2").unwrap();
+
+    add_group_member(&store, &gid, &member, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member2, GroupMemberRole::Member).unwrap();
+    set_member_alias(&store, &gid, &member2, "member2").unwrap();
+    set_member_capability(&store, &gid, &member2, 0b010).unwrap();
+    set_local_gov_nonce(&store, &gid, &member, 7).unwrap();
+
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let signer_sk = PrivateKey::random(&mut rng);
+    let op = SignedGroupOp::sign(
+        &signer_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::Noop,
+    )
+    .unwrap();
+    let op_bytes = borsh::to_vec(&op).unwrap();
+    append_op_log_entry(&store, &gid, 1, &op_bytes).unwrap();
+    set_op_head(&store, &gid, 1, vec![[0x11; 32]]).unwrap();
+    track_member_context_join(&store, &gid, &member2, &context, [0xAA; 32]).unwrap();
+
+    assert_eq!(get_local_gov_nonce(&store, &gid, &member).unwrap(), Some(7));
+    assert_eq!(read_op_log_after(&store, &gid, 0, 10).unwrap().len(), 1);
+    assert_eq!(
+        get_member_context_joins(&store, &gid, &member2)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    delete_group_local_rows(&store, &gid).unwrap();
+
+    assert!(load_group_meta(&store, &gid).unwrap().is_none());
+    assert!(get_group_alias(&store, &gid).unwrap().is_none());
+    assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
+    assert!(get_default_visibility(&store, &gid).unwrap().is_none());
+    assert!(enumerate_member_capabilities(&store, &gid)
+        .unwrap()
+        .is_empty());
+    assert!(enumerate_member_aliases(&store, &gid).unwrap().is_empty());
+    assert!(get_context_last_migration(&store, &gid, &context)
+        .unwrap()
+        .is_none());
+    assert!(get_local_gov_nonce(&store, &gid, &member)
+        .unwrap()
+        .is_none());
+    assert!(get_op_head(&store, &gid).unwrap().is_none());
+    assert!(read_op_log_after(&store, &gid, 0, 10).unwrap().is_empty());
+}
+
+#[test]
+fn tee_policy_and_quote_hash_scan_latest_and_match() {
+    let store = test_store();
+    let gid = ContextGroupId::from([0xD1; 32]);
+    let quote_a = [0xE1; 32];
+    let quote_b = [0xE2; 32];
+
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let signer_sk = PrivateKey::random(&mut rng);
+    let policy_1 = SignedGroupOp::sign(
+        &signer_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m1".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned()],
+            accept_mock: false,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(&store, &gid, 1, &borsh::to_vec(&policy_1).unwrap()).unwrap();
+
+    let joined = SignedGroupOp::sign(
+        &signer_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        2,
+        GroupOp::MemberJoinedViaTeeAttestation {
+            member: PublicKey::from([0xD3; 32]),
+            quote_hash: quote_a,
+            mrtd: "m1".to_owned(),
+            rtmr0: "r0".to_owned(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(&store, &gid, 2, &borsh::to_vec(&joined).unwrap()).unwrap();
+
+    let policy_2 = SignedGroupOp::sign(
+        &signer_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        3,
+        GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m2".to_owned()],
+            allowed_rtmr0: vec!["x".to_owned()],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned(), "warn".to_owned()],
+            accept_mock: true,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(&store, &gid, 3, &borsh::to_vec(&policy_2).unwrap()).unwrap();
+
+    let latest = read_tee_admission_policy(&store, &gid).unwrap().unwrap();
+    assert_eq!(latest.allowed_mrtd, vec!["m2".to_owned()]);
+    assert!(latest.accept_mock);
+    assert!(is_quote_hash_used(&store, &gid, &quote_a).unwrap());
+    assert!(!is_quote_hash_used(&store, &gid, &quote_b).unwrap());
+}
