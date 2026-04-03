@@ -162,6 +162,7 @@ impl NodeClient {
         hlc: calimero_storage::logical_clock::HybridTimestamp,
         events: Option<Vec<u8>>,
         governance_epoch: Vec<[u8; 32]>,
+        key_id: [u8; 32],
     ) -> eyre::Result<()> {
         info!(
             context_id=%context.id,
@@ -195,6 +196,7 @@ impl NodeClient {
             nonce,
             events: events.map(Cow::from),
             governance_epoch,
+            key_id,
         };
 
         let payload = borsh::to_vec(&payload)?;

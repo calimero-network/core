@@ -67,8 +67,9 @@ impl NamespaceGovernanceApplier {
 #[async_trait::async_trait]
 impl DeltaApplier<SignedNamespaceOp> for NamespaceGovernanceApplier {
     async fn apply(&self, delta: &CausalDelta<SignedNamespaceOp>) -> Result<(), ApplyError> {
-        group_store::apply_signed_namespace_op(&self.store, &delta.payload)
-            .map_err(|e| ApplyError::Application(e.to_string()))
+        let _pending = group_store::apply_signed_namespace_op(&self.store, &delta.payload)
+            .map_err(|e| ApplyError::Application(e.to_string()))?;
+        Ok(())
     }
 }
 

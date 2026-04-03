@@ -123,6 +123,15 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_CONTEXTS,
                 )?;
 
+                // Generate and store the group encryption key.
+                let group_key: [u8; 32] = rand::thread_rng().gen();
+                let key_id = group_store::store_group_key(&datastore, &group_id, &group_key)?;
+                tracing::debug!(
+                    ?group_id,
+                    key_id = %hex::encode(key_id),
+                    "stored initial group key"
+                );
+
                 if let Some(ref alias_str) = alias {
                     group_store::set_group_alias(&datastore, &group_id, alias_str)?;
                 }

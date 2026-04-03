@@ -611,7 +611,17 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
 
             cascade_target_application(store, &group_id, target_application_id, app_key)?;
         }
-        GroupOp::ContextRegistered { context_id } => {
+        GroupOp::ContextRegistered {
+            context_id,
+            application_id,
+            ..
+        } => {
+            tracing::info!(
+                %context_id,
+                %application_id,
+                group_id = %hex::encode(group_id.to_bytes()),
+                "processing ContextRegistered governance op"
+            );
             if !is_group_admin_or_has_capability(
                 store,
                 &group_id,
@@ -621,6 +631,39 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
                 bail!("only group admin or members with CAN_CREATE_CONTEXT can register a context");
             }
             register_context_in_group(store, &group_id, context_id)?;
+
+            let zero_app = calimero_primitives::application::ApplicationId::from([0u8; 32]);
+            if *application_id != zero_app {
+                if let Some(meta) = load_group_meta(store, &group_id)? {
+                    if meta.target_application_id == zero_app {
+                        let mut updated = meta;
+                        updated.target_application_id = *application_id;
+                        save_group_meta(store, &group_id, &updated)?;
+                        tracing::info!(
+                            group_id = %hex::encode(group_id.to_bytes()),
+                            %application_id,
+                            "updated group meta with real application ID from ContextRegistered"
+                        );
+                    }
+                }
+
+                let ctx_meta_key = calimero_store::key::ContextMeta::new(*context_id);
+                let handle = store.handle();
+                if let Ok(Some(mut ctx_meta)) = handle.get(&ctx_meta_key) {
+                    let ctx_meta: &mut calimero_store::types::ContextMeta = &mut ctx_meta;
+                    if ctx_meta.application.application_id() == zero_app {
+                        *ctx_meta = calimero_store::types::ContextMeta::new(
+                            calimero_store::key::ApplicationMeta::new(*application_id),
+                            ctx_meta.root_hash,
+                            ctx_meta.dag_heads.clone(),
+                            ctx_meta.service_name.clone(),
+                        );
+                        drop(handle);
+                        let mut wh = store.handle();
+                        wh.put(&ctx_meta_key, ctx_meta)?;
+                    }
+                }
+            }
         }
         GroupOp::ContextDetached { context_id } => {
             require_group_admin(store, &group_id, &op.signer)?;
@@ -862,7 +905,7 @@ pub async fn sign_apply_and_publish(
     // Apply locally first.
     let _output = sign_apply_local_group_op_borsh(store, group_id, signer_sk, op.clone())?;
 
-    // Resolve namespace and get sender_key for encryption.
+    // Resolve namespace and get group key for encryption.
     let ns_id = resolve_namespace(store, group_id)?;
     let ns_bytes = ns_id.to_bytes();
 
@@ -875,26 +918,20 @@ pub async fn sign_apply_and_publish(
         return Ok(());
     };
 
-    // Look up the group sender_key for encryption.
-    let local_pk = calimero_primitives::identity::PrivateKey::from(ns_sk_bytes).public_key();
-    let sender_key_bytes =
-        get_group_member_value(store, group_id, &local_pk)?.and_then(|v| v.sender_key);
+    let Some((key_id, group_key)) = load_current_group_key(store, group_id)? else {
+        tracing::debug!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            "no group key stored, skipping namespace publish"
+        );
+        return Ok(());
+    };
 
-    let ns_op = match sender_key_bytes {
-        Some(sk) => {
-            let encrypted = encrypt_group_op(&sk, &op)?;
-            NamespaceOp::Group {
-                group_id: group_id.to_bytes(),
-                encrypted,
-            }
-        }
-        None => {
-            tracing::debug!(
-                group_id = %hex::encode(group_id.to_bytes()),
-                "no sender_key for group, skipping namespace publish"
-            );
-            return Ok(());
-        }
+    let encrypted = encrypt_group_op(&group_key, &op)?;
+    let ns_op = NamespaceOp::Group {
+        group_id: group_id.to_bytes(),
+        key_id,
+        encrypted,
+        key_rotation: None,
     };
 
     // Sign and publish the namespace op WITHOUT re-applying locally
@@ -946,21 +983,277 @@ pub async fn sign_apply_and_publish(
         .await
 }
 
+/// Like [`sign_apply_and_publish`] but attaches a [`KeyRotation`] bundle to
+/// the encrypted `MemberRemoved` op. Generates a new group key, wraps it for
+/// all remaining members, and stores the new key locally.
+pub async fn sign_apply_and_publish_removal(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    removed_member: &PublicKey,
+) -> EyreResult<()> {
+    let op = GroupOp::MemberRemoved {
+        member: *removed_member,
+    };
+    let _output = sign_apply_local_group_op_borsh(store, group_id, signer_sk, op.clone())?;
+
+    let ns_id = resolve_namespace(store, group_id)?;
+    let ns_bytes = ns_id.to_bytes();
+
+    let ns_identity = get_namespace_identity(store, &ns_id)?;
+    let Some((_pk, ns_sk_bytes, _sender)) = ns_identity else {
+        return Ok(());
+    };
+
+    let Some((old_key_id, old_group_key)) = load_current_group_key(store, group_id)? else {
+        return Ok(());
+    };
+
+    let encrypted = encrypt_group_op(&old_group_key, &op)?;
+
+    let new_group_key: [u8; 32] = {
+        use rand::Rng;
+        rand::thread_rng().gen()
+    };
+    let _ = store_group_key(store, group_id, &new_group_key)?;
+    let rotation = build_key_rotation(
+        store,
+        group_id,
+        &new_group_key,
+        signer_sk,
+        Some(removed_member),
+    )?;
+
+    let ns_op = NamespaceOp::Group {
+        group_id: group_id.to_bytes(),
+        key_id: old_key_id,
+        encrypted,
+        key_rotation: Some(rotation),
+    };
+
+    let ns_sk = calimero_primitives::identity::PrivateKey::from(ns_sk_bytes);
+    let ns_head_key = calimero_store::key::NamespaceGovHead::new(ns_bytes);
+    let handle = store.handle();
+    let head = handle.get(&ns_head_key)?;
+    drop(handle);
+
+    let parent_hashes = head
+        .as_ref()
+        .map(|h| h.dag_heads.clone())
+        .unwrap_or_default();
+    let nonce = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
+
+    let signed = SignedNamespaceOp::sign(&ns_sk, ns_bytes, parent_hashes, [0u8; 32], nonce, ns_op)?;
+    let delta_id = signed
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    let parent_ids = signed.parent_op_hashes.clone();
+
+    store_namespace_gov_op(store, &signed)?;
+
+    let mut new_heads: Vec<[u8; 32]> = head
+        .as_ref()
+        .map(|h| h.dag_heads.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|h| !signed.parent_op_hashes.contains(h))
+        .collect();
+    new_heads.push(delta_id);
+
+    let seq = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
+    let mut wh = store.handle();
+    wh.put(
+        &ns_head_key,
+        &calimero_store::key::NamespaceGovHeadValue {
+            sequence: seq,
+            dag_heads: new_heads,
+        },
+    )?;
+    drop(wh);
+
+    let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+    node_client
+        .publish_signed_namespace_op(ns_bytes, delta_id, parent_ids, bytes)
+        .await
+}
+
 // ---------------------------------------------------------------------------
-// Namespace governance ops (Phase 2)
+// Group key management (envelope-based)
 // ---------------------------------------------------------------------------
 
 use calimero_context_primitives::local_governance::{
-    EncryptedGroupOp, NamespaceOp, OpaqueSkeleton, RootOp, SignedNamespaceOp,
+    EncryptedGroupOp, KeyEnvelope, KeyRotation, NamespaceOp, OpaqueSkeleton, RootOp,
+    SignedNamespaceOp,
 };
+use calimero_store::key::{GroupKeyEntry, GroupKeyValue, GROUP_KEY_PREFIX};
 
-/// Encrypt a [`GroupOp`] with the group's sender key to produce an
+/// Compute the key_id for a group key: `sha256(group_key)`.
+pub fn compute_key_id(group_key: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(group_key);
+    hasher.finalize().into()
+}
+
+/// Store a group key, returning its `key_id`.
+pub fn store_group_key(
+    store: &Store,
+    group_id: &ContextGroupId,
+    group_key: &[u8; 32],
+) -> EyreResult<[u8; 32]> {
+    let key_id = compute_key_id(group_key);
+    let entry = GroupKeyEntry::new(group_id.to_bytes(), key_id);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let value = GroupKeyValue {
+        group_key: *group_key,
+        created_at: now,
+    };
+    let mut handle = store.handle();
+    handle.put(&entry, &value)?;
+    Ok(key_id)
+}
+
+/// Load a specific group key by its `key_id`.
+pub fn load_group_key_by_id(
+    store: &Store,
+    group_id: &ContextGroupId,
+    key_id: &[u8; 32],
+) -> EyreResult<Option<[u8; 32]>> {
+    let entry = GroupKeyEntry::new(group_id.to_bytes(), *key_id);
+    let handle = store.handle();
+    Ok(handle.get(&entry)?.map(|v: GroupKeyValue| v.group_key))
+}
+
+/// Load the current (most recent) group key for a group.
+///
+/// Iterates all `GroupKeyEntry` rows for this group and picks the one with
+/// the highest `created_at` timestamp. Returns `(key_id, group_key)`.
+pub fn load_current_group_key(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<([u8; 32], [u8; 32])>> {
+    let handle = store.handle();
+    let gid = group_id.to_bytes();
+    let start = GroupKeyEntry::new(gid, [0u8; 32]);
+    let mut iter = handle.iter::<GroupKeyEntry>()?;
+    let first = iter.seek(start).transpose();
+
+    let mut best: Option<([u8; 32], [u8; 32], u64)> = None;
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+        if key.group_id() != gid {
+            break;
+        }
+        if key.as_key().as_bytes()[0] != GROUP_KEY_PREFIX {
+            break;
+        }
+        let Some(val): Option<GroupKeyValue> = handle.get(&key)? else {
+            continue;
+        };
+        let kid = key.key_id();
+        if best
+            .as_ref()
+            .map_or(true, |(_, _, ts)| val.created_at > *ts)
+        {
+            best = Some((kid, val.group_key, val.created_at));
+        }
+    }
+
+    Ok(best.map(|(kid, gk, _)| (kid, gk)))
+}
+
+/// ECDH-wrap a group key for a specific recipient.
+pub fn wrap_group_key_for_member(
+    sender_sk: &PrivateKey,
+    recipient_pk: &PublicKey,
+    group_key: &[u8; 32],
+) -> EyreResult<KeyEnvelope> {
+    use calimero_crypto::SharedKey;
+
+    let shared = SharedKey::new(sender_sk, recipient_pk)
+        .map_err(|e| eyre::eyre!("ECDH key agreement failed: {e:?}"))?;
+
+    let nonce: [u8; 12] = {
+        use rand::Rng;
+        rand::thread_rng().gen()
+    };
+
+    let ciphertext = shared
+        .encrypt(group_key.to_vec(), nonce)
+        .ok_or_else(|| eyre::eyre!("AES-GCM encryption of group key failed"))?;
+
+    Ok(KeyEnvelope {
+        recipient: *recipient_pk,
+        ephemeral_pk: sender_sk.public_key(),
+        nonce,
+        ciphertext,
+    })
+}
+
+/// Unwrap a [`KeyEnvelope`] addressed to us, recovering the group key.
+pub fn unwrap_group_key(recipient_sk: &PrivateKey, envelope: &KeyEnvelope) -> EyreResult<[u8; 32]> {
+    use calimero_crypto::SharedKey;
+
+    let shared = SharedKey::new(recipient_sk, &envelope.ephemeral_pk)
+        .map_err(|e| eyre::eyre!("ECDH key agreement failed: {e:?}"))?;
+
+    let plaintext = shared
+        .decrypt(envelope.ciphertext.clone(), envelope.nonce)
+        .ok_or_else(|| eyre::eyre!("failed to decrypt key envelope (wrong recipient?)"))?;
+
+    if plaintext.len() != 32 {
+        bail!(
+            "decrypted key envelope has wrong length: {}",
+            plaintext.len()
+        );
+    }
+
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&plaintext);
+    Ok(key)
+}
+
+/// Wrap the current group key for every member in a [`KeyRotation`] bundle.
+pub fn build_key_rotation(
+    store: &Store,
+    group_id: &ContextGroupId,
+    new_group_key: &[u8; 32],
+    sender_sk: &PrivateKey,
+    excluded_member: Option<&PublicKey>,
+) -> EyreResult<KeyRotation> {
+    let members = list_group_members(store, group_id, 0, usize::MAX)?;
+    let new_key_id = compute_key_id(new_group_key);
+    let mut envelopes = Vec::new();
+
+    for (member_pk, _role) in &members {
+        if excluded_member == Some(member_pk) {
+            continue;
+        }
+        let env = wrap_group_key_for_member(sender_sk, member_pk, new_group_key)?;
+        envelopes.push(env);
+    }
+
+    Ok(KeyRotation {
+        new_key_id,
+        envelopes,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Namespace governance ops
+// ---------------------------------------------------------------------------
+
+/// Encrypt a [`GroupOp`] with the group key to produce an
 /// [`EncryptedGroupOp`] for inclusion in a [`NamespaceOp::Group`].
-pub fn encrypt_group_op(sender_key_bytes: &[u8; 32], op: &GroupOp) -> EyreResult<EncryptedGroupOp> {
+pub fn encrypt_group_op(group_key: &[u8; 32], op: &GroupOp) -> EyreResult<EncryptedGroupOp> {
     use calimero_crypto::SharedKey;
 
     let plaintext = borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh encode GroupOp: {e}"))?;
-    let sk = calimero_primitives::identity::PrivateKey::from(*sender_key_bytes);
+    let sk = calimero_primitives::identity::PrivateKey::from(*group_key);
     let shared_key = SharedKey::from_sk(&sk);
 
     let nonce: [u8; 12] = {
@@ -975,35 +1268,120 @@ pub fn encrypt_group_op(sender_key_bytes: &[u8; 32], op: &GroupOp) -> EyreResult
     Ok(EncryptedGroupOp { nonce, ciphertext })
 }
 
+/// Side effect returned by [`apply_signed_namespace_op`] when an existing
+/// member should deliver the group key to a joiner.
+#[derive(Debug)]
+pub struct PendingKeyDelivery {
+    pub namespace_id: [u8; 32],
+    pub group_id: [u8; 32],
+    pub joiner_pk: PublicKey,
+}
+
 /// Apply a [`SignedNamespaceOp`] to the local store.
 ///
-/// - `RootOp` variants are applied in cleartext (group creation/deletion, admin changes).
-/// - `Group { .. }` variants: if we hold the group's sender key we decrypt
-///   and delegate to the existing group-op logic; otherwise we store an
-///   [`OpaqueSkeleton`].
-pub fn apply_signed_namespace_op(store: &Store, op: &SignedNamespaceOp) -> EyreResult<()> {
+/// - `RootOp` variants are applied in cleartext (group creation/deletion,
+///   admin changes, key delivery).
+/// - `Group { key_id, .. }` variants: look up the group key by `key_id`,
+///   decrypt, and apply the inner governance op. If `key_rotation` is
+///   present, unwrap and store the new group key.
+///
+/// Returns a list of pending key deliveries that the caller should publish
+/// (wrapping the group key for new joiners via ECDH).
+pub fn apply_signed_namespace_op(
+    store: &Store,
+    op: &SignedNamespaceOp,
+) -> EyreResult<Vec<PendingKeyDelivery>> {
     op.verify_signature()
         .map_err(|e| eyre::eyre!("signed namespace op: {e}"))?;
 
+    let mut pending_deliveries = Vec::new();
+
     match &op.op {
-        NamespaceOp::Root(root) => apply_root_op(store, op, root)?,
+        NamespaceOp::Root(root) => {
+            apply_root_op(store, op, root)?;
+
+            match root {
+                RootOp::KeyDelivery {
+                    group_id,
+                    ref envelope,
+                } => {
+                    let ns_id = ContextGroupId::from(op.namespace_id);
+                    if let Some((_pk, sk, _)) = get_namespace_identity(store, &ns_id)? {
+                        let recipient_sk = PrivateKey::from(sk);
+                        if envelope.recipient == recipient_sk.public_key() {
+                            match unwrap_group_key(&recipient_sk, envelope) {
+                                Ok(group_key) => {
+                                    let gid = ContextGroupId::from(*group_id);
+                                    let key_id = store_group_key(store, &gid, &group_key)?;
+                                    tracing::info!(
+                                        group_id = %hex::encode(group_id),
+                                        key_id = %hex::encode(key_id),
+                                        "received group key via KeyDelivery"
+                                    );
+                                    retry_encrypted_ops_for_group(
+                                        store,
+                                        op.namespace_id,
+                                        *group_id,
+                                    )?;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(?e, "failed to unwrap KeyDelivery envelope");
+                                }
+                            }
+                        }
+                    }
+                }
+                RootOp::MemberJoined {
+                    member,
+                    ref signed_invitation,
+                } => {
+                    let gid = signed_invitation.invitation.group_id;
+                    let group_id_typed = ContextGroupId::from(gid);
+                    if load_current_group_key(store, &group_id_typed)?.is_some() {
+                        pending_deliveries.push(PendingKeyDelivery {
+                            namespace_id: op.namespace_id,
+                            group_id: group_id_typed.to_bytes(),
+                            joiner_pk: *member,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
         NamespaceOp::Group {
             group_id,
+            key_id,
             encrypted,
+            key_rotation,
         } => {
             let group_id_typed = ContextGroupId::from(*group_id);
 
-            let ns_id = ContextGroupId::from(op.namespace_id);
-            let sender_key_bytes = get_namespace_identity(store, &ns_id)?
-                .and_then(|(local_pk, _, _)| {
-                    get_group_member_value(store, &group_id_typed, &local_pk)
-                        .ok()
-                        .flatten()
-                })
-                .and_then(|member_val| member_val.sender_key);
+            if let Some(group_key) = load_group_key_by_id(store, &group_id_typed, key_id)? {
+                decrypt_and_apply_group_op(store, op, &group_id_typed, &group_key, encrypted)?;
+            }
 
-            if let Some(sk_bytes) = sender_key_bytes {
-                decrypt_and_apply_group_op(store, op, &group_id_typed, &sk_bytes, encrypted)?;
+            if let Some(rotation) = key_rotation {
+                let ns_id = ContextGroupId::from(op.namespace_id);
+                if let Some((_pk, sk, _)) = get_namespace_identity(store, &ns_id)? {
+                    let recipient_sk = PrivateKey::from(sk);
+                    for envelope in &rotation.envelopes {
+                        if envelope.recipient == recipient_sk.public_key() {
+                            match unwrap_group_key(&recipient_sk, envelope) {
+                                Ok(new_key) => {
+                                    let _ = store_group_key(store, &group_id_typed, &new_key)?;
+                                    tracing::info!(
+                                        group_id = %hex::encode(group_id),
+                                        "stored rotated group key"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(?e, "failed to unwrap key rotation envelope");
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
             }
         }
     }
@@ -1041,7 +1419,7 @@ pub fn apply_signed_namespace_op(store: &Store, op: &SignedNamespaceOp) -> EyreR
     // Persist the op for backfill.
     store_namespace_gov_op(store, op)?;
 
-    Ok(())
+    Ok(pending_deliveries)
 }
 
 /// Decrypt an [`EncryptedGroupOp`] and apply the inner [`GroupOp`] via the
@@ -1051,13 +1429,13 @@ fn decrypt_and_apply_group_op(
     store: &Store,
     ns_op: &SignedNamespaceOp,
     group_id: &ContextGroupId,
-    sender_key_bytes: &[u8; 32],
+    group_key: &[u8; 32],
     encrypted: &calimero_context_primitives::local_governance::EncryptedGroupOp,
 ) -> EyreResult<()> {
     use calimero_context_primitives::local_governance::GroupOp;
     use calimero_crypto::SharedKey;
 
-    let sk = calimero_primitives::identity::PrivateKey::from(*sender_key_bytes);
+    let sk = calimero_primitives::identity::PrivateKey::from(*group_key);
     let shared_key = SharedKey::from_sk(&sk);
 
     let plaintext = shared_key
@@ -1158,7 +1536,12 @@ fn apply_group_op_inner(
             ensure_not_last_admin_demotion(store, group_id, member, role)?;
             add_group_member(store, group_id, member, role.clone())?;
         }
-        GroupOp::ContextRegistered { context_id } => {
+        GroupOp::ContextRegistered {
+            context_id,
+            application_id,
+            blob_id,
+            source,
+        } => {
             if !is_group_admin_or_has_capability(
                 store,
                 group_id,
@@ -1168,6 +1551,50 @@ fn apply_group_op_inner(
                 bail!("only group admin or members with CAN_CREATE_CONTEXT can register a context");
             }
             register_context_in_group(store, group_id, context_id)?;
+
+            let zero_app = calimero_primitives::application::ApplicationId::from([0u8; 32]);
+            if *application_id != zero_app {
+                if let Some(meta) = load_group_meta(store, group_id)? {
+                    if meta.target_application_id == zero_app {
+                        let mut updated = meta;
+                        updated.target_application_id = *application_id;
+                        save_group_meta(store, group_id, &updated)?;
+                        tracing::info!(
+                            %application_id,
+                            "updated group meta with real application ID (inner handler)"
+                        );
+                    }
+                }
+
+                let app_key = calimero_store::key::ApplicationMeta::new(*application_id);
+                let handle = store.handle();
+                if !handle.has(&app_key)? {
+                    drop(handle);
+                    let blob_meta = calimero_store::key::BlobMeta::new(*blob_id);
+                    let effective_source = if source.starts_with("file://") || source.is_empty() {
+                        "calimero://pending-blob-share".to_owned()
+                    } else {
+                        source.clone()
+                    };
+                    let stub = calimero_store::types::ApplicationMeta::new(
+                        blob_meta,
+                        0,
+                        effective_source.into_boxed_str(),
+                        Vec::new().into_boxed_slice(),
+                        blob_meta,
+                        String::new().into_boxed_str(),
+                        String::new().into_boxed_str(),
+                        String::new().into_boxed_str(),
+                    );
+                    let mut wh = store.handle();
+                    wh.put(&app_key, &stub)?;
+                    tracing::info!(
+                        %application_id,
+                        blob_id = %blob_id,
+                        "created stub application entry from ContextRegistered"
+                    );
+                }
+            }
         }
         GroupOp::ContextDetached { context_id } => {
             require_group_admin(store, group_id, signer)?;
@@ -1386,6 +1813,10 @@ fn apply_root_op(store: &Store, op: &SignedNamespaceOp, root: &RootOp) -> EyreRe
 
             Ok(())
         }
+        RootOp::KeyDelivery { .. } => {
+            // Key delivery is processed in apply_signed_namespace_op, not here.
+            Ok(())
+        }
     }
 }
 
@@ -1402,6 +1833,90 @@ fn store_namespace_gov_op(store: &Store, op: &SignedNamespaceOp) -> EyreResult<(
     };
     let mut handle = store.handle();
     handle.put(&key, &value)?;
+    Ok(())
+}
+
+/// After receiving a group key via `KeyDelivery`, re-process any stored
+/// namespace governance ops for the given group that we previously couldn't
+/// decrypt. This handles the ordering case where `ContextRegistered` arrives
+/// before `KeyDelivery` in the DAG.
+fn retry_encrypted_ops_for_group(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: [u8; 32],
+) -> EyreResult<()> {
+    let gid_typed = ContextGroupId::from(group_id);
+
+    let delta_ids: Vec<[u8; 32]> = {
+        let handle = store.handle();
+        let start = calimero_store::key::NamespaceGovOp::new(namespace_id, [0u8; 32]);
+        let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
+        let first = iter.seek(start).transpose();
+        let mut ids = Vec::new();
+        for key_result in first.into_iter().chain(iter.keys()) {
+            let key = key_result?;
+            if key.namespace_id() != namespace_id {
+                break;
+            }
+            ids.push(key.delta_id());
+        }
+        ids
+    };
+
+    let mut ops_to_retry = Vec::new();
+    for did in &delta_ids {
+        let key = calimero_store::key::NamespaceGovOp::new(namespace_id, *did);
+        let handle = store.handle();
+        let Some(val): Option<calimero_store::key::NamespaceGovOpValue> = handle.get(&key)? else {
+            continue;
+        };
+        drop(handle);
+        if let Ok(signed_op) = borsh::from_slice::<SignedNamespaceOp>(&val.skeleton_bytes) {
+            if let NamespaceOp::Group {
+                group_id: op_gid,
+                ref key_id,
+                ..
+            } = signed_op.op
+            {
+                if op_gid == group_id {
+                    if load_group_key_by_id(store, &gid_typed, key_id)?.is_some() {
+                        ops_to_retry.push(signed_op);
+                    }
+                }
+            }
+        }
+    }
+
+    for signed_op in &ops_to_retry {
+        if let NamespaceOp::Group {
+            group_id: _,
+            key_id,
+            ref encrypted,
+            ..
+        } = signed_op.op
+        {
+            if let Some(group_key) = load_group_key_by_id(store, &gid_typed, &key_id)? {
+                match decrypt_and_apply_group_op(
+                    store, signed_op, &gid_typed, &group_key, encrypted,
+                ) {
+                    Ok(()) => {
+                        tracing::info!(
+                            group_id = %hex::encode(group_id),
+                            "retried encrypted op after KeyDelivery"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            group_id = %hex::encode(group_id),
+                            ?e,
+                            "failed to retry encrypted op after KeyDelivery"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1943,9 +2458,15 @@ pub fn is_group_admin(
     identity: &PublicKey,
 ) -> EyreResult<bool> {
     match get_group_member_role(store, group_id, identity)? {
-        Some(GroupMemberRole::Admin) => Ok(true),
-        _ => Ok(false),
+        Some(GroupMemberRole::Admin) => return Ok(true),
+        _ => {}
     }
+    if let Some(meta) = load_group_meta(store, group_id)? {
+        if meta.admin_identity == *identity {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn require_group_admin(
@@ -3141,7 +3662,12 @@ mod tests {
             vec![],
             [0u8; 32],
             1,
-            GroupOp::ContextRegistered { context_id },
+            GroupOp::ContextRegistered {
+                context_id,
+                application_id: calimero_primitives::application::ApplicationId::from([0u8; 32]),
+                blob_id: calimero_primitives::blobs::BlobId::from([0u8; 32]),
+                source: String::new(),
+            },
         )
         .unwrap();
         apply_local_signed_group_op(&store, &op_reg).unwrap();

@@ -33,7 +33,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
             }
         }
 
-        let (ns_id, joiner_identity, sk_bytes, sender_key_bytes) =
+        let (ns_id, joiner_identity, sk_bytes, _sender_key_bytes) =
             match self.get_or_create_namespace_identity(&group_id) {
                 Ok(result) => result,
                 Err(err) => {
@@ -58,11 +58,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 };
 
                 // -------------------------------------------------------
-                // Phase 1: Set up local state BEFORE syncing so that
-                // encrypted namespace ops can be decrypted on arrival.
+                // Phase 1: Set up local state.
                 // -------------------------------------------------------
 
-                // Store signing key.
                 let _ = group_store::store_group_signing_key(
                     &datastore,
                     &group_id,
@@ -70,7 +68,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &sk_bytes,
                 );
 
-                // Store group metadata stub (needed for auto_join flag).
                 if group_store::load_group_meta(&datastore, &group_id)?.is_none() {
                     let meta = calimero_store::key::GroupMetaValue {
                         admin_identity: calimero_primitives::identity::PublicKey::from(
@@ -87,39 +84,15 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     group_store::save_group_meta(&datastore, &group_id, &meta)?;
                 }
 
-                // Store membership with the namespace identity sender_key so
-                // encrypted namespace Group ops can be decrypted deterministically.
-                let sender_key = PrivateKey::from(sender_key_bytes);
-                group_store::add_group_member_with_keys(
-                    &datastore,
-                    &group_id,
-                    &joiner_identity,
-                    role,
-                    Some(*sk),
-                    Some(*sender_key),
-                )?;
+                group_store::add_group_member(&datastore, &group_id, &joiner_identity, role)?;
 
                 // -------------------------------------------------------
-                // Phase 2: Subscribe + sync namespace governance ops.
+                // Phase 2: Subscribe + publish MemberJoined + sync.
                 // -------------------------------------------------------
 
                 let _ = node_client.subscribe_namespace(namespace_id).await;
 
-                // Wait for gossipsub mesh to form with existing peers.
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-                // Pull all namespace governance ops from a peer. Because
-                // we already have the sender_key, encrypted ContextRegistered
-                // ops will be decrypted and GroupContextIndex written.
-                if let Err(e) = node_client.sync_namespace(namespace_id).await {
-                    warn!(?e, "namespace sync request failed");
-                }
-                // Wait for async sync to complete.
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-                // -------------------------------------------------------
-                // Phase 3: Publish MemberJoined + auto-join contexts.
-                // -------------------------------------------------------
 
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoined {
                     member: joiner_identity,
@@ -135,11 +108,36 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 )
                 .await?;
 
+                // Pull namespace governance ops. Existing members publish
+                // KeyDelivery after seeing our MemberJoined. Poll until we
+                // have the group key (up to ~15s).
+                for attempt in 0..5 {
+                    if let Err(e) = node_client.sync_namespace(namespace_id).await {
+                        warn!(?e, "namespace sync request failed");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+                    if group_store::load_current_group_key(&datastore, &group_id)?.is_some() {
+                        info!("received group key after {} sync attempts", attempt + 1);
+                        break;
+                    }
+                }
+
+                // One more sync to ensure all encrypted ops (ContextRegistered)
+                // have been retried and group context index is populated.
+                if let Err(e) = node_client.sync_namespace(namespace_id).await {
+                    warn!(?e, "final namespace sync request failed");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                // -------------------------------------------------------
+                // Phase 3: Auto-join contexts.
+                // -------------------------------------------------------
+
                 if let Some(ref alias_str) = group_alias {
                     group_store::set_group_alias(&datastore, &group_id, alias_str)?;
                 }
 
-                // Auto-subscribe to visible contexts.
                 if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
                     if meta.auto_join {
                         let contexts = group_store::enumerate_group_contexts(
@@ -148,6 +146,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             0,
                             usize::MAX,
                         )?;
+                        info!(
+                            ?group_id,
+                            context_count = contexts.len(),
+                            app_id = %meta.target_application_id,
+                            "auto-join: enumerated group contexts"
+                        );
                         for context_id in &contexts {
                             let mut handle = datastore.handle();
                             let ci_key = key::ContextIdentity::new(*context_id, joiner_identity);
@@ -156,15 +160,20 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                     &ci_key,
                                     &calimero_store::types::ContextIdentity {
                                         private_key: Some(*sk),
-                                        sender_key: Some(*sender_key),
+                                        sender_key: None,
                                     },
                                 )?;
                             }
                             drop(handle);
 
                             let config = if !context_client.has_context(context_id)? {
+                                let zero_app =
+                                    calimero_primitives::application::ApplicationId::from(
+                                        [0u8; 32],
+                                    );
                                 let app_id = group_store::load_group_meta(&datastore, &group_id)?
-                                    .map(|m| m.target_application_id);
+                                    .map(|m| m.target_application_id)
+                                    .filter(|id| *id != zero_app);
                                 Some(ContextConfigParams {
                                     application_id: app_id,
                                     application_revision: 0,
@@ -190,7 +199,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     }
                 }
 
-                // Trigger a global sync for any remaining contexts.
                 if let Err(e) = node_client.sync(None, None).await {
                     warn!(?e, "failed to trigger global sync after join");
                 }

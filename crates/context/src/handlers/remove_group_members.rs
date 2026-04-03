@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::RemoveGroupMembersRequest;
-use calimero_context_primitives::local_governance::GroupOp;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use eyre::bail;
@@ -89,12 +88,12 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                     eyre::eyre!("local group governance requires a signing key for the requester")
                 })?);
                 for identity in &members {
-                    group_store::sign_apply_and_publish(
+                    group_store::sign_apply_and_publish_removal(
                         &datastore,
                         &node_client,
                         &group_id,
                         &sk,
-                        GroupOp::MemberRemoved { member: *identity },
+                        identity,
                     )
                     .await?;
                 }

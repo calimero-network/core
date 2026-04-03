@@ -47,14 +47,14 @@ steps:
     node: rust-xcall-1
     group_id: "{{group_id_a}}"
     outputs:
-      invitation_a: data
+      invitation_a: invitation
 
   - name: Create group invitation for Context B
     type: create_group_invitation
     node: rust-xcall-1
     group_id: "{{group_id_b}}"
     outputs:
-      invitation_b: data
+      invitation_b: invitation
 
   - name: Node 2 joins group A
     type: join_group

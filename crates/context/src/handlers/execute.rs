@@ -132,15 +132,13 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
         }
 
-        // Fetch the full identity, not just the sender_key
         let identity = match self.context_client.get_identity(&context_id, &executor) {
             Ok(Some(
                 identity @ ContextIdentity {
                     private_key: Some(_),
-                    sender_key: Some(_),
                     ..
                 },
-            )) => identity, // Keep the whole identity
+            )) => identity,
             Ok(_) => {
                 return ActorResponse::reply(Err(ExecuteError::Unauthorized {
                     context_id,
@@ -154,22 +152,36 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
         };
 
-        // Extract the private key so it could be moved later into the closure
-        // without having ownership errors.
         let private_key = identity.private_key.expect(
             "infallible (verified before): missing private key in ContextIdentity for signing",
         );
 
-        // Get the private key we know we have
-        let sender_key = identity.sender_key.expect(
-            "infallible (verified before): missing sender key in ContextIdentity for signing",
-        );
+        let (sender_key, broadcast_key_id) =
+            match crate::group_store::get_group_for_context(&self.datastore, &context_id) {
+                Ok(Some(gid)) => {
+                    match crate::group_store::load_current_group_key(&self.datastore, &gid) {
+                        Ok(Some((kid, gk))) => (PrivateKey::from(gk), kid),
+                        _ => {
+                            if let Some(sk) = identity.sender_key {
+                                (sk, [0u8; 32])
+                            } else {
+                                return ActorResponse::reply(Err(ExecuteError::InternalError));
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(sk) = identity.sender_key {
+                        (sk, [0u8; 32])
+                    } else {
+                        return ActorResponse::reply(Err(ExecuteError::InternalError));
+                    }
+                }
+            };
 
         debug!(
             public_key = ?identity.public_key,
             public_key = %identity.public_key,
-            sender_key = ?sender_key.public_key(),
-            sender_key = %sender_key.public_key(),
             "ContextManager: keys",
         );
 
@@ -655,6 +667,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     the_delta.hlc,
                                     events_data,
                                     governance_epoch,
+                                    broadcast_key_id,
                                 )
                                 .await?;
                         }

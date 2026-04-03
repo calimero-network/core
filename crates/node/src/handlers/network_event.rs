@@ -172,6 +172,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         nonce,
                         events,
                         governance_epoch,
+                        key_id,
                     } => {
                         info!(
                             %context_id,
@@ -207,6 +208,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                     nonce,
                                     events.map(|e| e.into_owned()),
                                     governance_epoch,
+                                    key_id,
                                 )
                                 .await
                                 {
@@ -460,13 +462,22 @@ impl Handler<NetworkEvent> for NodeManager {
                         }
 
                         let context_client = self.clients.context.clone();
+                        let node_client = self.clients.node.clone();
+                        let op_for_delivery = op.clone();
                         let _ignored = ctx.spawn(
                             async move {
                                 if let Err(err) =
                                     context_client.apply_signed_namespace_op(op.clone()).await
                                 {
                                     warn!(?err, %source, "failed to apply namespace governance delta");
+                                    return;
                                 }
+                                crate::key_delivery::maybe_publish_key_delivery(
+                                    &context_client,
+                                    &node_client,
+                                    &op_for_delivery,
+                                )
+                                .await;
                             }
                             .into_actor(self),
                         );

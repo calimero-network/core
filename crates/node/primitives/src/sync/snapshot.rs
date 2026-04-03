@@ -605,6 +605,11 @@ pub enum BroadcastMessage<'a> {
         /// Allows receiving nodes to determine if the author was authorized
         /// at the governance state the delta was created against.
         governance_epoch: Vec<[u8; 32]>,
+
+        /// `sha256(group_key)` — identifies which group key encrypted this
+        /// delta. Receivers look up the corresponding key from their local
+        /// `GroupKeyEntry` store to decrypt.
+        key_id: [u8; 32],
     },
 
     /// Hash heartbeat for divergence detection

@@ -118,3 +118,8 @@ impl PredefinedEntry for key::NamespaceGovHead {
     type Codec = Borsh;
     type DataType<'a> = key::NamespaceGovHeadValue;
 }
+
+impl PredefinedEntry for key::GroupKeyEntry {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupKeyValue;
+}

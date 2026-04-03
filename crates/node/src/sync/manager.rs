@@ -1427,12 +1427,8 @@ impl SyncManager {
             .await
             .wrap_err("open stream for sync")?;
 
-        // Phase 1: Key share
-        let phase_start = Instant::now();
-        self.initiate_key_share_process(&mut context, our_identity, &mut stream)
-            .await
-            .wrap_err("key share")?;
-        let key_share_elapsed = phase_start.elapsed();
+        // Key share phase removed — group key envelopes handle key distribution.
+        let key_share_elapsed = std::time::Duration::ZERO;
         debug!(
             %context_id,
             %chosen_peer,
@@ -1478,6 +1474,11 @@ impl SyncManager {
         }
 
         let Some(_application) = application else {
+            if context.application_id
+                == calimero_primitives::application::ApplicationId::from([0u8; 32])
+            {
+                bail!("context has placeholder application ID — waiting for governance op to resolve it");
+            }
             bail!("application not found: {}", context.application_id);
         };
 
@@ -2134,10 +2135,6 @@ impl SyncManager {
         };
 
         match payload {
-            InitPayload::KeyShare => {
-                self.handle_key_share_request(&context, our_identity, their_identity, stream, nonce)
-                    .await?
-            }
             InitPayload::BlobShare { blob_id } => {
                 self.handle_blob_share_request(
                     &context,
@@ -2374,16 +2371,26 @@ impl SyncManager {
                 for (_delta_id, op_bytes) in deltas {
                     match borsh::from_slice::<
                         calimero_context_primitives::local_governance::SignedNamespaceOp,
-                    >(&op_bytes) {
+                    >(&op_bytes)
+                    {
                         Ok(op) => {
-                            if let Err(err) =
-                                self.context_client.apply_signed_namespace_op(op).await
+                            if let Err(err) = self
+                                .context_client
+                                .apply_signed_namespace_op(op.clone())
+                                .await
                             {
                                 warn!(
                                     namespace_id = %hex::encode(namespace_id),
                                     ?err,
                                     "failed to apply namespace governance op from backfill"
                                 );
+                            } else {
+                                crate::key_delivery::maybe_publish_key_delivery(
+                                    &self.context_client,
+                                    &self.node_client,
+                                    &op,
+                                )
+                                .await;
                             }
                         }
                         Err(err) => {

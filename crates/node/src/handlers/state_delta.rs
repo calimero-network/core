@@ -17,7 +17,6 @@ use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use crate::delta_store::DeltaStore;
-use crate::sync::CHALLENGE_DOMAIN;
 use crate::utils::choose_stream;
 
 /// Handles state delta received from a peer (DAG-based)
@@ -48,6 +47,7 @@ pub async fn handle_state_delta(
     nonce: Nonce,
     events: Option<Vec<u8>>,
     governance_epoch: Vec<[u8; 32]>,
+    key_id: [u8; 32],
 ) -> Result<()> {
     let Some(context) = node_clients.context.get_context(&context_id)? else {
         bail!("context '{}' not found", context_id);
@@ -105,7 +105,6 @@ pub async fn handle_state_delta(
             "Buffering delta (sync in progress or context uninitialized)"
         );
 
-        // CRITICAL: Store ALL fields needed for replay after sync completes
         let buffered = calimero_node_primitives::delta_buffer::BufferedDelta {
             id: delta_id,
             parents: parent_ids.clone(),
@@ -116,6 +115,7 @@ pub async fn handle_state_delta(
             root_hash,
             events: events.clone(),
             source_peer: source,
+            key_id,
         };
 
         if let Some(result) = node_state.buffer_delta(&context_id, buffered) {
@@ -148,6 +148,7 @@ pub async fn handle_state_delta(
                 root_hash,
                 events: events.clone(),
                 source_peer: source,
+                key_id,
             };
 
             if let Some(result) = node_state.buffer_delta(&context_id, buffered) {
@@ -175,18 +176,28 @@ pub async fn handle_state_delta(
         // Fall through to normal processing
     }
 
-    let sender_key = ensure_author_sender_key(
-        &node_clients.context,
-        &network_client,
-        &context_id,
-        &author_id,
-        source,
-        sync_timeout,
-        context.root_hash,
-    )
-    .await?;
+    let group_key = {
+        let store = node_clients.context.datastore();
+        let gid = calimero_context::group_store::get_group_for_context(store, &context_id)?;
+        match gid {
+            Some(g) => calimero_context::group_store::load_group_key_by_id(store, &g, &key_id)?
+                .map(PrivateKey::from)
+                .ok_or_else(|| {
+                    eyre::eyre!("no group key found for key_id {}", hex::encode(key_id))
+                })?,
+            None => {
+                let identity = node_clients
+                    .context
+                    .get_identity(&context_id, &author_id)?
+                    .ok_or_else(|| eyre::eyre!("no identity for author {author_id}"))?;
+                identity
+                    .sender_key
+                    .ok_or_else(|| eyre::eyre!("no sender_key or group_key for context"))?
+            }
+        }
+    };
 
-    let actions = decrypt_delta_actions(artifact, nonce, sender_key)?;
+    let actions = decrypt_delta_actions(artifact, nonce, group_key)?;
 
     let delta = calimero_dag::CausalDelta {
         id: delta_id,
@@ -406,82 +417,6 @@ fn decrypt_delta_actions(
         calimero_storage::delta::StorageDelta::Actions(actions) => Ok(actions),
         _ => bail!("Expected Actions variant in state delta"),
     }
-}
-
-async fn ensure_author_sender_key(
-    context_client: &ContextClient,
-    network_client: &calimero_network_primitives::client::NetworkClient,
-    context_id: &ContextId,
-    author_id: &PublicKey,
-    source: PeerId,
-    sync_timeout: std::time::Duration,
-    context_root_hash: Hash,
-) -> Result<PrivateKey> {
-    let mut author_identity = context_client
-        .get_identity(context_id, author_id)?
-        .ok_or_eyre("author identity not found")?;
-
-    if author_identity.sender_key.is_none() {
-        // Check if context is uninitialized (bootstrapping)
-        // During bootstrap, skip key share to avoid blocking state sync.
-        // The key share would block for ~350ms and interfere with the parallel
-        // state sync stream from the same peer. State sync will deliver all
-        // deltas needed to initialize the context. Once initialized, subsequent
-        // deltas can trigger key shares without blocking critical bootstrap.
-        if context_root_hash == Hash::default() {
-            debug!(
-                %context_id,
-                %author_id,
-                source_peer=%source,
-                "Context uninitialized - deferring key share until after state sync completes"
-            );
-            bail!("author sender_key not available (context uninitialized, deferring key share)");
-        }
-
-        info!(
-            %context_id,
-            %author_id,
-            source_peer=%source,
-            "Missing sender_key for author - initiating key share with source peer"
-        );
-
-        match request_key_share_with_peer(
-            network_client,
-            context_client,
-            context_id,
-            author_id,
-            source,
-            sync_timeout,
-        )
-        .await
-        {
-            Ok(()) => {
-                info!(
-                    %context_id,
-                    %author_id,
-                    source_peer=%source,
-                    "Successfully completed key share with source peer"
-                );
-                author_identity = context_client
-                    .get_identity(context_id, author_id)?
-                    .ok_or_eyre("author identity disappeared")?;
-            }
-            Err(e) => {
-                warn!(
-                    %context_id,
-                    %author_id,
-                    source_peer=%source,
-                    ?e,
-                    "Failed to complete key share with source peer - will retry when delta is rebroadcast"
-                );
-                bail!("author sender_key not available (key share requested, will retry)");
-            }
-        }
-    }
-
-    author_identity
-        .sender_key
-        .ok_or_eyre("author has no sender key")
 }
 
 async fn choose_owned_identity(
@@ -1017,417 +952,6 @@ async fn request_missing_deltas(
     Ok(())
 }
 
-/// Initiate bidirectional key share with a specific peer for a specific author identity
-/// This performs the same cryptographic key exchange as initial sync, but on-demand.
-///
-/// **IMPORTANT**: This must follow the exact same protocol as `sync/key.rs::bidirectional_key_share`
-/// to be compatible with the responder side (`handle_key_share_request`).
-///
-/// Protocol:
-/// 1. Init (KeyShare) → Init (KeyShare) ack
-/// 2. Challenge/Response authentication (deterministic initiator/responder roles)
-/// 3. KeyShare message exchange (all messages unencrypted - transport layer handles encryption)
-async fn request_key_share_with_peer(
-    network_client: &calimero_network_primitives::client::NetworkClient,
-    context_client: &ContextClient,
-    context_id: &ContextId,
-    author_identity: &PublicKey,
-    peer: PeerId,
-    timeout: std::time::Duration,
-) -> Result<()> {
-    use calimero_crypto::Nonce;
-    use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
-    use ed25519_dalek::Signature;
-    use rand::Rng;
-
-    debug!(
-        %context_id,
-        %author_identity,
-        %peer,
-        "Initiating bidirectional key share with peer"
-    );
-
-    // Wrap entire key share in single timeout
-    tokio::time::timeout(timeout, async {
-        // Open stream to source peer
-        let mut stream = network_client.open_stream(peer).await?;
-
-        // Get our identity for this context
-        let identities = context_client.get_context_members(context_id, Some(true));
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
-            .await
-            .transpose()?
-        else {
-            bail!("no owned identities found for context");
-        };
-
-        let our_nonce = rand::thread_rng().gen::<Nonce>();
-
-        // Step 1: Initiate key share request
-        crate::sync::stream::send(
-            &mut stream,
-            &StreamMessage::Init {
-                context_id: *context_id,
-                party_id: our_identity,
-                payload: InitPayload::KeyShare,
-                next_nonce: our_nonce,
-            },
-            None,
-        )
-        .await?;
-
-        // Step 2: Receive ack from peer (contains their identity)
-        let Some(ack) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
-            bail!("connection closed while awaiting key share handshake");
-        };
-
-        let their_identity = match ack {
-            StreamMessage::Init {
-                party_id,
-                payload: InitPayload::KeyShare,
-                ..
-            } => party_id,
-            unexpected => {
-                bail!("unexpected message during key share: {:?}", unexpected)
-            }
-        };
-
-        // Verify peer responded with the identity we need
-        // If the peer has multiple identities, they might respond with a different one
-        if their_identity != *author_identity {
-            warn!(
-                %context_id,
-                %author_identity,
-                %their_identity,
-                "Peer responded with different identity than expected author - key share may not provide the needed sender_key"
-            );
-            bail!(
-                "peer responded with unexpected identity (expected author {}, got {})",
-                author_identity,
-                their_identity
-            );
-        }
-
-        // Step 3: Deterministic tie-breaker for initiator/responder role
-        // Both peers must agree on roles to prevent deadlock
-        let is_initiator = <PublicKey as AsRef<[u8; 32]>>::as_ref(&our_identity)
-            > <PublicKey as AsRef<[u8; 32]>>::as_ref(&their_identity);
-
-        debug!(
-            %context_id,
-            %our_identity,
-            %their_identity,
-            is_initiator,
-            "Determined role via deterministic comparison"
-        );
-
-        // Get our private key and sender key
-        let (our_private_key, sender_key) = context_client
-            .get_identity(context_id, &our_identity)?
-            .and_then(|i| Some((i.private_key?, i.sender_key?)))
-            .ok_or_eyre("expected own identity to have private & sender keys")?;
-
-        // Get their identity record (to update with sender_key later)
-        let mut their_identity_record = context_client
-            .get_identity(context_id, &their_identity)?
-            .ok_or_eyre("expected peer identity to exist")?;
-
-        let mut sequence_id_out: u64 = 0;
-        let mut sequence_id_in: u64 = 0;
-
-        // Step 4: Challenge/Response authentication
-        // Protocol must match sync/key.rs exactly:
-        // - Initiator: send challenge → recv response → recv challenge → send response
-        // - Responder: recv challenge → send response → send challenge → recv response
-        if is_initiator {
-            // INITIATOR: Challenge them first
-            let challenge: [u8; 32] = rand::thread_rng().gen();
-
-            debug!(%context_id, %their_identity, "Sending authentication challenge (initiator)");
-
-            crate::sync::stream::send(
-                &mut stream,
-                &StreamMessage::Message {
-                    sequence_id: sequence_id_out,
-                    payload: MessagePayload::Challenge { challenge },
-                    next_nonce: our_nonce,
-                },
-                None,
-            )
-            .await?;
-            sequence_id_out += 1;
-
-            // Receive their signature
-            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
-                bail!("connection closed while awaiting challenge response");
-            };
-
-            let their_signature_bytes = match msg {
-                StreamMessage::Message {
-                    sequence_id,
-                    payload: MessagePayload::ChallengeResponse { signature },
-                    ..
-                } => {
-                    if sequence_id != sequence_id_in {
-                        bail!(
-                            "unexpected sequence_id: expected {}, got {}",
-                            sequence_id_in,
-                            sequence_id
-                        );
-                    }
-                    sequence_id_in += 1;
-                    signature
-                }
-                unexpected => bail!("expected ChallengeResponse, got {:?}", unexpected),
-            };
-
-            let mut peer_payload = CHALLENGE_DOMAIN.to_vec();
-            peer_payload.extend_from_slice(&challenge);
-
-            // Verify their signature
-            let their_signature = Signature::from_bytes(&their_signature_bytes);
-            their_identity
-                .verify(&peer_payload, &their_signature)
-                .map_err(|e| eyre::eyre!("Peer failed to prove identity ownership: {}", e))?;
-
-            debug!(%context_id, %their_identity, "Peer authenticated successfully");
-
-            // Now receive their challenge for us
-            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
-                bail!("connection closed while awaiting challenge");
-            };
-
-            let their_challenge = match msg {
-                StreamMessage::Message {
-                    sequence_id,
-                    payload: MessagePayload::Challenge { challenge },
-                    ..
-                } => {
-                    if sequence_id != sequence_id_in {
-                        bail!(
-                            "unexpected sequence_id: expected {}, got {}",
-                            sequence_id_in,
-                            sequence_id
-                        );
-                    }
-                    sequence_id_in += 1;
-                    challenge
-                }
-                unexpected => bail!("expected Challenge, got {:?}", unexpected),
-            };
-
-            let mut payload = CHALLENGE_DOMAIN.to_vec();
-            payload.extend_from_slice(&their_challenge);
-
-            // Sign their challenge with a payload
-            let our_signature = our_private_key.sign(&payload)?;
-
-            debug!(%context_id, %our_identity, "Sending authentication response (initiator)");
-
-            crate::sync::stream::send(
-                &mut stream,
-                &StreamMessage::Message {
-                    sequence_id: sequence_id_out,
-                    payload: MessagePayload::ChallengeResponse {
-                        signature: our_signature.to_bytes(),
-                    },
-                    next_nonce: our_nonce,
-                },
-                None,
-            )
-            .await?;
-            sequence_id_out += 1;
-
-            // Step 5: Key exchange - initiator sends first
-            crate::sync::stream::send(
-                &mut stream,
-                &StreamMessage::Message {
-                    sequence_id: sequence_id_out,
-                    payload: MessagePayload::KeyShare { sender_key },
-                    next_nonce: our_nonce,
-                },
-                None,
-            )
-            .await?;
-
-            // Receive their sender_key
-            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
-                bail!("connection closed while awaiting key share");
-            };
-
-            let peer_sender_key = match msg {
-                StreamMessage::Message {
-                    sequence_id,
-                    payload: MessagePayload::KeyShare { sender_key },
-                    ..
-                } => {
-                    if sequence_id != sequence_id_in {
-                        bail!(
-                            "unexpected sequence_id: expected {}, got {}",
-                            sequence_id_in,
-                            sequence_id
-                        );
-                    }
-                    sender_key
-                }
-                unexpected => bail!("expected KeyShare, got {:?}", unexpected),
-            };
-
-            their_identity_record.sender_key = Some(peer_sender_key);
-        } else {
-            // RESPONDER: Receive challenge first
-            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
-                bail!("connection closed while awaiting challenge");
-            };
-
-            let their_challenge = match msg {
-                StreamMessage::Message {
-                    sequence_id,
-                    payload: MessagePayload::Challenge { challenge },
-                    ..
-                } => {
-                    if sequence_id != sequence_id_in {
-                        bail!(
-                            "unexpected sequence_id: expected {}, got {}",
-                            sequence_id_in,
-                            sequence_id
-                        );
-                    }
-                    sequence_id_in += 1;
-                    challenge
-                }
-                unexpected => bail!("expected Challenge, got {:?}", unexpected),
-            };
-
-            let mut payload = CHALLENGE_DOMAIN.to_vec();
-            payload.extend_from_slice(&their_challenge);
-
-            // Sign their challenge with a payload
-            let our_signature = our_private_key.sign(&payload)?;
-
-            debug!(%context_id, %our_identity, "Sending authentication response (responder)");
-
-            crate::sync::stream::send(
-                &mut stream,
-                &StreamMessage::Message {
-                    sequence_id: sequence_id_out,
-                    payload: MessagePayload::ChallengeResponse {
-                        signature: our_signature.to_bytes(),
-                    },
-                    next_nonce: our_nonce,
-                },
-                None,
-            )
-            .await?;
-            sequence_id_out += 1;
-
-            // Now send our challenge
-            let challenge: [u8; 32] = rand::thread_rng().gen();
-
-            debug!(%context_id, %their_identity, "Sending authentication challenge (responder)");
-
-            crate::sync::stream::send(
-                &mut stream,
-                &StreamMessage::Message {
-                    sequence_id: sequence_id_out,
-                    payload: MessagePayload::Challenge { challenge },
-                    next_nonce: our_nonce,
-                },
-                None,
-            )
-            .await?;
-            sequence_id_out += 1;
-
-            // Receive their signature
-            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
-                bail!("connection closed while awaiting challenge response");
-            };
-
-            let their_signature_bytes = match msg {
-                StreamMessage::Message {
-                    sequence_id,
-                    payload: MessagePayload::ChallengeResponse { signature },
-                    ..
-                } => {
-                    if sequence_id != sequence_id_in {
-                        bail!(
-                            "unexpected sequence_id: expected {}, got {}",
-                            sequence_id_in,
-                            sequence_id
-                        );
-                    }
-                    sequence_id_in += 1;
-                    signature
-                }
-                unexpected => bail!("expected ChallengeResponse, got {:?}", unexpected),
-            };
-
-            let mut peer_payload = CHALLENGE_DOMAIN.to_vec();
-            peer_payload.extend_from_slice(&challenge);
-
-            // Verify their signature
-            let their_signature = Signature::from_bytes(&their_signature_bytes);
-            their_identity
-                .verify(&peer_payload, &their_signature)
-                .map_err(|e| eyre::eyre!("Peer failed to prove identity ownership: {}", e))?;
-
-            debug!(%context_id, %their_identity, "Peer authenticated successfully");
-
-            // Step 5: Key exchange - responder receives first
-            let Some(msg) = crate::sync::stream::recv(&mut stream, None, timeout).await? else {
-                bail!("connection closed while awaiting key share");
-            };
-
-            let peer_sender_key = match msg {
-                StreamMessage::Message {
-                    sequence_id,
-                    payload: MessagePayload::KeyShare { sender_key },
-                    ..
-                } => {
-                    if sequence_id != sequence_id_in {
-                        bail!(
-                            "unexpected sequence_id: expected {}, got {}",
-                            sequence_id_in,
-                            sequence_id
-                        );
-                    }
-                    sender_key
-                }
-                unexpected => bail!("expected KeyShare, got {:?}", unexpected),
-            };
-
-            their_identity_record.sender_key = Some(peer_sender_key);
-
-            // Then send our sender_key
-            crate::sync::stream::send(
-                &mut stream,
-                &StreamMessage::Message {
-                    sequence_id: sequence_id_out,
-                    payload: MessagePayload::KeyShare { sender_key },
-                    next_nonce: our_nonce,
-                },
-                None,
-            )
-            .await?;
-        }
-
-        // Step 6: Store their sender_key
-        context_client.update_identity(context_id, &their_identity_record)?;
-
-        info!(
-            %context_id,
-            %our_identity,
-            their_identity=%their_identity_record.public_key,
-            %peer,
-            "Bidirectional key share completed with mutual authentication"
-        );
-
-        Ok(())
-    })
-    .await
-    .map_err(|_| eyre::eyre!("Timeout during key share with peer"))?
-}
-
 /// Ensures the application blob is available for a context before handler execution.
 ///
 /// This fixes the race condition where gossipsub state deltas arrive before the
@@ -1559,20 +1083,27 @@ pub async fn replay_buffered_delta(
         .get_context(&context_id)?
         .ok_or_else(|| eyre::eyre!("context not found after snapshot sync"))?;
 
-    // Get sender key (should be available now that context is initialized)
-    let sender_key = ensure_author_sender_key(
-        context_client,
-        network_client,
-        &context_id,
-        &buffered.author_id,
-        buffered.source_peer,
-        sync_timeout,
-        context.root_hash,
-    )
-    .await?;
+    let group_key = {
+        let store = context_client.datastore();
+        let gid = calimero_context::group_store::get_group_for_context(store, &context_id)?;
+        match gid {
+            Some(g) => {
+                calimero_context::group_store::load_group_key_by_id(store, &g, &buffered.key_id)?
+                    .map(PrivateKey::from)
+                    .ok_or_else(|| eyre::eyre!("no group key found for buffered delta"))?
+            }
+            None => {
+                let identity = context_client
+                    .get_identity(&context_id, &buffered.author_id)?
+                    .ok_or_else(|| eyre::eyre!("no identity for buffered author"))?;
+                identity
+                    .sender_key
+                    .ok_or_else(|| eyre::eyre!("no sender_key or group_key"))?
+            }
+        }
+    };
 
-    // Decrypt the payload
-    let actions = decrypt_delta_actions(buffered.payload, buffered.nonce, sender_key)?;
+    let actions = decrypt_delta_actions(buffered.payload, buffered.nonce, group_key)?;
 
     // Build the delta - reconstruct HLC from stored time
     use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};

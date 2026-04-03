@@ -1,9 +1,9 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::AddGroupMembersRequest;
-use calimero_context_primitives::local_governance::GroupOp;
+use calimero_context_primitives::local_governance::{GroupOp, NamespaceOp, RootOp};
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::group_store;
 use crate::ContextManager;
@@ -85,6 +85,34 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                         },
                     )
                     .await?;
+
+                    if let Some((_key_id, group_key)) =
+                        group_store::load_current_group_key(&datastore, &group_id)?
+                    {
+                        let ns_id = group_store::resolve_namespace(&datastore, &group_id)?;
+                        match group_store::wrap_group_key_for_member(&sk, identity, &group_key) {
+                            Ok(envelope) => {
+                                let delivery_op = NamespaceOp::Root(RootOp::KeyDelivery {
+                                    group_id: group_id.to_bytes(),
+                                    envelope,
+                                });
+                                if let Err(e) = group_store::sign_and_publish_namespace_op(
+                                    &datastore,
+                                    &node_client,
+                                    ns_id.to_bytes(),
+                                    &sk,
+                                    delivery_op,
+                                )
+                                .await
+                                {
+                                    warn!(?e, %identity, "failed to publish KeyDelivery for added member");
+                                }
+                            }
+                            Err(e) => {
+                                warn!(?e, %identity, "failed to wrap group key for added member");
+                            }
+                        }
+                    }
                 }
                 info!(
                     ?group_id,

@@ -56,14 +56,16 @@ impl Handler<JoinContextRequest> for ContextManager {
         let node_client = self.node_client.clone();
         ActorResponse::r#async(
             async move {
-                // Use the group member's existing keys (reused across all contexts).
-                let group_member_val =
-                    group_store::get_group_member_value(&datastore, &group_id, &joiner_identity)?
-                        .ok_or_else(|| eyre::eyre!("group member value not found"))?;
+                let ns_id = group_store::resolve_namespace(&datastore, &group_id)?;
+                let ns_identity = group_store::get_namespace_identity(&datastore, &ns_id)?
+                    .ok_or_else(|| eyre::eyre!("namespace identity not found"))?;
+                let (_pk, sk_bytes, _sender) = ns_identity;
 
+                let zero_app = calimero_primitives::application::ApplicationId::from([0u8; 32]);
                 let config = if !context_client.has_context(&context_id)? {
                     let app_id = group_store::load_group_meta(&datastore, &group_id)?
-                        .map(|meta| meta.target_application_id);
+                        .map(|meta| meta.target_application_id)
+                        .filter(|id| *id != zero_app);
 
                     Some(ContextConfigParams {
                         application_id: app_id,
@@ -78,15 +80,13 @@ impl Handler<JoinContextRequest> for ContextManager {
                     .sync_context_config(context_id, config)
                     .await?;
 
-                // Write ContextIdentity from group member keys so the sync
-                // key-share can find identity + keys for this context.
                 {
                     let mut handle = datastore.handle();
                     handle.put(
                         &calimero_store::key::ContextIdentity::new(context_id, joiner_identity),
                         &calimero_store::types::ContextIdentity {
-                            private_key: group_member_val.private_key,
-                            sender_key: group_member_val.sender_key,
+                            private_key: Some(sk_bytes),
+                            sender_key: None,
                         },
                     )?;
                 }

@@ -151,6 +151,7 @@ async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempD
 
     let (event_sender, _) = broadcast::channel(256);
     let (ctx_sync_tx, _) = mpsc::channel(64);
+    let (ns_sync_tx, _) = mpsc::channel(64);
 
     let node_client = NodeClient::new(
         datastore,
@@ -159,6 +160,7 @@ async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempD
         LazyRecipient::new(),
         event_sender,
         ctx_sync_tx,
+        ns_sync_tx,
         String::new(), // Not used in tests
     );
 

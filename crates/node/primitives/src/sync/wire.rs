@@ -107,9 +107,6 @@ pub enum InitPayload {
         blob_id: BlobId,
     },
 
-    /// Request to share encryption keys.
-    KeyShare,
-
     /// Request a specific delta by ID (for DAG gap filling).
     DeltaRequest {
         /// Context for the delta.
@@ -215,12 +212,6 @@ pub enum MessagePayload<'a> {
         chunk: Cow<'a, [u8]>,
     },
 
-    /// Encryption key share.
-    KeyShare {
-        /// The sender's private key for the context.
-        sender_key: PrivateKey,
-    },
-
     /// Response to DeltaRequest containing the requested delta.
     DeltaResponse {
         /// The serialized delta data.
@@ -236,18 +227,6 @@ pub enum MessagePayload<'a> {
         dag_heads: Vec<[u8; 32]>,
         /// Current root hash.
         root_hash: Hash,
-    },
-
-    /// Challenge to prove ownership of claimed identity.
-    Challenge {
-        /// Random challenge bytes.
-        challenge: [u8; 32],
-    },
-
-    /// Response to challenge with signature (Ed25519 signature is 64 bytes).
-    ChallengeResponse {
-        /// Signature proving identity ownership.
-        signature: [u8; 64],
     },
 
     /// Response to SnapshotBoundaryRequest.

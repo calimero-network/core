@@ -296,6 +296,13 @@ impl Prepared<'_> {
                 &*identity_secret,
                 &*sender_key,
             )?;
+
+            let group_key: [u8; 32] = {
+                use rand::Rng;
+                rng.gen()
+            };
+            group_store::store_group_key(datastore, &auto_group_id, &group_key)?;
+
             auto_group_id
         };
 
@@ -485,6 +492,9 @@ async fn create_context(
             &sk,
             GroupOp::ContextRegistered {
                 context_id: context.id,
+                application_id: context.application_id,
+                blob_id: application.blob.bytecode,
+                source: application.source.to_string(),
             },
         )
         .await?;

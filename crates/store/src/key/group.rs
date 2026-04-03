@@ -1512,6 +1512,84 @@ pub struct NamespaceGovHeadValue {
     pub dag_heads: Vec<[u8; 32]>,
 }
 
+// ---------------------------------------------------------------------------
+// Group key storage (envelope-based key management)
+// ---------------------------------------------------------------------------
+
+/// Prefix for group key entries.
+pub const GROUP_KEY_PREFIX: u8 = 0x3A;
+
+/// Stores a group encryption key by `(group_id, key_id)`.
+///
+/// Key layout: `prefix(1) + group_id(32) + key_id(32)` = 65 bytes.
+/// `key_id` is `sha256(group_key)` — a content-addressed identifier that
+/// appears on every encrypted governance op and state delta so receivers
+/// know which key to use for decryption.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupKeyEntry(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupKeyEntry {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], key_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_KEY_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(key_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn key_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..65]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupKeyEntry {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupKeyEntry {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupKeyEntry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupKeyEntry")
+            .field("group_id", &self.group_id())
+            .field("key_id", &self.key_id())
+            .finish()
+    }
+}
+
+/// Value for [`GroupKeyEntry`]. The raw 32-byte AES-256 group key plus a
+/// creation timestamp used to determine "current" (latest) key for encryption.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupKeyValue {
+    pub group_key: [u8; 32],
+    pub created_at: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

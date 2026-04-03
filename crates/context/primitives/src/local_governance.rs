@@ -72,7 +72,14 @@ pub enum GroupOp {
         target_application_id: ApplicationId,
     },
     /// Register a context index under this group (must match `ContextGroupRef` invariants).
-    ContextRegistered { context_id: ContextId },
+    ContextRegistered {
+        context_id: ContextId,
+        application_id: calimero_primitives::application::ApplicationId,
+        blob_id: calimero_primitives::blobs::BlobId,
+        /// Source URL for the application (registry URL or `file://` for dev).
+        /// Joiners use this to install the app directly without blob sharing.
+        source: String,
+    },
     /// Unregister a context from this group.
     ContextDetached { context_id: ContextId },
     /// Default visibility for new contexts (`0` = Open, `1` = Restricted).
@@ -143,12 +150,18 @@ pub enum GroupOp {
 pub enum NamespaceOp {
     /// Cleartext namespace-wide administrative operation.
     Root(RootOp),
-    /// Encrypted group-scoped operation. The `group_id` is cleartext so
-    /// non-members can store the skeleton; the payload is only readable
-    /// by holders of the group's sender key.
+    /// Encrypted group-scoped operation. The `group_id` and `key_id` are
+    /// cleartext so non-members can store the skeleton; the payload is only
+    /// readable by holders of the group key identified by `key_id`.
     Group {
         group_id: [u8; 32],
+        /// `sha256(group_key)` — identifies which group key encrypted this op.
+        key_id: [u8; 32],
         encrypted: EncryptedGroupOp,
+        /// Present only on `MemberRemoved` ops: wraps a NEW group key for
+        /// each remaining member. Lives outside the encrypted payload so
+        /// the removed member cannot read it.
+        key_rotation: Option<KeyRotation>,
     },
 }
 
@@ -177,9 +190,9 @@ pub enum RootOp {
     },
     /// A member joined a group via an admin-signed invitation.
     ///
-    /// **Cleartext** because the joiner doesn't hold the group's
-    /// sender_key yet. The outer `SignedNamespaceOp` MUST be signed by
-    /// the joining member (proves key ownership). Peers verify:
+    /// **Cleartext** because the joiner doesn't hold the group key yet.
+    /// The outer `SignedNamespaceOp` MUST be signed by the joining member
+    /// (proves key ownership). Peers verify:
     ///
     /// 1. `signed_invitation.inviter_signature` is from a group admin
     /// 2. `signed_invitation.invitation.group_id` matches this op's context
@@ -189,8 +202,9 @@ pub enum RootOp {
     /// The **role** is inside `signed_invitation.invitation.invited_role`
     /// (covered by admin's signature, joiner cannot escalate).
     ///
-    /// After peers apply this, they deliver the group `sender_key` to
-    /// the new member via the key-share protocol.
+    /// After peers apply this, any existing member who holds the group key
+    /// publishes a [`KeyDelivery`](RootOp::KeyDelivery) wrapping the key
+    /// for the joiner via ECDH.
     MemberJoined {
         member: PublicKey,
         /// The full admin-signed invitation — carries the inviter's
@@ -198,16 +212,56 @@ pub enum RootOp {
         /// signature. Peers use this to verify the join was authorized.
         signed_invitation: SignedGroupOpenInvitation,
     },
+    /// Delivers the current group key to a specific member.
+    ///
+    /// Published by an existing member after seeing `MemberJoined` on the
+    /// DAG. The group key is ECDH-wrapped so only the recipient can
+    /// decrypt it. No P2P handshake or online requirement — the joiner
+    /// picks this up when it processes the DAG.
+    KeyDelivery {
+        group_id: [u8; 32],
+        envelope: KeyEnvelope,
+    },
 }
 
 /// An encrypted group operation payload. Only members of the group
-/// (who possess the sender key) can decrypt the inner [`GroupOp`].
+/// (who possess the group key) can decrypt the inner [`GroupOp`].
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct EncryptedGroupOp {
     /// 12-byte AES-GCM nonce.
     pub nonce: [u8; 12],
-    /// `AES-256-GCM(borsh(GroupOp))` using the group's sender key.
+    /// `AES-256-GCM(borsh(GroupOp))` using the group key.
     pub ciphertext: Vec<u8>,
+}
+
+/// ECDH-wrapped group key for a specific recipient.
+///
+/// The sender encrypts the group key using a shared secret derived from
+/// `SharedKey::new(sender_sk, recipient_pk)`. The recipient decrypts with
+/// `SharedKey::new(recipient_sk, ephemeral_pk)`.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct KeyEnvelope {
+    /// Recipient's namespace identity public key.
+    pub recipient: PublicKey,
+    /// Sender's public key used for ECDH key agreement.
+    pub ephemeral_pk: PublicKey,
+    /// 12-byte AES-GCM nonce.
+    pub nonce: [u8; 12],
+    /// `AES-256-GCM(group_key)` using the ECDH shared secret.
+    pub ciphertext: Vec<u8>,
+}
+
+/// Key rotation bundle attached to a `MemberRemoved` governance op.
+///
+/// Contains the new key's identifier and ECDH-wrapped envelopes for every
+/// remaining group member. The removed member receives no envelope and is
+/// cryptographically locked out of all future data.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct KeyRotation {
+    /// `sha256(new_group_key)` — identifies the new epoch.
+    pub new_key_id: [u8; 32],
+    /// One envelope per remaining member, each wrapping the new group key.
+    pub envelopes: Vec<KeyEnvelope>,
 }
 
 /// Signable envelope for a namespace governance operation.

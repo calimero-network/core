@@ -36,6 +36,7 @@ mod constants;
 mod delta_store;
 pub mod gc;
 pub mod handlers;
+pub mod key_delivery;
 pub mod network_event_channel;
 pub mod network_event_processor;
 mod run;
