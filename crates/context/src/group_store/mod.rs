@@ -22,6 +22,7 @@ mod group_settings;
 mod local_state;
 mod membership;
 mod membership_policy;
+mod membership_view;
 mod meta;
 mod migrations;
 mod namespace;
@@ -71,6 +72,7 @@ pub use self::membership::{
     require_group_admin, require_group_admin_or_capability,
 };
 pub use self::membership_policy::MembershipPolicy;
+pub use self::membership_view::GroupMembershipView;
 pub use self::meta::{
     compute_group_state_hash, delete_group_meta, enumerate_all_groups, load_group_meta,
     save_group_meta,

@@ -5,10 +5,8 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::membership::{
-    is_group_admin, is_group_admin_or_has_capability, require_group_admin,
-    require_group_admin_or_capability,
-};
+use super::membership::is_group_admin_or_has_capability;
+use super::{membership_view::GroupMembershipView, require_group_admin_or_capability};
 
 /// Authorization service for group governance operations.
 ///
@@ -18,19 +16,24 @@ use super::membership::{
 pub struct PermissionChecker<'a> {
     store: &'a Store,
     group_id: ContextGroupId,
+    membership: GroupMembershipView<'a>,
 }
 
 impl<'a> PermissionChecker<'a> {
     pub fn new(store: &'a Store, group_id: ContextGroupId) -> Self {
-        Self { store, group_id }
+        Self {
+            store,
+            group_id,
+            membership: GroupMembershipView::new(store, group_id),
+        }
     }
 
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
-        is_group_admin(self.store, &self.group_id, identity)
+        self.membership.is_admin(identity)
     }
 
     pub fn require_admin(&self, identity: &PublicKey) -> EyreResult<()> {
-        require_group_admin(self.store, &self.group_id, identity)
+        self.membership.require_admin(identity)
     }
 
     pub fn require_manage_members(&self, identity: &PublicKey, operation: &str) -> EyreResult<()> {

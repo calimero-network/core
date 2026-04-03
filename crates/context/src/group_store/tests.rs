@@ -244,6 +244,25 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
 }
 
 #[test]
+fn membership_view_reports_admin_and_member_counts() {
+    let store = test_store();
+    let gid = test_group_id();
+    let admin1 = PublicKey::from([0xD1; 32]);
+    let admin2 = PublicKey::from([0xD2; 32]);
+    let member = PublicKey::from([0xD3; 32]);
+
+    add_group_member(&store, &gid, &admin1, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &admin2, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+
+    let view = GroupMembershipView::new(&store, gid);
+    assert!(view.is_admin(&admin1).unwrap());
+    assert!(!view.is_admin(&member).unwrap());
+    assert_eq!(view.admin_count().unwrap(), 2);
+    assert_eq!(view.member_count().unwrap(), 3);
+}
+
+#[test]
 fn group_settings_service_enforces_permissions_and_persists_values() {
     let store = test_store();
     let gid = test_group_id();

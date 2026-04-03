@@ -5,8 +5,8 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
 use super::{
-    add_group_member, check_group_membership, count_group_admins, is_group_admin,
-    read_tee_admission_policy, GroupStoreError, TeeAdmissionPolicy,
+    add_group_member, membership_view::GroupMembershipView, read_tee_admission_policy,
+    GroupStoreError, TeeAdmissionPolicy,
 };
 
 /// Membership policy service for governance mutations.
@@ -16,6 +16,7 @@ use super::{
 pub struct MembershipPolicy<'a> {
     store: &'a Store,
     group_id: ContextGroupId,
+    membership: GroupMembershipView<'a>,
 }
 
 pub struct TeeAttestationFields<'a> {
@@ -29,14 +30,19 @@ pub struct TeeAttestationFields<'a> {
 
 impl<'a> MembershipPolicy<'a> {
     pub fn new(store: &'a Store, group_id: ContextGroupId) -> Self {
-        Self { store, group_id }
+        let membership = GroupMembershipView::new(store, group_id);
+        Self {
+            store,
+            group_id,
+            membership,
+        }
     }
 
     pub fn ensure_not_last_admin_removal(&self, member: &PublicKey) -> EyreResult<()> {
-        if !is_group_admin(self.store, &self.group_id, member)? {
+        if !self.membership.is_admin(member)? {
             return Ok(());
         }
-        if count_group_admins(self.store, &self.group_id)? > 1 {
+        if self.membership.has_another_admin(member)? {
             return Ok(());
         }
         bail!(GroupStoreError::LastAdmin);
@@ -50,10 +56,10 @@ impl<'a> MembershipPolicy<'a> {
         if *new_role == GroupMemberRole::Admin {
             return Ok(());
         }
-        if !is_group_admin(self.store, &self.group_id, member)? {
+        if !self.membership.is_admin(member)? {
             return Ok(());
         }
-        if count_group_admins(self.store, &self.group_id)? > 1 {
+        if self.membership.has_another_admin(member)? {
             return Ok(());
         }
         bail!(GroupStoreError::LastAdminDemotion);
@@ -63,7 +69,7 @@ impl<'a> MembershipPolicy<'a> {
         &self,
         signer: &PublicKey,
     ) -> EyreResult<()> {
-        if !check_group_membership(self.store, &self.group_id, signer)? {
+        if !self.membership.is_member(signer)? {
             bail!("TEE attestation verifier must be a group member");
         }
         Ok(())
@@ -136,7 +142,7 @@ impl<'a> MembershipPolicy<'a> {
         member: &PublicKey,
         role: &GroupMemberRole,
     ) -> EyreResult<()> {
-        if !check_group_membership(self.store, &self.group_id, member)? {
+        if !self.membership.is_member(member)? {
             add_group_member(self.store, &self.group_id, member, role.clone())?;
         }
         Ok(())
