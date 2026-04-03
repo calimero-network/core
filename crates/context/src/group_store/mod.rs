@@ -15,6 +15,7 @@ use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
 mod aliases;
 mod capabilities;
 mod context_registration;
+mod context_tree;
 mod contexts;
 mod group_governance_publisher;
 mod group_keys;
@@ -49,6 +50,7 @@ pub use self::capabilities::{
     set_default_capabilities, set_default_visibility, set_member_capability,
 };
 pub use self::context_registration::ContextRegistrationService;
+pub use self::context_tree::ContextTreeService;
 pub use self::contexts::{
     cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identity,
     get_group_for_context, register_context_in_group, unregister_context_from_group,

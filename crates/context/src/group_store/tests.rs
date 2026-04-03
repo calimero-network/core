@@ -392,6 +392,50 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
 }
 
 #[test]
+fn context_tree_service_register_move_detach_and_cascade_cleanup() {
+    let store = test_store();
+    let gid_a = ContextGroupId::from([0x31; 32]);
+    let gid_b = ContextGroupId::from([0x32; 32]);
+    let context = ContextId::from([0x33; 32]);
+    let member = PublicKey::from([0x34; 32]);
+
+    let tree_a = ContextTreeService::new(&store, gid_a);
+    let tree_b = ContextTreeService::new(&store, gid_b);
+
+    tree_a.register_context(&context).unwrap();
+    assert_eq!(tree_a.group_for_context(&context).unwrap(), Some(gid_a));
+
+    // Moving registration to another group should clean the old group index.
+    tree_b.register_context(&context).unwrap();
+    assert_eq!(tree_b.group_for_context(&context).unwrap(), Some(gid_b));
+    assert!(tree_a.enumerate_contexts(0, usize::MAX).unwrap().is_empty());
+    assert_eq!(
+        tree_b.enumerate_contexts(0, usize::MAX).unwrap(),
+        vec![context]
+    );
+
+    let mut handle = store.handle();
+    handle
+        .put(
+            &calimero_store::key::ContextIdentity::new(context, member.into()),
+            &calimero_store::types::ContextIdentity {
+                private_key: None,
+                sender_key: Some([0u8; 32]),
+            },
+        )
+        .unwrap();
+    drop(handle);
+
+    tree_b.cascade_remove_member(&member).unwrap();
+    let handle = store.handle();
+    let identity_key = calimero_store::key::ContextIdentity::new(context, member.into());
+    assert!(!handle.has(&identity_key).unwrap());
+
+    tree_b.unregister_context(&context).unwrap();
+    assert_eq!(tree_b.group_for_context(&context).unwrap(), None);
+}
+
+#[test]
 fn context_registration_service_keeps_existing_non_zero_context_meta_application() {
     let store = test_store();
     let gid = test_group_id();

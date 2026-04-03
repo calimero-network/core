@@ -10,8 +10,7 @@ use eyre::{bail, Result as EyreResult};
 
 use super::permission_checker::PermissionChecker;
 use super::{
-    get_group_for_context, load_group_meta, register_context_in_group, save_group_meta,
-    unregister_context_from_group,
+    context_tree::ContextTreeService, get_group_for_context, load_group_meta, save_group_meta,
 };
 
 /// Service that applies context registration and detachment mutations.
@@ -40,7 +39,7 @@ impl<'a> ContextRegistrationService<'a> {
             "processing ContextRegistered governance op"
         );
 
-        register_context_in_group(self.store, &self.group_id, context_id)?;
+        ContextTreeService::new(self.store, self.group_id).register_context(context_id)?;
         self.backfill_application_if_needed(context_id, application_id)
     }
 
@@ -53,7 +52,8 @@ impl<'a> ContextRegistrationService<'a> {
         permissions.require_admin(signer)?;
         match get_group_for_context(self.store, context_id)? {
             Some(g) if g == self.group_id => {
-                unregister_context_from_group(self.store, &self.group_id, context_id)?;
+                ContextTreeService::new(self.store, self.group_id)
+                    .unregister_context(context_id)?;
                 Ok(())
             }
             Some(_) => bail!("context is registered to a different group"),
