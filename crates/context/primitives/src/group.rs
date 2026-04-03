@@ -152,6 +152,9 @@ impl Message for ListGroupContextsRequest {
     type Result = eyre::Result<Vec<GroupContextEntry>>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`GroupOp::ContextAliasSet`](crate::local_governance::GroupOp::ContextAliasSet)
+/// via `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreContextAliasRequest {
     pub group_id: ContextGroupId,
@@ -422,6 +425,9 @@ impl Message for SetDefaultVisibilityRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`SetDefaultVisibilityRequest`] instead, which
+/// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreDefaultVisibilityRequest {
     pub group_id: ContextGroupId,
@@ -462,6 +468,9 @@ impl Message for SetMemberAliasRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`SetMemberAliasRequest`] instead, which
+/// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreMemberAliasRequest {
     pub group_id: ContextGroupId,
@@ -484,6 +493,9 @@ impl Message for SetGroupAliasRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`SetGroupAliasRequest`] instead, which
+/// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreGroupAliasRequest {
     pub group_id: ContextGroupId,
@@ -494,6 +506,9 @@ impl Message for StoreGroupAliasRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`GroupOp::ContextRegistered`](crate::local_governance::GroupOp::ContextRegistered)
+/// via `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreGroupContextRequest {
     pub group_id: ContextGroupId,
@@ -504,6 +519,10 @@ impl Message for StoreGroupContextRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use the appropriate `Set*Request` types or other
+/// signed [`GroupOp`](crate::local_governance::GroupOp) flows that go through
+/// `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreGroupMetaRequest {
     pub group_id: ContextGroupId,
@@ -515,6 +534,9 @@ impl Message for StoreGroupMetaRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`SetMemberCapabilitiesRequest`] instead, which
+/// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreMemberCapabilityRequest {
     pub group_id: ContextGroupId,
@@ -526,6 +548,9 @@ impl Message for StoreMemberCapabilityRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`SetDefaultCapabilitiesRequest`] instead, which
+/// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreDefaultCapabilitiesRequest {
     pub group_id: ContextGroupId,
