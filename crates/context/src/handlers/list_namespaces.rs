@@ -86,11 +86,15 @@ impl Handler<ListNamespacesRequest> for ContextManager {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use calimero_context_client::group::NamespaceSummary;
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::UpgradePolicy;
     use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
+    use calimero_store::Store;
 
     use super::{collect_namespace_summaries, paginate_namespaces};
     use crate::group_store::GroupStoreError;
@@ -182,5 +186,82 @@ mod tests {
 
         let empty = paginate_namespaces(&namespaces, 10, 10);
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn helper_flow_matches_handler_membership_rules() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group_id_with_membership =
+            calimero_context_config::types::ContextGroupId::from([0x11; 32]);
+        let group_id_without_membership =
+            calimero_context_config::types::ContextGroupId::from([0x22; 32]);
+
+        let node_identity_sk = calimero_primitives::identity::PrivateKey::from([0x33; 32]);
+        let node_identity_pk = node_identity_sk.public_key();
+        let sender_key = [0x44; 32];
+
+        let meta = GroupMetaValue {
+            app_key: [0x55; 32],
+            target_application_id: ApplicationId::from([0x66; 32]),
+            upgrade_policy: UpgradePolicy::Automatic,
+            created_at: 1_700_000_000,
+            admin_identity: node_identity_pk,
+            migration: None,
+            auto_join: true,
+        };
+
+        crate::group_store::save_group_meta(&store, &group_id_with_membership, &meta)
+            .expect("save group meta with membership");
+        crate::group_store::save_group_meta(&store, &group_id_without_membership, &meta)
+            .expect("save group meta without membership");
+
+        crate::group_store::store_namespace_identity(
+            &store,
+            &group_id_with_membership,
+            &node_identity_pk,
+            &*node_identity_sk,
+            &sender_key,
+        )
+        .expect("store namespace identity for first namespace");
+        crate::group_store::store_namespace_identity(
+            &store,
+            &group_id_without_membership,
+            &node_identity_pk,
+            &*node_identity_sk,
+            &sender_key,
+        )
+        .expect("store namespace identity for second namespace");
+
+        crate::group_store::add_group_member(
+            &store,
+            &group_id_with_membership,
+            &node_identity_pk,
+            calimero_primitives::context::GroupMemberRole::Admin,
+        )
+        .expect("add node identity to first namespace group");
+
+        let entries =
+            crate::group_store::enumerate_all_groups(&store, 0, usize::MAX).expect("enumerate");
+        let namespaces = collect_namespace_summaries(
+            entries,
+            None,
+            |group_id| {
+                crate::group_store::resolve_namespace_identity(&store, group_id)
+                    .expect("resolve namespace identity")
+                    .map(|(pk, sk, _sender)| (pk, sk))
+            },
+            |group_id, meta, node_identity| {
+                crate::group_store::build_namespace_summary(&store, group_id, meta, node_identity)
+            },
+        )
+        .expect("collect summaries");
+        let result = paginate_namespaces(&namespaces, 0, usize::MAX);
+
+        assert_eq!(
+            result.len(),
+            1,
+            "only the namespace with membership is listed"
+        );
+        assert_eq!(result[0].namespace_id, group_id_with_membership);
     }
 }
