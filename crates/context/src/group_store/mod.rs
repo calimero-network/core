@@ -1,6 +1,5 @@
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::FromKeyParts;
@@ -15,9 +14,11 @@ use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
 
 mod aliases;
 mod capabilities;
+mod context_registration;
 mod contexts;
 mod group_governance_publisher;
 mod group_keys;
+mod group_settings;
 mod local_state;
 mod membership;
 mod membership_policy;
@@ -42,6 +43,7 @@ pub use self::capabilities::{
     get_default_visibility, get_member_capability, set_context_member_capability,
     set_default_capabilities, set_default_visibility, set_member_capability,
 };
+pub use self::context_registration::ContextRegistrationService;
 pub use self::contexts::{
     cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identity,
     get_group_for_context, register_context_in_group, unregister_context_from_group,
@@ -52,6 +54,7 @@ pub use self::group_keys::{
     load_current_group_key_record, load_group_key_by_id, store_group_key, unwrap_group_key,
     wrap_group_key_for_member, GroupKeyring, StoredGroupKey,
 };
+pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{
     delete_group_local_rows, get_local_gov_nonce, get_member_context_joins, get_op_head,
     read_op_log_after, remove_all_member_context_joins, set_local_gov_nonce,
@@ -749,6 +752,8 @@ fn apply_group_op_mutations(
 ) -> EyreResult<bool> {
     let permissions = PermissionChecker::new(store, *group_id);
     let membership_policy = MembershipPolicy::new(store, *group_id);
+    let settings = GroupSettingsService::new(store, *group_id);
+    let context_registration = ContextRegistrationService::new(store, *group_id);
 
     match op {
         GroupOp::Noop => {}
@@ -777,90 +782,29 @@ fn apply_group_op_mutations(
             set_member_capability(store, group_id, member, *capabilities)?;
         }
         GroupOp::DefaultCapabilitiesSet { capabilities } => {
-            permissions.require_admin(signer)?;
-            set_default_capabilities(store, group_id, *capabilities)?;
+            settings.set_default_capabilities(signer, *capabilities)?;
         }
         GroupOp::UpgradePolicySet { policy } => {
-            permissions.require_admin(signer)?;
-            let mut meta = load_group_meta(store, group_id)?
-                .ok_or_else(|| eyre::eyre!("group metadata not found"))?;
-            meta.upgrade_policy = policy.clone();
-            save_group_meta(store, group_id, &meta)?;
+            settings.set_upgrade_policy(signer, policy)?;
         }
         GroupOp::TargetApplicationSet {
             app_key,
             target_application_id,
         } => {
-            permissions.require_manage_application(signer, "set target application")?;
-            let mut meta = load_group_meta(store, group_id)?
-                .ok_or_else(|| eyre::eyre!("group metadata not found"))?;
-            meta.app_key = *app_key;
-            meta.target_application_id = *target_application_id;
-            save_group_meta(store, group_id, &meta)?;
-            cascade_target_application(store, group_id, target_application_id, app_key)?;
+            settings.set_target_application(signer, app_key, target_application_id)?;
         }
         GroupOp::ContextRegistered {
             context_id,
             application_id,
             ..
         } => {
-            tracing::info!(
-                %context_id,
-                %application_id,
-                group_id = %hex::encode(group_id.to_bytes()),
-                "processing ContextRegistered governance op"
-            );
-            permissions.require_can_create_context(signer)?;
-            register_context_in_group(store, group_id, context_id)?;
-
-            if *application_id != ZERO_APPLICATION_ID {
-                if let Some(meta) = load_group_meta(store, group_id)? {
-                    if meta.target_application_id == ZERO_APPLICATION_ID {
-                        let mut updated = meta;
-                        updated.target_application_id = *application_id;
-                        save_group_meta(store, group_id, &updated)?;
-                        tracing::info!(
-                            group_id = %hex::encode(group_id.to_bytes()),
-                            %application_id,
-                            "updated group meta with real application ID from ContextRegistered"
-                        );
-                    }
-                }
-
-                let ctx_meta_key = calimero_store::key::ContextMeta::new(*context_id);
-                let handle = store.handle();
-                if let Ok(Some(mut ctx_meta)) = handle.get(&ctx_meta_key) {
-                    let ctx_meta: &mut calimero_store::types::ContextMeta = &mut ctx_meta;
-                    if ctx_meta.application.application_id() == ZERO_APPLICATION_ID {
-                        *ctx_meta = calimero_store::types::ContextMeta::new(
-                            calimero_store::key::ApplicationMeta::new(*application_id),
-                            ctx_meta.root_hash,
-                            ctx_meta.dag_heads.clone(),
-                            ctx_meta.service_name.clone(),
-                        );
-                        drop(handle);
-                        let mut wh = store.handle();
-                        wh.put(&ctx_meta_key, ctx_meta)?;
-                    }
-                }
-            }
+            context_registration.register(&permissions, signer, context_id, application_id)?;
         }
         GroupOp::ContextDetached { context_id } => {
-            permissions.require_admin(signer)?;
-            match get_group_for_context(store, context_id)? {
-                Some(g) if g == *group_id => {
-                    unregister_context_from_group(store, group_id, context_id)?;
-                }
-                Some(_) => bail!("context is registered to a different group"),
-                None => bail!("context is not registered in any group"),
-            }
+            context_registration.detach(&permissions, signer, context_id)?;
         }
         GroupOp::DefaultVisibilitySet { mode } => {
-            permissions.require_admin(signer)?;
-            if *mode > 1 {
-                bail!("visibility mode must be 0 (Open) or 1 (Restricted), got {mode}");
-            }
-            set_default_visibility(store, group_id, *mode)?;
+            settings.set_default_visibility(signer, *mode)?;
         }
         GroupOp::ContextAliasSet { context_id, alias } => {
             permissions.require_admin(signer)?;
@@ -871,8 +815,7 @@ fn apply_group_op_mutations(
             set_member_alias(store, group_id, member, alias)?;
         }
         GroupOp::GroupAliasSet { alias } => {
-            permissions.require_admin(signer)?;
-            set_group_alias(store, group_id, alias)?;
+            settings.set_group_alias(signer, alias)?;
         }
         GroupOp::GroupDelete => {
             permissions.require_admin(signer)?;
@@ -882,11 +825,7 @@ fn apply_group_op_mutations(
             delete_group_local_rows(store, group_id)?;
         }
         GroupOp::GroupMigrationSet { migration } => {
-            permissions.require_manage_application(signer, "set group migration")?;
-            let mut meta = load_group_meta(store, group_id)?
-                .ok_or_else(|| eyre::eyre!("group metadata not found"))?;
-            meta.migration = migration.clone();
-            save_group_meta(store, group_id, &meta)?;
+            settings.set_group_migration(signer, migration)?;
         }
         GroupOp::ContextCapabilityGranted {
             context_id,

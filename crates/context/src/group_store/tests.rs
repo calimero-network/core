@@ -244,6 +244,180 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
 }
 
 #[test]
+fn group_settings_service_enforces_permissions_and_persists_values() {
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x21; 32]);
+    let member = PublicKey::from([0x22; 32]);
+    let app_id = ApplicationId::from([0x23; 32]);
+
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+
+    let settings = GroupSettingsService::new(&store, gid);
+
+    assert!(settings.set_default_visibility(&member, 1).is_err());
+    assert!(settings.set_default_visibility(&admin, 2).is_err());
+    settings.set_default_visibility(&admin, 1).unwrap();
+    assert_eq!(get_default_visibility(&store, &gid).unwrap(), Some(1));
+
+    settings.set_default_capabilities(&admin, 0b101).unwrap();
+    assert_eq!(get_default_capabilities(&store, &gid).unwrap(), Some(0b101));
+
+    assert!(settings
+        .set_group_migration(&member, &Some(vec![1, 2, 3]))
+        .is_err());
+    set_member_capability(
+        &store,
+        &gid,
+        &member,
+        calimero_context_config::MemberCapabilities::MANAGE_APPLICATION,
+    )
+    .unwrap();
+    settings
+        .set_group_migration(&member, &Some(vec![1, 2, 3]))
+        .unwrap();
+    assert_eq!(
+        load_group_meta(&store, &gid).unwrap().unwrap().migration,
+        Some(vec![1, 2, 3])
+    );
+
+    settings
+        .set_target_application(&member, &[0xAB; 32], &app_id)
+        .unwrap();
+    let meta = load_group_meta(&store, &gid).unwrap().unwrap();
+    assert_eq!(meta.app_key, [0xAB; 32]);
+    assert_eq!(meta.target_application_id, app_id);
+
+    settings.set_group_alias(&admin, "group-main").unwrap();
+    assert_eq!(
+        get_group_alias(&store, &gid).unwrap().as_deref(),
+        Some("group-main")
+    );
+}
+
+#[test]
+fn context_registration_service_applies_backfill_and_detach_rules() {
+    let store = test_store();
+    let gid = test_group_id();
+    let other_gid = ContextGroupId::from([0x31; 32]);
+    let admin = PublicKey::from([0x32; 32]);
+    let creator = PublicKey::from([0x33; 32]);
+    let context = ContextId::from([0x34; 32]);
+    let app_id = ApplicationId::from([0x35; 32]);
+
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &creator, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &gid,
+        &creator,
+        calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+    )
+    .unwrap();
+
+    let mut meta = test_meta();
+    meta.target_application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
+    save_group_meta(&store, &gid, &meta).unwrap();
+
+    // Pre-store context meta with zero app id to verify backfill path.
+    let zero_app = calimero_primitives::application::ZERO_APPLICATION_ID;
+    let ctx_meta_key = calimero_store::key::ContextMeta::new(context);
+    let mut handle = store.handle();
+    handle
+        .put(
+            &ctx_meta_key,
+            &calimero_store::types::ContextMeta::new(
+                calimero_store::key::ApplicationMeta::new(zero_app),
+                [0x44; 32],
+                vec![[0x45; 32]],
+                None,
+            ),
+        )
+        .unwrap();
+    drop(handle);
+
+    let service = ContextRegistrationService::new(&store, gid);
+    let permissions = PermissionChecker::new(&store, gid);
+
+    assert!(service
+        .register(
+            &permissions,
+            &PublicKey::from([0x36; 32]),
+            &context,
+            &app_id
+        )
+        .is_err());
+    service
+        .register(&permissions, &creator, &context, &app_id)
+        .unwrap();
+    assert_eq!(get_group_for_context(&store, &context).unwrap(), Some(gid));
+    assert_eq!(
+        load_group_meta(&store, &gid)
+            .unwrap()
+            .unwrap()
+            .target_application_id,
+        app_id
+    );
+    let handle = store.handle();
+    let ctx_meta: calimero_store::types::ContextMeta = handle.get(&ctx_meta_key).unwrap().unwrap();
+    assert_eq!(ctx_meta.application.application_id(), app_id);
+
+    assert!(service.detach(&permissions, &creator, &context).is_err());
+    service.detach(&permissions, &admin, &context).unwrap();
+    assert_eq!(get_group_for_context(&store, &context).unwrap(), None);
+
+    register_context_in_group(&store, &other_gid, &context).unwrap();
+    assert!(service.detach(&permissions, &admin, &context).is_err());
+}
+
+#[test]
+fn context_registration_service_keeps_existing_non_zero_context_meta_application() {
+    let store = test_store();
+    let gid = test_group_id();
+    let creator = PublicKey::from([0x41; 32]);
+    let context = ContextId::from([0x42; 32]);
+    let existing_app_id = ApplicationId::from([0x43; 32]);
+    let incoming_app_id = ApplicationId::from([0x44; 32]);
+
+    add_group_member(&store, &gid, &creator, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &gid,
+        &creator,
+        calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+    )
+    .unwrap();
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+
+    let ctx_meta_key = calimero_store::key::ContextMeta::new(context);
+    let mut handle = store.handle();
+    handle
+        .put(
+            &ctx_meta_key,
+            &calimero_store::types::ContextMeta::new(
+                calimero_store::key::ApplicationMeta::new(existing_app_id),
+                [0x55; 32],
+                vec![[0x56; 32]],
+                None,
+            ),
+        )
+        .unwrap();
+    drop(handle);
+
+    let service = ContextRegistrationService::new(&store, gid);
+    let permissions = PermissionChecker::new(&store, gid);
+    service
+        .register(&permissions, &creator, &context, &incoming_app_id)
+        .unwrap();
+
+    let handle = store.handle();
+    let ctx_meta: calimero_store::types::ContextMeta = handle.get(&ctx_meta_key).unwrap().unwrap();
+    assert_eq!(ctx_meta.application.application_id(), existing_app_id);
+}
+
+#[test]
 fn apply_local_signed_group_op_nonce_and_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
