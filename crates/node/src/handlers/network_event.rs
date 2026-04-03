@@ -5,16 +5,18 @@
 //! - `heartbeat` - hash heartbeat divergence detection and sync trigger
 //! - `specialized` - specialized node invitation protocol
 //! - `namespace` - namespace governance and heartbeat handling
-//! - this file - dispatch and lightweight blob/listen handlers
+//! - `blobs` - blob request/provider/download event handling
+//! - this file - dispatch wiring only
 
 use actix::{AsyncContext, Handler, WrapFuture};
 use calimero_network_primitives::messages::NetworkEvent;
 use calimero_node_primitives::sync::BroadcastMessage;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::handlers::{state_delta, stream_opened};
 use crate::NodeManager;
 
+mod blobs;
 mod heartbeat;
 mod namespace;
 mod specialized;
@@ -210,24 +212,14 @@ impl Handler<NetworkEvent> for NodeManager {
                 context_id,
                 requesting_peer,
             } => {
-                debug!(
-                    blob_id = %blob_id,
-                    context_id = %context_id,
-                    requesting_peer = %requesting_peer,
-                    "Blob requested by peer"
-                );
+                blobs::handle_blob_requested(blob_id, context_id, requesting_peer);
             }
             NetworkEvent::BlobProvidersFound {
                 blob_id,
                 context_id,
                 providers,
             } => {
-                debug!(
-                    blob_id = %blob_id,
-                    context_id = ?context_id.as_ref().map(|id| id.to_string()),
-                    providers_count = providers.len(),
-                    "Blob providers found in DHT"
-                );
+                blobs::handle_blob_providers_found(blob_id, context_id, providers);
             }
             NetworkEvent::BlobDownloaded {
                 blob_id,
@@ -235,41 +227,7 @@ impl Handler<NetworkEvent> for NodeManager {
                 data,
                 from_peer,
             } => {
-                info!(
-                    blob_id = %blob_id,
-                    context_id = %context_id,
-                    from_peer = %from_peer,
-                    data_size = data.len(),
-                    "Blob downloaded successfully from peer"
-                );
-
-                let blobstore = self.managers.blobstore.clone();
-                let blob_data = data.clone();
-
-                let _ignored = ctx.spawn(
-                    async move {
-                        let reader = &blob_data[..];
-
-                        match blobstore.put(reader).await {
-                            Ok((stored_blob_id, _hash, size)) => {
-                                info!(
-                                    requested_blob_id = %blob_id,
-                                    stored_blob_id = %stored_blob_id,
-                                    size = size,
-                                    "Blob stored successfully"
-                                );
-                            }
-                            Err(e) => {
-                                error!(
-                                    blob_id = %blob_id,
-                                    error = %e,
-                                    "Failed to store downloaded blob"
-                                );
-                            }
-                        }
-                    }
-                    .into_actor(self),
-                );
+                blobs::handle_blob_downloaded(self, ctx, blob_id, context_id, data, from_peer);
             }
             NetworkEvent::BlobDownloadFailed {
                 blob_id,
@@ -277,13 +235,7 @@ impl Handler<NetworkEvent> for NodeManager {
                 from_peer,
                 error,
             } => {
-                info!(
-                    blob_id = %blob_id,
-                    context_id = %context_id,
-                    from_peer = %from_peer,
-                    error = %error,
-                    "Blob download failed"
-                );
+                blobs::handle_blob_download_failed(blob_id, context_id, from_peer, error);
             }
             NetworkEvent::SpecializedNodeVerificationRequest {
                 peer_id,
