@@ -1580,7 +1580,7 @@ impl SyncManager {
                 // This ensures we don't miss sibling heads that might be the missing parents
 
                 // Get or create DeltaStore for this context (do this once before the loop)
-                let (delta_store_ref, is_new_store) = {
+                let delta_store_ref = {
                     let mut is_new = false;
                     let delta_store = self
                         .node_state
@@ -1596,8 +1596,7 @@ impl SyncManager {
                             )
                         });
 
-                    let delta_store_ref = delta_store.clone();
-                    (delta_store_ref, is_new)
+                    delta_store.clone()
                 };
 
                 // Always reload persisted deltas from database before sync operations
@@ -1840,7 +1839,7 @@ impl SyncManager {
         deltas: Vec<calimero_node_primitives::delta_buffer::BufferedDelta>,
         _fallback_peer: PeerId,
     ) {
-        use crate::handlers::state_delta::replay_buffered_delta;
+        use crate::handlers::state_delta::{replay_buffered_delta, ReplayBufferedDeltaInput};
         use std::collections::{HashMap, HashSet};
 
         // Build a set of IDs that are "covered" by the snapshot
@@ -1922,17 +1921,16 @@ impl SyncManager {
             let has_events = buffered.events.is_some();
             let is_covered_by_checkpoint = covered_delta_ids.contains(&delta_id);
 
-            match replay_buffered_delta(
-                &self.context_client,
-                &self.node_client,
-                &self.network_client,
-                &self.node_state,
+            match replay_buffered_delta(ReplayBufferedDeltaInput {
+                context_client: self.context_client.clone(),
+                node_client: self.node_client.clone(),
+                node_state: self.node_state.clone(),
                 context_id,
                 our_identity,
                 buffered,
-                self.sync_config.timeout,
+                sync_timeout: self.sync_config.timeout,
                 is_covered_by_checkpoint,
-            )
+            })
             .await
             {
                 Ok(applied) => {
@@ -2274,7 +2272,6 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         use calimero_context_client::local_governance::SignedNamespaceOp;
-        use calimero_store::key::AsKeyParts;
 
         let store = self.context_client.datastore_handle().into_inner();
         let handle = store.handle();

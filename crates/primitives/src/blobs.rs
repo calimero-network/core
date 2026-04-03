@@ -1,6 +1,4 @@
 use crate::common::DIGEST_SIZE;
-use crate::identity::PublicKey;
-
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 use core::str::FromStr;

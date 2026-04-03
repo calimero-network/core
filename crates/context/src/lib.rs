@@ -5,7 +5,7 @@ use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
-use actix::{Actor, AsyncContext};
+use actix::Actor;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -349,22 +349,3 @@ impl ContextManager {
         }
     }
 }
-
-// objectives:
-//   keep up to N items, refresh entries as they are used
-//   garbage collect entries as they expire, or as needed
-//   share across tasks efficiently, not prolonging locks
-//   managed mutation, so guards aren't held for too long
-//
-// result: this should help us share data between clients
-//         and their actors,
-//
-// pub struct SharedCache<K, V> {
-//     cache: DashMap<Key<K>, V>,
-//     index: ArcTimedSizedCache<K, Key<K>>,
-// }
-//
-// struct Key<K>(K);
-// struct Cached<V: Copy>(..);
-//        ^- aids read without locking
-//           downside: Copy on every write

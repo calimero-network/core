@@ -1,5 +1,3 @@
-use super::*;
-
 use std::sync::Arc;
 
 use calimero_context_config::types::ContextGroupId;

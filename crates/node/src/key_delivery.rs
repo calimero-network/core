@@ -19,7 +19,7 @@ pub async fn maybe_publish_key_delivery(
 
     let namespace_id = op.namespace_id;
     let group_id_bytes = signed_invitation.invitation.group_id;
-    let group_id = calimero_context_config::types::ContextGroupId::from(group_id_bytes);
+    let group_id = group_id_bytes;
     let ns_id = calimero_context_config::types::ContextGroupId::from(namespace_id);
 
     let store = context_client.datastore_handle().into_inner();

@@ -238,7 +238,7 @@ impl SyncManager {
     /// * `context_id` - The context to sync
     /// * `peer_id` - The peer to sync from
     /// * `force` - If true, skip the safety check (for divergence recovery).
-    ///             If false, enforce that the node is fresh (for bootstrap).
+    ///   If false, enforce that the node is fresh (for bootstrap).
     pub async fn request_snapshot_sync(
         &self,
         context_id: ContextId,

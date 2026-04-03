@@ -36,7 +36,7 @@ impl Handler<NodeMessage> for NodeManager {
                     inviter_id: request.inviter_id,
                 };
                 self.state
-                    .pending_specialized_node_invites
+                    .pending_specialized_node_invites_handle()
                     .insert(request.nonce, PendingSpecializedNodeInvite::new(action));
 
                 debug!(
@@ -48,7 +48,7 @@ impl Handler<NodeMessage> for NodeManager {
             }
             NodeMessage::RemovePendingSpecializedNodeInvite { request } => {
                 self.state
-                    .pending_specialized_node_invites
+                    .pending_specialized_node_invites_handle()
                     .remove(&request.nonce);
 
                 debug!(

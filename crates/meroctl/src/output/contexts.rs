@@ -6,7 +6,6 @@ use calimero_server_primitives::admin::{
     SyncContextResponse, UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::jsonrpc::Response;
-use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
 
 use super::Report;

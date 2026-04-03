@@ -19,6 +19,39 @@ use tracing::{debug, info, warn};
 use crate::delta_store::DeltaStore;
 use crate::utils::choose_stream;
 
+pub(crate) struct StateDeltaMessage {
+    pub(crate) source: PeerId,
+    pub(crate) context_id: ContextId,
+    pub(crate) author_id: PublicKey,
+    pub(crate) delta_id: [u8; 32],
+    pub(crate) parent_ids: Vec<[u8; 32]>,
+    pub(crate) hlc: calimero_storage::logical_clock::HybridTimestamp,
+    pub(crate) root_hash: Hash,
+    pub(crate) artifact: Vec<u8>,
+    pub(crate) nonce: Nonce,
+    pub(crate) events: Option<Vec<u8>>,
+    pub(crate) governance_epoch: Vec<[u8; 32]>,
+    pub(crate) key_id: [u8; 32],
+}
+
+pub(crate) struct StateDeltaContext {
+    pub(crate) node_clients: crate::NodeClients,
+    pub(crate) node_state: crate::NodeState,
+    pub(crate) network_client: calimero_network_primitives::client::NetworkClient,
+    pub(crate) sync_timeout: std::time::Duration,
+}
+
+pub(crate) struct ReplayBufferedDeltaInput {
+    pub(crate) context_client: ContextClient,
+    pub(crate) node_client: NodeClient,
+    pub(crate) node_state: crate::NodeState,
+    pub(crate) context_id: ContextId,
+    pub(crate) our_identity: PublicKey,
+    pub(crate) buffered: calimero_node_primitives::delta_buffer::BufferedDelta,
+    pub(crate) sync_timeout: std::time::Duration,
+    pub(crate) is_covered_by_checkpoint: bool,
+}
+
 /// Handles state delta received from a peer (DAG-based)
 ///
 /// This processes incoming state mutations using a DAG structure.
@@ -32,23 +65,30 @@ use crate::utils::choose_stream;
 /// 5. Executes event handlers
 /// 6. Re-emits events to WebSocket clients
 pub async fn handle_state_delta(
-    node_clients: crate::NodeClients,
-    node_state: crate::NodeState,
-    network_client: calimero_network_primitives::client::NetworkClient,
-    sync_timeout: std::time::Duration,
-    source: PeerId,
-    context_id: ContextId,
-    author_id: PublicKey,
-    delta_id: [u8; 32],
-    parent_ids: Vec<[u8; 32]>,
-    hlc: calimero_storage::logical_clock::HybridTimestamp,
-    root_hash: Hash,
-    artifact: Vec<u8>,
-    nonce: Nonce,
-    events: Option<Vec<u8>>,
-    governance_epoch: Vec<[u8; 32]>,
-    key_id: [u8; 32],
+    input: StateDeltaContext,
+    message: StateDeltaMessage,
 ) -> Result<()> {
+    let StateDeltaContext {
+        node_clients,
+        node_state,
+        network_client,
+        sync_timeout,
+    } = input;
+    let StateDeltaMessage {
+        source,
+        context_id,
+        author_id,
+        delta_id,
+        parent_ids,
+        hlc,
+        root_hash,
+        artifact,
+        nonce,
+        events,
+        governance_epoch,
+        key_id,
+    } = message;
+
     let Some(context) = node_clients.context.get_context(&context_id)? else {
         bail!("context '{}' not found", context_id);
     };
@@ -1047,17 +1087,18 @@ async fn ensure_application_available(
 /// can't be applied to the DAG (due to missing intermediate parents).
 ///
 /// Returns Ok(true) if delta was applied, Ok(false) if pending (missing parents).
-pub async fn replay_buffered_delta(
-    context_client: &ContextClient,
-    node_client: &NodeClient,
-    network_client: &calimero_network_primitives::client::NetworkClient,
-    node_state: &crate::NodeState,
-    context_id: ContextId,
-    our_identity: PublicKey,
-    buffered: calimero_node_primitives::delta_buffer::BufferedDelta,
-    sync_timeout: std::time::Duration,
-    is_covered_by_checkpoint: bool,
-) -> Result<bool> {
+pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bool> {
+    let ReplayBufferedDeltaInput {
+        context_client,
+        node_client,
+        node_state,
+        context_id,
+        our_identity,
+        buffered,
+        sync_timeout,
+        is_covered_by_checkpoint,
+    } = input;
+
     let delta_id = buffered.id;
 
     info!(
@@ -1079,7 +1120,7 @@ pub async fn replay_buffered_delta(
     }
 
     // Get context (should exist now after snapshot sync)
-    let context = context_client
+    let _context = context_client
         .get_context(&context_id)?
         .ok_or_else(|| eyre::eyre!("context not found after snapshot sync"))?;
 
@@ -1207,7 +1248,7 @@ pub async fn replay_buffered_delta(
                     );
 
                     execute_event_handlers_parsed(
-                        context_client,
+                        &context_client,
                         &context_id,
                         &our_identity,
                         &events,
@@ -1217,7 +1258,7 @@ pub async fn replay_buffered_delta(
 
                 // Emit to WebSocket clients
                 emit_state_mutation_event_parsed(
-                    node_client,
+                    &node_client,
                     &context_id,
                     buffered.root_hash,
                     events,
