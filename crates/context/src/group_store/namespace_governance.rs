@@ -10,9 +10,10 @@ use eyre::{bail, Result as EyreResult};
 
 use super::{
     apply_group_op_mutations, count_group_contexts, decrypt_group_op, get_local_gov_nonce,
-    get_namespace_identity_record, load_current_group_key_record, load_group_key_by_id,
-    load_group_meta, namespace_membership::NamespaceMembershipService, nest_group, save_group_meta,
-    set_local_gov_nonce, store_group_key, unnest_group, unwrap_group_key,
+    get_namespace_identity_record, is_group_admin, load_current_group_key_record,
+    load_group_key_by_id, load_group_meta, namespace_membership::NamespaceMembershipService,
+    nest_group, save_group_meta, set_local_gov_nonce, store_group_key, unnest_group,
+    unwrap_group_key,
 };
 
 /// Side effect returned by namespace-op application when an existing
@@ -423,7 +424,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_key: &[u8; 32],
         encrypted: &EncryptedGroupOp,
     ) -> EyreResult<()> {
-        let inner_op = super::decrypt_group_op(group_key, encrypted)?;
+        let inner_op = decrypt_group_op(group_key, encrypted)?;
 
         let signed_group_op = SignedGroupOp {
             version: calimero_context_client::local_governance::SIGNED_GROUP_OP_SCHEMA_VERSION,
@@ -635,7 +636,7 @@ impl<'a> NamespaceGovernance<'a> {
         signed_invitation: &calimero_context_config::types::SignedGroupOpenInvitation,
     ) -> EyreResult<()> {
         NamespaceMembershipService::new(self.store, self.namespace_id).apply_member_joined(
-            op,
+            &op.signer,
             member,
             signed_invitation,
         )
