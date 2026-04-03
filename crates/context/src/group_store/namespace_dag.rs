@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
 use calimero_context_client::local_governance::{OpaqueSkeleton, SignedNamespaceOp};
-use calimero_store::key::AsKeyParts;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
