@@ -63,6 +63,422 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// GroupHandle — scoped handle for a single group's store operations
+// ---------------------------------------------------------------------------
+
+/// A scoped handle binding a `Store` reference and a `ContextGroupId`.
+///
+/// Provides methods for all single-group operations, eliminating the need
+/// to pass `(&Store, &ContextGroupId)` to every free function. Handlers
+/// create a `GroupHandle` once and call methods on it.
+///
+/// The existing free functions remain available for callers that haven't
+/// migrated yet.
+pub struct GroupHandle<'a> {
+    store: &'a Store,
+    group_id: ContextGroupId,
+}
+
+impl<'a> GroupHandle<'a> {
+    pub fn new(store: &'a Store, group_id: ContextGroupId) -> Self {
+        Self { store, group_id }
+    }
+
+    pub fn store(&self) -> &Store { self.store }
+    pub fn group_id(&self) -> &ContextGroupId { &self.group_id }
+
+    // --- Meta ---
+    pub fn load_meta(&self) -> EyreResult<Option<GroupMetaValue>> {
+        load_group_meta(self.store, &self.group_id)
+    }
+    pub fn save_meta(&self, meta: &GroupMetaValue) -> EyreResult<()> {
+        save_group_meta(self.store, &self.group_id, meta)
+    }
+    pub fn delete_meta(&self) -> EyreResult<()> {
+        delete_group_meta(self.store, &self.group_id)
+    }
+    pub fn compute_state_hash(&self) -> EyreResult<[u8; 32]> {
+        compute_group_state_hash(self.store, &self.group_id)
+    }
+
+    // --- Members ---
+    pub fn add_member(&self, identity: &PublicKey, role: GroupMemberRole) -> EyreResult<()> {
+        add_group_member(self.store, &self.group_id, identity, role)
+    }
+    pub fn add_member_with_keys(
+        &self,
+        identity: &PublicKey,
+        role: GroupMemberRole,
+        private_key: Option<[u8; 32]>,
+        sender_key: Option<[u8; 32]>,
+    ) -> EyreResult<()> {
+        add_group_member_with_keys(self.store, &self.group_id, identity, role, private_key, sender_key)
+    }
+    pub fn remove_member(&self, identity: &PublicKey) -> EyreResult<()> {
+        remove_group_member(self.store, &self.group_id, identity)
+    }
+    pub fn list_members(&self, offset: usize, limit: usize) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
+        list_group_members(self.store, &self.group_id, offset, limit)
+    }
+    pub fn count_members(&self) -> EyreResult<usize> {
+        count_group_members(self.store, &self.group_id)
+    }
+    pub fn count_admins(&self) -> EyreResult<usize> {
+        count_group_admins(self.store, &self.group_id)
+    }
+    pub fn is_member(&self, identity: &PublicKey) -> EyreResult<bool> {
+        check_group_membership(self.store, &self.group_id, identity)
+    }
+    pub fn get_member_value(&self, identity: &PublicKey) -> EyreResult<Option<GroupMemberValue>> {
+        get_group_member_value(self.store, &self.group_id, identity)
+    }
+    pub fn get_member_role(&self, identity: &PublicKey) -> EyreResult<Option<GroupMemberRole>> {
+        get_group_member_role(self.store, &self.group_id, identity)
+    }
+
+    // --- Authorization ---
+    pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
+        is_group_admin(self.store, &self.group_id, identity)
+    }
+    pub fn is_direct_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
+        is_direct_group_admin(self.store, &self.group_id, identity)
+    }
+    pub fn require_admin(&self, identity: &PublicKey) -> EyreResult<()> {
+        require_group_admin(self.store, &self.group_id, identity)
+    }
+    pub fn is_admin_or_has_capability(&self, identity: &PublicKey, cap: u32) -> EyreResult<bool> {
+        is_group_admin_or_has_capability(self.store, &self.group_id, identity, cap)
+    }
+    pub fn require_admin_or_capability(&self, identity: &PublicKey, cap: u32, op: &str) -> EyreResult<()> {
+        require_group_admin_or_capability(self.store, &self.group_id, identity, cap, op)
+    }
+
+    // --- Nonce ---
+    pub fn get_local_gov_nonce(&self, signer: &PublicKey) -> EyreResult<Option<u64>> {
+        get_local_gov_nonce(self.store, &self.group_id, signer)
+    }
+    pub fn set_local_gov_nonce(&self, signer: &PublicKey, nonce: u64) -> EyreResult<()> {
+        set_local_gov_nonce(self.store, &self.group_id, signer, nonce)
+    }
+
+    // --- Op log ---
+    pub fn get_op_head(&self) -> EyreResult<Option<GroupOpHeadValue>> {
+        get_op_head(self.store, &self.group_id)
+    }
+    pub fn read_op_log_after(&self, after_sequence: u64, limit: usize) -> EyreResult<Vec<(u64, Vec<u8>)>> {
+        read_op_log_after(self.store, &self.group_id, after_sequence, limit)
+    }
+
+    // --- Governance ops ---
+    pub fn apply_signed_op(&self, op: &SignedGroupOp) -> EyreResult<()> {
+        apply_local_signed_group_op(self.store, op)
+    }
+    pub fn sign_apply_op(&self, signer_sk: &PrivateKey, op: GroupOp) -> EyreResult<SignedOpOutput> {
+        sign_apply_local_group_op_borsh(self.store, &self.group_id, signer_sk, op)
+    }
+
+    // --- Signing keys ---
+    pub fn store_signing_key(&self, pk: &PublicKey, sk: &[u8; 32]) -> EyreResult<()> {
+        store_group_signing_key(self.store, &self.group_id, pk, sk)
+    }
+    pub fn get_signing_key(&self, pk: &PublicKey) -> EyreResult<Option<[u8; 32]>> {
+        get_group_signing_key(self.store, &self.group_id, pk)
+    }
+    pub fn delete_signing_key(&self, pk: &PublicKey) -> EyreResult<()> {
+        delete_group_signing_key(self.store, &self.group_id, pk)
+    }
+    pub fn require_signing_key(&self, pk: &PublicKey) -> EyreResult<()> {
+        require_group_signing_key(self.store, &self.group_id, pk)
+    }
+
+    // --- Group keys ---
+    pub fn store_key(&self, group_key: &[u8; 32]) -> EyreResult<[u8; 32]> {
+        store_group_key(self.store, &self.group_id, group_key)
+    }
+    pub fn load_current_key(&self) -> EyreResult<Option<([u8; 32], [u8; 32])>> {
+        load_current_group_key(self.store, &self.group_id)
+    }
+    pub fn load_key_by_id(&self, key_id: &[u8; 32]) -> EyreResult<Option<[u8; 32]>> {
+        load_group_key_by_id(self.store, &self.group_id, key_id)
+    }
+
+    // --- Contexts ---
+    pub fn register_context(&self, context_id: &ContextId) -> EyreResult<()> {
+        register_context_in_group(self.store, &self.group_id, context_id)
+    }
+    pub fn unregister_context(&self, context_id: &ContextId) -> EyreResult<()> {
+        unregister_context_from_group(self.store, &self.group_id, context_id)
+    }
+    pub fn enumerate_contexts(&self, offset: usize, limit: usize) -> EyreResult<Vec<ContextId>> {
+        enumerate_group_contexts(self.store, &self.group_id, offset, limit)
+    }
+    pub fn count_contexts(&self) -> EyreResult<usize> {
+        count_group_contexts(self.store, &self.group_id)
+    }
+
+    // --- Aliases ---
+    pub fn set_alias(&self, alias: &str) -> EyreResult<()> {
+        set_group_alias(self.store, &self.group_id, alias)
+    }
+    pub fn get_alias(&self) -> EyreResult<Option<String>> {
+        get_group_alias(self.store, &self.group_id)
+    }
+    pub fn set_member_alias(&self, member: &PublicKey, alias: &str) -> EyreResult<()> {
+        set_member_alias(self.store, &self.group_id, member, alias)
+    }
+    pub fn get_member_alias(&self, member: &PublicKey) -> EyreResult<Option<String>> {
+        get_member_alias(self.store, &self.group_id, member)
+    }
+    pub fn set_context_alias(&self, ctx_id: &ContextId, alias: &str) -> EyreResult<()> {
+        set_context_alias(self.store, &self.group_id, ctx_id, alias)
+    }
+    pub fn get_context_alias(&self, ctx_id: &ContextId) -> EyreResult<Option<String>> {
+        get_context_alias(self.store, &self.group_id, ctx_id)
+    }
+    pub fn enumerate_contexts_with_aliases(&self, offset: usize, limit: usize) -> EyreResult<Vec<(ContextId, Option<String>)>> {
+        enumerate_group_contexts_with_aliases(self.store, &self.group_id, offset, limit)
+    }
+    pub fn enumerate_member_aliases(&self) -> EyreResult<Vec<(PublicKey, String)>> {
+        enumerate_member_aliases(self.store, &self.group_id)
+    }
+
+    // --- Capabilities ---
+    pub fn get_member_capability(&self, member: &PublicKey) -> EyreResult<Option<u32>> {
+        get_member_capability(self.store, &self.group_id, member)
+    }
+    pub fn set_member_capability(&self, member: &PublicKey, caps: u32) -> EyreResult<()> {
+        set_member_capability(self.store, &self.group_id, member, caps)
+    }
+    pub fn enumerate_capabilities(&self) -> EyreResult<Vec<(PublicKey, u32)>> {
+        enumerate_member_capabilities(self.store, &self.group_id)
+    }
+    pub fn get_default_capabilities(&self) -> EyreResult<Option<u32>> {
+        get_default_capabilities(self.store, &self.group_id)
+    }
+    pub fn set_default_capabilities(&self, caps: u32) -> EyreResult<()> {
+        set_default_capabilities(self.store, &self.group_id, caps)
+    }
+    pub fn get_default_visibility(&self) -> EyreResult<Option<u8>> {
+        get_default_visibility(self.store, &self.group_id)
+    }
+    pub fn set_default_visibility(&self, mode: u8) -> EyreResult<()> {
+        set_default_visibility(self.store, &self.group_id, mode)
+    }
+
+    // --- Tree ---
+    pub fn parent(&self) -> EyreResult<Option<ContextGroupId>> {
+        get_parent_group(self.store, &self.group_id)
+    }
+    pub fn list_children(&self) -> EyreResult<Vec<ContextGroupId>> {
+        list_child_groups(self.store, &self.group_id)
+    }
+    pub fn collect_descendants(&self) -> EyreResult<Vec<ContextGroupId>> {
+        collect_descendant_groups(self.store, &self.group_id)
+    }
+
+    // --- Upgrades ---
+    pub fn save_upgrade(&self, upgrade: &GroupUpgradeValue) -> EyreResult<()> {
+        save_group_upgrade(self.store, &self.group_id, upgrade)
+    }
+    pub fn load_upgrade(&self) -> EyreResult<Option<GroupUpgradeValue>> {
+        load_group_upgrade(self.store, &self.group_id)
+    }
+    pub fn delete_upgrade(&self) -> EyreResult<()> {
+        delete_group_upgrade(self.store, &self.group_id)
+    }
+
+    // --- Member-context tracking ---
+    pub fn track_member_context_join(&self, member: &PublicKey, context_id: &ContextId, context_identity: [u8; 32]) -> EyreResult<()> {
+        track_member_context_join(self.store, &self.group_id, member, context_id, context_identity)
+    }
+    pub fn get_member_context_joins(&self, member: &PublicKey) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
+        get_member_context_joins(self.store, &self.group_id, member)
+    }
+    pub fn remove_all_member_context_joins(&self, member: &PublicKey) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
+        remove_all_member_context_joins(self.store, &self.group_id, member)
+    }
+
+    // --- Cleanup ---
+    pub fn delete_all_local_rows(&self) -> EyreResult<()> {
+        delete_group_local_rows(self.store, &self.group_id)
+    }
+
+    // --- Namespace resolution ---
+    pub fn resolve_namespace(&self) -> EyreResult<ContextGroupId> {
+        resolve_namespace(self.store, &self.group_id)
+    }
+    pub fn resolve_namespace_identity(&self) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+        resolve_namespace_identity(self.store, &self.group_id)
+    }
+    pub fn get_or_create_namespace_identity(&self) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
+        get_or_create_namespace_identity(self.store, &self.group_id)
+    }
+
+    // --- Migration tracking ---
+    pub fn get_context_last_migration(&self, context_id: &ContextId) -> EyreResult<Option<String>> {
+        get_context_last_migration(self.store, &self.group_id, context_id)
+    }
+    pub fn set_context_last_migration(&self, context_id: &ContextId, method: &str) -> EyreResult<()> {
+        set_context_last_migration(self.store, &self.group_id, context_id, method)
+    }
+
+    // --- Per-context capabilities ---
+    pub fn set_context_member_capability(&self, ctx_id: &ContextId, member: &PublicKey, caps: u8) -> EyreResult<()> {
+        set_context_member_capability(self.store, &self.group_id, ctx_id, member, caps)
+    }
+    pub fn get_context_member_capability(&self, ctx_id: &ContextId, member: &PublicKey) -> EyreResult<Option<u8>> {
+        get_context_member_capability(self.store, &self.group_id, ctx_id, member)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NamespaceHandle — scoped handle for namespace governance operations
+// ---------------------------------------------------------------------------
+
+/// A scoped handle for namespace-level operations (identity, DAG heads, governance ops).
+pub struct NamespaceHandle<'a> {
+    store: &'a Store,
+    namespace_id: [u8; 32],
+}
+
+impl<'a> NamespaceHandle<'a> {
+    pub fn new(store: &'a Store, namespace_id: [u8; 32]) -> Self {
+        Self { store, namespace_id }
+    }
+
+    pub fn namespace_id(&self) -> [u8; 32] { self.namespace_id }
+
+    pub fn get_identity(&self) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+        get_namespace_identity(self.store, &ContextGroupId::from(self.namespace_id))
+    }
+
+    pub fn store_identity(&self, pk: &PublicKey, sk: &[u8; 32], sender: &[u8; 32]) -> EyreResult<()> {
+        store_namespace_identity(self.store, &ContextGroupId::from(self.namespace_id), pk, sk, sender)
+    }
+
+    pub fn read_head(&self) -> EyreResult<(Vec<[u8; 32]>, u64)> {
+        read_namespace_head(self.store, self.namespace_id)
+    }
+
+    pub fn advance_dag_head(&self, delta_id: [u8; 32], parent_ids: &[[u8; 32]], sequence: u64) -> EyreResult<()> {
+        advance_namespace_dag_head(self.store, self.namespace_id, delta_id, parent_ids, sequence)
+    }
+
+    pub fn store_gov_op(&self, op: &SignedNamespaceOp) -> EyreResult<()> {
+        store_namespace_gov_op(self.store, op)
+    }
+
+    pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<Vec<PendingKeyDelivery>> {
+        apply_signed_namespace_op(self.store, op)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GovernancePublisher — sign + publish workflow for group/namespace ops
+// ---------------------------------------------------------------------------
+
+/// Encapsulates the sign-apply-publish workflow for governance operations.
+///
+/// Binds a `Store` and `NodeClient` reference, providing methods to publish
+/// group ops (encrypted under the namespace topic) and namespace ops.
+pub struct GovernancePublisher<'a> {
+    store: &'a Store,
+    node_client: &'a calimero_node_primitives::client::NodeClient,
+}
+
+impl<'a> GovernancePublisher<'a> {
+    pub fn new(store: &'a Store, node_client: &'a calimero_node_primitives::client::NodeClient) -> Self {
+        Self { store, node_client }
+    }
+
+    pub async fn publish_group_op(
+        &self,
+        group_id: &ContextGroupId,
+        signer_sk: &PrivateKey,
+        op: GroupOp,
+    ) -> EyreResult<()> {
+        sign_apply_and_publish(self.store, self.node_client, group_id, signer_sk, op).await
+    }
+
+    pub async fn publish_group_removal(
+        &self,
+        group_id: &ContextGroupId,
+        signer_sk: &PrivateKey,
+        removed_member: &PublicKey,
+    ) -> EyreResult<()> {
+        sign_apply_and_publish_removal(self.store, self.node_client, group_id, signer_sk, removed_member).await
+    }
+
+    pub async fn publish_namespace_op(
+        &self,
+        namespace_id: [u8; 32],
+        signer_sk: &PrivateKey,
+        op: NamespaceOp,
+    ) -> EyreResult<()> {
+        sign_apply_and_publish_namespace_op(self.store, self.node_client, namespace_id, signer_sk, op).await
+    }
+
+    pub async fn publish_namespace_op_without_apply(
+        &self,
+        namespace_id: [u8; 32],
+        signer_sk: &PrivateKey,
+        op: NamespaceOp,
+    ) -> EyreResult<()> {
+        sign_and_publish_namespace_op(self.store, self.node_client, namespace_id, signer_sk, op).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GroupStoreIndex — cross-group queries and handle factory
+// ---------------------------------------------------------------------------
+
+/// Top-level entry point for group store operations.
+///
+/// Provides cross-group queries (enumerate all, find group for context) and
+/// acts as a factory for [`GroupHandle`] and [`NamespaceHandle`].
+pub struct GroupStoreIndex<'a> {
+    store: &'a Store,
+}
+
+impl<'a> GroupStoreIndex<'a> {
+    pub fn new(store: &'a Store) -> Self {
+        Self { store }
+    }
+
+    pub fn group(&self, group_id: ContextGroupId) -> GroupHandle<'a> {
+        GroupHandle::new(self.store, group_id)
+    }
+
+    pub fn namespace(&self, namespace_id: [u8; 32]) -> NamespaceHandle<'a> {
+        NamespaceHandle::new(self.store, namespace_id)
+    }
+
+    pub fn enumerate_all(&self, offset: usize, limit: usize) -> EyreResult<Vec<([u8; 32], GroupMetaValue)>> {
+        enumerate_all_groups(self.store, offset, limit)
+    }
+
+    pub fn get_group_for_context(&self, context_id: &ContextId) -> EyreResult<Option<ContextGroupId>> {
+        get_group_for_context(self.store, context_id)
+    }
+
+    pub fn enumerate_in_progress_upgrades(&self) -> EyreResult<Vec<(ContextGroupId, GroupUpgradeValue)>> {
+        enumerate_in_progress_upgrades(self.store)
+    }
+
+    pub fn resolve_namespace(&self, group_id: &ContextGroupId) -> EyreResult<ContextGroupId> {
+        resolve_namespace(self.store, group_id)
+    }
+
+    pub fn is_read_only_for_context(&self, context_id: &ContextId, identity: &PublicKey) -> EyreResult<bool> {
+        is_read_only_for_context(self.store, context_id, identity)
+    }
+
+    pub fn find_local_signing_identity(&self, context_id: &ContextId) -> EyreResult<Option<PublicKey>> {
+        find_local_signing_identity(self.store, context_id)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Group meta helpers
 // ---------------------------------------------------------------------------
 
