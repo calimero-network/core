@@ -1,11 +1,9 @@
 use actix::{ActorResponse, Handler, Message};
+use calimero_context_client::group::{CreateGroupInvitationRequest, CreateGroupInvitationResponse};
 use calimero_context_config::types::{
     GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::MemberCapabilities;
-use calimero_context_client::group::{
-    CreateGroupInvitationRequest, CreateGroupInvitationResponse,
-};
 use calimero_primitives::identity::PrivateKey;
 use rand::Rng;
 use sha2::{Digest, Sha256};

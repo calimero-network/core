@@ -1,9 +1,10 @@
+use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
-use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_store::key::FromKeyParts;
 use calimero_store::key::{
     AsKeyParts, ContextGroupRef, ContextIdentity, GroupAlias, GroupChildIndex, GroupContextAlias,
     GroupContextIndex, GroupContextLastMigration, GroupContextLastMigrationValue,
@@ -12,12 +13,11 @@ use calimero_store::key::{
     GroupMemberCapabilityValue, GroupMemberContext, GroupMemberValue, GroupMeta, GroupMetaValue,
     GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupSigningKey,
     GroupSigningKeyValue, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
-    NamespaceIdentity, NamespaceIdentityValue, GROUP_CONTEXT_INDEX_PREFIX,
-    GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_MEMBER_ALIAS_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
-    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX,
-    GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX, GROUP_CHILD_INDEX_PREFIX,
+    NamespaceIdentity, NamespaceIdentityValue, GROUP_CHILD_INDEX_PREFIX,
+    GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_LAST_MIGRATION_PREFIX, GROUP_MEMBER_ALIAS_PREFIX,
+    GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_PREFIX,
+    GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX, GROUP_SIGNING_KEY_PREFIX, GROUP_UPGRADE_PREFIX,
 };
-use calimero_store::key::FromKeyParts;
 use calimero_store::types::PredefinedEntry;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -142,8 +142,12 @@ impl<'a> GroupHandle<'a> {
         Self { store, group_id }
     }
 
-    pub fn store(&self) -> &Store { self.store }
-    pub fn group_id(&self) -> &ContextGroupId { &self.group_id }
+    pub fn store(&self) -> &Store {
+        self.store
+    }
+    pub fn group_id(&self) -> &ContextGroupId {
+        &self.group_id
+    }
 
     // --- Meta ---
     pub fn load_meta(&self) -> EyreResult<Option<GroupMetaValue>> {
@@ -170,12 +174,23 @@ impl<'a> GroupHandle<'a> {
         private_key: Option<[u8; 32]>,
         sender_key: Option<[u8; 32]>,
     ) -> EyreResult<()> {
-        add_group_member_with_keys(self.store, &self.group_id, identity, role, private_key, sender_key)
+        add_group_member_with_keys(
+            self.store,
+            &self.group_id,
+            identity,
+            role,
+            private_key,
+            sender_key,
+        )
     }
     pub fn remove_member(&self, identity: &PublicKey) -> EyreResult<()> {
         remove_group_member(self.store, &self.group_id, identity)
     }
-    pub fn list_members(&self, offset: usize, limit: usize) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
+    pub fn list_members(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
         list_group_members(self.store, &self.group_id, offset, limit)
     }
     pub fn count_members(&self) -> EyreResult<usize> {
@@ -207,7 +222,12 @@ impl<'a> GroupHandle<'a> {
     pub fn is_admin_or_has_capability(&self, identity: &PublicKey, cap: u32) -> EyreResult<bool> {
         is_group_admin_or_has_capability(self.store, &self.group_id, identity, cap)
     }
-    pub fn require_admin_or_capability(&self, identity: &PublicKey, cap: u32, op: &str) -> EyreResult<()> {
+    pub fn require_admin_or_capability(
+        &self,
+        identity: &PublicKey,
+        cap: u32,
+        op: &str,
+    ) -> EyreResult<()> {
         require_group_admin_or_capability(self.store, &self.group_id, identity, cap, op)
     }
 
@@ -223,7 +243,11 @@ impl<'a> GroupHandle<'a> {
     pub fn get_op_head(&self) -> EyreResult<Option<GroupOpHeadValue>> {
         get_op_head(self.store, &self.group_id)
     }
-    pub fn read_op_log_after(&self, after_sequence: u64, limit: usize) -> EyreResult<Vec<(u64, Vec<u8>)>> {
+    pub fn read_op_log_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> EyreResult<Vec<(u64, Vec<u8>)>> {
         read_op_log_after(self.store, &self.group_id, after_sequence, limit)
     }
 
@@ -293,7 +317,11 @@ impl<'a> GroupHandle<'a> {
     pub fn get_context_alias(&self, ctx_id: &ContextId) -> EyreResult<Option<String>> {
         get_context_alias(self.store, &self.group_id, ctx_id)
     }
-    pub fn enumerate_contexts_with_aliases(&self, offset: usize, limit: usize) -> EyreResult<Vec<(ContextId, Option<String>)>> {
+    pub fn enumerate_contexts_with_aliases(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> EyreResult<Vec<(ContextId, Option<String>)>> {
         enumerate_group_contexts_with_aliases(self.store, &self.group_id, offset, limit)
     }
     pub fn enumerate_member_aliases(&self) -> EyreResult<Vec<(PublicKey, String)>> {
@@ -346,13 +374,30 @@ impl<'a> GroupHandle<'a> {
     }
 
     // --- Member-context tracking ---
-    pub fn track_member_context_join(&self, member: &PublicKey, context_id: &ContextId, context_identity: [u8; 32]) -> EyreResult<()> {
-        track_member_context_join(self.store, &self.group_id, member, context_id, context_identity)
+    pub fn track_member_context_join(
+        &self,
+        member: &PublicKey,
+        context_id: &ContextId,
+        context_identity: [u8; 32],
+    ) -> EyreResult<()> {
+        track_member_context_join(
+            self.store,
+            &self.group_id,
+            member,
+            context_id,
+            context_identity,
+        )
     }
-    pub fn get_member_context_joins(&self, member: &PublicKey) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
+    pub fn get_member_context_joins(
+        &self,
+        member: &PublicKey,
+    ) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
         get_member_context_joins(self.store, &self.group_id, member)
     }
-    pub fn remove_all_member_context_joins(&self, member: &PublicKey) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
+    pub fn remove_all_member_context_joins(
+        &self,
+        member: &PublicKey,
+    ) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
         remove_all_member_context_joins(self.store, &self.group_id, member)
     }
 
@@ -365,10 +410,14 @@ impl<'a> GroupHandle<'a> {
     pub fn resolve_namespace(&self) -> EyreResult<ContextGroupId> {
         resolve_namespace(self.store, &self.group_id)
     }
-    pub fn resolve_namespace_identity(&self) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+    pub fn resolve_namespace_identity(
+        &self,
+    ) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
         resolve_namespace_identity(self.store, &self.group_id)
     }
-    pub fn get_or_create_namespace_identity(&self) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
+    pub fn get_or_create_namespace_identity(
+        &self,
+    ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
         get_or_create_namespace_identity(self.store, &self.group_id)
     }
 
@@ -376,15 +425,28 @@ impl<'a> GroupHandle<'a> {
     pub fn get_context_last_migration(&self, context_id: &ContextId) -> EyreResult<Option<String>> {
         get_context_last_migration(self.store, &self.group_id, context_id)
     }
-    pub fn set_context_last_migration(&self, context_id: &ContextId, method: &str) -> EyreResult<()> {
+    pub fn set_context_last_migration(
+        &self,
+        context_id: &ContextId,
+        method: &str,
+    ) -> EyreResult<()> {
         set_context_last_migration(self.store, &self.group_id, context_id, method)
     }
 
     // --- Per-context capabilities ---
-    pub fn set_context_member_capability(&self, ctx_id: &ContextId, member: &PublicKey, caps: u8) -> EyreResult<()> {
+    pub fn set_context_member_capability(
+        &self,
+        ctx_id: &ContextId,
+        member: &PublicKey,
+        caps: u8,
+    ) -> EyreResult<()> {
         set_context_member_capability(self.store, &self.group_id, ctx_id, member, caps)
     }
-    pub fn get_context_member_capability(&self, ctx_id: &ContextId, member: &PublicKey) -> EyreResult<Option<u8>> {
+    pub fn get_context_member_capability(
+        &self,
+        ctx_id: &ContextId,
+        member: &PublicKey,
+    ) -> EyreResult<Option<u8>> {
         get_context_member_capability(self.store, &self.group_id, ctx_id, member)
     }
 }
@@ -401,25 +463,52 @@ pub struct NamespaceHandle<'a> {
 
 impl<'a> NamespaceHandle<'a> {
     pub fn new(store: &'a Store, namespace_id: [u8; 32]) -> Self {
-        Self { store, namespace_id }
+        Self {
+            store,
+            namespace_id,
+        }
     }
 
-    pub fn namespace_id(&self) -> [u8; 32] { self.namespace_id }
+    pub fn namespace_id(&self) -> [u8; 32] {
+        self.namespace_id
+    }
 
     pub fn get_identity(&self) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
         get_namespace_identity(self.store, &ContextGroupId::from(self.namespace_id))
     }
 
-    pub fn store_identity(&self, pk: &PublicKey, sk: &[u8; 32], sender: &[u8; 32]) -> EyreResult<()> {
-        store_namespace_identity(self.store, &ContextGroupId::from(self.namespace_id), pk, sk, sender)
+    pub fn store_identity(
+        &self,
+        pk: &PublicKey,
+        sk: &[u8; 32],
+        sender: &[u8; 32],
+    ) -> EyreResult<()> {
+        store_namespace_identity(
+            self.store,
+            &ContextGroupId::from(self.namespace_id),
+            pk,
+            sk,
+            sender,
+        )
     }
 
     pub fn read_head(&self) -> EyreResult<(Vec<[u8; 32]>, u64)> {
         read_namespace_head(self.store, self.namespace_id)
     }
 
-    pub fn advance_dag_head(&self, delta_id: [u8; 32], parent_ids: &[[u8; 32]], sequence: u64) -> EyreResult<()> {
-        advance_namespace_dag_head(self.store, self.namespace_id, delta_id, parent_ids, sequence)
+    pub fn advance_dag_head(
+        &self,
+        delta_id: [u8; 32],
+        parent_ids: &[[u8; 32]],
+        sequence: u64,
+    ) -> EyreResult<()> {
+        advance_namespace_dag_head(
+            self.store,
+            self.namespace_id,
+            delta_id,
+            parent_ids,
+            sequence,
+        )
     }
 
     pub fn store_gov_op(&self, op: &SignedNamespaceOp) -> EyreResult<()> {
@@ -445,7 +534,10 @@ pub struct GovernancePublisher<'a> {
 }
 
 impl<'a> GovernancePublisher<'a> {
-    pub fn new(store: &'a Store, node_client: &'a calimero_node_primitives::client::NodeClient) -> Self {
+    pub fn new(
+        store: &'a Store,
+        node_client: &'a calimero_node_primitives::client::NodeClient,
+    ) -> Self {
         Self { store, node_client }
     }
 
@@ -464,7 +556,14 @@ impl<'a> GovernancePublisher<'a> {
         signer_sk: &PrivateKey,
         removed_member: &PublicKey,
     ) -> EyreResult<()> {
-        sign_apply_and_publish_removal(self.store, self.node_client, group_id, signer_sk, removed_member).await
+        sign_apply_and_publish_removal(
+            self.store,
+            self.node_client,
+            group_id,
+            signer_sk,
+            removed_member,
+        )
+        .await
     }
 
     pub async fn publish_namespace_op(
@@ -473,7 +572,14 @@ impl<'a> GovernancePublisher<'a> {
         signer_sk: &PrivateKey,
         op: NamespaceOp,
     ) -> EyreResult<()> {
-        sign_apply_and_publish_namespace_op(self.store, self.node_client, namespace_id, signer_sk, op).await
+        sign_apply_and_publish_namespace_op(
+            self.store,
+            self.node_client,
+            namespace_id,
+            signer_sk,
+            op,
+        )
+        .await
     }
 
     pub async fn publish_namespace_op_without_apply(
@@ -482,7 +588,8 @@ impl<'a> GovernancePublisher<'a> {
         signer_sk: &PrivateKey,
         op: NamespaceOp,
     ) -> EyreResult<()> {
-        sign_and_publish_namespace_op(self.store, self.node_client, namespace_id, signer_sk, op).await
+        sign_and_publish_namespace_op(self.store, self.node_client, namespace_id, signer_sk, op)
+            .await
     }
 }
 
@@ -511,15 +618,24 @@ impl<'a> GroupStoreIndex<'a> {
         NamespaceHandle::new(self.store, namespace_id)
     }
 
-    pub fn enumerate_all(&self, offset: usize, limit: usize) -> EyreResult<Vec<([u8; 32], GroupMetaValue)>> {
+    pub fn enumerate_all(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> EyreResult<Vec<([u8; 32], GroupMetaValue)>> {
         enumerate_all_groups(self.store, offset, limit)
     }
 
-    pub fn get_group_for_context(&self, context_id: &ContextId) -> EyreResult<Option<ContextGroupId>> {
+    pub fn get_group_for_context(
+        &self,
+        context_id: &ContextId,
+    ) -> EyreResult<Option<ContextGroupId>> {
         get_group_for_context(self.store, context_id)
     }
 
-    pub fn enumerate_in_progress_upgrades(&self) -> EyreResult<Vec<(ContextGroupId, GroupUpgradeValue)>> {
+    pub fn enumerate_in_progress_upgrades(
+        &self,
+    ) -> EyreResult<Vec<(ContextGroupId, GroupUpgradeValue)>> {
         enumerate_in_progress_upgrades(self.store)
     }
 
@@ -527,11 +643,18 @@ impl<'a> GroupStoreIndex<'a> {
         resolve_namespace(self.store, group_id)
     }
 
-    pub fn is_read_only_for_context(&self, context_id: &ContextId, identity: &PublicKey) -> EyreResult<bool> {
+    pub fn is_read_only_for_context(
+        &self,
+        context_id: &ContextId,
+        identity: &PublicKey,
+    ) -> EyreResult<bool> {
         is_read_only_for_context(self.store, context_id, identity)
     }
 
-    pub fn find_local_signing_identity(&self, context_id: &ContextId) -> EyreResult<Option<PublicKey>> {
+    pub fn find_local_signing_identity(
+        &self,
+        context_id: &ContextId,
+    ) -> EyreResult<Option<PublicKey>> {
         find_local_signing_identity(self.store, context_id)
     }
 }
@@ -573,9 +696,10 @@ pub fn enumerate_all_groups(
     offset: usize,
     limit: usize,
 ) -> EyreResult<Vec<([u8; 32], GroupMetaValue)>> {
-    let keys = collect_keys_with_prefix(store, GroupMeta::new([0u8; 32]), GROUP_META_PREFIX, |_| {
-        true
-    })?;
+    let keys =
+        collect_keys_with_prefix(store, GroupMeta::new([0u8; 32]), GROUP_META_PREFIX, |_| {
+            true
+        })?;
     let handle = store.handle();
     let mut results = Vec::new();
 
@@ -996,8 +1120,7 @@ fn apply_group_op_mutations(
                 MemberCapabilities::MANAGE_MEMBERS,
                 "remove member",
             )?;
-            if is_group_admin(store, group_id, member)?
-                && !is_group_admin(store, group_id, signer)?
+            if is_group_admin(store, group_id, member)? && !is_group_admin(store, group_id, signer)?
             {
                 bail!("only admins can remove other admins");
             }
@@ -1670,10 +1793,7 @@ pub fn build_key_rotation(
 /// Read the current namespace DAG head, returning `(parent_hashes, next_nonce)`.
 ///
 /// Returns `(vec![], 1)` if no head exists yet (genesis).
-fn read_namespace_head(
-    store: &Store,
-    namespace_id: [u8; 32],
-) -> EyreResult<(Vec<[u8; 32]>, u64)> {
+fn read_namespace_head(store: &Store, namespace_id: [u8; 32]) -> EyreResult<(Vec<[u8; 32]>, u64)> {
     let handle = store.handle();
     let key = calimero_store::key::NamespaceGovHead::new(namespace_id);
     let head = handle.get(&key)?;
@@ -2536,7 +2656,10 @@ pub fn list_child_groups(
         GROUP_CHILD_INDEX_PREFIX,
         |k| k.parent_group_id() == pid,
     )?;
-    Ok(keys.into_iter().map(|k| ContextGroupId::from(k.child_group_id())).collect())
+    Ok(keys
+        .into_iter()
+        .map(|k| ContextGroupId::from(k.child_group_id()))
+        .collect())
 }
 
 /// Collect ALL descendant group IDs (recursive BFS). Returns them in
@@ -3122,7 +3245,12 @@ pub fn enumerate_group_contexts(
         GROUP_CONTEXT_INDEX_PREFIX,
         |k| k.group_id() == gid,
     )?;
-    Ok(keys.into_iter().skip(offset).take(limit).map(|k| k.context_id()).collect())
+    Ok(keys
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|k| k.context_id())
+        .collect())
 }
 
 /// Stores a human-readable alias for a context within a group.

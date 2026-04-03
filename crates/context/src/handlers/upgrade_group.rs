@@ -1,10 +1,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
-use calimero_context_config::types::ContextGroupId;
 use calimero_context_client::group::{UpgradeGroupRequest, UpgradeGroupResponse};
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_client::messages::MigrationParams;
+use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};

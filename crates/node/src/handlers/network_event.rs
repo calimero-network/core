@@ -40,8 +40,8 @@ impl Handler<NetworkEvent> for NodeManager {
                         let context_client = self.clients.context.clone();
                         let _ignored = ctx.spawn(
                             async move {
-                                use calimero_context_config::types::ContextGroupId;
                                 use calimero_context_client::group::SyncGroupRequest;
+                                use calimero_context_config::types::ContextGroupId;
 
                                 let group_id = ContextGroupId::from(bytes);
                                 if let Err(err) = context_client

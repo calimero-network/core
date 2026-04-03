@@ -6,9 +6,9 @@ use std::future::Future;
 use std::sync::Arc;
 
 use actix::{Actor, AsyncContext};
-use calimero_context_config::types::ContextGroupId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::local_governance::SignedNamespaceOp;
+use calimero_context_config::types::ContextGroupId;
 use calimero_dag::DagStore;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
@@ -186,9 +186,7 @@ impl ContextManager {
             None => match node_identity {
                 Some((pk, _)) => pk,
                 None => {
-                    eyre::bail!(
-                        "requester not provided and node has no configured group identity"
-                    )
+                    eyre::bail!("requester not provided and node has no configured group identity")
                 }
             },
         };
@@ -207,8 +205,7 @@ impl ContextManager {
         }
 
         if let Some(ref sk) = signing_key {
-            let _ =
-                group_store::store_group_signing_key(&self.datastore, group_id, &requester, sk);
+            let _ = group_store::store_group_signing_key(&self.datastore, group_id, &requester, sk);
         }
 
         let effective_signing_key = signing_key.or_else(|| {

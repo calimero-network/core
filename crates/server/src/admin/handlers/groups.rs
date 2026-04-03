@@ -24,8 +24,8 @@ pub mod update_group_settings;
 pub mod update_member_role;
 pub mod upgrade_group;
 
-use calimero_context_config::types::ContextGroupId;
 use calimero_context_client::group::{GroupUpgradeInfo, GroupUpgradeStatus};
+use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GroupUpgradeStatusApiData;

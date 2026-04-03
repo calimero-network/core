@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_config::types::AppKey;
 use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
+use calimero_context_config::types::AppKey;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;

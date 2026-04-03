@@ -12,9 +12,9 @@ use calimero_context::group_store::{
     add_group_member, check_group_membership, get_local_gov_nonce, save_group_meta,
 };
 use calimero_context::ContextManager;
-use calimero_context_config::types::ContextGroupId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+use calimero_context_config::types::ContextGroupId;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::messages::NodeMessage;

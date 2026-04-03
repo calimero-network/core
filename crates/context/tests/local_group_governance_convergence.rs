@@ -12,11 +12,11 @@ use calimero_context::group_store::{
     self, add_group_member, apply_local_signed_group_op, compute_group_state_hash, get_op_head,
     list_group_members, load_group_meta, read_op_log_after, save_group_meta,
 };
+use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::MemberCapabilities;
-use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_dag::DagStore;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};

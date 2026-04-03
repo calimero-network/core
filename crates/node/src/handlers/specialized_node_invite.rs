@@ -27,8 +27,8 @@
 use crate::specialized_node_invite_state::{
     InviteState, PendingSpecializedNodeInvites, SpecializedNodeInviteAction,
 };
-use calimero_context_config::types::SignedOpenInvitation;
 use calimero_context_client::client::ContextClient;
+use calimero_context_config::types::SignedOpenInvitation;
 use calimero_network_primitives::specialized_node_invite::{
     SpecializedNodeInvitationResponse, VerificationRequest,
 };
