@@ -426,7 +426,7 @@ impl<'a> NamespaceHandle<'a> {
         store_namespace_gov_op(self.store, op)
     }
 
-    pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<Vec<PendingKeyDelivery>> {
+    pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<ApplyNamespaceOpResult> {
         apply_signed_namespace_op(self.store, op)
     }
 }
@@ -1750,6 +1750,16 @@ pub struct PendingKeyDelivery {
     pub joiner_pk: PublicKey,
 }
 
+/// A key delivery or rotation unwrap failure that the caller should handle.
+///
+/// Previously these were silently logged with `tracing::warn`, leaving the
+/// node without a group key and unable to decrypt future operations.
+#[derive(Debug)]
+pub struct KeyUnwrapFailure {
+    pub group_id: [u8; 32],
+    pub reason: String,
+}
+
 /// Apply a [`SignedNamespaceOp`] to the local store.
 ///
 /// - `RootOp` variants are applied in cleartext (group creation/deletion,
@@ -1760,14 +1770,21 @@ pub struct PendingKeyDelivery {
 ///
 /// Returns a list of pending key deliveries that the caller should publish
 /// (wrapping the group key for new joiners via ECDH).
+/// Result of applying a namespace governance op.
+#[derive(Debug, Default)]
+pub struct ApplyNamespaceOpResult {
+    pub pending_deliveries: Vec<PendingKeyDelivery>,
+    pub key_unwrap_failures: Vec<KeyUnwrapFailure>,
+}
+
 pub fn apply_signed_namespace_op(
     store: &Store,
     op: &SignedNamespaceOp,
-) -> EyreResult<Vec<PendingKeyDelivery>> {
+) -> EyreResult<ApplyNamespaceOpResult> {
     op.verify_signature()
         .map_err(|e| eyre::eyre!("signed namespace op: {e}"))?;
 
-    let mut pending_deliveries = Vec::new();
+    let mut result = ApplyNamespaceOpResult::default();
 
     match &op.op {
         NamespaceOp::Root(root) => {
@@ -1799,6 +1816,10 @@ pub fn apply_signed_namespace_op(
                                 }
                                 Err(e) => {
                                     tracing::warn!(?e, "failed to unwrap KeyDelivery envelope");
+                                    result.key_unwrap_failures.push(KeyUnwrapFailure {
+                                        group_id: *group_id,
+                                        reason: format!("KeyDelivery unwrap failed: {e}"),
+                                    });
                                 }
                             }
                         }
@@ -1811,7 +1832,7 @@ pub fn apply_signed_namespace_op(
                     let gid = signed_invitation.invitation.group_id;
                     let group_id_typed = ContextGroupId::from(gid);
                     if load_current_group_key(store, &group_id_typed)?.is_some() {
-                        pending_deliveries.push(PendingKeyDelivery {
+                        result.pending_deliveries.push(PendingKeyDelivery {
                             namespace_id: op.namespace_id,
                             group_id: group_id_typed.to_bytes(),
                             joiner_pk: *member,
@@ -1849,6 +1870,10 @@ pub fn apply_signed_namespace_op(
                                 }
                                 Err(e) => {
                                     tracing::warn!(?e, "failed to unwrap key rotation envelope");
+                                    result.key_unwrap_failures.push(KeyUnwrapFailure {
+                                        group_id: *group_id,
+                                        reason: format!("key rotation unwrap failed: {e}"),
+                                    });
                                 }
                             }
                             break;
@@ -1866,7 +1891,7 @@ pub fn apply_signed_namespace_op(
     advance_namespace_dag_head(store, op.namespace_id, delta_id, &op.parent_op_hashes, seq)?;
     store_namespace_gov_op(store, op)?;
 
-    Ok(pending_deliveries)
+    Ok(result)
 }
 
 /// Decrypt an [`EncryptedGroupOp`] and apply the inner [`GroupOp`] via the
