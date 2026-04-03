@@ -1,5 +1,4 @@
 use actix::{AsyncContext, WrapFuture};
-use calimero_network_primitives::messages::NetworkEvent;
 use calimero_primitives::context::ContextId;
 use tracing::{debug, info, warn};
 

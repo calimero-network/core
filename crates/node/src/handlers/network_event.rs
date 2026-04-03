@@ -55,7 +55,6 @@ impl Handler<NetworkEvent> for NodeManager {
                     }
                 };
 
-                #[expect(clippy::match_same_arms, reason = "clearer separation")]
                 match message {
                     BroadcastMessage::StateDelta {
                         context_id,
@@ -87,11 +86,13 @@ impl Handler<NetworkEvent> for NodeManager {
 
                         let _ignored = ctx.spawn(
                             async move {
-                                if let Err(err) = state_delta::handle_state_delta(
+                                let input = state_delta::StateDeltaContext {
                                     node_clients,
                                     node_state,
                                     network_client,
-                                    sync_config_timeout,
+                                    sync_timeout: sync_config_timeout,
+                                };
+                                let message = state_delta::StateDeltaMessage {
                                     source,
                                     context_id,
                                     author_id,
@@ -99,13 +100,14 @@ impl Handler<NetworkEvent> for NodeManager {
                                     parent_ids,
                                     hlc,
                                     root_hash,
-                                    artifact.into_owned(),
+                                    artifact: artifact.into_owned(),
                                     nonce,
-                                    events.map(|e| e.into_owned()),
+                                    events: events.map(|e| e.into_owned()),
                                     governance_epoch,
                                     key_id,
-                                )
-                                .await
+                                };
+                                if let Err(err) =
+                                    state_delta::handle_state_delta(input, message).await
                                 {
                                     warn!(?err, "Failed to handle state delta");
                                 }

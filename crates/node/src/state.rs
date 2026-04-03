@@ -127,7 +127,7 @@ impl NodeState {
     pub(crate) fn should_buffer_delta(&self, context_id: &ContextId) -> bool {
         self.sync_sessions
             .get(context_id)
-            .map_or(false, |session| session.state.should_buffer_deltas())
+            .is_some_and(|session| session.state.should_buffer_deltas())
     }
 
     /// Buffer a delta during snapshot sync (Invariant I6).
@@ -155,7 +155,7 @@ impl NodeState {
 
             if result.had_data_loss() {
                 // A delta was lost - log rate-limited warning
-                let should_warn = session.last_drop_warning.map_or(true, |last| {
+                let should_warn = session.last_drop_warning.is_none_or(|last| {
                     last.elapsed()
                         > Duration::from_secs(constants::DELTA_BUFFER_DROP_WARNING_RATE_LIMIT_S)
                 });
@@ -321,7 +321,7 @@ impl NodeState {
             // Remove oldest until under count limit
             let to_remove = self.blob_cache.len() - constants::MAX_BLOB_CACHE_COUNT;
             for (blob_id, _) in blobs.iter().take(to_remove) {
-                let _removed = self.blob_cache.remove(&blob_id);
+                let _removed = self.blob_cache.remove(blob_id);
             }
         }
 
