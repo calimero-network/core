@@ -12,8 +12,8 @@ use super::{
     apply_group_op_mutations, count_group_contexts, decrypt_group_op, get_local_gov_nonce,
     get_namespace_identity_record, is_group_admin, load_current_group_key_record,
     load_group_key_by_id, load_group_meta, namespace_membership::NamespaceMembershipService,
-    nest_group, save_group_meta, set_local_gov_nonce, store_group_key, unnest_group,
-    unwrap_group_key,
+    namespace_retry::NamespaceRetryService, nest_group, save_group_meta, set_local_gov_nonce,
+    store_group_key, unnest_group, unwrap_group_key,
 };
 
 /// Side effect returned by namespace-op application when an existing
@@ -340,46 +340,8 @@ impl<'a> NamespaceGovernance<'a> {
 
     fn retry_encrypted_ops_for_group(&self, group_id: [u8; 32]) -> EyreResult<()> {
         let gid_typed = ContextGroupId::from(group_id);
-        let delta_ids: Vec<[u8; 32]> = {
-            let handle = self.store.handle();
-            let start = calimero_store::key::NamespaceGovOp::new(self.namespace_id, [0u8; 32]);
-            let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
-            let first = iter.seek(start).transpose();
-            let mut ids = Vec::new();
-            for key_result in first.into_iter().chain(iter.keys()) {
-                let key = key_result?;
-                if key.namespace_id() != self.namespace_id {
-                    break;
-                }
-                ids.push(key.delta_id());
-            }
-            ids
-        };
-
-        let mut ops_to_retry = Vec::new();
-        for did in &delta_ids {
-            let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id, *did);
-            let handle = self.store.handle();
-            let Some(val): Option<calimero_store::key::NamespaceGovOpValue> = handle.get(&key)?
-            else {
-                continue;
-            };
-            drop(handle);
-            if let Ok(signed_op) = borsh::from_slice::<SignedNamespaceOp>(&val.skeleton_bytes) {
-                if let NamespaceOp::Group {
-                    group_id: op_gid,
-                    ref key_id,
-                    ..
-                } = signed_op.op
-                {
-                    if op_gid == group_id
-                        && load_group_key_by_id(self.store, &gid_typed, key_id)?.is_some()
-                    {
-                        ops_to_retry.push(signed_op);
-                    }
-                }
-            }
-        }
+        let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
+        let ops_to_retry = retry_service.collect_retryable_group_ops(group_id, &gid_typed)?;
 
         for signed_op in &ops_to_retry {
             if let NamespaceOp::Group {

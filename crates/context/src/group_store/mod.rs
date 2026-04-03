@@ -27,6 +27,7 @@ mod migrations;
 mod namespace;
 mod namespace_governance;
 mod namespace_membership;
+mod namespace_retry;
 mod permission_checker;
 mod signing_keys;
 mod tee;
@@ -89,6 +90,7 @@ pub use self::namespace_governance::{
     NamespaceGovernance, NamespaceHead, PendingKeyDelivery,
 };
 pub use self::namespace_membership::NamespaceMembershipService;
+pub use self::namespace_retry::NamespaceRetryService;
 pub use self::permission_checker::PermissionChecker;
 pub use self::signing_keys::{
     delete_all_group_signing_keys, delete_group_signing_key, get_group_signing_key,

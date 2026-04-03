@@ -452,6 +452,84 @@ fn namespace_governance_store_operation_rejects_namespace_mismatch() {
 }
 
 #[test]
+fn namespace_retry_service_collects_only_retryable_group_ops() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x81; 32];
+    let group_a = ContextGroupId::from([0x82; 32]);
+    let group_b = ContextGroupId::from([0x83; 32]);
+    let signer_sk = PrivateKey::random(&mut rng);
+
+    let group_key = [0x91; 32];
+    let key_id = store_group_key(&store, &group_a, &group_key).unwrap();
+
+    let encrypted_a = encrypt_group_op(&group_key, &GroupOp::Noop).unwrap();
+    let encrypted_b = encrypt_group_op(&group_key, &GroupOp::Noop).unwrap();
+
+    let group_a_op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: group_a.to_bytes(),
+            key_id,
+            encrypted: encrypted_a,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let group_b_op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Group {
+            group_id: group_b.to_bytes(),
+            key_id,
+            encrypted: encrypted_b,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let root_op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        3,
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![7, 8, 9],
+        }),
+    )
+    .unwrap();
+
+    let governance = NamespaceGovernance::new(&store, namespace_id);
+    governance.store_operation(&group_a_op).unwrap();
+    governance.store_operation(&group_b_op).unwrap();
+    governance.store_operation(&root_op).unwrap();
+
+    let retry = NamespaceRetryService::new(&store, namespace_id);
+    let retryable = retry
+        .collect_retryable_group_ops(group_a.to_bytes())
+        .unwrap();
+
+    assert_eq!(retryable.len(), 1, "expected only one retryable op");
+    match &retryable[0].op {
+        NamespaceOp::Group { group_id, .. } => assert_eq!(*group_id, group_a.to_bytes()),
+        _ => panic!("expected group op"),
+    }
+}
+
+#[test]
 fn apply_local_signed_group_op_nonce_and_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
