@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::RemoveGroupMembersRequest;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use tracing::info;
 
@@ -22,32 +22,12 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
         }: RemoveGroupMembersRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_namespace_identity(&group_id);
-
-        // Resolve requester: use provided value or fall back to node group identity
-        let requester = match requester {
-            Some(pk) => pk,
-            None => match node_identity {
-                Some((pk, _)) => pk,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured group identity"
-                    )))
-                }
-            },
+        let preflight = match self.governance_preflight(&group_id, requester, true) {
+            Ok(p) => p,
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
 
-        // Resolve signing_key from node identity key
-        let node_sk = node_identity.map(|(_, sk)| sk);
-        let signing_key = node_sk;
-
-        // Sync validation
         if let Err(err) = (|| -> eyre::Result<()> {
-            group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
-            if signing_key.is_none() {
-                group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
-            }
-
             let admin_count = group_store::count_group_admins(&self.datastore, &group_id)?;
             let mut unique_admins_being_removed: BTreeSet<PublicKey> = BTreeSet::new();
             for id in &members {
@@ -65,28 +45,16 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
             return ActorResponse::reply(Err(err));
         }
 
-        // Auto-store signing key for future use
-        if let Some(ref sk) = signing_key {
-            let _ =
-                group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk);
-        }
-
         let self_identity = self.node_namespace_identity(&group_id).map(|(pk, _)| pk);
-        let datastore = self.datastore.clone();
-        let node_client = self.node_client.clone();
+        let datastore = preflight.datastore.clone();
+        let node_client = preflight.node_client.clone();
         let context_client = self.context_client.clone();
-        let effective_signing_key = signing_key.or_else(|| {
-            group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
-                .ok()
-                .flatten()
-        });
+        let sk = preflight.signer_sk();
+        let requester = preflight.requester;
         let members = members.clone();
 
         ActorResponse::r#async(
             async move {
-                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                    eyre::eyre!("local group governance requires a signing key for the requester")
-                })?);
                 for identity in &members {
                     group_store::sign_apply_and_publish_removal(
                         &datastore,

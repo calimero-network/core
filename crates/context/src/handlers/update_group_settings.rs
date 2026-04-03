@@ -1,8 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_primitives::group::UpdateGroupSettingsRequest;
 use calimero_context_primitives::local_governance::GroupOp;
-use calimero_primitives::identity::PrivateKey;
-use eyre::bail;
 
 use crate::group_store;
 use crate::ContextManager;
@@ -19,55 +17,17 @@ impl Handler<UpdateGroupSettingsRequest> for ContextManager {
         }: UpdateGroupSettingsRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_namespace_identity(&group_id);
-
-        let requester = match requester {
-            Some(pk) => pk,
-            None => match node_identity {
-                Some((pk, _)) => pk,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured group identity"
-                    )))
-                }
-            },
+        let preflight = match self.governance_preflight(&group_id, requester, true) {
+            Ok(p) => p,
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
 
-        if let Some((_, node_sk)) = node_identity {
-            let _ = group_store::store_group_signing_key(
-                &self.datastore,
-                &group_id,
-                &requester,
-                &node_sk,
-            );
-        }
-
-        if let Err(err) = (|| -> eyre::Result<()> {
-            let Some(_meta) = group_store::load_group_meta(&self.datastore, &group_id)? else {
-                bail!("group '{group_id:?}' not found");
-            };
-
-            group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
-            group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
-
-            Ok(())
-        })() {
-            return ActorResponse::reply(Err(err));
-        }
-
-        let datastore = self.datastore.clone();
-        let node_client = self.node_client.clone();
-        let effective_signing_key = node_identity.map(|(_, sk)| sk).or_else(|| {
-            group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
-                .ok()
-                .flatten()
-        });
+        let datastore = preflight.datastore.clone();
+        let node_client = preflight.node_client.clone();
+        let sk = preflight.signer_sk();
 
         ActorResponse::r#async(
             async move {
-                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                    eyre::eyre!("local group governance requires a signing key for the requester")
-                })?);
                 group_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
