@@ -607,16 +607,24 @@ impl Handler<NetworkEvent> for NodeManager {
                                             ..
                                         },
                                     )) => {
-                                        for (_delta_id, op_bytes) in deltas {
+                                        for (delta_id, op_bytes) in deltas {
                                             if let Ok(op) = borsh::from_slice::<
                                                 calimero_context_primitives::local_governance::SignedNamespaceOp,
                                             >(
                                                 &op_bytes
                                             ) {
-                                                let _ =
-                                                    context_client
-                                                        .apply_signed_namespace_op(op)
-                                                        .await;
+                                                if let Err(err) = context_client
+                                                    .apply_signed_namespace_op(op)
+                                                    .await
+                                                {
+                                                    warn!(
+                                                        %source,
+                                                        namespace_id = %hex::encode(namespace_id),
+                                                        delta_id = %hex::encode(delta_id),
+                                                        ?err,
+                                                        "failed to apply namespace backfill op from heartbeat catch-up"
+                                                    );
+                                                }
                                             }
                                         }
                                     }

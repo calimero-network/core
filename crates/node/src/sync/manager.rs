@@ -2372,11 +2372,27 @@ impl SyncManager {
                     "received namespace governance ops from peer"
                 );
                 for (_delta_id, op_bytes) in deltas {
-                    if let Ok(op) = borsh::from_slice::<
+                    match borsh::from_slice::<
                         calimero_context_primitives::local_governance::SignedNamespaceOp,
-                    >(&op_bytes)
-                    {
-                        let _ = self.context_client.apply_signed_namespace_op(op).await;
+                    >(&op_bytes) {
+                        Ok(op) => {
+                            if let Err(err) =
+                                self.context_client.apply_signed_namespace_op(op).await
+                            {
+                                warn!(
+                                    namespace_id = %hex::encode(namespace_id),
+                                    ?err,
+                                    "failed to apply namespace governance op from backfill"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                namespace_id = %hex::encode(namespace_id),
+                                %err,
+                                "failed to decode namespace governance op from backfill"
+                            );
+                        }
                     }
                 }
             }

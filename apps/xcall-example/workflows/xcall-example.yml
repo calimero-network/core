@@ -75,7 +75,7 @@ steps:
     node: calimero-node-1
     group_id: "{{group_id_a}}"
     outputs:
-      invitation_a: invitation
+      invitation_a: data.invitation
 
   # Step 6: Create group invitation for Context B's group
   - name: Create group invitation for Context B
@@ -83,7 +83,7 @@ steps:
     node: calimero-node-1
     group_id: "{{group_id_b}}"
     outputs:
-      invitation_b: invitation
+      invitation_b: data.invitation
 
   # Step 7: Node 2 joins group A (auto-joins all contexts in group)
   - name: Node 2 Join Group A
