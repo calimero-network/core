@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_config::types::ContextGroupId;
 use calimero_context_client::group::{JoinContextRequest, JoinContextResponse};
+use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextConfigParams;
 use eyre::bail;
 use tracing::{info, warn};
@@ -43,17 +43,18 @@ impl Handler<JoinContextRequest> for ContextManager {
                     }
                 }
 
-                let group_id = group_id
-                    .ok_or_else(|| eyre::eyre!("context does not belong to any group"))?;
+                let group_id =
+                    group_id.ok_or_else(|| eyre::eyre!("context does not belong to any group"))?;
 
                 // Resolve joiner identity from node namespace identity.
-                let (joiner_identity, _) = group_store::resolve_namespace_identity(&datastore, &group_id)?
-                    .map(|(pk, sk, _sender)| (pk, sk))
-                    .ok_or_else(|| {
-                        eyre::eyre!(
+                let (joiner_identity, _) =
+                    group_store::resolve_namespace_identity(&datastore, &group_id)?
+                        .map(|(pk, sk, _sender)| (pk, sk))
+                        .ok_or_else(|| {
+                            eyre::eyre!(
                             "node has no namespace identity for this group; join the group first"
                         )
-                    })?;
+                        })?;
 
                 // Group membership already verified above. All contexts in a group
                 // a member has access to are joinable. Restricted access is handled
