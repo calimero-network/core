@@ -28,6 +28,7 @@ mod namespace;
 mod namespace_dag;
 mod namespace_governance;
 mod namespace_membership;
+mod namespace_op_log;
 mod namespace_retry;
 mod permission_checker;
 mod signing_keys;
@@ -92,6 +93,7 @@ pub use self::namespace_governance::{
     NamespaceGovernance, PendingKeyDelivery,
 };
 pub use self::namespace_membership::NamespaceMembershipService;
+pub use self::namespace_op_log::NamespaceOpLogService;
 pub use self::namespace_retry::NamespaceRetryService;
 pub use self::permission_checker::PermissionChecker;
 pub use self::signing_keys::{

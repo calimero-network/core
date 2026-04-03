@@ -529,6 +529,148 @@ fn namespace_dag_service_collects_skeleton_delta_ids_by_group() {
 }
 
 #[test]
+fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
+    use calimero_context_client::local_governance::{
+        NamespaceOp, OpaqueSkeleton, SignedNamespaceOp,
+    };
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x77; 32];
+    let group_a = ContextGroupId::from([0x78; 32]);
+    let group_b = ContextGroupId::from([0x79; 32]);
+    let signer_sk = PrivateKey::random(&mut rng);
+
+    let signed_group = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: group_a.to_bytes(),
+            key_id: [0x01; 32],
+            encrypted: encrypt_group_op(&[0xA1; 32], &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    let signed_delta = signed_group.content_hash().unwrap();
+
+    let mut handle = store.handle();
+    let key_signed = calimero_store::key::NamespaceGovOp::new(namespace_id, signed_delta);
+    let val_signed = calimero_store::key::NamespaceGovOpValue {
+        skeleton_bytes: borsh::to_vec(&signed_group).unwrap(),
+    };
+    handle.put(&key_signed, &val_signed).unwrap();
+
+    let skeleton_delta = [0xB2; 32];
+    let key_skeleton = calimero_store::key::NamespaceGovOp::new(namespace_id, skeleton_delta);
+    let val_skeleton = calimero_store::key::NamespaceGovOpValue {
+        skeleton_bytes: borsh::to_vec(&OpaqueSkeleton {
+            delta_id: skeleton_delta,
+            parent_op_hashes: vec![],
+            group_id: group_b.to_bytes(),
+            signer: signer_sk.public_key(),
+        })
+        .unwrap(),
+    };
+    handle.put(&key_skeleton, &val_skeleton).unwrap();
+    drop(handle);
+
+    let op_log = NamespaceOpLogService::new(&store, namespace_id);
+
+    let decoded_signed = op_log
+        .collect_signed_group_ops_for_group(group_a.to_bytes())
+        .unwrap();
+    assert_eq!(decoded_signed.len(), 1);
+    assert_eq!(
+        decoded_signed[0].signed_op.content_hash().unwrap(),
+        signed_delta,
+        "signed op should be decoded with stable delta id",
+    );
+    assert_eq!(decoded_signed[0].key_id, [0x01; 32]);
+
+    let decoded_skeleton = op_log
+        .collect_opaque_skeleton_delta_ids_for_group(group_b.to_bytes())
+        .unwrap();
+    assert_eq!(decoded_skeleton, vec![skeleton_delta]);
+}
+
+#[test]
+fn namespace_op_log_service_collects_group_scoped_signed_ops() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x7A; 32];
+    let group_a = ContextGroupId::from([0x7B; 32]);
+    let group_b = ContextGroupId::from([0x7C; 32]);
+    let signer_sk = PrivateKey::random(&mut rng);
+
+    let op_a = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: group_a.to_bytes(),
+            key_id: [0x11; 32],
+            encrypted: encrypt_group_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let op_b = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Group {
+            group_id: group_b.to_bytes(),
+            key_id: [0x22; 32],
+            encrypted: encrypt_group_op(&[0xBB; 32], &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let root = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        3,
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![1, 2, 3],
+        }),
+    )
+    .unwrap();
+
+    let op_log = NamespaceOpLogService::new(&store, namespace_id);
+    op_log.store_signed_operation(&op_a).unwrap();
+    op_log.store_signed_operation(&op_b).unwrap();
+    op_log.store_signed_operation(&root).unwrap();
+
+    let selected = op_log
+        .collect_signed_group_ops_for_group(group_a.to_bytes())
+        .unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(
+        selected[0].signed_op.content_hash().unwrap(),
+        op_a.content_hash().unwrap()
+    );
+    assert_eq!(selected[0].key_id, [0x11; 32]);
+}
+
+#[test]
 fn namespace_retry_service_collects_only_retryable_group_ops() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;

@@ -3,7 +3,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use super::load_group_key_by_id;
+use super::{load_group_key_by_id, namespace_op_log::NamespaceOpLogService};
 
 /// A namespace group operation that can be retried locally because the
 /// corresponding group key is now available.
@@ -32,37 +32,15 @@ impl<'a> NamespaceRetryService<'a> {
     ) -> EyreResult<Vec<RetryCandidate>> {
         let mut candidates = Vec::new();
         let gid_typed = ContextGroupId::from(group_id);
-        let handle = self.store.handle();
-        let start = calimero_store::key::NamespaceGovOp::new(self.namespace_id, [0u8; 32]);
-        let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
-        let first = iter.seek(start).transpose();
-
-        for key_result in first.into_iter().chain(iter.keys()) {
-            let key = key_result?;
-            if key.namespace_id() != self.namespace_id {
-                break;
-            }
-            let Some(val): Option<calimero_store::key::NamespaceGovOpValue> = handle.get(&key)?
-            else {
+        let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
+        for entry in op_log.collect_signed_group_ops_for_group(group_id)? {
+            let NamespaceOp::Group { key_id, .. } = entry.signed_op.op else {
                 continue;
             };
-            let Ok(signed_op) = borsh::from_slice::<SignedNamespaceOp>(&val.skeleton_bytes) else {
-                continue;
-            };
-            let NamespaceOp::Group {
-                group_id: op_group_id,
-                key_id,
-                ..
-            } = signed_op.op
-            else {
-                continue;
-            };
-            if op_group_id != group_id {
-                continue;
-            }
             let Some(group_key) = load_group_key_by_id(self.store, &gid_typed, &key_id)? else {
                 continue;
             };
+            let signed_op: SignedNamespaceOp = entry.signed_op;
             candidates.push(RetryCandidate {
                 signed_op,
                 group_key,
