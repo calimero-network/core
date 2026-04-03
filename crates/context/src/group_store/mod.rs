@@ -24,6 +24,63 @@ use eyre::{bail, Result as EyreResult};
 use sha2::{Digest, Sha256};
 
 // ---------------------------------------------------------------------------
+// Typed errors for group store operations
+// ---------------------------------------------------------------------------
+
+/// Structured errors for group store operations.
+///
+/// Replaces ad-hoc `bail!("string")` errors with matchable variants so callers
+/// can programmatically handle specific failure cases (e.g. treating `StaleNonce`
+/// as idempotent success rather than an error).
+#[derive(Debug, thiserror::Error)]
+pub enum GroupStoreError {
+    #[error("group {0} not found")]
+    GroupNotFound(String),
+
+    #[error("{identity} is not an admin of group {group_id}")]
+    NotAdmin { group_id: String, identity: String },
+
+    #[error("cannot remove the last admin of the group")]
+    LastAdmin,
+
+    #[error("cannot demote the last admin of the group")]
+    LastAdminDemotion,
+
+    #[error("nesting would create a cycle")]
+    NestingCycle,
+
+    #[error("group {0} already has a parent; unnest it first")]
+    AlreadyHasParent(String),
+
+    #[error("cannot nest a group under itself")]
+    SelfNesting,
+
+    #[error("state_hash mismatch: op signed against {expected}, current is {actual}")]
+    StateHashMismatch { expected: String, actual: String },
+
+    #[error("nonce {nonce} already processed (last: {last})")]
+    StaleNonce { nonce: u64, last: u64 },
+
+    #[error("namespace identity not found for {0}")]
+    NoNamespaceIdentity(String),
+
+    #[error("no group key stored for group {0}")]
+    NoGroupKey(String),
+
+    #[error("signing key not found for {identity} in group {group_id}")]
+    NoSigningKey { group_id: String, identity: String },
+
+    #[error("requester lacks permission to {operation} in group {group_id}")]
+    Unauthorized { group_id: String, operation: String },
+
+    #[error("unsupported group op variant")]
+    UnsupportedOp,
+
+    #[error("{0}")]
+    Other(String),
+}
+
+// ---------------------------------------------------------------------------
 // Prefix-scan helpers (DRY: replaces 15+ copy-pasted iteration loops)
 // ---------------------------------------------------------------------------
 
@@ -872,7 +929,7 @@ fn ensure_not_last_admin_removal(
     if count_group_admins(store, group_id)? > 1 {
         return Ok(());
     }
-    bail!("cannot remove the last admin of the group");
+    bail!(GroupStoreError::LastAdmin);
 }
 
 fn ensure_not_last_admin_demotion(
@@ -890,7 +947,7 @@ fn ensure_not_last_admin_demotion(
     if count_group_admins(store, group_id)? > 1 {
         return Ok(());
     }
-    bail!("cannot demote the last admin of the group");
+    bail!(GroupStoreError::LastAdminDemotion);
 }
 
 /// Maximum number of parent hashes allowed in a single [`SignedGroupOp`].
@@ -2749,7 +2806,10 @@ pub fn require_group_admin(
     identity: &PublicKey,
 ) -> EyreResult<()> {
     if !is_group_admin(store, group_id, identity)? {
-        bail!("requester is not an admin of group '{group_id:?}'");
+        bail!(GroupStoreError::NotAdmin {
+            group_id: format!("{group_id:?}"),
+            identity: format!("{identity:?}"),
+        });
     }
     Ok(())
 }
@@ -2778,10 +2838,10 @@ pub fn require_group_admin_or_capability(
     operation: &str,
 ) -> EyreResult<()> {
     if !is_group_admin_or_has_capability(store, group_id, identity, capability_bit)? {
-        bail!(
-            "requester lacks permission to {operation} in group '{group_id:?}' \
-             (not an admin and capability bit 0x{capability_bit:x} is not set)"
-        );
+        bail!(GroupStoreError::Unauthorized {
+            group_id: format!("{group_id:?}"),
+            operation: operation.to_owned(),
+        });
     }
     Ok(())
 }
@@ -2921,10 +2981,10 @@ pub fn require_group_signing_key(
     requester: &PublicKey,
 ) -> EyreResult<()> {
     if get_group_signing_key(store, group_id, requester)?.is_none() {
-        bail!(
-            "node does not hold a signing key for requester in group '{group_id:?}'; \
-             register one via POST /admin-api/groups/<id>/signing-key"
-        );
+        bail!(GroupStoreError::NoSigningKey {
+            group_id: format!("{group_id:?}"),
+            identity: format!("{requester:?}"),
+        });
     }
     Ok(())
 }
