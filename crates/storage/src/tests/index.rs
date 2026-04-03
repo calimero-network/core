@@ -162,7 +162,7 @@ mod index__public_methods {
         assert!(root_index.parent_id.is_none());
         assert!(root_index.children.is_none());
 
-        let collection_name = "Books";
+        let _collection_name = "Books";
         let child_id = Id::random();
         let child_own_hash = [2_u8; 32];
         let child_full_hash: [u8; 32] =
@@ -225,9 +225,9 @@ mod index__public_methods {
     fn get_ancestors_of() {
         let root_id = Id::random();
         let root_hash = [1_u8; 32];
-        let child_collection_name = "Books";
-        let grandchild_collection_name = "Pages";
-        let greatgrandchild_collection_name = "Paragraphs";
+        let _child_collection_name = "Books";
+        let _grandchild_collection_name = "Pages";
+        let _greatgrandchild_collection_name = "Paragraphs";
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(
             root_id,
@@ -304,7 +304,7 @@ mod index__public_methods {
         ),)
         .is_ok());
 
-        let collection_name = "Books";
+        let _collection_name = "Books";
         let child1_id = Id::from([2; 32]);
         let child1_own_hash = [2_u8; 32];
         let child1_full_hash: [u8; 32] =
@@ -410,7 +410,7 @@ mod index__public_methods {
         ),)
         .is_ok());
 
-        let collection_name = "Pages";
+        let _collection_name = "Pages";
         let child1_id = Id::random();
         let child1_own_hash = [2_u8; 32];
 
@@ -465,7 +465,7 @@ mod index__public_methods {
         assert!(root_index.parent_id.is_none());
         assert!(root_index.children.is_none());
 
-        let collection_name = "Books";
+        let _collection_name = "Books";
         let child_id = Id::random();
         let child_own_hash = [2_u8; 32];
 
@@ -486,7 +486,7 @@ mod index__public_methods {
     fn has_children() {
         let root_id = Id::random();
         let root_hash = [1_u8; 32];
-        let collection_name = "Books";
+        let _collection_name = "Books";
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(
             root_id,
@@ -525,7 +525,7 @@ mod index__public_methods {
         assert!(root_index.parent_id.is_none());
         assert!(root_index.children.is_none());
 
-        let collection_name = "Books";
+        let _collection_name = "Books";
         let child_id = Id::random();
         let child_own_hash = [2_u8; 32];
 
@@ -609,7 +609,7 @@ mod index__private_methods {
         <Index<TestStorage>>::add_root(ChildInfo::new(root_id, [1; 32], Metadata::default()))
             .unwrap();
 
-        let collection = "children";
+        let _collection = "children";
 
         // Add children
         <Index<TestStorage>>::add_child_to(
@@ -684,7 +684,7 @@ mod hashing {
         ),)
         .is_ok());
 
-        let collection_name = "Children";
+        let _collection_name = "Children";
         let child1_id = Id::from([1; 32]);
         let child1_hash = [1_u8; 32];
         let child1_info = ChildInfo::new(child1_id, child1_hash, Metadata::default());
@@ -720,9 +720,9 @@ mod hashing {
     fn recalculate_ancestor_hashes_for() {
         let root_id = Id::random();
         let root_hash = [1_u8; 32];
-        let child_collection_name = "Books";
-        let grandchild_collection_name = "Pages";
-        let greatgrandchild_collection_name = "Paragraphs";
+        let _child_collection_name = "Books";
+        let _grandchild_collection_name = "Pages";
+        let _greatgrandchild_collection_name = "Paragraphs";
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(
             root_id,

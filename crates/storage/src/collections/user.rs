@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 pub struct UserStorage<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor = MainStorage> {
     /// The underlying map storing user data.
     #[borsh(bound(serialize = "", deserialize = ""))]
-    pub(crate) inner: UnorderedMap<PublicKey, T, S>,
+    inner: UnorderedMap<PublicKey, T, S>,
     /// The storage element for this UserStorage instance itself.
     storage: Element,
 }
