@@ -897,6 +897,111 @@ fn defaults_isolated_per_group() {
     assert_eq!(get_default_visibility(&store, &g2).unwrap().unwrap(), 1);
 }
 
+#[test]
+fn context_member_capability_roundtrip_and_isolation() {
+    let store = test_store();
+    let gid = test_group_id();
+    let context_a = ContextId::from([0x21; 32]);
+    let context_b = ContextId::from([0x22; 32]);
+    let alice = PublicKey::from([0x31; 32]);
+    let bob = PublicKey::from([0x32; 32]);
+
+    assert!(
+        get_context_member_capability(&store, &gid, &context_a, &alice)
+            .unwrap()
+            .is_none()
+    );
+
+    set_context_member_capability(&store, &gid, &context_a, &alice, 0b001).unwrap();
+    set_context_member_capability(&store, &gid, &context_a, &bob, 0b010).unwrap();
+    set_context_member_capability(&store, &gid, &context_b, &alice, 0b111).unwrap();
+
+    assert_eq!(
+        get_context_member_capability(&store, &gid, &context_a, &alice)
+            .unwrap()
+            .unwrap(),
+        0b001
+    );
+    assert_eq!(
+        get_context_member_capability(&store, &gid, &context_a, &bob)
+            .unwrap()
+            .unwrap(),
+        0b010
+    );
+    assert_eq!(
+        get_context_member_capability(&store, &gid, &context_b, &alice)
+            .unwrap()
+            .unwrap(),
+        0b111
+    );
+}
+
+#[test]
+fn delete_defaults_and_member_capabilities_clears_values() {
+    let store = test_store();
+    let gid = test_group_id();
+    let alice = PublicKey::from([0x41; 32]);
+    let bob = PublicKey::from([0x42; 32]);
+
+    set_default_capabilities(&store, &gid, 0b101).unwrap();
+    set_default_visibility(&store, &gid, 1).unwrap();
+    set_member_capability(&store, &gid, &alice, 0b001).unwrap();
+    set_member_capability(&store, &gid, &bob, 0b010).unwrap();
+    assert_eq!(enumerate_member_capabilities(&store, &gid).unwrap().len(), 2);
+
+    delete_default_capabilities(&store, &gid).unwrap();
+    delete_default_visibility(&store, &gid).unwrap();
+    delete_all_member_capabilities(&store, &gid).unwrap();
+
+    assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
+    assert!(get_default_visibility(&store, &gid).unwrap().is_none());
+    assert!(get_member_capability(&store, &gid, &alice).unwrap().is_none());
+    assert!(get_member_capability(&store, &gid, &bob).unwrap().is_none());
+    assert!(enumerate_member_capabilities(&store, &gid).unwrap().is_empty());
+}
+
+#[test]
+fn migration_tracking_roundtrip_and_cleanup() {
+    let store = test_store();
+    let gid = test_group_id();
+    let context_a = ContextId::from([0x51; 32]);
+    let context_b = ContextId::from([0x52; 32]);
+
+    assert!(
+        get_context_last_migration(&store, &gid, &context_a)
+            .unwrap()
+            .is_none()
+    );
+
+    set_context_last_migration(&store, &gid, &context_a, "migrate_v2").unwrap();
+    set_context_last_migration(&store, &gid, &context_b, "migrate_v3").unwrap();
+
+    assert_eq!(
+        get_context_last_migration(&store, &gid, &context_a)
+            .unwrap()
+            .as_deref(),
+        Some("migrate_v2")
+    );
+    assert_eq!(
+        get_context_last_migration(&store, &gid, &context_b)
+            .unwrap()
+            .as_deref(),
+        Some("migrate_v3")
+    );
+
+    delete_all_context_last_migrations(&store, &gid).unwrap();
+    assert!(
+        get_context_last_migration(&store, &gid, &context_a)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        get_context_last_migration(&store, &gid, &context_b)
+            .unwrap()
+            .is_none()
+    );
+}
+
 // -----------------------------------------------------------------------
 // Auto-group: node identity as admin (regression test for fix)
 // -----------------------------------------------------------------------
