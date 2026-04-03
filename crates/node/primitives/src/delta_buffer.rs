@@ -278,6 +278,7 @@ mod tests {
             root_hash: Hash::from([0; 32]),
             events: None,
             source_peer: libp2p::PeerId::random(),
+            key_id: [0; 32],
         }
     }
 

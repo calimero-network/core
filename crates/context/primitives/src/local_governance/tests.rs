@@ -190,7 +190,9 @@ fn namespace_op_sign_verify_group() {
         1,
         NamespaceOp::Group {
             group_id: sample_group_id(),
+            key_id: [0u8; 32],
             encrypted,
+            key_rotation: None,
         },
     )
     .expect("sign");
