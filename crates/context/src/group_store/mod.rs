@@ -25,6 +25,7 @@ mod membership_policy;
 mod meta;
 mod migrations;
 mod namespace;
+mod namespace_dag;
 mod namespace_governance;
 mod namespace_membership;
 mod namespace_retry;
@@ -84,10 +85,11 @@ pub use self::namespace::{
     resolve_namespace_identity, resolve_namespace_identity_record, store_namespace_identity,
     unnest_group, NamespaceIdentityRecord, ResolvedNamespaceIdentity,
 };
+pub use self::namespace_dag::{NamespaceDagService, NamespaceHead};
 pub use self::namespace_governance::{
     apply_signed_namespace_op, collect_skeleton_delta_ids_for_group, sign_and_publish_namespace_op,
     sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, KeyUnwrapFailure,
-    NamespaceGovernance, NamespaceHead, PendingKeyDelivery,
+    NamespaceGovernance, PendingKeyDelivery,
 };
 pub use self::namespace_membership::NamespaceMembershipService;
 pub use self::namespace_retry::NamespaceRetryService;

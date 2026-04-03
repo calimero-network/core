@@ -418,7 +418,7 @@ fn context_registration_service_keeps_existing_non_zero_context_meta_application
 }
 
 #[test]
-fn namespace_governance_store_operation_rejects_namespace_mismatch() {
+fn namespace_dag_service_store_operation_rejects_namespace_mismatch() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -441,7 +441,7 @@ fn namespace_governance_store_operation_rejects_namespace_mismatch() {
     )
     .unwrap();
 
-    let err = NamespaceGovernance::new(&store, governance_ns)
+    let err = NamespaceDagService::new(&store, governance_ns)
         .store_operation(&signed)
         .unwrap_err();
     assert!(
@@ -449,6 +449,90 @@ fn namespace_governance_store_operation_rejects_namespace_mismatch() {
             .contains("namespace mismatch when storing op"),
         "unexpected error: {err}"
     );
+}
+
+#[test]
+fn namespace_dag_service_advance_dag_head_prunes_parent_hashes() {
+    let store = test_store();
+    let namespace_id = [0x73; 32];
+    let dag = NamespaceDagService::new(&store, namespace_id);
+
+    let delta_a = [0xA1; 32];
+    let delta_b = [0xB2; 32];
+    let delta_c = [0xC3; 32];
+
+    dag.advance_dag_head(delta_a, &[], 1).unwrap();
+    dag.advance_dag_head(delta_b, &[], 2).unwrap();
+    dag.advance_dag_head(delta_c, &[delta_a], 3).unwrap();
+
+    let head = dag.read_head_record().unwrap();
+    assert_eq!(head.parent_hashes, vec![delta_b, delta_c]);
+    assert_eq!(head.next_nonce, 4);
+}
+
+#[test]
+fn namespace_dag_service_collects_skeleton_delta_ids_by_group() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x74; 32];
+    let group_a = ContextGroupId::from([0x75; 32]);
+    let group_b = ContextGroupId::from([0x76; 32]);
+    let signer_sk = PrivateKey::random(&mut rng);
+    let dag = NamespaceDagService::new(&store, namespace_id);
+
+    let op_group_a = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: group_a.to_bytes(),
+            key_id: [0x01; 32],
+            encrypted: vec![0x11, 0x22, 0x33],
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    let op_group_b = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Group {
+            group_id: group_b.to_bytes(),
+            key_id: [0x02; 32],
+            encrypted: vec![0x44, 0x55, 0x66],
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    let op_root = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        3,
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![1, 2, 3],
+        }),
+    )
+    .unwrap();
+
+    dag.store_operation(&op_group_a).unwrap();
+    dag.store_operation(&op_group_b).unwrap();
+    dag.store_operation(&op_root).unwrap();
+
+    let collected = dag
+        .collect_skeleton_delta_ids_for_group(group_a.to_bytes())
+        .unwrap();
+    let expected = op_group_a.content_hash().unwrap();
+    assert_eq!(collected, vec![expected]);
 }
 
 #[test]
