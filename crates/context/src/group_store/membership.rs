@@ -6,8 +6,8 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
 use super::{
-    collect_keys_with_prefix, get_member_capability, load_group_meta, set_member_capability,
-    GroupStoreError,
+    collect_keys_with_prefix, collect_keys_with_prefix_paginated, count_keys_with_prefix,
+    get_member_capability, load_group_meta, set_member_capability, GroupStoreError,
 };
 
 pub fn add_group_member(
@@ -193,15 +193,17 @@ pub fn list_group_members(
     limit: usize,
 ) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
     let gid = group_id.to_bytes();
-    let keys = collect_keys_with_prefix(
+    let keys = collect_keys_with_prefix_paginated(
         store,
         GroupMember::new(gid, [0u8; 32].into()),
         GROUP_MEMBER_PREFIX,
         |k| k.group_id() == gid,
+        offset,
+        limit,
     )?;
     let handle = store.handle();
     let mut results = Vec::new();
-    for key in keys.into_iter().skip(offset).take(limit) {
+    for key in keys {
         let val: GroupMemberValue = handle
             .get(&key)?
             .ok_or_else(|| eyre::eyre!("member key exists but value is missing"))?;
@@ -212,13 +214,12 @@ pub fn list_group_members(
 
 pub fn count_group_members(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
     let gid = group_id.to_bytes();
-    let keys = collect_keys_with_prefix(
+    count_keys_with_prefix(
         store,
         GroupMember::new(gid, [0u8; 32].into()),
         GROUP_MEMBER_PREFIX,
         |k| k.group_id() == gid,
-    )?;
-    Ok(keys.len())
+    )
 }
 
 fn has_direct_member(

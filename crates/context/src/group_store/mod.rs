@@ -23,6 +23,7 @@ mod group_settings;
 mod local_state;
 mod membership;
 mod membership_policy;
+mod membership_policy_rules;
 mod membership_view;
 mod meta;
 mod migrations;
@@ -36,7 +37,7 @@ mod permission_checker;
 mod signing_keys;
 mod tee;
 mod upgrades;
-use self::local_state::{append_op_log_entry, set_op_head};
+use self::local_state::persist_group_governance_progress;
 
 pub use self::aliases::{
     build_namespace_summary, count_group_contexts, delete_all_member_aliases, delete_group_alias,
@@ -207,6 +208,85 @@ where
     }
 
     Ok(keys)
+}
+
+/// Collect a page of keys matching a prefix without materializing the full
+/// key-space first.
+fn collect_keys_with_prefix_paginated<K>(
+    store: &Store,
+    start: K,
+    prefix_byte: u8,
+    belongs: impl Fn(&K) -> bool,
+    offset: usize,
+    limit: usize,
+) -> EyreResult<Vec<K>>
+where
+    K: PredefinedEntry + FromKeyParts + AsKeyParts,
+    eyre::Report: From<calimero_store::iter::IterError<<K as FromKeyParts>::Error>>,
+    for<'a> <K::Codec as calimero_store::entry::Codec<'a, K::DataType<'a>>>::Error:
+        std::error::Error + Send + Sync + 'static,
+{
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let handle = store.handle();
+    let mut iter = handle.iter::<K>()?;
+    let first = iter.seek(start).transpose();
+    let mut seen = 0usize;
+    let mut keys = Vec::with_capacity(limit);
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+        if key.as_key().as_bytes()[0] != prefix_byte {
+            break;
+        }
+        if !belongs(&key) {
+            break;
+        }
+        if seen < offset {
+            seen += 1;
+            continue;
+        }
+        keys.push(key);
+        if keys.len() >= limit {
+            break;
+        }
+    }
+
+    Ok(keys)
+}
+
+/// Count keys matching a prefix without storing all matching keys in memory.
+fn count_keys_with_prefix<K>(
+    store: &Store,
+    start: K,
+    prefix_byte: u8,
+    belongs: impl Fn(&K) -> bool,
+) -> EyreResult<usize>
+where
+    K: PredefinedEntry + FromKeyParts + AsKeyParts,
+    eyre::Report: From<calimero_store::iter::IterError<<K as FromKeyParts>::Error>>,
+    for<'a> <K::Codec as calimero_store::entry::Codec<'a, K::DataType<'a>>>::Error:
+        std::error::Error + Send + Sync + 'static,
+{
+    let handle = store.handle();
+    let mut iter = handle.iter::<K>()?;
+    let first = iter.seek(start).transpose();
+    let mut count = 0usize;
+
+    for key_result in first.into_iter().chain(iter.keys()) {
+        let key = key_result?;
+        if key.as_key().as_bytes()[0] != prefix_byte {
+            break;
+        }
+        if !belongs(&key) {
+            break;
+        }
+        count += 1;
+    }
+
+    Ok(count)
 }
 
 // ---------------------------------------------------------------------------
@@ -967,8 +1047,6 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     let head = get_op_head(store, &group_id)?;
     let next_seq = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
     let op_bytes = borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh: {e}"))?;
-    append_op_log_entry(store, &group_id, next_seq, &op_bytes)?;
-
     let parent_set: std::collections::HashSet<[u8; 32]> =
         op.parent_op_hashes.iter().copied().collect();
     let mut new_heads: Vec<[u8; 32]> = head
@@ -988,9 +1066,9 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         );
         new_heads.drain(..excess);
     }
-    set_op_head(store, &group_id, next_seq, new_heads)?;
-
-    set_local_gov_nonce(store, &group_id, &op.signer, op.nonce)?;
+    persist_group_governance_progress(
+        store, &group_id, next_seq, &op.signer, op.nonce, new_heads, &op_bytes,
+    )?;
 
     Ok(())
 }

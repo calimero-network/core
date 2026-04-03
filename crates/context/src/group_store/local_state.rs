@@ -76,6 +76,7 @@ pub fn get_op_head(
     handle.get(&key).map_err(Into::into)
 }
 
+#[cfg(test)]
 pub(crate) fn set_op_head(
     store: &Store,
     group_id: &ContextGroupId,
@@ -94,6 +95,7 @@ pub(crate) fn set_op_head(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn append_op_log_entry(
     store: &Store,
     group_id: &ContextGroupId,
@@ -103,6 +105,36 @@ pub(crate) fn append_op_log_entry(
     let mut handle = store.handle();
     let key = GroupOpLog::new(group_id.to_bytes(), sequence);
     handle.put(&key, &op_bytes.to_vec())?;
+    Ok(())
+}
+
+pub(crate) fn persist_group_governance_progress(
+    store: &Store,
+    group_id: &ContextGroupId,
+    sequence: u64,
+    signer: &PublicKey,
+    nonce: u64,
+    dag_heads: Vec<[u8; 32]>,
+    op_bytes: &[u8],
+) -> EyreResult<()> {
+    let gid = group_id.to_bytes();
+    let mut handle = store.handle();
+
+    let op_log_key = GroupOpLog::new(gid, sequence);
+    handle.put(&op_log_key, &op_bytes.to_vec())?;
+
+    let head_key = GroupOpHead::new(gid);
+    handle.put(
+        &head_key,
+        &GroupOpHeadValue {
+            sequence,
+            dag_heads,
+        },
+    )?;
+
+    let nonce_key = GroupLocalGovNonce::new(gid, *signer);
+    handle.put(&nonce_key, &nonce)?;
+
     Ok(())
 }
 

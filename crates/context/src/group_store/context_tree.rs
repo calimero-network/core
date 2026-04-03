@@ -7,7 +7,7 @@ use calimero_store::key::{
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use super::collect_keys_with_prefix;
+use super::collect_keys_with_prefix_paginated;
 
 /// Service for context/group index traversal and mutations.
 pub struct ContextTreeService<'a> {
@@ -67,18 +67,15 @@ impl<'a> ContextTreeService<'a> {
 
     pub fn enumerate_contexts(&self, offset: usize, limit: usize) -> EyreResult<Vec<ContextId>> {
         let gid = self.group_id.to_bytes();
-        let keys = collect_keys_with_prefix(
+        let keys = collect_keys_with_prefix_paginated(
             self.store,
             GroupContextIndex::new(gid, ContextId::from([0u8; 32])),
             GROUP_CONTEXT_INDEX_PREFIX,
             |k| k.group_id() == gid,
+            offset,
+            limit,
         )?;
-        Ok(keys
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .map(|k| k.context_id())
-            .collect())
+        Ok(keys.into_iter().map(|k| k.context_id()).collect())
     }
 
     /// Backward-compatible alias for `enumerate_contexts`.

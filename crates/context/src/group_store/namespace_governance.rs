@@ -7,6 +7,8 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
+use crate::metrics::record_namespace_retry_event;
+
 use super::{
     apply_group_op_mutations, count_group_contexts, decrypt_group_op, get_local_gov_nonce,
     get_namespace_identity_record, is_group_admin, load_current_group_key_record,
@@ -264,6 +266,10 @@ impl<'a> NamespaceGovernance<'a> {
         let gid_typed = ContextGroupId::from(group_id);
         let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
         let retry_candidates = retry_service.collect_retry_candidates_for_group(group_id)?;
+        let attempted = retry_candidates.len();
+        if attempted > 0 {
+            record_namespace_retry_event("collected");
+        }
 
         for candidate in &retry_candidates {
             let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
@@ -276,12 +282,14 @@ impl<'a> NamespaceGovernance<'a> {
                 encrypted,
             ) {
                 Ok(()) => {
+                    record_namespace_retry_event("applied");
                     tracing::info!(
                         group_id = %hex::encode(group_id),
                         "retried encrypted op after KeyDelivery"
                     );
                 }
                 Err(e) => {
+                    record_namespace_retry_event("failed");
                     tracing::warn!(
                         group_id = %hex::encode(group_id),
                         ?e,
@@ -289,6 +297,10 @@ impl<'a> NamespaceGovernance<'a> {
                     );
                 }
             }
+        }
+
+        if attempted == 0 {
+            record_namespace_retry_event("none");
         }
 
         Ok(())

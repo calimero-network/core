@@ -244,6 +244,54 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
 }
 
 #[test]
+fn membership_policy_rules_report_rejection_reasons() {
+    use super::membership_policy_rules::{
+        validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
+        TeeAttestationClaims,
+    };
+
+    let policy = TeeAllowlistPolicy {
+        allowed_mrtd: vec!["m-ok".to_owned()],
+        allowed_rtmr0: vec!["r0-ok".to_owned()],
+        allowed_rtmr1: vec![],
+        allowed_rtmr2: vec![],
+        allowed_rtmr3: vec![],
+        allowed_tcb_statuses: vec!["ok".to_owned()],
+    };
+    let claims = TeeAttestationClaims {
+        mrtd: "m-ok",
+        rtmr0: "r0-ok",
+        rtmr1: "anything",
+        rtmr2: "anything",
+        rtmr3: "anything",
+        tcb_status: "ok",
+    };
+
+    assert!(validate_tee_attestation_allowlists(&policy, &claims).is_ok());
+
+    let bad_mrtd = TeeAttestationClaims {
+        mrtd: "m-bad",
+        ..claims
+    };
+    let err = validate_tee_attestation_allowlists(&policy, &bad_mrtd).unwrap_err();
+    assert_eq!(err.reason(), MembershipPolicyRejection::MrtdNotAllowed);
+
+    let bad_rtmr0 = TeeAttestationClaims {
+        rtmr0: "r0-bad",
+        ..claims
+    };
+    let err = validate_tee_attestation_allowlists(&policy, &bad_rtmr0).unwrap_err();
+    assert_eq!(err.reason(), MembershipPolicyRejection::Rtmr0NotAllowed);
+
+    let bad_tcb = TeeAttestationClaims {
+        tcb_status: "warn",
+        ..claims
+    };
+    let err = validate_tee_attestation_allowlists(&policy, &bad_tcb).unwrap_err();
+    assert_eq!(err.reason(), MembershipPolicyRejection::TcbStatusNotAllowed);
+}
+
+#[test]
 fn membership_view_reports_admin_and_member_counts() {
     let store = test_store();
     let gid = test_group_id();
@@ -535,7 +583,7 @@ fn namespace_dag_service_advance_dag_head_prunes_parent_hashes() {
 
 #[test]
 fn namespace_dag_service_collects_skeleton_delta_ids_by_group() {
-    use calimero_context_client::local_governance::OpaqueSkeleton;
+    use calimero_context_client::local_governance::{OpaqueSkeleton, StoredNamespaceEntry};
 
     let store = test_store();
     let namespace_id = [0x74; 32];
@@ -553,31 +601,31 @@ fn namespace_dag_service_collects_skeleton_delta_ids_by_group() {
     let key_other_ns = calimero_store::key::NamespaceGovOp::new([0x99; 32], delta_other_ns);
 
     let val_a = calimero_store::key::NamespaceGovOpValue {
-        skeleton_bytes: borsh::to_vec(&OpaqueSkeleton {
+        skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
             delta_id: delta_a,
             parent_op_hashes: vec![],
             group_id: group_a.to_bytes(),
             signer,
-        })
+        }))
         .unwrap(),
     };
     let val_b = calimero_store::key::NamespaceGovOpValue {
-        skeleton_bytes: borsh::to_vec(&OpaqueSkeleton {
+        skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
             delta_id: delta_b,
             parent_op_hashes: vec![delta_a],
             group_id: group_b.to_bytes(),
             signer,
-        })
+        }))
         .unwrap(),
     };
     // Different namespace id should be ignored by the iteration.
     let val_other_ns = calimero_store::key::NamespaceGovOpValue {
-        skeleton_bytes: borsh::to_vec(&OpaqueSkeleton {
+        skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
             delta_id: delta_other_ns,
             parent_op_hashes: vec![],
             group_id: group_a.to_bytes(),
             signer,
-        })
+        }))
         .unwrap(),
     };
     handle.put(&key_a, &val_a).unwrap();
@@ -594,7 +642,7 @@ fn namespace_dag_service_collects_skeleton_delta_ids_by_group() {
 #[test]
 fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
     use calimero_context_client::local_governance::{
-        NamespaceOp, OpaqueSkeleton, SignedNamespaceOp,
+        NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
     };
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -625,19 +673,19 @@ fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
     let mut handle = store.handle();
     let key_signed = calimero_store::key::NamespaceGovOp::new(namespace_id, signed_delta);
     let val_signed = calimero_store::key::NamespaceGovOpValue {
-        skeleton_bytes: borsh::to_vec(&signed_group).unwrap(),
+        skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Signed(signed_group)).unwrap(),
     };
     handle.put(&key_signed, &val_signed).unwrap();
 
     let skeleton_delta = [0xB2; 32];
     let key_skeleton = calimero_store::key::NamespaceGovOp::new(namespace_id, skeleton_delta);
     let val_skeleton = calimero_store::key::NamespaceGovOpValue {
-        skeleton_bytes: borsh::to_vec(&OpaqueSkeleton {
+        skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
             delta_id: skeleton_delta,
             parent_op_hashes: vec![],
             group_id: group_b.to_bytes(),
             signer: signer_sk.public_key(),
-        })
+        }))
         .unwrap(),
     };
     handle.put(&key_skeleton, &val_skeleton).unwrap();
@@ -660,6 +708,84 @@ fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
         .collect_opaque_skeleton_delta_ids_for_group(group_b.to_bytes())
         .unwrap();
     assert_eq!(decoded_skeleton, vec![skeleton_delta]);
+}
+
+#[test]
+fn namespace_op_log_service_reads_tagged_and_legacy_rows() {
+    use calimero_context_client::local_governance::{
+        NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
+    };
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x70; 32];
+    let group = ContextGroupId::from([0x71; 32]);
+    let signer_sk = PrivateKey::random(&mut rng);
+
+    let tagged_signed = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: group.to_bytes(),
+            key_id: [0x12; 32],
+            encrypted: encrypt_group_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    let tagged_delta = tagged_signed.content_hash().unwrap();
+    let tagged_signed_key_id = match tagged_signed.op {
+        NamespaceOp::Group { key_id, .. } => key_id,
+        _ => panic!("expected group-scoped namespace op"),
+    };
+
+    let legacy_skeleton_delta = [0x13; 32];
+    let legacy_skeleton = OpaqueSkeleton {
+        delta_id: legacy_skeleton_delta,
+        parent_op_hashes: vec![],
+        group_id: group.to_bytes(),
+        signer: signer_sk.public_key(),
+    };
+
+    let mut handle = store.handle();
+    let tagged_key = calimero_store::key::NamespaceGovOp::new(namespace_id, tagged_delta);
+    handle
+        .put(
+            &tagged_key,
+            &calimero_store::key::NamespaceGovOpValue {
+                skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Signed(tagged_signed))
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+
+    let legacy_key = calimero_store::key::NamespaceGovOp::new(namespace_id, legacy_skeleton_delta);
+    handle
+        .put(
+            &legacy_key,
+            &calimero_store::key::NamespaceGovOpValue {
+                skeleton_bytes: borsh::to_vec(&legacy_skeleton).unwrap(),
+            },
+        )
+        .unwrap();
+    drop(handle);
+
+    let op_log = NamespaceOpLogService::new(&store, namespace_id);
+    let signed = op_log
+        .collect_signed_group_ops_for_group(group.to_bytes())
+        .unwrap();
+    assert_eq!(signed.len(), 1);
+    assert_eq!(signed[0].key_id, tagged_signed_key_id);
+
+    let skeletons = op_log
+        .collect_opaque_skeleton_delta_ids_for_group(group.to_bytes())
+        .unwrap();
+    assert_eq!(skeletons, vec![legacy_skeleton_delta]);
 }
 
 #[test]

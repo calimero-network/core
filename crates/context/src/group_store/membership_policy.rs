@@ -5,9 +5,16 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
 use super::{
-    add_group_member, membership_view::GroupMembershipView, read_tee_admission_policy,
-    GroupStoreError, TeeAdmissionPolicy,
+    add_group_member,
+    membership_policy_rules::{
+        validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
+        TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_RTMR0, TEE_REJECT_RTMR1,
+        TEE_REJECT_RTMR2, TEE_REJECT_RTMR3, TEE_REJECT_TCB_STATUS,
+    },
+    membership_view::GroupMembershipView,
+    read_tee_admission_policy, GroupStoreError, TeeAdmissionPolicy,
 };
+use crate::metrics::record_membership_policy_rejection;
 
 /// Membership policy service for governance mutations.
 ///
@@ -17,15 +24,6 @@ pub struct MembershipPolicy<'a> {
     store: &'a Store,
     group_id: ContextGroupId,
     membership: GroupMembershipView<'a>,
-}
-
-pub struct TeeAttestationFields<'a> {
-    pub mrtd: &'a str,
-    pub rtmr0: &'a str,
-    pub rtmr1: &'a str,
-    pub rtmr2: &'a str,
-    pub rtmr3: &'a str,
-    pub tcb_status: &'a str,
 }
 
 impl<'a> MembershipPolicy<'a> {
@@ -95,7 +93,7 @@ impl<'a> MembershipPolicy<'a> {
     ) -> EyreResult<()> {
         self.validate_tee_attestation_allowlists_record(
             policy,
-            &TeeAttestationFields {
+            &TeeAttestationClaims {
                 mrtd,
                 rtmr0,
                 rtmr1,
@@ -109,30 +107,27 @@ impl<'a> MembershipPolicy<'a> {
     pub fn validate_tee_attestation_allowlists_record(
         &self,
         policy: &TeeAdmissionPolicy,
-        fields: &TeeAttestationFields<'_>,
+        fields: &TeeAttestationClaims<'_>,
     ) -> EyreResult<()> {
-        // Empty allowlists are intentionally permissive (allow-all for that field).
-        if !policy.allowed_mrtd.is_empty() && !policy.allowed_mrtd.iter().any(|a| a == fields.mrtd)
-        {
-            bail!("MemberJoinedViaTeeAttestation rejected: MRTD not in policy allowlist");
-        }
-        if !policy.allowed_tcb_statuses.is_empty()
-            && !policy
-                .allowed_tcb_statuses
-                .iter()
-                .any(|a| a == fields.tcb_status)
-        {
-            bail!("MemberJoinedViaTeeAttestation rejected: TCB status not in policy allowlist");
-        }
-        for (allowlist, actual, label) in [
-            (&policy.allowed_rtmr0, fields.rtmr0, "RTMR0"),
-            (&policy.allowed_rtmr1, fields.rtmr1, "RTMR1"),
-            (&policy.allowed_rtmr2, fields.rtmr2, "RTMR2"),
-            (&policy.allowed_rtmr3, fields.rtmr3, "RTMR3"),
-        ] {
-            if !allowlist.is_empty() && !allowlist.iter().any(|a| a == actual) {
-                bail!("MemberJoinedViaTeeAttestation rejected: {label} not in policy allowlist");
-            }
+        let normalized_policy = TeeAllowlistPolicy {
+            allowed_mrtd: policy.allowed_mrtd.clone(),
+            allowed_rtmr0: policy.allowed_rtmr0.clone(),
+            allowed_rtmr1: policy.allowed_rtmr1.clone(),
+            allowed_rtmr2: policy.allowed_rtmr2.clone(),
+            allowed_rtmr3: policy.allowed_rtmr3.clone(),
+            allowed_tcb_statuses: policy.allowed_tcb_statuses.clone(),
+        };
+        if let Err(err) = validate_tee_attestation_allowlists(&normalized_policy, fields) {
+            let reason = match err.reason() {
+                MembershipPolicyRejection::MrtdNotAllowed => TEE_REJECT_MRTD,
+                MembershipPolicyRejection::TcbStatusNotAllowed => TEE_REJECT_TCB_STATUS,
+                MembershipPolicyRejection::Rtmr0NotAllowed => TEE_REJECT_RTMR0,
+                MembershipPolicyRejection::Rtmr1NotAllowed => TEE_REJECT_RTMR1,
+                MembershipPolicyRejection::Rtmr2NotAllowed => TEE_REJECT_RTMR2,
+                MembershipPolicyRejection::Rtmr3NotAllowed => TEE_REJECT_RTMR3,
+            };
+            record_membership_policy_rejection(reason);
+            bail!(err);
         }
         Ok(())
     }

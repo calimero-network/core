@@ -1,6 +1,10 @@
-use calimero_context_client::local_governance::{NamespaceOp, OpaqueSkeleton, SignedNamespaceOp};
+use calimero_context_client::local_governance::{
+    NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
+};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
+
+use crate::metrics::{record_namespace_decode_fallback, record_namespace_decode_invalid};
 
 /// Typed namespace group entry decoded from the namespace op-log.
 pub struct StoredSignedGroupOp {
@@ -36,7 +40,8 @@ impl<'a> NamespaceOpLogService<'a> {
             .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
         let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id, delta_id);
         let value = calimero_store::key::NamespaceGovOpValue {
-            skeleton_bytes: borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh: {e}"))?,
+            skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Signed(op.clone()))
+                .map_err(|e| eyre::eyre!("borsh: {e}"))?,
         };
 
         let mut handle = self.store.handle();
@@ -63,8 +68,7 @@ impl<'a> NamespaceOpLogService<'a> {
             else {
                 continue;
             };
-            let Ok(signed_op) = borsh::from_slice::<SignedNamespaceOp>(&value.skeleton_bytes)
-            else {
+            let Some(signed_op) = decode_signed_namespace_op(&value.skeleton_bytes) else {
                 continue;
             };
             let NamespaceOp::Group {
@@ -103,7 +107,7 @@ impl<'a> NamespaceOpLogService<'a> {
             else {
                 continue;
             };
-            let Ok(skeleton) = borsh::from_slice::<OpaqueSkeleton>(&value.skeleton_bytes) else {
+            let Some(skeleton) = decode_opaque_skeleton(&value.skeleton_bytes) else {
                 continue;
             };
             if skeleton.group_id == group_id {
@@ -113,4 +117,30 @@ impl<'a> NamespaceOpLogService<'a> {
 
         Ok(delta_ids)
     }
+}
+
+fn decode_signed_namespace_op(bytes: &[u8]) -> Option<SignedNamespaceOp> {
+    if let Ok(StoredNamespaceEntry::Signed(op)) = borsh::from_slice::<StoredNamespaceEntry>(bytes) {
+        return Some(op);
+    }
+    if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(bytes) {
+        record_namespace_decode_fallback("signed");
+        return Some(op);
+    }
+    record_namespace_decode_invalid("signed");
+    None
+}
+
+fn decode_opaque_skeleton(bytes: &[u8]) -> Option<OpaqueSkeleton> {
+    if let Ok(StoredNamespaceEntry::Opaque(skeleton)) =
+        borsh::from_slice::<StoredNamespaceEntry>(bytes)
+    {
+        return Some(skeleton);
+    }
+    if let Ok(skeleton) = borsh::from_slice::<OpaqueSkeleton>(bytes) {
+        record_namespace_decode_fallback("opaque");
+        return Some(skeleton);
+    }
+    record_namespace_decode_invalid("opaque");
+    None
 }

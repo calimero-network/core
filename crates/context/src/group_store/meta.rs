@@ -4,7 +4,7 @@ use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
 use sha2::{Digest, Sha256};
 
-use super::{collect_keys_with_prefix, list_group_members};
+use super::{collect_keys_with_prefix_paginated, list_group_members};
 
 pub fn load_group_meta(
     store: &Store,
@@ -39,14 +39,18 @@ pub fn enumerate_all_groups(
     offset: usize,
     limit: usize,
 ) -> EyreResult<Vec<([u8; 32], GroupMetaValue)>> {
-    let keys =
-        collect_keys_with_prefix(store, GroupMeta::new([0u8; 32]), GROUP_META_PREFIX, |_| {
-            true
-        })?;
+    let keys = collect_keys_with_prefix_paginated(
+        store,
+        GroupMeta::new([0u8; 32]),
+        GROUP_META_PREFIX,
+        |_| true,
+        offset,
+        limit,
+    )?;
     let handle = store.handle();
     let mut results = Vec::new();
 
-    for key in keys.into_iter().skip(offset).take(limit) {
+    for key in keys {
         let Some(meta) = handle.get(&key)? else {
             continue;
         };
