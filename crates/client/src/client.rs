@@ -29,6 +29,7 @@ mod applications;
 mod blobs;
 mod contexts;
 mod group;
+mod jsonrpc;
 mod namespace;
 mod packages;
 
