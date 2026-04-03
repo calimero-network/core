@@ -1,0 +1,344 @@
+//! Core API operations for the Calimero client.
+
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
+use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
+use calimero_server_primitives::admin::{
+    CreateContextRequest, CreateContextResponse, DeleteContextApiRequest, DeleteContextResponse,
+    GenerateContextIdentityResponse, GetApplicationResponse, GetContextClientKeysResponse,
+    GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
+    GetContextsResponse, GetLatestVersionResponse, GetPeersCountResponse,
+    InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
+    InviteSpecializedNodeRequest, InviteSpecializedNodeResponse, ListApplicationsResponse,
+    ListPackagesResponse, ListVersionsResponse, SyncContextResponse, UninstallApplicationResponse,
+    UpdateContextApplicationRequest, UpdateContextApplicationResponse,
+};
+use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
+use calimero_server_primitives::jsonrpc::{Request, Response};
+use eyre::Result;
+use serde::Serialize;
+
+use super::Client;
+use crate::traits::{ClientAuthenticator, ClientStorage};
+
+impl<A, S> Client<A, S>
+where
+    A: ClientAuthenticator + Clone + Send + Sync,
+    S: ClientStorage + Clone + Send + Sync,
+{
+    pub async fn get_application(&self, app_id: &ApplicationId) -> Result<GetApplicationResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/applications/{app_id}"))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn install_dev_application(
+        &self,
+        request: InstallDevApplicationRequest,
+    ) -> Result<InstallApplicationResponse> {
+        let response = self
+            .connection
+            .post("admin-api/install-dev-application", request)
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn install_application(
+        &self,
+        request: InstallApplicationRequest,
+    ) -> Result<InstallApplicationResponse> {
+        let response = self
+            .connection
+            .post("admin-api/install-application", request)
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn list_applications(&self) -> Result<ListApplicationsResponse> {
+        let response = self.connection.get("admin-api/applications").await?;
+        Ok(response)
+    }
+
+    pub async fn uninstall_application(
+        &self,
+        app_id: &ApplicationId,
+    ) -> Result<UninstallApplicationResponse> {
+        let response = self
+            .connection
+            .delete(&format!("admin-api/applications/{app_id}"))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn delete_blob(&self, blob_id: &BlobId) -> Result<BlobDeleteResponse> {
+        let response = self
+            .connection
+            .delete(&format!("admin-api/blobs/{blob_id}"))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn list_blobs(&self) -> Result<BlobListResponse> {
+        let response = self.connection.get("admin-api/blobs").await?;
+        Ok(response)
+    }
+
+    pub async fn get_blob_info(&self, blob_id: &BlobId) -> Result<BlobInfoResponse> {
+        let headers = self
+            .connection
+            .head(&format!("admin-api/blobs/{blob_id}"))
+            .await?;
+
+        let size = headers
+            .get("content-length")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        let mime_type = headers
+            .get("content-type")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+
+        let hash_hex = headers
+            .get("x-blob-hash")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+
+        let hash =
+            hex::decode(hash_hex).map_err(|_| eyre::eyre!("Invalid hash in response headers"))?;
+
+        let hash_array: [u8; 32] = hash
+            .try_into()
+            .map_err(|_| eyre::eyre!("Hash must be 32 bytes"))?;
+
+        let blob_info = BlobInfoResponse {
+            data: BlobMetadata {
+                blob_id: *blob_id,
+                size,
+                mime_type,
+                hash: hash_array,
+            },
+        };
+
+        Ok(blob_info)
+    }
+
+    pub async fn upload_blob(
+        &self,
+        data: Vec<u8>,
+        context_id: Option<&ContextId>,
+    ) -> Result<BlobInfo> {
+        let path = if let Some(ctx_id) = context_id {
+            format!("admin-api/blobs?context_id={}", ctx_id)
+        } else {
+            "admin-api/blobs".to_owned()
+        };
+
+        let response = self.connection.put_binary(&path, data).await?;
+
+        #[derive(serde::Deserialize)]
+        struct BlobUploadResponse {
+            data: BlobInfo,
+        }
+
+        let upload_response: BlobUploadResponse = response.json().await?;
+        Ok(upload_response.data)
+    }
+
+    pub async fn download_blob(
+        &self,
+        blob_id: &BlobId,
+        context_id: Option<&ContextId>,
+    ) -> Result<Vec<u8>> {
+        let path = if let Some(ctx_id) = context_id {
+            format!("admin-api/blobs/{}?context_id={}", blob_id, ctx_id)
+        } else {
+            format!("admin-api/blobs/{}", blob_id)
+        };
+
+        let data = self.connection.get_binary(&path).await?;
+        Ok(data)
+    }
+
+    pub async fn generate_context_identity(&self) -> Result<GenerateContextIdentityResponse> {
+        let response = self
+            .connection
+            .post("admin-api/identity/context", ())
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_peers_count(&self) -> Result<GetPeersCountResponse> {
+        let response = self.connection.get("admin-api/peers").await?;
+        Ok(response)
+    }
+
+    pub async fn execute_jsonrpc<P>(&self, request: Request<P>) -> Result<Response>
+    where
+        P: Serialize,
+    {
+        // Debug: Print the request being sent
+        eprintln!(
+            "🔍 JSON-RPC Request to {}: {}",
+            self.connection.api_url.join("jsonrpc")?,
+            serde_json::to_string_pretty(&request)?
+        );
+
+        let response = self.connection.post("jsonrpc", request).await?;
+
+        // Debug: Print the parsed response
+        eprintln!(
+            "🔍 JSON-RPC Parsed Response: {}",
+            serde_json::to_string_pretty(&response)?
+        );
+
+        Ok(response)
+    }
+
+    /// Invite specialized nodes (e.g., read-only TEE nodes) to join a context.
+    ///
+    /// This broadcasts a specialized node discovery request to the global invite topic.
+    /// Specialized nodes listening will respond with verification and receive invitations.
+    pub async fn invite_specialized_node(
+        &self,
+        request: InviteSpecializedNodeRequest,
+    ) -> Result<InviteSpecializedNodeResponse> {
+        let response = self
+            .connection
+            .post("admin-api/contexts/invite-specialized-node", request)
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn update_context_application(
+        &self,
+        context_id: &ContextId,
+        request: UpdateContextApplicationRequest,
+    ) -> Result<UpdateContextApplicationResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/contexts/{context_id}/application"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_context(&self, context_id: &ContextId) -> Result<GetContextResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/contexts/{context_id}"))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn list_contexts(&self) -> Result<GetContextsResponse> {
+        let response = self.connection.get("admin-api/contexts").await?;
+        Ok(response)
+    }
+
+    pub async fn create_context(
+        &self,
+        request: CreateContextRequest,
+    ) -> Result<CreateContextResponse> {
+        let response = self.connection.post("admin-api/contexts", request).await?;
+        Ok(response)
+    }
+
+    pub async fn delete_context(
+        &self,
+        context_id: &ContextId,
+        requester: Option<PublicKey>,
+    ) -> Result<DeleteContextResponse> {
+        let response = self
+            .connection
+            .delete_with_body(
+                &format!("admin-api/contexts/{context_id}"),
+                DeleteContextApiRequest { requester },
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_context_storage(
+        &self,
+        context_id: &ContextId,
+    ) -> Result<GetContextStorageResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/contexts/{context_id}/storage"))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_context_identities(
+        &self,
+        context_id: &ContextId,
+        owned: bool,
+    ) -> Result<GetContextIdentitiesResponse> {
+        let endpoint = if owned {
+            format!("admin-api/contexts/{}/identities-owned", context_id)
+        } else {
+            format!("admin-api/contexts/{}/identities", context_id)
+        };
+
+        let response = self.connection.get(&endpoint).await?;
+        Ok(response)
+    }
+
+    pub async fn get_context_client_keys(
+        &self,
+        context_id: &ContextId,
+    ) -> Result<GetContextClientKeysResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/contexts/{context_id}/client-keys"))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn sync_context(&self, context_id: &ContextId) -> Result<SyncContextResponse> {
+        let response = self
+            .connection
+            .post_no_body(&format!("admin-api/contexts/sync/{context_id}"))
+            .await?;
+        Ok(response)
+    }
+
+    /// Sync all contexts (legacy method for backward compatibility)
+    pub async fn sync_all_contexts(&self) -> Result<SyncContextResponse> {
+        let response = self
+            .connection
+            .post_no_body("admin-api/contexts/sync")
+            .await?;
+        Ok(response)
+    }
+
+    // Package management methods
+    pub async fn list_packages(&self) -> Result<ListPackagesResponse> {
+        let response = self.connection.get("admin-api/packages").await?;
+        Ok(response)
+    }
+
+    pub async fn list_versions(&self, package: &str) -> Result<ListVersionsResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/packages/{package}/versions"))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_latest_version(&self, package: &str) -> Result<GetLatestVersionResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/packages/{package}/latest"))
+            .await?;
+        Ok(response)
+    }
+}
