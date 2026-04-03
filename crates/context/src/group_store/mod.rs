@@ -6,12 +6,10 @@ use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::FromKeyParts;
 use calimero_store::key::{
-    AsKeyParts, ContextGroupRef, ContextIdentity, GroupChildIndex, GroupContextIndex,
-    GroupLocalGovNonce, GroupMember, GroupMemberContext, GroupMemberValue, GroupMeta,
-    GroupMetaValue, GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupSigningKey,
-    GroupSigningKeyValue, GroupUpgradeValue, NamespaceIdentity, NamespaceIdentityValue,
-    GROUP_CHILD_INDEX_PREFIX, GROUP_CONTEXT_INDEX_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX,
-    GROUP_MEMBER_PREFIX, GROUP_META_PREFIX, GROUP_OP_LOG_PREFIX, GROUP_SIGNING_KEY_PREFIX,
+    AsKeyParts, GroupChildIndex, GroupLocalGovNonce, GroupMemberContext, GroupMemberValue,
+    GroupMetaValue, GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupUpgradeValue,
+    NamespaceIdentity, NamespaceIdentityValue, GROUP_CHILD_INDEX_PREFIX,
+    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX,
 };
 use calimero_store::types::PredefinedEntry;
 use calimero_store::Store;
@@ -20,7 +18,11 @@ use sha2::{Digest, Sha256};
 
 mod aliases;
 mod capabilities;
+mod contexts;
 mod migrations;
+mod meta;
+mod membership;
+mod signing_keys;
 mod upgrades;
 
 pub use self::aliases::{
@@ -34,8 +36,26 @@ pub use self::capabilities::{
     get_default_visibility, get_member_capability, set_context_member_capability,
     set_default_capabilities, set_default_visibility, set_member_capability,
 };
+pub use self::contexts::{
+    cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identity,
+    get_group_for_context, register_context_in_group, unregister_context_from_group,
+};
 pub use self::migrations::{
     delete_all_context_last_migrations, get_context_last_migration, set_context_last_migration,
+};
+pub use self::meta::{
+    compute_group_state_hash, delete_group_meta, enumerate_all_groups, load_group_meta,
+    save_group_meta,
+};
+pub use self::membership::{
+    add_group_member, add_group_member_with_keys, check_group_membership, count_group_admins,
+    count_group_members, get_group_member_role, get_group_member_value, is_direct_group_admin,
+    is_group_admin, is_group_admin_or_has_capability, list_group_members, remove_group_member,
+    require_group_admin, require_group_admin_or_capability,
+};
+pub use self::signing_keys::{
+    delete_all_group_signing_keys, delete_group_signing_key, get_group_signing_key,
+    require_group_signing_key, store_group_signing_key,
 };
 pub use self::upgrades::{
     delete_group_upgrade, enumerate_in_progress_upgrades, load_group_upgrade, save_group_upgrade,
@@ -680,83 +700,6 @@ impl<'a> GroupStoreIndex<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Group meta helpers
-// ---------------------------------------------------------------------------
-
-pub fn load_group_meta(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<GroupMetaValue>> {
-    let handle = store.handle();
-    let key = GroupMeta::new(group_id.to_bytes());
-    let value = handle.get(&key)?;
-    Ok(value)
-}
-
-pub fn save_group_meta(
-    store: &Store,
-    group_id: &ContextGroupId,
-    meta: &GroupMetaValue,
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupMeta::new(group_id.to_bytes());
-    handle.put(&key, meta)?;
-    Ok(())
-}
-
-pub fn delete_group_meta(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupMeta::new(group_id.to_bytes());
-    handle.delete(&key)?;
-    Ok(())
-}
-
-pub fn enumerate_all_groups(
-    store: &Store,
-    offset: usize,
-    limit: usize,
-) -> EyreResult<Vec<([u8; 32], GroupMetaValue)>> {
-    let keys =
-        collect_keys_with_prefix(store, GroupMeta::new([0u8; 32]), GROUP_META_PREFIX, |_| {
-            true
-        })?;
-    let handle = store.handle();
-    let mut results = Vec::new();
-
-    for key in keys.into_iter().skip(offset).take(limit) {
-        let Some(meta) = handle.get(&key)? else {
-            continue;
-        };
-        results.push((key.group_id(), meta));
-    }
-
-    Ok(results)
-}
-
-/// Compute a deterministic SHA-256 hash of the group's authorization-relevant state.
-///
-/// Covers members (sorted by public key) + roles + admin identity + target application.
-/// This hash is embedded in each [`SignedGroupOp`] to ensure ops can only apply against
-/// the exact state they were signed against, preventing divergence from concurrent ops.
-pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> EyreResult<[u8; 32]> {
-    let meta = load_group_meta(store, group_id)?
-        .ok_or_else(|| eyre::eyre!("group not found for state hash computation"))?;
-
-    let mut members = list_group_members(store, group_id, 0, usize::MAX)?;
-    members.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut hasher = Sha256::new();
-    hasher.update(group_id.to_bytes());
-    hasher.update(AsRef::<[u8]>::as_ref(&meta.admin_identity));
-    hasher.update(meta.target_application_id.as_ref());
-    for (pk, role) in &members {
-        hasher.update(AsRef::<[u8]>::as_ref(pk));
-        hasher.update(&borsh::to_vec(role).unwrap_or_default());
-    }
-    Ok(hasher.finalize().into())
-}
-
 /// Namespace governance epoch: just the namespace DAG heads.
 ///
 /// With the single-DAG model, governance epoch is simply the heads of
@@ -781,62 +724,6 @@ pub fn compute_namespace_governance_epoch(
                 .unwrap_or_else(|| Ok(vec![]))
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Group member helpers
-// ---------------------------------------------------------------------------
-
-pub fn add_group_member(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-    role: GroupMemberRole,
-) -> EyreResult<()> {
-    add_group_member_with_keys(store, group_id, identity, role, None, None)
-}
-
-pub fn add_group_member_with_keys(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-    role: GroupMemberRole,
-    private_key: Option<[u8; 32]>,
-    sender_key: Option<[u8; 32]>,
-) -> EyreResult<()> {
-    let is_admin = role == GroupMemberRole::Admin;
-    let mut handle = store.handle();
-    let key = GroupMember::new(group_id.to_bytes(), *identity);
-    handle.put(
-        &key,
-        &GroupMemberValue {
-            role,
-            private_key,
-            sender_key,
-        },
-    )?;
-    drop(handle);
-
-    if !is_admin {
-        if let Some(defaults) = get_default_capabilities(store, group_id)? {
-            if defaults != 0 {
-                set_member_capability(store, group_id, identity, defaults)?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-pub fn remove_group_member(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupMember::new(group_id.to_bytes(), *identity);
-    handle.delete(&key)?;
-    Ok(())
 }
 
 pub fn get_local_gov_nonce(
@@ -2556,27 +2443,6 @@ pub fn collect_skeleton_delta_ids_for_group(
     Ok(delta_ids)
 }
 
-/// Returns the member's effective role, walking up the ancestor chain.
-/// Direct membership takes priority; if not found, checks parent groups.
-/// Returns the most privileged role found (Admin > Member > ReadOnly).
-pub fn get_group_member_role(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<Option<GroupMemberRole>> {
-    get_direct_member_role(store, group_id, identity)
-}
-
-pub fn get_group_member_value(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<Option<GroupMemberValue>> {
-    let handle = store.handle();
-    let key = GroupMember::new(group_id.to_bytes(), *identity);
-    Ok(handle.get(&key)?)
-}
-
 /// Returns `true` if the member has a `ReadOnly` role in the group that owns this context.
 /// Returns `false` if the context has no group, the member is not found, or the member
 /// has `Admin` or `Member` role.
@@ -2908,370 +2774,6 @@ fn cascade_target_application(
     _app_key: &[u8; 32],
 ) -> EyreResult<()> {
     Ok(())
-}
-
-fn has_direct_member(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<bool> {
-    let handle = store.handle();
-    let key = GroupMember::new(group_id.to_bytes(), *identity);
-    Ok(handle.has(&key)?)
-}
-
-fn get_direct_member_role(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<Option<GroupMemberRole>> {
-    let handle = store.handle();
-    let key = GroupMember::new(group_id.to_bytes(), *identity);
-    Ok(handle.get(&key)?.map(|v: GroupMemberValue| v.role))
-}
-
-pub fn check_group_membership(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<bool> {
-    has_direct_member(store, group_id, identity)
-}
-
-/// Returns `true` if `identity` is a direct admin of this specific group
-/// (no ancestor walk). Used for operations where inherited admin authority
-/// should NOT apply (e.g., managing Restricted context allowlists).
-pub fn is_direct_group_admin(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<bool> {
-    match get_direct_member_role(store, group_id, identity)? {
-        Some(GroupMemberRole::Admin) => Ok(true),
-        _ => Ok(false),
-    }
-}
-
-pub fn is_group_admin(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<bool> {
-    match get_group_member_role(store, group_id, identity)? {
-        Some(GroupMemberRole::Admin) => return Ok(true),
-        _ => {}
-    }
-    if let Some(meta) = load_group_meta(store, group_id)? {
-        if meta.admin_identity == *identity {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-pub fn require_group_admin(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<()> {
-    if !is_group_admin(store, group_id, identity)? {
-        bail!(GroupStoreError::NotAdmin {
-            group_id: format!("{group_id:?}"),
-            identity: format!("{identity:?}"),
-        });
-    }
-    Ok(())
-}
-
-/// Returns `true` if `identity` is a group admin **or** holds the given capability bit.
-/// Admins always pass regardless of capability bits.
-pub fn is_group_admin_or_has_capability(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-    capability_bit: u32,
-) -> EyreResult<bool> {
-    if is_group_admin(store, group_id, identity)? {
-        return Ok(true);
-    }
-    let caps = get_member_capability(store, group_id, identity)?.unwrap_or(0);
-    Ok(caps & capability_bit != 0)
-}
-
-/// Enforces that `identity` is a group admin or holds the given capability bit.
-pub fn require_group_admin_or_capability(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-    capability_bit: u32,
-    operation: &str,
-) -> EyreResult<()> {
-    if !is_group_admin_or_has_capability(store, group_id, identity, capability_bit)? {
-        bail!(GroupStoreError::Unauthorized {
-            group_id: format!("{group_id:?}"),
-            operation: operation.to_owned(),
-        });
-    }
-    Ok(())
-}
-
-pub fn count_group_admins(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
-    let gid = group_id.to_bytes();
-    let keys = collect_keys_with_prefix(
-        store,
-        GroupMember::new(gid, [0u8; 32].into()),
-        GROUP_MEMBER_PREFIX,
-        |k| k.group_id() == gid,
-    )?;
-    let handle = store.handle();
-    let mut count = 0usize;
-    for key in keys {
-        let val: GroupMemberValue = handle
-            .get(&key)?
-            .ok_or_else(|| eyre::eyre!("member key exists but value is missing"))?;
-        if val.role == GroupMemberRole::Admin {
-            count += 1;
-        }
-    }
-    Ok(count)
-}
-
-pub fn list_group_members(
-    store: &Store,
-    group_id: &ContextGroupId,
-    offset: usize,
-    limit: usize,
-) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
-    let gid = group_id.to_bytes();
-    let keys = collect_keys_with_prefix(
-        store,
-        GroupMember::new(gid, [0u8; 32].into()),
-        GROUP_MEMBER_PREFIX,
-        |k| k.group_id() == gid,
-    )?;
-    let handle = store.handle();
-    let mut results = Vec::new();
-    for key in keys.into_iter().skip(offset).take(limit) {
-        let val: GroupMemberValue = handle
-            .get(&key)?
-            .ok_or_else(|| eyre::eyre!("member key exists but value is missing"))?;
-        results.push((key.identity(), val.role));
-    }
-    Ok(results)
-}
-
-pub fn count_group_members(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
-    let gid = group_id.to_bytes();
-    let keys = collect_keys_with_prefix(
-        store,
-        GroupMember::new(gid, [0u8; 32].into()),
-        GROUP_MEMBER_PREFIX,
-        |k| k.group_id() == gid,
-    )?;
-    Ok(keys.len())
-}
-
-/// Scans the ContextIdentity column for the given context and returns the first
-/// `PublicKey` for which the node holds a local private key. Used to find a
-/// valid signer when performing group upgrades on behalf of a context that the
-/// group admin may not be a member of.
-pub fn find_local_signing_identity(
-    store: &Store,
-    context_id: &ContextId,
-) -> EyreResult<Option<PublicKey>> {
-    let handle = store.handle();
-    let start_key = ContextIdentity::new(*context_id, [0u8; 32].into());
-    let mut iter = handle.iter::<ContextIdentity>()?;
-    let first = iter.seek(start_key).transpose();
-
-    for key_result in first.into_iter().chain(iter.keys()) {
-        let key = key_result?;
-        if key.context_id() != *context_id {
-            break;
-        }
-        let Some(value) = handle.get(&key)? else {
-            continue;
-        };
-        if value.private_key.is_some() {
-            return Ok(Some(key.public_key()));
-        }
-    }
-
-    Ok(None)
-}
-
-// ---------------------------------------------------------------------------
-// Group signing key helpers
-// ---------------------------------------------------------------------------
-
-pub fn store_group_signing_key(
-    store: &Store,
-    group_id: &ContextGroupId,
-    public_key: &PublicKey,
-    private_key: &[u8; 32],
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupSigningKey::new(group_id.to_bytes(), *public_key);
-    handle.put(
-        &key,
-        &GroupSigningKeyValue {
-            private_key: *private_key,
-        },
-    )?;
-    Ok(())
-}
-
-pub fn get_group_signing_key(
-    store: &Store,
-    group_id: &ContextGroupId,
-    public_key: &PublicKey,
-) -> EyreResult<Option<[u8; 32]>> {
-    let handle = store.handle();
-    let key = GroupSigningKey::new(group_id.to_bytes(), *public_key);
-    let value = handle.get(&key)?;
-    Ok(value.map(|v| v.private_key))
-}
-
-pub fn delete_group_signing_key(
-    store: &Store,
-    group_id: &ContextGroupId,
-    public_key: &PublicKey,
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupSigningKey::new(group_id.to_bytes(), *public_key);
-    handle.delete(&key)?;
-    Ok(())
-}
-
-/// Verify that the node holds a signing key for the given requester in this group.
-pub fn require_group_signing_key(
-    store: &Store,
-    group_id: &ContextGroupId,
-    requester: &PublicKey,
-) -> EyreResult<()> {
-    if get_group_signing_key(store, group_id, requester)?.is_none() {
-        bail!(GroupStoreError::NoSigningKey {
-            group_id: format!("{group_id:?}"),
-            identity: format!("{requester:?}"),
-        });
-    }
-    Ok(())
-}
-
-/// Delete all signing keys for a group (used during group deletion).
-pub fn delete_all_group_signing_keys(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    let gid = group_id.to_bytes();
-    let keys = collect_keys_with_prefix(
-        store,
-        GroupSigningKey::new(gid, [0u8; 32].into()),
-        GROUP_SIGNING_KEY_PREFIX,
-        |k| k.group_id() == gid,
-    )?;
-    let mut handle = store.handle();
-    for key in keys {
-        handle.delete(&key)?;
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Context-group index helpers
-// ---------------------------------------------------------------------------
-
-pub fn register_context_in_group(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let group_id_bytes: [u8; 32] = group_id.to_bytes();
-
-    // If already registered in a different group, remove the stale index entry
-    // to prevent orphaned counts and enumerations for the old group.
-    let ref_key = ContextGroupRef::new(*context_id);
-    if let Some(existing_group_bytes) = handle.get(&ref_key)? {
-        if existing_group_bytes != group_id_bytes {
-            let old_idx = GroupContextIndex::new(existing_group_bytes, *context_id);
-            handle.delete(&old_idx)?;
-        }
-    }
-
-    let idx_key = GroupContextIndex::new(group_id_bytes, *context_id);
-    handle.put(&idx_key, &())?;
-    handle.put(&ref_key, &group_id_bytes)?;
-
-    Ok(())
-}
-
-pub fn unregister_context_from_group(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let group_id_bytes: [u8; 32] = group_id.to_bytes();
-
-    let idx_key = GroupContextIndex::new(group_id_bytes, *context_id);
-    handle.delete(&idx_key)?;
-
-    let ref_key = ContextGroupRef::new(*context_id);
-    handle.delete(&ref_key)?;
-
-    Ok(())
-}
-
-pub fn get_group_for_context(
-    store: &Store,
-    context_id: &ContextId,
-) -> EyreResult<Option<ContextGroupId>> {
-    let handle = store.handle();
-    let key = ContextGroupRef::new(*context_id);
-    let value = handle.get(&key)?;
-    Ok(value.map(ContextGroupId::from))
-}
-
-fn cascade_remove_member_from_group_tree(
-    store: &Store,
-    group_id: &ContextGroupId,
-    member: &PublicKey,
-) -> EyreResult<()> {
-    let contexts = enumerate_group_contexts(store, group_id, 0, usize::MAX)?;
-    for context_id in &contexts {
-        let mut handle = store.handle();
-        let identity_key = ContextIdentity::new(*context_id, (*member).into());
-        if handle.has(&identity_key)? {
-            handle.delete(&identity_key)?;
-            tracing::info!(
-                group_id = %hex::encode(group_id.to_bytes()),
-                context_id = %hex::encode(context_id.as_ref()),
-                member = %member,
-                "cascade-removed member from context"
-            );
-        }
-    }
-
-    Ok(())
-}
-
-pub fn enumerate_group_contexts(
-    store: &Store,
-    group_id: &ContextGroupId,
-    offset: usize,
-    limit: usize,
-) -> EyreResult<Vec<ContextId>> {
-    let gid = group_id.to_bytes();
-    let keys = collect_keys_with_prefix(
-        store,
-        GroupContextIndex::new(gid, ContextId::from([0u8; 32])),
-        GROUP_CONTEXT_INDEX_PREFIX,
-        |k| k.group_id() == gid,
-    )?;
-    Ok(keys
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|k| k.context_id())
-        .collect())
 }
 
 #[cfg(test)]
