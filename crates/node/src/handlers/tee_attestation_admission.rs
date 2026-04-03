@@ -29,7 +29,7 @@ pub async fn handle_tee_attestation_announce(
 
     let is_mock = is_mock_quote(&quote_bytes);
 
-    let pk_hash: [u8; 32] = Sha256::digest(&*public_key).into();
+    let pk_hash: [u8; 32] = Sha256::digest(*public_key).into();
 
     let verification_result = if is_mock {
         warn!("Verifying MOCK attestation for TEE admission");

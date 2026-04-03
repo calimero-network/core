@@ -77,7 +77,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         let context = self
             .context_client
             .get_context(&self.context_id)
-            .map_err(|e| ApplyError::Application(format!("Failed to get context: {}", e)))?
+            .map_err(|e| ApplyError::Application(format!("Failed to get context: {e}")))?
             .ok_or_else(|| ApplyError::Application("Context not found".to_owned()))?;
 
         let current_root_hash = *context.root_hash;
@@ -118,7 +118,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
 
         // Serialize actions to StorageDelta
         let artifact = borsh::to_vec(&StorageDelta::Actions(delta.payload.clone()))
-            .map_err(|e| ApplyError::Application(format!("Failed to serialize delta: {}", e)))?;
+            .map_err(|e| ApplyError::Application(format!("Failed to serialize delta: {e}")))?;
 
         let wasm_start = std::time::Instant::now();
 
@@ -134,7 +134,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
                 None,
             )
             .await
-            .map_err(|e| ApplyError::Application(format!("WASM execution failed: {}", e)))?;
+            .map_err(|e| ApplyError::Application(format!("WASM execution failed: {e}")))?;
 
         let wasm_elapsed_ms = wasm_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -963,7 +963,7 @@ impl DeltaStore {
         // Filter out parents that exist in the database
         let handle = self.applier.context_client.datastore_handle();
         let mut actually_missing = Vec::new();
-        let mut all_cascaded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+        let all_cascaded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
         for parent_id in &potentially_missing {
             let db_key =

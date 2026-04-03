@@ -182,7 +182,7 @@ pub async fn handle_verification_request(
                         reset_to_pending(pending_invites, &nonce);
                         return SpecializedNodeInvitationResponse::error(
                             nonce,
-                            format!("Mock attestation verification failed: {}", err),
+                            format!("Mock attestation verification failed: {err}"),
                         );
                     }
                 }
@@ -194,7 +194,7 @@ pub async fn handle_verification_request(
                         reset_to_pending(pending_invites, &nonce);
                         return SpecializedNodeInvitationResponse::error(
                             nonce,
-                            format!("Attestation verification failed: {}", err),
+                            format!("Attestation verification failed: {err}"),
                         );
                     }
                 }
@@ -297,7 +297,7 @@ async fn create_invitation_response(
             error!(error = %err, %context_id, "Failed to create invitation for specialized node");
             return SpecializedNodeInvitationResponse::error(
                 nonce,
-                format!("Failed to create invitation: {}", err),
+                format!("Failed to create invitation: {err}"),
             );
         }
     };
@@ -314,7 +314,7 @@ async fn create_invitation_response(
             error!(error = %err, "Failed to serialize SignedOpenInvitation");
             return SpecializedNodeInvitationResponse::error(
                 nonce,
-                format!("Failed to serialize invitation: {}", err),
+                format!("Failed to serialize invitation: {err}"),
             );
         }
     };

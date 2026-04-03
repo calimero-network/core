@@ -50,7 +50,7 @@ impl Handler<GetBlobBytesRequest> for NodeManager {
         };
 
         ActorResponse::r#async(task.into_actor(self).map(move |res, act, _ctx| {
-            if let Err(_) = &res {
+            if res.is_err() {
                 // On error, remove from cache if it was added
                 let _ignored = act.state.blob_cache_handle().remove(&blob_id);
             }
