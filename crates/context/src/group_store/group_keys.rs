@@ -266,3 +266,7 @@ pub fn build_key_rotation(
 pub fn encrypt_group_op(group_key: &[u8; 32], op: &GroupOp) -> EyreResult<EncryptedGroupOp> {
     GroupKeyring::encrypt_op(group_key, op)
 }
+
+pub fn decrypt_group_op(group_key: &[u8; 32], encrypted: &EncryptedGroupOp) -> EyreResult<GroupOp> {
+    GroupKeyring::decrypt_op(group_key, encrypted)
+}

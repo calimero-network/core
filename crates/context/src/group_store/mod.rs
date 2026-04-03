@@ -26,6 +26,7 @@ mod meta;
 mod migrations;
 mod namespace;
 mod namespace_governance;
+mod namespace_membership;
 mod permission_checker;
 mod signing_keys;
 mod tee;
@@ -50,7 +51,7 @@ pub use self::contexts::{
 };
 pub use self::group_governance_publisher::GroupGovernancePublisher;
 pub use self::group_keys::{
-    build_key_rotation, compute_key_id, encrypt_group_op, load_current_group_key,
+    build_key_rotation, compute_key_id, decrypt_group_op, encrypt_group_op, load_current_group_key,
     load_current_group_key_record, load_group_key_by_id, store_group_key, unwrap_group_key,
     wrap_group_key_for_member, GroupKeyring, StoredGroupKey,
 };
@@ -87,6 +88,7 @@ pub use self::namespace_governance::{
     sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, KeyUnwrapFailure,
     NamespaceGovernance, NamespaceHead, PendingKeyDelivery,
 };
+pub use self::namespace_membership::NamespaceMembershipService;
 pub use self::permission_checker::PermissionChecker;
 pub use self::signing_keys::{
     delete_all_group_signing_keys, delete_group_signing_key, get_group_signing_key,

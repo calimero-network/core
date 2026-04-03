@@ -3,20 +3,16 @@ use calimero_context_client::local_governance::{
     SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_config::MemberCapabilities;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
-use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
-use sha2::Digest;
 
 use super::{
-    add_group_member, apply_group_op_mutations, check_group_membership, count_group_contexts,
-    get_local_gov_nonce, get_namespace_identity_record, is_group_admin,
-    is_group_admin_or_has_capability, load_current_group_key_record, load_group_key_by_id,
-    load_group_meta, nest_group, resolve_namespace, save_group_meta, set_local_gov_nonce,
-    store_group_key, unnest_group, unwrap_group_key,
+    apply_group_op_mutations, count_group_contexts, decrypt_group_op, get_local_gov_nonce,
+    get_namespace_identity_record, load_current_group_key_record, load_group_key_by_id,
+    load_group_meta, namespace_membership::NamespaceMembershipService, nest_group, save_group_meta,
+    set_local_gov_nonce, store_group_key, unnest_group, unwrap_group_key,
 };
 
 /// Side effect returned by namespace-op application when an existing
@@ -127,6 +123,13 @@ impl<'a> NamespaceGovernance<'a> {
 
     /// Persist a namespace governance op in the local DAG log.
     pub fn store_operation(&self, op: &SignedNamespaceOp) -> EyreResult<()> {
+        if op.namespace_id != self.namespace_id {
+            bail!(
+                "namespace mismatch when storing op: handle={}, op={}",
+                hex::encode(self.namespace_id),
+                hex::encode(op.namespace_id)
+            );
+        }
         let delta_id = op
             .content_hash()
             .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
@@ -420,15 +423,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_key: &[u8; 32],
         encrypted: &EncryptedGroupOp,
     ) -> EyreResult<()> {
-        use calimero_crypto::SharedKey;
-
-        let sk = PrivateKey::from(*group_key);
-        let shared_key = SharedKey::from_sk(&sk);
-        let plaintext = shared_key
-            .decrypt(encrypted.ciphertext.clone(), encrypted.nonce)
-            .ok_or_else(|| eyre::eyre!("failed to decrypt group op (bad sender_key or corrupt)"))?;
-        let inner_op: GroupOp = borsh::from_slice(&plaintext)
-            .map_err(|e| eyre::eyre!("borsh decode inner GroupOp: {e}"))?;
+        let inner_op = super::decrypt_group_op(group_key, encrypted)?;
 
         let signed_group_op = SignedGroupOp {
             version: calimero_context_client::local_governance::SIGNED_GROUP_OP_SCHEMA_VERSION,
@@ -639,86 +634,11 @@ impl<'a> NamespaceGovernance<'a> {
         member: &PublicKey,
         signed_invitation: &calimero_context_config::types::SignedGroupOpenInvitation,
     ) -> EyreResult<()> {
-        let inv = &signed_invitation.invitation;
-        let group_id = inv.group_id;
-
-        self.verify_member_join_signature(op, member, signed_invitation)?;
-        let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
-        self.require_inviter_permission(&group_id, &inviter_pk)?;
-
-        if check_group_membership(self.store, &group_id, member)? {
-            return Ok(());
-        }
-
-        let role = self.map_invited_role(inv.invited_role);
-        if role == GroupMemberRole::Admin && !is_group_admin(self.store, &group_id, &inviter_pk)? {
-            bail!("only admins can invite new admins");
-        }
-
-        let resolved_ns = resolve_namespace(self.store, &group_id)?;
-        if resolved_ns.to_bytes() != self.namespace_id {
-            bail!("group does not belong to this namespace");
-        }
-
-        add_group_member(self.store, &group_id, member, role)?;
-        Ok(())
-    }
-
-    fn verify_member_join_signature(
-        &self,
-        op: &SignedNamespaceOp,
-        member: &PublicKey,
-        signed_invitation: &calimero_context_config::types::SignedGroupOpenInvitation,
-    ) -> EyreResult<()> {
-        if op.signer != *member {
-            bail!(
-                "MemberJoined signer ({}) does not match member ({})",
-                op.signer,
-                member
-            );
-        }
-
-        let inv = &signed_invitation.invitation;
-        let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
-        let invitation_bytes = borsh::to_vec(inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;
-        let hash = sha2::Sha256::digest(&invitation_bytes);
-        let sig_bytes = hex::decode(&signed_invitation.inviter_signature)
-            .map_err(|e| eyre::eyre!("bad invitation signature hex: {e}"))?;
-        let sig_arr: [u8; 64] = sig_bytes
-            .try_into()
-            .map_err(|_| eyre::eyre!("invitation signature wrong length"))?;
-        inviter_pk
-            .verify_raw_signature(&hash, &sig_arr)
-            .map_err(|e| eyre::eyre!("invalid invitation signature: {e}"))?;
-        Ok(())
-    }
-
-    fn require_inviter_permission(
-        &self,
-        group_id: &ContextGroupId,
-        inviter_pk: &PublicKey,
-    ) -> EyreResult<()> {
-        if !is_group_admin_or_has_capability(
-            self.store,
-            group_id,
-            inviter_pk,
-            MemberCapabilities::CAN_INVITE_MEMBERS,
-        )? {
-            bail!(
-                "invitation inviter {} lacks permission for group {:?}",
-                inviter_pk,
-                group_id
-            );
-        }
-        Ok(())
-    }
-
-    fn map_invited_role(&self, invited_role: u8) -> GroupMemberRole {
-        match invited_role {
-            0 => GroupMemberRole::Admin,
-            2 => GroupMemberRole::ReadOnly,
-            _ => GroupMemberRole::Member,
-        }
+        NamespaceMembershipService::new(self.store, self.namespace_id).apply_member_joined(
+            op,
+            member,
+            signed_invitation,
+        )
     }
 }
 

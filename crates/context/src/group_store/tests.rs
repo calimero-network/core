@@ -418,6 +418,40 @@ fn context_registration_service_keeps_existing_non_zero_context_meta_application
 }
 
 #[test]
+fn namespace_governance_store_operation_rejects_namespace_mismatch() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let governance_ns = [0x71; 32];
+    let op_ns = [0x72; 32];
+    let signer_sk = PrivateKey::random(&mut rng);
+
+    let signed = SignedNamespaceOp::sign(
+        &signer_sk,
+        op_ns,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![1, 2, 3],
+        }),
+    )
+    .unwrap();
+
+    let err = NamespaceGovernance::new(&store, governance_ns)
+        .store_operation(&signed)
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("namespace mismatch when storing op"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn apply_local_signed_group_op_nonce_and_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
