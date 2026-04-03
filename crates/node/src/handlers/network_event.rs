@@ -297,7 +297,7 @@ impl Handler<NetworkEvent> for NodeManager {
                     BroadcastMessage::SpecializedNodeDiscovery { nonce, node_type } => {
                         // Only specialized nodes should respond to discovery broadcasts
                         // Check if this node's mode matches the requested node_type
-                        let should_respond = match (self.state.node_mode, node_type) {
+                        let should_respond = match (self.state.node_mode(), node_type) {
                             (NodeMode::ReadOnly, SpecializedNodeType::ReadOnly) => true,
                             _ => false,
                         };
@@ -307,7 +307,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                 %source,
                                 nonce = %hex::encode(nonce),
                                 ?node_type,
-                                node_mode = ?self.state.node_mode,
+                                node_mode = ?self.state.node_mode(),
                                 "Ignoring specialized node discovery (not a matching specialized node)"
                             );
                             return;
@@ -423,7 +423,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         );
 
                         // Handle the confirmation to remove the pending invite
-                        let pending_invites = self.state.pending_specialized_node_invites.clone();
+                        let pending_invites = self.state.pending_specialized_node_invites_handle();
                         specialized_node_invite::handle_join_confirmation(&pending_invites, nonce);
                     }
                     BroadcastMessage::NamespaceGovernanceDelta {
@@ -771,10 +771,10 @@ impl Handler<NetworkEvent> for NodeManager {
                 );
 
                 // Standard nodes verify and send invitation
-                let pending_invites = self.state.pending_specialized_node_invites.clone();
+                let pending_invites = self.state.pending_specialized_node_invites_handle();
                 let network_client = self.managers.sync.network_client.clone();
                 let context_client = self.clients.context.clone();
-                let accept_mock_tee = self.state.accept_mock_tee;
+                let accept_mock_tee = self.state.accept_mock_tee();
 
                 let _ignored = ctx.spawn(
                     async move {

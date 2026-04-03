@@ -34,9 +34,7 @@ pub use network_event_channel::{
 };
 pub use network_event_processor::NetworkEventBridge;
 pub use run::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
-pub(crate) use state::{
-    CachedBlob, NodeClients, NodeManagers, NodeState, SyncSession, SyncSessionState,
-};
+pub(crate) use state::{CachedBlob, NodeClients, NodeManagers, NodeState};
 pub use sync::SyncManager;
 
 #[cfg(test)]

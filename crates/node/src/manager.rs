@@ -1,4 +1,3 @@
-use crate::run::NodeMode;
 use crate::sync::SyncManager;
 use crate::{NodeClients, NodeManagers, NodeState};
 use actix::Actor;

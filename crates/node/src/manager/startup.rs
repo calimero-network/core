@@ -1,7 +1,7 @@
 use std::pin::pin;
 use std::time::Duration;
 
-use actix::{ActorFutureExt, AsyncContext, WrapFuture};
+use actix::{AsyncContext, WrapFuture};
 use calimero_context_client::group::ListAllGroupsRequest;
 use futures_util::StreamExt;
 use tracing::{debug, error, warn};
