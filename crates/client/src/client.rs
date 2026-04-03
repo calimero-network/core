@@ -32,6 +32,7 @@ mod group;
 mod jsonrpc;
 mod namespace;
 mod packages;
+mod system;
 
 pub trait UrlFragment: ScopedAlias + AliasKind {
     const KIND: &'static str;

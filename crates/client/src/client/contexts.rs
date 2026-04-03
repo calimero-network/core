@@ -4,9 +4,8 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponse, DeleteContextApiRequest, DeleteContextResponse,
-    GenerateContextIdentityResponse, GetContextClientKeysResponse, GetContextIdentitiesResponse,
-    GetContextResponse, GetContextStorageResponse, GetContextsResponse, GetPeersCountResponse,
-    InviteSpecializedNodeRequest, InviteSpecializedNodeResponse, SyncContextResponse,
+    GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
+    GetContextStorageResponse, GetContextsResponse, SyncContextResponse,
     UpdateContextApplicationRequest, UpdateContextApplicationResponse,
 };
 use eyre::Result;
@@ -19,34 +18,6 @@ where
     A: ClientAuthenticator + Clone + Send + Sync,
     S: ClientStorage + Clone + Send + Sync,
 {
-    pub async fn generate_context_identity(&self) -> Result<GenerateContextIdentityResponse> {
-        let response = self
-            .connection
-            .post("admin-api/identity/context", ())
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn get_peers_count(&self) -> Result<GetPeersCountResponse> {
-        let response = self.connection.get("admin-api/peers").await?;
-        Ok(response)
-    }
-
-    /// Invite specialized nodes (e.g., read-only TEE nodes) to join a context.
-    ///
-    /// This broadcasts a specialized node discovery request to the global invite topic.
-    /// Specialized nodes listening will respond with verification and receive invitations.
-    pub async fn invite_specialized_node(
-        &self,
-        request: InviteSpecializedNodeRequest,
-    ) -> Result<InviteSpecializedNodeResponse> {
-        let response = self
-            .connection
-            .post("admin-api/contexts/invite-specialized-node", request)
-            .await?;
-        Ok(response)
-    }
-
     pub async fn update_context_application(
         &self,
         context_id: &ContextId,

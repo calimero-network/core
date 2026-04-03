@@ -16,21 +16,7 @@ where
     where
         P: Serialize,
     {
-        // Debug: Print the request being sent
-        eprintln!(
-            "🔍 JSON-RPC Request to {}: {}",
-            self.connection.api_url.join("jsonrpc")?,
-            serde_json::to_string_pretty(&request)?
-        );
-
         let response = self.connection.post("jsonrpc", request).await?;
-
-        // Debug: Print the parsed response
-        eprintln!(
-            "🔍 JSON-RPC Parsed Response: {}",
-            serde_json::to_string_pretty(&response)?
-        );
-
         Ok(response)
     }
 }
