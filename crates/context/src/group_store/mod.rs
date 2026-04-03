@@ -111,6 +111,8 @@ pub use self::upgrades::{
 };
 
 #[cfg(test)]
+use self::local_state::{append_op_log_entry, set_op_head};
+#[cfg(test)]
 use self::upgrades::extract_application_id;
 
 // ---------------------------------------------------------------------------
@@ -234,7 +236,7 @@ where
     let mut iter = handle.iter::<K>()?;
     let first = iter.seek(start).transpose();
     let mut seen = 0usize;
-    let mut keys = Vec::with_capacity(limit);
+    let mut keys = Vec::new();
 
     for key_result in first.into_iter().chain(iter.keys()) {
         let key = key_result?;
