@@ -403,7 +403,12 @@ fn two_nodes_converge_on_context_alias_as_admin() {
         vec![],
         [0u8; 32],
         1,
-        GroupOp::ContextRegistered { context_id },
+        GroupOp::ContextRegistered {
+            context_id,
+            application_id: calimero_primitives::application::ApplicationId::from([0xAA; 32]),
+            blob_id: calimero_primitives::blobs::BlobId::from([0xBB; 32]),
+            source: String::new(),
+        },
     )
     .expect("sign ContextRegistered");
     let op2 = SignedGroupOp::sign(
