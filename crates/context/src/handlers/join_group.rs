@@ -1,12 +1,39 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{JoinGroupRequest, JoinGroupResponse};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
 use calimero_primitives::context::{ContextConfigParams, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::key;
+use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use crate::{group_store, ContextManager};
+
+const JOIN_OVERALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+async fn await_condition<F>(
+    notify: &Arc<Notify>,
+    deadline: tokio::time::Instant,
+    mut check: F,
+) -> eyre::Result<bool>
+where
+    F: FnMut() -> eyre::Result<bool>,
+{
+    loop {
+        if check()? {
+            return Ok(true);
+        }
+        if tokio::time::timeout_at(deadline, notify.notified())
+            .await
+            .is_err()
+        {
+            return check();
+        }
+    }
+}
 
 impl Handler<JoinGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <JoinGroupRequest as Message>::Result>;
@@ -47,6 +74,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let context_client = self.context_client.clone();
+        let notify = self.ns_gov_notify.clone();
 
         ActorResponse::r#async(
             async move {
@@ -56,6 +84,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     2 => GroupMemberRole::ReadOnly,
                     _ => GroupMemberRole::Member,
                 };
+
+                let deadline = tokio::time::Instant::now() + JOIN_OVERALL_TIMEOUT;
 
                 // -------------------------------------------------------
                 // Phase 1: Set up local state.
@@ -87,12 +117,17 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 group_store::add_group_member(&datastore, &group_id, &joiner_identity, role)?;
 
                 // -------------------------------------------------------
-                // Phase 2: Subscribe + publish MemberJoined + sync.
+                // Phase 2: Subscribe + publish MemberJoined, then wait
+                //          for the group key to arrive via gossipsub.
                 // -------------------------------------------------------
 
                 let _ = node_client.subscribe_namespace(namespace_id).await;
 
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                // Backfill: ops published before we subscribed won't arrive
+                // via gossipsub. Request them once from a mesh peer.
+                if let Err(e) = node_client.sync_namespace(namespace_id).await {
+                    warn!(?e, "initial namespace backfill request failed");
+                }
 
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoined {
                     member: joiner_identity,
@@ -108,29 +143,24 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 )
                 .await?;
 
-                // Pull namespace governance ops. Existing members publish
-                // KeyDelivery after seeing our MemberJoined. Poll until we
-                // have the group key (up to ~15s).
-                for attempt in 0..5 {
-                    if let Err(e) = node_client.sync_namespace(namespace_id).await {
-                        warn!(?e, "namespace sync request failed");
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                {
+                    let ds = &datastore;
+                    let gid = &group_id;
+                    let got_key = await_condition(&notify, deadline, || {
+                        Ok(group_store::load_current_group_key(ds, gid)?.is_some())
+                    })
+                    .await?;
 
-                    if group_store::load_current_group_key(&datastore, &group_id)?.is_some() {
-                        info!("received group key after {} sync attempts", attempt + 1);
-                        break;
+                    if !got_key {
+                        warn!("group key did not arrive within timeout");
+                    } else {
+                        info!("received group key via gossipsub");
                     }
                 }
 
                 // -------------------------------------------------------
-                // Phase 3: Auto-join contexts.
-                //
-                // ContextRegistered ops are encrypted and can only be
-                // processed once the group key arrives. Even after
-                // KeyDelivery the ops may still be in-flight on the
-                // gossip layer. Poll sync_namespace + enumerate until
-                // at least one context appears (up to ~20s).
+                // Phase 3: Wait for ContextRegistered ops to populate the
+                //          group context index, then auto-join.
                 // -------------------------------------------------------
 
                 if let Some(ref alias_str) = group_alias {
@@ -139,35 +169,28 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                 if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
                     if meta.auto_join {
-                        let mut contexts = Vec::new();
-                        for poll in 0..10 {
-                            if let Err(e) = node_client.sync_namespace(namespace_id).await {
-                                warn!(?e, "namespace sync request failed (context poll)");
-                            }
-                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        let ds = &datastore;
+                        let gid = &group_id;
+                        let _ = await_condition(&notify, deadline, || {
+                            Ok(!group_store::enumerate_group_contexts(ds, gid, 0, 1)?.is_empty())
+                        })
+                        .await;
 
-                            contexts = group_store::enumerate_group_contexts(
-                                &datastore,
-                                &group_id,
-                                0,
-                                usize::MAX,
-                            )?;
-                            if !contexts.is_empty() {
-                                info!(
-                                    poll,
-                                    count = contexts.len(),
-                                    "group contexts appeared after polling"
-                                );
-                                break;
-                            }
-                        }
+                        let contexts = group_store::enumerate_group_contexts(
+                            &datastore,
+                            &group_id,
+                            0,
+                            usize::MAX,
+                        )?;
+
                         if contexts.is_empty() {
                             warn!(
                                 ?group_id,
-                                "no group contexts found after polling; \
+                                "no group contexts found within timeout; \
                                  contexts may sync later in the background"
                             );
                         }
+
                         info!(
                             ?group_id,
                             context_count = contexts.len(),

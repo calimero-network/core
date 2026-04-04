@@ -16,7 +16,7 @@ use calimero_primitives::context::{Context, ContextId};
 use calimero_store::Store;
 use either::Either;
 use prometheus_client::registry::Registry;
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::{Mutex, Notify, OwnedMutexGuard};
 
 use crate::metrics::Metrics;
 
@@ -82,6 +82,11 @@ pub struct ContextManager {
     /// Per-namespace governance DAG. Single DAG per namespace containing both
     /// root ops and encrypted group-scoped ops.
     namespace_dags: HashMap<[u8; 32], Arc<tokio::sync::Mutex<DagStore<SignedNamespaceOp>>>>,
+
+    /// Signaled after every successful namespace governance op application.
+    /// Allows `join_group` to react immediately when KeyDelivery or
+    /// ContextRegistered ops arrive via gossipsub, instead of polling.
+    ns_gov_notify: Arc<Notify>,
 }
 
 /// Creates a new `ContextManager`.
@@ -110,6 +115,7 @@ impl ContextManager {
             metrics: prometheus_registry.map(Metrics::new),
             active_propagators: HashSet::new(),
             namespace_dags: HashMap::new(),
+            ns_gov_notify: Arc::new(Notify::new()),
         }
     }
 
