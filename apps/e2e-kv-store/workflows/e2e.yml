@@ -36,6 +36,20 @@ steps:
       context_id: contextId
       node1_key: memberPublicKey
 
+  - name: Allow mesh context to settle
+    type: wait
+    seconds: 5
+
+  - name: Wait for initial mesh context sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
   # KV OPERATIONS
 
   - name: Set initial value on node-1
