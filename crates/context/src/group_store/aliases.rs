@@ -9,7 +9,7 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 use super::{
-    check_group_membership, collect_keys_with_prefix, count_group_members,
+    check_group_membership, collect_keys_with_prefix, count_group_members, count_keys_with_prefix,
     enumerate_group_contexts, get_parent_group, list_child_groups,
 };
 
@@ -160,13 +160,12 @@ pub fn enumerate_member_aliases(
 
 pub fn count_group_contexts(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
     let gid = group_id.to_bytes();
-    let keys = collect_keys_with_prefix(
+    count_keys_with_prefix(
         store,
         GroupContextIndex::new(gid, ContextId::from([0u8; 32])),
         GROUP_CONTEXT_INDEX_PREFIX,
         |k| k.group_id() == gid,
-    )?;
-    Ok(keys.len())
+    )
 }
 
 pub fn delete_group_alias(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {

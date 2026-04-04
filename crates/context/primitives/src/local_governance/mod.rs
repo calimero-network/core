@@ -405,6 +405,16 @@ pub struct OpaqueSkeleton {
     pub signer: PublicKey,
 }
 
+/// Tagged storage representation for namespace governance op-log rows.
+///
+/// This removes ambiguity from polymorphic storage payloads by explicitly
+/// tagging whether a row contains a full signed op or an opaque skeleton.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub enum StoredNamespaceEntry {
+    Signed(SignedNamespaceOp),
+    Opaque(OpaqueSkeleton),
+}
+
 // ---------------------------------------------------------------------------
 // Original group-scoped types (kept for backward compat and as inner payload)
 // ---------------------------------------------------------------------------

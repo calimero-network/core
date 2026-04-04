@@ -113,6 +113,831 @@ fn require_group_admin_rejects_non_admin() {
 }
 
 #[test]
+fn permission_checker_enforces_admin_and_capability_rules() {
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x10; 32]);
+    let member = PublicKey::from([0x11; 32]);
+    let outsider = PublicKey::from([0x12; 32]);
+
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+
+    let checker = PermissionChecker::new(&store, gid);
+    assert!(checker.require_admin(&admin).is_ok());
+    assert!(checker.require_admin(&member).is_err());
+
+    assert!(checker
+        .require_manage_members(&admin, "manage members")
+        .is_ok());
+    assert!(checker
+        .require_manage_members(&member, "manage members")
+        .is_err());
+    set_member_capability(
+        &store,
+        &gid,
+        &member,
+        calimero_context_config::MemberCapabilities::MANAGE_MEMBERS,
+    )
+    .unwrap();
+    assert!(checker
+        .require_manage_members(&member, "manage members")
+        .is_ok());
+
+    assert!(checker.require_can_create_context(&admin).is_ok());
+    assert!(checker.require_can_create_context(&member).is_err());
+    set_member_capability(
+        &store,
+        &gid,
+        &member,
+        calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+    )
+    .unwrap();
+    assert!(checker.require_can_create_context(&member).is_ok());
+
+    assert!(checker.require_admin_or_self(&member, &member).is_ok());
+    assert!(checker.require_admin_or_self(&member, &outsider).is_err());
+    assert!(checker.require_admin_or_self(&admin, &outsider).is_ok());
+}
+
+#[test]
+fn membership_policy_guards_last_admin_and_tee_paths() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PrivateKey::random(&mut rng).public_key();
+    let admin2 = PrivateKey::random(&mut rng).public_key();
+    let member = PrivateKey::random(&mut rng).public_key();
+    let outsider = PrivateKey::random(&mut rng).public_key();
+
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+
+    let membership = MembershipPolicy::new(&store, gid);
+    assert!(membership.ensure_not_last_admin_removal(&admin).is_err());
+    assert!(membership
+        .ensure_not_last_admin_demotion(&admin, &GroupMemberRole::Member)
+        .is_err());
+    assert!(membership
+        .ensure_not_last_admin_demotion(&admin, &GroupMemberRole::Admin)
+        .is_ok());
+
+    add_group_member(&store, &gid, &admin2, GroupMemberRole::Admin).unwrap();
+    assert!(membership.ensure_not_last_admin_removal(&admin).is_ok());
+    assert!(membership
+        .ensure_not_last_admin_demotion(&admin, &GroupMemberRole::Member)
+        .is_ok());
+
+    assert!(membership
+        .require_tee_attestation_verifier_membership(&member)
+        .is_ok());
+    assert!(membership
+        .require_tee_attestation_verifier_membership(&outsider)
+        .is_err());
+    assert!(membership.read_required_tee_admission_policy().is_err());
+
+    let signer_sk = PrivateKey::random(&mut rng);
+    let policy_op = SignedGroupOp::sign(
+        &signer_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m1".to_owned()],
+            allowed_rtmr0: vec!["r0".to_owned()],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned()],
+            accept_mock: false,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(&store, &gid, 1, &borsh::to_vec(&policy_op).unwrap()).unwrap();
+
+    let policy = membership.read_required_tee_admission_policy().unwrap();
+    assert!(membership
+        .validate_tee_attestation_allowlists(&policy, "m1", "r0", "x", "y", "z", "ok")
+        .is_ok());
+    assert!(membership
+        .validate_tee_attestation_allowlists(&policy, "wrong", "r0", "x", "y", "z", "ok")
+        .is_err());
+    assert!(membership
+        .validate_tee_attestation_allowlists(&policy, "m1", "wrong", "x", "y", "z", "ok")
+        .is_err());
+
+    let tee_joined = PrivateKey::random(&mut rng).public_key();
+    assert!(!check_group_membership(&store, &gid, &tee_joined).unwrap());
+    membership
+        .admit_member_if_absent(&tee_joined, &GroupMemberRole::Member)
+        .unwrap();
+    assert!(check_group_membership(&store, &gid, &tee_joined).unwrap());
+    membership
+        .admit_member_if_absent(&tee_joined, &GroupMemberRole::Member)
+        .unwrap();
+    assert!(check_group_membership(&store, &gid, &tee_joined).unwrap());
+}
+
+#[test]
+fn membership_policy_rules_report_rejection_reasons() {
+    use super::membership_policy_rules::{
+        validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
+        TeeAttestationClaims,
+    };
+
+    let policy = TeeAllowlistPolicy {
+        allowed_mrtd: vec!["m-ok".to_owned()],
+        allowed_rtmr0: vec!["r0-ok".to_owned()],
+        allowed_rtmr1: vec![],
+        allowed_rtmr2: vec![],
+        allowed_rtmr3: vec![],
+        allowed_tcb_statuses: vec!["ok".to_owned()],
+    };
+    let claims = TeeAttestationClaims {
+        mrtd: "m-ok",
+        rtmr0: "r0-ok",
+        rtmr1: "anything",
+        rtmr2: "anything",
+        rtmr3: "anything",
+        tcb_status: "ok",
+    };
+
+    assert!(validate_tee_attestation_allowlists(&policy, &claims).is_ok());
+
+    let bad_mrtd = TeeAttestationClaims {
+        mrtd: "m-bad",
+        ..claims
+    };
+    let err = validate_tee_attestation_allowlists(&policy, &bad_mrtd).unwrap_err();
+    assert_eq!(err.reason(), MembershipPolicyRejection::MrtdNotAllowed);
+
+    let bad_rtmr0 = TeeAttestationClaims {
+        rtmr0: "r0-bad",
+        ..claims
+    };
+    let err = validate_tee_attestation_allowlists(&policy, &bad_rtmr0).unwrap_err();
+    assert_eq!(err.reason(), MembershipPolicyRejection::Rtmr0NotAllowed);
+
+    let bad_tcb = TeeAttestationClaims {
+        tcb_status: "warn",
+        ..claims
+    };
+    let err = validate_tee_attestation_allowlists(&policy, &bad_tcb).unwrap_err();
+    assert_eq!(err.reason(), MembershipPolicyRejection::TcbStatusNotAllowed);
+}
+
+#[test]
+fn membership_view_reports_admin_and_member_counts() {
+    let store = test_store();
+    let gid = test_group_id();
+    let admin1 = PublicKey::from([0xD1; 32]);
+    let admin2 = PublicKey::from([0xD2; 32]);
+    let member = PublicKey::from([0xD3; 32]);
+
+    add_group_member(&store, &gid, &admin1, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &admin2, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+
+    let view = GroupMembershipView::new(&store, gid);
+    assert!(view.is_admin(&admin1).unwrap());
+    assert!(!view.is_admin(&member).unwrap());
+    assert_eq!(view.admin_count().unwrap(), 2);
+    assert_eq!(view.member_count().unwrap(), 3);
+}
+
+#[test]
+fn group_settings_service_enforces_permissions_and_persists_values() {
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x21; 32]);
+    let member = PublicKey::from([0x22; 32]);
+    let app_id = ApplicationId::from([0x23; 32]);
+
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+
+    let settings = GroupSettingsService::new(&store, gid);
+
+    assert!(settings.set_default_visibility(&member, 1).is_err());
+    assert!(settings.set_default_visibility(&admin, 2).is_err());
+    settings.set_default_visibility(&admin, 1).unwrap();
+    assert_eq!(get_default_visibility(&store, &gid).unwrap(), Some(1));
+
+    settings.set_default_capabilities(&admin, 0b101).unwrap();
+    assert_eq!(get_default_capabilities(&store, &gid).unwrap(), Some(0b101));
+
+    assert!(settings
+        .set_group_migration(&member, &Some(vec![1, 2, 3]))
+        .is_err());
+    set_member_capability(
+        &store,
+        &gid,
+        &member,
+        calimero_context_config::MemberCapabilities::MANAGE_APPLICATION,
+    )
+    .unwrap();
+    settings
+        .set_group_migration(&member, &Some(vec![1, 2, 3]))
+        .unwrap();
+    assert_eq!(
+        load_group_meta(&store, &gid).unwrap().unwrap().migration,
+        Some(vec![1, 2, 3])
+    );
+
+    settings
+        .set_target_application(&member, &[0xAB; 32], &app_id)
+        .unwrap();
+    let meta = load_group_meta(&store, &gid).unwrap().unwrap();
+    assert_eq!(meta.app_key, [0xAB; 32]);
+    assert_eq!(meta.target_application_id, app_id);
+
+    settings.set_group_alias(&admin, "group-main").unwrap();
+    assert_eq!(
+        get_group_alias(&store, &gid).unwrap().as_deref(),
+        Some("group-main")
+    );
+}
+
+#[test]
+fn context_registration_service_applies_backfill_and_detach_rules() {
+    let store = test_store();
+    let gid = test_group_id();
+    let other_gid = ContextGroupId::from([0x31; 32]);
+    let admin = PublicKey::from([0x32; 32]);
+    let creator = PublicKey::from([0x33; 32]);
+    let context = ContextId::from([0x34; 32]);
+    let app_id = ApplicationId::from([0x35; 32]);
+
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &creator, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &gid,
+        &creator,
+        calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+    )
+    .unwrap();
+
+    let mut meta = test_meta();
+    meta.target_application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
+    save_group_meta(&store, &gid, &meta).unwrap();
+
+    // Pre-store context meta with zero app id to verify backfill path.
+    let zero_app = calimero_primitives::application::ZERO_APPLICATION_ID;
+    let ctx_meta_key = calimero_store::key::ContextMeta::new(context);
+    let mut handle = store.handle();
+    handle
+        .put(
+            &ctx_meta_key,
+            &calimero_store::types::ContextMeta::new(
+                calimero_store::key::ApplicationMeta::new(zero_app),
+                [0x44; 32],
+                vec![[0x45; 32]],
+                None,
+            ),
+        )
+        .unwrap();
+    drop(handle);
+
+    let service = ContextRegistrationService::new(&store, gid);
+    let permissions = PermissionChecker::new(&store, gid);
+
+    assert!(service
+        .register(
+            &permissions,
+            &PublicKey::from([0x36; 32]),
+            &context,
+            &app_id
+        )
+        .is_err());
+    service
+        .register(&permissions, &creator, &context, &app_id)
+        .unwrap();
+    assert_eq!(get_group_for_context(&store, &context).unwrap(), Some(gid));
+    assert_eq!(
+        load_group_meta(&store, &gid)
+            .unwrap()
+            .unwrap()
+            .target_application_id,
+        app_id
+    );
+    let handle = store.handle();
+    let ctx_meta: calimero_store::types::ContextMeta = handle.get(&ctx_meta_key).unwrap().unwrap();
+    assert_eq!(ctx_meta.application.application_id(), app_id);
+
+    assert!(service.detach(&permissions, &creator, &context).is_err());
+    service.detach(&permissions, &admin, &context).unwrap();
+    assert_eq!(get_group_for_context(&store, &context).unwrap(), None);
+
+    register_context_in_group(&store, &other_gid, &context).unwrap();
+    assert!(service.detach(&permissions, &admin, &context).is_err());
+}
+
+#[test]
+fn context_tree_service_register_move_detach_and_cascade_cleanup() {
+    let store = test_store();
+    let gid_a = ContextGroupId::from([0x31; 32]);
+    let gid_b = ContextGroupId::from([0x32; 32]);
+    let context = ContextId::from([0x33; 32]);
+    let member = PublicKey::from([0x34; 32]);
+
+    let tree_a = ContextTreeService::new(&store, gid_a);
+    let tree_b = ContextTreeService::new(&store, gid_b);
+
+    tree_a.register_context(&context).unwrap();
+    assert_eq!(tree_a.group_for_context(&context).unwrap(), Some(gid_a));
+
+    // Moving registration to another group should clean the old group index.
+    tree_b.register_context(&context).unwrap();
+    assert_eq!(tree_b.group_for_context(&context).unwrap(), Some(gid_b));
+    assert!(tree_a.enumerate_contexts(0, usize::MAX).unwrap().is_empty());
+    assert_eq!(
+        tree_b.enumerate_contexts(0, usize::MAX).unwrap(),
+        vec![context]
+    );
+
+    let mut handle = store.handle();
+    handle
+        .put(
+            &calimero_store::key::ContextIdentity::new(context, member.into()),
+            &calimero_store::types::ContextIdentity {
+                private_key: None,
+                sender_key: Some([0u8; 32]),
+            },
+        )
+        .unwrap();
+    drop(handle);
+
+    tree_b.cascade_remove_member(&member).unwrap();
+    let handle = store.handle();
+    let identity_key = calimero_store::key::ContextIdentity::new(context, member.into());
+    assert!(!handle.has(&identity_key).unwrap());
+
+    tree_b.unregister_context(&context).unwrap();
+    assert_eq!(tree_b.group_for_context(&context).unwrap(), None);
+}
+
+#[test]
+fn context_registration_service_keeps_existing_non_zero_context_meta_application() {
+    let store = test_store();
+    let gid = test_group_id();
+    let creator = PublicKey::from([0x41; 32]);
+    let context = ContextId::from([0x42; 32]);
+    let existing_app_id = ApplicationId::from([0x43; 32]);
+    let incoming_app_id = ApplicationId::from([0x44; 32]);
+
+    add_group_member(&store, &gid, &creator, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &gid,
+        &creator,
+        calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+    )
+    .unwrap();
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+
+    let ctx_meta_key = calimero_store::key::ContextMeta::new(context);
+    let mut handle = store.handle();
+    handle
+        .put(
+            &ctx_meta_key,
+            &calimero_store::types::ContextMeta::new(
+                calimero_store::key::ApplicationMeta::new(existing_app_id),
+                [0x55; 32],
+                vec![[0x56; 32]],
+                None,
+            ),
+        )
+        .unwrap();
+    drop(handle);
+
+    let service = ContextRegistrationService::new(&store, gid);
+    let permissions = PermissionChecker::new(&store, gid);
+    service
+        .register(&permissions, &creator, &context, &incoming_app_id)
+        .unwrap();
+
+    let handle = store.handle();
+    let ctx_meta: calimero_store::types::ContextMeta = handle.get(&ctx_meta_key).unwrap().unwrap();
+    assert_eq!(ctx_meta.application.application_id(), existing_app_id);
+}
+
+#[test]
+fn namespace_dag_service_store_operation_rejects_namespace_mismatch() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let governance_ns = [0x71; 32];
+    let op_ns = [0x72; 32];
+    let signer_sk = PrivateKey::random(&mut rng);
+
+    let signed = SignedNamespaceOp::sign(
+        &signer_sk,
+        op_ns,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![1, 2, 3],
+        }),
+    )
+    .unwrap();
+
+    let err = NamespaceDagService::new(&store, governance_ns)
+        .store_operation(&signed)
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("namespace mismatch when storing op"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn namespace_dag_service_advance_dag_head_prunes_parent_hashes() {
+    let store = test_store();
+    let namespace_id = [0x73; 32];
+    let dag = NamespaceDagService::new(&store, namespace_id);
+
+    let delta_a = [0xA1; 32];
+    let delta_b = [0xB2; 32];
+    let delta_c = [0xC3; 32];
+
+    dag.advance_dag_head(delta_a, &[], 1).unwrap();
+    dag.advance_dag_head(delta_b, &[], 2).unwrap();
+    dag.advance_dag_head(delta_c, &[delta_a], 3).unwrap();
+
+    let head = dag.read_head_record().unwrap();
+    assert_eq!(head.parent_hashes, vec![delta_b, delta_c]);
+    assert_eq!(head.next_nonce, 4);
+}
+
+#[test]
+fn namespace_dag_service_collects_skeleton_delta_ids_by_group() {
+    use calimero_context_client::local_governance::{OpaqueSkeleton, StoredNamespaceEntry};
+
+    let store = test_store();
+    let namespace_id = [0x74; 32];
+    let group_a = ContextGroupId::from([0x75; 32]);
+    let group_b = ContextGroupId::from([0x76; 32]);
+    let dag = NamespaceDagService::new(&store, namespace_id);
+    let delta_a = [0xA1; 32];
+    let delta_b = [0xB2; 32];
+    let delta_other_ns = [0xC3; 32];
+    let signer = PublicKey::from([0x61; 32]);
+
+    let mut handle = store.handle();
+    let key_a = calimero_store::key::NamespaceGovOp::new(namespace_id, delta_a);
+    let key_b = calimero_store::key::NamespaceGovOp::new(namespace_id, delta_b);
+    let key_other_ns = calimero_store::key::NamespaceGovOp::new([0x99; 32], delta_other_ns);
+
+    let val_a = calimero_store::key::NamespaceGovOpValue {
+        skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
+            delta_id: delta_a,
+            parent_op_hashes: vec![],
+            group_id: group_a.to_bytes(),
+            signer,
+        }))
+        .unwrap(),
+    };
+    let val_b = calimero_store::key::NamespaceGovOpValue {
+        skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
+            delta_id: delta_b,
+            parent_op_hashes: vec![delta_a],
+            group_id: group_b.to_bytes(),
+            signer,
+        }))
+        .unwrap(),
+    };
+    // Different namespace id should be ignored by the iteration.
+    let val_other_ns = calimero_store::key::NamespaceGovOpValue {
+        skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
+            delta_id: delta_other_ns,
+            parent_op_hashes: vec![],
+            group_id: group_a.to_bytes(),
+            signer,
+        }))
+        .unwrap(),
+    };
+    handle.put(&key_a, &val_a).unwrap();
+    handle.put(&key_b, &val_b).unwrap();
+    handle.put(&key_other_ns, &val_other_ns).unwrap();
+    drop(handle);
+
+    let collected = dag
+        .collect_skeleton_delta_ids_for_group(group_a.to_bytes())
+        .unwrap();
+    assert_eq!(collected, vec![delta_a]);
+}
+
+#[test]
+fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
+    use calimero_context_client::local_governance::{
+        NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
+    };
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x77; 32];
+    let group_a = ContextGroupId::from([0x78; 32]);
+    let group_b = ContextGroupId::from([0x79; 32]);
+    let signer_sk = PrivateKey::random(&mut rng);
+
+    let signed_group = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: group_a.to_bytes(),
+            key_id: [0x01; 32],
+            encrypted: encrypt_group_op(&[0xA1; 32], &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    let signed_delta = signed_group.content_hash().unwrap();
+
+    let mut handle = store.handle();
+    let key_signed = calimero_store::key::NamespaceGovOp::new(namespace_id, signed_delta);
+    let val_signed = calimero_store::key::NamespaceGovOpValue {
+        skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Signed(signed_group)).unwrap(),
+    };
+    handle.put(&key_signed, &val_signed).unwrap();
+
+    let skeleton_delta = [0xB2; 32];
+    let key_skeleton = calimero_store::key::NamespaceGovOp::new(namespace_id, skeleton_delta);
+    let val_skeleton = calimero_store::key::NamespaceGovOpValue {
+        skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
+            delta_id: skeleton_delta,
+            parent_op_hashes: vec![],
+            group_id: group_b.to_bytes(),
+            signer: signer_sk.public_key(),
+        }))
+        .unwrap(),
+    };
+    handle.put(&key_skeleton, &val_skeleton).unwrap();
+    drop(handle);
+
+    let op_log = NamespaceOpLogService::new(&store, namespace_id);
+
+    let decoded_signed = op_log
+        .collect_signed_group_ops_for_group(group_a.to_bytes())
+        .unwrap();
+    assert_eq!(decoded_signed.len(), 1);
+    assert_eq!(
+        decoded_signed[0].signed_op.content_hash().unwrap(),
+        signed_delta,
+        "signed op should be decoded with stable delta id",
+    );
+    assert_eq!(decoded_signed[0].key_id, [0x01; 32]);
+
+    let decoded_skeleton = op_log
+        .collect_opaque_skeleton_delta_ids_for_group(group_b.to_bytes())
+        .unwrap();
+    assert_eq!(decoded_skeleton, vec![skeleton_delta]);
+}
+
+#[test]
+fn namespace_op_log_service_reads_tagged_and_legacy_rows() {
+    use calimero_context_client::local_governance::{
+        NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
+    };
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x70; 32];
+    let group = ContextGroupId::from([0x71; 32]);
+    let signer_sk = PrivateKey::random(&mut rng);
+
+    let tagged_signed = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: group.to_bytes(),
+            key_id: [0x12; 32],
+            encrypted: encrypt_group_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    let tagged_delta = tagged_signed.content_hash().unwrap();
+    let tagged_signed_key_id = match tagged_signed.op {
+        NamespaceOp::Group { key_id, .. } => key_id,
+        _ => panic!("expected group-scoped namespace op"),
+    };
+
+    let legacy_skeleton_delta = [0x13; 32];
+    let legacy_skeleton = OpaqueSkeleton {
+        delta_id: legacy_skeleton_delta,
+        parent_op_hashes: vec![],
+        group_id: group.to_bytes(),
+        signer: signer_sk.public_key(),
+    };
+
+    let mut handle = store.handle();
+    let tagged_key = calimero_store::key::NamespaceGovOp::new(namespace_id, tagged_delta);
+    handle
+        .put(
+            &tagged_key,
+            &calimero_store::key::NamespaceGovOpValue {
+                skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Signed(tagged_signed))
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+
+    let legacy_key = calimero_store::key::NamespaceGovOp::new(namespace_id, legacy_skeleton_delta);
+    handle
+        .put(
+            &legacy_key,
+            &calimero_store::key::NamespaceGovOpValue {
+                skeleton_bytes: borsh::to_vec(&legacy_skeleton).unwrap(),
+            },
+        )
+        .unwrap();
+    drop(handle);
+
+    let op_log = NamespaceOpLogService::new(&store, namespace_id);
+    let signed = op_log
+        .collect_signed_group_ops_for_group(group.to_bytes())
+        .unwrap();
+    assert_eq!(signed.len(), 1);
+    assert_eq!(signed[0].key_id, tagged_signed_key_id);
+
+    let skeletons = op_log
+        .collect_opaque_skeleton_delta_ids_for_group(group.to_bytes())
+        .unwrap();
+    assert_eq!(skeletons, vec![legacy_skeleton_delta]);
+}
+
+#[test]
+fn namespace_op_log_service_collects_group_scoped_signed_ops() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x7A; 32];
+    let group_a = ContextGroupId::from([0x7B; 32]);
+    let group_b = ContextGroupId::from([0x7C; 32]);
+    let signer_sk = PrivateKey::random(&mut rng);
+
+    let op_a = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: group_a.to_bytes(),
+            key_id: [0x11; 32],
+            encrypted: encrypt_group_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let op_b = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Group {
+            group_id: group_b.to_bytes(),
+            key_id: [0x22; 32],
+            encrypted: encrypt_group_op(&[0xBB; 32], &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let root = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        3,
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![1, 2, 3],
+        }),
+    )
+    .unwrap();
+
+    let op_log = NamespaceOpLogService::new(&store, namespace_id);
+    op_log.store_signed_operation(&op_a).unwrap();
+    op_log.store_signed_operation(&op_b).unwrap();
+    op_log.store_signed_operation(&root).unwrap();
+
+    let selected = op_log
+        .collect_signed_group_ops_for_group(group_a.to_bytes())
+        .unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(
+        selected[0].signed_op.content_hash().unwrap(),
+        op_a.content_hash().unwrap()
+    );
+    assert_eq!(selected[0].key_id, [0x11; 32]);
+}
+
+#[test]
+fn namespace_retry_service_collects_only_retryable_group_ops() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x81; 32];
+    let group_a = ContextGroupId::from([0x82; 32]);
+    let group_b = ContextGroupId::from([0x83; 32]);
+    let signer_sk = PrivateKey::random(&mut rng);
+
+    let group_key = [0x91; 32];
+    let key_id = store_group_key(&store, &group_a, &group_key).unwrap();
+
+    let encrypted_a = encrypt_group_op(&group_key, &GroupOp::Noop).unwrap();
+    let encrypted_b = encrypt_group_op(&group_key, &GroupOp::Noop).unwrap();
+
+    let group_a_op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: group_a.to_bytes(),
+            key_id,
+            encrypted: encrypted_a,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let group_b_op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Group {
+            group_id: group_b.to_bytes(),
+            key_id,
+            encrypted: encrypted_b,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let root_op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        3,
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![7, 8, 9],
+        }),
+    )
+    .unwrap();
+
+    let governance = NamespaceGovernance::new(&store, namespace_id);
+    governance.store_operation(&group_a_op).unwrap();
+    governance.store_operation(&group_b_op).unwrap();
+    governance.store_operation(&root_op).unwrap();
+
+    let retry = NamespaceRetryService::new(&store, namespace_id);
+    let retryable = retry
+        .collect_retry_candidates_for_group(group_a.to_bytes())
+        .unwrap();
+
+    assert_eq!(retryable.len(), 1, "expected only one retryable op");
+    match &retryable[0].signed_op.op {
+        NamespaceOp::Group { group_id, .. } => assert_eq!(*group_id, group_a.to_bytes()),
+        _ => panic!("expected group op"),
+    }
+}
+
+#[test]
 fn apply_local_signed_group_op_nonce_and_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
@@ -897,6 +1722,112 @@ fn defaults_isolated_per_group() {
     assert_eq!(get_default_visibility(&store, &g2).unwrap().unwrap(), 1);
 }
 
+#[test]
+fn context_member_capability_roundtrip_and_isolation() {
+    let store = test_store();
+    let gid = test_group_id();
+    let context_a = ContextId::from([0x21; 32]);
+    let context_b = ContextId::from([0x22; 32]);
+    let alice = PublicKey::from([0x31; 32]);
+    let bob = PublicKey::from([0x32; 32]);
+
+    assert!(
+        get_context_member_capability(&store, &gid, &context_a, &alice)
+            .unwrap()
+            .is_none()
+    );
+
+    set_context_member_capability(&store, &gid, &context_a, &alice, 0b001).unwrap();
+    set_context_member_capability(&store, &gid, &context_a, &bob, 0b010).unwrap();
+    set_context_member_capability(&store, &gid, &context_b, &alice, 0b111).unwrap();
+
+    assert_eq!(
+        get_context_member_capability(&store, &gid, &context_a, &alice)
+            .unwrap()
+            .unwrap(),
+        0b001
+    );
+    assert_eq!(
+        get_context_member_capability(&store, &gid, &context_a, &bob)
+            .unwrap()
+            .unwrap(),
+        0b010
+    );
+    assert_eq!(
+        get_context_member_capability(&store, &gid, &context_b, &alice)
+            .unwrap()
+            .unwrap(),
+        0b111
+    );
+}
+
+#[test]
+fn delete_defaults_and_member_capabilities_clears_values() {
+    let store = test_store();
+    let gid = test_group_id();
+    let alice = PublicKey::from([0x41; 32]);
+    let bob = PublicKey::from([0x42; 32]);
+
+    set_default_capabilities(&store, &gid, 0b101).unwrap();
+    set_default_visibility(&store, &gid, 1).unwrap();
+    set_member_capability(&store, &gid, &alice, 0b001).unwrap();
+    set_member_capability(&store, &gid, &bob, 0b010).unwrap();
+    assert_eq!(
+        enumerate_member_capabilities(&store, &gid).unwrap().len(),
+        2
+    );
+
+    delete_default_capabilities(&store, &gid).unwrap();
+    delete_default_visibility(&store, &gid).unwrap();
+    delete_all_member_capabilities(&store, &gid).unwrap();
+
+    assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
+    assert!(get_default_visibility(&store, &gid).unwrap().is_none());
+    assert!(get_member_capability(&store, &gid, &alice)
+        .unwrap()
+        .is_none());
+    assert!(get_member_capability(&store, &gid, &bob).unwrap().is_none());
+    assert!(enumerate_member_capabilities(&store, &gid)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn migration_tracking_roundtrip_and_cleanup() {
+    let store = test_store();
+    let gid = test_group_id();
+    let context_a = ContextId::from([0x51; 32]);
+    let context_b = ContextId::from([0x52; 32]);
+
+    assert!(get_context_last_migration(&store, &gid, &context_a)
+        .unwrap()
+        .is_none());
+
+    set_context_last_migration(&store, &gid, &context_a, "migrate_v2").unwrap();
+    set_context_last_migration(&store, &gid, &context_b, "migrate_v3").unwrap();
+
+    assert_eq!(
+        get_context_last_migration(&store, &gid, &context_a)
+            .unwrap()
+            .as_deref(),
+        Some("migrate_v2")
+    );
+    assert_eq!(
+        get_context_last_migration(&store, &gid, &context_b)
+            .unwrap()
+            .as_deref(),
+        Some("migrate_v3")
+    );
+
+    delete_all_context_last_migrations(&store, &gid).unwrap();
+    assert!(get_context_last_migration(&store, &gid, &context_a)
+        .unwrap()
+        .is_none());
+    assert!(get_context_last_migration(&store, &gid, &context_b)
+        .unwrap()
+        .is_none());
+}
+
 // -----------------------------------------------------------------------
 // Auto-group: node identity as admin (regression test for fix)
 // -----------------------------------------------------------------------
@@ -988,4 +1919,181 @@ fn auto_group_random_identity_not_found_by_node_check() {
 
     // But the node's identity is NOT a member — this is the bug
     assert!(!check_group_membership(&store, &auto_group_id, &node_pk).unwrap());
+}
+
+#[test]
+fn namespace_nesting_resolve_and_read_only_checks() {
+    let store = test_store();
+    let parent = ContextGroupId::from([0xA1; 32]);
+    let child = ContextGroupId::from([0xA2; 32]);
+    let grandchild = ContextGroupId::from([0xA3; 32]);
+    let outsider = ContextGroupId::from([0xA4; 32]);
+    let context = ContextId::from([0xB1; 32]);
+    let ro_member = PublicKey::from([0xB2; 32]);
+    let rw_member = PublicKey::from([0xB3; 32]);
+
+    nest_group(&store, &parent, &child).unwrap();
+    nest_group(&store, &child, &grandchild).unwrap();
+    assert!(nest_group(&store, &grandchild, &parent).is_err());
+
+    let children = list_child_groups(&store, &parent).unwrap();
+    assert_eq!(children, vec![child]);
+    let descendants = collect_descendant_groups(&store, &parent).unwrap();
+    assert!(descendants.contains(&child));
+    assert!(descendants.contains(&grandchild));
+
+    assert_eq!(resolve_namespace(&store, &grandchild).unwrap(), parent);
+    assert_eq!(resolve_namespace(&store, &outsider).unwrap(), outsider);
+
+    register_context_in_group(&store, &child, &context).unwrap();
+    add_group_member(&store, &child, &ro_member, GroupMemberRole::ReadOnly).unwrap();
+    add_group_member(&store, &child, &rw_member, GroupMemberRole::Member).unwrap();
+    assert!(is_read_only_for_context(&store, &context, &ro_member).unwrap());
+    assert!(!is_read_only_for_context(&store, &context, &rw_member).unwrap());
+}
+
+#[test]
+fn local_state_join_tracking_and_delete_group_rows_cleanup() {
+    let store = test_store();
+    let gid = ContextGroupId::from([0xC1; 32]);
+    let context = ContextId::from([0xC2; 32]);
+    let member = PublicKey::from([0xC3; 32]);
+    let member2 = PublicKey::from([0xC4; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    set_default_capabilities(&store, &gid, 0b111).unwrap();
+    set_default_visibility(&store, &gid, 1).unwrap();
+    set_group_alias(&store, &gid, "g-alias").unwrap();
+    set_context_last_migration(&store, &gid, &context, "v2").unwrap();
+
+    add_group_member(&store, &gid, &member, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member2, GroupMemberRole::Member).unwrap();
+    set_member_alias(&store, &gid, &member2, "member2").unwrap();
+    set_member_capability(&store, &gid, &member2, 0b010).unwrap();
+    set_local_gov_nonce(&store, &gid, &member, 7).unwrap();
+
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let signer_sk = PrivateKey::random(&mut rng);
+    let op = SignedGroupOp::sign(
+        &signer_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::Noop,
+    )
+    .unwrap();
+    let op_bytes = borsh::to_vec(&op).unwrap();
+    append_op_log_entry(&store, &gid, 1, &op_bytes).unwrap();
+    set_op_head(&store, &gid, 1, vec![[0x11; 32]]).unwrap();
+    track_member_context_join(&store, &gid, &member2, &context, [0xAA; 32]).unwrap();
+
+    assert_eq!(get_local_gov_nonce(&store, &gid, &member).unwrap(), Some(7));
+    assert_eq!(read_op_log_after(&store, &gid, 0, 10).unwrap().len(), 1);
+    assert_eq!(
+        get_member_context_joins(&store, &gid, &member2)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    delete_group_local_rows(&store, &gid).unwrap();
+
+    assert!(load_group_meta(&store, &gid).unwrap().is_none());
+    assert!(get_group_alias(&store, &gid).unwrap().is_none());
+    assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
+    assert!(get_default_visibility(&store, &gid).unwrap().is_none());
+    assert!(enumerate_member_capabilities(&store, &gid)
+        .unwrap()
+        .is_empty());
+    assert!(enumerate_member_aliases(&store, &gid).unwrap().is_empty());
+    assert!(get_context_last_migration(&store, &gid, &context)
+        .unwrap()
+        .is_none());
+    assert!(get_local_gov_nonce(&store, &gid, &member)
+        .unwrap()
+        .is_none());
+    assert!(get_op_head(&store, &gid).unwrap().is_none());
+    assert!(read_op_log_after(&store, &gid, 0, 10).unwrap().is_empty());
+}
+
+#[test]
+fn tee_policy_and_quote_hash_scan_latest_and_match() {
+    let store = test_store();
+    let gid = ContextGroupId::from([0xD1; 32]);
+    let quote_a = [0xE1; 32];
+    let quote_b = [0xE2; 32];
+
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let signer_sk = PrivateKey::random(&mut rng);
+    let policy_1 = SignedGroupOp::sign(
+        &signer_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m1".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned()],
+            accept_mock: false,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(&store, &gid, 1, &borsh::to_vec(&policy_1).unwrap()).unwrap();
+
+    let joined = SignedGroupOp::sign(
+        &signer_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        2,
+        GroupOp::MemberJoinedViaTeeAttestation {
+            member: PublicKey::from([0xD3; 32]),
+            quote_hash: quote_a,
+            mrtd: "m1".to_owned(),
+            rtmr0: "r0".to_owned(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(&store, &gid, 2, &borsh::to_vec(&joined).unwrap()).unwrap();
+
+    let policy_2 = SignedGroupOp::sign(
+        &signer_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        3,
+        GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m2".to_owned()],
+            allowed_rtmr0: vec!["x".to_owned()],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned(), "warn".to_owned()],
+            accept_mock: true,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(&store, &gid, 3, &borsh::to_vec(&policy_2).unwrap()).unwrap();
+
+    let latest = read_tee_admission_policy(&store, &gid).unwrap().unwrap();
+    assert_eq!(latest.allowed_mrtd, vec!["m2".to_owned()]);
+    assert!(latest.accept_mock);
+    assert!(is_quote_hash_used(&store, &gid, &quote_a).unwrap());
+    assert!(!is_quote_hash_used(&store, &gid, &quote_b).unwrap());
 }
