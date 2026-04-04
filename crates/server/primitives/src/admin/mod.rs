@@ -1548,6 +1548,12 @@ pub struct CreateNamespaceApiRequest {
     pub alias: Option<String>,
 }
 
+impl Validate for CreateNamespaceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateNamespaceApiResponseData {
@@ -1565,6 +1571,12 @@ pub struct CreateNamespaceApiResponse {
 pub struct DeleteNamespaceApiRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
+}
+
+impl Validate for DeleteNamespaceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -1855,6 +1867,12 @@ pub struct NestGroupApiRequest {
     pub requester: Option<PublicKey>,
 }
 
+impl Validate for NestGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NestGroupApiResponse;
@@ -1865,6 +1883,12 @@ pub struct UnnestGroupApiRequest {
     pub child_group_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
+}
+
+impl Validate for UnnestGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

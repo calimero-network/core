@@ -19,7 +19,7 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let Some((node_pk, _)) = state.ctx_client.node_namespace_identity(&group_id) else {
+    let Some((node_pk, _)) = state.ctx_client.get_namespace_identity(&group_id) else {
         return ApiError {
             status_code: StatusCode::NOT_FOUND,
             message: "No namespace identity found".to_owned(),
@@ -48,8 +48,12 @@ pub async fn handler(
         }
     };
 
-    match calimero_context::group_store::build_namespace_summary(&state.store, &group_id, &meta, &node_pk)
-    {
+    match calimero_context::group_store::build_namespace_summary(
+        &state.store,
+        &group_id,
+        &meta,
+        &node_pk,
+    ) {
         Ok(Some(ns)) => ApiResponse {
             payload: calimero_server_primitives::admin::NamespaceApiResponse {
                 namespace_id: hex::encode(ns.namespace_id.to_bytes()),

@@ -4,7 +4,6 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::CreateGroupInvitationRequest;
-use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::{
     CreateGroupInvitationApiRequest, CreateGroupInvitationApiResponse,
@@ -59,7 +58,8 @@ pub async fn handler(
                 Ok(None) => {
                     return ApiError {
                         status_code: StatusCode::BAD_REQUEST,
-                        message: "requester not provided and no namespace identity available".into(),
+                        message: "requester not provided and no namespace identity available"
+                            .into(),
                     }
                     .into_response();
                 }
@@ -107,11 +107,11 @@ pub async fn handler(
 
         let mut data = Vec::with_capacity(invitations.len());
         for (group_id, invitation) in invitations {
-            let group_alias = match calimero_context::group_store::get_group_alias(&state.store, &group_id)
-            {
-                Ok(alias) => alias,
-                Err(err) => return parse_api_error(err).into_response(),
-            };
+            let group_alias =
+                match calimero_context::group_store::get_group_alias(&state.store, &group_id) {
+                    Ok(alias) => alias,
+                    Err(err) => return parse_api_error(err).into_response(),
+                };
             data.push(RecursiveInvitationEntry {
                 group_id: hex::encode(group_id.to_bytes()),
                 invitation,

@@ -5,9 +5,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
 use calimero_primitives::identity::PrivateKey;
-use calimero_server_primitives::admin::{
-    NestGroupApiResponse, UnnestGroupApiRequest, UnnestGroupApiResponse,
-};
+use calimero_server_primitives::admin::{UnnestGroupApiRequest, UnnestGroupApiResponse};
 use tracing::{error, info};
 
 use super::parse_group_id;
