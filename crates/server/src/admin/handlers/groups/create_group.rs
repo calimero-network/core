@@ -70,10 +70,12 @@ pub async fn handler(
     match result {
         Ok(response) => {
             let group_id_hex = hex::encode(response.group_id.to_bytes());
+            let is_root_group = parent_group_id.is_none();
             info!(group_id=%group_id_hex, "Group created successfully");
             ApiResponse {
                 payload: CreateGroupApiResponse {
                     data: CreateGroupApiResponseData {
+                        namespace_id: is_root_group.then(|| group_id_hex.clone()),
                         group_id: group_id_hex,
                     },
                 },

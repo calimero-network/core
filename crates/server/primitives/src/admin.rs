@@ -1628,6 +1628,8 @@ pub struct CreateGroupApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupApiResponseData {
     pub group_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
