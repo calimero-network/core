@@ -123,15 +123,14 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     }
                 }
 
-                // One more sync to ensure all encrypted ops (ContextRegistered)
-                // have been retried and group context index is populated.
-                if let Err(e) = node_client.sync_namespace(namespace_id).await {
-                    warn!(?e, "final namespace sync request failed");
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
                 // -------------------------------------------------------
                 // Phase 3: Auto-join contexts.
+                //
+                // ContextRegistered ops are encrypted and can only be
+                // processed once the group key arrives. Even after
+                // KeyDelivery the ops may still be in-flight on the
+                // gossip layer. Poll sync_namespace + enumerate until
+                // at least one context appears (up to ~20s).
                 // -------------------------------------------------------
 
                 if let Some(ref alias_str) = group_alias {
@@ -140,12 +139,35 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                 if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
                     if meta.auto_join {
-                        let contexts = group_store::enumerate_group_contexts(
-                            &datastore,
-                            &group_id,
-                            0,
-                            usize::MAX,
-                        )?;
+                        let mut contexts = Vec::new();
+                        for poll in 0..10 {
+                            if let Err(e) = node_client.sync_namespace(namespace_id).await {
+                                warn!(?e, "namespace sync request failed (context poll)");
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                            contexts = group_store::enumerate_group_contexts(
+                                &datastore,
+                                &group_id,
+                                0,
+                                usize::MAX,
+                            )?;
+                            if !contexts.is_empty() {
+                                info!(
+                                    poll,
+                                    count = contexts.len(),
+                                    "group contexts appeared after polling"
+                                );
+                                break;
+                            }
+                        }
+                        if contexts.is_empty() {
+                            warn!(
+                                ?group_id,
+                                "no group contexts found after polling; \
+                                 contexts may sync later in the background"
+                            );
+                        }
                         info!(
                             ?group_id,
                             context_count = contexts.len(),
