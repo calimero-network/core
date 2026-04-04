@@ -10,13 +10,10 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{
-    Context, ContextConfigParams, ContextId, GroupMemberRole, UpgradePolicy,
-};
+use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::delta::{CausalDelta, StorageDelta};
-use calimero_store::key::GroupMetaValue;
 use calimero_store::{key, types, Store};
 use eyre::{bail, OptionExt};
 use rand::rngs::StdRng;
@@ -46,8 +43,7 @@ impl Handler<CreateContextRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let identity_secret = identity_secret.or_else(|| {
-            let gid = group_id.as_ref()?;
-            let (_, sk) = self.node_namespace_identity(gid)?;
+            let (_, sk) = self.node_namespace_identity(&group_id)?;
             Some(PrivateKey::from(sk))
         });
 
@@ -76,7 +72,6 @@ impl Handler<CreateContextRequest> for ContextManager {
             identity_secret,
             sender_key,
             group_id,
-            group_created,
             alias,
         } = prepared;
 
@@ -131,7 +126,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         context_id: context_meta_for_map_ok.id,
                         identity,
                         group_id: Some(group_id_for_response),
-                        group_created,
+                        group_created: false,
                     }
                 })
                 .map_err(move |err, act, _ctx| {
@@ -152,7 +147,6 @@ struct Prepared<'a> {
     identity_secret: PrivateKey,
     sender_key: PrivateKey,
     group_id: ContextGroupId,
-    group_created: bool,
     alias: Option<String>,
 }
 
@@ -165,7 +159,7 @@ impl Prepared<'_> {
         seed: Option<[u8; 32]>,
         application_id: &ApplicationId,
         identity_secret: Option<PrivateKey>,
-        group_id: Option<ContextGroupId>,
+        group_id: ContextGroupId,
         alias: Option<String>,
         datastore: &Store,
     ) -> eyre::Result<Self> {
@@ -176,39 +170,37 @@ impl Prepared<'_> {
         };
 
         let mut effective_app_id = *application_id;
-        if let Some(ref gid) = group_id {
-            let meta =
-                group_store::load_group_meta(datastore, gid)?.ok_or_eyre("group not found")?;
+        let meta =
+            group_store::load_group_meta(datastore, &group_id)?.ok_or_eyre("group not found")?;
 
-            let identity_pk = identity_secret
-                .as_ref()
-                .ok_or_eyre("identity_secret required for group context creation")?
-                .public_key();
+        let identity_pk = identity_secret
+            .as_ref()
+            .ok_or_eyre("identity_secret required for group context creation")?
+            .public_key();
 
-            if !group_store::check_group_membership(datastore, gid, &identity_pk)? {
-                bail!("identity is not a member of group '{gid:?}'");
-            }
+        if !group_store::check_group_membership(datastore, &group_id, &identity_pk)? {
+            bail!("identity is not a member of group '{group_id:?}'");
+        }
 
-            if !group_store::is_group_admin_or_has_capability(
-                datastore,
-                gid,
-                &identity_pk,
-                MemberCapabilities::CAN_CREATE_CONTEXT,
-            )? {
-                bail!(
-                    "identity lacks permission to create a context in group '{gid:?}' \
-                     (not an admin and CAN_CREATE_CONTEXT is not set)"
-                );
-            }
+        if !group_store::is_group_admin_or_has_capability(
+            datastore,
+            &group_id,
+            &identity_pk,
+            MemberCapabilities::CAN_CREATE_CONTEXT,
+        )? {
+            bail!(
+                "identity lacks permission to create a context in group '{group_id:?}' \
+                 (not an admin and CAN_CREATE_CONTEXT is not set)"
+            );
+        }
 
-            if effective_app_id != meta.target_application_id {
-                warn!(
-                    requested=?effective_app_id,
-                    group_target=?meta.target_application_id,
-                    "overriding application_id with group target"
-                );
-                effective_app_id = meta.target_application_id;
-            }
+        if effective_app_id != meta.target_application_id {
+            warn!(
+                requested=?effective_app_id,
+                group_target=?meta.target_application_id,
+                "overriding application_id with group target"
+            );
+            effective_app_id = meta.target_application_id;
         }
 
         let mut rng = rand::thread_rng();
@@ -258,54 +250,6 @@ impl Prepared<'_> {
 
         let identity = identity_secret.public_key();
 
-        // Auto-create a single-member group when no explicit group_id was provided.
-        let group_created = group_id.is_none();
-        let group_id = if let Some(gid) = group_id {
-            gid
-        } else {
-            let auto_group_id = ContextGroupId::from(*context_id.as_ref());
-            group_store::save_group_meta(
-                datastore,
-                &auto_group_id,
-                &GroupMetaValue {
-                    app_key: [0u8; 32],
-                    target_application_id: effective_app_id,
-                    upgrade_policy: UpgradePolicy::Automatic,
-                    created_at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                    admin_identity: identity,
-                    migration: None,
-                    auto_join: true,
-                },
-            )?;
-            let sender_key = PrivateKey::random(&mut rng);
-            group_store::add_group_member_with_keys(
-                datastore,
-                &auto_group_id,
-                &identity,
-                GroupMemberRole::Admin,
-                Some(*identity_secret),
-                Some(*sender_key),
-            )?;
-            group_store::store_namespace_identity(
-                datastore,
-                &auto_group_id,
-                &identity,
-                &*identity_secret,
-                &*sender_key,
-            )?;
-
-            let group_key: [u8; 32] = {
-                use rand::Rng;
-                rng.gen()
-            };
-            group_store::store_group_key(datastore, &auto_group_id, &group_key)?;
-
-            auto_group_id
-        };
-
         let application = match applications.entry(effective_app_id) {
             btree_map::Entry::Vacant(vacant) => {
                 let application = node_client
@@ -335,7 +279,6 @@ impl Prepared<'_> {
             identity_secret,
             sender_key,
             group_id,
-            group_created,
             alias,
         })
     }

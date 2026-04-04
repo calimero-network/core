@@ -64,39 +64,49 @@ steps:
   # Phase 1: Node 1 creates context, Nodes 2-3 join
   # ============================================
 
+  - name: Create namespace
+    type: create_namespace
+    node: sync6-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id: namespaceId
+
   - name: Node 1 creates context
     type: create_context
     node: sync6-1
     application_id: "{{app_id}}"
+    group_id: "{{namespace_id}}"
     outputs:
       ctx: contextId
       key1: memberPublicKey
       group_id: groupId
 
-  - name: Invite Node 2 to Group
-    type: create_group_invitation
+  - name: Invite Node 2 to Namespace
+    type: create_namespace_invitation
     node: sync6-1
-    group_id: "{{group_id}}"
+    namespace_id: "{{namespace_id}}"
     outputs:
       inv2: invitation
 
-  - name: Node 2 joins group
-    type: join_group
+  - name: Node 2 joins namespace
+    type: join_namespace
     node: sync6-2
+    namespace_id: "{{namespace_id}}"
     invitation: "{{inv2}}"
     outputs:
       key2: memberIdentity
 
-  - name: Invite Node 3 to Group
-    type: create_group_invitation
+  - name: Invite Node 3 to Namespace
+    type: create_namespace_invitation
     node: sync6-1
-    group_id: "{{group_id}}"
+    namespace_id: "{{namespace_id}}"
     outputs:
       inv3: invitation
 
-  - name: Node 3 joins group
-    type: join_group
+  - name: Node 3 joins namespace
+    type: join_namespace
     node: sync6-3
+    namespace_id: "{{namespace_id}}"
     invitation: "{{inv3}}"
     outputs:
       key3: memberIdentity
@@ -163,44 +173,47 @@ steps:
   # Phase 3: Nodes 4-6 join LATE (must snapshot existing state)
   # ============================================
 
-  - name: Invite Node 4 to Group
-    type: create_group_invitation
+  - name: Invite Node 4 to Namespace
+    type: create_namespace_invitation
     node: sync6-1
-    group_id: "{{group_id}}"
+    namespace_id: "{{namespace_id}}"
     outputs:
       inv4: invitation
 
-  - name: Node 4 joins group
-    type: join_group
+  - name: Node 4 joins namespace
+    type: join_namespace
     node: sync6-4
+    namespace_id: "{{namespace_id}}"
     invitation: "{{inv4}}"
     outputs:
       key4: memberIdentity
 
-  - name: Invite Node 5 to Group
-    type: create_group_invitation
+  - name: Invite Node 5 to Namespace
+    type: create_namespace_invitation
     node: sync6-1
-    group_id: "{{group_id}}"
+    namespace_id: "{{namespace_id}}"
     outputs:
       inv5: invitation
 
-  - name: Node 5 joins group
-    type: join_group
+  - name: Node 5 joins namespace
+    type: join_namespace
     node: sync6-5
+    namespace_id: "{{namespace_id}}"
     invitation: "{{inv5}}"
     outputs:
       key5: memberIdentity
 
-  - name: Invite Node 6 to Group
-    type: create_group_invitation
+  - name: Invite Node 6 to Namespace
+    type: create_namespace_invitation
     node: sync6-1
-    group_id: "{{group_id}}"
+    namespace_id: "{{namespace_id}}"
     outputs:
       inv6: invitation
 
-  - name: Node 6 joins group
-    type: join_group
+  - name: Node 6 joins namespace
+    type: join_namespace
     node: sync6-6
+    namespace_id: "{{namespace_id}}"
     invitation: "{{inv6}}"
     outputs:
       key6: memberIdentity

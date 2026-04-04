@@ -9,9 +9,10 @@ use tracing::{error, info};
 
 use super::{parse_group_id, parse_identity};
 use crate::admin::handlers::validation::ValidatedJson;
-use crate::admin::service::{parse_api_error, ApiResponse, Empty};
+use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::auth::AuthenticatedKey;
 use crate::AdminState;
+use calimero_server_primitives::admin::SetMemberAliasApiResponse;
 
 pub async fn handler(
     Path((group_id_str, identity_str)): Path<(String, String)>,
@@ -45,7 +46,10 @@ pub async fn handler(
     match result {
         Ok(()) => {
             info!(group_id=%group_id_str, identity=%identity_str, "Member alias set");
-            ApiResponse { payload: Empty }.into_response()
+            ApiResponse {
+                payload: SetMemberAliasApiResponse {},
+            }
+            .into_response()
         }
         Err(err) => {
             error!(group_id=%group_id_str, identity=%identity_str, error=?err, "Failed to set member alias");

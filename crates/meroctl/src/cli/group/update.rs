@@ -1,12 +1,9 @@
-use std::time::Duration;
-
-use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::UpdateGroupSettingsApiRequest;
 use clap::Parser;
 use eyre::Result;
 
-use crate::cli::group::create::UpgradePolicyArg;
+use crate::cli::upgrade_policy::{to_upgrade_policy, UpgradePolicyArg};
 use crate::cli::Environment;
 
 #[derive(Clone, Debug, Parser)]
@@ -35,13 +32,7 @@ pub struct UpdateCommand {
 
 impl UpdateCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let upgrade_policy = match self.upgrade_policy {
-            UpgradePolicyArg::Automatic => UpgradePolicy::Automatic,
-            UpgradePolicyArg::LazyOnAccess => UpgradePolicy::LazyOnAccess,
-            UpgradePolicyArg::Coordinated => UpgradePolicy::Coordinated {
-                deadline: self.deadline_secs.map(Duration::from_secs),
-            },
-        };
+        let upgrade_policy = to_upgrade_policy(self.upgrade_policy, self.deadline_secs);
 
         let request = UpdateGroupSettingsApiRequest {
             requester: self.requester,

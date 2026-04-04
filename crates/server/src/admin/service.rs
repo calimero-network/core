@@ -161,10 +161,7 @@ pub(crate) fn setup(
                 .delete(blob::delete_handler),
         )
         // Group management
-        .route(
-            "/groups",
-            get(groups::list_all_groups::handler).post(groups::create_group::handler),
-        )
+        .route("/groups", post(groups::create_group::handler))
         .route(
             "/groups/:group_id",
             get(groups::get_group_info::handler)
@@ -174,6 +171,12 @@ pub(crate) fn setup(
         .route(
             "/groups/:group_id/contexts",
             get(groups::list_group_contexts::handler),
+        )
+        .route("/groups/:group_id/nest", post(groups::nest_group::handler))
+        .route("/groups/:group_id/unnest", post(groups::unnest_group::handler))
+        .route(
+            "/groups/:group_id/subgroups",
+            get(groups::list_subgroups::handler),
         )
         .route(
             "/groups/:group_id/members",
@@ -220,10 +223,6 @@ pub(crate) fn setup(
             post(groups::sync_group::handler),
         )
         .route(
-            "/groups/:group_id/invite",
-            post(groups::create_group_invitation::handler),
-        )
-        .route(
             "/contexts/:context_id/join",
             post(join_context::handler),
         )
@@ -244,12 +243,29 @@ pub(crate) fn setup(
             "/groups/:group_id/settings/default-visibility",
             put(groups::set_default_visibility::handler),
         )
+        // Legacy subgroup invitation/join routes kept for backwards compatibility.
         .route(
-            "/groups/join",
-            post(groups::join_group::handler),
+            "/groups/:group_id/invite",
+            post(groups::create_group_invitation::handler),
         )
+        .route("/groups/join", post(groups::join_group::handler))
         // Namespace management
-        .route("/namespaces", get(namespaces::list::handler))
+        .route(
+            "/namespaces",
+            get(namespaces::list::handler).post(namespaces::create_namespace::handler),
+        )
+        .route(
+            "/namespaces/:namespace_id",
+            get(namespaces::get_namespace::handler).delete(namespaces::delete_namespace::handler),
+        )
+        .route(
+            "/namespaces/:namespace_id/invite",
+            post(namespaces::invite_namespace::handler),
+        )
+        .route(
+            "/namespaces/:namespace_id/join",
+            post(namespaces::join_namespace::handler),
+        )
         .route(
             "/namespaces/:namespace_id/identity",
             get(namespaces::get_identity::handler),
@@ -261,11 +277,8 @@ pub(crate) fn setup(
         // Namespace governance (Phase 2)
         .route(
             "/namespaces/:namespace_id/groups",
-            post(namespaces::create_group_in_namespace::handler),
-        )
-        .route(
-            "/namespaces/:namespace_id/subscribe",
-            post(namespaces::subscribe_namespace::handler),
+            get(namespaces::list_namespace_groups::handler)
+                .post(namespaces::create_group_in_namespace::handler),
         )
         // TEE protected endpoints
         .nest("/tee", tee::protected_service())

@@ -35,7 +35,7 @@ pub struct CreateContextRequest {
     pub service_name: Option<String>,
     pub identity_secret: Option<PrivateKey>,
     pub init_params: Vec<u8>,
-    pub group_id: Option<ContextGroupId>,
+    pub group_id: ContextGroupId,
     pub alias: Option<String>,
 }
 

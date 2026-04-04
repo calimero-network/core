@@ -5,13 +5,15 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::SetDefaultVisibilityRequest;
 use calimero_context_config::VisibilityMode;
-use calimero_server_primitives::admin::SetDefaultVisibilityApiRequest;
+use calimero_server_primitives::admin::{
+    SetDefaultVisibilityApiRequest, SetDefaultVisibilityApiResponse,
+};
 use reqwest::StatusCode;
 use tracing::{error, info};
 
 use super::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
-use crate::admin::service::{parse_api_error, ApiError, ApiResponse, Empty};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
@@ -53,7 +55,10 @@ pub async fn handler(
     match result {
         Ok(()) => {
             info!(group_id=%group_id_str, "Default visibility updated");
-            ApiResponse { payload: Empty }.into_response()
+            ApiResponse {
+                payload: SetDefaultVisibilityApiResponse {},
+            }
+            .into_response()
         }
         Err(err) => {
             error!(group_id=%group_id_str, error=?err, "Failed to set default visibility");

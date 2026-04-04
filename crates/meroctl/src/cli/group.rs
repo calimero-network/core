@@ -5,35 +5,38 @@ use eyre::Result;
 use crate::cli::Environment;
 
 pub mod contexts;
-pub mod create;
 pub mod delete;
 pub mod get;
-pub mod invite;
-pub mod join;
 pub mod join_context;
-pub mod list;
 pub mod members;
+pub mod nest;
 pub mod settings;
 pub mod signing_key;
+pub mod subgroups;
 pub mod sync;
+pub mod unnest;
 pub mod update;
 pub mod upgrade;
 
 pub const EXAMPLES: &str = r"
-  # List all groups
-  $ meroctl --node node1 group ls
-
-  # Create a new group
-  $ meroctl --node node1 group create --app-key <hex_key> --application-id <app_id> --admin-identity <public_key>
+  # Create a namespace (root group)
+  $ meroctl --node node1 namespace create --application-id <app_id>
 
   # Get group info
   $ meroctl --node node1 group get <group_id>
 
-  # Create an invitation to join a group
-  $ meroctl --node node1 group invite <group_id> --requester <public_key>
+  # Invite another node to a namespace
+  $ meroctl --node node1 namespace invite <namespace_id>
 
-  # Join a group using an invitation payload
-  $ meroctl --node node1 group join '<payload>' --joiner-identity <public_key>
+  # Join a namespace using an invitation payload
+  $ meroctl --node node2 namespace join <namespace_id> '<payload>'
+
+  # List direct child groups
+  $ meroctl --node node1 group subgroups <group_id>
+
+  # Nest and unnest existing groups
+  $ meroctl --node node1 group nest <parent_group_id> <child_group_id>
+  $ meroctl --node node1 group unnest <parent_group_id> <child_group_id>
 
   # Register a signing key for a group admin
   $ meroctl --node node1 group signing-key register <group_id> <hex_signing_key>
@@ -58,17 +61,15 @@ pub struct GroupCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum GroupSubCommands {
-    #[command(alias = "ls")]
-    List(list::ListCommand),
-    Create(create::CreateCommand),
     Get(get::GetCommand),
     #[command(alias = "del")]
     Delete(delete::DeleteCommand),
     Update(update::UpdateCommand),
     Members(members::MembersCommand),
     Contexts(contexts::ContextsCommand),
-    Invite(invite::InviteCommand),
-    Join(join::JoinCommand),
+    Nest(nest::NestCommand),
+    Unnest(unnest::UnnestCommand),
+    Subgroups(subgroups::SubgroupsCommand),
     #[command(alias = "signing-key")]
     SigningKey(signing_key::SigningKeyCommand),
     Upgrade(upgrade::UpgradeCommand),
@@ -81,15 +82,14 @@ pub enum GroupSubCommands {
 impl GroupCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         match self.subcommand {
-            GroupSubCommands::List(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Create(cmd) => cmd.run(environment).await,
             GroupSubCommands::Get(cmd) => cmd.run(environment).await,
             GroupSubCommands::Delete(cmd) => cmd.run(environment).await,
             GroupSubCommands::Update(cmd) => cmd.run(environment).await,
             GroupSubCommands::Members(cmd) => cmd.run(environment).await,
             GroupSubCommands::Contexts(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Invite(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Join(cmd) => cmd.run(environment).await,
+            GroupSubCommands::Nest(cmd) => cmd.run(environment).await,
+            GroupSubCommands::Unnest(cmd) => cmd.run(environment).await,
+            GroupSubCommands::Subgroups(cmd) => cmd.run(environment).await,
             GroupSubCommands::SigningKey(cmd) => cmd.run(environment).await,
             GroupSubCommands::Upgrade(cmd) => cmd.run(environment).await,
             GroupSubCommands::Sync(cmd) => cmd.run(environment).await,

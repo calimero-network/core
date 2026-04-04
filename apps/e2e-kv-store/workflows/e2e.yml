@@ -123,16 +123,17 @@ steps:
 
   # NODE-3 OPEN INVITATION JOIN (after initial cross-node traffic)
 
-  - name: Create group invitation for node-3
-    type: create_group_invitation
+  - name: Create namespace invitation for node-3
+    type: create_namespace_invitation
     node: e2e-node-1
-    group_id: "{{group_id}}"
+    namespace_id: "{{group_id}}"
     outputs:
       open_invitation_3: invitation
 
-  - name: Join group - node-3
-    type: join_group
+  - name: Join namespace - node-3
+    type: join_namespace
     node: e2e-node-3
+    namespace_id: "{{group_id}}"
     invitation: "{{open_invitation_3}}"
     outputs:
       node3_key: memberIdentity

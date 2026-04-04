@@ -24,48 +24,66 @@ steps:
     path: res/xcall_example.wasm
     dev: true
 
+  - name: Create Namespace A
+    type: create_namespace
+    node: rust-xcall-1
+    application_id: "{{app_id_node1}}"
+    outputs:
+      namespace_id_a: namespaceId
+
   - name: Create Context A
     type: create_context
     node: rust-xcall-1
     application_id: "{{app_id_node1}}"
+    group_id: "{{namespace_id_a}}"
     outputs:
       context_a_id: contextId
       context_a_member_key: memberPublicKey
       group_id_a: groupId
 
+  - name: Create Namespace B
+    type: create_namespace
+    node: rust-xcall-1
+    application_id: "{{app_id_node1}}"
+    outputs:
+      namespace_id_b: namespaceId
+
   - name: Create Context B
     type: create_context
     node: rust-xcall-1
     application_id: "{{app_id_node1}}"
+    group_id: "{{namespace_id_b}}"
     outputs:
       context_b_id: contextId
       context_b_member_key: memberPublicKey
       group_id_b: groupId
 
-  - name: Create group invitation for Context A
-    type: create_group_invitation
+  - name: Create namespace invitation for Context A
+    type: create_namespace_invitation
     node: rust-xcall-1
-    group_id: "{{group_id_a}}"
+    namespace_id: "{{namespace_id_a}}"
     outputs:
       invitation_a: invitation
 
-  - name: Create group invitation for Context B
-    type: create_group_invitation
+  - name: Create namespace invitation for Context B
+    type: create_namespace_invitation
     node: rust-xcall-1
-    group_id: "{{group_id_b}}"
+    namespace_id: "{{namespace_id_b}}"
     outputs:
       invitation_b: invitation
 
-  - name: Node 2 joins group A
-    type: join_group
+  - name: Node 2 joins namespace A
+    type: join_namespace
     node: rust-xcall-2
+    namespace_id: "{{namespace_id_a}}"
     invitation: "{{invitation_a}}"
     outputs:
       identity_a: memberIdentity
 
-  - name: Node 2 joins group B
-    type: join_group
+  - name: Node 2 joins namespace B
+    type: join_namespace
     node: rust-xcall-2
+    namespace_id: "{{namespace_id_b}}"
     invitation: "{{invitation_b}}"
     outputs:
       identity_b: memberIdentity

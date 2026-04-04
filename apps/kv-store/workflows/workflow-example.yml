@@ -22,45 +22,56 @@ steps:
     outputs:
       app_id: applicationId          # Export 'applicationId' field as 'app_id'
 
-  # Step 2: Create a context using the installed application
+  # Step 2: Create namespace on Node 1
+  - name: Create Namespace on Node 1
+    type: create_namespace
+    node: calimero-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  # Step 3: Create a context using the installed application
   # Uses the captured application ID from step 1
   - name: Create Context on Node 1
     type: create_context
     node: calimero-node-1
     application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
     outputs:
       context_id: contextId          # Export 'contextId' field as 'context_id'
       member_public_key: memberPublicKey  # Export 'memberPublicKey' as 'member_public_key'
       group_id: groupId              # Export 'groupId' as 'group_id'
 
-  # Step 3: Create a group invitation for Node 2
-  - name: Invite Node 2 to Group
-    type: create_group_invitation
+  # Step 4: Create a namespace invitation for Node 2
+  - name: Invite Node 2 to Namespace
+    type: create_namespace_invitation
     node: calimero-node-1
-    group_id: '{{group_id}}'
+    namespace_id: '{{namespace_id}}'
     outputs:
       invitation_node2: invitation
 
-  # Step 4: Node 2 joins the group (auto-joins all contexts)
-  - name: Node 2 Joins Group
-    type: join_group
+  # Step 5: Node 2 joins the namespace (auto-joins all contexts)
+  - name: Node 2 Joins Namespace
+    type: join_namespace
     node: calimero-node-2
+    namespace_id: '{{namespace_id}}'
     invitation: '{{invitation_node2}}'
     outputs:
       public_key_node2: memberIdentity
 
-  # Step 5: Create a group invitation for Node 3
-  - name: Invite Node 3 to Group
-    type: create_group_invitation
+  # Step 6: Create a namespace invitation for Node 3
+  - name: Invite Node 3 to Namespace
+    type: create_namespace_invitation
     node: calimero-node-1
-    group_id: '{{group_id}}'
+    namespace_id: '{{namespace_id}}'
     outputs:
       invitation_node3: invitation
 
-  # Step 6: Node 3 joins the group (auto-joins all contexts)
-  - name: Node 3 Joins Group
-    type: join_group
+  # Step 7: Node 3 joins the namespace (auto-joins all contexts)
+  - name: Node 3 Joins Namespace
+    type: join_namespace
     node: calimero-node-3
+    namespace_id: '{{namespace_id}}'
     invitation: '{{invitation_node3}}'
     outputs:
       public_key_node3: memberIdentity

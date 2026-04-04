@@ -71,8 +71,12 @@ pub struct CreateCommand {
     )]
     pub service: Option<String>,
 
-    #[clap(long, help = "Group ID (hex) to attach this context to")]
-    pub group_id: Option<String>,
+    #[clap(
+        long,
+        required = true,
+        help = "Group ID (hex) to attach this context to"
+    )]
+    pub group_id: String,
 
     #[clap(long, help = "Identity secret (hex) for signing group membership")]
     pub identity_secret: Option<String>,
@@ -186,7 +190,7 @@ pub async fn create_context(
     params: Option<String>,
     identity: Option<Alias<PublicKey>>,
     context: Option<Alias<ContextId>>,
-    group_id: Option<String>,
+    group_id: String,
     identity_secret: Option<String>,
     alias: Option<String>,
 ) -> Result<(ContextId, PublicKey)> {
