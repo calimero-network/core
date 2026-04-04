@@ -13,6 +13,7 @@ use tracing::{info, warn};
 use crate::{group_store, ContextManager};
 
 const JOIN_OVERALL_TIMEOUT: Duration = Duration::from_secs(30);
+const MESH_FORMATION_GRACE: Duration = Duration::from_secs(2);
 
 async fn await_condition<F>(
     notify: &Arc<Notify>,
@@ -123,6 +124,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                 let _ = node_client.subscribe_namespace(namespace_id).await;
 
+                // Gossipsub mesh formation requires a heartbeat round
+                // (~1s default). Wait briefly so that mesh peers are
+                // available for both publishing and backfill requests.
+                tokio::time::sleep(MESH_FORMATION_GRACE).await;
+
                 // Backfill: ops published before we subscribed won't arrive
                 // via gossipsub. Request them once from a mesh peer.
                 if let Err(e) = node_client.sync_namespace(namespace_id).await {
@@ -169,6 +175,13 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                 if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
                     if meta.auto_join {
+                        // After receiving the key, the encrypted ContextRegistered
+                        // ops may not have been backfilled yet. Trigger another
+                        // backfill so they arrive and get retried with the key.
+                        if let Err(e) = node_client.sync_namespace(namespace_id).await {
+                            warn!(?e, "post-key namespace backfill request failed");
+                        }
+
                         let ds = &datastore;
                         let gid = &group_id;
                         let _ = await_condition(&notify, deadline, || {
