@@ -10,9 +10,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{
-    Context, ContextConfigParams, ContextId,
-};
+use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::delta::{CausalDelta, StorageDelta};
@@ -174,7 +172,8 @@ impl Prepared<'_> {
         };
 
         let mut effective_app_id = *application_id;
-        let meta = group_store::load_group_meta(datastore, &group_id)?.ok_or_eyre("group not found")?;
+        let meta =
+            group_store::load_group_meta(datastore, &group_id)?.ok_or_eyre("group not found")?;
 
         let identity_pk = identity_secret
             .as_ref()

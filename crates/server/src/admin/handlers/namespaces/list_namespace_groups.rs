@@ -3,7 +3,9 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_server_primitives::admin::{ListNamespaceGroupsApiResponse, NamespaceGroupEntryApiResponse};
+use calimero_server_primitives::admin::{
+    ListNamespaceGroupsApiResponse, NamespaceGroupEntryApiResponse,
+};
 use tracing::error;
 
 use crate::admin::handlers::groups::parse_group_id;
@@ -19,7 +21,8 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let groups = match calimero_context::group_store::list_child_groups(&state.store, &namespace_id) {
+    let groups = match calimero_context::group_store::list_child_groups(&state.store, &namespace_id)
+    {
         Ok(groups) => groups,
         Err(err) => return parse_api_error(err).into_response(),
     };
@@ -29,7 +32,10 @@ pub async fn handler(
         let alias = match calimero_context::group_store::get_group_alias(&state.store, &group_id) {
             Ok(alias) => alias,
             Err(err) => {
-                error!(?err, "Failed to resolve group alias while listing namespace groups");
+                error!(
+                    ?err,
+                    "Failed to resolve group alias while listing namespace groups"
+                );
                 return parse_api_error(err).into_response();
             }
         };

@@ -12,7 +12,7 @@ use tracing::{error, info};
 
 use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
-use crate::admin::service::{ApiError, parse_api_error, ApiResponse};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(

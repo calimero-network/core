@@ -3,8 +3,8 @@ use calimero_server_primitives::admin::CreateNamespaceApiRequest;
 use clap::Parser;
 use eyre::Result;
 
-use crate::cli::Environment;
 use crate::cli::upgrade_policy::{to_upgrade_policy, UpgradePolicyArg};
+use crate::cli::Environment;
 
 #[derive(Debug, Parser)]
 #[command(about = "Create a new namespace")]

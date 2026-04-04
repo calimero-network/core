@@ -6,7 +6,10 @@ use crate::cli::Environment;
 #[derive(Clone, Debug, Parser)]
 #[command(about = "List direct groups under a namespace")]
 pub struct GroupsCommand {
-    #[clap(name = "NAMESPACE_ID", help = "The hex-encoded namespace (root group) ID")]
+    #[clap(
+        name = "NAMESPACE_ID",
+        help = "The hex-encoded namespace (root group) ID"
+    )]
     pub namespace_id: String,
 }
 

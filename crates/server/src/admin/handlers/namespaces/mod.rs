@@ -1,8 +1,8 @@
-pub mod create_namespace;
 pub mod create_group_in_namespace;
+pub mod create_namespace;
 pub mod delete_namespace;
-pub mod get_namespace;
 pub mod get_identity;
+pub mod get_namespace;
 pub mod invite_namespace;
 pub mod join_namespace;
 pub mod list;

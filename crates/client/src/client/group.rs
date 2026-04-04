@@ -178,7 +178,10 @@ where
     ) -> Result<UnnestGroupApiResponse> {
         let response = self
             .connection
-            .post(&format!("admin-api/groups/{parent_group_id}/unnest"), request)
+            .post(
+                &format!("admin-api/groups/{parent_group_id}/unnest"),
+                request,
+            )
             .await?;
         Ok(response)
     }
