@@ -24,23 +24,43 @@ steps:
     path: res/xcall_example.wasm
     dev: true
 
+  - name: Create group A
+    type: create_group
+    node: rust-xcall-1
+    application_id: "{{app_id_node1}}"
+    # Compatibility shim: some merobox schema revisions require context_id
+    # for create_group validation even though runtime uses application_id.
+    context_id: "{{app_id_node1}}"
+    outputs:
+      group_a_id: groupId
+
   - name: Create Context A
     type: create_context
     node: rust-xcall-1
     application_id: "{{app_id_node1}}"
+    group_id: "{{group_a_id}}"
     outputs:
       context_a_id: contextId
       context_a_member_key: memberPublicKey
-      group_a_id: groupId
+
+  - name: Create group B
+    type: create_group
+    node: rust-xcall-1
+    application_id: "{{app_id_node1}}"
+    # Compatibility shim: some merobox schema revisions require context_id
+    # for create_group validation even though runtime uses application_id.
+    context_id: "{{app_id_node1}}"
+    outputs:
+      group_b_id: groupId
 
   - name: Create Context B
     type: create_context
     node: rust-xcall-1
     application_id: "{{app_id_node1}}"
+    group_id: "{{group_b_id}}"
     outputs:
       context_b_id: contextId
       context_b_member_key: memberPublicKey
-      group_b_id: groupId
 
   - name: Create identity for Context A on Node 2
     type: create_identity
