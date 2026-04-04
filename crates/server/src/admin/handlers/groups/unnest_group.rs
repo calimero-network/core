@@ -37,10 +37,15 @@ pub async fn handler(
         "Unnesting group"
     );
 
+    let namespace_anchor_group_id =
+        match calimero_context::group_store::resolve_namespace(&state.store, &parent_group_id) {
+            Ok(id) => id,
+            Err(err) => return parse_api_error(err).into_response(),
+        };
     let (namespace_id, signer_pk, signer_sk_bytes, _) =
         match calimero_context::group_store::get_or_create_namespace_identity(
             &state.store,
-            &parent_group_id,
+            &namespace_anchor_group_id,
         ) {
             Ok(identity) => identity,
             Err(err) => return parse_api_error(err).into_response(),

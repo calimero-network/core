@@ -4,7 +4,6 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
-use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::{NestGroupApiRequest, NestGroupApiResponse};
 use tracing::{error, info};
@@ -32,10 +31,16 @@ pub async fn handler(
 
     let requester = auth_key.map(|Extension(k)| k.0).or(req.requester);
 
-    let ns_gid = ContextGroupId::from(parent_group_id.to_bytes());
+    let namespace_anchor_group_id =
+        match calimero_context::group_store::resolve_namespace(&state.store, &parent_group_id) {
+            Ok(id) => id,
+            Err(err) => return parse_api_error(err).into_response(),
+        };
     let (namespace_id, signer_pk, sk_bytes, _sender) =
-        match calimero_context::group_store::get_or_create_namespace_identity(&state.store, &ns_gid)
-        {
+        match calimero_context::group_store::get_or_create_namespace_identity(
+            &state.store,
+            &namespace_anchor_group_id,
+        ) {
             Ok(result) => result,
             Err(err) => return parse_api_error(err).into_response(),
         };

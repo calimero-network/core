@@ -72,7 +72,6 @@ impl Handler<CreateContextRequest> for ContextManager {
             identity_secret,
             sender_key,
             group_id,
-            group_created,
             alias,
         } = prepared;
 
@@ -127,7 +126,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         context_id: context_meta_for_map_ok.id,
                         identity,
                         group_id: Some(group_id_for_response),
-                        group_created,
+                        group_created: false,
                     }
                 })
                 .map_err(move |err, act, _ctx| {
@@ -148,7 +147,6 @@ struct Prepared<'a> {
     identity_secret: PrivateKey,
     sender_key: PrivateKey,
     group_id: ContextGroupId,
-    group_created: bool,
     alias: Option<String>,
 }
 
@@ -252,8 +250,6 @@ impl Prepared<'_> {
 
         let identity = identity_secret.public_key();
 
-        let group_created = false;
-
         let application = match applications.entry(effective_app_id) {
             btree_map::Entry::Vacant(vacant) => {
                 let application = node_client
@@ -283,7 +279,6 @@ impl Prepared<'_> {
             identity_secret,
             sender_key,
             group_id,
-            group_created,
             alias,
         })
     }
