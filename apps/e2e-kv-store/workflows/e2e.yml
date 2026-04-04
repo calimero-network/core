@@ -25,24 +25,14 @@ steps:
     statements:
       - "is_set({{app_id}})"
 
-  - name: Create group on node-1
-    type: create_group
-    node: e2e-node-1
-    application_id: "{{app_id}}"
-    # Compatibility shim: some merobox schema revisions require context_id
-    # for create_group validation even though runtime uses application_id.
-    context_id: "{{app_id}}"
-    outputs:
-      group_id: groupId
-
   - name: Create context on node-1
     type: create_context
     node: e2e-node-1
     application_id: "{{app_id}}"
-    group_id: "{{group_id}}"
     outputs:
       context_id: contextId
       node1_key: memberPublicKey
+      group_id: groupId
 
   - name: Create identity on node-2
     type: create_identity
