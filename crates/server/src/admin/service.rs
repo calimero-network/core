@@ -274,10 +274,6 @@ pub(crate) fn setup(
             get(namespaces::list_namespace_groups::handler)
                 .post(namespaces::create_group_in_namespace::handler),
         )
-        .route(
-            "/namespaces/:namespace_id/subscribe",
-            post(namespaces::subscribe_namespace::handler),
-        )
         // TEE protected endpoints
         .nest("/tee", tee::protected_service())
         // Alias management

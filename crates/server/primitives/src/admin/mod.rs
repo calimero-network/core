@@ -2022,22 +2022,22 @@ impl Validate for UpdateGroupSettingsApiRequest {
 // ---- Update Group Settings ----
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct UpdateGroupSettingsApiResponse;
+pub struct UpdateGroupSettingsApiResponse {}
 
 // ---- Update Member Role ----
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct UpdateMemberRoleApiResponse;
+pub struct UpdateMemberRoleApiResponse {}
 
 // ---- Add Group Members (empty response) ----
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct AddGroupMembersApiResponse;
+pub struct AddGroupMembersApiResponse {}
 
 // ---- Remove Group Members (empty response) ----
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct RemoveGroupMembersApiResponse;
+pub struct RemoveGroupMembersApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2056,7 +2056,7 @@ impl Validate for UpdateMemberRoleApiRequest {
 // ---- Detach Context From Group ----
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct DetachContextFromGroupApiResponse;
+pub struct DetachContextFromGroupApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2186,7 +2186,7 @@ impl Validate for SetMemberCapabilitiesApiRequest {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct SetMemberCapabilitiesApiResponse;
+pub struct SetMemberCapabilitiesApiResponse {}
 
 // ---- Set Member Alias ----
 
@@ -2212,7 +2212,7 @@ impl Validate for SetMemberAliasApiRequest {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct SetMemberAliasApiResponse;
+pub struct SetMemberAliasApiResponse {}
 
 // ---- Set Group Alias ----
 
@@ -2238,7 +2238,7 @@ impl Validate for SetGroupAliasApiRequest {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct SetGroupAliasApiResponse;
+pub struct SetGroupAliasApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2267,7 +2267,7 @@ impl Validate for SetDefaultCapabilitiesApiRequest {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct SetDefaultCapabilitiesApiResponse;
+pub struct SetDefaultCapabilitiesApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2318,7 +2318,7 @@ impl Validate for SetDefaultVisibilityApiRequest {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct SetDefaultVisibilityApiResponse;
+pub struct SetDefaultVisibilityApiResponse {}
 
 #[cfg(test)]
 mod tests {

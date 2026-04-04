@@ -161,7 +161,7 @@ async fn update_group_settings() {
     let server = MockServer::start().await;
     Mock::given(method("PATCH"))
         .and(path(format!("/admin-api/groups/{GID}")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -202,7 +202,7 @@ async fn add_group_members() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/members")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -228,7 +228,7 @@ async fn remove_group_members() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/members/remove")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -253,7 +253,7 @@ async fn update_member_role() {
         .and(path(format!(
             "/admin-api/groups/{GID}/members/{IDENT}/role"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -297,7 +297,7 @@ async fn detach_context_from_group() {
         .and(path(format!(
             "/admin-api/groups/{GID}/contexts/{CID}/remove"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -726,7 +726,7 @@ async fn set_member_capabilities() {
         .and(path(format!(
             "/admin-api/groups/{GID}/members/{IDENT}/capabilities"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -774,7 +774,7 @@ async fn set_default_capabilities() {
         .and(path(format!(
             "/admin-api/groups/{GID}/settings/default-capabilities"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -799,7 +799,7 @@ async fn set_default_visibility() {
         .and(path(format!(
             "/admin-api/groups/{GID}/settings/default-visibility"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;

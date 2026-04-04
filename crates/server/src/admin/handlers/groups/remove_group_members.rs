@@ -4,12 +4,14 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::RemoveGroupMembersRequest;
-use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
+use calimero_server_primitives::admin::{
+    RemoveGroupMembersApiRequest, RemoveGroupMembersApiResponse,
+};
 use tracing::{error, info};
 
 use super::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
-use crate::admin::service::{parse_api_error, ApiResponse, Empty};
+use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
@@ -43,7 +45,10 @@ pub async fn handler(
     match result {
         Ok(()) => {
             info!(group_id=%group_id_str, "Group members removed successfully");
-            ApiResponse { payload: Empty }.into_response()
+            ApiResponse {
+                payload: RemoveGroupMembersApiResponse {},
+            }
+            .into_response()
         }
         Err(err) => {
             error!(group_id=%group_id_str, error=?err, "Failed to remove group members");

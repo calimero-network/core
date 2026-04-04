@@ -8,4 +8,3 @@ pub mod join_namespace;
 pub mod list;
 pub mod list_for_application;
 pub mod list_namespace_groups;
-pub mod subscribe_namespace;
