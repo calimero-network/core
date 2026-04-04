@@ -243,6 +243,12 @@ pub(crate) fn setup(
             "/groups/:group_id/settings/default-visibility",
             put(groups::set_default_visibility::handler),
         )
+        // Legacy subgroup invitation/join routes kept for backwards compatibility.
+        .route(
+            "/groups/:group_id/invite",
+            post(groups::create_group_invitation::handler),
+        )
+        .route("/groups/join", post(groups::join_group::handler))
         // Namespace management
         .route(
             "/namespaces",

@@ -13,11 +13,13 @@ use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateGroupInNamespaceBody {
     pub group_alias: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateGroupInNamespaceResponse {
     pub group_id: String,
 }

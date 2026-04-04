@@ -67,7 +67,7 @@ steps:
       - "is_set({{context_id}})"
       - "is_set({{fran_key}})"
 
-  # Matea joins via namespace invitation
+  # Matea joins via invitation
   - name: Invite Matea to Namespace
     type: create_namespace_invitation
     node: sync-test-node-1

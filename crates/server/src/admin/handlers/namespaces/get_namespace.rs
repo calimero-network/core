@@ -71,16 +71,18 @@ pub async fn handler(
         &node_pk,
     ) {
         Ok(Some(ns)) => ApiResponse {
-            payload: calimero_server_primitives::admin::NamespaceApiResponse {
-                namespace_id: hex::encode(ns.namespace_id.to_bytes()),
-                app_key: hex::encode(ns.app_key.to_bytes()),
-                target_application_id: ns.target_application_id.to_string(),
-                upgrade_policy: format!("{:?}", ns.upgrade_policy),
-                created_at: ns.created_at,
-                alias: ns.alias,
-                member_count: ns.member_count,
-                context_count: ns.context_count,
-                subgroup_count: ns.subgroup_count,
+            payload: calimero_server_primitives::admin::GetNamespaceApiResponse {
+                data: calimero_server_primitives::admin::NamespaceApiResponse {
+                    namespace_id: hex::encode(ns.namespace_id.to_bytes()),
+                    app_key: hex::encode(ns.app_key.to_bytes()),
+                    target_application_id: ns.target_application_id.to_string(),
+                    upgrade_policy: format!("{:?}", ns.upgrade_policy),
+                    created_at: ns.created_at,
+                    alias: ns.alias,
+                    member_count: ns.member_count,
+                    context_count: ns.context_count,
+                    subgroup_count: ns.subgroup_count,
+                },
             },
         }
         .into_response(),

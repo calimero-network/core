@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::SetTeeAdmissionPolicyRequest;
 use calimero_server_primitives::admin::{
-    SetMemberCapabilitiesApiResponse, SetTeeAdmissionPolicyApiRequest,
+    SetTeeAdmissionPolicyApiRequest, SetTeeAdmissionPolicyApiResponse,
 };
 use tracing::{error, info};
 
@@ -48,7 +48,7 @@ pub async fn handler(
         Ok(()) => {
             info!(group_id=%group_id_str, "TEE admission policy updated");
             ApiResponse {
-                payload: SetMemberCapabilitiesApiResponse {},
+                payload: SetTeeAdmissionPolicyApiResponse {},
             }
             .into_response()
         }

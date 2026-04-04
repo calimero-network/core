@@ -444,15 +444,17 @@ async fn get_namespace() {
     Mock::given(method("GET"))
         .and(path(format!("/admin-api/namespaces/{GID}")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "namespaceId": GID,
-            "appKey": "testkey",
-            "targetApplicationId": ZERO_BS58,
-            "upgradePolicy": "Automatic",
-            "createdAt": 0,
-            "alias": null,
-            "memberCount": 0,
-            "contextCount": 0,
-            "subgroupCount": 0
+            "data": {
+                "namespaceId": GID,
+                "appKey": "testkey",
+                "targetApplicationId": ZERO_BS58,
+                "upgradePolicy": "Automatic",
+                "createdAt": 0,
+                "alias": null,
+                "memberCount": 0,
+                "contextCount": 0,
+                "subgroupCount": 0
+            }
         })))
         .expect(1)
         .mount(&server)

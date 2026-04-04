@@ -2296,6 +2296,9 @@ impl Validate for SetTeeAdmissionPolicyApiRequest {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetTeeAdmissionPolicyApiResponse {}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetDefaultVisibilityApiRequest {
@@ -2396,6 +2399,12 @@ pub struct NamespaceApiResponse {
     pub member_count: usize,
     pub context_count: usize,
     pub subgroup_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetNamespaceApiResponse {
+    pub data: NamespaceApiResponse,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

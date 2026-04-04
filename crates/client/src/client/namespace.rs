@@ -1,8 +1,8 @@
 use calimero_server_primitives::admin::{
     CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
-    DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, JoinGroupApiRequest,
-    JoinGroupApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
-    NamespaceApiResponse, NamespaceIdentityApiResponse,
+    DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
+    JoinGroupApiRequest, JoinGroupApiResponse, ListNamespaceGroupsApiResponse,
+    ListNamespacesApiResponse, NamespaceApiResponse, NamespaceIdentityApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -65,7 +65,8 @@ where
             .connection
             .get(&format!("admin-api/namespaces/{namespace_id}"))
             .await?;
-        Ok(response)
+        let response: GetNamespaceApiResponse = response;
+        Ok(response.data)
     }
 
     pub async fn delete_namespace(
