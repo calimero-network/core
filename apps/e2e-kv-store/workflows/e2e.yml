@@ -57,9 +57,10 @@ steps:
     outputs:
       group_invitation_2: invitation
 
-  - name: Join group - node-2
-    type: join_group
+  - name: Join namespace - node-2
+    type: join_namespace
     node: e2e-node-2
+    namespace_id: "{{group_id}}"
     invitation: "{{group_invitation_2}}"
 
   - name: Join context - node-2
@@ -170,9 +171,10 @@ steps:
     outputs:
       group_invitation_3: invitation
 
-  - name: Join group - node-3
-    type: join_group
+  - name: Join namespace - node-3
+    type: join_namespace
     node: e2e-node-3
+    namespace_id: "{{group_id}}"
     invitation: "{{group_invitation_3}}"
 
   - name: Join context - node-3

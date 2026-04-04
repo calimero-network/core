@@ -56,9 +56,10 @@ steps:
     node: e2e-node-1
     group_id: '{{group_id}}'
 
-  - name: Node-2 joins group
-    type: join_group
+  - name: Node-2 joins namespace
+    type: join_namespace
     node: e2e-node-2
+    namespace_id: '{{group_id}}'
     invitation: '{{group_invitation_e2e-node-1}}'
 
   - name: Node-2 joins context 1 via group

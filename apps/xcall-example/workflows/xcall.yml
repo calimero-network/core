@@ -88,14 +88,16 @@ steps:
     outputs:
       invitation_b: invitation
 
-  - name: Join group A from Node 2
-    type: join_group
+  - name: Join namespace A from Node 2
+    type: join_namespace
     node: rust-xcall-2
+    namespace_id: "{{group_a_id}}"
     invitation: "{{invitation_a}}"
 
-  - name: Join group B from Node 2
-    type: join_group
+  - name: Join namespace B from Node 2
+    type: join_namespace
     node: rust-xcall-2
+    namespace_id: "{{group_b_id}}"
     invitation: "{{invitation_b}}"
 
   - name: Join Context A from Node 2
