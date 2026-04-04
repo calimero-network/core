@@ -25,23 +25,49 @@ steps:
     statements:
       - "is_set({{app_id}})"
 
-  - name: Create mesh with node-2
-    type: create_mesh
-    context_node: e2e-node-1
+  - name: Create group on node-1
+    type: create_group
+    node: e2e-node-1
     application_id: "{{app_id}}"
-    nodes:
-      - e2e-node-2
-    capability: member
+    # Compatibility shim: some merobox schema revisions require context_id
+    # for create_group validation even though runtime uses application_id.
+    context_id: "{{app_id}}"
+    outputs:
+      group_id: groupId
+
+  - name: Create context on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_id}}"
     outputs:
       context_id: contextId
       node1_key: memberPublicKey
-      group_id: groupId
 
-  - name: Allow mesh context to settle
-    type: wait
-    seconds: 5
+  - name: Create identity on node-2
+    type: create_identity
+    node: e2e-node-2
+    outputs:
+      "public_key_e2e-node-2": publicKey
 
-  - name: Wait for initial mesh context sync
+  - name: Create group invitation for node-2
+    type: create_group_invitation
+    node: e2e-node-1
+    group_id: "{{group_id}}"
+    outputs:
+      group_invitation_2: invitation
+
+  - name: Join group - node-2
+    type: join_group
+    node: e2e-node-2
+    invitation: "{{group_invitation_2}}"
+
+  - name: Join context - node-2
+    type: join_context
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+
+  - name: Wait for initial context sync
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
