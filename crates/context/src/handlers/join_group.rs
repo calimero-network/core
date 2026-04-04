@@ -253,8 +253,24 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         }
                     }
                 } else {
-                    eprintln!("[JOIN-DIAG] group_meta NOT FOUND for {:?}", group_id);
+                    warn!(
+                        ?group_id,
+                        "group_meta NOT FOUND after join"
+                    );
                 }
+
+                let default_ctx = calimero_primitives::context::ContextId::from([0u8; 32]);
+                let first_ctx = contexts.first().unwrap_or(&default_ctx);
+                let locally_visible = context_client
+                    .get_context(first_ctx)
+                    .map(|o| o.is_some())
+                    .unwrap_or(false);
+                eprintln!(
+                    "[JOIN-DIAG] checkpoint: ctx_from_peer={} first_visible={} app={}",
+                    contexts.len(),
+                    locally_visible,
+                    hex::encode(app_id_bytes),
+                );
 
                 if let Err(e) = node_client.sync(None, None).await {
                     warn!(?e, "failed to trigger global sync after join");

@@ -48,13 +48,20 @@ pub async fn handler(
     match result {
         Ok(resp) => {
             let group_id_hex = hex::encode(resp.group_id.to_bytes());
-            info!(group_id=%group_id_hex, member=%resp.member_identity, "Joined namespace successfully");
+            let diag = format!(
+                "group={} member={} gov_op_len={}",
+                group_id_hex,
+                resp.member_identity,
+                resp.governance_op_bytes.len(),
+            );
+            info!(group_id=%group_id_hex, member=%resp.member_identity, %diag, "Joined namespace successfully");
             ApiResponse {
                 payload: JoinGroupApiResponse {
                     data: JoinGroupApiResponseData {
                         group_id: group_id_hex,
                         member_identity: resp.member_identity,
                         governance_op: hex::encode(&resp.governance_op_bytes),
+                        debug_info: Some(diag),
                     },
                 },
             }
