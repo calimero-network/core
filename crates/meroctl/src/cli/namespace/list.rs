@@ -8,11 +8,11 @@ use crate::cli::Environment;
 pub struct ListCommand;
 
 impl ListCommand {
-    pub async fn run(self, _environment: &mut Environment) -> Result<()> {
-        let client = _environment.client()?;
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let client = environment.client()?;
         let response = client.list_namespaces().await?;
 
-        println!("{}", serde_json::to_string_pretty(&response)?);
+        environment.output.write(&response);
 
         Ok(())
     }

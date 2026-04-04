@@ -20,7 +20,7 @@ pub async fn handler(
 ) -> impl IntoResponse {
     info!(application_id=%req.application_id, "Creating context");
 
-    let group_id = match req.group_id.as_deref().map(parse_group_id).transpose() {
+    let group_id = match parse_group_id(&req.group_id) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };

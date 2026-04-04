@@ -26,6 +26,7 @@ mod group;
 mod namespace;
 mod node;
 mod peers;
+mod upgrade_policy;
 pub mod validation;
 
 use app::AppCommand;
@@ -47,8 +48,8 @@ pub const EXAMPLES: &str = r"
   # List all contexts
   $ meroctl --node node1 context ls
 
-  # List all groups
-  $ meroctl --node node1 group ls
+  # List all namespaces (root groups)
+  $ meroctl --node node1 namespace ls
 
   # List all blobs
   $ meroctl --node node1 blob ls

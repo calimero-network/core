@@ -1,7 +1,9 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
 use calimero_context_config::types::AppKey;
+use calimero_context_client::local_governance::{NamespaceOp, RootOp};
 use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::identity::PrivateKey;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use rand::Rng;
@@ -40,7 +42,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
         }
 
-        let (_, admin_identity, sk_bytes, _sender) =
+        let (namespace_id, admin_identity, sk_bytes, _sender) =
             match self.get_or_create_namespace_identity(&group_id) {
                 Ok(result) => result,
                 Err(err) => {
@@ -139,6 +141,39 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // In the namespace model, group hierarchy is tracked in the
                 // namespace DAG (RootOp::GroupCreated), not via parent refs.
                 let _ = node_client.subscribe_namespace(group_id.to_bytes()).await;
+
+                let signer_sk = PrivateKey::from(sk_bytes);
+                let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+                    group_id: group_id.to_bytes(),
+                });
+                if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
+                    &datastore,
+                    &node_client,
+                    namespace_id.to_bytes(),
+                    &signer_sk,
+                    create_op,
+                )
+                .await
+                {
+                    tracing::warn!(?e, "failed to publish GroupCreated on namespace DAG");
+                }
+                if let Some(ref parent_id) = parent_group_id {
+                    let nest_op = NamespaceOp::Root(RootOp::GroupNested {
+                        parent_group_id: parent_id.to_bytes(),
+                        child_group_id: group_id.to_bytes(),
+                    });
+                    if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
+                        &datastore,
+                        &node_client,
+                        namespace_id.to_bytes(),
+                        &signer_sk,
+                        nest_op,
+                    )
+                    .await
+                    {
+                        tracing::warn!(?e, "failed to publish GroupNested on namespace DAG");
+                    }
+                }
 
                 info!(?group_id, ?parent_group_id, %admin_identity, "group created");
 

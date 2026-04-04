@@ -137,7 +137,7 @@ impl ContextClient {
         identity_secret: Option<PrivateKey>,
         init_params: Vec<u8>,
         seed: Option<[u8; DIGEST_SIZE]>,
-        group_id: Option<ContextGroupId>,
+        group_id: ContextGroupId,
         alias: Option<String>,
     ) -> eyre::Result<CreateContextResponse> {
         let (sender, receiver) = oneshot::channel();

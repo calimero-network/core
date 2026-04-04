@@ -219,7 +219,7 @@ pub struct CreateContextRequest {
     pub service_name: Option<String>,
     pub context_seed: Option<Hash>,
     pub initialization_params: Vec<u8>,
-    pub group_id: Option<String>,
+    pub group_id: String,
     pub identity_secret: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
@@ -230,7 +230,7 @@ impl CreateContextRequest {
         application_id: ApplicationId,
         context_seed: Option<Hash>,
         initialization_params: Vec<u8>,
-        group_id: Option<String>,
+        group_id: String,
         identity_secret: Option<String>,
     ) -> Self {
         Self {
@@ -1541,6 +1541,46 @@ pub struct CreateGroupApiResponseData {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreateNamespaceApiRequest {
+    pub application_id: ApplicationId,
+    pub upgrade_policy: UpgradePolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateNamespaceApiResponseData {
+    pub namespace_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateNamespaceApiResponse {
+    pub data: CreateNamespaceApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteNamespaceApiRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteNamespaceApiResponseData {
+    pub is_deleted: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteNamespaceApiResponse {
+    pub data: DeleteNamespaceApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteGroupApiRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
@@ -1762,6 +1802,8 @@ pub struct CreateGroupInvitationApiRequest {
     /// Defaults to 1 year when not provided.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expiration_timestamp: Option<u64>,
+    #[serde(default)]
+    pub recursive: Option<bool>,
 }
 
 impl Validate for CreateGroupInvitationApiRequest {
@@ -1782,6 +1824,79 @@ pub struct CreateGroupInvitationApiResponseData {
     pub invitation: SignedGroupOpenInvitation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_alias: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecursiveInvitationEntry {
+    pub group_id: String,
+    pub invitation: SignedGroupOpenInvitation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_alias: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateRecursiveInvitationApiResponseData {
+    pub invitations: Vec<RecursiveInvitationEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateRecursiveInvitationApiResponse {
+    pub data: CreateRecursiveInvitationApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NestGroupApiRequest {
+    pub child_group_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NestGroupApiResponse;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnnestGroupApiRequest {
+    pub child_group_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnnestGroupApiResponse;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubgroupEntryApiResponse {
+    pub group_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListSubgroupsApiResponse {
+    pub data: Vec<SubgroupEntryApiResponse>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceGroupEntryApiResponse {
+    pub group_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListNamespaceGroupsApiResponse {
+    pub data: Vec<NamespaceGroupEntryApiResponse>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
