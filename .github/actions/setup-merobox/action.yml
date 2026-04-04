@@ -15,9 +15,16 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
-    - name: Install merobox from git
+    - name: Install pinned merobox and client
       shell: bash
-      run: pip install "merobox @ git+https://github.com/calimero-network/merobox.git@master"
+      run: |
+        # Pin both repos to a known-compatible pair to avoid CI flakiness from
+        # moving `master` heads changing Python API signatures between runs.
+        MEROBOX_REF="b6914cf07a0aa03dd8875466533d790e81d78ca7"
+        CLIENT_REF="23c9ba433ed2795b00a603624c4d3444beeb74ad"
+
+        pip install "merobox @ git+https://github.com/calimero-network/merobox.git@${MEROBOX_REF}"
+        pip install --force-reinstall "calimero-client-py @ git+https://github.com/calimero-network/calimero-client-py.git@${CLIENT_REF}"
 
     - name: Verify merobox installation
       shell: bash
