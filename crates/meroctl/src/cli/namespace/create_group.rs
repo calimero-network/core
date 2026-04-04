@@ -3,17 +3,18 @@ use eyre::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::Environment;
+use crate::output::Report;
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateGroupInNamespaceBody {
-    group_alias: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateGroupInNamespaceResponse {
     group_id: String,
+}
+
+impl Report for CreateGroupInNamespaceResponse {
+    fn report(&self) {
+        println!("Created group: {}", self.group_id);
+    }
 }
 
 #[derive(Clone, Debug, Parser)]
@@ -35,7 +36,7 @@ impl CreateGroupCommand {
         let response: CreateGroupInNamespaceResponse = serde_json::from_value(response)
             .map_err(|err| eyre::eyre!("invalid response: {err}"))?;
 
-        println!("{}", serde_json::to_string_pretty(&response)?);
+        environment.output.write(&response);
 
         Ok(())
     }

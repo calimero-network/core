@@ -60,6 +60,10 @@ pub struct StartCommand {
     /// Application metadata (JSON string)
     #[arg(long)]
     pub metadata: Option<String>,
+
+    /// Group ID (hex) to attach created contexts to
+    #[arg(long, required = true)]
+    pub group_id: String,
 }
 
 impl DevCommand {
@@ -141,7 +145,7 @@ impl StartCommand {
                     .clone()
                     .map(String::into_bytes)
                     .unwrap_or_default(),
-                None,
+                self.group_id.clone(),
                 None,
             );
             let response = client.create_context(request).await?;
@@ -151,7 +155,14 @@ impl StartCommand {
                 false,
             )
         } else {
-            find_or_create_context(client, application_id, self.seed, &self.params).await?
+            find_or_create_context(
+                client,
+                application_id,
+                self.seed,
+                &self.params,
+                self.group_id.clone(),
+            )
+            .await?
         };
 
         let action = if reused { "updated" } else { "created" };
@@ -214,6 +225,7 @@ async fn find_or_create_context(
     application_id: ApplicationId,
     seed: Option<Hash>,
     params: &Option<String>,
+    group_id: String,
 ) -> Result<(ContextId, PublicKey, bool)> {
     let contexts_response = client.list_contexts().await?;
     let existing = contexts_response
@@ -243,7 +255,7 @@ async fn find_or_create_context(
             application_id,
             seed,
             params.clone().map(String::into_bytes).unwrap_or_default(),
-            None,
+            group_id,
             None,
         );
         let response = client.create_context(request).await?;

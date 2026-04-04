@@ -5,9 +5,10 @@ use calimero_server_primitives::admin::{
     GetMemberCapabilitiesApiResponse, GroupInfoApiResponse, JoinContextApiResponse,
     JoinGroupApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
-    NamespaceApiResponse, NamespaceIdentityApiResponse, RegisterGroupSigningKeyApiResponse,
-    RemoveGroupMembersApiResponse, SetDefaultCapabilitiesApiResponse,
-    SetDefaultVisibilityApiResponse, SetMemberCapabilitiesApiResponse, SyncGroupApiResponse,
+    NamespaceApiResponse, NamespaceIdentityApiResponse, NestGroupApiResponse,
+    RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse,
+    SetDefaultCapabilitiesApiResponse, SetDefaultVisibilityApiResponse,
+    SetMemberCapabilitiesApiResponse, SyncGroupApiResponse, UnnestGroupApiResponse,
     UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
@@ -179,6 +180,24 @@ impl Report for ListSubgroupsApiResponse {
                 group.alias.clone().unwrap_or_else(|| "-".to_owned()),
             ]);
         }
+        println!("{table}");
+    }
+}
+
+impl Report for NestGroupApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Group Nested").fg(Color::Green)]);
+        let _ = table.add_row(vec!["Successfully nested group"]);
+        println!("{table}");
+    }
+}
+
+impl Report for UnnestGroupApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Group Unnested").fg(Color::Green)]);
+        let _ = table.add_row(vec!["Successfully unnested group"]);
         println!("{table}");
     }
 }
