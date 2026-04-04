@@ -12,11 +12,13 @@ use tracing::{error, info};
 use super::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
+use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<NestGroupApiRequest>,
 ) -> impl IntoResponse {
     let parent_group_id = match parse_group_id(&group_id_str) {
@@ -28,13 +30,24 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
+    let requester = auth_key.map(|Extension(k)| k.0).or(req.requester);
+
     let ns_gid = ContextGroupId::from(parent_group_id.to_bytes());
-    let (namespace_id, _pk, sk_bytes, _sender) =
+    let (namespace_id, signer_pk, sk_bytes, _sender) =
         match calimero_context::group_store::get_or_create_namespace_identity(&state.store, &ns_gid)
         {
             Ok(result) => result,
             Err(err) => return parse_api_error(err).into_response(),
         };
+
+    if let Some(requester) = requester {
+        if requester != signer_pk {
+            return parse_api_error(eyre::eyre!(
+                "requester does not match local namespace identity"
+            ))
+            .into_response();
+        }
+    }
 
     let signer_sk = PrivateKey::from(sk_bytes);
     let op = NamespaceOp::Root(RootOp::GroupNested {

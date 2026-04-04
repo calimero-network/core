@@ -7,7 +7,7 @@ use calimero_primitives::identity::PrivateKey;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use rand::Rng;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::group_store;
 use crate::ContextManager;
@@ -42,8 +42,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
             return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
         }
 
+        let namespace_anchor_group_id = parent_group_id.as_ref().unwrap_or(&group_id);
         let (namespace_id, admin_identity, sk_bytes, _sender) =
-            match self.get_or_create_namespace_identity(&group_id) {
+            match self.get_or_create_namespace_identity(namespace_anchor_group_id) {
                 Ok(result) => result,
                 Err(err) => {
                     return ActorResponse::reply(Err(eyre::eyre!(
@@ -140,7 +141,16 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
                 // In the namespace model, group hierarchy is tracked in the
                 // namespace DAG (RootOp::GroupCreated), not via parent refs.
-                let _ = node_client.subscribe_namespace(group_id.to_bytes()).await;
+                if let Err(err) = node_client
+                    .subscribe_namespace(namespace_id.to_bytes())
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        namespace_id=%hex::encode(namespace_id.to_bytes()),
+                        "failed to subscribe to namespace before publishing governance ops"
+                    );
+                }
 
                 let signer_sk = PrivateKey::from(sk_bytes);
                 let create_op = NamespaceOp::Root(RootOp::GroupCreated {
