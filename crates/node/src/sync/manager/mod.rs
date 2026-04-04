@@ -10,7 +10,7 @@ use calimero_context_client::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::stream::Stream;
-use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::client::{NamespaceJoinParams, NamespaceJoinResult, NodeClient};
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::ContextId;
@@ -23,7 +23,7 @@ use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use rand::Rng;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::{self, timeout_at, Instant, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
@@ -56,6 +56,12 @@ pub struct SyncManager {
 
     pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
     pub(super) ns_sync_rx: Option<mpsc::Receiver<[u8; 32]>>,
+    pub(super) ns_join_rx: Option<
+        mpsc::Receiver<(
+            NamespaceJoinParams,
+            oneshot::Sender<eyre::Result<NamespaceJoinResult>>,
+        )>,
+    >,
 }
 
 impl Clone for SyncManager {
@@ -68,6 +74,7 @@ impl Clone for SyncManager {
             node_state: self.node_state.clone(),
             ctx_sync_rx: None,
             ns_sync_rx: None,
+            ns_join_rx: None,
         }
     }
 }
@@ -81,6 +88,10 @@ impl SyncManager {
         node_state: crate::NodeState,
         ctx_sync_rx: mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>,
         ns_sync_rx: mpsc::Receiver<[u8; 32]>,
+        ns_join_rx: mpsc::Receiver<(
+            NamespaceJoinParams,
+            oneshot::Sender<eyre::Result<NamespaceJoinResult>>,
+        )>,
     ) -> Self {
         Self {
             sync_config,
@@ -90,6 +101,7 @@ impl SyncManager {
             node_state,
             ctx_sync_rx: Some(ctx_sync_rx),
             ns_sync_rx: Some(ns_sync_rx),
+            ns_join_rx: Some(ns_join_rx),
         }
     }
 
@@ -245,6 +257,10 @@ impl SyncManager {
             let (_tx, rx) = mpsc::channel(1);
             rx
         });
+        let mut ns_join_rx = self.ns_join_rx.take().unwrap_or_else(|| {
+            let (_tx, rx) = mpsc::channel(1);
+            rx
+        });
 
         loop {
             tokio::select! {
@@ -260,6 +276,15 @@ impl SyncManager {
                         "Performing namespace governance sync"
                     );
                     self.sync_namespace_from_peer(namespace_id).await;
+                    continue;
+                }
+                Some((params, reply_tx)) = ns_join_rx.recv() => {
+                    info!(
+                        namespace_id = %hex::encode(params.namespace_id),
+                        "Processing namespace join request (initiator side)"
+                    );
+                    let result = self.initiate_namespace_join(params).await;
+                    let _ignored = reply_tx.send(result);
                     continue;
                 }
                 Some((ctx, peer)) = ctx_sync_rx.recv() => {
@@ -2075,6 +2100,23 @@ impl SyncManager {
             return Ok(Some(()));
         }
 
+        if let InitPayload::NamespaceJoinRequest {
+            namespace_id,
+            ref invitation_bytes,
+            joiner_public_key,
+        } = &payload
+        {
+            self.handle_namespace_join_request(
+                *namespace_id,
+                invitation_bytes,
+                *joiner_public_key,
+                stream,
+                nonce,
+            )
+            .await?;
+            return Ok(Some(()));
+        }
+
         let Some(context) = self.context_client.get_context(&context_id)? else {
             bail!("context not found: {}", context_id);
         };
@@ -2251,6 +2293,9 @@ impl SyncManager {
             InitPayload::NamespaceBackfillRequest { .. } => {
                 unreachable!("handled by early return above")
             }
+            InitPayload::NamespaceJoinRequest { .. } => {
+                unreachable!("handled by early return above")
+            }
         };
 
         Ok(Some(()))
@@ -2315,6 +2360,212 @@ impl SyncManager {
         };
         super::stream::send(stream, &msg, None).await?;
         Ok(())
+    }
+
+    /// Handle an incoming NamespaceJoinRequest on the responder side.
+    ///
+    /// Validates the invitation, wraps the group key for the joiner,
+    /// enumerates contexts, and collects governance ops.
+    async fn handle_namespace_join_request(
+        &self,
+        namespace_id: [u8; 32],
+        invitation_bytes: &[u8],
+        joiner_public_key: PublicKey,
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use calimero_context::group_store::{
+            enumerate_group_contexts, load_current_group_key, load_group_meta,
+            wrap_group_key_for_member,
+        };
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_context_config::types::SignedGroupOpenInvitation;
+
+        let _invitation: SignedGroupOpenInvitation = match borsh::from_slice(invitation_bytes) {
+            Ok(inv) => inv,
+            Err(err) => {
+                let msg = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload: MessagePayload::NamespaceJoinRejected {
+                        reason: format!("invalid invitation: {err}"),
+                    },
+                    next_nonce: nonce,
+                };
+                super::stream::send(stream, &msg, None).await?;
+                return Ok(());
+            }
+        };
+
+        let group_id = ContextGroupId::from(namespace_id);
+        let store = self.context_client.datastore_handle().into_inner();
+
+        let meta = match load_group_meta(&store, &group_id)? {
+            Some(m) => m,
+            None => {
+                let msg = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload: MessagePayload::NamespaceJoinRejected {
+                        reason: "group not found".to_owned(),
+                    },
+                    next_nonce: nonce,
+                };
+                super::stream::send(stream, &msg, None).await?;
+                return Ok(());
+            }
+        };
+
+        let key_envelope_bytes = match load_current_group_key(&store, &group_id)? {
+            Some((_key_id, group_key)) => {
+                let ns_identity = calimero_context::group_store::resolve_namespace_identity_record(
+                    &store, &group_id,
+                )?;
+                match ns_identity {
+                    Some(record) => {
+                        let sender_sk =
+                            calimero_primitives::identity::PrivateKey::from(record.private_key);
+                        match wrap_group_key_for_member(&sender_sk, &joiner_public_key, &group_key)
+                        {
+                            Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
+                            Err(err) => {
+                                warn!(
+                                    namespace_id = %hex::encode(namespace_id),
+                                    %err,
+                                    "failed to wrap group key for joiner"
+                                );
+                                Vec::new()
+                            }
+                        }
+                    }
+                    None => {
+                        warn!(
+                            namespace_id = %hex::encode(namespace_id),
+                            "no namespace identity found, cannot wrap key"
+                        );
+                        Vec::new()
+                    }
+                }
+            }
+            None => Vec::new(),
+        };
+
+        let context_ids = enumerate_group_contexts(&store, &group_id, 0, usize::MAX)?;
+        let application_id: [u8; 32] = *meta.target_application_id.as_ref();
+
+        let governance_ops = self.collect_namespace_governance_ops(namespace_id)?;
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::NamespaceJoinResponse {
+                key_envelope_bytes,
+                context_ids,
+                application_id,
+                governance_ops,
+            },
+            next_nonce: nonce,
+        };
+        super::stream::send(stream, &msg, None).await?;
+        Ok(())
+    }
+
+    /// Collect all governance ops for a namespace (reused by the join responder).
+    fn collect_namespace_governance_ops(
+        &self,
+        namespace_id: [u8; 32],
+    ) -> eyre::Result<Vec<Vec<u8>>> {
+        use calimero_context_client::local_governance::SignedNamespaceOp;
+
+        let store = self.context_client.datastore_handle().into_inner();
+        let handle = store.handle();
+        let mut ops = Vec::new();
+
+        let start = calimero_store::key::NamespaceGovOp::new(namespace_id, [0u8; 32]);
+        let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
+        let first = iter.seek(start).transpose();
+
+        for entry in first.into_iter().chain(iter.keys()) {
+            let key = match entry {
+                Ok(k) => k,
+                Err(_) => break,
+            };
+            if key.namespace_id() != namespace_id {
+                break;
+            }
+            if let Ok(Some(value)) = handle.get(&key) {
+                if borsh::from_slice::<SignedNamespaceOp>(&value.skeleton_bytes).is_ok() {
+                    ops.push(value.skeleton_bytes);
+                }
+            }
+        }
+
+        Ok(ops)
+    }
+
+    /// Initiator side: open a stream to a mesh peer and perform the
+    /// NamespaceJoinRequest / NamespaceJoinResponse exchange.
+    async fn initiate_namespace_join(
+        &self,
+        params: NamespaceJoinParams,
+    ) -> eyre::Result<NamespaceJoinResult> {
+        let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
+            "ns/{}",
+            hex::encode(params.namespace_id)
+        ));
+        let peers = self.network_client.mesh_peers(topic).await;
+        let peer = peers.first().ok_or_else(|| {
+            eyre::eyre!(
+                "no mesh peers for namespace {}",
+                hex::encode(params.namespace_id)
+            )
+        })?;
+
+        let mut stream = self
+            .network_client
+            .open_stream(*peer)
+            .await
+            .wrap_err("open stream for namespace join")?;
+
+        let msg = StreamMessage::Init {
+            context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
+            party_id: params.joiner_public_key,
+            payload: InitPayload::NamespaceJoinRequest {
+                namespace_id: params.namespace_id,
+                invitation_bytes: params.invitation_bytes,
+                joiner_public_key: params.joiner_public_key,
+            },
+            next_nonce: rand::thread_rng().gen(),
+        };
+
+        super::stream::send(&mut stream, &msg, None).await?;
+
+        match super::stream::recv(&mut stream, None, self.sync_config.timeout).await? {
+            Some(StreamMessage::Message {
+                payload:
+                    MessagePayload::NamespaceJoinResponse {
+                        key_envelope_bytes,
+                        context_ids,
+                        application_id,
+                        governance_ops,
+                    },
+                ..
+            }) => Ok(NamespaceJoinResult {
+                key_envelope_bytes,
+                context_ids,
+                application_id,
+                governance_ops,
+            }),
+            Some(StreamMessage::Message {
+                payload: MessagePayload::NamespaceJoinRejected { reason },
+                ..
+            }) => {
+                eyre::bail!("namespace join rejected: {}", reason)
+            }
+            other => {
+                eyre::bail!(
+                    "unexpected response to namespace join request: {:?}",
+                    other.as_ref().map(|m| std::mem::discriminant(m))
+                )
+            }
+        }
     }
 
     /// Pull all namespace governance ops from a mesh peer.

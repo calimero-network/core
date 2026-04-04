@@ -21,6 +21,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
+use tokio::sync::oneshot;
 
 use crate::messages::{
     NodeMessage, RegisterPendingSpecializedNodeInvite, RemovePendingSpecializedNodeInvite,
@@ -31,6 +32,23 @@ mod alias;
 mod application;
 mod blob;
 
+/// Parameters for a direct namespace join request.
+#[derive(Debug)]
+pub struct NamespaceJoinParams {
+    pub namespace_id: [u8; 32],
+    pub invitation_bytes: Vec<u8>,
+    pub joiner_public_key: PublicKey,
+}
+
+/// Result of a successful namespace join request.
+#[derive(Debug)]
+pub struct NamespaceJoinResult {
+    pub key_envelope_bytes: Vec<u8>,
+    pub context_ids: Vec<calimero_primitives::context::ContextId>,
+    pub application_id: [u8; 32],
+    pub governance_ops: Vec<Vec<u8>>,
+}
+
 #[derive(Clone, Debug)]
 pub struct NodeClient {
     datastore: Store,
@@ -40,6 +58,10 @@ pub struct NodeClient {
     event_sender: broadcast::Sender<NodeEvent>,
     ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
     ns_sync_tx: mpsc::Sender<[u8; 32]>,
+    ns_join_tx: mpsc::Sender<(
+        NamespaceJoinParams,
+        oneshot::Sender<eyre::Result<NamespaceJoinResult>>,
+    )>,
     specialized_node_invite_topic: String,
 }
 
@@ -53,6 +75,10 @@ impl NodeClient {
         event_sender: broadcast::Sender<NodeEvent>,
         ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
         ns_sync_tx: mpsc::Sender<[u8; 32]>,
+        ns_join_tx: mpsc::Sender<(
+            NamespaceJoinParams,
+            oneshot::Sender<eyre::Result<NamespaceJoinResult>>,
+        )>,
         specialized_node_invite_topic: String,
     ) -> Self {
         Self {
@@ -63,6 +89,7 @@ impl NodeClient {
             event_sender,
             ctx_sync_tx,
             ns_sync_tx,
+            ns_join_tx,
             specialized_node_invite_topic,
         }
     }
@@ -418,5 +445,27 @@ impl NodeClient {
     pub async fn sync_namespace(&self, namespace_id: [u8; 32]) -> eyre::Result<()> {
         self.ns_sync_tx.send(namespace_id).await?;
         Ok(())
+    }
+
+    /// Send a direct namespace join request to a mesh peer and await the
+    /// response. The SyncManager handles the actual stream I/O.
+    pub async fn request_namespace_join(
+        &self,
+        namespace_id: [u8; 32],
+        invitation_bytes: Vec<u8>,
+        joiner_public_key: PublicKey,
+    ) -> eyre::Result<NamespaceJoinResult> {
+        let (tx, rx) = oneshot::channel();
+        let params = NamespaceJoinParams {
+            namespace_id,
+            invitation_bytes,
+            joiner_public_key,
+        };
+        self.ns_join_tx
+            .send((params, tx))
+            .await
+            .map_err(|_| eyre::eyre!("namespace join channel closed"))?;
+        rx.await
+            .map_err(|_| eyre::eyre!("namespace join response channel dropped"))?
     }
 }

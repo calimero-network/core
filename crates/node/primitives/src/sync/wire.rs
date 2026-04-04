@@ -194,6 +194,17 @@ pub enum InitPayload {
         /// Delta IDs for which we have skeletons but need full payloads.
         delta_ids: Vec<[u8; 32]>,
     },
+
+    /// Direct request to join a namespace. The joiner sends their signed
+    /// invitation and public key; the responder validates and returns the
+    /// group key + context list in one shot.
+    NamespaceJoinRequest {
+        namespace_id: [u8; 32],
+        /// Borsh-serialized SignedGroupOpenInvitation
+        invitation_bytes: Vec<u8>,
+        /// The joiner's public key for ECDH key wrapping
+        joiner_public_key: PublicKey,
+    },
 }
 
 // =============================================================================
@@ -303,6 +314,23 @@ pub enum MessagePayload<'a> {
         /// Only includes deltas the responder has full payloads for.
         deltas: Vec<([u8; 32], Vec<u8>)>,
     },
+
+    /// Response to NamespaceJoinRequest with everything the joiner needs.
+    NamespaceJoinResponse {
+        /// ECDH-wrapped group key envelope (borsh-serialized KeyEnvelope).
+        /// Empty if the responder doesn't hold the group key.
+        key_envelope_bytes: Vec<u8>,
+        /// Context IDs registered under this namespace/group.
+        context_ids: Vec<ContextId>,
+        /// The application ID used by contexts in this group.
+        application_id: [u8; 32],
+        /// All namespace governance ops (borsh-serialized SignedNamespaceOp)
+        /// so the joiner can replay the full governance history.
+        governance_ops: Vec<Vec<u8>>,
+    },
+
+    /// The responder rejected the join request.
+    NamespaceJoinRejected { reason: String },
 }
 
 // =============================================================================
