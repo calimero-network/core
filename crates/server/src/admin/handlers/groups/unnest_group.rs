@@ -72,7 +72,7 @@ pub async fn handler(
 
     match result {
         Ok(()) => ApiResponse {
-            payload: UnnestGroupApiResponse,
+            payload: UnnestGroupApiResponse {},
         }
         .into_response(),
         Err(err) => {

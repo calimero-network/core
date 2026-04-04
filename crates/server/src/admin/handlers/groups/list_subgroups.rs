@@ -4,7 +4,7 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_server_primitives::admin::{ListSubgroupsApiResponse, SubgroupEntryApiResponse};
-use tracing::{error, info};
+use tracing::info;
 
 use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiResponse};

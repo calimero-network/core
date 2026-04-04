@@ -54,7 +54,7 @@ pub async fn handler(
     .await
     {
         Ok(()) => ApiResponse {
-            payload: NestGroupApiResponse,
+            payload: NestGroupApiResponse {},
         }
         .into_response(),
         Err(err) => {
