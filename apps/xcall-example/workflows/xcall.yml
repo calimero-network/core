@@ -31,6 +31,7 @@ steps:
     outputs:
       context_a_id: contextId
       context_a_member_key: memberPublicKey
+      group_a_id: groupId
 
   - name: Create Context B
     type: create_context
@@ -39,6 +40,7 @@ steps:
     outputs:
       context_b_id: contextId
       context_b_member_key: memberPublicKey
+      group_b_id: groupId
 
   - name: Create identity for Context A on Node 2
     type: create_identity
@@ -55,30 +57,28 @@ steps:
   - name: Invite identity A to Context A
     type: invite
     node: rust-xcall-1
-    context_id: "{{context_a_id}}"
-    granter_id: "{{context_a_member_key}}"
-    valid_for_seconds: 3600
+    group_id: "{{group_a_id}}"
     outputs:
       invitation_a: invitation
 
   - name: Invite identity B to Context B
     type: invite
     node: rust-xcall-1
-    context_id: "{{context_b_id}}"
-    granter_id: "{{context_b_member_key}}"
-    valid_for_seconds: 3600
+    group_id: "{{group_b_id}}"
     outputs:
       invitation_b: invitation
 
   - name: Join Context A from Node 2
     type: join
     node: rust-xcall-2
+    group_id: "{{group_a_id}}"
     invitee_id: "{{identity_a}}"
     invitation: "{{invitation_a}}"
 
   - name: Join Context B from Node 2
     type: join
     node: rust-xcall-2
+    group_id: "{{group_b_id}}"
     invitee_id: "{{identity_b}}"
     invitation: "{{invitation_b}}"
 

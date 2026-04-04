@@ -59,9 +59,8 @@ steps:
     invitation: '{{group_invitation_e2e-node-1}}'
 
   - name: Node-2 joins context 1 via group
-    type: join_group_context
+    type: join_context
     node: e2e-node-2
-    group_id: '{{group_id_e2e-node-1}}'
     context_id: '{{ctx1_id}}'
     outputs:
       ctx1_id_n2: contextId
@@ -160,8 +159,7 @@ steps:
   - name: Create context invitation on node-1
     type: invite
     node: e2e-node-1
-    context_id: '{{ctx3_id}}'
-    granter_id: '{{ctx3_key_node1}}'
+    group_id: '{{group_id_e2e-node-1}}'
     valid_for_seconds: 3600
     outputs:
       ctx3_invitation: invitation
@@ -169,6 +167,7 @@ steps:
   - name: Node-2 joins context 3 via context invitation
     type: join
     node: e2e-node-2
+    group_id: '{{group_id_e2e-node-1}}'
     invitee_id: '{{identity_node2_ctx3}}'
     invitation: '{{ctx3_invitation}}'
     outputs:
