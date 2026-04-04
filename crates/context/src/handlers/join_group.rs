@@ -106,13 +106,13 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     .request_namespace_join(namespace_id, invitation_bytes, joiner_identity)
                     .await?;
 
-                info!(
-                    key_envelope_len = join_result.key_envelope_bytes.len(),
-                    context_count = join_result.context_ids.len(),
-                    governance_ops_count = join_result.governance_ops.len(),
-                    application_id = %hex::encode(join_result.application_id),
-                    context_ids = ?join_result.context_ids.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
-                    "join response received from peer"
+                eprintln!(
+                    "[JOIN-DIAG] join response: key_len={} contexts={} gov_ops={} app_id={} context_ids={:?}",
+                    join_result.key_envelope_bytes.len(),
+                    join_result.context_ids.len(),
+                    join_result.governance_ops.len(),
+                    hex::encode(join_result.application_id),
+                    join_result.context_ids.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
                 );
 
                 // Unwrap and store the group key.
@@ -167,11 +167,10 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 let app_id_bytes = join_result.application_id;
 
                 if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
-                    info!(
-                        ?group_id,
-                        auto_join = meta.auto_join,
-                        target_app = %meta.target_application_id,
-                        "loaded group meta for auto-join decision"
+                    eprintln!(
+                        "[JOIN-DIAG] group_meta: auto_join={} target_app={}",
+                        meta.auto_join,
+                        meta.target_application_id,
                     );
                     if meta.auto_join {
                         info!(
@@ -194,10 +193,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             drop(handle);
 
                             let has_ctx = context_client.has_context(context_id)?;
-                            info!(
-                                %context_id,
-                                has_context_already = has_ctx,
-                                "auto-join: processing context"
+                            eprintln!(
+                                "[JOIN-DIAG] auto-join ctx={} has_already={}",
+                                context_id, has_ctx,
                             );
 
                             let config = if !has_ctx {
@@ -215,10 +213,10 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                         .map(|m| m.target_application_id)
                                         .filter(|id| *id != zero_app)
                                 };
-                                info!(
-                                    %context_id,
-                                    resolved_app_id = ?resolved.map(|a| a.to_string()),
-                                    "auto-join: will bootstrap context with config"
+                                eprintln!(
+                                    "[JOIN-DIAG] bootstrap ctx={} app={:?}",
+                                    context_id,
+                                    resolved.map(|a| a.to_string()),
                                 );
                                 Some(ContextConfigParams {
                                     application_id: resolved,
@@ -234,15 +232,16 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                 .await
                             {
                                 Ok(ctx) => {
-                                    info!(
-                                        %context_id,
-                                        app_id = %ctx.application_id,
-                                        root_hash = %ctx.root_hash,
-                                        "sync_context_config succeeded"
+                                    eprintln!(
+                                        "[JOIN-DIAG] sync_context_config OK ctx={} app={}",
+                                        context_id, ctx.application_id,
                                     );
                                 }
                                 Err(e) => {
-                                    warn!(%context_id, ?e, "failed to sync context config");
+                                    eprintln!(
+                                        "[JOIN-DIAG] sync_context_config FAILED ctx={} err={:?}",
+                                        context_id, e,
+                                    );
                                 }
                             }
                             if let Err(e) = node_client.subscribe(context_id).await {
@@ -253,6 +252,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             }
                         }
                     }
+                } else {
+                    eprintln!("[JOIN-DIAG] group_meta NOT FOUND for {:?}", group_id);
                 }
 
                 if let Err(e) = node_client.sync(None, None).await {
