@@ -77,7 +77,6 @@ pub fn get_op_head(
 }
 
 #[cfg(test)]
-#[cfg(test)]
 pub(crate) fn set_op_head(
     store: &Store,
     group_id: &ContextGroupId,
@@ -96,7 +95,6 @@ pub(crate) fn set_op_head(
     Ok(())
 }
 
-#[cfg(test)]
 #[cfg(test)]
 pub(crate) fn append_op_log_entry(
     store: &Store,
