@@ -21,7 +21,6 @@ use crate::traits::ClientStorage;
 
 use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::ContextId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::PublicKey;

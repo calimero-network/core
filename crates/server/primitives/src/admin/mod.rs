@@ -1875,7 +1875,7 @@ impl Validate for NestGroupApiRequest {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NestGroupApiResponse;
+pub struct NestGroupApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1893,7 +1893,7 @@ impl Validate for UnnestGroupApiRequest {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UnnestGroupApiResponse;
+pub struct UnnestGroupApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
