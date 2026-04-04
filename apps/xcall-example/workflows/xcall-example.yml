@@ -24,15 +24,23 @@ steps:
     outputs:
       app_id: applicationId
 
-  # Step 2: Create Context A on Node 1
+  # Step 2: Create Namespace A on Node 1
+  - name: Create Namespace A on Node 1
+    type: create_namespace
+    node: calimero-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id_a: namespaceId
+
+  # Step 3: Create Context A on Node 1
   - name: Create Context A on Node 1
     type: create_context
     node: calimero-node-1
     application_id: "{{app_id}}"
+    group_id: "{{namespace_id_a}}"
     outputs:
       context_a_id: contextId
       context_a_member_key: memberPublicKey
-      group_id_a: groupId
 
   - name: Assert Context A created
     type: assert
@@ -40,15 +48,23 @@ steps:
       - "is_set({{context_a_id}})"
       - "is_set({{context_a_member_key}})"
 
-  # Step 3: Create Context B on Node 1 (same node, different context)
+  # Step 4: Create Namespace B on Node 1
+  - name: Create Namespace B on Node 1
+    type: create_namespace
+    node: calimero-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id_b: namespaceId
+
+  # Step 5: Create Context B on Node 1 (same node, different context)
   - name: Create Context B on Node 1
     type: create_context
     node: calimero-node-1
     application_id: "{{app_id}}"
+    group_id: "{{namespace_id_b}}"
     outputs:
       context_b_id: contextId
       context_b_member_key: memberPublicKey
-      group_id_b: groupId
 
   - name: Assert Context B created
     type: assert
@@ -69,26 +85,27 @@ steps:
     outputs:
       app_id_node2: applicationId
 
-  # Step 5: Create group invitation for Context A's group
-  - name: Create group invitation for Context A
-    type: create_group_invitation
+  # Step 7: Create namespace invitation for Context A's namespace
+  - name: Create namespace invitation for Context A
+    type: create_namespace_invitation
     node: calimero-node-1
-    group_id: "{{group_id_a}}"
+    namespace_id: "{{namespace_id_a}}"
     outputs:
       invitation_a: invitation
 
-  # Step 6: Create group invitation for Context B's group
-  - name: Create group invitation for Context B
-    type: create_group_invitation
+  # Step 8: Create namespace invitation for Context B's namespace
+  - name: Create namespace invitation for Context B
+    type: create_namespace_invitation
     node: calimero-node-1
-    group_id: "{{group_id_b}}"
+    namespace_id: "{{namespace_id_b}}"
     outputs:
       invitation_b: invitation
 
-  # Step 7: Node 2 joins group A (auto-joins all contexts in group)
-  - name: Node 2 Join Group A
-    type: join_group
+  # Step 9: Node 2 joins namespace A (auto-joins all contexts in namespace)
+  - name: Node 2 Join Namespace A
+    type: join_namespace
     node: calimero-node-2
+    namespace_id: "{{namespace_id_a}}"
     invitation: "{{invitation_a}}"
     outputs:
       identity_a: memberIdentity
@@ -103,10 +120,11 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  # Step 8: Node 2 joins group B (auto-joins all contexts in group)
-  - name: Node 2 Join Group B
-    type: join_group
+  # Step 10: Node 2 joins namespace B (auto-joins all contexts in namespace)
+  - name: Node 2 Join Namespace B
+    type: join_namespace
     node: calimero-node-2
+    namespace_id: "{{namespace_id_b}}"
     invitation: "{{invitation_b}}"
     outputs:
       identity_b: memberIdentity

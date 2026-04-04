@@ -45,14 +45,21 @@ steps:
   # Phase 1: Fran creates context, Matea joins
   # ============================================
 
+  - name: Fran creates namespace
+    type: create_namespace
+    node: sync-test-node-1
+    application_id: "{{app_id_1}}"
+    outputs:
+      namespace_id: namespaceId
+
   - name: Fran creates context
     type: create_context
     node: sync-test-node-1
     application_id: "{{app_id_1}}"
+    group_id: "{{namespace_id}}"
     outputs:
       context_id: contextId
       fran_key: memberPublicKey
-      group_id: groupId
 
   - name: Assert context created
     type: assert
@@ -60,17 +67,18 @@ steps:
       - "is_set({{context_id}})"
       - "is_set({{fran_key}})"
 
-  # Matea joins via group invitation
-  - name: Invite Matea to Group
-    type: create_group_invitation
+  # Matea joins via namespace invitation
+  - name: Invite Matea to Namespace
+    type: create_namespace_invitation
     node: sync-test-node-1
-    group_id: "{{group_id}}"
+    namespace_id: "{{namespace_id}}"
     outputs:
       matea_invitation: invitation
 
-  - name: Matea joins group
-    type: join_group
+  - name: Matea joins namespace
+    type: join_namespace
     node: sync-test-node-2
+    namespace_id: "{{namespace_id}}"
     invitation: "{{matea_invitation}}"
     outputs:
       matea_key: memberIdentity
@@ -154,16 +162,17 @@ steps:
   # Phase 3: Sandi joins AFTER existing writes
   # ============================================
 
-  - name: Invite Sandi to Group
-    type: create_group_invitation
+  - name: Invite Sandi to Namespace
+    type: create_namespace_invitation
     node: sync-test-node-1
-    group_id: "{{group_id}}"
+    namespace_id: "{{namespace_id}}"
     outputs:
       sandi_invitation: invitation
 
-  - name: Sandi joins group
-    type: join_group
+  - name: Sandi joins namespace
+    type: join_namespace
     node: sync-test-node-3
+    namespace_id: "{{namespace_id}}"
     invitation: "{{sandi_invitation}}"
     outputs:
       sandi_key: memberIdentity

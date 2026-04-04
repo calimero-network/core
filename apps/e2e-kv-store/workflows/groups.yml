@@ -12,7 +12,7 @@ nodes:
   prefix: e2e-node
 
 steps:
-  # --- SCENARIO 1: Full group lifecycle ---
+  # --- SCENARIO 1: Full namespace lifecycle ---
 
   - name: Install application on node-1
     type: install_application
@@ -27,36 +27,36 @@ steps:
     statements:
       - "is_set({{app_id}})"
 
-  - name: Create group on node-1
-    type: create_group
+  - name: Create namespace on node-1
+    type: create_namespace
     node: e2e-node-1
-    context_id: 'seed-context'
     application_id: '{{app_id}}'
     outputs:
-      group_id: groupId
+      namespace_id: namespaceId
 
-  - name: Assert group created
+  - name: Assert namespace created
     type: assert
     statements:
-      - "is_set({{group_id}})"
+      - "is_set({{namespace_id}})"
 
-  - name: Create context 1 in group on node-1
+  - name: Create context 1 in namespace on node-1
     type: create_context
     node: e2e-node-1
     application_id: '{{app_id}}'
-    group_id: '{{group_id}}'
+    group_id: '{{namespace_id}}'
     outputs:
       ctx1_id: contextId
       ctx1_key_node1: memberPublicKey
 
-  - name: Create group invitation on node-1
-    type: create_group_invitation
+  - name: Create namespace invitation on node-1
+    type: create_namespace_invitation
     node: e2e-node-1
-    group_id: '{{group_id}}'
+    namespace_id: '{{namespace_id}}'
 
-  - name: Node-2 joins group
-    type: join_group
+  - name: Node-2 joins namespace
+    type: join_namespace
     node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
     invitation: '{{group_invitation_e2e-node-1}}'
     outputs:
       member_identity_node2: memberIdentity
@@ -134,13 +134,13 @@ steps:
       - 'json_equal({{get_result_2}}, {"output": "from_node2"})'
 
 
-  # --- SCENARIO 2 : Context invitation within group ---
+  # --- SCENARIO 2 : Context invitation within namespace ---
 
-  - name: Create context 3 in same group
+  - name: Create context 3 in same namespace
     type: create_context
     node: e2e-node-1
     application_id: '{{app_id}}'
-    group_id: '{{group_id}}'
+    group_id: '{{namespace_id}}'
     outputs:
       ctx3_id: contextId
       ctx3_key_node1: memberPublicKey
