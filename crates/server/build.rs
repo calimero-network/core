@@ -178,12 +178,10 @@ fn cached_path_with_retry(cache: &Cache, src: &str, options: &Options) -> eyre::
         match cache.cached_path_with_options(src, options) {
             Ok(path) => return Ok(path),
             Err(err) => {
-                let report = eyre::Report::new(err).wrap_err_with(|| {
-                    format!(
-                        "failed to fetch CALIMERO_WEBUI_SRC from {src} (attempt {attempt}/{})",
-                        CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS
-                    )
-                });
+                let report = eyre::Report::new(err).wrap_err(format!(
+                    "failed to fetch CALIMERO_WEBUI_SRC from {src} (attempt {attempt}/{})",
+                    CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS
+                ));
 
                 if attempt == CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS {
                     return Err(report);
