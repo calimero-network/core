@@ -24,13 +24,17 @@ where
     F: FnMut() -> eyre::Result<bool>,
 {
     loop {
+        // Register the waiter BEFORE checking so we don't miss a
+        // notification that fires between check() and .await.
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        // Enable the future to receive notifications from this point.
+        notified.as_mut().enable();
+
         if check()? {
             return Ok(true);
         }
-        if tokio::time::timeout_at(deadline, notify.notified())
-            .await
-            .is_err()
-        {
+        if tokio::time::timeout_at(deadline, notified).await.is_err() {
             return check();
         }
     }
