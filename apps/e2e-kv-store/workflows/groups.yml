@@ -27,31 +27,24 @@ steps:
     statements:
       - "is_set({{app_id}})"
 
-  - name: Create group on node-1
-    type: create_group
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    outputs:
-      group_id: groupId
-
-  - name: Assert group created
-    type: assert
-    statements:
-      - "is_set({{group_id_e2e-node-1}})"
-
-  - name: Create context 1 in group on node-1
+  - name: Create context 1 on node-1
     type: create_context
     node: e2e-node-1
     application_id: '{{app_id}}'
-    group_id: '{{group_id_e2e-node-1}}'
     outputs:
       ctx1_id: contextId
       ctx1_key_node1: memberPublicKey
+      group_id: groupId
+
+  - name: Assert group created from context 1
+    type: assert
+    statements:
+      - "is_set({{group_id}})"
 
   - name: Create group invitation on node-1
     type: create_group_invitation
     node: e2e-node-1
-    group_id: '{{group_id_e2e-node-1}}'
+    group_id: '{{group_id}}'
 
   - name: Node-2 joins group
     type: join_group
@@ -145,31 +138,15 @@ steps:
     type: create_context
     node: e2e-node-1
     application_id: '{{app_id}}'
-    group_id: '{{group_id_e2e-node-1}}'
+    group_id: '{{group_id}}'
     outputs:
       ctx3_id: contextId
       ctx3_key_node1: memberPublicKey
 
-  - name: Create identity on node-2 for invite flow
-    type: create_identity
+  - name: Node-2 joins context 3 via group membership
+    type: join_context
     node: e2e-node-2
-    outputs:
-      identity_node2_ctx3: publicKey
-
-  - name: Create context invitation on node-1
-    type: invite
-    node: e2e-node-1
-    group_id: '{{group_id_e2e-node-1}}'
-    valid_for_seconds: 3600
-    outputs:
-      ctx3_invitation: invitation
-
-  - name: Node-2 joins context 3 via context invitation
-    type: join
-    node: e2e-node-2
-    group_id: '{{group_id_e2e-node-1}}'
-    invitee_id: '{{identity_node2_ctx3}}'
-    invitation: '{{ctx3_invitation}}'
+    context_id: '{{ctx3_id}}'
     outputs:
       ctx3_key_node2: memberPublicKey
 
