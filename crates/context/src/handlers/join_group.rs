@@ -106,6 +106,15 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     .request_namespace_join(namespace_id, invitation_bytes, joiner_identity)
                     .await?;
 
+                info!(
+                    key_envelope_len = join_result.key_envelope_bytes.len(),
+                    context_count = join_result.context_ids.len(),
+                    governance_ops_count = join_result.governance_ops.len(),
+                    application_id = %hex::encode(join_result.application_id),
+                    context_ids = ?join_result.context_ids.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
+                    "join response received from peer"
+                );
+
                 // Unwrap and store the group key.
                 if !join_result.key_envelope_bytes.is_empty() {
                     let envelope: calimero_context_client::local_governance::KeyEnvelope =
@@ -158,6 +167,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 let app_id_bytes = join_result.application_id;
 
                 if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
+                    info!(
+                        ?group_id,
+                        auto_join = meta.auto_join,
+                        target_app = %meta.target_application_id,
+                        "loaded group meta for auto-join decision"
+                    );
                     if meta.auto_join {
                         info!(
                             ?group_id,
@@ -178,7 +193,14 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             }
                             drop(handle);
 
-                            let config = if !context_client.has_context(context_id)? {
+                            let has_ctx = context_client.has_context(context_id)?;
+                            info!(
+                                %context_id,
+                                has_context_already = has_ctx,
+                                "auto-join: processing context"
+                            );
+
+                            let config = if !has_ctx {
                                 let zero_app =
                                     calimero_primitives::application::ApplicationId::from(
                                         [0u8; 32],
@@ -193,6 +215,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                         .map(|m| m.target_application_id)
                                         .filter(|id| *id != zero_app)
                                 };
+                                info!(
+                                    %context_id,
+                                    resolved_app_id = ?resolved.map(|a| a.to_string()),
+                                    "auto-join: will bootstrap context with config"
+                                );
                                 Some(ContextConfigParams {
                                     application_id: resolved,
                                     application_revision: 0,
@@ -202,11 +229,21 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                 None
                             };
 
-                            if let Err(e) = context_client
+                            match context_client
                                 .sync_context_config(*context_id, config)
                                 .await
                             {
-                                warn!(%context_id, ?e, "failed to sync context config");
+                                Ok(ctx) => {
+                                    info!(
+                                        %context_id,
+                                        app_id = %ctx.application_id,
+                                        root_hash = %ctx.root_hash,
+                                        "sync_context_config succeeded"
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(%context_id, ?e, "failed to sync context config");
+                                }
                             }
                             if let Err(e) = node_client.subscribe(context_id).await {
                                 warn!(%context_id, ?e, "failed to subscribe to context");

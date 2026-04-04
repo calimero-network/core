@@ -2453,6 +2453,17 @@ impl SyncManager {
 
         let governance_ops = self.collect_namespace_governance_ops(namespace_id)?;
 
+        info!(
+            namespace_id = %hex::encode(namespace_id),
+            has_key = !key_envelope_bytes.is_empty(),
+            context_count = context_ids.len(),
+            app_id = %hex::encode(application_id),
+            gov_ops_count = governance_ops.len(),
+            target_app = %meta.target_application_id,
+            context_ids = ?context_ids.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
+            "NamespaceJoinRequest: sending response to joiner"
+        );
+
         let msg = StreamMessage::Message {
             sequence_id: 0,
             payload: MessagePayload::NamespaceJoinResponse {
