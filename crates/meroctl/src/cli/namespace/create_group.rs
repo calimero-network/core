@@ -1,6 +1,6 @@
 use clap::Parser;
-use serde::{Deserialize, Serialize};
 use eyre::Result;
+use serde::{Deserialize, Serialize};
 
 use crate::cli::Environment;
 
@@ -28,28 +28,11 @@ pub struct CreateGroupCommand {
 
 impl CreateGroupCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let request = CreateGroupInNamespaceBody {
-            group_alias: self.alias,
-        };
-
-        let client = environment.client()?;
-        let url = client
-            .api_url()
-            .join(&format!("/admin-api/namespaces/{}/groups", self.namespace_id))
-            .map_err(|err| eyre::eyre!("failed to build namespace create-group URL: {err}"))?;
-        let raw = reqwest::Client::new()
-            .post(url)
-            .json(&request)
-            .send()
+        let response = environment
+            .client()?
+            .create_group_in_namespace(&self.namespace_id, self.alias)
             .await?;
-        if !raw.status().is_success() {
-            let status = raw.status();
-            let body = raw.text().await.unwrap_or_default();
-            return Err(eyre::eyre!("request failed with status {status}: {body}"));
-        }
-        let response: CreateGroupInNamespaceResponse = raw
-            .json()
-            .await
+        let response: CreateGroupInNamespaceResponse = serde_json::from_value(response)
             .map_err(|err| eyre::eyre!("invalid response: {err}"))?;
 
         println!("{}", serde_json::to_string_pretty(&response)?);

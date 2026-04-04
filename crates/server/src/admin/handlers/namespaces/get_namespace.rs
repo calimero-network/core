@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
+use calimero_context_client::group::GetNamespaceIdentityRequest;
 use reqwest::StatusCode;
 use tracing::{error, info};
 
@@ -19,12 +20,27 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let Some((node_pk, _)) = state.ctx_client.get_namespace_identity(&group_id) else {
-        return ApiError {
-            status_code: StatusCode::NOT_FOUND,
-            message: "No namespace identity found".to_owned(),
+    let node_pk = match state
+        .ctx_client
+        .get_namespace_identity(GetNamespaceIdentityRequest { group_id })
+        .await
+    {
+        Ok(Some((_, node_pk))) => node_pk,
+        Ok(None) => {
+            return ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "No namespace identity found".to_owned(),
+            }
+            .into_response();
         }
-        .into_response();
+        Err(err) => {
+            error!(error=?err, "Failed to get namespace identity");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to get namespace identity".to_owned(),
+            }
+            .into_response();
+        }
     };
 
     info!(namespace_id=%namespace_id_str, "Getting namespace summary");

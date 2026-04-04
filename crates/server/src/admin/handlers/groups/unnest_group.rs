@@ -37,7 +37,7 @@ pub async fn handler(
         "Unnesting group"
     );
 
-    let (_, signer_pk, signer_sk_bytes, _) =
+    let (namespace_id, signer_pk, signer_sk_bytes, _) =
         match calimero_context::group_store::get_or_create_namespace_identity(
             &state.store,
             &parent_group_id,
@@ -64,7 +64,7 @@ pub async fn handler(
     let result = calimero_context::group_store::sign_apply_and_publish_namespace_op(
         &state.store,
         &state.node_client,
-        parent_group_id.to_bytes(),
+        namespace_id.to_bytes(),
         &signer_sk,
         op,
     )

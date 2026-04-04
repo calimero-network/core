@@ -52,12 +52,14 @@ steps:
     type: create_namespace_invitation
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
 
   - name: Node-2 joins namespace
     type: join_namespace
     node: e2e-node-2
     namespace_id: '{{namespace_id}}'
-    invitation: '{{group_invitation_e2e-node-1}}'
+    invitation: '{{namespace_invitation}}'
     outputs:
       member_identity_node2: memberIdentity
 
