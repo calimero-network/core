@@ -15,7 +15,6 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
         let namespace_id = op.namespace_id;
         let dag = self.get_or_create_namespace_dag(&namespace_id);
         let datastore = self.datastore.clone();
-        let notify = self.ns_gov_notify.clone();
 
         let delta = match signed_namespace_op_to_delta(&op) {
             Ok(d) => d,
@@ -28,10 +27,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
             async move {
                 let mut dag = dag.lock().await;
                 match dag.add_delta(delta, &applier).await {
-                    Ok(_applied) => {
-                        notify.notify_waiters();
-                        Ok(())
-                    }
+                    Ok(_applied) => Ok(()),
                     Err(e) => Err(eyre::eyre!("namespace DAG apply error: {e}")),
                 }
             }

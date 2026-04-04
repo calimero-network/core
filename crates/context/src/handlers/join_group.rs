@@ -1,44 +1,16 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{JoinGroupRequest, JoinGroupResponse};
-use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_primitives::context::{ContextConfigParams, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::key;
-use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use crate::{group_store, ContextManager};
 
-const JOIN_OVERALL_TIMEOUT: Duration = Duration::from_secs(30);
 const MESH_FORMATION_GRACE: Duration = Duration::from_secs(2);
-
-async fn await_condition<F>(
-    notify: &Arc<Notify>,
-    deadline: tokio::time::Instant,
-    mut check: F,
-) -> eyre::Result<bool>
-where
-    F: FnMut() -> eyre::Result<bool>,
-{
-    loop {
-        // Register the waiter BEFORE checking so we don't miss a
-        // notification that fires between check() and .await.
-        let notified = notify.notified();
-        tokio::pin!(notified);
-        // Enable the future to receive notifications from this point.
-        notified.as_mut().enable();
-
-        if check()? {
-            return Ok(true);
-        }
-        if tokio::time::timeout_at(deadline, notified).await.is_err() {
-            return check();
-        }
-    }
-}
 
 impl Handler<JoinGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <JoinGroupRequest as Message>::Result>;
@@ -79,7 +51,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let context_client = self.context_client.clone();
-        let notify = self.ns_gov_notify.clone();
 
         ActorResponse::r#async(
             async move {
@@ -89,8 +60,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     2 => GroupMemberRole::ReadOnly,
                     _ => GroupMemberRole::Member,
                 };
-
-                let deadline = tokio::time::Instant::now() + JOIN_OVERALL_TIMEOUT;
 
                 // -------------------------------------------------------
                 // Phase 1: Set up local state.
@@ -122,99 +91,80 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 group_store::add_group_member(&datastore, &group_id, &joiner_identity, role)?;
 
                 // -------------------------------------------------------
-                // Phase 2: Subscribe + publish MemberJoined, then wait
-                //          for the group key to arrive via gossipsub.
+                // Phase 2: Subscribe to namespace topic, wait for mesh
+                //          formation, then get everything we need via a
+                //          single direct stream request to a mesh peer.
                 // -------------------------------------------------------
 
                 let _ = node_client.subscribe_namespace(namespace_id).await;
-
-                // Gossipsub mesh formation requires a heartbeat round
-                // (~1s default). Wait briefly so that mesh peers are
-                // available for both publishing and backfill requests.
                 tokio::time::sleep(MESH_FORMATION_GRACE).await;
 
-                // Backfill: ops published before we subscribed won't arrive
-                // via gossipsub. Request them once from a mesh peer.
-                if let Err(e) = node_client.sync_namespace(namespace_id).await {
-                    warn!(?e, "initial namespace backfill request failed");
+                let invitation_bytes = borsh::to_vec(&invitation)
+                    .map_err(|e| eyre::eyre!("failed to serialize invitation: {e}"))?;
+
+                let join_result = node_client
+                    .request_namespace_join(namespace_id, invitation_bytes, joiner_identity)
+                    .await?;
+
+                // Unwrap and store the group key.
+                if !join_result.key_envelope_bytes.is_empty() {
+                    let envelope: calimero_context_client::local_governance::KeyEnvelope =
+                        borsh::from_slice(&join_result.key_envelope_bytes)
+                            .map_err(|e| eyre::eyre!("failed to deserialize key envelope: {e}"))?;
+
+                    let group_key = group_store::unwrap_group_key(&sk, &envelope)?;
+                    group_store::store_group_key(&datastore, &group_id, &group_key)?;
+                    info!("received group key via direct join response");
+                } else {
+                    warn!("join response contained no group key");
                 }
 
+                // Apply governance ops so the local DAG is up to date.
+                for op_bytes in &join_result.governance_ops {
+                    if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(op_bytes) {
+                        if let Err(e) = context_client.apply_signed_namespace_op(op).await {
+                            warn!(?e, "failed to apply governance op from join response");
+                        }
+                    }
+                }
+
+                // Publish MemberJoined so other namespace members learn
+                // about us (fire-and-forget, the joiner doesn't depend on it).
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoined {
                     member: joiner_identity,
                     signed_invitation: invitation.clone(),
                 });
-
-                group_store::sign_and_publish_namespace_op(
+                if let Err(e) = group_store::sign_and_publish_namespace_op(
                     &datastore,
                     &node_client,
                     namespace_id,
                     &sk,
                     member_joined_op,
                 )
-                .await?;
-
+                .await
                 {
-                    let ds = &datastore;
-                    let gid = &group_id;
-                    let got_key = await_condition(&notify, deadline, || {
-                        Ok(group_store::load_current_group_key(ds, gid)?.is_some())
-                    })
-                    .await?;
-
-                    if !got_key {
-                        warn!("group key did not arrive within timeout");
-                    } else {
-                        info!("received group key via gossipsub");
-                    }
+                    warn!(?e, "failed to publish MemberJoined (non-fatal)");
                 }
 
                 // -------------------------------------------------------
-                // Phase 3: Wait for ContextRegistered ops to populate the
-                //          group context index, then auto-join.
+                // Phase 3: Auto-join contexts from the response.
                 // -------------------------------------------------------
 
                 if let Some(ref alias_str) = group_alias {
                     group_store::set_group_alias(&datastore, &group_id, alias_str)?;
                 }
 
+                let contexts = &join_result.context_ids;
+                let app_id_bytes = join_result.application_id;
+
                 if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
                     if meta.auto_join {
-                        // After receiving the key, the encrypted ContextRegistered
-                        // ops may not have been backfilled yet. Trigger another
-                        // backfill so they arrive and get retried with the key.
-                        if let Err(e) = node_client.sync_namespace(namespace_id).await {
-                            warn!(?e, "post-key namespace backfill request failed");
-                        }
-
-                        let ds = &datastore;
-                        let gid = &group_id;
-                        let _ = await_condition(&notify, deadline, || {
-                            Ok(!group_store::enumerate_group_contexts(ds, gid, 0, 1)?.is_empty())
-                        })
-                        .await;
-
-                        let contexts = group_store::enumerate_group_contexts(
-                            &datastore,
-                            &group_id,
-                            0,
-                            usize::MAX,
-                        )?;
-
-                        if contexts.is_empty() {
-                            warn!(
-                                ?group_id,
-                                "no group contexts found within timeout; \
-                                 contexts may sync later in the background"
-                            );
-                        }
-
                         info!(
                             ?group_id,
                             context_count = contexts.len(),
-                            app_id = %meta.target_application_id,
-                            "auto-join: enumerated group contexts"
+                            "auto-join: contexts from direct join response"
                         );
-                        for context_id in &contexts {
+                        for context_id in contexts {
                             let mut handle = datastore.handle();
                             let ci_key = key::ContextIdentity::new(*context_id, joiner_identity);
                             if !handle.has(&ci_key)? {
@@ -233,11 +183,18 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                     calimero_primitives::application::ApplicationId::from(
                                         [0u8; 32],
                                     );
-                                let app_id = group_store::load_group_meta(&datastore, &group_id)?
-                                    .map(|m| m.target_application_id)
-                                    .filter(|id| *id != zero_app);
+                                let app_id = calimero_primitives::application::ApplicationId::from(
+                                    app_id_bytes,
+                                );
+                                let resolved = if app_id != zero_app {
+                                    Some(app_id)
+                                } else {
+                                    group_store::load_group_meta(&datastore, &group_id)?
+                                        .map(|m| m.target_application_id)
+                                        .filter(|id| *id != zero_app)
+                                };
                                 Some(ContextConfigParams {
-                                    application_id: app_id,
+                                    application_id: resolved,
                                     application_revision: 0,
                                     members_revision: 0,
                                 })
@@ -269,7 +226,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     ?group_id,
                     namespace_id = %hex::encode(namespace_id),
                     %joiner_identity,
-                    "member joined group via namespace MemberJoined"
+                    "member joined group via direct request-response"
                 );
 
                 Ok(JoinGroupResponse {
