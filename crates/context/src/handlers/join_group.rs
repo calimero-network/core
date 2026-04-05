@@ -222,6 +222,14 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     warn!(?e, "failed to trigger global sync after join");
                 }
 
+                // Allow blob sharing to deliver the application binary before
+                // returning. Without the WASM, context state sync cannot apply
+                // deltas. The interval sync will eventually deliver it, but the
+                // e2e tests issue writes immediately after join.
+                if !contexts.is_empty() {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
+
                 info!(
                     ?group_id,
                     namespace_id = %hex::encode(namespace_id),
