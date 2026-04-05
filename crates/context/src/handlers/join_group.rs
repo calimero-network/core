@@ -265,12 +265,19 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     .get_context(first_ctx)
                     .map(|o| o.is_some())
                     .unwrap_or(false);
-                eprintln!(
-                    "[JOIN-DIAG] checkpoint: ctx_from_peer={} first_visible={} app={}",
-                    contexts.len(),
-                    locally_visible,
-                    hex::encode(app_id_bytes),
-                );
+
+                if !locally_visible && !contexts.is_empty() {
+                    return Err(eyre::eyre!(
+                        "DIAG: join completed but context not locally visible. \
+                         ctx_from_peer={} first_ctx={} app_from_peer={} \
+                         has_key={} gov_ops={}",
+                        contexts.len(),
+                        first_ctx,
+                        hex::encode(app_id_bytes),
+                        !join_result.key_envelope_bytes.is_empty(),
+                        join_result.governance_ops.len(),
+                    ));
+                }
 
                 if let Err(e) = node_client.sync(None, None).await {
                     warn!(?e, "failed to trigger global sync after join");
