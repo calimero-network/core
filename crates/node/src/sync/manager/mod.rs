@@ -2448,8 +2448,34 @@ impl SyncManager {
             None => Vec::new(),
         };
 
+        // Pre-register the joiner as a group member and write ContextIdentity
+        // entries so that when the joiner opens a sync stream, this node's
+        // membership check (has_member) passes immediately.
+        if let Err(e) = calimero_context::group_store::add_group_member(
+            &store,
+            &group_id,
+            &joiner_public_key,
+            calimero_primitives::context::GroupMemberRole::Member,
+        ) {
+            warn!(%e, "failed to pre-register joiner as group member");
+        }
+
         let context_ids = enumerate_group_contexts(&store, &group_id, 0, usize::MAX)?;
         let application_id: [u8; 32] = *meta.target_application_id.as_ref();
+
+        for ctx_id in &context_ids {
+            let ci_key = calimero_store::key::ContextIdentity::new(*ctx_id, joiner_public_key);
+            let mut handle = store.handle();
+            if !handle.has(&ci_key).unwrap_or(false) {
+                let _ = handle.put(
+                    &ci_key,
+                    &calimero_store::types::ContextIdentity {
+                        private_key: None,
+                        sender_key: None,
+                    },
+                );
+            }
+        }
 
         let governance_ops = self.collect_namespace_governance_ops(namespace_id)?;
 
