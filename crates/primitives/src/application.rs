@@ -2,6 +2,8 @@
 #[path = "tests/application.rs"]
 mod tests;
 
+use std::collections::BTreeMap;
+
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 use core::str::FromStr;
@@ -52,7 +54,16 @@ impl ApplicationId {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
+
+    /// Sentinel value: no application / uninitialized application ID (all-zero hash).
+    #[must_use]
+    pub const fn zero() -> Self {
+        Self(Hash::zero())
+    }
 }
+
+/// Sentinel value representing "no application" or an uninitialized application ID.
+pub const ZERO_APPLICATION_ID: ApplicationId = ApplicationId::zero();
 
 impl Display for ApplicationId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -422,6 +433,10 @@ pub struct Application {
     pub package: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub version: String,
+    /// Named services. Key = service name, value = WASM blob.
+    /// Empty for single-service apps (use `blob` field instead).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub services: BTreeMap<String, ApplicationBlob>,
 }
 
 impl Application {
@@ -442,6 +457,18 @@ impl Application {
             signer_id: String::new(),
             package: String::new(),
             version: String::new(),
+            services: BTreeMap::new(),
+        }
+    }
+
+    /// Resolve the blob for a given service name.
+    /// None service_name returns default blob for single-service apps.
+    pub fn resolve_service_blob(&self, service_name: Option<&str>) -> Option<ApplicationBlob> {
+        match service_name {
+            None if self.services.is_empty() => Some(self.blob),
+            None if self.services.len() == 1 => self.services.values().next().copied(),
+            None => None,
+            Some(name) => self.services.get(name).copied(),
         }
     }
 

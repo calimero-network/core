@@ -1,11 +1,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
+use calimero_context_client::group::{UpgradeGroupRequest, UpgradeGroupResponse};
+use calimero_context_client::local_governance::GroupOp;
+use calimero_context_client::messages::MigrationParams;
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_primitives::group::{UpgradeGroupRequest, UpgradeGroupResponse};
-use calimero_context_primitives::local_governance::GroupOp;
-use calimero_context_primitives::messages::MigrationParams;
-use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -28,7 +27,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         }: UpgradeGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_group_identity();
+        let node_identity = self.node_namespace_identity(&group_id);
 
         // Resolve requester: use provided value or fall back to node group identity
         let requester = match requester {
@@ -186,9 +185,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         0,
                         usize::MAX,
                     )?;
-                    let _ = node_client
-                        .broadcast_group_mutation(group_id.to_bytes(), GroupMutationKind::Upgraded)
-                        .await;
 
                     // Announce target app blob on DHT for each group context so
                     // peer nodes can discover and fetch it during group sync.
@@ -362,14 +358,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         usize::MAX,
                     ) {
                         let nc = node_client_for_gossip;
-                        let gid = group_id_clone.to_bytes();
                         ctx.spawn(
                             async move {
-                                let _ = nc
-                                    .broadcast_group_mutation(gid, GroupMutationKind::Upgraded)
-                                    .await;
-
-                                // Announce target app blob on DHT for peers
                                 if let Some((blob_id, blob_size)) = target_blob_info {
                                     for context_id in &contexts {
                                         if let Err(err) = nc
@@ -517,7 +507,7 @@ const MAX_AUTO_RETRIES: u32 = 3;
 const RETRY_BASE_DELAY_SECS: u64 = 5;
 
 pub(crate) async fn propagate_upgrade(
-    context_client: calimero_context_primitives::client::ContextClient,
+    context_client: calimero_context_client::client::ContextClient,
     datastore: calimero_store::Store,
     group_id: ContextGroupId,
     target_application_id: ApplicationId,

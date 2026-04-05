@@ -18,10 +18,18 @@ steps:
     outputs:
       app_id: applicationId
 
+  - name: Create namespace
+    type: create_namespace
+    node: simple-store-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
   - name: Create Simple Store Context
     type: create_context
     node: simple-store-node-1
     application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
     params: '{}'
     outputs:
       context_id: contextId

@@ -39,7 +39,21 @@ impl NodeClient {
             return Ok(None);
         };
 
-        let application = Application::new(
+        let services = application
+            .services
+            .iter()
+            .map(|s| {
+                (
+                    s.name.to_string(),
+                    ApplicationBlob {
+                        bytecode: s.bytecode.blob_id(),
+                        compiled: s.compiled.blob_id(),
+                    },
+                )
+            })
+            .collect();
+
+        let mut app = Application::new(
             *application_id,
             ApplicationBlob {
                 bytecode: application.bytecode.blob_id(),
@@ -54,8 +68,9 @@ impl NodeClient {
             application.package.to_string(),
             application.version.to_string(),
         );
+        app.services = services;
 
-        Ok(Some(application))
+        Ok(Some(app))
     }
 
     pub async fn get_application_bytes(
@@ -239,7 +254,7 @@ impl NodeClient {
         Ok(false)
     }
 
-    pub fn install_application(
+    pub fn install_raw_wasm(
         &self,
         blob_id: &BlobId,
         size: u64,
@@ -247,17 +262,7 @@ impl NodeClient {
         metadata: Vec<u8>,
         package: &str,
         version: &str,
-        signer_id: Option<&str>,
-        is_bundle: bool,
     ) -> eyre::Result<ApplicationId> {
-        // For bundles: signer_id is required
-        // For non-bundles: signer_id is optional (backwards compatibility)
-        // Note: Empty string is used as a sentinel value for non-bundle applications.
-        // This distinguishes 'no signer' (non-bundle) from 'has signer' (bundle) cases.
-        // Non-bundle installations cannot be upgraded to signed bundle installations
-        // without re-installation.
-        let signer_id_str = signer_id.unwrap_or("");
-
         let application = types::ApplicationMeta::new(
             key::BlobMeta::new(*blob_id),
             size,
@@ -266,18 +271,10 @@ impl NodeClient {
             key::BlobMeta::new(BlobId::from([0; 32])),
             package.to_owned().into_boxed_str(),
             version.to_owned().into_boxed_str(),
-            signer_id_str.to_owned().into_boxed_str(),
+            "".to_owned().into_boxed_str(),
         );
 
-        let application_id = if is_bundle {
-            // For bundles: use package and signer_id for deterministic ApplicationId
-            // This creates a stable application identity based on who signed the bundle,
-            // allowing version upgrades while maintaining the same ApplicationId
-            let components = (&application.package, &application.signer_id);
-            ApplicationId::from(*Hash::hash_borsh(&components)?)
-        } else {
-            // For single WASM: use current logic (blob_id, size, source, metadata)
-            // Maintains backward compatibility for non-bundle installations
+        let application_id = {
             let components = (
                 application.bytecode,
                 application.size,
@@ -288,12 +285,120 @@ impl NodeClient {
         };
 
         let mut handle = self.datastore.handle();
-
         let key = key::ApplicationMeta::new(application_id);
-
         handle.put(&key, &application)?;
-
         Ok(application_id)
+    }
+
+    fn install_bundle_application(
+        &self,
+        blob_id: &BlobId,
+        size: u64,
+        source: &ApplicationSource,
+        metadata: Vec<u8>,
+        package: &str,
+        version: &str,
+        signer_id: &str,
+        services: Vec<types::ServiceMeta>,
+    ) -> eyre::Result<ApplicationId> {
+        let mut application = types::ApplicationMeta::new(
+            key::BlobMeta::new(*blob_id),
+            size,
+            source.to_string().into_boxed_str(),
+            metadata.into_boxed_slice(),
+            key::BlobMeta::new(BlobId::from([0; 32])),
+            package.to_owned().into_boxed_str(),
+            version.to_owned().into_boxed_str(),
+            signer_id.to_owned().into_boxed_str(),
+        );
+        application.services = services;
+
+        let application_id = {
+            let components = (&application.package, &application.signer_id);
+            ApplicationId::from(*Hash::hash_borsh(&components)?)
+        };
+
+        let mut handle = self.datastore.handle();
+        let key = key::ApplicationMeta::new(application_id);
+        handle.put(&key, &application)?;
+        Ok(application_id)
+    }
+
+    async fn install_verified_bundle(
+        &self,
+        bundle_data: Arc<Vec<u8>>,
+        blob_id: &BlobId,
+        stored_size: u64,
+        source: &ApplicationSource,
+    ) -> eyre::Result<ApplicationId> {
+        let bundle_data_clone = Arc::clone(&bundle_data);
+        let (verification, manifest) = tokio::task::spawn_blocking(move || {
+            Self::verify_and_extract_manifest(&bundle_data_clone)
+        })
+        .await??;
+
+        let signer_id = verification.signer_id;
+        let package = &manifest.package;
+        let version = &manifest.app_version;
+
+        let blobstore_root = self.blobstore.root_path();
+        let node_root = blobstore_root
+            .parent()
+            .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?
+            .to_path_buf();
+        let extract_dir = node_root
+            .join("applications")
+            .join(package)
+            .join(version)
+            .join("extracted");
+
+        let bundle_data_clone = Arc::clone(&bundle_data);
+        let manifest_clone = manifest.clone();
+        let extract_dir_clone = extract_dir.clone();
+        let node_root_clone = node_root.clone();
+        let package_clone = package.to_string();
+        let version_clone = version.to_string();
+        tokio::task::spawn_blocking(move || {
+            Self::extract_bundle_artifacts(
+                &bundle_data_clone,
+                &manifest_clone,
+                &extract_dir_clone,
+                &node_root_clone,
+                &package_clone,
+                &version_clone,
+            )
+        })
+        .await??;
+
+        let mut services = Vec::new();
+        for artifact in manifest.wasm_artifacts() {
+            if let Some(name) = artifact.name {
+                let wasm_path = extract_dir.join(&artifact.wasm.path);
+                let wasm_bytes = tokio::fs::read(&wasm_path).await?;
+                let cursor = Cursor::new(wasm_bytes.as_slice());
+                let (svc_blob_id, _svc_size) = self
+                    .add_blob(cursor, Some(wasm_bytes.len() as u64), None)
+                    .await?;
+                services.push(types::ServiceMeta {
+                    name: name.to_owned().into_boxed_str(),
+                    bytecode: key::BlobMeta::new(svc_blob_id),
+                    compiled: key::BlobMeta::new(BlobId::from([0; 32])),
+                });
+            }
+        }
+
+        let bundle_metadata = manifest.to_metadata_json()?;
+
+        self.install_bundle_application(
+            blob_id,
+            stored_size,
+            source,
+            bundle_metadata,
+            package,
+            version,
+            &signer_id,
+            services,
+        )
     }
 
     /// Check if a path points to a bundle archive (.mpk - Mero Package Kit)
@@ -364,15 +469,13 @@ impl NodeClient {
             bail!("non-absolute path")
         };
 
-        self.install_application(
+        self.install_raw_wasm(
             &blob_id,
             size,
             &uri.as_str().parse()?,
             metadata,
             package,
             version,
-            None,  // signer_id: None for non-bundle installations
-            false, // is_bundle: false for single WASM
         )
     }
 
@@ -408,10 +511,8 @@ impl NodeClient {
         let is_bundle = url.path().ends_with(".mpk");
 
         if is_bundle {
-            // Download entire bundle into memory
             let bundle_data = Arc::new(response.bytes().await?.to_vec());
 
-            // Store entire bundle as a single blob
             let cursor = Cursor::new(bundle_data.as_slice());
             let (bundle_blob_id, stored_size) = self
                 .add_blob(cursor, Some(bundle_data.len() as u64), expected_hash)
@@ -424,141 +525,9 @@ impl NodeClient {
                 "bundle downloaded and stored as blob"
             );
 
-            // Extract bundle manifest and verify signature
-            // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-            let bundle_data_clone = Arc::clone(&bundle_data);
-            let (verification, manifest) = tokio::task::spawn_blocking(move || {
-                Self::verify_and_extract_manifest(&bundle_data_clone)
-            })
-            .await??;
-
-            let signer_id = verification.signer_id;
-
-            // Extract package and version from manifest
-            let package = &manifest.package;
-            let version = &manifest.app_version;
-
-            // Extract artifacts with deduplication
-            // Use node root (parent of blobstore) instead of blobstore root
-            // Must be done before spawn_blocking
-            let blobstore_root = self.blobstore.root_path();
-            let node_root = blobstore_root
-                .parent()
-                .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?
-                .to_path_buf();
-            // Extract directory is derived from package and version
-            let extract_dir = node_root
-                .join("applications")
-                .join(package)
-                .join(version)
-                .join("extracted");
-
-            // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-            let bundle_data_clone = Arc::clone(&bundle_data);
-            let manifest_clone = manifest.clone();
-            let extract_dir_clone = extract_dir.clone();
-            let node_root_clone = node_root.clone();
-            let package_clone = package.to_string();
-            let version_clone = version.to_string();
-            tokio::task::spawn_blocking(move || {
-                Self::extract_bundle_artifacts(
-                    &bundle_data_clone,
-                    &manifest_clone,
-                    &extract_dir_clone,
-                    &node_root_clone,
-                    &package_clone,
-                    &version_clone,
-                )
-            })
-            .await??;
-
-            // Extract metadata from bundle manifest and serialize it
-            // Bundle manifest contains metadata (name, description, author, links, etc.)
-            let bundle_metadata = {
-                let mut metadata_obj = serde_json::Map::new();
-                metadata_obj.insert(
-                    "package".to_string(),
-                    serde_json::Value::String(package.clone()),
-                );
-                metadata_obj.insert(
-                    "version".to_string(),
-                    serde_json::Value::String(version.clone()),
-                );
-
-                if let Some(ref metadata) = manifest.metadata {
-                    metadata_obj.insert(
-                        "name".to_string(),
-                        serde_json::Value::String(metadata.name.clone()),
-                    );
-                    if let Some(ref description) = metadata.description {
-                        metadata_obj.insert(
-                            "description".to_string(),
-                            serde_json::Value::String(description.clone()),
-                        );
-                    }
-                    if let Some(ref icon) = metadata.icon {
-                        metadata_obj
-                            .insert("icon".to_string(), serde_json::Value::String(icon.clone()));
-                    }
-                    if !metadata.tags.is_empty() {
-                        metadata_obj.insert(
-                            "tags".to_string(),
-                            serde_json::Value::Array(
-                                metadata
-                                    .tags
-                                    .iter()
-                                    .map(|t| serde_json::Value::String(t.clone()))
-                                    .collect(),
-                            ),
-                        );
-                    }
-                    if let Some(ref license) = metadata.license {
-                        metadata_obj.insert(
-                            "license".to_string(),
-                            serde_json::Value::String(license.clone()),
-                        );
-                    }
-                }
-
-                if let Some(ref links) = manifest.links {
-                    let mut links_obj = serde_json::Map::new();
-                    if let Some(ref frontend) = links.frontend {
-                        links_obj.insert(
-                            "frontend".to_string(),
-                            serde_json::Value::String(frontend.clone()),
-                        );
-                    }
-                    if let Some(ref github) = links.github {
-                        links_obj.insert(
-                            "github".to_string(),
-                            serde_json::Value::String(github.clone()),
-                        );
-                    }
-                    if let Some(ref docs) = links.docs {
-                        links_obj
-                            .insert("docs".to_string(), serde_json::Value::String(docs.clone()));
-                    }
-                    if !links_obj.is_empty() {
-                        metadata_obj
-                            .insert("links".to_string(), serde_json::Value::Object(links_obj));
-                    }
-                }
-
-                // Serialize metadata to JSON bytes
-                serde_json::to_vec(&serde_json::Value::Object(metadata_obj))?
-            };
-
-            // Install application with bundle blob_id and extracted metadata
-            return self.install_application(
-                &bundle_blob_id,
-                stored_size,
-                &uri,
-                bundle_metadata, // Use metadata extracted from bundle manifest
-                package,
-                version,
-                Some(&signer_id), // signer_id from manifest verification
-                true,             // is_bundle: true for bundles
-            );
+            return self
+                .install_verified_bundle(bundle_data, &bundle_blob_id, stored_size, &uri)
+                .await;
         }
 
         // Single WASM installation (existing behavior)
@@ -577,11 +546,7 @@ impl NodeClient {
             )
             .await?;
 
-        self.install_application(
-            &blob_id, size, &uri, metadata, package, version,
-            None,  // signer_id: None for non-bundle installations
-            false, // is_bundle: false for single WASM
-        )
+        self.install_raw_wasm(&blob_id, size, &uri, metadata, package, version)
     }
 
     /// Install a bundle archive (.mpk - Mero Package Kit) containing WASM, ABI, and migrations
@@ -591,167 +556,33 @@ impl NodeClient {
         path: Utf8PathBuf,
         _metadata: Vec<u8>,
     ) -> eyre::Result<ApplicationId> {
-        debug!(
-            path = %path,
-            "install_bundle_from_path started"
-        );
+        debug!(path = %path, "install_bundle_from_path started");
 
-        // Clone path for deletion after installation
-        let bundle_path = path.clone();
-
-        // Read bundle file
         let bundle_data = Arc::new(tokio::fs::read(&path).await?);
-        let bundle_size = bundle_data.len() as u64;
 
-        // Store entire bundle as a single blob
         let cursor = Cursor::new(bundle_data.as_slice());
-        let (bundle_blob_id, stored_size) = self.add_blob(cursor, Some(bundle_size), None).await?;
+        let (bundle_blob_id, stored_size) = self
+            .add_blob(cursor, Some(bundle_data.len() as u64), None)
+            .await?;
 
         debug!(
             %bundle_blob_id,
-            bundle_size,
+            bundle_size = bundle_data.len(),
             stored_size,
             "bundle stored as blob"
         );
 
-        // Extract bundle manifest and verify signature
-        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-        let bundle_data_clone = Arc::clone(&bundle_data);
-        let (verification, manifest) = tokio::task::spawn_blocking(move || {
-            Self::verify_and_extract_manifest(&bundle_data_clone)
-        })
-        .await??;
-
-        let signer_id = verification.signer_id;
-
-        // Extract package and version from manifest (ignore provided values)
-        let package = &manifest.package;
-        let version = &manifest.app_version;
-
-        // Extract artifacts with deduplication
-        // Use node root (parent of blobstore) instead of blobstore root
-        // Must be done before spawn_blocking
-        let blobstore_root = self.blobstore.root_path();
-        let node_root = blobstore_root
-            .parent()
-            .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?
-            .to_path_buf();
-        // Extract directory is derived from package and version
-        let extract_dir = node_root
-            .join("applications")
-            .join(package)
-            .join(version)
-            .join("extracted");
-
-        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-        let bundle_data_clone = Arc::clone(&bundle_data);
-        let manifest_clone = manifest.clone();
-        let extract_dir_clone = extract_dir.clone();
-        let node_root_clone = node_root.clone();
-        let package_clone = package.to_string();
-        let version_clone = version.to_string();
-        tokio::task::spawn_blocking(move || {
-            Self::extract_bundle_artifacts(
-                &bundle_data_clone,
-                &manifest_clone,
-                &extract_dir_clone,
-                &node_root_clone,
-                &package_clone,
-                &version_clone,
-            )
-        })
-        .await??;
-
-        let Ok(uri) = Url::from_file_path(path) else {
+        let Ok(uri) = Url::from_file_path(&path) else {
             bail!("non-absolute path")
         };
 
-        // Extract metadata from bundle manifest and serialize it
-        let bundle_metadata = {
-            let mut metadata_obj = serde_json::Map::new();
-            metadata_obj.insert(
-                "package".to_string(),
-                serde_json::Value::String(package.clone()),
-            );
-            metadata_obj.insert(
-                "version".to_string(),
-                serde_json::Value::String(version.clone()),
-            );
-
-            if let Some(ref metadata) = manifest.metadata {
-                metadata_obj.insert(
-                    "name".to_string(),
-                    serde_json::Value::String(metadata.name.clone()),
-                );
-                if let Some(ref description) = metadata.description {
-                    metadata_obj.insert(
-                        "description".to_string(),
-                        serde_json::Value::String(description.clone()),
-                    );
-                }
-                if let Some(ref icon) = metadata.icon {
-                    metadata_obj
-                        .insert("icon".to_string(), serde_json::Value::String(icon.clone()));
-                }
-                if !metadata.tags.is_empty() {
-                    metadata_obj.insert(
-                        "tags".to_string(),
-                        serde_json::Value::Array(
-                            metadata
-                                .tags
-                                .iter()
-                                .map(|t| serde_json::Value::String(t.clone()))
-                                .collect(),
-                        ),
-                    );
-                }
-                if let Some(ref license) = metadata.license {
-                    metadata_obj.insert(
-                        "license".to_string(),
-                        serde_json::Value::String(license.clone()),
-                    );
-                }
-            }
-
-            if let Some(ref links) = manifest.links {
-                let mut links_obj = serde_json::Map::new();
-                if let Some(ref frontend) = links.frontend {
-                    links_obj.insert(
-                        "frontend".to_string(),
-                        serde_json::Value::String(frontend.clone()),
-                    );
-                }
-                if let Some(ref github) = links.github {
-                    links_obj.insert(
-                        "github".to_string(),
-                        serde_json::Value::String(github.clone()),
-                    );
-                }
-                if let Some(ref docs) = links.docs {
-                    links_obj.insert("docs".to_string(), serde_json::Value::String(docs.clone()));
-                }
-                if !links_obj.is_empty() {
-                    metadata_obj.insert("links".to_string(), serde_json::Value::Object(links_obj));
-                }
-            }
-
-            // Serialize metadata to JSON bytes
-            serde_json::to_vec(&serde_json::Value::Object(metadata_obj))?
-        };
-
-        // Install application with bundle blob_id and extracted metadata
-        let application_id = self.install_application(
+        self.install_verified_bundle(
+            bundle_data,
             &bundle_blob_id,
             stored_size,
             &uri.as_str().parse()?,
-            bundle_metadata, // Use metadata extracted from bundle manifest
-            package,
-            version,
-            Some(&signer_id), // signer_id from manifest verification
-            true,             // is_bundle: true for bundles
-        )?;
-
-        Ok(application_id)
+        )
+        .await
     }
 
     /// Validates that a string is safe for use as a filesystem path component.
@@ -962,161 +793,22 @@ impl NodeClient {
 
     /// Install an application from a bundle blob that's already in the blobstore.
     /// This is used when a bundle blob is received via blob sharing or discovery.
-    /// No metadata needed - bundle detection happens via is_bundle_blob()
     pub async fn install_application_from_bundle_blob(
         &self,
         blob_id: &BlobId,
         source: &ApplicationSource,
     ) -> eyre::Result<ApplicationId> {
-        debug!(
-            %blob_id,
-            "install_application_from_bundle_blob started"
-        );
+        debug!(%blob_id, "install_application_from_bundle_blob started");
 
-        // Get bundle bytes from blobstore
         let Some(bundle_bytes) = self.get_blob_bytes(blob_id, None).await? else {
             bail!("bundle blob not found");
         };
 
-        // Extract manifest and verify signature
-        // No metadata needed - bundle detection happens via is_bundle_blob()
-        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-        let bundle_bytes_clone = Arc::clone(&bundle_bytes);
-        let (verification, manifest) = tokio::task::spawn_blocking(move || {
-            Self::verify_and_extract_manifest(&bundle_bytes_clone)
-        })
-        .await??;
+        let stored_size = bundle_bytes.len() as u64;
+        let bundle_data = Arc::new(bundle_bytes.to_vec());
 
-        let signer_id = verification.signer_id;
-
-        let package = &manifest.package;
-        let version = &manifest.app_version;
-
-        // Extract artifacts with deduplication
-        // Must be done before spawn_blocking
-        let blobstore_root = self.blobstore.root_path();
-        let node_root = blobstore_root
-            .parent()
-            .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?
-            .to_path_buf();
-        let extract_dir = node_root
-            .join("applications")
-            .join(package)
-            .join(version)
-            .join("extracted");
-
-        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-        let bundle_bytes_clone = Arc::clone(&bundle_bytes);
-        let manifest_clone = manifest.clone();
-        let extract_dir_clone = extract_dir.clone();
-        let node_root_clone = node_root.clone();
-        let package_clone = package.to_string();
-        let version_clone = version.to_string();
-        tokio::task::spawn_blocking(move || {
-            Self::extract_bundle_artifacts(
-                &bundle_bytes_clone,
-                &manifest_clone,
-                &extract_dir_clone,
-                &node_root_clone,
-                &package_clone,
-                &version_clone,
-            )
-        })
-        .await??;
-        let size = bundle_bytes.len() as u64;
-
-        debug!(
-            %blob_id,
-            package,
-            version,
-            size,
-            "bundle extracted and ready for installation"
-        );
-
-        // Extract metadata from bundle manifest and serialize it
-        let bundle_metadata = {
-            let mut metadata_obj = serde_json::Map::new();
-            metadata_obj.insert(
-                "package".to_string(),
-                serde_json::Value::String(package.clone()),
-            );
-            metadata_obj.insert(
-                "version".to_string(),
-                serde_json::Value::String(version.clone()),
-            );
-
-            if let Some(ref metadata) = manifest.metadata {
-                metadata_obj.insert(
-                    "name".to_string(),
-                    serde_json::Value::String(metadata.name.clone()),
-                );
-                if let Some(ref description) = metadata.description {
-                    metadata_obj.insert(
-                        "description".to_string(),
-                        serde_json::Value::String(description.clone()),
-                    );
-                }
-                if let Some(ref icon) = metadata.icon {
-                    metadata_obj
-                        .insert("icon".to_string(), serde_json::Value::String(icon.clone()));
-                }
-                if !metadata.tags.is_empty() {
-                    metadata_obj.insert(
-                        "tags".to_string(),
-                        serde_json::Value::Array(
-                            metadata
-                                .tags
-                                .iter()
-                                .map(|t| serde_json::Value::String(t.clone()))
-                                .collect(),
-                        ),
-                    );
-                }
-                if let Some(ref license) = metadata.license {
-                    metadata_obj.insert(
-                        "license".to_string(),
-                        serde_json::Value::String(license.clone()),
-                    );
-                }
-            }
-
-            if let Some(ref links) = manifest.links {
-                let mut links_obj = serde_json::Map::new();
-                if let Some(ref frontend) = links.frontend {
-                    links_obj.insert(
-                        "frontend".to_string(),
-                        serde_json::Value::String(frontend.clone()),
-                    );
-                }
-                if let Some(ref github) = links.github {
-                    links_obj.insert(
-                        "github".to_string(),
-                        serde_json::Value::String(github.clone()),
-                    );
-                }
-                if let Some(ref docs) = links.docs {
-                    links_obj.insert("docs".to_string(), serde_json::Value::String(docs.clone()));
-                }
-                if !links_obj.is_empty() {
-                    metadata_obj.insert("links".to_string(), serde_json::Value::Object(links_obj));
-                }
-            }
-
-            // Serialize metadata to JSON bytes
-            serde_json::to_vec(&serde_json::Value::Object(metadata_obj))?
-        };
-
-        // Install application with extracted metadata
-        self.install_application(
-            blob_id,
-            size,
-            source,
-            bundle_metadata,
-            package,
-            version,
-            Some(&signer_id), // signer_id from manifest verification
-            true,             // is_bundle: true for bundles
-        )
+        self.install_verified_bundle(bundle_data, blob_id, stored_size, source)
+            .await
     }
 
     /// Find duplicate artifact in other versions by hash and relative path

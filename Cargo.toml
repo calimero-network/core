@@ -9,7 +9,7 @@ description = "Core Calimero infrastructure and tools"
 # Update workspace metadata (see docs/RELEASE.md for versioning and release)
 [workspace.metadata.workspaces]
 # Shared version of all public crates; bump this when cutting a release.
-version = "0.10.1-rc.17"
+version = "0.10.1-rc.18"
 exclude = [
     "./apps/abi_conformance",
     "./apps/blobs",
@@ -221,7 +221,7 @@ calimero-client = { path = "./crates/client" }
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
 calimero-context-config = { path = "./crates/context/config", default-features = false }
-calimero-context-primitives = { path = "./crates/context/primitives" }
+calimero-context-client = { path = "./crates/context/primitives" }
 calimero-crypto = { path = "./crates/crypto" }
 calimero-dag = { path = "./crates/dag" }
 calimero-network = { path = "./crates/network" }

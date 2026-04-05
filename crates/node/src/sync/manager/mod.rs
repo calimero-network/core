@@ -1,0 +1,2701 @@
+//! Sync manager and orchestration.
+//!
+//! **Purpose**: Coordinates periodic syncs, selects peers, and delegates to protocols.
+//! **Strategy**: Try delta sync first, fallback to state sync on failure.
+
+use std::collections::{hash_map, HashMap};
+use std::pin::pin;
+
+use calimero_context_client::client::ContextClient;
+use calimero_crypto::{Nonce, SharedKey};
+use calimero_network_primitives::client::NetworkClient;
+use calimero_network_primitives::stream::Stream;
+use calimero_node_primitives::client::{NamespaceJoinParams, NamespaceJoinResult, NodeClient};
+use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+use calimero_primitives::common::DIGEST_SIZE;
+use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
+use eyre::bail;
+use eyre::WrapErr;
+use futures_util::stream::{self, FuturesUnordered};
+use futures_util::{FutureExt, StreamExt};
+use libp2p::gossipsub::TopicHash;
+use libp2p::PeerId;
+use rand::seq::SliceRandom;
+use rand::Rng;
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::{self, timeout_at, Instant, MissedTickBehavior};
+use tracing::{debug, error, info, warn};
+
+use crate::utils::choose_stream;
+
+use super::config::SyncConfig;
+use super::tracking::SyncState;
+// Internal SyncProtocol for metrics (3 variants)
+use super::tracking::SyncProtocol as TrackingSyncProtocol;
+// Full SyncProtocol from primitives for protocol selection (7 variants, CIP §2.3)
+// Uses shared state machine types for consistent behavior with simulation
+use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtocol};
+use super::level_sync::{LevelWiseConfig, LevelWiseProtocol};
+use calimero_node_primitives::sync::{
+    build_handshake_from_raw, estimate_entity_count, estimate_max_depth, select_protocol,
+    SyncHandshake, SyncProtocol, SyncProtocolExecutor,
+};
+
+/// Network synchronization manager.
+///
+/// Orchestrates sync protocols: full resync, delta sync, state sync.
+#[derive(Debug)]
+pub struct SyncManager {
+    pub(crate) sync_config: SyncConfig,
+
+    pub(super) node_client: NodeClient,
+    pub(super) context_client: ContextClient,
+    pub(crate) network_client: NetworkClient,
+    pub(super) node_state: crate::NodeState,
+
+    pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
+    pub(super) ns_sync_rx: Option<mpsc::Receiver<[u8; 32]>>,
+    pub(super) ns_join_rx: Option<
+        mpsc::Receiver<(
+            NamespaceJoinParams,
+            oneshot::Sender<eyre::Result<NamespaceJoinResult>>,
+        )>,
+    >,
+}
+
+impl Clone for SyncManager {
+    fn clone(&self) -> Self {
+        Self {
+            sync_config: self.sync_config,
+            node_client: self.node_client.clone(),
+            context_client: self.context_client.clone(),
+            network_client: self.network_client.clone(),
+            node_state: self.node_state.clone(),
+            ctx_sync_rx: None,
+            ns_sync_rx: None,
+            ns_join_rx: None,
+        }
+    }
+}
+
+impl SyncManager {
+    pub(crate) fn new(
+        sync_config: SyncConfig,
+        node_client: NodeClient,
+        context_client: ContextClient,
+        network_client: NetworkClient,
+        node_state: crate::NodeState,
+        ctx_sync_rx: mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>,
+        ns_sync_rx: mpsc::Receiver<[u8; 32]>,
+        ns_join_rx: mpsc::Receiver<(
+            NamespaceJoinParams,
+            oneshot::Sender<eyre::Result<NamespaceJoinResult>>,
+        )>,
+    ) -> Self {
+        Self {
+            sync_config,
+            node_client,
+            context_client,
+            network_client,
+            node_state,
+            ctx_sync_rx: Some(ctx_sync_rx),
+            ns_sync_rx: Some(ns_sync_rx),
+            ns_join_rx: Some(ns_join_rx),
+        }
+    }
+
+    /// Build `SyncHandshake` from local context state for protocol negotiation.
+    ///
+    /// Queries the real entity count and tree depth from the Merkle tree Index
+    /// via the storage bridge. Falls back to estimation from DAG heads if the
+    /// Index is not accessible (e.g., after snapshot sync with format mismatch).
+    ///
+    /// # Arguments
+    ///
+    /// * `context` - The context to build a handshake for.
+    ///
+    /// # Returns
+    ///
+    /// A `SyncHandshake` containing the context's current state summary.
+    fn build_local_handshake(
+        &self,
+        context: &calimero_primitives::context::Context,
+    ) -> SyncHandshake {
+        let root_hash = *context.root_hash;
+        let dag_heads = context.dag_heads.clone();
+
+        // Try to get real entity count and depth from the Merkle tree Index.
+        // This gives accurate protocol selection instead of guessing from dag_heads.
+        let (entity_count, max_depth) = self.query_tree_stats(&context.id).unwrap_or_else(|| {
+            // Fallback: estimate from dag_heads if Index is unavailable
+            let count = estimate_entity_count(root_hash, dag_heads.len());
+            let depth = estimate_max_depth(count);
+            (count, depth)
+        });
+
+        build_handshake_from_raw(root_hash, entity_count, max_depth, dag_heads)
+    }
+
+    /// Query real entity count and tree depth from the Merkle tree Index.
+    ///
+    /// Returns `Some((entity_count, max_depth))` on success, `None` if the
+    /// Index is unavailable (e.g., fresh node or deserialization mismatch).
+    fn query_tree_stats(&self, context_id: &ContextId) -> Option<(u64, u32)> {
+        use calimero_node_primitives::sync::create_runtime_env;
+        use calimero_storage::address::Id;
+        use calimero_storage::env::with_runtime_env;
+        use calimero_storage::index::Index;
+        use calimero_storage::store::MainStorage;
+
+        let store = self.context_client.datastore_handle().into_inner();
+        // SAFETY: identity is unused for read-only Index queries via RuntimeEnv
+        let identity = calimero_primitives::identity::PublicKey::from([0u8; 32]);
+        let env = create_runtime_env(&store, *context_id, identity);
+
+        let root_id = Id::new(*context_id.as_ref());
+
+        with_runtime_env(env, || {
+            // Check if root Index exists
+            let root_index = Index::<MainStorage>::get_index(root_id).ok().flatten()?;
+
+            // Count children (leaf entities) under root.
+            // Minimum 1 when root exists (consistent with fallback estimation).
+            let children = root_index.children().unwrap_or_default();
+            let entity_count = (children.len() as u64).max(1);
+
+            // Depth: 1 when root has data (consistent with fallback).
+            // For deeper trees, we'd need recursive traversal — tracked in #2054.
+            let max_depth = 1;
+
+            Some((entity_count, max_depth))
+        })
+    }
+
+    /// Build `SyncHandshake` from peer state for protocol negotiation.
+    ///
+    /// Uses shared estimation functions from `calimero_node_primitives::sync::state_machine`
+    /// to ensure consistent behavior between production (`SyncManager`) and simulation (`SimNode`).
+    fn build_remote_handshake(
+        peer_root_hash: calimero_primitives::hash::Hash,
+        peer_dag_heads: &[[u8; DIGEST_SIZE]],
+    ) -> SyncHandshake {
+        let root_hash = *peer_root_hash;
+
+        // Use shared estimation functions for consistency with simulation
+        let entity_count = estimate_entity_count(root_hash, peer_dag_heads.len());
+        let max_depth = estimate_max_depth(entity_count);
+
+        build_handshake_from_raw(root_hash, entity_count, max_depth, peer_dag_heads.to_vec())
+    }
+
+    pub async fn start(mut self) {
+        let mut next_sync = time::interval(self.sync_config.frequency);
+
+        next_sync.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        let mut state = HashMap::<_, SyncState>::new();
+
+        let mut futs = FuturesUnordered::new();
+
+        let advance = async |futs: &mut FuturesUnordered<_>, state: &mut HashMap<_, SyncState>| {
+            let (context_id, peer_id, start, result): (
+                ContextId,
+                PeerId,
+                Instant,
+                Result<Result<SyncProtocol, eyre::Error>, time::error::Elapsed>,
+            ) = futs.next().await?;
+
+            let now = Instant::now();
+            let took = Instant::saturating_duration_since(&now, start);
+
+            let _ignored = state.entry(context_id).and_modify(|state| match result {
+                Ok(Ok(ref protocol)) => {
+                    state.on_success(peer_id, TrackingSyncProtocol::from(protocol));
+                    info!(
+                        %context_id,
+                        ?took,
+                        ?protocol,
+                        success_count = state.success_count,
+                        "Sync finished successfully"
+                    );
+                }
+                Ok(Err(ref err)) => {
+                    state.on_failure(err.to_string());
+                    warn!(
+                        %context_id,
+                        ?took,
+                        error = %err,
+                        failure_count = state.failure_count(),
+                        backoff_secs = state.backoff_delay().as_secs(),
+                        "Sync failed, applying exponential backoff"
+                    );
+                }
+                Err(ref timeout_err) => {
+                    state.on_failure(timeout_err.to_string());
+                    warn!(
+                        %context_id,
+                        ?took,
+                        failure_count = state.failure_count(),
+                        backoff_secs = state.backoff_delay().as_secs(),
+                        "Sync timed out, applying exponential backoff"
+                    );
+                }
+            });
+
+            Some(())
+        };
+
+        let mut requested_ctx = None;
+        let mut requested_peer = None;
+
+        let Some(mut ctx_sync_rx) = self.ctx_sync_rx.take() else {
+            error!("SyncManager can only be run once");
+            return;
+        };
+        let mut ns_sync_rx = self.ns_sync_rx.take().unwrap_or_else(|| {
+            let (_tx, rx) = mpsc::channel(1);
+            rx
+        });
+        let mut ns_join_rx = self.ns_join_rx.take().unwrap_or_else(|| {
+            let (_tx, rx) = mpsc::channel(1);
+            rx
+        });
+
+        loop {
+            tokio::select! {
+                _ = next_sync.tick() => {
+                    debug!("Performing interval sync");
+                }
+                Some(()) = async {
+                    loop { advance(&mut futs, &mut state).await? }
+                } => {},
+                Some(namespace_id) = ns_sync_rx.recv() => {
+                    info!(
+                        namespace_id = %hex::encode(namespace_id),
+                        "Performing namespace governance sync"
+                    );
+                    self.sync_namespace_from_peer(namespace_id).await;
+                    continue;
+                }
+                Some((params, reply_tx)) = ns_join_rx.recv() => {
+                    info!(
+                        namespace_id = %hex::encode(params.namespace_id),
+                        "Processing namespace join request (initiator side)"
+                    );
+                    let result = self.initiate_namespace_join(params).await;
+                    let _ignored = reply_tx.send(result);
+                    continue;
+                }
+                Some((ctx, peer)) = ctx_sync_rx.recv() => {
+                    info!(?ctx, ?peer, "Received sync request");
+
+                    requested_ctx = ctx;
+                    requested_peer = peer;
+
+                    // CRITICAL FIX: Drain all other pending sync requests in the queue.
+                    // When multiple contexts join rapidly (common in E2E tests), they all
+                    // call sync() which queues requests in ctx_sync_rx. The old code only
+                    // processed ONE request per loop iteration, leaving contexts 2-N queued
+                    // indefinitely. This caused those contexts to never sync and remain
+                    // with dag_heads=[] and Uninitialized errors.
+                    //
+                    // Solution: Use try_recv() to drain all buffered requests immediately,
+                    // then trigger a full sync that will process all contexts.
+                    let mut drained_count = 0;
+                    while ctx_sync_rx.try_recv().is_ok() {
+                        drained_count += 1;
+                    }
+
+                    if drained_count > 0 {
+                        info!(drained_count, "Drained additional sync requests from queue, will sync all contexts");
+                        // Clear requested_ctx to force syncing ALL contexts
+                        // This ensures newly-joined contexts get synced even if they weren't first in queue
+                        requested_ctx = None;
+                        requested_peer = None;
+                    }
+                }
+            }
+
+            let requested_ctx = requested_ctx.take();
+            let requested_peer = requested_peer.take();
+
+            let contexts = requested_ctx
+                .is_none()
+                .then(|| self.context_client.get_context_ids(None));
+
+            let contexts = stream::iter(requested_ctx)
+                .map(Ok)
+                .chain(stream::iter(contexts).flatten());
+
+            let mut contexts = pin!(contexts);
+
+            while let Some(context_id) = contexts.next().await {
+                let context_id = match context_id {
+                    Ok(context_id) => context_id,
+                    Err(err) => {
+                        error!(%err, "Failed reading context id to sync");
+                        continue;
+                    }
+                };
+
+                match state.entry(context_id) {
+                    hash_map::Entry::Occupied(state) => {
+                        let state = state.into_mut();
+
+                        let Some(last_sync) = state.last_sync() else {
+                            debug!(
+                                %context_id,
+                                "Sync already in progress"
+                            );
+
+                            continue;
+                        };
+
+                        let minimum = self.sync_config.interval;
+                        let time_since = last_sync.elapsed();
+
+                        if time_since < minimum {
+                            if requested_ctx.is_none() {
+                                debug!(%context_id, ?time_since, ?minimum, "Skipping sync, last one was too recent");
+
+                                continue;
+                            }
+
+                            debug!(%context_id, ?time_since, ?minimum, "Force syncing despite recency, due to explicit request");
+                        }
+
+                        let _ignored = state.take_last_sync();
+                    }
+                    hash_map::Entry::Vacant(state) => {
+                        info!(
+                            %context_id,
+                            "Syncing for the first time"
+                        );
+
+                        let mut new_state = SyncState::new();
+                        new_state.start();
+                        let _ignored = state.insert(new_state);
+                    }
+                };
+
+                info!(%context_id, "Scheduled sync");
+
+                let start = Instant::now();
+                let Some(deadline) = start.checked_add(self.sync_config.timeout) else {
+                    error!(
+                        ?start,
+                        timeout=?self.sync_config.timeout,
+                        "Unable to determine when to timeout sync procedure"
+                    );
+
+                    // if we can't determine the sync deadline, this is a hard error
+                    // we intentionally want to exit the sync loop
+                    return;
+                };
+
+                let fut = timeout_at(
+                    deadline,
+                    self.perform_interval_sync(context_id, requested_peer),
+                )
+                .map(move |res| {
+                    // Extract peer_id from result or use placeholder
+                    let peer_id = res
+                        .as_ref()
+                        .ok()
+                        .and_then(|r| r.as_ref().ok())
+                        .map(|(p, _)| *p)
+                        .unwrap_or(PeerId::random());
+                    (
+                        context_id,
+                        peer_id,
+                        start,
+                        res.map(|r| r.map(|(_, proto)| proto)),
+                    )
+                });
+
+                futs.push(fut);
+
+                if futs.len() >= self.sync_config.max_concurrent {
+                    let _ignored = advance(&mut futs, &mut state).await;
+                }
+            }
+        }
+    }
+
+    async fn perform_interval_sync(
+        &self,
+        context_id: ContextId,
+        peer_id: Option<PeerId>,
+    ) -> eyre::Result<(PeerId, SyncProtocol)> {
+        if let Some(peer_id) = peer_id {
+            return self.initiate_sync(context_id, peer_id).await;
+        }
+
+        // Check if we're uninitialized before peer discovery so we can use
+        // a longer mesh wait window for bootstrap scenarios.
+        let context = self
+            .context_client
+            .get_context(&context_id)?
+            .ok_or_else(|| eyre::eyre!("Context not found: {}", context_id))?;
+
+        let is_uninitialized = *context.root_hash == [0; 32];
+
+        // Retry peer discovery if mesh is still forming.
+        // Uninitialized nodes need a longer wait window (10s vs 1.5s) to avoid
+        // getting stuck before first snapshot sync. Gossipsub mesh takes 5-10
+        // heartbeats (~5-10s) to add a new subscriber after topic subscription.
+        let (max_retries, retry_delay_ms) = if is_uninitialized {
+            (
+                super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED,
+                super::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
+            )
+        } else {
+            (
+                super::config::DEFAULT_MESH_RETRIES_INITIALIZED,
+                super::config::DEFAULT_MESH_RETRY_DELAY_MS_INITIALIZED,
+            )
+        };
+
+        let mesh_discovery_start = Instant::now();
+        let mut peers = Vec::new();
+        let mut final_attempt = 0u32;
+        for attempt in 1..=max_retries {
+            final_attempt = attempt;
+            peers = self
+                .network_client
+                .mesh_peers(TopicHash::from_raw(context_id))
+                .await;
+
+            if !peers.is_empty() {
+                break;
+            }
+
+            if attempt < max_retries {
+                debug!(
+                    %context_id,
+                    attempt,
+                    is_uninitialized,
+                    max_retries,
+                    "No peers found yet, mesh may still be forming, retrying..."
+                );
+                time::sleep(std::time::Duration::from_millis(retry_delay_ms)).await;
+            }
+        }
+        let mesh_elapsed = mesh_discovery_start.elapsed();
+
+        if peers.is_empty() {
+            warn!(
+                %context_id,
+                is_uninitialized,
+                attempts = max_retries,
+                ?mesh_elapsed,
+                "Mesh peer discovery exhausted all retries"
+            );
+            bail!("No peers to sync with for context {}", context_id);
+        }
+
+        info!(
+            %context_id,
+            peer_count = peers.len(),
+            attempts = final_attempt,
+            ?mesh_elapsed,
+            is_uninitialized,
+            peers = ?peers,
+            "Mesh peer discovery succeeded"
+        );
+
+        if is_uninitialized {
+            // When uninitialized, we need to bootstrap from a peer that HAS data
+            // Trying random peers can result in querying other uninitialized nodes
+            info!(
+                %context_id,
+                peer_count = peers.len(),
+                "Node is uninitialized, selecting peer with state for bootstrapping"
+            );
+
+            // Try to find a peer with actual state
+            match self.find_peer_with_state(context_id, &peers).await {
+                Ok(peer_id) => {
+                    info!(%context_id, %peer_id, "Found peer with state, syncing from them");
+                    return self.initiate_sync(context_id, peer_id).await;
+                }
+                Err(e) => {
+                    warn!(%context_id, error = %e, "Failed to find peer with state, falling back to random selection");
+                    // Fall through to random selection
+                }
+            }
+        }
+
+        // Normal sync: try all peers until we find one that works
+        // (for initialized nodes or fallback when we can't find a peer with state)
+        debug!(%context_id, "Using random peer selection for sync");
+        for peer_id in peers.choose_multiple(&mut rand::thread_rng(), peers.len()) {
+            if let Ok(result) = self.initiate_sync(context_id, *peer_id).await {
+                return Ok(result);
+            }
+        }
+
+        bail!("Failed to sync with any peer for context {}", context_id)
+    }
+
+    /// Find a peer that has state (non-zero root_hash and non-empty DAG heads)
+    ///
+    /// This is critical for bootstrapping newly joined nodes. Without this,
+    /// uninitialized nodes may query other uninitialized nodes, resulting in
+    /// all nodes remaining uninitialized.
+    async fn find_peer_with_state(
+        &self,
+        context_id: ContextId,
+        peers: &[PeerId],
+    ) -> eyre::Result<PeerId> {
+        use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+
+        // Get our identity for handshake
+        let identities = self
+            .context_client
+            .get_context_members(&context_id, Some(true));
+
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+            .await
+            .transpose()?
+        else {
+            bail!("no owned identities found for context: {}", context_id);
+        };
+
+        // Query peers to find one with state
+        for peer_id in peers {
+            debug!(%context_id, %peer_id, "Querying peer for state");
+
+            // Try to open stream and request DAG heads
+            let stream_result = self.network_client.open_stream(*peer_id).await;
+            let mut stream = match stream_result {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!(%context_id, %peer_id, error = %e, "Failed to open stream to peer");
+                    continue;
+                }
+            };
+
+            // Send DAG heads request
+            let request_msg = StreamMessage::Init {
+                context_id,
+                party_id: our_identity,
+                payload: InitPayload::DagHeadsRequest { context_id },
+                next_nonce: {
+                    use rand::Rng;
+                    rand::thread_rng().gen()
+                },
+            };
+
+            if let Err(e) = self.send(&mut stream, &request_msg, None).await {
+                debug!(%context_id, %peer_id, error = %e, "Failed to send DAG heads request");
+                continue;
+            }
+
+            // Receive response with short timeout
+            let timeout_budget = self.sync_config.timeout / 6;
+            let response = match super::stream::recv(&mut stream, None, timeout_budget).await {
+                Ok(Some(resp)) => resp,
+                Ok(None) => {
+                    debug!(%context_id, %peer_id, "No response from peer");
+                    continue;
+                }
+                Err(e) => {
+                    debug!(%context_id, %peer_id, error = %e, "Failed to receive response");
+                    continue;
+                }
+            };
+
+            // Check if peer has state
+            if let StreamMessage::Message {
+                payload:
+                    MessagePayload::DagHeadsResponse {
+                        dag_heads,
+                        root_hash,
+                    },
+                ..
+            } = response
+            {
+                // Peer has state if root_hash is not zeros
+                // (even if dag_heads is empty due to migration/legacy contexts)
+                let has_state = *root_hash != [0; 32];
+
+                debug!(
+                    %context_id,
+                    %peer_id,
+                    heads_count = dag_heads.len(),
+                    %root_hash,
+                    has_state,
+                    "Received DAG heads from peer"
+                );
+
+                if has_state {
+                    info!(
+                        %context_id,
+                        %peer_id,
+                        heads_count = dag_heads.len(),
+                        %root_hash,
+                        "Found peer with state for bootstrapping"
+                    );
+                    return Ok(*peer_id);
+                }
+            }
+        }
+
+        bail!("No peers with state found for context {}", context_id)
+    }
+
+    async fn initiate_sync(
+        &self,
+        context_id: ContextId,
+        peer_id: PeerId,
+    ) -> eyre::Result<(PeerId, SyncProtocol)> {
+        let start = Instant::now();
+
+        info!(%context_id, %peer_id, "Attempting to sync with peer");
+
+        let protocol = match self.initiate_sync_inner(context_id, peer_id).await {
+            Ok(protocol) => protocol,
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    %peer_id,
+                    error = %err,
+                    "Sync attempt failed for peer"
+                );
+                return Err(err);
+            }
+        };
+
+        let took = start.elapsed();
+
+        info!(%context_id, %peer_id, ?took, ?protocol, "Sync with peer completed successfully");
+
+        Ok((peer_id, protocol))
+    }
+
+    /// Sends a message over the stream (delegates to stream module).
+    pub(super) async fn send(
+        &self,
+        stream: &mut Stream,
+        message: &StreamMessage<'_>,
+        shared_key: Option<(SharedKey, Nonce)>,
+    ) -> eyre::Result<()> {
+        super::stream::send(stream, message, shared_key).await
+    }
+
+    /// Receives a message from the stream (delegates to stream module).
+    pub(super) async fn recv(
+        &self,
+        stream: &mut Stream,
+        shared_key: Option<(SharedKey, Nonce)>,
+    ) -> eyre::Result<Option<StreamMessage<'static>>> {
+        let budget = self.sync_config.timeout / 3;
+        super::stream::recv(stream, shared_key, budget).await
+    }
+
+    /// Get blob ID and application config from application or context config
+    async fn get_blob_info(
+        &self,
+        context_id: &ContextId,
+        application: &Option<calimero_primitives::application::Application>,
+    ) -> eyre::Result<(
+        calimero_primitives::blobs::BlobId,
+        Option<calimero_primitives::application::Application>,
+    )> {
+        if let Some(ref app) = application {
+            Ok((app.blob.bytecode, None))
+        } else {
+            // Application not found - get blob_id from context config
+            let app_config = self
+                .context_client
+                .get_context_application(context_id)
+                .await?;
+            Ok((app_config.blob.bytecode, Some(app_config)))
+        }
+    }
+
+    /// Get application size from application, cached config, or context config
+    async fn get_application_size(
+        &self,
+        context_id: &ContextId,
+        application: &Option<calimero_primitives::application::Application>,
+        app_config_opt: &Option<calimero_primitives::application::Application>,
+    ) -> eyre::Result<u64> {
+        if let Some(ref app) = application {
+            Ok(app.size)
+        } else if let Some(ref app_config) = app_config_opt {
+            Ok(app_config.size)
+        } else {
+            let app_config = self
+                .context_client
+                .get_context_application(context_id)
+                .await?;
+            Ok(app_config.size)
+        }
+    }
+
+    /// Get application source from cached config or context config
+    async fn get_application_source(
+        &self,
+        context_id: &ContextId,
+        app_config_opt: &Option<calimero_primitives::application::Application>,
+    ) -> eyre::Result<calimero_primitives::application::ApplicationSource> {
+        if let Some(ref app_config) = app_config_opt {
+            Ok(app_config.source.clone())
+        } else {
+            let app_config = self
+                .context_client
+                .get_context_application(context_id)
+                .await?;
+            Ok(app_config.source.clone())
+        }
+    }
+
+    /// Install bundle application after blob sharing completes.
+    ///
+    /// Returns `Some(installed_application)` if a bundle was installed,
+    /// `None` otherwise. Updates `context.application_id` if the installed
+    /// ApplicationId differs from the context's ApplicationId.
+    async fn install_bundle_after_blob_sharing(
+        &self,
+        context_id: &ContextId,
+        blob_id: &calimero_primitives::blobs::BlobId,
+        app_config_opt: &Option<calimero_primitives::application::Application>,
+        context: &mut calimero_primitives::context::Context,
+        application: &mut Option<calimero_primitives::application::Application>,
+    ) -> eyre::Result<()> {
+        // Only proceed if blob is now available locally
+        if !self.node_client.has_blob(blob_id)? {
+            return Ok(());
+        }
+
+        // Check if blob is a bundle
+        let Some(blob_bytes) = self.node_client.get_blob_bytes(blob_id, None).await? else {
+            return Ok(());
+        };
+
+        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
+        let blob_bytes_clone = blob_bytes.clone();
+        let is_bundle =
+            tokio::task::spawn_blocking(move || NodeClient::is_bundle_blob(&blob_bytes_clone))
+                .await?;
+
+        // Get source from context config (use cached if available, otherwise fetch)
+        let source = self
+            .get_application_source(context_id, app_config_opt)
+            .await?;
+
+        let installed_app_id = if is_bundle {
+            self.node_client
+                .install_application_from_bundle_blob(blob_id, &source)
+                .await
+                .map_err(|e| {
+                    eyre::eyre!(
+                        "Failed to install bundle application from blob {}: {}",
+                        blob_id,
+                        e
+                    )
+                })?
+        } else {
+            // For non-bundle apps, write ApplicationMeta directly under the
+            // known application_id rather than re-deriving it via
+            // install_application (which hashes source+metadata and would
+            // produce a different ID than the original installer used).
+            let size = blob_bytes.len() as u64;
+            let mut handle = self.context_client.datastore_handle();
+            handle.put(
+                &calimero_store::key::ApplicationMeta::new(context.application_id),
+                &calimero_store::types::ApplicationMeta::new(
+                    calimero_store::key::BlobMeta::new(*blob_id),
+                    size,
+                    source.to_string().into_boxed_str(),
+                    Box::default(),
+                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
+                        [0u8; 32],
+                    )),
+                    "unknown".to_owned().into_boxed_str(),
+                    "0.0.0".to_owned().into_boxed_str(),
+                    String::new().into_boxed_str(),
+                ),
+            )?;
+            context.application_id
+        };
+
+        // Verify installation succeeded by fetching the installed application
+        let installed_application = self
+            .node_client
+            .get_application(&installed_app_id)
+            .map_err(|e| {
+                eyre::eyre!(
+                    "Failed to verify bundle installation for application {}: {}",
+                    installed_app_id,
+                    e
+                )
+            })?;
+
+        let Some(installed_application) = installed_application else {
+            bail!(
+                "Bundle installation reported success but application {} is not retrievable",
+                installed_app_id
+            );
+        };
+
+        // Check if the installed ApplicationId matches the context's ApplicationId
+        if installed_app_id != context.application_id {
+            warn!(
+                installed_app_id = %installed_app_id,
+                context_app_id = %context.application_id,
+                "Installed application ID does not match context application ID, updating to installed ID"
+            );
+            // Update context with the installed application ID for consistency
+            context.application_id = installed_app_id;
+
+            // Persist the ApplicationId change to the database
+            // This is critical: if we don't persist, the old ApplicationId will be
+            // used on node restart, causing application lookup failures
+            self.context_client
+                .update_context_application_id(context_id, installed_app_id)
+                .map_err(|e| {
+                    eyre::eyre!(
+                        "Failed to persist ApplicationId update for context {}: {}",
+                        context_id,
+                        e
+                    )
+                })?;
+
+            debug!(
+                %context_id,
+                installed_app_id = %installed_app_id,
+                "Persisted ApplicationId update to database"
+            );
+        }
+
+        // Use the verified installed application
+        *application = Some(installed_application);
+
+        Ok(())
+    }
+
+    /// Handle DAG synchronization for uninitialized nodes or nodes with incomplete DAGs
+    async fn handle_dag_sync(
+        &self,
+        context_id: ContextId,
+        context: &calimero_primitives::context::Context,
+        chosen_peer: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
+    ) -> eyre::Result<Option<SyncProtocol>> {
+        let is_uninitialized = *context.root_hash == [0; 32];
+
+        // Check for incomplete sync from a previous run (crash recovery)
+        let has_incomplete_sync = self.check_sync_in_progress(context_id)?.is_some();
+        if has_incomplete_sync {
+            warn!(
+                %context_id,
+                "Detected incomplete snapshot sync from previous run, forcing re-sync"
+            );
+        }
+
+        if is_uninitialized || has_incomplete_sync {
+            info!(
+                %context_id,
+                %chosen_peer,
+                is_uninitialized,
+                has_incomplete_sync,
+                "Node needs snapshot sync, checking if peer has state"
+            );
+
+            // Query peer's state to decide sync strategy
+            let peer_state = self
+                .query_peer_dag_state(context_id, chosen_peer, our_identity, stream)
+                .await?;
+
+            match peer_state {
+                Some((peer_root_hash, _peer_dag_heads)) if *peer_root_hash != [0; 32] => {
+                    // Peer has state - use snapshot sync for efficient bootstrap
+                    info!(
+                        %context_id,
+                        %chosen_peer,
+                        peer_root_hash = %peer_root_hash,
+                        "Peer has state, using snapshot sync for bootstrap"
+                    );
+
+                    // Note: request_snapshot_sync opens its own stream, existing stream
+                    // will be closed when this function returns
+                    // force=false: This is bootstrap for uninitialized nodes
+                    match self
+                        .request_snapshot_sync(context_id, chosen_peer, false)
+                        .await
+                        .wrap_err("snapshot sync")
+                    {
+                        Ok(result) => {
+                            info!(
+                                %context_id,
+                                %chosen_peer,
+                                applied_records = result.applied_records,
+                                boundary_root_hash = %result.boundary_root_hash,
+                                dag_heads_count = result.dag_heads.len(),
+                                "Snapshot sync completed successfully"
+                            );
+
+                            // CRITICAL: Add snapshot boundary checkpoints to DAG
+                            // This ensures that when new deltas arrive referencing the
+                            // snapshot boundary heads as parents, the DAG accepts them.
+                            if !result.dag_heads.is_empty() {
+                                let delta_store = self
+                                    .node_state
+                                    .delta_stores
+                                    .entry(context_id)
+                                    .or_insert_with(|| {
+                                        crate::delta_store::DeltaStore::new(
+                                            [0u8; 32],
+                                            self.context_client.clone(),
+                                            context_id,
+                                            our_identity,
+                                        )
+                                    })
+                                    .clone();
+
+                                let checkpoints_added = delta_store
+                                    .add_snapshot_checkpoints(
+                                        result.dag_heads.clone(),
+                                        *result.boundary_root_hash,
+                                    )
+                                    .await;
+
+                                info!(
+                                    %context_id,
+                                    checkpoints_added,
+                                    "Added snapshot boundary checkpoints to DAG"
+                                );
+
+                                match self.network_client.open_stream(chosen_peer).await {
+                                    Ok(mut fine_stream) => {
+                                        if let Err(e) = self
+                                            .fine_sync_from_boundary(
+                                                context_id,
+                                                chosen_peer,
+                                                our_identity,
+                                                &mut fine_stream,
+                                            )
+                                            .await
+                                        {
+                                            warn!(
+                                                %context_id,
+                                                %chosen_peer,
+                                                error = %e,
+                                                "Fine-sync after snapshot failed, state may be slightly behind"
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            %context_id,
+                                            %chosen_peer,
+                                            error = %e,
+                                            "Fine-sync stream open failed, state may be slightly behind"
+                                        );
+                                    }
+                                }
+                            }
+
+                            // Replay any buffered deltas (from uninitialized context period)
+                            // This ensures handlers execute for deltas that arrived before sync completed
+                            if let Some(buffered_deltas) =
+                                self.node_state.end_sync_session(&context_id)
+                            {
+                                let buffered_count = buffered_deltas.len();
+                                if buffered_count > 0 {
+                                    info!(
+                                        %context_id,
+                                        buffered_count,
+                                        "Replaying buffered deltas after snapshot sync (bootstrap path)"
+                                    );
+                                    self.replay_buffered_deltas(
+                                        context_id,
+                                        our_identity,
+                                        buffered_deltas,
+                                        chosen_peer,
+                                    )
+                                    .await;
+                                }
+                            }
+
+                            return Ok(Some(SyncProtocol::Snapshot {
+                                compressed: false,
+                                verified: true,
+                            }));
+                        }
+                        Err(e) => {
+                            warn!(
+                                %context_id,
+                                %chosen_peer,
+                                error = %e,
+                                "Snapshot sync failed, will retry with another peer"
+                            );
+                            bail!("Snapshot sync failed: {}", e);
+                        }
+                    }
+                }
+                Some(_) => {
+                    // Peer is also uninitialized, try next peer
+                    info!(%context_id, %chosen_peer, "Peer also has no state, trying next peer");
+                    bail!("Peer has no data for this context");
+                }
+                None => {
+                    // Failed to query peer state
+                    bail!("Failed to query peer state for context {}", context_id);
+                }
+            }
+        }
+
+        // Check if we have pending deltas (incomplete DAG)
+        // Even if node has some state, it might be missing parent deltas
+        if let Some(delta_store) = self.node_state.delta_stores.get(&context_id) {
+            // Reload persisted deltas to catch locally-created deltas from execute.rs
+            // that are in the database but not in the in-memory DeltaStore
+            let _ = delta_store.load_persisted_deltas().await;
+            let missing_result = delta_store.get_missing_parents().await;
+
+            // Note: Cascaded events from DB loads are handled in state_delta handler
+            if !missing_result.cascaded_events.is_empty() {
+                info!(
+                    %context_id,
+                    cascaded_count = missing_result.cascaded_events.len(),
+                    "Cascaded deltas from DB load (handlers executed in state_delta path)"
+                );
+            }
+
+            if !missing_result.missing_ids.is_empty() {
+                warn!(
+                    %context_id,
+                    %chosen_peer,
+                    missing_count = missing_result.missing_ids.len(),
+                    "Node has incomplete DAG (pending deltas), requesting DAG heads to catch up"
+                );
+
+                // Request DAG heads just like uninitialized nodes
+                let result = self
+                    .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+                    .await
+                    .wrap_err("request DAG heads and sync")?;
+
+                // If peer had no data, return error to try next peer
+                if matches!(result, SyncProtocol::None) {
+                    bail!("Peer has no data for this context");
+                }
+
+                return Ok(Some(result));
+            }
+        }
+
+        // Compare our state with peer's state even if we think we're in sync.
+        // The peer might have new heads we don't know about (e.g., if gossipsub messages were lost).
+        let peer_state = self
+            .query_peer_dag_state(context_id, chosen_peer, our_identity, stream)
+            .await?;
+
+        if let Some((peer_root_hash, peer_dag_heads)) = peer_state {
+            // Build handshakes for protocol selection (CIP §2.3)
+            // Uses shared functions from calimero_node_primitives::sync::state_machine
+            let local_hs = self.build_local_handshake(context);
+            let remote_hs = Self::build_remote_handshake(peer_root_hash, &peer_dag_heads);
+
+            // Select optimal sync protocol based on state comparison
+            let selection = select_protocol(&local_hs, &remote_hs);
+
+            info!(
+                %context_id,
+                %chosen_peer,
+                protocol = ?selection.protocol,
+                reason = %selection.reason,
+                local_root = %context.root_hash,
+                remote_root = %peer_root_hash,
+                local_entities = local_hs.entity_count,
+                remote_entities = remote_hs.entity_count,
+                "Protocol selected"
+            );
+
+            // Dispatch based on selected protocol
+            match selection.protocol {
+                SyncProtocol::None => {
+                    debug!(
+                        %context_id,
+                        %chosen_peer,
+                        root_hash = %context.root_hash,
+                        reason = %selection.reason,
+                        "No sync needed: {}",
+                        selection.reason
+                    );
+                    return Ok(None);
+                }
+                SyncProtocol::Snapshot { compressed, .. } => {
+                    // Snapshot sync - use existing handler
+                    info!(
+                        %context_id,
+                        %chosen_peer,
+                        compressed,
+                        reason = %selection.reason,
+                        "Initiating snapshot sync"
+                    );
+                    let result = self
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
+                        .await
+                        .wrap_err("snapshot sync")?;
+                    return Ok(Some(result));
+                }
+                SyncProtocol::DeltaSync { .. } => {
+                    // Delta sync - use existing DAG heads request mechanism
+                    info!(
+                        %context_id,
+                        %chosen_peer,
+                        reason = %selection.reason,
+                        "Initiating delta sync via DAG heads request"
+                    );
+                    let result = self
+                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+                        .await
+                        .wrap_err("delta sync")?;
+
+                    if matches!(result, SyncProtocol::None) {
+                        bail!("Peer has no data for this context");
+                    }
+
+                    return Ok(Some(result));
+                }
+                SyncProtocol::HashComparison { root_hash, .. } => {
+                    // Execute HashComparison sync (CIP §4)
+                    info!(
+                        %context_id,
+                        reason = %selection.reason,
+                        "Starting HashComparison sync"
+                    );
+
+                    // Wrap stream in transport abstraction
+                    let mut transport = super::stream::StreamTransport::new(stream);
+
+                    // Get store for protocol execution
+                    let store = self.context_client.datastore_handle().into_inner();
+                    let config = HashComparisonConfig {
+                        remote_root_hash: root_hash,
+                    };
+
+                    match HashComparisonProtocol::run_initiator(
+                        &mut transport,
+                        &store,
+                        context_id,
+                        our_identity,
+                        config,
+                    )
+                    .await
+                    {
+                        Ok(stats) => {
+                            info!(
+                                %context_id,
+                                nodes_compared = stats.nodes_compared,
+                                entities_merged = stats.entities_merged,
+                                nodes_skipped = stats.nodes_skipped,
+                                "HashComparison sync completed successfully"
+                            );
+                            return Ok(Some(SyncProtocol::HashComparison {
+                                root_hash,
+                                divergent_subtrees: vec![],
+                            }));
+                        }
+                        Err(e) => {
+                            warn!(
+                                %context_id,
+                                error = %e,
+                                "HashComparison sync failed, falling back to DAG catchup"
+                            );
+                            // Fall back to DAG heads request
+                            let result = self
+                                .request_dag_heads_and_sync(
+                                    context_id,
+                                    chosen_peer,
+                                    our_identity,
+                                    stream,
+                                )
+                                .await
+                                .wrap_err("hash comparison fallback")?;
+
+                            if matches!(result, SyncProtocol::None) {
+                                // If DAG catchup doesn't work, try snapshot as last resort
+                                info!(
+                                    %context_id,
+                                    "DAG catchup failed, falling back to snapshot sync"
+                                );
+                                let result = self
+                                    .fallback_to_snapshot_sync(
+                                        context_id,
+                                        our_identity,
+                                        chosen_peer,
+                                    )
+                                    .await
+                                    .wrap_err("snapshot fallback")?;
+                                return Ok(Some(result));
+                            }
+
+                            return Ok(Some(result));
+                        }
+                    }
+                }
+                SyncProtocol::BloomFilter { .. } => {
+                    warn!(
+                        %context_id,
+                        reason = %selection.reason,
+                        "BloomFilter not yet implemented, falling back to snapshot"
+                    );
+                    let result = self
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
+                        .await
+                        .wrap_err("bloom filter fallback")?;
+                    return Ok(Some(result));
+                }
+                SyncProtocol::SubtreePrefetch { .. } => {
+                    warn!(
+                        %context_id,
+                        reason = %selection.reason,
+                        "SubtreePrefetch not yet implemented, falling back to snapshot"
+                    );
+                    let result = self
+                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
+                        .await
+                        .wrap_err("subtree prefetch fallback")?;
+                    return Ok(Some(result));
+                }
+                SyncProtocol::LevelWise { max_depth } => {
+                    // Execute LevelWise sync (CIP Appendix B)
+                    info!(
+                        %context_id,
+                        max_depth,
+                        reason = %selection.reason,
+                        "Starting LevelWise sync"
+                    );
+
+                    // Wrap stream in transport abstraction
+                    let mut transport = super::stream::StreamTransport::new(stream);
+
+                    // Get store for protocol execution
+                    let store = self.context_client.datastore_handle().into_inner();
+                    let config = LevelWiseConfig {
+                        remote_root_hash: *peer_root_hash,
+                        max_depth,
+                    };
+
+                    match LevelWiseProtocol::run_initiator(
+                        &mut transport,
+                        &store,
+                        context_id,
+                        our_identity,
+                        config,
+                    )
+                    .await
+                    {
+                        Ok(stats) => {
+                            info!(
+                                %context_id,
+                                levels_synced = stats.levels_synced,
+                                nodes_compared = stats.nodes_compared,
+                                entities_merged = stats.entities_merged,
+                                nodes_skipped = stats.nodes_skipped,
+                                "LevelWise sync completed successfully"
+                            );
+                            return Ok(Some(SyncProtocol::LevelWise { max_depth }));
+                        }
+                        Err(e) => {
+                            warn!(
+                                %context_id,
+                                error = %e,
+                                "LevelWise sync failed, falling back to DAG catchup"
+                            );
+                            // Fall back to DAG heads request - open a new stream since the
+                            // LevelWise protocol may have left the peer's responder in a state
+                            // where it expects LevelWiseRequest messages, not DagHeadsRequest.
+                            let mut fallback_stream = self
+                                .network_client
+                                .open_stream(chosen_peer)
+                                .await
+                                .wrap_err("open stream for level-wise fallback")?;
+                            let result = self
+                                .request_dag_heads_and_sync(
+                                    context_id,
+                                    chosen_peer,
+                                    our_identity,
+                                    &mut fallback_stream,
+                                )
+                                .await
+                                .wrap_err("level-wise fallback")?;
+
+                            if matches!(result, SyncProtocol::None) {
+                                // If DAG catchup doesn't work, try snapshot as last resort
+                                info!(
+                                    %context_id,
+                                    "DAG catchup insufficient, attempting snapshot"
+                                );
+                                // Drop the consumed fallback_stream before opening fresh streams
+                                // in snapshot sync (fallback_stream is in indeterminate state
+                                // after DAG sync exchanges)
+                                drop(fallback_stream);
+                                let snapshot_result = self
+                                    .fallback_to_snapshot_sync(
+                                        context_id,
+                                        our_identity,
+                                        chosen_peer,
+                                    )
+                                    .await
+                                    .wrap_err("level-wise snapshot fallback")?;
+                                return Ok(Some(snapshot_result));
+                            }
+                            return Ok(Some(result));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Query peer for their DAG state (root_hash and dag_heads) without triggering full sync.
+    ///
+    /// Returns `Ok(Some((root_hash, dag_heads)))` if peer responded successfully,
+    /// `Ok(None)` if peer had no valid response or no state, or `Err` on communication error.
+    async fn query_peer_dag_state(
+        &self,
+        context_id: ContextId,
+        chosen_peer: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
+    ) -> eyre::Result<Option<(calimero_primitives::hash::Hash, Vec<[u8; DIGEST_SIZE]>)>> {
+        let request_msg = StreamMessage::Init {
+            context_id,
+            party_id: our_identity,
+            payload: InitPayload::DagHeadsRequest { context_id },
+            next_nonce: rand::thread_rng().gen(),
+        };
+
+        self.send(stream, &request_msg, None).await?;
+
+        let response = self.recv(stream, None).await?;
+
+        match response {
+            Some(StreamMessage::Message {
+                payload:
+                    MessagePayload::DagHeadsResponse {
+                        dag_heads,
+                        root_hash,
+                    },
+                ..
+            }) => {
+                debug!(
+                    %context_id,
+                    %chosen_peer,
+                    heads_count = dag_heads.len(),
+                    peer_root_hash = %root_hash,
+                    "Received peer DAG state for comparison"
+                );
+                Ok(Some((root_hash, dag_heads)))
+            }
+            _ => {
+                debug!(%context_id, %chosen_peer, "Failed to get peer DAG state for comparison");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn initiate_sync_inner(
+        &self,
+        context_id: ContextId,
+        chosen_peer: PeerId,
+    ) -> eyre::Result<SyncProtocol> {
+        let sync_start = Instant::now();
+
+        let mut context = self
+            .context_client
+            .sync_context_config(context_id, None)
+            .await?;
+
+        let is_uninitialized = *context.root_hash == [0; 32];
+        info!(
+            %context_id,
+            %chosen_peer,
+            is_uninitialized,
+            root_hash = %context.root_hash,
+            dag_heads_count = context.dag_heads.len(),
+            application_id = %context.application_id,
+            "Starting sync session"
+        );
+
+        // Get application - if not found, we'll try to install it after blob sharing
+        let mut application = self.node_client.get_application(&context.application_id)?;
+
+        // Get blob_id and app config for later use
+        let (blob_id, app_config_opt) = self.get_blob_info(&context_id, &application).await?;
+
+        let identities = self
+            .context_client
+            .get_context_members(&context.id, Some(true));
+
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+            .await
+            .transpose()?
+        else {
+            bail!("no owned identities found for context: {}", context.id);
+        };
+
+        let mut stream = self
+            .network_client
+            .open_stream(chosen_peer)
+            .await
+            .wrap_err("open stream for sync")?;
+
+        // Key share phase removed — group key envelopes handle key distribution.
+        let key_share_elapsed = std::time::Duration::ZERO;
+        debug!(
+            %context_id,
+            %chosen_peer,
+            ?key_share_elapsed,
+            "Phase 1/3 complete: key share"
+        );
+
+        // Phase 2: Blob share (if needed)
+        if !self.node_client.has_blob(&blob_id)? {
+            let phase_start = Instant::now();
+            // Get size from application config if we don't have application yet
+            let size = self
+                .get_application_size(&context_id, &application, &app_config_opt)
+                .await?;
+
+            self.initiate_blob_share_process(&context, our_identity, blob_id, size, &mut stream)
+                .await
+                .wrap_err("blob share")?;
+
+            let blob_share_elapsed = phase_start.elapsed();
+            debug!(
+                %context_id,
+                %chosen_peer,
+                ?blob_share_elapsed,
+                "Phase 2/3 complete: blob share"
+            );
+
+            // After blob sharing, try to install application if it doesn't exist
+            // or if we only have a stub (size==0 from join_context bootstrap)
+            let needs_install =
+                application.is_none() || application.as_ref().is_some_and(|app| app.size == 0);
+            if needs_install {
+                self.install_bundle_after_blob_sharing(
+                    &context_id,
+                    &blob_id,
+                    &app_config_opt,
+                    &mut context,
+                    &mut application,
+                )
+                .await
+                .wrap_err("install bundle after blob share")?;
+            }
+        }
+
+        let Some(_application) = application else {
+            if context.application_id
+                == calimero_primitives::application::ApplicationId::from([0u8; 32])
+            {
+                bail!("context has placeholder application ID — waiting for governance op to resolve it");
+            }
+            bail!("application not found: {}", context.application_id);
+        };
+
+        // Phase 3: DAG synchronization (if needed — uninitialized or incomplete DAG)
+        let phase_start = Instant::now();
+        if let Some(result) = self
+            .handle_dag_sync(context_id, &context, chosen_peer, our_identity, &mut stream)
+            .await
+            .wrap_err("DAG sync")?
+        {
+            let dag_sync_elapsed = phase_start.elapsed();
+            let total_elapsed = sync_start.elapsed();
+            info!(
+                %context_id,
+                %chosen_peer,
+                ?key_share_elapsed,
+                ?dag_sync_elapsed,
+                ?total_elapsed,
+                protocol = ?result,
+                "Sync session complete (DAG sync performed)"
+            );
+            return Ok(result);
+        }
+
+        let total_elapsed = sync_start.elapsed();
+        // Otherwise, DAG-based sync happens automatically via BroadcastMessage::StateDelta
+        debug!(
+            %context_id,
+            %chosen_peer,
+            ?key_share_elapsed,
+            ?total_elapsed,
+            "Sync session complete: node is in sync, no active protocol needed"
+        );
+        Ok(SyncProtocol::None)
+    }
+
+    /// Request peer's DAG heads and sync all missing deltas
+    async fn request_dag_heads_and_sync(
+        &self,
+        context_id: ContextId,
+        peer_id: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
+    ) -> eyre::Result<SyncProtocol> {
+        use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+
+        // Send DAG heads request
+        let request_msg = StreamMessage::Init {
+            context_id,
+            party_id: our_identity,
+            payload: InitPayload::DagHeadsRequest { context_id },
+            next_nonce: {
+                use rand::Rng;
+                rand::thread_rng().gen()
+            },
+        };
+
+        self.send(stream, &request_msg, None).await?;
+
+        // Receive response
+        let response = self.recv(stream, None).await?;
+
+        match response {
+            Some(StreamMessage::Message {
+                payload:
+                    MessagePayload::DagHeadsResponse {
+                        dag_heads,
+                        root_hash,
+                    },
+                ..
+            }) => {
+                info!(
+                    %context_id,
+                    heads_count = dag_heads.len(),
+                    peer_root_hash = %root_hash,
+                    "Received DAG heads from peer, requesting deltas"
+                );
+
+                // Check if peer has state even without DAG heads
+                if dag_heads.is_empty() && *root_hash != [0; 32] {
+                    error!(
+                        %context_id,
+                        peer_root_hash = %root_hash,
+                        "Peer has state but no DAG heads!"
+                    );
+                    bail!(
+                        "Peer has state but no DAG heads (migration issue). \
+                         Clear data directories on both nodes and recreate context."
+                    );
+                }
+
+                if dag_heads.is_empty() {
+                    info!(%context_id, "Peer also has no deltas and no state, will try next peer");
+                    // Return None to signal caller to try next peer
+                    return Ok(SyncProtocol::None);
+                }
+
+                // CRITICAL FIX: Fetch ALL DAG heads first, THEN request missing parents
+                // This ensures we don't miss sibling heads that might be the missing parents
+
+                // Get or create DeltaStore for this context (do this once before the loop)
+                let delta_store_ref = {
+                    let mut is_new = false;
+                    let delta_store = self
+                        .node_state
+                        .delta_stores
+                        .entry(context_id)
+                        .or_insert_with(|| {
+                            is_new = true;
+                            crate::delta_store::DeltaStore::new(
+                                [0u8; 32],
+                                self.context_client.clone(),
+                                context_id,
+                                our_identity,
+                            )
+                        });
+
+                    delta_store.clone()
+                };
+
+                // Always reload persisted deltas from database before sync operations
+                // This is critical because local deltas created via execute.rs are persisted
+                // to the database but NOT added to the in-memory DeltaStore. Without this
+                // reload, the DeltaStore would be missing locally-created deltas.
+                if let Err(e) = delta_store_ref.load_persisted_deltas().await {
+                    warn!(
+                        ?e,
+                        %context_id,
+                        "Failed to load persisted deltas, starting with empty DAG"
+                    );
+                }
+
+                // Phase 1: Request and add ALL DAG heads
+                for head_id in &dag_heads {
+                    info!(
+                        %context_id,
+                        head_id = ?head_id,
+                        "Requesting DAG head delta from peer"
+                    );
+
+                    let delta_request = StreamMessage::Init {
+                        context_id,
+                        party_id: our_identity,
+                        payload: InitPayload::DeltaRequest {
+                            context_id,
+                            delta_id: *head_id,
+                        },
+                        next_nonce: {
+                            use rand::Rng;
+                            rand::thread_rng().gen()
+                        },
+                    };
+
+                    self.send(stream, &delta_request, None).await?;
+
+                    let delta_response = self.recv(stream, None).await?;
+
+                    match delta_response {
+                        Some(StreamMessage::Message {
+                            payload: MessagePayload::DeltaResponse { delta },
+                            ..
+                        }) => {
+                            // Deserialize and add to DAG
+                            let storage_delta: calimero_storage::delta::CausalDelta =
+                                borsh::from_slice(&delta)?;
+
+                            let dag_delta = calimero_dag::CausalDelta {
+                                id: storage_delta.id,
+                                parents: storage_delta.parents,
+                                payload: storage_delta.actions,
+                                hlc: storage_delta.hlc,
+                                expected_root_hash: storage_delta.expected_root_hash,
+                                kind: calimero_dag::DeltaKind::Regular,
+                            };
+
+                            if let Err(e) = delta_store_ref.add_delta(dag_delta).await {
+                                warn!(
+                                    ?e,
+                                    %context_id,
+                                    head_id = ?head_id,
+                                    "Failed to add DAG head delta"
+                                );
+                            } else {
+                                info!(
+                                    %context_id,
+                                    head_id = ?head_id,
+                                    "Successfully added DAG head delta"
+                                );
+                            }
+                        }
+                        Some(StreamMessage::Message {
+                            payload:
+                                MessagePayload::SnapshotError {
+                                    error:
+                                        calimero_node_primitives::sync::SnapshotError::SnapshotRequired,
+                                },
+                            ..
+                        }) => {
+                            info!(
+                                %context_id,
+                                head_id = ?head_id,
+                                "Peer's delta history is pruned, falling back to snapshot sync"
+                            );
+                            // Fall back to snapshot sync
+                            return self
+                                .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
+                                .await;
+                        }
+                        Some(StreamMessage::Message {
+                            payload: MessagePayload::DeltaNotFound,
+                            ..
+                        }) => {
+                            warn!(
+                                %context_id,
+                                head_id = ?head_id,
+                                "Peer doesn't have requested DAG head delta"
+                            );
+                            // Continue trying other heads
+                        }
+                        _ => {
+                            warn!(%context_id, head_id = ?head_id, "Unexpected response to delta request");
+                        }
+                    }
+                }
+
+                // Phase 2: Now check for missing parents and fetch them recursively
+                let missing_result = delta_store_ref.get_missing_parents().await;
+
+                // Note: Cascaded events from DB loads logged but not executed here (state_delta handler will catch them)
+                if !missing_result.cascaded_events.is_empty() {
+                    info!(
+                        %context_id,
+                        cascaded_count = missing_result.cascaded_events.len(),
+                        "Cascaded deltas from DB load during DAG head sync"
+                    );
+                }
+
+                if !missing_result.missing_ids.is_empty() {
+                    info!(
+                        %context_id,
+                        missing_count = missing_result.missing_ids.len(),
+                        "DAG heads have missing parents, requesting them recursively"
+                    );
+
+                    // Request missing parents (this uses recursive topological fetching)
+                    if let Err(e) = self
+                        .request_missing_deltas(
+                            context_id,
+                            missing_result.missing_ids,
+                            peer_id,
+                            delta_store_ref.clone(),
+                            our_identity,
+                        )
+                        .await
+                    {
+                        warn!(
+                            ?e,
+                            %context_id,
+                            "Failed to request missing parent deltas during DAG catchup"
+                        );
+                    }
+                }
+
+                // Return a non-None protocol to signal success (prevents trying next peer)
+                Ok(SyncProtocol::DeltaSync {
+                    missing_delta_ids: vec![],
+                })
+            }
+            _ => {
+                warn!(%context_id, "Unexpected response to DAG heads request, trying next peer");
+                Ok(SyncProtocol::None)
+            }
+        }
+    }
+
+    /// Fall back to full snapshot sync when delta sync is not possible.
+    ///
+    /// Implements Invariant I6: Deltas received during sync are buffered and
+    /// replayed after sync completes. On error, buffered deltas are discarded
+    /// via `cancel_sync_session()`.
+    async fn fallback_to_snapshot_sync(
+        &self,
+        context_id: ContextId,
+        our_identity: PublicKey,
+        peer_id: PeerId,
+    ) -> eyre::Result<SyncProtocol> {
+        info!(%context_id, %peer_id, "Initiating snapshot sync");
+
+        // Start buffering deltas that arrive during snapshot sync (Invariant I6)
+        // Use current time as sync start HLC
+        let sync_start_hlc = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        self.node_state
+            .start_sync_session(context_id, sync_start_hlc);
+
+        // force=false: Enforce Invariant I5 - only allow snapshot on fresh nodes.
+        // If the node has state, this will fail, which is correct - divergence
+        // or pruned history on initialized nodes cannot be safely resolved via
+        // snapshot overwrite. CRDT merge must be used instead.
+        let result = match self.request_snapshot_sync(context_id, peer_id, false).await {
+            Ok(r) => r,
+            Err(e) => {
+                // Cancel sync session on failure - discard buffered deltas
+                // since the context state is inconsistent
+                self.node_state.cancel_sync_session(&context_id);
+                return Err(e);
+            }
+        };
+        info!(%context_id, records = result.applied_records, "Snapshot sync completed");
+
+        // End buffering and get any deltas that arrived during sync
+        let buffered_deltas = self.node_state.end_sync_session(&context_id);
+        let buffered_count = buffered_deltas.as_ref().map_or(0, Vec::len);
+
+        if buffered_count > 0 {
+            info!(
+                %context_id,
+                buffered_count,
+                "Replaying buffered deltas after snapshot sync"
+            );
+
+            // Replay buffered deltas - now that context is initialized, we can process them
+            if let Some(deltas) = buffered_deltas {
+                self.replay_buffered_deltas(context_id, our_identity, deltas, peer_id)
+                    .await;
+            }
+        }
+
+        // Fine-sync to catch any deltas since the snapshot boundary
+        if !result.dag_heads.is_empty() {
+            let mut stream = self.network_client.open_stream(peer_id).await?;
+            if let Err(e) = self
+                .fine_sync_from_boundary(context_id, peer_id, our_identity, &mut stream)
+                .await
+            {
+                warn!(?e, %context_id, "Fine-sync failed, state may be slightly behind");
+            }
+        }
+
+        Ok(SyncProtocol::Snapshot {
+            compressed: false,
+            verified: true,
+        })
+    }
+
+    /// Replay buffered deltas after snapshot sync completes.
+    ///
+    /// This ensures that:
+    /// 1. Deltas arriving during sync aren't lost
+    /// 2. Event handlers execute for buffered deltas
+    /// 3. Ancestor deltas (whose state is covered by checkpoint) get handlers executed
+    async fn replay_buffered_deltas(
+        &self,
+        context_id: ContextId,
+        our_identity: PublicKey,
+        deltas: Vec<calimero_node_primitives::delta_buffer::BufferedDelta>,
+        _fallback_peer: PeerId,
+    ) {
+        use crate::handlers::state_delta::{replay_buffered_delta, ReplayBufferedDeltaInput};
+        use std::collections::{HashMap, HashSet};
+
+        // Build a set of IDs that are "covered" by the snapshot
+        // This includes:
+        // 1. Deltas that match checkpoints directly
+        // 2. Deltas that are ancestors of checkpoints (their state is included in snapshot)
+        let mut covered_delta_ids: HashSet<[u8; 32]> = HashSet::new();
+
+        // Get the delta store to check for existing checkpoints
+        let delta_store = self
+            .node_state
+            .delta_stores
+            .entry(context_id)
+            .or_insert_with(|| {
+                crate::delta_store::DeltaStore::new(
+                    [0u8; 32],
+                    self.context_client.clone(),
+                    context_id,
+                    our_identity,
+                )
+            })
+            .clone();
+
+        // Build parent -> children map from buffered deltas
+        let mut parent_to_children: HashMap<[u8; 32], Vec<[u8; 32]>> = HashMap::new();
+        for buffered in &deltas {
+            for parent in &buffered.parents {
+                parent_to_children
+                    .entry(*parent)
+                    .or_default()
+                    .push(buffered.id);
+            }
+        }
+
+        // Identify which buffered deltas match existing checkpoints
+        let mut checkpoint_matches: Vec<[u8; 32]> = Vec::new();
+        for buffered in &deltas {
+            if delta_store.dag_has_delta_applied(&buffered.id).await {
+                checkpoint_matches.push(buffered.id);
+                covered_delta_ids.insert(buffered.id);
+            }
+        }
+
+        // Propagate "covered" status backwards through the parent chain
+        // If delta D has a child C that is covered, then D is also covered
+        // (D's state is included in C's checkpoint)
+        let delta_ids: HashSet<[u8; 32]> = deltas.iter().map(|d| d.id).collect();
+        let delta_parents: HashMap<[u8; 32], Vec<[u8; 32]>> =
+            deltas.iter().map(|d| (d.id, d.parents.clone())).collect();
+
+        // BFS backwards from checkpoint matches
+        let mut queue: std::collections::VecDeque<[u8; 32]> =
+            checkpoint_matches.iter().copied().collect();
+        while let Some(child_id) = queue.pop_front() {
+            // Get parents of this delta (if it's one of our buffered deltas)
+            if let Some(parents) = delta_parents.get(&child_id) {
+                for parent_id in parents {
+                    // If parent is also a buffered delta and not yet covered
+                    if delta_ids.contains(parent_id) && !covered_delta_ids.contains(parent_id) {
+                        covered_delta_ids.insert(*parent_id);
+                        queue.push_back(*parent_id);
+                    }
+                }
+            }
+        }
+
+        if !covered_delta_ids.is_empty() {
+            info!(
+                %context_id,
+                covered_count = covered_delta_ids.len(),
+                checkpoint_matches = checkpoint_matches.len(),
+                total_buffered = deltas.len(),
+                "Identified buffered deltas covered by snapshot checkpoint"
+            );
+        }
+
+        for buffered in deltas {
+            let delta_id = buffered.id;
+            let has_events = buffered.events.is_some();
+            let is_covered_by_checkpoint = covered_delta_ids.contains(&delta_id);
+
+            match replay_buffered_delta(ReplayBufferedDeltaInput {
+                context_client: self.context_client.clone(),
+                node_client: self.node_client.clone(),
+                node_state: self.node_state.clone(),
+                context_id,
+                our_identity,
+                buffered,
+                sync_timeout: self.sync_config.timeout,
+                is_covered_by_checkpoint,
+            })
+            .await
+            {
+                Ok(applied) => {
+                    if applied {
+                        info!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            has_events,
+                            "Replayed buffered delta successfully"
+                        );
+                    } else if is_covered_by_checkpoint {
+                        debug!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            "Buffered delta is ancestor of checkpoint (state covered, handlers executed)"
+                        );
+                    } else {
+                        debug!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            "Buffered delta went to pending (missing parents)"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        error = %e,
+                        "Failed to replay buffered delta"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Fine-sync from snapshot boundary to catch up to latest state.
+    async fn fine_sync_from_boundary(
+        &self,
+        context_id: ContextId,
+        peer_id: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
+    ) -> eyre::Result<()> {
+        let delta_store = self
+            .node_state
+            .delta_stores
+            .entry(context_id)
+            .or_insert_with(|| {
+                crate::delta_store::DeltaStore::new(
+                    [0u8; 32],
+                    self.context_client.clone(),
+                    context_id,
+                    our_identity,
+                )
+            })
+            .clone();
+
+        let _ = delta_store.load_persisted_deltas().await;
+
+        let request_msg = StreamMessage::Init {
+            context_id,
+            party_id: our_identity,
+            payload: InitPayload::DagHeadsRequest { context_id },
+            next_nonce: rand::random(),
+        };
+        self.send(stream, &request_msg, None).await?;
+
+        let response = self.recv(stream, None).await?;
+
+        if let Some(StreamMessage::Message {
+            payload: MessagePayload::DagHeadsResponse { dag_heads, .. },
+            ..
+        }) = response
+        {
+            let mut missing = Vec::new();
+            for head in &dag_heads {
+                if !delta_store.has_delta(head).await {
+                    missing.push(*head);
+                }
+            }
+
+            if !missing.is_empty() {
+                self.request_missing_deltas(
+                    context_id,
+                    missing,
+                    peer_id,
+                    delta_store,
+                    our_identity,
+                )
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
+        loop {
+            match self.internal_handle_opened_stream(&mut stream).await {
+                Ok(None) => break,
+                Ok(Some(())) => {}
+                Err(err) => {
+                    error!(%err, "Failed to handle stream message");
+
+                    if let Err(err) = self
+                        .send(&mut stream, &StreamMessage::OpaqueError, None)
+                        .await
+                    {
+                        error!(%err, "Failed to send error message");
+                    }
+                }
+            }
+        }
+    }
+
+    async fn internal_handle_opened_stream(&self, stream: &mut Stream) -> eyre::Result<Option<()>> {
+        let Some(message) = self.recv(stream, None).await? else {
+            return Ok(None);
+        };
+
+        let (context_id, their_identity, payload, nonce) = match message {
+            StreamMessage::Init {
+                context_id,
+                party_id,
+                payload,
+                next_nonce,
+                ..
+            } => (context_id, party_id, payload, next_nonce),
+            unexpected @ (StreamMessage::Message { .. } | StreamMessage::OpaqueError) => {
+                bail!("expected initialization handshake, got {:?}", unexpected)
+            }
+        };
+
+        if let InitPayload::NamespaceBackfillRequest {
+            namespace_id,
+            delta_ids,
+        } = &payload
+        {
+            self.handle_namespace_backfill_request(*namespace_id, delta_ids, stream, nonce)
+                .await?;
+            return Ok(Some(()));
+        }
+
+        if let InitPayload::NamespaceJoinRequest {
+            namespace_id,
+            ref invitation_bytes,
+            joiner_public_key,
+        } = &payload
+        {
+            self.handle_namespace_join_request(
+                *namespace_id,
+                invitation_bytes,
+                *joiner_public_key,
+                stream,
+                nonce,
+            )
+            .await?;
+            return Ok(Some(()));
+        }
+
+        let Some(context) = self.context_client.get_context(&context_id)? else {
+            bail!("context not found: {}", context_id);
+        };
+
+        let mut _updated = None;
+
+        if !self
+            .context_client
+            .has_member(&context_id, &their_identity)?
+        {
+            _updated = Some(
+                self.context_client
+                    .sync_context_config(context_id, None)
+                    .await?,
+            );
+
+            if !self
+                .context_client
+                .has_member(&context_id, &their_identity)?
+            {
+                // The joiner may have just published a governance op announcing
+                // their membership. Wait briefly for gossip propagation and retry.
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    "member not found yet, waiting for governance gossip"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                if !self
+                    .context_client
+                    .has_member(&context_id, &their_identity)?
+                {
+                    bail!(
+                        "unknown context member {} in context {}",
+                        their_identity,
+                        context_id
+                    );
+                }
+            }
+        }
+
+        // Note: Concurrent syncs are already prevented by SyncState tracking
+        // in the start() loop. When sync starts, last_sync is set to None.
+        // When complete, it's set to Some(now).
+
+        let identities = self
+            .context_client
+            .get_context_members(&context.id, Some(true));
+
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+            .await
+            .transpose()?
+        else {
+            bail!("no owned identities found for context: {}", context.id);
+        };
+
+        match payload {
+            InitPayload::BlobShare { blob_id } => {
+                self.handle_blob_share_request(
+                    &context,
+                    our_identity,
+                    their_identity,
+                    blob_id,
+                    stream,
+                )
+                .await?
+            }
+            // Old sync protocols removed - DAG uses gossipsub broadcast instead
+            // Streams are only used for: KeyShare, BlobShare, DeltaRequest, DagHeadsRequest
+            InitPayload::DeltaRequest {
+                context_id: requested_context_id,
+                delta_id,
+            } => {
+                // Handle delta request from peer
+                self.handle_delta_request(requested_context_id, delta_id, stream)
+                    .await?
+            }
+            InitPayload::DagHeadsRequest {
+                context_id: requested_context_id,
+            } => {
+                // Handle DAG heads request from peer
+                self.handle_dag_heads_request(requested_context_id, stream, nonce)
+                    .await?
+            }
+            InitPayload::SnapshotBoundaryRequest {
+                context_id: requested_context_id,
+                requested_cutoff_timestamp,
+            } => {
+                // Handle snapshot boundary negotiation request from peer
+                self.handle_snapshot_boundary_request(
+                    requested_context_id,
+                    requested_cutoff_timestamp,
+                    stream,
+                    nonce,
+                )
+                .await?
+            }
+            InitPayload::SnapshotStreamRequest {
+                context_id: requested_context_id,
+                boundary_root_hash,
+                page_limit,
+                byte_limit,
+                resume_cursor,
+            } => {
+                // Handle snapshot stream request from peer
+                self.handle_snapshot_stream_request(
+                    requested_context_id,
+                    boundary_root_hash,
+                    page_limit,
+                    byte_limit,
+                    resume_cursor,
+                    stream,
+                    nonce,
+                )
+                .await?
+            }
+            InitPayload::TreeNodeRequest {
+                context_id: requested_context_id,
+                node_id,
+                max_depth,
+            } => {
+                // Handle tree node request from peer (HashComparison sync)
+                // Wrap stream in transport abstraction
+                let mut transport = super::stream::StreamTransport::new(stream);
+                self.handle_tree_node_request(
+                    requested_context_id,
+                    node_id,
+                    max_depth,
+                    &mut transport,
+                    nonce,
+                )
+                .await?
+            }
+            InitPayload::LevelWiseRequest {
+                context_id: requested_context_id,
+                level: first_level,
+                parent_ids: first_parent_ids,
+            } => {
+                // Handle LevelWise request from peer (LevelWise sync responder)
+                // Wrap stream in transport abstraction
+                let mut transport = super::stream::StreamTransport::new(stream);
+
+                // Get store for protocol execution
+                let store = self.context_client.datastore_handle().into_inner();
+
+                // Use the already-resolved our_identity from the top of handle_sync_request
+                // (avoids redundant lookup and ensures consistency with other handlers)
+
+                // Build the first request data (already parsed above for routing)
+                let first_request = super::level_sync::LevelWiseFirstRequest {
+                    level: first_level,
+                    parent_ids: first_parent_ids,
+                };
+
+                // Run the LevelWise responder via the trait method
+                use calimero_node_primitives::sync::SyncProtocolExecutor;
+                super::level_sync::LevelWiseProtocol::run_responder(
+                    &mut transport,
+                    &store,
+                    requested_context_id,
+                    our_identity,
+                    first_request,
+                )
+                .await?
+            }
+            InitPayload::EntityPush { .. } => {
+                // EntityPush is handled within the HashComparison responder loop,
+                // not as a top-level stream init. If received here, it means a
+                // protocol error — the initiator sent EntityPush outside of a
+                // HashComparison session. Log and ignore.
+                warn!("Received EntityPush outside of HashComparison session, ignoring");
+            }
+            InitPayload::NamespaceBackfillRequest { .. } => {
+                unreachable!("handled by early return above")
+            }
+            InitPayload::NamespaceJoinRequest { .. } => {
+                unreachable!("handled by early return above")
+            }
+        };
+
+        Ok(Some(()))
+    }
+}
+
+impl SyncManager {
+    /// Handle a namespace backfill request: look up full `SignedNamespaceOp`
+    /// payloads for the requested delta IDs and send them back.
+    ///
+    /// We scan the namespace governance op store for matching delta IDs.
+    /// For each requested delta, if we have the full op (stored when we were
+    /// a member at apply time), we include it in the response.
+    async fn handle_namespace_backfill_request(
+        &self,
+        namespace_id: [u8; 32],
+        delta_ids: &[[u8; 32]],
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use calimero_context_client::local_governance::SignedNamespaceOp;
+
+        let store = self.context_client.datastore_handle().into_inner();
+        let handle = store.handle();
+        let mut found = Vec::new();
+
+        if delta_ids.is_empty() {
+            // Empty request = "give me everything for this namespace".
+            let start = calimero_store::key::NamespaceGovOp::new(namespace_id, [0u8; 32]);
+            let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
+            let first = iter.seek(start).transpose();
+
+            for entry in first.into_iter().chain(iter.keys()) {
+                let key = match entry {
+                    Ok(k) => k,
+                    Err(_) => break,
+                };
+                if key.namespace_id() != namespace_id {
+                    break;
+                }
+                if let Ok(Some(value)) = handle.get(&key) {
+                    if borsh::from_slice::<SignedNamespaceOp>(&value.skeleton_bytes).is_ok() {
+                        found.push((key.delta_id(), value.skeleton_bytes));
+                    }
+                }
+            }
+        } else {
+            for delta_id in delta_ids {
+                let key = calimero_store::key::NamespaceGovOp::new(namespace_id, *delta_id);
+                if let Ok(Some(value)) = handle.get(&key) {
+                    if borsh::from_slice::<SignedNamespaceOp>(&value.skeleton_bytes).is_ok() {
+                        found.push((*delta_id, value.skeleton_bytes));
+                    }
+                }
+            }
+        }
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::NamespaceBackfillResponse { deltas: found },
+            next_nonce: nonce,
+        };
+        super::stream::send(stream, &msg, None).await?;
+        Ok(())
+    }
+
+    /// Handle an incoming NamespaceJoinRequest on the responder side.
+    ///
+    /// Validates the invitation, wraps the group key for the joiner,
+    /// enumerates contexts, and collects governance ops.
+    async fn handle_namespace_join_request(
+        &self,
+        namespace_id: [u8; 32],
+        invitation_bytes: &[u8],
+        joiner_public_key: PublicKey,
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use calimero_context::group_store::{
+            enumerate_group_contexts, load_current_group_key, load_group_meta,
+            wrap_group_key_for_member,
+        };
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_context_config::types::SignedGroupOpenInvitation;
+
+        let _invitation: SignedGroupOpenInvitation = match borsh::from_slice(invitation_bytes) {
+            Ok(inv) => inv,
+            Err(err) => {
+                let msg = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload: MessagePayload::NamespaceJoinRejected {
+                        reason: format!("invalid invitation: {err}"),
+                    },
+                    next_nonce: nonce,
+                };
+                super::stream::send(stream, &msg, None).await?;
+                return Ok(());
+            }
+        };
+
+        let group_id = ContextGroupId::from(namespace_id);
+        let store = self.context_client.datastore_handle().into_inner();
+
+        let meta = match load_group_meta(&store, &group_id)? {
+            Some(m) => m,
+            None => {
+                let msg = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload: MessagePayload::NamespaceJoinRejected {
+                        reason: "group not found".to_owned(),
+                    },
+                    next_nonce: nonce,
+                };
+                super::stream::send(stream, &msg, None).await?;
+                return Ok(());
+            }
+        };
+
+        let key_envelope_bytes = match load_current_group_key(&store, &group_id)? {
+            Some((_key_id, group_key)) => {
+                let ns_identity = calimero_context::group_store::resolve_namespace_identity_record(
+                    &store, &group_id,
+                )?;
+                match ns_identity {
+                    Some(record) => {
+                        let sender_sk =
+                            calimero_primitives::identity::PrivateKey::from(record.private_key);
+                        match wrap_group_key_for_member(&sender_sk, &joiner_public_key, &group_key)
+                        {
+                            Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
+                            Err(err) => {
+                                warn!(
+                                    namespace_id = %hex::encode(namespace_id),
+                                    %err,
+                                    "failed to wrap group key for joiner"
+                                );
+                                Vec::new()
+                            }
+                        }
+                    }
+                    None => {
+                        warn!(
+                            namespace_id = %hex::encode(namespace_id),
+                            "no namespace identity found, cannot wrap key"
+                        );
+                        Vec::new()
+                    }
+                }
+            }
+            None => Vec::new(),
+        };
+
+        // Pre-register the joiner as a group member and write ContextIdentity
+        // entries so that when the joiner opens a sync stream, this node's
+        // membership check (has_member) passes immediately.
+        if let Err(e) = calimero_context::group_store::add_group_member(
+            &store,
+            &group_id,
+            &joiner_public_key,
+            calimero_primitives::context::GroupMemberRole::Member,
+        ) {
+            warn!(%e, "failed to pre-register joiner as group member");
+        }
+
+        let context_ids = enumerate_group_contexts(&store, &group_id, 0, usize::MAX)?;
+        let application_id: [u8; 32] = *meta.target_application_id.as_ref();
+
+        for ctx_id in &context_ids {
+            let ci_key = calimero_store::key::ContextIdentity::new(*ctx_id, joiner_public_key);
+            let mut handle = store.handle();
+            if !handle.has(&ci_key).unwrap_or(false) {
+                let _ = handle.put(
+                    &ci_key,
+                    &calimero_store::types::ContextIdentity {
+                        private_key: None,
+                        sender_key: None,
+                    },
+                );
+            }
+        }
+
+        let governance_ops = self.collect_namespace_governance_ops(namespace_id)?;
+
+        eprintln!(
+            "[JOIN-RESP] ns={} has_key={} contexts={} app={} gov_ops={} ctx_ids={:?}",
+            hex::encode(namespace_id),
+            !key_envelope_bytes.is_empty(),
+            context_ids.len(),
+            hex::encode(application_id),
+            governance_ops.len(),
+            context_ids
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>(),
+        );
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::NamespaceJoinResponse {
+                key_envelope_bytes,
+                context_ids,
+                application_id,
+                governance_ops,
+            },
+            next_nonce: nonce,
+        };
+        super::stream::send(stream, &msg, None).await?;
+        Ok(())
+    }
+
+    /// Collect all governance ops for a namespace (reused by the join responder).
+    fn collect_namespace_governance_ops(
+        &self,
+        namespace_id: [u8; 32],
+    ) -> eyre::Result<Vec<Vec<u8>>> {
+        use calimero_context_client::local_governance::SignedNamespaceOp;
+
+        let store = self.context_client.datastore_handle().into_inner();
+        let handle = store.handle();
+        let mut ops = Vec::new();
+
+        let start = calimero_store::key::NamespaceGovOp::new(namespace_id, [0u8; 32]);
+        let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
+        let first = iter.seek(start).transpose();
+
+        for entry in first.into_iter().chain(iter.keys()) {
+            let key = match entry {
+                Ok(k) => k,
+                Err(_) => break,
+            };
+            if key.namespace_id() != namespace_id {
+                break;
+            }
+            if let Ok(Some(value)) = handle.get(&key) {
+                if borsh::from_slice::<SignedNamespaceOp>(&value.skeleton_bytes).is_ok() {
+                    ops.push(value.skeleton_bytes);
+                }
+            }
+        }
+
+        Ok(ops)
+    }
+
+    /// Initiator side: open a stream to a mesh peer and perform the
+    /// NamespaceJoinRequest / NamespaceJoinResponse exchange.
+    async fn initiate_namespace_join(
+        &self,
+        params: NamespaceJoinParams,
+    ) -> eyre::Result<NamespaceJoinResult> {
+        let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
+            "ns/{}",
+            hex::encode(params.namespace_id)
+        ));
+        let peers = self.network_client.mesh_peers(topic).await;
+        let peer = peers.first().ok_or_else(|| {
+            eyre::eyre!(
+                "no mesh peers for namespace {}",
+                hex::encode(params.namespace_id)
+            )
+        })?;
+
+        let mut stream = self
+            .network_client
+            .open_stream(*peer)
+            .await
+            .wrap_err("open stream for namespace join")?;
+
+        let msg = StreamMessage::Init {
+            context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
+            party_id: params.joiner_public_key,
+            payload: InitPayload::NamespaceJoinRequest {
+                namespace_id: params.namespace_id,
+                invitation_bytes: params.invitation_bytes,
+                joiner_public_key: params.joiner_public_key,
+            },
+            next_nonce: rand::thread_rng().gen(),
+        };
+
+        super::stream::send(&mut stream, &msg, None).await?;
+
+        match super::stream::recv(&mut stream, None, self.sync_config.timeout).await? {
+            Some(StreamMessage::Message {
+                payload:
+                    MessagePayload::NamespaceJoinResponse {
+                        key_envelope_bytes,
+                        context_ids,
+                        application_id,
+                        governance_ops,
+                    },
+                ..
+            }) => Ok(NamespaceJoinResult {
+                key_envelope_bytes,
+                context_ids,
+                application_id,
+                governance_ops,
+            }),
+            Some(StreamMessage::Message {
+                payload: MessagePayload::NamespaceJoinRejected { reason },
+                ..
+            }) => {
+                eyre::bail!("namespace join rejected: {}", reason)
+            }
+            other => {
+                eyre::bail!(
+                    "unexpected response to namespace join request: {:?}",
+                    other.as_ref().map(|m| std::mem::discriminant(m))
+                )
+            }
+        }
+    }
+
+    /// Pull all namespace governance ops from a mesh peer.
+    async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) {
+        use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+
+        let topic =
+            libp2p::gossipsub::TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)));
+        let peers = self.network_client.mesh_peers(topic).await;
+        let Some(peer) = peers.first() else {
+            debug!(
+                namespace_id = %hex::encode(namespace_id),
+                "no mesh peers for namespace sync"
+            );
+            return;
+        };
+
+        let Ok(mut stream) = self.network_client.open_stream(*peer).await else {
+            debug!("failed to open stream for namespace sync");
+            return;
+        };
+
+        let msg = StreamMessage::Init {
+            context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
+            party_id: calimero_primitives::identity::PublicKey::from([0u8; 32]),
+            payload: InitPayload::NamespaceBackfillRequest {
+                namespace_id,
+                delta_ids: vec![],
+            },
+            next_nonce: {
+                use rand::Rng;
+                rand::thread_rng().gen()
+            },
+        };
+
+        if let Err(err) = super::stream::send(&mut stream, &msg, None).await {
+            debug!(%err, "failed to send NamespaceBackfillRequest");
+            return;
+        }
+
+        match super::stream::recv(&mut stream, None, self.sync_config.timeout).await {
+            Ok(Some(StreamMessage::Message {
+                payload: MessagePayload::NamespaceBackfillResponse { deltas },
+                ..
+            })) => {
+                info!(
+                    namespace_id = %hex::encode(namespace_id),
+                    ops = deltas.len(),
+                    "received namespace governance ops from peer"
+                );
+                for (_delta_id, op_bytes) in deltas {
+                    match borsh::from_slice::<
+                        calimero_context_client::local_governance::SignedNamespaceOp,
+                    >(&op_bytes)
+                    {
+                        Ok(op) => {
+                            if let Err(err) = self
+                                .context_client
+                                .apply_signed_namespace_op(op.clone())
+                                .await
+                            {
+                                warn!(
+                                    namespace_id = %hex::encode(namespace_id),
+                                    ?err,
+                                    "failed to apply namespace governance op from backfill"
+                                );
+                            } else {
+                                crate::key_delivery::maybe_publish_key_delivery(
+                                    &self.context_client,
+                                    &self.node_client,
+                                    &op,
+                                )
+                                .await;
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                namespace_id = %hex::encode(namespace_id),
+                                %err,
+                                "failed to decode namespace governance op from backfill"
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {
+                debug!("unexpected response to namespace sync request");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -125,7 +125,7 @@
 <span class="kw">pub struct</span> <span class="ty">NodeConfig</span> {<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">home</span>: <span class="ty">Utf8PathBuf</span>,<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">identity</span>: <span class="ty">Keypair</span>,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">group_identity</span>: Option&lt;<span class="ty">GroupIdentityConfig</span>&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// namespace identity is auto-generated per root group in the datastore</span><br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">network</span>: <span class="ty">NetworkConfig</span>,<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sync</span>: <span class="ty">SyncConfig</span>,<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">datastore</span>: <span class="ty">StoreConfig</span>,<br>

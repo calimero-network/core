@@ -154,6 +154,7 @@ pub fn test_context_meta(app_id_byte: u8) -> ContextMeta {
         app_meta_key,
         [0_u8; 32], // root_hash
         Vec::new(), // dag_heads
+        None,       // service_name
     )
 }
 

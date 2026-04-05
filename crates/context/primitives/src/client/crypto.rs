@@ -208,6 +208,8 @@ mod tests {
         let network_client = NetworkClient::new(LazyRecipient::new());
         let (event_sender, _) = broadcast::channel(16);
         let (ctx_sync_tx, _) = mpsc::channel(16);
+        let (ns_sync_tx, _) = mpsc::channel(16);
+        let (ns_join_tx, _) = mpsc::channel(16);
         let node_manager = LazyRecipient::<NodeMessage>::new();
 
         // 4. Construct the real NodeClient.
@@ -218,6 +220,8 @@ mod tests {
             node_manager,
             event_sender,
             ctx_sync_tx,
+            ns_sync_tx,
+            ns_join_tx,
             String::new(), // Not used in tests
         );
 

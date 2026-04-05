@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message};
+use calimero_context_client::group::{GroupSummary, ListAllGroupsRequest};
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_primitives::group::{GroupSummary, ListAllGroupsRequest};
 
 use crate::group_store;
 use crate::ContextManager;
@@ -14,15 +14,14 @@ impl Handler<ListAllGroupsRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let Some((node_identity, _)) = self.node_group_identity() else {
-                return Ok(vec![]);
-            };
-
             let entries = group_store::enumerate_all_groups(&self.datastore, offset, limit)?;
 
             let mut summaries = Vec::with_capacity(entries.len());
             for (group_id_bytes, meta) in entries {
                 let group_id = ContextGroupId::from(group_id_bytes);
+                let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
+                    continue;
+                };
                 if group_store::check_group_membership(&self.datastore, &group_id, &node_identity)?
                 {
                     let alias = group_store::get_group_alias(&self.datastore, &group_id)

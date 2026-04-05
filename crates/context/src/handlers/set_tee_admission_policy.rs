@@ -1,7 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::SetTeeAdmissionPolicyRequest;
-use calimero_context_primitives::local_governance::GroupOp;
-use calimero_node_primitives::sync::GroupMutationKind;
+use calimero_context_client::group::SetTeeAdmissionPolicyRequest;
+use calimero_context_client::local_governance::GroupOp;
 use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
@@ -27,7 +26,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
         }: SetTeeAdmissionPolicyRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_group_identity();
+        let node_identity = self.node_namespace_identity(&group_id);
 
         let requester = match requester {
             Some(pk) => pk,
@@ -97,13 +96,6 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                     },
                 )
                 .await?;
-
-                let _ = node_client
-                    .broadcast_group_mutation(
-                        group_id.to_bytes(),
-                        GroupMutationKind::TeeAdmissionPolicySet,
-                    )
-                    .await;
 
                 info!(?group_id, accept_mock, "TEE admission policy updated");
 

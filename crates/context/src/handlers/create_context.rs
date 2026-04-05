@@ -3,21 +3,17 @@ use std::mem;
 use std::sync::Arc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
+use calimero_context_client::client::ContextClient;
+use calimero_context_client::local_governance::GroupOp;
+use calimero_context_client::messages::{CreateContextRequest, CreateContextResponse};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
-use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::local_governance::GroupOp;
-use calimero_context_primitives::messages::{CreateContextRequest, CreateContextResponse};
 use calimero_node_primitives::client::NodeClient;
-use calimero_node_primitives::sync::GroupMutationKind;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{
-    Context, ContextConfigParams, ContextId, GroupMemberRole, UpgradePolicy,
-};
+use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::delta::{CausalDelta, StorageDelta};
-use calimero_store::key::GroupMetaValue;
 use calimero_store::{key, types, Store};
 use eyre::{bail, OptionExt};
 use rand::rngs::StdRng;
@@ -37,6 +33,7 @@ impl Handler<CreateContextRequest> for ContextManager {
         CreateContextRequest {
             seed,
             application_id,
+            service_name,
             identity_secret,
             init_params,
             group_id,
@@ -46,7 +43,7 @@ impl Handler<CreateContextRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let identity_secret = identity_secret.or_else(|| {
-            let (_, sk) = self.node_group_identity()?;
+            let (_, sk) = self.node_namespace_identity(&group_id)?;
             Some(PrivateKey::from(sk))
         });
 
@@ -75,7 +72,6 @@ impl Handler<CreateContextRequest> for ContextManager {
             identity_secret,
             sender_key,
             group_id,
-            group_created,
             alias,
         } = prepared;
 
@@ -87,9 +83,10 @@ impl Handler<CreateContextRequest> for ContextManager {
             .try_lock_owned()
             .expect("logically exclusive");
 
-        let context_meta = context.meta.clone();
+        let mut context_meta = context.meta.clone();
+        context_meta.service_name = service_name;
 
-        let module_task = self.get_module(application.id);
+        let module_task = self.get_module(application.id, context_meta.service_name.clone());
 
         let context_meta_for_map_ok = context_meta.clone();
         let context_meta_for_map_err = context_meta.clone();
@@ -129,7 +126,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         context_id: context_meta_for_map_ok.id,
                         identity,
                         group_id: Some(group_id_for_response),
-                        group_created,
+                        group_created: false,
                     }
                 })
                 .map_err(move |err, act, _ctx| {
@@ -150,7 +147,6 @@ struct Prepared<'a> {
     identity_secret: PrivateKey,
     sender_key: PrivateKey,
     group_id: ContextGroupId,
-    group_created: bool,
     alias: Option<String>,
 }
 
@@ -163,7 +159,7 @@ impl Prepared<'_> {
         seed: Option<[u8; 32]>,
         application_id: &ApplicationId,
         identity_secret: Option<PrivateKey>,
-        group_id: Option<ContextGroupId>,
+        group_id: ContextGroupId,
         alias: Option<String>,
         datastore: &Store,
     ) -> eyre::Result<Self> {
@@ -174,39 +170,37 @@ impl Prepared<'_> {
         };
 
         let mut effective_app_id = *application_id;
-        if let Some(ref gid) = group_id {
-            let meta =
-                group_store::load_group_meta(datastore, gid)?.ok_or_eyre("group not found")?;
+        let meta =
+            group_store::load_group_meta(datastore, &group_id)?.ok_or_eyre("group not found")?;
 
-            let identity_pk = identity_secret
-                .as_ref()
-                .ok_or_eyre("identity_secret required for group context creation")?
-                .public_key();
+        let identity_pk = identity_secret
+            .as_ref()
+            .ok_or_eyre("identity_secret required for group context creation")?
+            .public_key();
 
-            if !group_store::check_group_membership(datastore, gid, &identity_pk)? {
-                bail!("identity is not a member of group '{gid:?}'");
-            }
+        if !group_store::check_group_membership(datastore, &group_id, &identity_pk)? {
+            bail!("identity is not a member of group '{group_id:?}'");
+        }
 
-            if !group_store::is_group_admin_or_has_capability(
-                datastore,
-                gid,
-                &identity_pk,
-                MemberCapabilities::CAN_CREATE_CONTEXT,
-            )? {
-                bail!(
-                    "identity lacks permission to create a context in group '{gid:?}' \
-                     (not an admin and CAN_CREATE_CONTEXT is not set)"
-                );
-            }
+        if !group_store::is_group_admin_or_has_capability(
+            datastore,
+            &group_id,
+            &identity_pk,
+            MemberCapabilities::CAN_CREATE_CONTEXT,
+        )? {
+            bail!(
+                "identity lacks permission to create a context in group '{group_id:?}' \
+                 (not an admin and CAN_CREATE_CONTEXT is not set)"
+            );
+        }
 
-            if effective_app_id != meta.target_application_id {
-                warn!(
-                    requested=?effective_app_id,
-                    group_target=?meta.target_application_id,
-                    "overriding application_id with group target"
-                );
-                effective_app_id = meta.target_application_id;
-            }
+        if effective_app_id != meta.target_application_id {
+            warn!(
+                requested=?effective_app_id,
+                group_target=?meta.target_application_id,
+                "overriding application_id with group target"
+            );
+            effective_app_id = meta.target_application_id;
         }
 
         let mut rng = rand::thread_rng();
@@ -256,39 +250,6 @@ impl Prepared<'_> {
 
         let identity = identity_secret.public_key();
 
-        // Auto-create a single-member group when no explicit group_id was provided.
-        let group_created = group_id.is_none();
-        let group_id = if let Some(gid) = group_id {
-            gid
-        } else {
-            let auto_group_id = ContextGroupId::from(*context_id.as_ref());
-            group_store::save_group_meta(
-                datastore,
-                &auto_group_id,
-                &GroupMetaValue {
-                    app_key: [0u8; 32],
-                    target_application_id: effective_app_id,
-                    upgrade_policy: UpgradePolicy::Automatic,
-                    created_at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                    admin_identity: identity,
-                    migration: None,
-                    auto_join: true,
-                },
-            )?;
-            group_store::add_group_member_with_keys(
-                datastore,
-                &auto_group_id,
-                &identity,
-                GroupMemberRole::Admin,
-                Some(*identity_secret),
-                Some(*PrivateKey::random(&mut rng)),
-            )?;
-            auto_group_id
-        };
-
         let application = match applications.entry(effective_app_id) {
             btree_map::Entry::Vacant(vacant) => {
                 let application = node_client
@@ -318,7 +279,6 @@ impl Prepared<'_> {
             identity_secret,
             sender_key,
             group_id,
-            group_created,
             alias,
         })
     }
@@ -440,6 +400,7 @@ async fn create_context(
             key::ApplicationMeta::new(application.id),
             *context.root_hash,
             context.dag_heads.clone(),
+            context.service_name.as_deref().map(Box::from),
         ),
     )?;
 
@@ -474,46 +435,12 @@ async fn create_context(
             &sk,
             GroupOp::ContextRegistered {
                 context_id: context.id,
+                application_id: context.application_id,
+                blob_id: application.blob.bytecode,
+                source: application.source.to_string(),
             },
         )
         .await?;
-
-        let vis_mode = group_store::get_default_visibility(&datastore, &group_id)?.unwrap_or(0u8);
-        group_store::sign_apply_and_publish(
-            &datastore,
-            &node_client,
-            &group_id,
-            &sk,
-            GroupOp::ContextVisibilitySet {
-                context_id: context.id,
-                mode: vis_mode,
-                creator: identity,
-            },
-        )
-        .await?;
-
-        // Also broadcast via the notification path so peers already
-        // subscribed to the group topic receive the info immediately,
-        // without waiting for the governance DAG to catch up.
-        let group_id_bytes = group_id.to_bytes();
-        let _ = node_client
-            .broadcast_group_mutation(
-                group_id_bytes,
-                GroupMutationKind::ContextRegistered {
-                    context_id: *context.id,
-                },
-            )
-            .await;
-        let _ = node_client
-            .broadcast_group_mutation(
-                group_id_bytes,
-                GroupMutationKind::ContextVisibilitySet {
-                    context_id: *context.id,
-                    mode: vis_mode,
-                    creator: *identity,
-                },
-            )
-            .await;
     }
 
     // Write ContextIdentity so the sync key-share can find keys for this context.
@@ -529,7 +456,7 @@ async fn create_context(
     drop(handle);
 
     node_client.subscribe(&context.id).await?;
-    node_client.subscribe_group(group_id.to_bytes()).await?;
+    node_client.subscribe_namespace(group_id.to_bytes()).await?;
 
     if let Some(ref alias_str) = alias {
         let sk = PrivateKey::from(*identity_secret);

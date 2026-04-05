@@ -21,7 +21,7 @@ use calimero_utils_actix::LazyRecipient;
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
 
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 
 /// Setup a test ContextClient with in-memory storage
 async fn setup_test_context_client() -> (ContextClient, TempDir) {
@@ -40,6 +40,8 @@ async fn setup_test_context_client() -> (ContextClient, TempDir) {
     let network_client = NetworkClient::new(LazyRecipient::new());
     let (event_sender, _) = broadcast::channel(16);
     let (ctx_sync_tx, _) = mpsc::channel(16);
+    let (ns_sync_tx, _) = mpsc::channel(16);
+    let (ns_join_tx, _) = mpsc::channel(16);
     let node_manager = LazyRecipient::<NodeMessage>::new();
 
     // 4. Construct NodeClient
@@ -50,7 +52,9 @@ async fn setup_test_context_client() -> (ContextClient, TempDir) {
         node_manager,
         event_sender,
         ctx_sync_tx,
-        String::new(), // Not used in tests
+        ns_sync_tx,
+        ns_join_tx,
+        String::new(),
     );
 
     let context_manager = LazyRecipient::new();
@@ -72,6 +76,7 @@ fn create_test_context(
         key::ApplicationMeta::new(application_id),
         *Hash::default(),
         vec![],
+        None,
     );
 
     handle.put(&key, &meta)?;

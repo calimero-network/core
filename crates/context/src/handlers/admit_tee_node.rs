@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::AdmitTeeNodeRequest;
-use calimero_context_primitives::local_governance::GroupOp;
+use calimero_context_client::group::AdmitTeeNodeRequest;
+use calimero_context_client::local_governance::GroupOp;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use tracing::info;
@@ -27,7 +27,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         }: AdmitTeeNodeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_group_identity();
+        let node_identity = self.node_namespace_identity(&group_id);
 
         let requester = match node_identity {
             Some((pk, _)) => pk,

@@ -12,9 +12,21 @@
 <h1>Core <em>Concepts</em></h1>
 <p class="page-subtitle">Groups, contexts, roles, capabilities, and CRDTs for app builders</p>
 
+<div class="card gc">
+<h2>Namespaces</h2>
+<p>A <strong>namespace</strong> is a root group (a group with no parent). It is the <strong>application instance boundary</strong> and the <strong>identity scope</strong> for a node.</p>
+<ul>
+<li>Each namespace gets its own Ed25519 keypair, auto-generated on first use and persisted in the datastore.</li>
+<li>All subgroups and contexts within the namespace share the same node identity.</li>
+<li>Different namespaces have different keys &mdash; identity isolation across application instances.</li>
+<li>Subgroups inherit the namespace&rsquo;s <code>target_application_id</code>; upgrading the root upgrades the entire tree.</li>
+<li>The admin API exposes <code>GET /admin-api/namespaces</code> to list, query, and inspect namespace identity.</li>
+</ul>
+</div>
+
 <div class="card ga">
 <h2>Groups</h2>
-<p>A <strong>group</strong> is the top-level governance boundary. It has members, an application, and one or more contexts. All membership management, access control, and upgrades happen at the group level via signed governance operations that propagate via P2P gossip.</p>
+<p>A <strong>group</strong> is a governance boundary within a namespace. It has members, an application (inherited from the namespace root), and one or more contexts. All membership management, access control, and upgrades happen at the group level via signed governance operations that propagate via P2P gossip.</p>
 <ul>
 <li>Think of the group as where you vote, invite people, and upgrade the app.</li>
 <li>Contexts live <em>inside</em> a group; they do not replace group governance.</li>
@@ -27,8 +39,21 @@
 <p>A <strong>context</strong> is a running instance of a WASM application with its own isolated state. State stays in sync across context members automatically, using CRDT-based replication.</p>
 <ul>
 <li>Each context belongs to exactly one group.</li>
-<li>Multiple contexts can run the same application with independent state.</li>
-<li>Joining a context is separate from joining the group; visibility rules apply (see below).</li>
+<li>Multiple contexts can run the same application (or different services from the same bundle) with independent state.</li>
+<li>Joining a context requires group membership. By default (<code>auto_join: true</code>), joining a group auto-joins all its contexts.</li>
+<li>For multi-service applications, each context specifies which <strong>service</strong> it runs via an optional <code>service_name</code>.</li>
+</ul>
+</div>
+
+<div class="card ga">
+<h2>Services (multi-WASM bundles)</h2>
+<p>An <strong>application bundle</strong> (<code>.mpk</code>) can contain multiple named <strong>services</strong>, each with its own WASM binary and optional ABI.</p>
+<ul>
+<li>Single-service bundles (one <code>wasm</code> field in the manifest) work as before &mdash; no service name needed.</li>
+<li>Multi-service bundles declare a <code>services</code> array in the manifest, each with a name and WASM path.</li>
+<li>When creating a context for a multi-service app, specify <code>service_name</code> to choose which WASM to run.</li>
+<li>All services in a bundle share the same <code>ApplicationId</code> and upgrade atomically.</li>
+<li>Example: a chat application with services <code>user-mgmt</code>, <code>chat</code>, and <code>storage</code> &mdash; each running in its own context with independent state.</li>
 </ul>
 </div>
 
@@ -48,10 +73,10 @@
 <h3>Membership and admin inheritance</h3>
 <ul>
 <li><strong>Membership</strong> inherits downward: a parent member is also a member of descendant groups.</li>
-<li><strong>Admin authority</strong> inherits for structural operations on the tree, but <em>not</em> for access control inside child resources (see Restricted contexts).</li>
+<li><strong>Admin authority</strong> inherits for structural operations on the tree (add/remove members, manage subgroups).</li>
 </ul>
-<h3>Privacy boundary for Restricted contexts</h3>
-<p>Only <strong>direct</strong> group admins may manage the allowlist for a <em>Restricted</em> context in that group. Parent admins cannot manage those allowlists on behalf of a child&mdash;this keeps child-level privacy intact.</p>
+<h3>Restricting access via subgroups</h3>
+<p>To restrict access to specific contexts, create a <strong>subgroup</strong> and add only the intended members. Contexts within that subgroup are only accessible to its direct members (and inherited parent members). This replaces the former per-context visibility/allowlist model with a simpler group-membership-based approach.</p>
 </div>
 
 <div class="card gb">
@@ -66,25 +91,20 @@
 <div class="typedef" aria-label="Capability bits (conceptual)"><span class="comment">// conceptual bit layout</span><br>
 <span class="kw">bit</span> <span class="field">0</span> &mdash; <span class="ty">CAN_CREATE_CONTEXT</span><br>
 <span class="kw">bit</span> <span class="field">1</span> &mdash; <span class="ty">CAN_INVITE_MEMBERS</span><br>
-<span class="kw">bit</span> <span class="field">2</span> &mdash; <span class="ty">CAN_JOIN_OPEN_CONTEXTS</span><br>
-<span class="kw">bit</span> <span class="field">3</span> &mdash; <span class="ty">MANAGE_MEMBERS</span><br>
-<span class="kw">bit</span> <span class="field">4</span> &mdash; <span class="ty">MANAGE_APPLICATION</span></div>
+<span class="kw">bit</span> <span class="field">2</span> &mdash; <span class="ty">MANAGE_MEMBERS</span><br>
+<span class="kw">bit</span> <span class="field">3</span> &mdash; <span class="ty">MANAGE_APPLICATION</span></div>
 <div class="g3" style="font-size:.82rem;">
 <div class="cb"><h4><span class="code">CAN_CREATE_CONTEXT</span></h4><p>Bit 0. Create new contexts in this group.</p></div>
 <div class="cb"><h4><span class="code">CAN_INVITE_MEMBERS</span></h4><p>Bit 1. Issue invitations for new members.</p></div>
-<div class="cb"><h4><span class="code">CAN_JOIN_OPEN_CONTEXTS</span></h4><p>Bit 2. Join contexts whose visibility is Open.</p></div>
-<div class="cb"><h4><span class="code">MANAGE_MEMBERS</span></h4><p>Bit 3. Add or remove non-admin members.</p></div>
-<div class="cb"><h4><span class="code">MANAGE_APPLICATION</span></h4><p>Bit 4. Set the target application and handle migration.</p></div>
+<div class="cb"><h4><span class="code">MANAGE_MEMBERS</span></h4><p>Bit 2. Add or remove non-admin members.</p></div>
+<div class="cb"><h4><span class="code">MANAGE_APPLICATION</span></h4><p>Bit 3. Set the target application and handle migration.</p></div>
 </div>
 </div>
 
 <div class="card gc">
-<h2>Context visibility</h2>
-<p>When you create a context, you choose who may join it.</p>
-<div class="g2">
-<div class="cb"><h4>Open</h4><p>Any group member (including membership inherited from a parent) may join when they hold the <span class="code">CAN_JOIN_OPEN_CONTEXTS</span> capability. Admins satisfy this implicitly.</p></div>
-<div class="cb"><h4>Restricted</h4><p>Only members on the allowlist may join. There is no admin bypass. Direct group admins edit the list; if an admin is not listed, they may add themselves (as direct admins), then join like any other allowlisted member.</p></div>
-</div>
+<h2>Context access</h2>
+<p>Context access is determined entirely by <strong>group membership</strong>. Any member of a group can join any context within that group. To restrict access to a subset of contexts, create a <strong>subgroup</strong> and register those contexts there &mdash; only subgroup members (direct or inherited) can join them.</p>
+<p>By default, <code>auto_join: true</code> causes joining a group to automatically subscribe to all its contexts. Members can also explicitly join individual contexts via <code>join_group_context</code>.</p>
 </div>
 
 <div class="card gd">

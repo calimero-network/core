@@ -109,6 +109,10 @@ pub struct Context {
     pub id: ContextId,
     /// The identifier of the application logic running within this context.
     pub application_id: ApplicationId,
+    /// Which service from the application bundle this context runs.
+    /// None for single-service applications (backward compat).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub service_name: Option<String>,
     /// The root hash of the context's state Merkle tree.
     pub root_hash: Hash,
     /// Current DAG heads (delta IDs with no children yet)
@@ -130,6 +134,7 @@ impl Context {
         Self {
             id,
             application_id,
+            service_name: None,
             root_hash,
             dag_heads: Vec::new(),
         }
@@ -146,6 +151,25 @@ impl Context {
         Self {
             id,
             application_id,
+            service_name: None,
+            root_hash,
+            dag_heads,
+        }
+    }
+
+    /// Constructs a new `Context` with an optional service name.
+    #[must_use]
+    pub fn with_service(
+        id: ContextId,
+        application_id: ApplicationId,
+        root_hash: Hash,
+        dag_heads: Vec<[u8; 32]>,
+        service_name: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            application_id,
+            service_name,
             root_hash,
             dag_heads,
         }

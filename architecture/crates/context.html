@@ -174,7 +174,7 @@
   <div>
     <h3 style="color:#3b82f6;">Context Lifecycle</h3>
     <div class="fr"><div class="fp">CreateContext</div><div class="fd">Create a new context, bind to group, emit ContextRegistered ops</div></div>
-    <div class="fr"><div class="fp">JoinContext</div><div class="fd">Join existing context via invitation or open membership</div></div>
+    <div class="fr"><div class="fp">JoinGroupContext</div><div class="fd">Join a context within a group (requires group membership)</div></div>
     <div class="fr"><div class="fp">DeleteContext</div><div class="fd">Remove context and clean up all associated state</div></div>
     <div class="fr"><div class="fp">Execute</div><div class="fd">Run WASM method, produce state delta, broadcast</div></div>
     <div class="fr"><div class="fp">UpdateApplication</div><div class="fd">Upgrade WASM binary for a context</div></div>
@@ -196,10 +196,7 @@
     <div class="fr"><div class="fp">JoinGroup</div><div class="fd">Join a group via invitation claim flow</div></div>
     <div class="fr"><div class="fp">JoinGroupContext</div><div class="fd">Join a specific context within a group</div></div>
     <div class="fr"><div class="fp">CreateGroupInvitation</div><div class="fd">Generate a <span class="code">SignedGroupOpenInvitation</span></div></div>
-    <div class="fr"><div class="fp">SetContextVisibility</div><div class="fd">Toggle open vs restricted context access</div></div>
-    <div class="fr"><div class="fp">ManageContextAllowlist</div><div class="fd">Add/remove members from context allowlist</div></div>
     <div class="fr"><div class="fp">SetDefaultCapabilities</div><div class="fd">Default capability flags for new group members</div></div>
-    <div class="fr"><div class="fp">SetDefaultVisibility</div><div class="fd">Default visibility for new contexts in group</div></div>
   </div>
   <div>
     <h3 style="color:#f59e0b;">Configuration &amp; Sync</h3>
@@ -314,7 +311,6 @@
     <div class="fr"><div class="fp">GroupCapability</div><div class="fd">Member capability grants</div></div>
     <div class="fr"><div class="fp">GroupAlias</div><div class="fd">Human-readable group alias</div></div>
     <div class="fr"><div class="fp">MemberAlias</div><div class="fd">Human-readable member alias</div></div>
-    <div class="fr"><div class="fp">ContextAllowlist</div><div class="fd">Per-context member allowlist</div></div>
   </div>
 </div>
 
@@ -392,7 +388,7 @@
   <div>
     <h3 style="color:#3b82f6;">Context Operations</h3>
     <div class="fr"><div class="fp">create_context</div><div class="fd">Create new context bound to group</div></div>
-    <div class="fr"><div class="fp">join_context</div><div class="fd">Join an existing context</div></div>
+    <div class="fr"><div class="fp">join_group_context</div><div class="fd">Join a context within a group</div></div>
     <div class="fr"><div class="fp">delete_context</div><div class="fd">Remove context and clean up state</div></div>
     <div class="fr"><div class="fp">execute</div><div class="fd">Run WASM method, produce delta</div></div>
     <div class="fr"><div class="fp">get_context</div><div class="fd">Query context metadata</div></div>
@@ -411,8 +407,6 @@
 
     <h3 style="color:#f59e0b;margin-top:16px;">Configuration</h3>
     <div class="fr"><div class="fp">sync_group</div><div class="fd">Trigger group sync with peers</div></div>
-    <div class="fr"><div class="fp">set_context_visibility</div><div class="fd">Toggle open/restricted access</div></div>
-    <div class="fr"><div class="fp">manage_context_allowlist</div><div class="fd">Update context allowlist</div></div>
 
     <h3 style="color:#06b6d4;margin-top:16px;">Query</h3>
     <div class="fr"><div class="fp">context_config</div><div class="fd">Get context configuration</div></div>

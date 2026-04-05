@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct UnorderedMap<K, V, S: StorageAdaptor = MainStorage> {
     #[borsh(bound(serialize = "", deserialize = ""))]
-    pub(crate) inner: Collection<(K, V), S>,
+    inner: Collection<(K, V), S>,
 }
 
 impl<K, V> UnorderedMap<K, V, MainStorage>
@@ -109,6 +109,52 @@ where
         }
     }
 
+    /// Updates the CRDT type metadata on the map collection itself.
+    pub(crate) fn set_collection_crdt_type(&mut self, crdt_type: CrdtType) {
+        self.inner.element_mut().metadata.crdt_type = Some(crdt_type);
+    }
+
+    /// Reassigns the map's ID and collection CRDT type to deterministic values.
+    ///
+    /// This is used by wrappers like RGA that store map entries but expose a
+    /// custom collection-level CRDT type.
+    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
+    pub(crate) fn reassign_deterministic_id_with_crdt_type(
+        &mut self,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) where
+        K: AsRef<[u8]> + PartialEq,
+    {
+        let new_id = super::compute_collection_id(None, field_name);
+        let old_id = self.inner.id();
+
+        // If already has the correct ID, only ensure CRDT type is correct.
+        if old_id == new_id {
+            self.set_collection_crdt_type(crdt_type);
+            return;
+        }
+
+        // Collect all entries before migration (must do this before clearing).
+        let entries: Vec<(K, V)> = self
+            .entries()
+            .expect("failed to read entries for migration")
+            .collect();
+
+        // Clear the collection (removes old entries with old IDs).
+        self.inner.clear().expect("failed to clear for migration");
+
+        // Now reassign the collection's ID with the requested CRDT type.
+        self.inner
+            .reassign_deterministic_id_with_crdt_type(field_name, crdt_type);
+
+        // Re-insert all entries (they will get new IDs based on new parent ID).
+        for (key, value) in entries {
+            self.insert(key, value)
+                .expect("failed to re-insert entry during migration");
+        }
+    }
+
     /// Reassigns the map's ID to a deterministic ID based on field name.
     ///
     /// This is called by the `#[app::state]` macro after `init()` returns to ensure
@@ -125,36 +171,10 @@ where
     where
         K: AsRef<[u8]> + PartialEq,
     {
-        use super::compute_collection_id;
-
-        let new_id = compute_collection_id(None, field_name);
-        let old_id = self.inner.id();
-
-        // If already has the correct ID, nothing to do
-        if old_id == new_id {
-            return;
-        }
-
-        // Collect all entries before migration (must do this before clearing)
-        let entries: Vec<(K, V)> = self
-            .entries()
-            .expect("failed to read entries for migration")
-            .collect();
-
-        // Clear the collection (removes old entries with old IDs)
-        self.inner.clear().expect("failed to clear for migration");
-
-        // Now reassign the collection's ID
-        self.inner.reassign_deterministic_id_with_crdt_type(
+        self.reassign_deterministic_id_with_crdt_type(
             field_name,
             CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
         );
-
-        // Re-insert all entries (they will get new IDs based on new parent ID)
-        for (key, value) in entries {
-            self.insert(key, value)
-                .expect("failed to re-insert entry during migration");
-        }
     }
 
     /// Insert a key-value pair into the map.
@@ -1101,6 +1121,37 @@ mod tests {
             <UnorderedMap<String, String> as crate::entities::Data>::id(&map4),
             "Maps with same field name should have same ID"
         );
+    }
+
+    #[test]
+    fn test_reassign_deterministic_id_preserves_entries() {
+        crate::env::reset_for_testing();
+
+        let mut map = UnorderedMap::<String, String>::new();
+        map.insert("alpha".to_owned(), "one".to_owned())
+            .expect("insert alpha failed");
+        map.insert("beta".to_owned(), "two".to_owned())
+            .expect("insert beta failed");
+
+        let old_id = <UnorderedMap<String, String> as crate::entities::Data>::id(&map);
+        map.reassign_deterministic_id("items");
+        let new_id = <UnorderedMap<String, String> as crate::entities::Data>::id(&map);
+
+        assert_ne!(
+            old_id, new_id,
+            "Map ID should change after deterministic reassignment"
+        );
+        assert_eq!(
+            map.get("alpha").expect("get alpha failed").as_deref(),
+            Some("one"),
+            "alpha entry should survive reassignment"
+        );
+        assert_eq!(
+            map.get("beta").expect("get beta failed").as_deref(),
+            Some("two"),
+            "beta entry should survive reassignment"
+        );
+        assert_eq!(map.len().expect("len failed"), 2);
     }
 
     #[test]

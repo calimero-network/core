@@ -152,6 +152,9 @@ impl Message for ListGroupContextsRequest {
     type Result = eyre::Result<Vec<GroupContextEntry>>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`GroupOp::ContextAliasSet`](crate::local_governance::GroupOp::ContextAliasSet)
+/// via `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreContextAliasRequest {
     pub group_id: ContextGroupId,
@@ -233,6 +236,10 @@ impl Message for JoinGroupRequest {
 pub struct JoinGroupResponse {
     pub group_id: ContextGroupId,
     pub member_identity: PublicKey,
+    /// Serialized `SignedGroupOp` (borsh) containing the `JoinWithInvitationClaim`.
+    /// The orchestrator must relay this to the inviting node's claim-invitation
+    /// endpoint so the member is registered on the remote side.
+    pub governance_op_bytes: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -318,17 +325,16 @@ pub struct SyncGroupResponse {
 }
 
 #[derive(Debug)]
-pub struct JoinGroupContextRequest {
-    pub group_id: ContextGroupId,
+pub struct JoinContextRequest {
     pub context_id: ContextId,
 }
 
-impl Message for JoinGroupContextRequest {
-    type Result = eyre::Result<JoinGroupContextResponse>;
+impl Message for JoinContextRequest {
+    type Result = eyre::Result<JoinContextResponse>;
 }
 
 #[derive(Clone, Debug)]
-pub struct JoinGroupContextResponse {
+pub struct JoinContextResponse {
     pub context_id: ContextId,
     pub member_public_key: PublicKey,
 }
@@ -360,57 +366,6 @@ impl Message for GetMemberCapabilitiesRequest {
 #[derive(Clone, Debug)]
 pub struct GetMemberCapabilitiesResponse {
     pub capabilities: u32,
-}
-
-#[derive(Debug)]
-pub struct SetContextVisibilityRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-    pub mode: calimero_context_config::VisibilityMode,
-    pub requester: Option<PublicKey>,
-}
-
-impl Message for SetContextVisibilityRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
-pub struct GetContextVisibilityRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-}
-
-impl Message for GetContextVisibilityRequest {
-    type Result = eyre::Result<GetContextVisibilityResponse>;
-}
-
-#[derive(Clone, Debug)]
-pub struct GetContextVisibilityResponse {
-    pub mode: calimero_context_config::VisibilityMode,
-    pub creator: PublicKey,
-}
-
-#[derive(Debug)]
-pub struct ManageContextAllowlistRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-    pub add: Vec<PublicKey>,
-    pub remove: Vec<PublicKey>,
-    pub requester: Option<PublicKey>,
-}
-
-impl Message for ManageContextAllowlistRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
-pub struct GetContextAllowlistRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-}
-
-impl Message for GetContextAllowlistRequest {
-    type Result = eyre::Result<Vec<PublicKey>>;
 }
 
 #[derive(Debug)]
@@ -470,6 +425,19 @@ impl Message for SetDefaultVisibilityRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`SetDefaultVisibilityRequest`] instead, which
+/// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
+#[derive(Debug)]
+pub struct StoreDefaultVisibilityRequest {
+    pub group_id: ContextGroupId,
+    pub mode: u8,
+}
+
+impl Message for StoreDefaultVisibilityRequest {
+    type Result = eyre::Result<()>;
+}
+
 #[derive(Debug)]
 pub struct BroadcastGroupAliasesRequest {
     pub group_id: ContextGroupId,
@@ -500,6 +468,9 @@ impl Message for SetMemberAliasRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`SetMemberAliasRequest`] instead, which
+/// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreMemberAliasRequest {
     pub group_id: ContextGroupId,
@@ -522,6 +493,9 @@ impl Message for SetGroupAliasRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`SetGroupAliasRequest`] instead, which
+/// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreGroupAliasRequest {
     pub group_id: ContextGroupId,
@@ -532,6 +506,9 @@ impl Message for StoreGroupAliasRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`GroupOp::ContextRegistered`](crate::local_governance::GroupOp::ContextRegistered)
+/// via `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreGroupContextRequest {
     pub group_id: ContextGroupId,
@@ -542,6 +519,10 @@ impl Message for StoreGroupContextRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use the appropriate `Set*Request` types or other
+/// signed [`GroupOp`](crate::local_governance::GroupOp) flows that go through
+/// `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreGroupMetaRequest {
     pub group_id: ContextGroupId,
@@ -553,6 +534,9 @@ impl Message for StoreGroupMetaRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`SetMemberCapabilitiesRequest`] instead, which
+/// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreMemberCapabilityRequest {
     pub group_id: ContextGroupId,
@@ -564,6 +548,9 @@ impl Message for StoreMemberCapabilityRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Direct local persist — used when applying replicated governance ops.
+/// For user-initiated changes, use [`SetDefaultCapabilitiesRequest`] instead, which
+/// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
 pub struct StoreDefaultCapabilitiesRequest {
     pub group_id: ContextGroupId,
@@ -574,59 +561,51 @@ impl Message for StoreDefaultCapabilitiesRequest {
     type Result = eyre::Result<()>;
 }
 
+// ---------------------------------------------------------------------------
+// Namespace queries
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct NamespaceSummary {
+    pub namespace_id: ContextGroupId,
+    pub app_key: AppKey,
+    pub target_application_id: ApplicationId,
+    pub upgrade_policy: UpgradePolicy,
+    pub created_at: u64,
+    pub alias: Option<String>,
+    pub member_count: usize,
+    pub context_count: usize,
+    pub subgroup_count: usize,
+}
+
 #[derive(Debug)]
-pub struct StoreContextVisibilityRequest {
+pub struct ListNamespacesRequest {
+    pub offset: usize,
+    pub limit: usize,
+}
+
+impl Message for ListNamespacesRequest {
+    type Result = eyre::Result<Vec<NamespaceSummary>>;
+}
+
+#[derive(Debug)]
+pub struct GetNamespaceIdentityRequest {
     pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-    pub mode: u8,
-    pub creator: PublicKey,
 }
 
-impl Message for StoreContextVisibilityRequest {
-    type Result = eyre::Result<()>;
+impl Message for GetNamespaceIdentityRequest {
+    type Result = eyre::Result<Option<(ContextGroupId, PublicKey)>>;
 }
 
 #[derive(Debug)]
-pub struct StoreDefaultVisibilityRequest {
-    pub group_id: ContextGroupId,
-    pub mode: u8,
+pub struct ListNamespacesForApplicationRequest {
+    pub application_id: ApplicationId,
+    pub offset: usize,
+    pub limit: usize,
 }
 
-impl Message for StoreDefaultVisibilityRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
-pub struct StoreContextAllowlistRequest {
-    pub group_id: ContextGroupId,
-    pub context_id: ContextId,
-    pub members: Vec<PublicKey>,
-}
-
-impl Message for StoreContextAllowlistRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
-pub struct GrantContextCapabilitiesRequest {
-    pub context_id: ContextId,
-    pub capabilities: Vec<(PublicKey, u8)>,
-    pub signer_id: PublicKey,
-}
-
-impl Message for GrantContextCapabilitiesRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
-pub struct RevokeContextCapabilitiesRequest {
-    pub context_id: ContextId,
-    pub capabilities: Vec<(PublicKey, u8)>,
-    pub signer_id: PublicKey,
-}
-
-impl Message for RevokeContextCapabilitiesRequest {
-    type Result = eyre::Result<()>;
+impl Message for ListNamespacesForApplicationRequest {
+    type Result = eyre::Result<Vec<NamespaceSummary>>;
 }
 
 impl From<calimero_store::key::GroupUpgradeValue> for GroupUpgradeInfo {

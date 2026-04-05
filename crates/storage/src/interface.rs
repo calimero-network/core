@@ -904,7 +904,6 @@ impl<S: StorageAdaptor> Interface<S> {
         data: &[u8],
         metadata: Metadata,
     ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
-        let incoming_created_at = metadata.created_at;
         let incoming_updated_at = metadata.updated_at();
 
         // Compute incoming data hash for tracing

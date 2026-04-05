@@ -3,6 +3,13 @@ use serde_json::{from_value as from_json_value, json, to_string as to_json_strin
 use super::*;
 
 #[test]
+fn zero_hash_matches_from_bytes() {
+    let from_bytes: Hash = [0u8; 32].into();
+    assert_eq!(Hash::zero(), from_bytes);
+    assert_eq!(from_bytes.as_str(), "11111111111111111111111111111111");
+}
+
+#[test]
 fn test_hash_43() {
     let hash = Hash::new(b"Hello, World");
 

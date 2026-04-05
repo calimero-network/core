@@ -19,5 +19,5 @@ tdx-quote.workspace = true
 url = { workspace = true, features = ["serde"] }
 
 calimero-context-config.workspace = true
-calimero-context-primitives.workspace = true
+calimero-context-client.workspace = true
 calimero-primitives.workspace = true

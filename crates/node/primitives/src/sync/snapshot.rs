@@ -573,7 +573,7 @@ pub fn check_snapshot_safety(has_local_state: bool) -> Result<(), SnapshotError>
 // Wire Protocol Messages
 // =============================================================================
 
-/// Maximum byte length for [`BroadcastMessage::SignedGroupOpV1::payload`].
+/// Maximum byte length for governance op payloads in [`BroadcastMessage::NamespaceGovernanceDelta`].
 pub const MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -605,6 +605,11 @@ pub enum BroadcastMessage<'a> {
         /// Allows receiving nodes to determine if the author was authorized
         /// at the governance state the delta was created against.
         governance_epoch: Vec<[u8; 32]>,
+
+        /// `sha256(group_key)` — identifies which group key encrypted this
+        /// delta. Receivers look up the corresponding key from their local
+        /// `GroupKeyEntry` store to decrypt.
+        key_id: [u8; 32],
     },
 
     /// Hash heartbeat for divergence detection
@@ -643,47 +648,6 @@ pub enum BroadcastMessage<'a> {
         nonce: [u8; 32],
     },
 
-    /// Notification that a group mutation occurred.
-    /// Receiving nodes should re-sync the group state from the local store or peers.
-    GroupMutationNotification {
-        group_id: [u8; 32],
-        mutation_kind: GroupMutationKind,
-    },
-
-    /// Signed local group governance operation (`calimero_context_primitives::local_governance::SignedGroupOp`).
-    ///
-    /// Payload is opaque here to keep `calimero-node-primitives` independent of `calimero-context-primitives`.
-    /// See `docs/context-management/LOCAL-GROUP-GOVERNANCE.md`.
-    SignedGroupOpV1 {
-        /// `borsh(SignedGroupOp)`; must be ≤ [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`].
-        payload: Vec<u8>,
-    },
-
-    /// DAG-aware group governance delta with causal metadata.
-    ///
-    /// Replaces [`SignedGroupOpV1`] for nodes running schema v2.
-    /// Contains the same `SignedGroupOp` payload plus DAG ordering info.
-    GroupGovernanceDelta {
-        group_id: [u8; 32],
-        /// Content hash of the signed op (delta ID in the governance DAG).
-        delta_id: [u8; 32],
-        /// Parent delta IDs (content hashes of causally preceding ops).
-        parent_ids: Vec<[u8; 32]>,
-        /// `borsh(SignedGroupOp)` — must be ≤ [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`].
-        payload: Vec<u8>,
-    },
-
-    /// Periodic heartbeat for group governance DAG divergence detection.
-    ///
-    /// Peers compare `dag_heads`; if a peer has heads we lack, trigger catch-up sync.
-    GroupStateHeartbeat {
-        group_id: [u8; 32],
-        /// Current DAG tip content hashes.
-        dag_heads: Vec<[u8; 32]>,
-        /// Number of members in the group (sanity check).
-        member_count: u32,
-    },
-
     /// TEE node announces its attestation to join a group.
     /// Broadcast on the group gossip topic by fleet nodes after being assigned by the gatekeeper.
     TeeAttestationAnnounce {
@@ -696,60 +660,24 @@ pub enum BroadcastMessage<'a> {
         /// Type of specialized node
         node_type: SpecializedNodeType,
     },
-}
 
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
-pub enum GroupMutationKind {
-    MembersAdded,
-    MembersRemoved,
-    Upgraded,
-    Deleted,
-    ContextDetached,
-    SettingsUpdated,
-    MemberRoleUpdated,
-    VisibilityUpdated,
-    ContextAttached,
-    ContextAliasSet {
-        context_id: [u8; 32],
-        alias: String,
+    /// Signed namespace governance operation (Phase 2 rewrite).
+    ///
+    /// Published on the `ns/<hex(namespace_id)>` topic. Contains a
+    /// `SignedNamespaceOp` which may be a cleartext root op or an encrypted
+    /// group-scoped op.
+    NamespaceGovernanceDelta {
+        namespace_id: [u8; 32],
+        delta_id: [u8; 32],
+        parent_ids: Vec<[u8; 32]>,
+        /// `borsh(SignedNamespaceOp)` — must be ≤ [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`].
+        payload: Vec<u8>,
     },
-    MemberCapabilitySet {
-        member: [u8; 32],
-        capabilities: u32,
-    },
-    DefaultCapabilitiesSet {
-        capabilities: u32,
-    },
-    ContextVisibilitySet {
-        context_id: [u8; 32],
-        /// 0 = Open, 1 = Restricted
-        mode: u8,
-        creator: [u8; 32],
-    },
-    DefaultVisibilitySet {
-        /// 0 = Open, 1 = Restricted
-        mode: u8,
-    },
-    ContextAllowlistSet {
-        context_id: [u8; 32],
-        /// Full replacement list — receiver clears then inserts
-        members: Vec<[u8; 32]>,
-    },
-    MemberAliasSet {
-        member: [u8; 32],
-        alias: String,
-    },
-    GroupAliasSet {
-        alias: String,
-    },
-    ContextRegistered {
-        context_id: [u8; 32],
-    },
-    TeeAdmissionPolicySet,
-    /// Bootstrap group metadata to a new peer (broadcast on subscription).
-    /// Payload is borsh-serialized `GroupMetaValue`.
-    GroupMetaSet {
-        meta_payload: Vec<u8>,
+
+    /// Periodic heartbeat for namespace governance DAG divergence detection.
+    NamespaceStateHeartbeat {
+        namespace_id: [u8; 32],
+        dag_heads: Vec<[u8; 32]>,
     },
 }
 
@@ -1644,19 +1572,5 @@ mod tests {
         let decoded: SnapshotBoundaryRequest = borsh::from_slice(&encoded).expect("deserialize");
         assert_eq!(request_none, decoded);
         assert!(decoded.requested_cutoff_timestamp.is_none());
-    }
-
-    #[test]
-    fn broadcast_message_signed_group_op_v1_roundtrip() {
-        let inner = vec![1u8, 2, 3];
-        let msg = BroadcastMessage::SignedGroupOpV1 {
-            payload: inner.clone(),
-        };
-        let bytes = borsh::to_vec(&msg).expect("serialize");
-        let decoded: BroadcastMessage<'static> = borsh::from_slice(&bytes).expect("deserialize");
-        match decoded {
-            BroadcastMessage::SignedGroupOpV1 { payload } => assert_eq!(payload, inner),
-            _ => panic!("expected SignedGroupOpV1 variant"),
-        }
     }
 }

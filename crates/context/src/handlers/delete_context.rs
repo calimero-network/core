@@ -1,7 +1,7 @@
 use core::error::Error;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
-use calimero_context_primitives::messages::{DeleteContextRequest, DeleteContextResponse};
+use calimero_context_client::messages::{DeleteContextRequest, DeleteContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -134,15 +134,9 @@ async fn delete_context(
             &node_client,
             &group_id,
             &PrivateKey::from(sk),
-            calimero_context_primitives::local_governance::GroupOp::ContextDetached { context_id },
+            calimero_context_client::local_governance::GroupOp::ContextDetached { context_id },
         )
         .await?;
-        let _ = node_client
-            .broadcast_group_mutation(
-                group_id.to_bytes(),
-                calimero_node_primitives::sync::GroupMutationKind::ContextDetached,
-            )
-            .await;
     }
 
     Ok(())

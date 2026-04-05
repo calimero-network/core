@@ -34,7 +34,7 @@ use calimero_crypto::Nonce;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 
 use super::hash_comparison::TreeNode;
 use super::levelwise::LevelNode;
@@ -106,9 +106,6 @@ pub enum InitPayload {
         /// ID of the blob to share.
         blob_id: BlobId,
     },
-
-    /// Request to share encryption keys.
-    KeyShare,
 
     /// Request a specific delta by ID (for DAG gap filling).
     DeltaRequest {
@@ -189,10 +186,24 @@ pub enum InitPayload {
         entities: Vec<super::hash_comparison::TreeLeafData>,
     },
 
-    /// Request a specific group governance delta by content hash.
-    GroupDeltaRequest {
-        group_id: [u8; 32],
-        delta_id: [u8; 32],
+    /// Request encrypted payloads for namespace governance skeletons.
+    /// Used during lazy backfill when a member joins a new group and
+    /// needs to decrypt previously-stored opaque skeletons.
+    NamespaceBackfillRequest {
+        namespace_id: [u8; 32],
+        /// Delta IDs for which we have skeletons but need full payloads.
+        delta_ids: Vec<[u8; 32]>,
+    },
+
+    /// Direct request to join a namespace. The joiner sends their signed
+    /// invitation and public key; the responder validates and returns the
+    /// group key + context list in one shot.
+    NamespaceJoinRequest {
+        namespace_id: [u8; 32],
+        /// Borsh-serialized SignedGroupOpenInvitation
+        invitation_bytes: Vec<u8>,
+        /// The joiner's public key for ECDH key wrapping
+        joiner_public_key: PublicKey,
     },
 }
 
@@ -212,12 +223,6 @@ pub enum MessagePayload<'a> {
         chunk: Cow<'a, [u8]>,
     },
 
-    /// Encryption key share.
-    KeyShare {
-        /// The sender's private key for the context.
-        sender_key: PrivateKey,
-    },
-
     /// Response to DeltaRequest containing the requested delta.
     DeltaResponse {
         /// The serialized delta data.
@@ -233,18 +238,6 @@ pub enum MessagePayload<'a> {
         dag_heads: Vec<[u8; 32]>,
         /// Current root hash.
         root_hash: Hash,
-    },
-
-    /// Challenge to prove ownership of claimed identity.
-    Challenge {
-        /// Random challenge bytes.
-        challenge: [u8; 32],
-    },
-
-    /// Response to challenge with signature (Ed25519 signature is 64 bytes).
-    ChallengeResponse {
-        /// Signature proving identity ownership.
-        signature: [u8; 64],
     },
 
     /// Response to SnapshotBoundaryRequest.
@@ -315,16 +308,29 @@ pub enum MessagePayload<'a> {
         applied_count: u32,
     },
 
-    /// Response containing a group governance delta.
-    GroupDeltaResponse {
-        delta_id: [u8; 32],
-        parent_ids: Vec<[u8; 32]>,
-        /// borsh(SignedGroupOp)
-        payload: Vec<u8>,
+    /// Response containing namespace governance delta payloads for backfill.
+    NamespaceBackfillResponse {
+        /// Pairs of (delta_id, borsh(SignedNamespaceOp)).
+        /// Only includes deltas the responder has full payloads for.
+        deltas: Vec<([u8; 32], Vec<u8>)>,
     },
 
-    /// The requested group delta was not found.
-    GroupDeltaNotFound,
+    /// Response to NamespaceJoinRequest with everything the joiner needs.
+    NamespaceJoinResponse {
+        /// ECDH-wrapped group key envelope (borsh-serialized KeyEnvelope).
+        /// Empty if the responder doesn't hold the group key.
+        key_envelope_bytes: Vec<u8>,
+        /// Context IDs registered under this namespace/group.
+        context_ids: Vec<ContextId>,
+        /// The application ID used by contexts in this group.
+        application_id: [u8; 32],
+        /// All namespace governance ops (borsh-serialized SignedNamespaceOp)
+        /// so the joiner can replay the full governance history.
+        governance_ops: Vec<Vec<u8>>,
+    },
+
+    /// The responder rejected the join request.
+    NamespaceJoinRejected { reason: String },
 }
 
 // =============================================================================

@@ -80,6 +80,7 @@ fn create_test_bundle(
             )
             .collect(),
         links: None,
+        services: None,
         signature: None,
     };
 
@@ -150,6 +151,8 @@ async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempD
 
     let (event_sender, _) = broadcast::channel(256);
     let (ctx_sync_tx, _) = mpsc::channel(64);
+    let (ns_sync_tx, _) = mpsc::channel(64);
+    let (ns_join_tx, _) = mpsc::channel(16);
 
     let node_client = NodeClient::new(
         datastore,
@@ -158,6 +161,8 @@ async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempD
         LazyRecipient::new(),
         event_sender,
         ctx_sync_tx,
+        ns_sync_tx,
+        ns_join_tx,
         String::new(), // Not used in tests
     );
 
@@ -541,6 +546,7 @@ fn create_test_bundle_custom_wasm_path(
         abi: None,
         migrations: vec![],
         links: None,
+        services: None,
         signature: None,
     };
 
@@ -1672,6 +1678,7 @@ fn create_test_bundle_with_key(
         abi: None,
         migrations: vec![],
         links: None,
+        services: None,
         signature: None,
     })
     .unwrap();
