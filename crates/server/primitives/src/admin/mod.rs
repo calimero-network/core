@@ -1949,8 +1949,6 @@ pub struct JoinGroupApiResponseData {
     pub group_id: String,
     pub member_identity: PublicKey,
     pub governance_op: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub debug_info: Option<String>,
 }
 
 // ---- Claim Group Invitation ----

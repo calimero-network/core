@@ -106,15 +106,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     .request_namespace_join(namespace_id, invitation_bytes, joiner_identity)
                     .await?;
 
-                eprintln!(
-                    "[JOIN-DIAG] join response: key_len={} contexts={} gov_ops={} app_id={} context_ids={:?}",
-                    join_result.key_envelope_bytes.len(),
-                    join_result.context_ids.len(),
-                    join_result.governance_ops.len(),
-                    hex::encode(join_result.application_id),
-                    join_result.context_ids.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
-                );
-
                 // Unwrap and store the group key.
                 if !join_result.key_envelope_bytes.is_empty() {
                     let envelope: calimero_context_client::local_governance::KeyEnvelope =
@@ -167,11 +158,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 let app_id_bytes = join_result.application_id;
 
                 if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
-                    eprintln!(
-                        "[JOIN-DIAG] group_meta: auto_join={} target_app={}",
-                        meta.auto_join,
-                        meta.target_application_id,
-                    );
                     if meta.auto_join {
                         info!(
                             ?group_id,
@@ -192,13 +178,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             }
                             drop(handle);
 
-                            let has_ctx = context_client.has_context(context_id)?;
-                            eprintln!(
-                                "[JOIN-DIAG] auto-join ctx={} has_already={}",
-                                context_id, has_ctx,
-                            );
-
-                            let config = if !has_ctx {
+                            let config = if !context_client.has_context(context_id)? {
                                 let zero_app =
                                     calimero_primitives::application::ApplicationId::from(
                                         [0u8; 32],
@@ -213,11 +193,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                         .map(|m| m.target_application_id)
                                         .filter(|id| *id != zero_app)
                                 };
-                                eprintln!(
-                                    "[JOIN-DIAG] bootstrap ctx={} app={:?}",
-                                    context_id,
-                                    resolved.map(|a| a.to_string()),
-                                );
                                 Some(ContextConfigParams {
                                     application_id: resolved,
                                     application_revision: 0,
@@ -227,22 +202,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                 None
                             };
 
-                            match context_client
+                            if let Err(e) = context_client
                                 .sync_context_config(*context_id, config)
                                 .await
                             {
-                                Ok(ctx) => {
-                                    eprintln!(
-                                        "[JOIN-DIAG] sync_context_config OK ctx={} app={}",
-                                        context_id, ctx.application_id,
-                                    );
-                                }
-                                Err(e) => {
-                                    eprintln!(
-                                        "[JOIN-DIAG] sync_context_config FAILED ctx={} err={:?}",
-                                        context_id, e,
-                                    );
-                                }
+                                warn!(%context_id, ?e, "failed to sync context config");
                             }
                             if let Err(e) = node_client.subscribe(context_id).await {
                                 warn!(%context_id, ?e, "failed to subscribe to context");
@@ -252,31 +216,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             }
                         }
                     }
-                } else {
-                    warn!(
-                        ?group_id,
-                        "group_meta NOT FOUND after join"
-                    );
-                }
-
-                let default_ctx = calimero_primitives::context::ContextId::from([0u8; 32]);
-                let first_ctx = contexts.first().unwrap_or(&default_ctx);
-                let locally_visible = context_client
-                    .get_context(first_ctx)
-                    .map(|o| o.is_some())
-                    .unwrap_or(false);
-
-                if !locally_visible && !contexts.is_empty() {
-                    return Err(eyre::eyre!(
-                        "DIAG: join completed but context not locally visible. \
-                         ctx_from_peer={} first_ctx={} app_from_peer={} \
-                         has_key={} gov_ops={}",
-                        contexts.len(),
-                        first_ctx,
-                        hex::encode(app_id_bytes),
-                        !join_result.key_envelope_bytes.is_empty(),
-                        join_result.governance_ops.len(),
-                    ));
                 }
 
                 if let Err(e) = node_client.sync(None, None).await {
