@@ -222,29 +222,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     warn!(?e, "failed to trigger global sync after join");
                 }
 
-                // Verify context visibility after auto-join
-                for ctx in contexts {
-                    let visible = context_client
-                        .get_context(ctx)
-                        .map(|o| o.is_some())
-                        .unwrap_or(false);
-                    if !visible {
-                        return Err(eyre::eyre!(
-                            "DIAG: ctx {} not visible after sync_context_config. \
-                             peer_ctx_count={} app_from_peer={} key_present={} \
-                             gov_ops={} auto_join={}",
-                            ctx,
-                            contexts.len(),
-                            hex::encode(app_id_bytes),
-                            !join_result.key_envelope_bytes.is_empty(),
-                            join_result.governance_ops.len(),
-                            group_store::load_group_meta(&datastore, &group_id)?
-                                .map(|m| m.auto_join)
-                                .unwrap_or(false),
-                        ));
-                    }
-                }
-
                 info!(
                     ?group_id,
                     namespace_id = %hex::encode(namespace_id),
