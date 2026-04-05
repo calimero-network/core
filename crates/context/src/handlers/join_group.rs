@@ -106,18 +106,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     .request_namespace_join(namespace_id, invitation_bytes, joiner_identity)
                     .await?;
 
-                if join_result.context_ids.is_empty() {
-                    return Err(eyre::eyre!(
-                        "DIAG: peer returned 0 contexts. ns_id={} group_id={:?} \
-                         key_len={} gov_ops={} app_id={}",
-                        hex::encode(namespace_id),
-                        group_id,
-                        join_result.key_envelope_bytes.len(),
-                        join_result.governance_ops.len(),
-                        hex::encode(join_result.application_id),
-                    ));
-                }
-
                 // Unwrap and store the group key.
                 if !join_result.key_envelope_bytes.is_empty() {
                     let envelope: calimero_context_client::local_governance::KeyEnvelope =
@@ -232,6 +220,29 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                 if let Err(e) = node_client.sync(None, None).await {
                     warn!(?e, "failed to trigger global sync after join");
+                }
+
+                // Verify context visibility after auto-join
+                for ctx in contexts {
+                    let visible = context_client
+                        .get_context(ctx)
+                        .map(|o| o.is_some())
+                        .unwrap_or(false);
+                    if !visible {
+                        return Err(eyre::eyre!(
+                            "DIAG: ctx {} not visible after sync_context_config. \
+                             peer_ctx_count={} app_from_peer={} key_present={} \
+                             gov_ops={} auto_join={}",
+                            ctx,
+                            contexts.len(),
+                            hex::encode(app_id_bytes),
+                            !join_result.key_envelope_bytes.is_empty(),
+                            join_result.governance_ops.len(),
+                            group_store::load_group_meta(&datastore, &group_id)?
+                                .map(|m| m.auto_join)
+                                .unwrap_or(false),
+                        ));
+                    }
                 }
 
                 info!(
