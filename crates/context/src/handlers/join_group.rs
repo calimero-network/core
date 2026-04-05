@@ -222,12 +222,40 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     warn!(?e, "failed to trigger global sync after join");
                 }
 
-                // Allow blob sharing to deliver the application binary before
-                // returning. Without the WASM, context state sync cannot apply
-                // deltas. The interval sync will eventually deliver it, but the
-                // e2e tests issue writes immediately after join.
+                // Ensure the application binary is locally available before
+                // returning. Without the WASM, context state sync cannot
+                // apply deltas. Poll has_application with a timeout.
                 if !contexts.is_empty() {
-                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    let zero_app = calimero_primitives::application::ApplicationId::from([0u8; 32]);
+                    let app_id =
+                        calimero_primitives::application::ApplicationId::from(app_id_bytes);
+                    if app_id != zero_app {
+                        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+                        loop {
+                            match node_client.has_application(&app_id) {
+                                Ok(true) => {
+                                    info!(%app_id, "application binary available");
+                                    break;
+                                }
+                                Ok(false) => {
+                                    if tokio::time::Instant::now() >= deadline {
+                                        warn!(
+                                            %app_id,
+                                            "application binary not available within timeout"
+                                        );
+                                        break;
+                                    }
+                                    // Trigger a sync round to request the blob
+                                    let _ = node_client.sync(None, None).await;
+                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                }
+                                Err(e) => {
+                                    warn!(%app_id, ?e, "failed to check application availability");
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 info!(
