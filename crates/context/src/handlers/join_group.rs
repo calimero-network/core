@@ -106,6 +106,18 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     .request_namespace_join(namespace_id, invitation_bytes, joiner_identity)
                     .await?;
 
+                if join_result.context_ids.is_empty() {
+                    return Err(eyre::eyre!(
+                        "DIAG: peer returned 0 contexts. ns_id={} group_id={:?} \
+                         key_len={} gov_ops={} app_id={}",
+                        hex::encode(namespace_id),
+                        group_id,
+                        join_result.key_envelope_bytes.len(),
+                        join_result.governance_ops.len(),
+                        hex::encode(join_result.application_id),
+                    ));
+                }
+
                 // Unwrap and store the group key.
                 if !join_result.key_envelope_bytes.is_empty() {
                     let envelope: calimero_context_client::local_governance::KeyEnvelope =
