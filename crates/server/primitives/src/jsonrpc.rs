@@ -144,7 +144,10 @@ pub struct ExecutionRequest {
     pub context_id: ContextId,
     pub method: String,
     pub args_json: serde_json::Value,
-    pub executor_public_key: PublicKey,
+    /// The identity to execute as. If omitted, the node auto-resolves its
+    /// owned identity for this context (there is exactly one per namespace).
+    #[serde(default)]
+    pub executor_public_key: Option<PublicKey>,
     #[serde(default)]
     pub substitute: Vec<Alias<PublicKey>>,
 }
@@ -155,7 +158,7 @@ impl ExecutionRequest {
         context_id: ContextId,
         method: String,
         args_json: serde_json::Value,
-        executor_public_key: PublicKey,
+        executor_public_key: Option<PublicKey>,
         substitute: Vec<Alias<PublicKey>>,
     ) -> Self {
         Self {
