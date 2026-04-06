@@ -647,14 +647,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 Some(serialized)
                             };
 
-                            let governance_epoch = {
-                                let ds = context_client.datastore();
-                                crate::group_store::compute_namespace_governance_epoch(
-                                    ds,
-                                    &context_id,
-                                )
-                                .unwrap_or_default()
-                            };
+                            // governance_epoch is retained in the wire protocol
+                            // for compatibility but is no longer processed by
+                            // receivers (catch-up is via NamespaceStateHeartbeat).
+                            // Skip the store lookup to avoid unnecessary I/O.
+                            let governance_epoch: Vec<[u8; 32]> = vec![];
 
                             node_client
                                 .broadcast(

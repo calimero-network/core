@@ -145,7 +145,10 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // join window that weren't in the join response snapshot.
                 // Direct stream request — does not depend on gossip delivery.
                 if let Err(e) = node_client.sync_namespace(namespace_id).await {
-                    warn!(?e, "failed to trigger post-join namespace governance pull (non-fatal)");
+                    warn!(
+                        ?e,
+                        "failed to trigger post-join namespace governance pull (non-fatal)"
+                    );
                 }
 
                 // Publish MemberJoined so other namespace members learn

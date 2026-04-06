@@ -2521,17 +2521,13 @@ impl SyncManager {
 
         let governance_ops = self.collect_namespace_governance_ops(namespace_id)?;
 
-        eprintln!(
-            "[JOIN-RESP] ns={} has_key={} contexts={} app={} gov_ops={} ctx_ids={:?}",
-            hex::encode(namespace_id),
-            !key_envelope_bytes.is_empty(),
-            context_ids.len(),
-            hex::encode(application_id),
-            governance_ops.len(),
-            context_ids
-                .iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<_>>(),
+        debug!(
+            namespace_id = %hex::encode(namespace_id),
+            has_key = !key_envelope_bytes.is_empty(),
+            context_count = context_ids.len(),
+            app_id = %hex::encode(application_id),
+            governance_ops_count = governance_ops.len(),
+            "Sending NamespaceJoinResponse"
         );
 
         let msg = StreamMessage::Message {

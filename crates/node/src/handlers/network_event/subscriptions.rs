@@ -20,7 +20,10 @@ pub(super) fn handle_subscribed(
             let context_client = manager.clients.context.clone();
             let _ignored = ctx.spawn(
                 async move {
-                    use calimero_context_client::group::SyncGroupRequest;
+                    use calimero_context_client::group::{
+                        BroadcastGroupAliasesRequest, BroadcastGroupLocalStateRequest,
+                        SyncGroupRequest,
+                    };
                     use calimero_context_config::types::ContextGroupId;
 
                     let group_id = ContextGroupId::from(bytes);
@@ -33,18 +36,7 @@ pub(super) fn handle_subscribed(
                     {
                         warn!(?err, "Failed to auto-sync group after peer subscription");
                     }
-                }
-                .into_actor(manager),
-            );
-
-            let context_client_alias = manager.clients.context.clone();
-            let _ignored_alias = ctx.spawn(
-                async move {
-                    use calimero_context_client::group::BroadcastGroupAliasesRequest;
-                    use calimero_context_config::types::ContextGroupId;
-
-                    let group_id = ContextGroupId::from(bytes);
-                    if let Err(err) = context_client_alias
+                    if let Err(err) = context_client
                         .broadcast_group_aliases(BroadcastGroupAliasesRequest { group_id })
                         .await
                     {
@@ -53,18 +45,7 @@ pub(super) fn handle_subscribed(
                             "Failed to re-broadcast group aliases after peer subscription"
                         );
                     }
-                }
-                .into_actor(manager),
-            );
-
-            let context_client_local_state = manager.clients.context.clone();
-            let _ignored_local_state = ctx.spawn(
-                async move {
-                    use calimero_context_client::group::BroadcastGroupLocalStateRequest;
-                    use calimero_context_config::types::ContextGroupId;
-
-                    let group_id = ContextGroupId::from(bytes);
-                    if let Err(err) = context_client_local_state
+                    if let Err(err) = context_client
                         .broadcast_group_local_state(BroadcastGroupLocalStateRequest { group_id })
                         .await
                     {
