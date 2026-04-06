@@ -118,6 +118,15 @@ jobs:
               echo "failed=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Upload e2e-kv-store logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-e2e-kv-store-${{ github.sha }}
+          path: docker-logs/e2e-kv-store*
+          retention-days: 7
+          if-no-files-found: ignore
+
       # Run groups workflow
       - name: Run e2e-kv-store Groups Workflow
         id: run_groups
@@ -160,6 +169,15 @@ jobs:
               echo "failed=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Upload groups logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-groups-${{ github.sha }}
+          path: docker-logs/groups*
+          retention-days: 7
+          if-no-files-found: ignore
+
       # Run xcall-example workflow
       - name: Run xcall-example Workflow
         id: run_xcall
@@ -201,6 +219,15 @@ jobs:
           else
               echo "failed=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Upload xcall logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-xcall-${{ github.sha }}
+          path: docker-logs/xcall*
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Upload Workflow Data Artifacts
         if: ${{ !cancelled() }}
