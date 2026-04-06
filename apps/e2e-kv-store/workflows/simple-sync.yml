@@ -36,7 +36,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set
     args:
       key: "test_key"
@@ -57,7 +56,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get
     args:
       key: "test_key"
@@ -74,7 +72,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: set
     args:
       key: "from_node2"
@@ -95,7 +92,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get
     args:
       key: "from_node2"

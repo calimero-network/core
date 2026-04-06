@@ -34,7 +34,6 @@ steps:
     type: call
     node: rust-private-data-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: add_secret
     args:
       game_id: game1
@@ -44,7 +43,6 @@ steps:
     type: call
     node: rust-private-data-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: add_secret
     args:
       game_id: game2
@@ -64,7 +62,6 @@ steps:
     type: call
     node: rust-private-data-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: my_secrets
     outputs:
       node_1_secrets: result.output
@@ -78,7 +75,6 @@ steps:
     type: call
     node: rust-private-data-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: games
     outputs:
       node_1_games: result.output
@@ -102,7 +98,6 @@ steps:
     type: call
     node: rust-private-data-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_rust-private-data-2}}"
     method: games
     outputs:
       node_2_games: result.output
@@ -116,7 +111,6 @@ steps:
     type: call
     node: rust-private-data-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_rust-private-data-2}}"
     method: my_secrets
     outputs:
       node_2_secrets: result.output
@@ -130,7 +124,6 @@ steps:
     type: call
     node: rust-private-data-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_rust-private-data-2}}"
     method: add_secret
     args:
       game_id: game3
@@ -150,7 +143,6 @@ steps:
     type: call
     node: rust-private-data-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: my_secrets
     outputs:
       node_1_secrets_again: result.output
@@ -164,7 +156,6 @@ steps:
     type: call
     node: rust-private-data-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_rust-private-data-2}}"
     method: add_guess
     args:
       game_id: game1

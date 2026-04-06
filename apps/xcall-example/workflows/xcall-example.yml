@@ -148,7 +148,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
-    executor_public_key: "{{context_a_member_key}}"
     method: get_counter
     outputs:
       context_a_initial_counter: result
@@ -162,7 +161,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: "{{context_b_id}}"
-    executor_public_key: "{{context_b_member_key}}"
     method: get_counter
     outputs:
       context_b_initial_counter_node1: result
@@ -176,7 +174,6 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_b_id}}"
-    executor_public_key: "{{identity_b}}"
     method: get_counter
     outputs:
       context_b_initial_counter_node2: result
@@ -191,7 +188,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
-    executor_public_key: "{{context_a_member_key}}"
     method: ping
     args:
       target_context: "{{context_b_id}}"
@@ -219,7 +215,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: "{{context_b_id}}"
-    executor_public_key: "{{context_b_member_key}}"
     method: get_counter
     outputs:
       context_b_counter_node1: result
@@ -234,7 +229,6 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_b_id}}"
-    executor_public_key: "{{identity_b}}"
     method: get_counter
     outputs:
       context_b_counter_node2: result
@@ -249,7 +243,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
-    executor_public_key: "{{context_a_member_key}}"
     method: get_counter
     outputs:
       context_a_counter_after_ping: result
@@ -268,7 +261,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: "{{context_b_id}}"
-    executor_public_key: "{{context_b_member_key}}"
     method: ping
     args:
       target_context: "{{context_a_id}}"
@@ -296,7 +288,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
-    executor_public_key: "{{context_a_member_key}}"
     method: get_counter
     outputs:
       context_a_counter_node1: result
@@ -311,7 +302,6 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_a_id}}"
-    executor_public_key: "{{identity_a}}"
     method: get_counter
     outputs:
       context_a_counter_node2: result
@@ -330,7 +320,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
-    executor_public_key: "{{context_a_member_key}}"
     method: ping
     args:
       target_context: "{{context_b_id}}"
@@ -351,7 +340,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
-    executor_public_key: "{{context_a_member_key}}"
     method: ping
     args:
       target_context: "{{context_b_id}}"
@@ -373,7 +361,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: "{{context_b_id}}"
-    executor_public_key: "{{context_b_member_key}}"
     method: get_counter
     outputs:
       context_b_final_counter_node1: result
@@ -387,7 +374,6 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_b_id}}"
-    executor_public_key: "{{identity_b}}"
     method: get_counter
     outputs:
       context_b_final_counter_node2: result
@@ -402,7 +388,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: "{{context_a_id}}"
-    executor_public_key: "{{context_a_member_key}}"
     method: get_counter
     outputs:
       context_a_final_counter: result

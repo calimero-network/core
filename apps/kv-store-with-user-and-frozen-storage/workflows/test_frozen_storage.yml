@@ -44,7 +44,6 @@ steps:
     type: call
     node: new-calimero-node-1
     context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
     method: set
     args:
       key: "my_key1"
@@ -55,7 +54,6 @@ steps:
     type: call
     node: new-calimero-node-1
     context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
     method: add_frozen
     args:
       value: "SomeFrozenString"
@@ -72,7 +70,6 @@ steps:
     type: call
     node: new-calimero-node-1
     context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
     method: get_frozen
     args:
       hash_hex: "{{frozen_value_hash_hex}}"
@@ -100,7 +97,6 @@ steps:
     type: call
     node: new-calimero-node-2
     context_id: '{{context_id}}'
-    executor_public_key: '{{public_key_new-calimero-node-2}}'
     method: get_frozen
     args:
       hash_hex: "{{frozen_value_hash_hex}}"
@@ -117,7 +113,6 @@ steps:
     type: call
     node: new-calimero-node-2
     context_id: '{{context_id}}'
-    executor_public_key: '{{public_key_new-calimero-node-2}}'
     method: add_frozen
     args:
       value: "SomeFrozenString2"
@@ -145,7 +140,6 @@ steps:
     type: call
     node: new-calimero-node-1
     context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
     method: get_frozen
     args:
       hash_hex: "{{frozen_value_hash_hex_node2}}"

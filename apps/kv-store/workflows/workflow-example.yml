@@ -94,7 +94,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
     method: set
     args:
       key: hello
@@ -119,7 +118,6 @@ steps:
     type: call
     node: calimero-node-2
     context_id: '{{context_id}}'
-    executor_public_key: '{{public_key_node2}}'
     method: get
     args:
       key: hello
@@ -131,7 +129,6 @@ steps:
     type: call
     node: calimero-node-3
     context_id: '{{context_id}}'
-    executor_public_key: '{{public_key_node3}}'
     method: get
     args:
       key: hello
@@ -143,7 +140,6 @@ steps:
     type: call
     node: calimero-node-3
     context_id: '{{context_id}}'
-    executor_public_key: '{{public_key_node3}}'
     method: set
     args:
       key: node3_key
@@ -168,7 +164,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
     method: get
     args:
       key: node3_key
@@ -186,7 +181,6 @@ steps:
         type: call
         node: calimero-node-1
         context_id: '{{context_id}}'
-        executor_public_key: '{{member_public_key}}'
         method: set
         args:
           key: "iteration_{{current_iteration}}"
@@ -209,7 +203,6 @@ steps:
         type: call
         node: calimero-node-2
         context_id: '{{context_id}}'
-        executor_public_key: '{{public_key_node2}}'
         method: get
         args:
           key: "iteration_{{current_iteration}}"
@@ -220,7 +213,6 @@ steps:
         type: call
         node: calimero-node-3
         context_id: '{{context_id}}'
-        executor_public_key: '{{public_key_node3}}'
         method: get
         args:
           key: "iteration_{{current_iteration}}"

@@ -127,7 +127,6 @@ steps:
     type: call
     node: sync6-1
     context_id: "{{ctx}}"
-    executor_public_key: "{{key1}}"
     method: write
     args: {"key": "a1", "value": "from_n1", "writer": "n1"}
 
@@ -135,7 +134,6 @@ steps:
     type: call
     node: sync6-2
     context_id: "{{ctx}}"
-    executor_public_key: "{{key2}}"
     method: write
     args: {"key": "a2", "value": "from_n2", "writer": "n2"}
 
@@ -143,7 +141,6 @@ steps:
     type: call
     node: sync6-3
     context_id: "{{ctx}}"
-    executor_public_key: "{{key3}}"
     method: write
     args: {"key": "a3", "value": "from_n3", "writer": "n3"}
 
@@ -159,7 +156,6 @@ steps:
     type: call
     node: sync6-1
     context_id: "{{ctx}}"
-    executor_public_key: "{{key1}}"
     method: count
     outputs:
       n1_count: result
@@ -231,7 +227,6 @@ steps:
     type: call
     node: sync6-4
     context_id: "{{ctx}}"
-    executor_public_key: "{{key4}}"
     method: count
     outputs:
       n4_count: result
@@ -245,7 +240,6 @@ steps:
     type: call
     node: sync6-6
     context_id: "{{ctx}}"
-    executor_public_key: "{{key6}}"
     method: count
     outputs:
       n6_count: result
@@ -263,7 +257,6 @@ steps:
     type: call
     node: sync6-1
     context_id: "{{ctx}}"
-    executor_public_key: "{{key1}}"
     method: write
     args: {"key": "b1", "value": "round2_n1", "writer": "n1"}
 
@@ -271,7 +264,6 @@ steps:
     type: call
     node: sync6-2
     context_id: "{{ctx}}"
-    executor_public_key: "{{key2}}"
     method: write
     args: {"key": "b2", "value": "round2_n2", "writer": "n2"}
 
@@ -279,7 +271,6 @@ steps:
     type: call
     node: sync6-3
     context_id: "{{ctx}}"
-    executor_public_key: "{{key3}}"
     method: write
     args: {"key": "b3", "value": "round2_n3", "writer": "n3"}
 
@@ -287,7 +278,6 @@ steps:
     type: call
     node: sync6-4
     context_id: "{{ctx}}"
-    executor_public_key: "{{key4}}"
     method: write
     args: {"key": "b4", "value": "round2_n4", "writer": "n4"}
 
@@ -295,7 +285,6 @@ steps:
     type: call
     node: sync6-5
     context_id: "{{ctx}}"
-    executor_public_key: "{{key5}}"
     method: write
     args: {"key": "b5", "value": "round2_n5", "writer": "n5"}
 
@@ -303,7 +292,6 @@ steps:
     type: call
     node: sync6-6
     context_id: "{{ctx}}"
-    executor_public_key: "{{key6}}"
     method: write
     args: {"key": "b6", "value": "round2_n6", "writer": "n6"}
 
@@ -323,7 +311,6 @@ steps:
     type: call
     node: sync6-1
     context_id: "{{ctx}}"
-    executor_public_key: "{{key1}}"
     method: count
     outputs:
       n1_final: result
@@ -337,7 +324,6 @@ steps:
     type: call
     node: sync6-4
     context_id: "{{ctx}}"
-    executor_public_key: "{{key4}}"
     method: count
     outputs:
       n4_final: result
@@ -351,7 +337,6 @@ steps:
     type: call
     node: sync6-6
     context_id: "{{ctx}}"
-    executor_public_key: "{{key6}}"
     method: count
     outputs:
       n6_final: result
@@ -366,7 +351,6 @@ steps:
     type: call
     node: sync6-1
     context_id: "{{ctx}}"
-    executor_public_key: "{{key1}}"
     method: snapshot
     outputs:
       snap1: result
@@ -375,7 +359,6 @@ steps:
     type: call
     node: sync6-6
     context_id: "{{ctx}}"
-    executor_public_key: "{{key6}}"
     method: snapshot
     outputs:
       snap6: result
@@ -393,7 +376,6 @@ steps:
     type: call
     node: sync6-6
     context_id: "{{ctx}}"
-    executor_public_key: "{{key6}}"
     method: create_invitation
     args: {"inviter": "n6", "invitee": "n4", "payload": "dm_ctx_n6_n4"}
 
@@ -409,7 +391,6 @@ steps:
     type: call
     node: sync6-4
     context_id: "{{ctx}}"
-    executor_public_key: "{{key4}}"
     method: read_invitation
     args: {"inviter": "n6", "invitee": "n4"}
     outputs:

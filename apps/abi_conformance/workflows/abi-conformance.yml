@@ -35,7 +35,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: noop
 
   # Test Scalar types
@@ -43,7 +42,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: echo_bool
     args:
       b: true
@@ -59,7 +57,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: echo_i32
     args:
       x: 42
@@ -75,7 +72,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: echo_i64
     args:
       x: -9223372036854775808
@@ -91,7 +87,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: echo_u32
     args:
       x: 4294967295
@@ -107,7 +102,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: echo_u64
     args:
       x: 18446744073709551615
@@ -123,7 +117,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: echo_f32
     args:
       x: 3.14159
@@ -139,7 +132,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: echo_f64
     args:
       x: 3.141592653589793
@@ -155,7 +147,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: echo_string
     args:
       s: "Hello, ABI Conformance!"
@@ -171,7 +162,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: echo_bytes
     args:
       b: [72, 101, 108, 108, 111, 32, 87, 111, 114, 108, 100]
@@ -188,7 +178,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: opt_u32
     args:
       x: 100
@@ -204,7 +193,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: opt_string
     args:
       x: "optional string"
@@ -221,7 +209,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: list_u32
     args:
       xs: [1, 2, 3, 4, 5]
@@ -237,7 +224,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: list_strings
     args:
       xs: ["hello", "world", "test"]
@@ -254,7 +240,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: map_u32
     args:
       m:
@@ -274,7 +259,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: make_person
     args:
       p:
@@ -328,7 +312,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: act
     args:
       a:
@@ -345,7 +328,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: act
     args:
       a:
@@ -362,7 +344,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: act
     args:
       a:
@@ -381,7 +362,6 @@ steps:
     type: call
     node: abi-conformance-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: may_fail
     args:
       flag: true
@@ -398,7 +378,6 @@ steps:
     type: call
     node: abi-conformance-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_abi-conformance-node-2}}"
     method: echo_string
     args:
       s: "Synced from Node 2"
@@ -414,7 +393,6 @@ steps:
     type: call
     node: abi-conformance-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_abi-conformance-node-2}}"
     method: list_u32
     args:
       xs: [10, 20, 30]

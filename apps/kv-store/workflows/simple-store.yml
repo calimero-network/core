@@ -39,7 +39,6 @@ steps:
     type: call
     node: simple-store-node-1
     context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
     method: set
     args:
       key: greeting
@@ -49,7 +48,6 @@ steps:
     type: call
     node: simple-store-node-1
     context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
     method: get
     args:
       key: greeting
@@ -65,7 +63,6 @@ steps:
     type: call
     node: simple-store-node-1
     context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
     method: set
     args:
       key: foo
@@ -75,7 +72,6 @@ steps:
     type: call
     node: simple-store-node-1
     context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
     method: set
     args:
       key: test
@@ -85,7 +81,6 @@ steps:
     type: call
     node: simple-store-node-1
     context_id: '{{context_id}}'
-    executor_public_key: '{{member_public_key}}'
     method: entries
     outputs:
       all_entries: result.output

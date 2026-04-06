@@ -67,7 +67,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: '{{ctx1_id}}'
-    executor_public_key: '{{ctx1_key_node1}}'
     method: set
     args:
       key: "group_key1"
@@ -87,7 +86,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: '{{ctx1_id}}'
-    executor_public_key: '{{member_identity_node2}}'
     method: get
     args:
       key: "group_key1"
@@ -103,7 +101,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: '{{ctx1_id}}'
-    executor_public_key: '{{member_identity_node2}}'
     method: set
     args:
       key: "group_key2"
@@ -123,7 +120,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: '{{ctx1_id}}'
-    executor_public_key: '{{ctx1_key_node1}}'
     method: get
     args:
       key: "group_key2"
@@ -168,7 +164,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: '{{ctx3_id}}'
-    executor_public_key: '{{ctx3_key_node2}}'
     method: set
     args:
       key: "ctx3_test"
@@ -188,7 +183,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: '{{ctx3_id}}'
-    executor_public_key: '{{ctx3_key_node1}}'
     method: get
     args:
       key: "ctx3_test"

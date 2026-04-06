@@ -87,7 +87,6 @@ steps:
           - type: call
             node: "{{random_node}}"
             context_id: "{{handlers_context_id}}"
-            executor_public_key: "{{random_executor}}"
             method: set
             args:
               key: "hkey_{{random_int(1, 10000)}}"
@@ -105,7 +104,6 @@ steps:
           - type: call
             node: "{{random_node}}"
             context_id: "{{handlers_context_id}}"
-            executor_public_key: "{{random_executor}}"
             method: get
             args:
               key: "{{fuzzy_key}}"
@@ -125,7 +123,6 @@ steps:
           - type: call
             node: "{{random_node}}"
             context_id: "{{handlers_context_id}}"
-            executor_public_key: "{{random_executor}}"
             method: get
             args:
               key: "hkey_{{random_int(1, 10000)}}"
@@ -144,7 +141,6 @@ steps:
           - type: call
             node: "{{random_node}}"
             context_id: "{{handlers_context_id}}"
-            executor_public_key: "{{random_executor}}"
             method: entries
             outputs:
               hentries_result: result
@@ -160,7 +156,6 @@ steps:
           - type: call
             node: "{{random_node}}"
             context_id: "{{handlers_context_id}}"
-            executor_public_key: "{{random_executor}}"
             method: remove
             args:
               key: "hkey_{{random_int(1, 10000)}}"
@@ -178,7 +173,6 @@ steps:
           - type: call
             node: "{{random_node}}"
             context_id: "{{handlers_context_id}}"
-            executor_public_key: "{{random_executor}}"
             method: get_handler_execution_count
             outputs:
               handler_count: result
@@ -196,7 +190,6 @@ steps:
           - type: call
             node: fuzzy-handlers-node-2
             context_id: "{{handlers_context_id}}"
-            executor_public_key: "{{public_key_fuzzy-handlers-node-2}}"
             method: set
             args:
               key: "handler_consistency_{{uuid}}"
@@ -206,7 +199,6 @@ steps:
           - type: call
             node: fuzzy-handlers-node-4
             context_id: "{{handlers_context_id}}"
-            executor_public_key: "{{public_key_fuzzy-handlers-node-4}}"
             method: get
             args:
               key: "{{fuzzy_key}}"

@@ -44,7 +44,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set
     args:
       key: "greeting"
@@ -54,7 +53,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set
     args:
       key: "count"
@@ -74,7 +72,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get
     args:
       key: "greeting"
@@ -90,7 +87,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: set
     args:
       key: "from_node2"
@@ -110,7 +106,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get
     args:
       key: "from_node2"
@@ -154,7 +149,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get
     args:
       key: "greeting"
@@ -165,7 +159,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get
     args:
       key: "from_node2"
@@ -182,7 +175,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: set
     args:
       key: "from_node3"
@@ -203,7 +195,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get
     args:
       key: "from_node3"
@@ -214,7 +205,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get
     args:
       key: "from_node3"
@@ -231,7 +221,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: entries
     outputs:
       all_entries: result
@@ -245,7 +234,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get_result
     args:
       key: "greeting"
@@ -261,7 +249,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: len
     outputs:
       kv_len: result
@@ -275,7 +262,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: remove
     args:
       key: "count"
@@ -295,7 +281,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get
     args:
       key: "count"
@@ -311,7 +296,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get
     args:
       key: "count"
@@ -331,7 +315,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_handler_execution_count
     outputs:
       initial_handler_count: result
@@ -345,7 +328,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_handler_execution_count
     outputs:
       initial_handler_count_node3: result
@@ -359,7 +341,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set_with_handler
     args:
       key: "handler_test"
@@ -380,7 +361,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_handler_execution_count
     outputs:
       handler_count_after_insert: result
@@ -394,7 +374,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_handler_execution_count
     outputs:
       handler_count_after_insert_node3: result
@@ -408,7 +387,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set_with_handler
     args:
       key: "handler_test"
@@ -429,7 +407,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_handler_execution_count
     outputs:
       handler_count_after_update: result
@@ -443,7 +420,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_handler_execution_count
     outputs:
       handler_count_after_update_node3: result
@@ -457,7 +433,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: remove_with_handler
     args:
       key: "handler_test"
@@ -477,7 +452,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_handler_execution_count
     outputs:
       handler_count_after_remove: result
@@ -491,7 +465,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_handler_execution_count
     outputs:
       handler_count_after_remove_node3: result
@@ -505,7 +478,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set
     args:
       key: "clear_test_1"
@@ -515,7 +487,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set
     args:
       key: "clear_test_2"
@@ -536,7 +507,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: clear_with_handler
 
   - name: Wait for handler sync after clear
@@ -554,7 +524,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_handler_execution_count
     outputs:
       handler_count_after_clear: result
@@ -568,7 +537,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_handler_execution_count
     outputs:
       handler_count_after_clear_node3: result
@@ -585,7 +553,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set_user_simple
     args:
       value: "Node1 Profile"
@@ -594,7 +561,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get_user_simple
     outputs:
       node1_profile: result
@@ -621,7 +587,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_user_simple_for
     args:
       user_key: "{{node1_key}}"
@@ -638,7 +603,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_user_simple_for
     args:
       user_key: "{{node1_key}}"
@@ -655,7 +619,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: set_user_simple
     args:
       value: "Node2 Profile"
@@ -664,7 +627,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_user_simple
     outputs:
       node2_profile: result
@@ -691,7 +653,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get_user_simple_for
     args:
       user_key: "{{public_key_e2e-node-2}}"
@@ -708,7 +669,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_user_simple_for
     args:
       user_key: "{{public_key_e2e-node-2}}"
@@ -726,7 +686,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set_user_nested
     args:
       key: "favorite_color"
@@ -747,7 +706,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get_user_nested
     args:
       key: "favorite_color"
@@ -765,7 +723,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: add_frozen
     args:
       value: "Immutable data"
@@ -787,7 +744,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_frozen
     args:
       hash_hex: "{{frozen_hash}}"
@@ -803,7 +759,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_frozen
     args:
       hash_hex: "{{frozen_hash}}"
@@ -821,7 +776,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: add_secret
     args:
       game_id: "game1"
@@ -842,7 +796,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: my_secrets
     outputs:
       node1_secrets: result
@@ -856,7 +809,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: my_secrets
     outputs:
       node2_secrets: result
@@ -870,7 +822,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: my_secrets
     outputs:
       node3_secrets: result
@@ -884,7 +835,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: games
     outputs:
       public_games: result
@@ -898,7 +848,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: add_guess
     args:
       game_id: "game1"
@@ -915,7 +864,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: add_guess
     args:
       game_id: "game1"
@@ -932,7 +880,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: add_guess
     args:
       game_id: "game1"
@@ -949,7 +896,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: add_guess
     args:
       game_id: "game1"
@@ -970,7 +916,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: increment_g_counter
     args:
       key: "visits"
@@ -979,7 +924,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: increment_g_counter
     args:
       key: "visits"
@@ -1000,7 +944,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: increment_g_counter
     args:
       key: "visits"
@@ -1020,7 +963,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get_g_counter
     args:
       key: "visits"
@@ -1036,7 +978,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_g_counter
     args:
       key: "visits"
@@ -1054,7 +995,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: increment_pn_counter
     args:
       key: "balance"
@@ -1063,7 +1003,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: increment_pn_counter
     args:
       key: "balance"
@@ -1072,7 +1011,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: increment_pn_counter
     args:
       key: "balance"
@@ -1082,7 +1020,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: decrement_pn_counter
     args:
       key: "balance"
@@ -1103,7 +1040,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_pn_counter
     args:
       key: "balance"
@@ -1119,7 +1055,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_pn_counter
     args:
       key: "balance"
@@ -1136,7 +1071,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: decrement_pn_counter
     args:
       key: "balance"
@@ -1156,7 +1090,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get_pn_counter
     args:
       key: "balance"
@@ -1172,7 +1105,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_pn_counter
     args:
       key: "balance"
@@ -1190,7 +1122,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set_register
     args:
       key: "status"
@@ -1211,7 +1142,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: set_register
     args:
       key: "status"
@@ -1232,7 +1162,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get_register
     args:
       key: "status"
@@ -1248,7 +1177,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_register
     args:
       key: "status"
@@ -1268,7 +1196,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set_metadata
     args:
       outer_key: "book1"
@@ -1292,7 +1219,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: set_metadata
     args:
       outer_key: "book1"
@@ -1315,7 +1241,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: get_metadata
     args:
       outer_key: "book1"
@@ -1332,7 +1257,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get_metadata
     args:
       outer_key: "book1"
@@ -1349,7 +1273,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_metadata
     args:
       outer_key: "book1"
@@ -1361,7 +1284,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_metadata
     args:
       outer_key: "book1"
@@ -1381,7 +1303,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: push_metric
     args:
       value: 100
@@ -1402,7 +1323,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: push_metric
     args:
       value: 30
@@ -1422,7 +1342,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: metrics_len
     outputs:
       metrics_length: result
@@ -1436,7 +1355,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: metrics_len
     outputs:
       metrics_length_node3: result
@@ -1450,7 +1368,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get_metric
     args:
       index: 0
@@ -1469,7 +1386,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: add_tag
     args:
       key: "languages"
@@ -1479,7 +1395,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: add_tag
     args:
       key: "languages"
@@ -1501,7 +1416,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: add_tag
     args:
       key: "languages"
@@ -1522,7 +1436,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get_tag_count
     args:
       key: "languages"
@@ -1538,7 +1451,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: has_tag
     args:
       key: "languages"
@@ -1555,7 +1467,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: get_tag_count
     args:
       key: "languages"
@@ -1571,7 +1482,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: has_tag
     args:
       key: "languages"
@@ -1590,7 +1500,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: rga_is_empty
     outputs:
       is_empty: result
@@ -1604,7 +1513,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: rga_insert_text
     args:
       position: 0
@@ -1614,7 +1522,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: rga_append_text
     args:
       text: " World"
@@ -1634,7 +1541,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: rga_get_text
     outputs:
       doc_text: result
@@ -1648,7 +1554,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: rga_get_text
     outputs:
       doc_text_node3: result
@@ -1662,7 +1567,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: rga_get_length
     outputs:
       doc_length: result
@@ -1676,7 +1580,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: rga_delete_text
     args:
       start: 5
@@ -1686,7 +1589,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: rga_get_text
     outputs:
       doc_text_after_delete: result
@@ -1700,7 +1602,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: rga_append_text
     args:
       text: " World"
@@ -1709,7 +1610,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: rga_set_title
     args:
       new_title: "E2E Test Document"
@@ -1729,7 +1629,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: rga_get_title
     outputs:
       doc_title: result
@@ -1743,7 +1642,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: rga_get_title
     outputs:
       doc_title_node3: result
@@ -1768,7 +1666,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: upload_file
     args:
       name: screenshot.png
@@ -1796,7 +1693,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: upload_file
     args:
       name: readme.txt
@@ -1826,7 +1722,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: list_files
     outputs:
       node1_files: result.output
@@ -1840,7 +1735,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: list_files
     outputs:
       node2_files: result.output
@@ -1854,7 +1748,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: list_files
     outputs:
       node3_files: result.output
@@ -1868,7 +1761,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get_file
     args:
       file_id: "{{png_file_id}}"
@@ -1884,7 +1776,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: get_blob_id_b58
     args:
       file_id: "{{png_file_id}}"
@@ -1900,7 +1791,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: search_files
     args:
       query: png
@@ -1916,7 +1806,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: delete_file
     args:
       file_id: "{{png_file_id}}"
@@ -1936,7 +1825,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: list_files
     outputs:
       files_after_delete: result.output
@@ -1950,7 +1838,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: list_files
     outputs:
       files_after_delete_node3: result.output
@@ -1968,7 +1855,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set
     args:
       key: "pre_clear_key"
@@ -1989,7 +1875,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: clear
 
   - name: Wait for sync after clear
@@ -2007,7 +1892,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: len
     outputs:
       final_len: result
@@ -2021,7 +1905,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: len
     outputs:
       final_len_node3: result
@@ -2035,7 +1918,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: rga_clear
 
   - name: Wait for sync after RGA clear
@@ -2053,7 +1935,6 @@ steps:
     type: call
     node: e2e-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_e2e-node-2}}"
     method: rga_is_empty
     outputs:
       final_is_empty: result
@@ -2067,7 +1948,6 @@ steps:
     type: call
     node: e2e-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{node3_key}}"
     method: rga_is_empty
     outputs:
       final_is_empty_node3: result
