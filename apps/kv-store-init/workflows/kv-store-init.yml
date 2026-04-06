@@ -22,6 +22,7 @@ steps:
     type: create_mesh
     context_node: kv-store-init-node-1
     application_id: "{{app_id}}"
+    path: res/kv_store_init.wasm
     nodes:
       - kv-store-init-node-2
     capability: member

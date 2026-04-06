@@ -22,6 +22,7 @@ steps:
     type: create_mesh
     context_node: nested-node-1
     application_id: "{{app_id}}"
+    path: res/nested_crdt_test.wasm
     nodes:
       - nested-node-2
     capability: member

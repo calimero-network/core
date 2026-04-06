@@ -22,6 +22,7 @@ steps:
     type: create_mesh
     context_node: team-macro-node-1
     application_id: "{{app_id}}"
+    path: res/team_metrics_macro.wasm
     nodes:
       - team-macro-node-2
     capability: member
