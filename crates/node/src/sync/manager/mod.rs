@@ -2173,11 +2173,15 @@ impl SyncManager {
                     .context_client
                     .has_member(&context_id, &their_identity)?
                 {
-                    bail!(
-                        "unknown context member {} in context {}",
-                        their_identity,
-                        context_id
+                    // Still not found after waiting — close stream gracefully so the
+                    // initiator retries on its next sync interval rather than treating
+                    // this as a hard error. Governance gossip may still be in-flight.
+                    warn!(
+                        %context_id,
+                        %their_identity,
+                        "unknown context member after governance sync, closing stream"
                     );
+                    return Ok(Some(()));
                 }
             }
         }

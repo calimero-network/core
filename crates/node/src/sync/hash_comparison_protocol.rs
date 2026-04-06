@@ -764,12 +764,18 @@ fn get_local_tree_node(
     if children_ids.is_empty() {
         // Leaf node
         if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-            let crdt_type = index.metadata.crdt_type.clone().ok_or_else(|| {
-                eyre::eyre!(
-                    "Missing CRDT type metadata for leaf entity {}: data integrity issue",
-                    entity_id
-                )
-            })?;
+            let Some(crdt_type) = index.metadata.crdt_type.clone() else {
+                // No CRDT type — treat as opaque node; sync via delta exchange, not EntityPush.
+                warn!(
+                    %entity_id,
+                    "leaf has no CRDT type, treating as opaque node"
+                );
+                return Ok(Some(TreeNode::internal(
+                    *entity_id.as_bytes(),
+                    full_hash,
+                    vec![],
+                )));
+            };
             let metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32]);
             let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
             Ok(Some(TreeNode::leaf(

@@ -337,12 +337,21 @@ impl SyncManager {
         if children_ids.is_empty() {
             // Leaf node - try to get entity data
             if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-                let crdt_type = index.metadata.crdt_type.clone().ok_or_else(|| {
-                    eyre::eyre!(
-                        "Missing CRDT type metadata for leaf entity {}: data integrity issue",
-                        entity_id
-                    )
-                })?;
+                let Some(crdt_type) = index.metadata.crdt_type.clone() else {
+                    // No CRDT type — entity is managed outside hash comparison (e.g. Root
+                    // sentinel). Return as an opaque internal node so its hash still
+                    // participates in divergence detection but it is never EntityPush'd.
+                    warn!(
+                        %context_id,
+                        entity_id = %entity_id,
+                        "leaf has no CRDT type, treating as opaque node"
+                    );
+                    return Ok(Some(TreeNode::internal(
+                        *entity_id.as_bytes(),
+                        full_hash,
+                        vec![],
+                    )));
+                };
                 let metadata = LeafMetadata::new(
                     crdt_type,
                     index.metadata.updated_at(),
