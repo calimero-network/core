@@ -2343,26 +2343,13 @@ impl SyncManager {
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
-        use calimero_context_client::local_governance::{SignedNamespaceOp, StoredNamespaceEntry};
-
         let store = self.context_client.datastore_handle().into_inner();
         let handle = store.handle();
         let mut found = Vec::new();
 
-        // Extract raw SignedNamespaceOp bytes from skeleton_bytes.
-        // skeleton_bytes stores StoredNamespaceEntry::Signed(op); the wire
-        // protocol expects bare SignedNamespaceOp so receivers can decode directly.
-        let extract = |bytes: Vec<u8>| -> Option<Vec<u8>> {
-            if let Ok(StoredNamespaceEntry::Signed(op)) =
-                borsh::from_slice::<StoredNamespaceEntry>(&bytes)
-            {
-                return borsh::to_vec(&op).ok();
-            }
-            if borsh::from_slice::<SignedNamespaceOp>(&bytes).is_ok() {
-                return Some(bytes);
-            }
-            None
-        };
+        /// Maximum ops returned in a single backfill response to prevent
+        /// memory exhaustion from large namespace governance DAGs.
+        const MAX_BACKFILL_OPS: usize = 500;
 
         if delta_ids.is_empty() {
             // Empty request = "give me everything for this namespace".
@@ -2379,16 +2366,23 @@ impl SyncManager {
                     break;
                 }
                 if let Ok(Some(value)) = handle.get(&key) {
-                    if let Some(signed_bytes) = extract(value.skeleton_bytes) {
+                    if let Some(signed_bytes) =
+                        crate::sync::helpers::extract_signed_op_bytes(&value.skeleton_bytes)
+                    {
                         found.push((key.delta_id(), signed_bytes));
+                        if found.len() >= MAX_BACKFILL_OPS {
+                            break;
+                        }
                     }
                 }
             }
         } else {
-            for delta_id in delta_ids {
+            for delta_id in delta_ids.iter().take(MAX_BACKFILL_OPS) {
                 let key = calimero_store::key::NamespaceGovOp::new(namespace_id, *delta_id);
                 if let Ok(Some(value)) = handle.get(&key) {
-                    if let Some(signed_bytes) = extract(value.skeleton_bytes) {
+                    if let Some(signed_bytes) =
+                        crate::sync::helpers::extract_signed_op_bytes(&value.skeleton_bytes)
+                    {
                         found.push((*delta_id, signed_bytes));
                     }
                 }
@@ -2552,8 +2546,6 @@ impl SyncManager {
         &self,
         namespace_id: [u8; 32],
     ) -> eyre::Result<Vec<Vec<u8>>> {
-        use calimero_context_client::local_governance::{SignedNamespaceOp, StoredNamespaceEntry};
-
         let store = self.context_client.datastore_handle().into_inner();
         let handle = store.handle();
         let mut ops = Vec::new();
@@ -2571,17 +2563,10 @@ impl SyncManager {
                 break;
             }
             if let Ok(Some(value)) = handle.get(&key) {
-                // skeleton_bytes is StoredNamespaceEntry::Signed(op); unwrap to
-                // bare SignedNamespaceOp bytes for the wire protocol.
-                if let Ok(StoredNamespaceEntry::Signed(op)) =
-                    borsh::from_slice::<StoredNamespaceEntry>(&value.skeleton_bytes)
+                if let Some(bytes) =
+                    crate::sync::helpers::extract_signed_op_bytes(&value.skeleton_bytes)
                 {
-                    if let Ok(bytes) = borsh::to_vec(&op) {
-                        ops.push(bytes);
-                    }
-                } else if borsh::from_slice::<SignedNamespaceOp>(&value.skeleton_bytes).is_ok() {
-                    // Legacy: already bare SignedNamespaceOp bytes.
-                    ops.push(value.skeleton_bytes);
+                    ops.push(bytes);
                 }
             }
         }

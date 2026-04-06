@@ -37,7 +37,7 @@ mod config;
 mod delta_request;
 mod hash_comparison;
 pub mod hash_comparison_protocol;
-mod helpers;
+pub(crate) mod helpers;
 pub mod level_sync;
 mod manager;
 pub mod metrics;

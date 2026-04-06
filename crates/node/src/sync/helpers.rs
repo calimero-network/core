@@ -167,6 +167,26 @@ pub fn handle_entity_push(
     })
 }
 
+/// Extract raw `SignedNamespaceOp` bytes from a `skeleton_bytes` store value.
+///
+/// The store encodes entries as `StoredNamespaceEntry::Signed(op)`. All wire
+/// paths (gossip, backfill, join response) expect bare `SignedNamespaceOp`
+/// bytes so the receiver can `borsh::from_slice::<SignedNamespaceOp>` directly.
+pub fn extract_signed_op_bytes(skeleton_bytes: &[u8]) -> Option<Vec<u8>> {
+    use calimero_context_client::local_governance::{SignedNamespaceOp, StoredNamespaceEntry};
+
+    if let Ok(StoredNamespaceEntry::Signed(op)) =
+        borsh::from_slice::<StoredNamespaceEntry>(skeleton_bytes)
+    {
+        return borsh::to_vec(&op).ok();
+    }
+    // Fallback: already raw SignedNamespaceOp bytes (legacy / direct-publish path).
+    if borsh::from_slice::<SignedNamespaceOp>(skeleton_bytes).is_ok() {
+        return Some(skeleton_bytes.to_vec());
+    }
+    None
+}
+
 // =============================================================================
 // Tests
 // =============================================================================

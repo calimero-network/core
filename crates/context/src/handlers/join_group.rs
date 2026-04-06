@@ -37,7 +37,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
             }
         }
 
-        let (ns_id, joiner_identity, sk_bytes, _sender_key_bytes) =
+        let (ns_id, joiner_identity, sk_bytes, _) =
             match self.get_or_create_namespace_identity(&group_id) {
                 Ok(result) => result,
                 Err(err) => {
@@ -186,20 +186,26 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             context_count = contexts.len(),
                             "auto-join: contexts from direct join response"
                         );
-                        for context_id in contexts {
+                        // Batch all ContextIdentity writes in a single handle to
+                        // avoid per-context mutex acquisition overhead.
+                        {
                             let mut handle = datastore.handle();
-                            let ci_key = key::ContextIdentity::new(*context_id, joiner_identity);
-                            if !handle.has(&ci_key)? {
-                                handle.put(
-                                    &ci_key,
-                                    &calimero_store::types::ContextIdentity {
-                                        private_key: Some(*sk),
-                                        sender_key: None,
-                                    },
-                                )?;
+                            for context_id in contexts {
+                                let ci_key =
+                                    key::ContextIdentity::new(*context_id, joiner_identity);
+                                if !handle.has(&ci_key)? {
+                                    handle.put(
+                                        &ci_key,
+                                        &calimero_store::types::ContextIdentity {
+                                            private_key: Some(*sk),
+                                            sender_key: None,
+                                        },
+                                    )?;
+                                }
                             }
-                            drop(handle);
+                        }
 
+                        for context_id in contexts {
                             let config = if !context_client.has_context(context_id)? {
                                 let zero_app =
                                     calimero_primitives::application::ApplicationId::from(
