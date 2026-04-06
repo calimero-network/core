@@ -141,6 +141,13 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     }
                 }
 
+                // Pull any governance ops published during (or just before) the
+                // join window that weren't in the join response snapshot.
+                // Direct stream request — does not depend on gossip delivery.
+                if let Err(e) = node_client.sync_namespace(namespace_id).await {
+                    warn!(?e, "failed to trigger post-join namespace governance pull (non-fatal)");
+                }
+
                 // Publish MemberJoined so other namespace members learn
                 // about us (fire-and-forget, the joiner doesn't depend on it).
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoined {

@@ -45,11 +45,18 @@ impl NodeManager {
                 {
                     Ok(groups) => {
                         for group in groups {
-                            if let Err(err) = node_client
-                                .subscribe_namespace(group.group_id.to_bytes())
-                                .await
-                            {
+                            let ns_bytes = group.group_id.to_bytes();
+                            if let Err(err) = node_client.subscribe_namespace(ns_bytes).await {
                                 error!(?group.group_id, %err, "Failed to subscribe to group topic");
+                                continue;
+                            }
+                            // Pull governance ops directly from a live peer.
+                            // This catches any ops we missed while offline.
+                            // sync_namespace_from_peer returns silently if no
+                            // mesh peers are up yet; the heartbeat interval
+                            // will retry on subsequent ticks.
+                            if let Err(err) = node_client.sync_namespace(ns_bytes).await {
+                                warn!(?group.group_id, %err, "Failed to queue namespace governance sync at startup");
                             }
                         }
                     }

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use actix::{AsyncContext, WrapFuture};
-use calimero_context_client::local_governance::SignedNamespaceOp;
+use calimero_context_client::local_governance::{SignedNamespaceOp, StoredNamespaceEntry};
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use tracing::{debug, info, warn};
 
@@ -101,11 +101,18 @@ pub(super) fn handle_namespace_state_heartbeat(
                 for delta_id in &peer_needs {
                     let key = calimero_store::key::NamespaceGovOp::new(namespace_id, *delta_id);
                     if let Ok(Some(value)) = handle_inner.get(&key) {
+                        // skeleton_bytes is StoredNamespaceEntry; unwrap to raw
+                        // SignedNamespaceOp bytes before sending over gossip so
+                        // the receiver can decode them with borsh::from_slice.
+                        let Some(signed_bytes) = extract_signed_op_bytes(&value.skeleton_bytes)
+                        else {
+                            continue;
+                        };
                         let payload = BroadcastMessage::NamespaceGovernanceDelta {
                             namespace_id,
                             delta_id: *delta_id,
                             parent_ids: vec![],
-                            payload: value.skeleton_bytes,
+                            payload: signed_bytes,
                         };
                         if let Ok(bytes) = borsh::to_vec(&payload) {
                             let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
@@ -184,4 +191,22 @@ pub(super) fn handle_namespace_state_heartbeat(
         }
         .into_actor(this),
     );
+}
+
+/// Extract raw `SignedNamespaceOp` bytes from a `skeleton_bytes` store value.
+///
+/// The store encodes entries as `StoredNamespaceEntry::Signed(op)`. All wire
+/// paths (gossip + backfill) expect bare `SignedNamespaceOp` bytes so the
+/// receiver can `borsh::from_slice::<SignedNamespaceOp>` directly.
+fn extract_signed_op_bytes(skeleton_bytes: &[u8]) -> Option<Vec<u8>> {
+    if let Ok(StoredNamespaceEntry::Signed(op)) =
+        borsh::from_slice::<StoredNamespaceEntry>(skeleton_bytes)
+    {
+        return borsh::to_vec(&op).ok();
+    }
+    // Fallback: already raw SignedNamespaceOp bytes (legacy / direct-publish path).
+    if borsh::from_slice::<SignedNamespaceOp>(skeleton_bytes).is_ok() {
+        return Some(skeleton_bytes.to_vec());
+    }
+    None
 }
