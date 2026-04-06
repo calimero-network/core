@@ -16,8 +16,7 @@ pub const EXAMPLES: &str = r"
   # Call a mutation (e.g. add_item, set) on a context
   $ meroctl --node <NODE_ID> call <METHOD_NAME> \
     --context <CONTEXT_ID> \
-    --args '<ARGS_JSON>' \
-    --as <IDENTITY_PUBLIC_KEY>
+    --args '<ARGS_JSON>'
 
   # Call a view (e.g. get_item, get) on a context
   $ meroctl --node <NODE_ID> call <METHOD_NAME> \
@@ -47,12 +46,6 @@ pub struct CallCommand {
     #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method")]
     pub args: Option<Value>,
 
-    #[arg(
-        long = "as",
-        help = "The identity of the executor (auto-resolved if omitted)"
-    )]
-    pub executor: Option<Alias<PublicKey>>,
-
     #[arg(long, help = "Id of the JsonRpc call")]
     pub id: Option<String>,
 
@@ -79,15 +72,10 @@ impl CallCommand {
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
 
-        // executor_public_key is always auto-resolved by the node.
-        // The --as flag is kept for backward compatibility but ignored.
-        let _ = self.executor;
-
         let payload = RequestPayload::Execute(ExecutionRequest::new(
             context_id,
             self.method,
             self.args.unwrap_or(json!({})),
-            None,
             self.substitute,
         ));
 
