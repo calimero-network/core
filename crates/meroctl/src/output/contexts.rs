@@ -2,12 +2,10 @@ use calimero_server_primitives::admin::{
     CreateContextResponse, DeleteContextResponse, GenerateContextIdentityResponse,
     GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
     GetContextStorageResponse, GetContextUsersResponse, GetContextsResponse, GetPeersCountResponse,
-    GrantPermissionResponse, InviteSpecializedNodeResponse, InviteToContextResponse,
-    JoinContextResponse, RevokePermissionResponse, SyncContextResponse,
-    UpdateContextApplicationResponse,
+    GrantPermissionResponse, InviteSpecializedNodeResponse, RevokePermissionResponse,
+    SyncContextResponse, UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::jsonrpc::Response;
-use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
 
 use super::Report;
@@ -173,32 +171,6 @@ impl Report for GrantPermissionResponse {
     }
 }
 
-impl Report for InviteToContextResponse {
-    fn report(&self) {
-        if let Some(ref signed_invitation) = self.data {
-            println!("{}", "Invitation Created Successfully".green());
-            println!();
-            println!("Invitation Payload:");
-            match serde_json::to_string(signed_invitation) {
-                Ok(json_payload) => {
-                    println!("{}", json_payload);
-                    println!();
-                    println!("To join, run from another node:");
-                    println!(
-                        "  meroctl --node <NODE_ID> context join '{}' --identity <PUBLIC_KEY>",
-                        json_payload
-                    );
-                }
-                Err(err) => {
-                    println!("Failed to serialize invitation: {}", err);
-                }
-            }
-        } else {
-            println!("Failed to create an invitation");
-        }
-    }
-}
-
 impl Report for InviteSpecializedNodeResponse {
     fn report(&self) {
         let mut table = Table::new();
@@ -210,15 +182,6 @@ impl Report for InviteSpecializedNodeResponse {
             "Successfully broadcast specialized node invite discovery",
             &self.data.nonce,
         ]);
-        println!("{table}");
-    }
-}
-
-impl Report for JoinContextResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Context Joined").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully joined context"]);
         println!("{table}");
     }
 }

@@ -5,15 +5,14 @@ use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
-use actix::{Actor, ActorFutureExt, AsyncContext, WrapFuture};
+use actix::Actor;
+use calimero_context_client::client::ContextClient;
+use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_primitives::client::ContextClient;
-use calimero_context_primitives::local_governance::SignedGroupOp;
 use calimero_dag::DagStore;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{Context, ContextId, UpgradePolicy};
-use calimero_store::key::GroupUpgradeStatus;
+use calimero_primitives::context::{Context, ContextId};
 use calimero_store::Store;
 use either::Either;
 use prometheus_client::registry::Registry;
@@ -26,6 +25,7 @@ pub mod error;
 pub mod governance_dag;
 pub mod group_store;
 pub mod handlers;
+mod lifecycle;
 mod metrics;
 
 /// A metadata container for a single, in-memory context.
@@ -55,9 +55,6 @@ pub struct ContextManager {
     /// for interacting with the datastore.
     context_client: ContextClient,
 
-    /// Dedicated group identity keypair for signed P2P group operations.
-    group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
-
     /// An in-memory cache of active contexts (`ContextId` -> `ContextMeta`).
     /// This serves as a hot cache to avoid expensive disk I/O for frequently accessed contexts.
     // todo! potentially make this a dashmap::DashMap
@@ -82,14 +79,9 @@ pub struct ContextManager {
     /// existing one is still active (e.g. sleeping in its backoff delay).
     active_propagators: HashSet<ContextGroupId>,
 
-    /// Per-group governance DAG. Tracks causal ordering of signed group ops,
-    /// with a pending queue for out-of-order delivery.
-    group_dags: HashMap<ContextGroupId, Arc<tokio::sync::Mutex<DagStore<SignedGroupOp>>>>,
-    //
-    // todo! when runtime let's us compile blobs separate from its
-    // todo! execution, we can introduce a cached::TimedSizedCache
-    // runtimes: TimedSizedCache<Exclusive<calimero_runtime::Engine>>,
-    //
+    /// Per-namespace governance DAG. Single DAG per namespace containing both
+    /// root ops and encrypted group-scoped ops.
+    namespace_dags: HashMap<[u8; 32], Arc<tokio::sync::Mutex<DagStore<SignedNamespaceOp>>>>,
 }
 
 /// Creates a new `ContextManager`.
@@ -105,73 +97,143 @@ impl ContextManager {
         datastore: Store,
         node_client: NodeClient,
         context_client: ContextClient,
-        group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
         Self {
             datastore,
             node_client,
             context_client,
-            group_identity,
 
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
 
             metrics: prometheus_registry.map(Metrics::new),
             active_propagators: HashSet::new(),
-            group_dags: HashMap::new(),
+            namespace_dags: HashMap::new(),
         }
     }
 
-    pub fn node_group_identity(
+    /// Get this node's identity for the namespace (root group) that contains `group_id`.
+    /// Returns `None` if no identity has been stored for that namespace yet.
+    pub fn node_namespace_identity(
         &self,
+        group_id: &ContextGroupId,
     ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
-        let gi = self.group_identity.as_ref()?;
-
-        let pk_str = gi.public_key.strip_prefix("ed25519:").or_else(|| {
-            tracing::warn!("node group identity: public_key missing 'ed25519:' prefix");
-            None
-        })?;
-        let sk_str = gi.secret_key.strip_prefix("ed25519:").or_else(|| {
-            tracing::warn!("node group identity: secret_key missing 'ed25519:' prefix");
-            None
-        })?;
-
-        let pk_bytes: [u8; 32] = bs58::decode(pk_str)
-            .into_vec()
-            .ok()
-            .and_then(|v| v.try_into().ok())
-            .or_else(|| {
-                tracing::warn!(
-                    "node group identity: failed to decode public_key (bad base58 or wrong length)"
-                );
+        match group_store::resolve_namespace_identity(&self.datastore, group_id) {
+            Ok(Some((pk, sk, _sender))) => Some((pk, sk)),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(?group_id, error=?e, "failed to resolve namespace identity");
                 None
-            })?;
-        let sk_bytes: [u8; 32] = bs58::decode(sk_str)
-            .into_vec()
-            .ok()
-            .and_then(|v| v.try_into().ok())
-            .or_else(|| {
-                tracing::warn!(
-                    "node group identity: failed to decode secret_key (bad base58 or wrong length)"
-                );
-                None
-            })?;
+            }
+        }
+    }
 
-        Some((
-            calimero_primitives::identity::PublicKey::from(pk_bytes),
-            sk_bytes,
-        ))
+    /// Get or create this node's identity for the namespace containing `group_id`.
+    /// Generates a new keypair if none exists. Returns (namespace_id, public_key, private_key, sender_key).
+    pub fn get_or_create_namespace_identity(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> eyre::Result<(
+        ContextGroupId,
+        calimero_primitives::identity::PublicKey,
+        [u8; 32],
+        [u8; 32],
+    )> {
+        group_store::get_or_create_namespace_identity(&self.datastore, group_id)
+    }
+}
+
+/// Result of the governance preflight check, containing everything needed
+/// to sign and publish a governance op.
+pub struct GovernancePreflight {
+    /// The resolved requester public key.
+    pub requester: calimero_primitives::identity::PublicKey,
+    /// The signing private key (as raw bytes).
+    pub signing_key: [u8; 32],
+    /// Cloned datastore for use in async blocks.
+    pub datastore: Store,
+    /// Cloned node client for use in async blocks.
+    pub node_client: calimero_node_primitives::client::NodeClient,
+}
+
+impl GovernancePreflight {
+    /// Convenience: build a `PrivateKey` from the stored signing key bytes.
+    pub fn signer_sk(&self) -> calimero_primitives::identity::PrivateKey {
+        calimero_primitives::identity::PrivateKey::from(self.signing_key)
     }
 }
 
 impl ContextManager {
-    fn get_or_create_group_dag(
-        &mut self,
+    /// Common preflight for governance mutation handlers.
+    ///
+    /// Resolves the requester identity, loads group metadata, checks admin
+    /// authorization, resolves or stores the signing key, and returns
+    /// everything needed for `sign_apply_and_publish`.
+    ///
+    /// Returns `Err` if the group doesn't exist, the requester isn't authorized,
+    /// or no signing key is available.
+    pub fn governance_preflight(
+        &self,
         group_id: &ContextGroupId,
-    ) -> Arc<tokio::sync::Mutex<DagStore<SignedGroupOp>>> {
-        self.group_dags
-            .entry(*group_id)
+        requester: Option<calimero_primitives::identity::PublicKey>,
+        require_admin: bool,
+    ) -> eyre::Result<GovernancePreflight> {
+        let node_identity = self.node_namespace_identity(group_id);
+
+        let requester = match requester {
+            Some(pk) => pk,
+            None => match node_identity {
+                Some((pk, _)) => pk,
+                None => {
+                    eyre::bail!("requester not provided and node has no configured group identity")
+                }
+            },
+        };
+
+        let node_sk = node_identity.map(|(_, sk)| sk);
+        let signing_key = node_sk;
+
+        if group_store::load_group_meta(&self.datastore, group_id)?.is_none() {
+            eyre::bail!("group '{group_id:?}' not found");
+        }
+        if require_admin {
+            group_store::require_group_admin(&self.datastore, group_id, &requester)?;
+        }
+        if signing_key.is_none() {
+            group_store::require_group_signing_key(&self.datastore, group_id, &requester)?;
+        }
+
+        if let Some(ref sk) = signing_key {
+            let _ = group_store::store_group_signing_key(&self.datastore, group_id, &requester, sk);
+        }
+
+        let effective_signing_key = signing_key.or_else(|| {
+            group_store::get_group_signing_key(&self.datastore, group_id, &requester)
+                .ok()
+                .flatten()
+        });
+
+        let sk_bytes = effective_signing_key.ok_or_else(|| {
+            eyre::eyre!("local group governance requires a signing key for the requester")
+        })?;
+
+        Ok(GovernancePreflight {
+            requester,
+            signing_key: sk_bytes,
+            datastore: self.datastore.clone(),
+            node_client: self.node_client.clone(),
+        })
+    }
+}
+
+impl ContextManager {
+    fn get_or_create_namespace_dag(
+        &mut self,
+        namespace_id: &[u8; 32],
+    ) -> Arc<tokio::sync::Mutex<DagStore<SignedNamespaceOp>>> {
+        self.namespace_dags
+            .entry(*namespace_id)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(DagStore::new([0u8; 32]))))
             .clone()
     }
@@ -187,188 +249,12 @@ impl Actor for ContextManager {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         self.recover_in_progress_upgrades(ctx);
-        self.reload_group_dags();
-        self.start_group_heartbeat(ctx);
+        self.start_namespace_heartbeat(ctx);
     }
 }
 
-impl ContextManager {
-    /// Scans the store for in-progress group upgrades and re-spawns
-    /// propagators for each. Called during actor startup for crash recovery.
-    fn recover_in_progress_upgrades(&mut self, ctx: &mut actix::Context<Self>) {
-        let upgrades = match group_store::enumerate_in_progress_upgrades(&self.datastore) {
-            Ok(u) => u,
-            Err(err) => {
-                tracing::error!(
-                    ?err,
-                    "failed to scan for in-progress upgrades during recovery"
-                );
-                return;
-            }
-        };
-
-        if upgrades.is_empty() {
-            return;
-        }
-
-        tracing::info!(
-            count = upgrades.len(),
-            "recovering in-progress group upgrades"
-        );
-
-        for (group_id, upgrade) in upgrades {
-            let (total, completed, failed) = match upgrade.status {
-                GroupUpgradeStatus::InProgress {
-                    total,
-                    completed,
-                    failed,
-                } => (total, completed, failed),
-                _ => continue, // shouldn't happen given our filter
-            };
-
-            tracing::info!(
-                ?group_id,
-                total,
-                completed,
-                failed,
-                "re-spawning propagator for in-progress upgrade"
-            );
-
-            // Extract migration method from stored bytes
-            let migration = upgrade
-                .migration
-                .as_ref()
-                .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
-                .map(|method| calimero_context_primitives::messages::MigrationParams { method });
-
-            let meta = match group_store::load_group_meta(&self.datastore, &group_id) {
-                Ok(Some(m)) => m,
-                Ok(None) => {
-                    tracing::warn!(?group_id, "group not found during recovery, skipping");
-                    continue;
-                }
-                Err(err) => {
-                    tracing::error!(?group_id, ?err, "failed to load group meta during recovery");
-                    continue;
-                }
-            };
-
-            // Skip LazyOnAccess groups — they upgrade contexts on-demand, not via propagator
-            if matches!(meta.upgrade_policy, UpgradePolicy::LazyOnAccess) {
-                tracing::debug!(?group_id, "skipping crash recovery for LazyOnAccess group");
-                continue;
-            }
-
-            self.active_propagators.insert(group_id);
-
-            let propagator = handlers::upgrade_group::propagate_upgrade(
-                self.context_client.clone(),
-                self.datastore.clone(),
-                group_id,
-                meta.target_application_id,
-                migration,
-                None, // no canary skip on recovery — propagator's idempotency handles already-upgraded contexts
-                0,    // recovery: no canary assumption
-            );
-
-            ctx.spawn(propagator.into_actor(self).map(move |_, act, _| {
-                act.active_propagators.remove(&group_id);
-            }));
-        }
-    }
-
-    /// Reloads persisted group ops into per-group DAGs so the pending queue
-    /// can correctly track causal parents for newly arriving deltas.
-    fn reload_group_dags(&mut self) {
-        let groups = match group_store::enumerate_all_groups(&self.datastore, 0, usize::MAX) {
-            Ok(g) => g,
-            Err(err) => {
-                tracing::error!(%err, "failed to enumerate groups for DAG reload");
-                return;
-            }
-        };
-
-        for (group_id_bytes, _meta) in &groups {
-            let group_id = ContextGroupId::from(*group_id_bytes);
-            let entries =
-                match group_store::read_op_log_after(&self.datastore, &group_id, 0, usize::MAX) {
-                    Ok(e) => e,
-                    Err(err) => {
-                        tracing::warn!(
-                            group_id = %hex::encode(group_id_bytes),
-                            %err,
-                            "failed to read op log for group DAG reload"
-                        );
-                        continue;
-                    }
-                };
-
-            if entries.is_empty() {
-                continue;
-            }
-
-            let dag = self.get_or_create_group_dag(&group_id);
-            let mut dag_guard = dag.try_lock().expect("DAG lock uncontended at startup");
-
-            for (_seq, op_bytes) in &entries {
-                let op: SignedGroupOp = match borsh::from_slice(op_bytes) {
-                    Ok(op) => op,
-                    Err(err) => {
-                        tracing::warn!(%err, "failed to decode persisted group op, skipping");
-                        continue;
-                    }
-                };
-                let delta = match governance_dag::signed_op_to_delta(&op) {
-                    Ok(d) => d,
-                    Err(err) => {
-                        tracing::warn!(
-                            %err,
-                            "failed to create delta from persisted op, skipping"
-                        );
-                        continue;
-                    }
-                };
-                dag_guard.restore_applied_delta(delta);
-            }
-
-            tracing::info!(
-                group_id = %hex::encode(group_id_bytes),
-                ops = entries.len(),
-                heads = dag_guard.get_heads().len(),
-                "reloaded group governance DAG"
-            );
-        }
-    }
-
-    fn start_group_heartbeat(&self, ctx: &mut actix::Context<Self>) {
-        let datastore = self.datastore.clone();
-        let node_client = self.node_client.clone();
-
-        ctx.run_interval(std::time::Duration::from_secs(30), move |_act, _ctx| {
-            let datastore = datastore.clone();
-            let node_client = node_client.clone();
-
-            actix::spawn(async move {
-                let groups = match group_store::enumerate_all_groups(&datastore, 0, usize::MAX) {
-                    Ok(g) => g,
-                    Err(_) => return,
-                };
-
-                for (group_id_bytes, _meta) in groups {
-                    let gid = ContextGroupId::from(group_id_bytes);
-                    let head = match group_store::get_op_head(&datastore, &gid) {
-                        Ok(Some(h)) => h,
-                        _ => continue,
-                    };
-
-                    let _ = node_client
-                        .publish_group_heartbeat(group_id_bytes, head.dag_heads, 0)
-                        .await;
-                }
-            });
-        });
-    }
-}
+// Lifecycle methods (recover_in_progress_upgrades, start_namespace_heartbeat)
+// are in lifecycle.rs
 
 impl ContextMeta {
     /// Acquires an asynchronous lock for this specific context.
@@ -463,22 +349,3 @@ impl ContextManager {
         }
     }
 }
-
-// objectives:
-//   keep up to N items, refresh entries as they are used
-//   garbage collect entries as they expire, or as needed
-//   share across tasks efficiently, not prolonging locks
-//   managed mutation, so guards aren't held for too long
-//
-// result: this should help us share data between clients
-//         and their actors,
-//
-// pub struct SharedCache<K, V> {
-//     cache: DashMap<Key<K>, V>,
-//     index: ArcTimedSizedCache<K, Key<K>>,
-// }
-//
-// struct Key<K>(K);
-// struct Cached<V: Copy>(..);
-//        ^- aids read without locking
-//           downside: Copy on every write

@@ -98,15 +98,14 @@ jobs:
                   success=true
                   break
               else
+                  # Capture logs immediately before containers are destroyed
+                  echo "Collecting Docker logs for e2e-kv-store attempt $attempt"
+                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
+                      if [ -n "$container" ]; then
+                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/e2e-kv-store-attempt${attempt}-${container}.log" 2>&1 || true
+                      fi
+                  done
                   attempt=$((attempt + 1))
-              fi
-          done
-
-          # Collect logs
-          echo "Collecting Docker logs for e2e-kv-store workflow"
-          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-              if [ -n "$container" ]; then
-                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/e2e-kv-store-${container}.log" 2>&1 || true
               fi
           done
 
@@ -118,6 +117,15 @@ jobs:
           else
               echo "failed=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Upload e2e-kv-store logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-e2e-kv-store-${{ github.sha }}
+          path: docker-logs/e2e-kv-store*
+          retention-days: 7
+          if-no-files-found: ignore
 
       # Run groups workflow
       - name: Run e2e-kv-store Groups Workflow
@@ -142,15 +150,13 @@ jobs:
                   success=true
                   break
               else
+                  echo "Collecting Docker logs for groups attempt $attempt"
+                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
+                      if [ -n "$container" ]; then
+                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/groups-attempt${attempt}-${container}.log" 2>&1 || true
+                      fi
+                  done
                   attempt=$((attempt + 1))
-              fi
-          done
-
-          # Collect logs
-          echo "Collecting Docker logs for groups workflow"
-          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-              if [ -n "$container" ]; then
-                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/groups-${container}.log" 2>&1 || true
               fi
           done
 
@@ -162,6 +168,15 @@ jobs:
           else
               echo "failed=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Upload groups logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-groups-${{ github.sha }}
+          path: docker-logs/groups*
+          retention-days: 7
+          if-no-files-found: ignore
 
       # Run xcall-example workflow
       - name: Run xcall-example Workflow
@@ -186,15 +201,13 @@ jobs:
                   success=true
                   break
               else
+                  echo "Collecting Docker logs for xcall attempt $attempt"
+                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
+                      if [ -n "$container" ]; then
+                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/xcall-attempt${attempt}-${container}.log" 2>&1 || true
+                      fi
+                  done
                   attempt=$((attempt + 1))
-              fi
-          done
-
-          # Collect logs
-          echo "Collecting Docker logs for xcall-example workflow"
-          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-              if [ -n "$container" ]; then
-                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/xcall-${container}.log" 2>&1 || true
               fi
           done
 
@@ -206,6 +219,15 @@ jobs:
           else
               echo "failed=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Upload xcall logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-xcall-${{ github.sha }}
+          path: docker-logs/xcall*
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Upload Workflow Data Artifacts
         if: ${{ !cancelled() }}

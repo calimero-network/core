@@ -23,8 +23,10 @@ mod call;
 mod context;
 mod dev;
 mod group;
+mod namespace;
 mod node;
 mod peers;
+mod upgrade_policy;
 pub mod validation;
 
 use app::AppCommand;
@@ -33,6 +35,7 @@ use call::CallCommand;
 use context::ContextCommand;
 use dev::DevCommand;
 use group::GroupCommand;
+use namespace::NamespaceCommand;
 use node::NodeCommand;
 use peers::PeersCommand;
 
@@ -45,8 +48,8 @@ pub const EXAMPLES: &str = r"
   # List all contexts
   $ meroctl --node node1 context ls
 
-  # List all groups
-  $ meroctl --node node1 group ls
+  # List all namespaces (root groups)
+  $ meroctl --node node1 namespace ls
 
   # List all blobs
   $ meroctl --node node1 blob ls
@@ -86,6 +89,8 @@ pub enum SubCommands {
     Context(ContextCommand),
     Dev(DevCommand),
     Group(GroupCommand),
+    #[command(alias = "ns")]
+    Namespace(NamespaceCommand),
     Call(CallCommand),
     Peers(PeersCommand),
     #[command(subcommand)]
@@ -159,6 +164,7 @@ impl RootCommand {
             SubCommands::Context(context) => context.run(&mut environment).await,
             SubCommands::Dev(dev) => dev.run(&mut environment).await,
             SubCommands::Group(group) => group.run(&mut environment).await,
+            SubCommands::Namespace(ns) => ns.run(&mut environment).await,
             SubCommands::Call(call) => call.run(&mut environment).await,
             SubCommands::Peers(peers) => peers.run(&mut environment).await,
             SubCommands::Node(node) => {

@@ -11,6 +11,7 @@ use crate::collections::{
 use crate::env;
 use crate::merge::{clear_merge_registry, merge_root_state, register_crdt_merge};
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_primitives::identity::PublicKey;
 use serial_test::serial;
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -114,6 +115,72 @@ fn test_merge_via_registry() {
             .unwrap()
             .map(|r| r.get().clone()),
         Some("from_node2".to_string())
+    );
+}
+
+#[test]
+#[serial]
+fn test_user_storage_reassign_deterministic_id_preserves_entries() {
+    use crate::collections::UserStorage;
+
+    env::reset_for_testing();
+    env::set_executor_id([0x11; 32]);
+
+    let mut storage = UserStorage::<u64>::new();
+    let _ = storage.insert(7).expect("initial insert should succeed");
+    let owner_key: PublicKey = [0x11; 32].into();
+    assert_eq!(
+        storage
+            .get_for_user(&owner_key)
+            .expect("get should succeed before migration"),
+        Some(7)
+    );
+
+    storage.reassign_deterministic_id("profile");
+    assert_eq!(
+        storage
+            .get_for_user(&owner_key)
+            .expect("get should succeed after migration"),
+        Some(7)
+    );
+
+    env::set_executor_id([0x22; 32]);
+    let _ = storage
+        .insert(11)
+        .expect("second user insert should succeed");
+    let second_key: PublicKey = [0x22; 32].into();
+    assert_eq!(
+        storage
+            .get_for_user(&second_key)
+            .expect("second user read should succeed"),
+        Some(11)
+    );
+}
+
+#[test]
+#[serial]
+fn test_frozen_storage_reassign_deterministic_id_preserves_entries() {
+    use crate::collections::FrozenStorage;
+
+    env::reset_for_testing();
+
+    let mut frozen = FrozenStorage::<Vec<u8>>::new();
+    let hash = frozen
+        .insert(vec![1, 2, 3, 4])
+        .expect("insert into frozen storage should succeed");
+    assert_eq!(
+        frozen
+            .get(&hash)
+            .expect("read before migration should succeed"),
+        Some(vec![1, 2, 3, 4])
+    );
+
+    frozen.reassign_deterministic_id("blob_cache");
+    assert_eq!(
+        frozen
+            .get(&hash)
+            .expect("read after migration should succeed"),
+        Some(vec![1, 2, 3, 4])
     );
 }
 

@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 pub struct UserStorage<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor = MainStorage> {
     /// The underlying map storing user data.
     #[borsh(bound(serialize = "", deserialize = ""))]
-    pub(crate) inner: UnorderedMap<PublicKey, T, S>,
+    inner: UnorderedMap<PublicKey, T, S>,
     /// The storage element for this UserStorage instance itself.
     storage: Element,
 }
@@ -127,6 +127,14 @@ where
     T: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
+    /// Returns an iterator over all `(PublicKey, value)` entries.
+    ///
+    /// # Errors
+    /// Returns a `StoreError` if the storage operation fails.
+    pub fn entries(&self) -> Result<impl Iterator<Item = (PublicKey, T)> + '_, StoreError> {
+        self.inner.entries()
+    }
+
     /// Gets the data for the current executor.
     ///
     /// # Errors

@@ -27,8 +27,8 @@
 use crate::specialized_node_invite_state::{
     InviteState, PendingSpecializedNodeInvites, SpecializedNodeInviteAction,
 };
+use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::SignedOpenInvitation;
-use calimero_context_primitives::client::ContextClient;
 use calimero_network_primitives::specialized_node_invite::{
     SpecializedNodeInvitationResponse, VerificationRequest,
 };
@@ -182,7 +182,7 @@ pub async fn handle_verification_request(
                         reset_to_pending(pending_invites, &nonce);
                         return SpecializedNodeInvitationResponse::error(
                             nonce,
-                            format!("Mock attestation verification failed: {}", err),
+                            format!("Mock attestation verification failed: {err}"),
                         );
                     }
                 }
@@ -194,7 +194,7 @@ pub async fn handle_verification_request(
                         reset_to_pending(pending_invites, &nonce);
                         return SpecializedNodeInvitationResponse::error(
                             nonce,
-                            format!("Attestation verification failed: {}", err),
+                            format!("Attestation verification failed: {err}"),
                         );
                     }
                 }
@@ -297,7 +297,7 @@ async fn create_invitation_response(
             error!(error = %err, %context_id, "Failed to create invitation for specialized node");
             return SpecializedNodeInvitationResponse::error(
                 nonce,
-                format!("Failed to create invitation: {}", err),
+                format!("Failed to create invitation: {err}"),
             );
         }
     };
@@ -314,7 +314,7 @@ async fn create_invitation_response(
             error!(error = %err, "Failed to serialize SignedOpenInvitation");
             return SpecializedNodeInvitationResponse::error(
                 nonce,
-                format!("Failed to serialize invitation: {}", err),
+                format!("Failed to serialize invitation: {err}"),
             );
         }
     };
@@ -386,36 +386,18 @@ pub async fn handle_specialized_node_invitation_response(
         }
     };
 
-    info!(
+    // Per-context invitations have been removed in favor of group-based joining.
+    // Specialized nodes should join via the group/fleet flow instead.
+    // For now, log a warning and skip -- the TEE fleet_join handler is the
+    // proper entry point for specialized node admission.
+    warn!(
         %peer_id,
         %our_public_key,
-        "Joining context via specialized node open invitation"
+        %context_id,
+        "Specialized node context invitation ignored -- use group-based fleet join instead"
     );
-
-    match context_client
-        .join_context(signed_invitation, &our_public_key)
-        .await
     {
-        Ok(Some(join_response)) => {
-            info!(
-                %peer_id,
-                context_id = %join_response.context_id,
-                member_public_key = %join_response.member_public_key,
-                "Successfully joined context via specialized node invitation"
-            );
-            Ok(Some(join_response.context_id))
-        }
-        Ok(None) => {
-            info!(%peer_id, %context_id, "Context already exists locally, skipping join");
-            Ok(Some(context_id))
-        }
-        Err(err) => {
-            error!(
-                %peer_id,
-                error = %err,
-                "Failed to join context via specialized node invitation"
-            );
-            Ok(None)
-        }
+        let _ = &signed_invitation;
+        Ok(Some(context_id))
     }
 }

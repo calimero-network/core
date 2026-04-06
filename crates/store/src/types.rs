@@ -8,7 +8,7 @@ mod context;
 mod generic;
 mod group;
 
-pub use application::ApplicationMeta;
+pub use application::{ApplicationMeta, ServiceMeta};
 pub use blobs::BlobMeta;
 pub use context::{
     ContextConfig, ContextDagDelta, ContextIdentity, ContextMeta, ContextPrivateState, ContextState,

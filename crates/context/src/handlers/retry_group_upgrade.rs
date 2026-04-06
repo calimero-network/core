@@ -1,6 +1,6 @@
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::{RetryGroupUpgradeRequest, UpgradeGroupResponse};
-use calimero_context_primitives::messages::MigrationParams;
+use calimero_context_client::group::{RetryGroupUpgradeRequest, UpgradeGroupResponse};
+use calimero_context_client::messages::MigrationParams;
 use calimero_store::key::GroupUpgradeStatus;
 use eyre::bail;
 use tracing::info;
@@ -21,11 +21,11 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
         // Resolve requester: use provided value or fall back to node group identity
         let requester = match requester {
             Some(pk) => pk,
-            None => match self.node_group_identity() {
+            None => match self.node_namespace_identity(&group_id) {
                 Some((pk, _)) => pk,
                 None => {
                     return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured group identity"
+                        "requester not provided and node has no namespace identity"
                     )))
                 }
             },

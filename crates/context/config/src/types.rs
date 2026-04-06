@@ -659,6 +659,15 @@ pub struct GroupInvitationFromAdmin {
     pub expiration_timestamp: ExpirationTimestamp,
     /// Secret salt for MEV protection.
     pub secret_salt: [u8; 32],
+    /// The role the invitee should be granted (0 = Admin, 1 = Member,
+    /// 2 = ReadOnly). Covered by the admin's signature so the joiner
+    /// cannot escalate. Defaults to 1 (Member) for backward compat.
+    #[serde(default = "default_invited_role")]
+    pub invited_role: u8,
+}
+
+fn default_invited_role() -> u8 {
+    1 // Member
 }
 
 /// A container for a group invitation and the admin's signature over it.
@@ -668,24 +677,6 @@ pub struct SignedGroupOpenInvitation {
     pub invitation: GroupInvitationFromAdmin,
     /// Admin's signature for the invitation payload (hex-encoded).
     pub inviter_signature: String,
-}
-
-/// The full payload the joiner reveals in the second transaction.
-#[derive(BorshSerialize, BorshDeserialize, Debug, Deserialize, Clone, Serialize)]
-pub struct GroupRevealPayloadData {
-    /// The signed open invitation from the admin.
-    pub signed_open_invitation: SignedGroupOpenInvitation,
-    /// The identity of the new member joining the group.
-    pub new_member_identity: SignerId,
-}
-
-/// The final object submitted to the `reveal_group_invitation` method.
-#[derive(BorshSerialize, BorshDeserialize, Debug, Deserialize, Clone, Serialize)]
-pub struct SignedGroupRevealPayload {
-    /// The data needed to join the group.
-    pub data: GroupRevealPayloadData,
-    /// The joiner's signature over the `data`.
-    pub invitee_signature: String,
 }
 
 #[cfg(test)]

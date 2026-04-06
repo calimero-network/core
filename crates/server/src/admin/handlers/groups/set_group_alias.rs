@@ -3,13 +3,13 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_primitives::group::SetGroupAliasRequest;
-use calimero_server_primitives::admin::SetGroupAliasApiRequest;
+use calimero_context_client::group::SetGroupAliasRequest;
+use calimero_server_primitives::admin::{SetGroupAliasApiRequest, SetGroupAliasApiResponse};
 use tracing::{error, info};
 
 use super::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
-use crate::admin::service::{parse_api_error, ApiResponse, Empty};
+use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
@@ -37,7 +37,10 @@ pub async fn handler(
     match result {
         Ok(()) => {
             info!(group_id=%group_id_str, "Group alias set");
-            ApiResponse { payload: Empty }.into_response()
+            ApiResponse {
+                payload: SetGroupAliasApiResponse {},
+            }
+            .into_response()
         }
         Err(err) => {
             error!(group_id=%group_id_str, error=?err, "Failed to set group alias");

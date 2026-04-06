@@ -48,15 +48,13 @@ impl ContextClient {
         source: &Url,
         metadata: &[u8],
     ) -> eyre::Result<ApplicationId> {
-        self.node_client.install_application(
+        self.node_client.install_raw_wasm(
             blob_id,
             size,
             &source.clone().into(),
             metadata.to_vec(),
             Self::DEFAULT_PACKAGE,
             Self::DEFAULT_VERSION,
-            None,  // signer_id: None for non-bundle installations
-            false, // is_bundle: false
         )
     }
 
@@ -226,7 +224,7 @@ impl ContextClient {
         context_id: ContextId,
         config: Option<ContextConfigParams>,
     ) -> eyre::Result<Context> {
-        let mut handle = self.datastore.handle();
+        let mut handle = self.registry.datastore.handle();
 
         let context = handle.get(&key::ContextMeta::new(context_id))?;
 
@@ -245,11 +243,12 @@ impl ContextClient {
                 "context already exists, returning stored metadata"
             );
 
-            return Ok(Context::with_dag_heads(
+            return Ok(Context::with_service(
                 context_id,
                 meta.application.application_id(),
                 meta.root_hash.into(),
                 meta.dag_heads.clone(),
+                meta.service_name.as_deref().map(String::from),
             ));
         };
 
@@ -317,8 +316,32 @@ impl ContextClient {
                 %context_id,
                 %application_id,
                 "application not available locally during bootstrap; \
-                 writing metadata — blob sharing will deliver it"
+                 writing stub — blob sharing will deliver it"
             );
+            let zero_app = ApplicationId::from([0u8; 32]);
+            if application_id != zero_app {
+                let app_key = key::ApplicationMeta::new(application_id);
+                if !handle.has(&app_key)? {
+                    let zero_blob =
+                        key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0u8; 32]));
+                    let stub_meta = types::ApplicationMeta::new(
+                        zero_blob,
+                        0,
+                        "calimero://pending-blob-share".to_owned().into_boxed_str(),
+                        Vec::new().into_boxed_slice(),
+                        zero_blob,
+                        String::new().into_boxed_str(),
+                        String::new().into_boxed_str(),
+                        String::new().into_boxed_str(),
+                    );
+                    handle.put(&app_key, &stub_meta)?;
+                    debug!(
+                        %context_id,
+                        %application_id,
+                        "wrote stub application entry for blob sharing"
+                    );
+                }
+            }
         }
 
         handle.put(
@@ -337,6 +360,7 @@ impl ContextClient {
                 key::ApplicationMeta::new(application_id),
                 *root_hash,
                 dag_heads.clone(),
+                None,
             ),
         )?;
 
@@ -355,11 +379,12 @@ impl ContextClient {
 
         receiver.await.expect("Mailbox not to be dropped");
 
-        Ok(Context::with_dag_heads(
+        Ok(Context::with_service(
             context_id,
             application_id,
             root_hash,
             dag_heads,
+            None,
         ))
     }
 }

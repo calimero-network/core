@@ -133,7 +133,7 @@ pub fn try_merge_registered(
     // TODO: Store type hints with root entity for O(1) dispatch (see issue #1993)
 
     // Try each registered merge function until one succeeds (O(n) where n = registered types)
-    let registry = MERGE_REGISTRY.read().unwrap_or_else(|poisoned| {
+    let registry = MERGE_REGISTRY.read().unwrap_or_else(|_poisoned| {
         // Lock poisoning indicates a panic occurred while holding the lock.
         // This is a serious error - abort to prevent undefined behavior.
         // This is consistent with the write side behavior in register_crdt_merge().
@@ -142,9 +142,6 @@ pub fn try_merge_registered(
             "MERGE_REGISTRY lock poisoned, aborting. This indicates a panic in merge code."
         );
         std::process::abort();
-        // Note: abort() never returns, but we need this for type inference
-        #[allow(unreachable_code)]
-        poisoned.into_inner()
     });
 
     if registry.is_empty() {

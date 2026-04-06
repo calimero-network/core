@@ -24,11 +24,20 @@ steps:
     outputs:
       app_id: applicationId
 
-  # Step 2: Create Context A on Node 1
+  # Step 2: Create Namespace A on Node 1
+  - name: Create Namespace A on Node 1
+    type: create_namespace
+    node: calimero-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id_a: namespaceId
+
+  # Step 3: Create Context A on Node 1
   - name: Create Context A on Node 1
     type: create_context
     node: calimero-node-1
     application_id: "{{app_id}}"
+    group_id: "{{namespace_id_a}}"
     outputs:
       context_a_id: contextId
       context_a_member_key: memberPublicKey
@@ -39,11 +48,20 @@ steps:
       - "is_set({{context_a_id}})"
       - "is_set({{context_a_member_key}})"
 
-  # Step 3: Create Context B on Node 1 (same node, different context)
+  # Step 4: Create Namespace B on Node 1
+  - name: Create Namespace B on Node 1
+    type: create_namespace
+    node: calimero-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id_b: namespaceId
+
+  # Step 5: Create Context B on Node 1 (same node, different context)
   - name: Create Context B on Node 1
     type: create_context
     node: calimero-node-1
     application_id: "{{app_id}}"
+    group_id: "{{namespace_id_b}}"
     outputs:
       context_b_id: contextId
       context_b_member_key: memberPublicKey
@@ -55,7 +73,7 @@ steps:
       - "is_set({{context_b_member_key}})"
 
   # ============================================
-  # Setup Phase: Node 2 creates identities and joins both contexts
+  # Setup Phase: Node 2 joins both groups
   # ============================================
 
   # Step 4: Install app on Node 2
@@ -67,56 +85,32 @@ steps:
     outputs:
       app_id_node2: applicationId
 
-  # Step 5: Node 2 creates first identity (for Context A)
-  - name: Create Identity for Context A on Node 2
-    type: create_identity
-    node: calimero-node-2
-    outputs:
-      identity_a: publicKey
-
-  - name: Wait for first identity creation
-    type: wait
-    seconds: 5
-
-  # Step 6: Node 2 creates second identity (for Context B)
-  - name: Create Identity for Context B on Node 2
-    type: create_identity
-    node: calimero-node-2
-    outputs:
-      identity_b: publicKey
-
-  - name: Wait for second identity creation
-    type: wait
-    seconds: 5
-
-  # Step 7: Node 1 invites first identity to Context A
-  - name: Invite Identity A to Context A
-    type: invite
+  # Step 7: Create namespace invitation for Context A's namespace
+  - name: Create namespace invitation for Context A
+    type: create_namespace_invitation
     node: calimero-node-1
-    context_id: "{{context_a_id}}"
-    granter_id: "{{context_a_member_key}}"
-    valid_for_seconds: 3600
+    namespace_id: "{{namespace_id_a}}"
     outputs:
       invitation_a: invitation
 
-  # Step 8: Node 1 invites second identity to Context B
-  - name: Invite Identity B to Context B
-    type: invite
+  # Step 8: Create namespace invitation for Context B's namespace
+  - name: Create namespace invitation for Context B
+    type: create_namespace_invitation
     node: calimero-node-1
-    context_id: "{{context_b_id}}"
-    granter_id: "{{context_b_member_key}}"
-    valid_for_seconds: 3600
+    namespace_id: "{{namespace_id_b}}"
     outputs:
       invitation_b: invitation
 
-  # Step 9: Node 2 joins Context A with first identity
-  - name: Node 2 Join Context A
-    type: join
+  # Step 9: Node 2 joins namespace A (auto-joins all contexts in namespace)
+  - name: Node 2 Join Namespace A
+    type: join_namespace
     node: calimero-node-2
-    invitee_id: "{{identity_a}}"
+    namespace_id: "{{namespace_id_a}}"
     invitation: "{{invitation_a}}"
+    outputs:
+      identity_a: memberIdentity
 
-  - name: Wait for Context A join to propagate
+  - name: Wait for Group A join to propagate
     type: wait_for_sync
     context_id: "{{context_a_id}}"
     nodes:
@@ -126,14 +120,16 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  # Step 10: Node 2 joins Context B with second identity
-  - name: Node 2 Join Context B
-    type: join
+  # Step 10: Node 2 joins namespace B (auto-joins all contexts in namespace)
+  - name: Node 2 Join Namespace B
+    type: join_namespace
     node: calimero-node-2
-    invitee_id: "{{identity_b}}"
+    namespace_id: "{{namespace_id_b}}"
     invitation: "{{invitation_b}}"
+    outputs:
+      identity_b: memberIdentity
 
-  - name: Wait for Context B join to propagate
+  - name: Wait for Group B join to propagate
     type: wait_for_sync
     context_id: "{{context_b_id}}"
     nodes:

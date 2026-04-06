@@ -904,7 +904,6 @@ impl<S: StorageAdaptor> Interface<S> {
         data: &[u8],
         metadata: Metadata,
     ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
-        let incoming_created_at = metadata.created_at;
         let incoming_updated_at = metadata.updated_at();
 
         // Compute incoming data hash for tracing
@@ -1095,7 +1094,7 @@ impl<S: StorageAdaptor> Interface<S> {
         existing_timestamp: u64,
         incoming_timestamp: u64,
     ) -> Result<Vec<u8>, StorageError> {
-        use crate::collections::crdt_meta::MergeError;
+        use crate::collections::crdt_meta::{CrdtType, MergeError};
         use crate::merge::{is_builtin_crdt, merge_by_crdt_type};
 
         // Check if we have CRDT type metadata
@@ -1115,6 +1114,18 @@ impl<S: StorageAdaptor> Interface<S> {
 
         // For built-in types, merge in storage layer
         if is_builtin_crdt(crdt_type) {
+            // LwwRegister's merge_by_crdt_type always returns incoming; the
+            // actual last-writer-wins comparison must happen here using the
+            // HLC timestamps carried in metadata.
+            let is_lww = matches!(crdt_type, CrdtType::LwwRegister { .. });
+            if is_lww {
+                return Ok(if incoming_timestamp >= existing_timestamp {
+                    incoming.to_vec()
+                } else {
+                    existing.to_vec()
+                });
+            }
+
             let result =
                 crate::env::with_merge_mode(|| merge_by_crdt_type(crdt_type, existing, incoming));
 

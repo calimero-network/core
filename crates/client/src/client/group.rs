@@ -4,35 +4,26 @@ use eyre::Result;
 
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::AddGroupMembersApiResponse;
-use calimero_server_primitives::admin::CreateGroupApiRequest;
-use calimero_server_primitives::admin::CreateGroupApiResponse;
-use calimero_server_primitives::admin::CreateGroupInvitationApiRequest;
-use calimero_server_primitives::admin::CreateGroupInvitationApiResponse;
+use calimero_server_primitives::admin::ClaimGroupInvitationApiRequest;
+use calimero_server_primitives::admin::ClaimGroupInvitationApiResponse;
 use calimero_server_primitives::admin::DeleteGroupApiRequest;
 use calimero_server_primitives::admin::DeleteGroupApiResponse;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use calimero_server_primitives::admin::DetachContextFromGroupApiResponse;
-use calimero_server_primitives::admin::GetContextAllowlistApiResponse;
-use calimero_server_primitives::admin::GetContextVisibilityApiResponse;
 use calimero_server_primitives::admin::GetGroupUpgradeStatusApiResponse;
 use calimero_server_primitives::admin::GetMemberCapabilitiesApiResponse;
 use calimero_server_primitives::admin::GroupInfoApiResponse;
-use calimero_server_primitives::admin::JoinGroupApiRequest;
-use calimero_server_primitives::admin::JoinGroupApiResponse;
-use calimero_server_primitives::admin::JoinGroupContextApiRequest;
-use calimero_server_primitives::admin::JoinGroupContextApiResponse;
-use calimero_server_primitives::admin::ListAllGroupsApiResponse;
+use calimero_server_primitives::admin::JoinContextApiResponse;
 use calimero_server_primitives::admin::ListGroupContextsApiResponse;
 use calimero_server_primitives::admin::ListGroupMembersApiResponse;
-use calimero_server_primitives::admin::ManageContextAllowlistApiRequest;
-use calimero_server_primitives::admin::ManageContextAllowlistApiResponse;
+use calimero_server_primitives::admin::ListSubgroupsApiResponse;
+use calimero_server_primitives::admin::NestGroupApiRequest;
+use calimero_server_primitives::admin::NestGroupApiResponse;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiRequest;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiResponse;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiResponse;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
-use calimero_server_primitives::admin::SetContextVisibilityApiRequest;
-use calimero_server_primitives::admin::SetContextVisibilityApiResponse;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiResponse;
 use calimero_server_primitives::admin::SetDefaultVisibilityApiRequest;
@@ -41,6 +32,8 @@ use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiResponse;
 use calimero_server_primitives::admin::SyncGroupApiRequest;
 use calimero_server_primitives::admin::SyncGroupApiResponse;
+use calimero_server_primitives::admin::UnnestGroupApiRequest;
+use calimero_server_primitives::admin::UnnestGroupApiResponse;
 use calimero_server_primitives::admin::UpdateGroupSettingsApiRequest;
 use calimero_server_primitives::admin::UpdateGroupSettingsApiResponse;
 use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
@@ -56,19 +49,6 @@ where
     A: ClientAuthenticator + Clone + Send + Sync,
     S: ClientStorage + Clone + Send + Sync,
 {
-    pub async fn list_groups(&self) -> Result<ListAllGroupsApiResponse> {
-        let response = self.connection.get("admin-api/groups").await?;
-        Ok(response)
-    }
-
-    pub async fn create_group(
-        &self,
-        request: CreateGroupApiRequest,
-    ) -> Result<CreateGroupApiResponse> {
-        let response = self.connection.post("admin-api/groups", request).await?;
-        Ok(response)
-    }
-
     pub async fn get_group_info(&self, group_id: &str) -> Result<GroupInfoApiResponse> {
         let response = self
             .connection
@@ -179,22 +159,48 @@ where
         Ok(response)
     }
 
-    pub async fn create_group_invitation(
+    pub async fn nest_group(
         &self,
-        group_id: &str,
-        request: CreateGroupInvitationApiRequest,
-    ) -> Result<CreateGroupInvitationApiResponse> {
+        parent_group_id: &str,
+        request: NestGroupApiRequest,
+    ) -> Result<NestGroupApiResponse> {
         let response = self
             .connection
-            .post(&format!("admin-api/groups/{group_id}/invite"), request)
+            .post(&format!("admin-api/groups/{parent_group_id}/nest"), request)
             .await?;
         Ok(response)
     }
 
-    pub async fn join_group(&self, request: JoinGroupApiRequest) -> Result<JoinGroupApiResponse> {
+    pub async fn unnest_group(
+        &self,
+        parent_group_id: &str,
+        request: UnnestGroupApiRequest,
+    ) -> Result<UnnestGroupApiResponse> {
         let response = self
             .connection
-            .post("admin-api/groups/join", request)
+            .post(
+                &format!("admin-api/groups/{parent_group_id}/unnest"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn list_subgroups(&self, group_id: &str) -> Result<ListSubgroupsApiResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/groups/{group_id}/subgroups"))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn claim_group_invitation(
+        &self,
+        request: ClaimGroupInvitationApiRequest,
+    ) -> Result<ClaimGroupInvitationApiResponse> {
+        let response = self
+            .connection
+            .post("admin-api/groups/claim-invitation", request)
             .await?;
         Ok(response)
     }
@@ -261,17 +267,10 @@ where
         Ok(response)
     }
 
-    pub async fn join_group_context(
-        &self,
-        group_id: &str,
-        request: JoinGroupContextApiRequest,
-    ) -> Result<JoinGroupContextApiResponse> {
+    pub async fn join_context(&self, context_id: &str) -> Result<JoinContextApiResponse> {
         let response = self
             .connection
-            .post(
-                &format!("admin-api/groups/{group_id}/join-context"),
-                request,
-            )
+            .post_no_body(&format!("admin-api/contexts/{context_id}/join"))
             .await?;
         Ok(response)
     }
@@ -303,66 +302,6 @@ where
             .connection
             .get(&format!(
                 "admin-api/groups/{group_id}/members/{identity_hex}/capabilities"
-            ))
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn set_context_visibility(
-        &self,
-        group_id: &str,
-        context_id: &str,
-        request: SetContextVisibilityApiRequest,
-    ) -> Result<SetContextVisibilityApiResponse> {
-        let response = self
-            .connection
-            .put_json(
-                &format!("admin-api/groups/{group_id}/contexts/{context_id}/visibility"),
-                request,
-            )
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn get_context_visibility(
-        &self,
-        group_id: &str,
-        context_id: &str,
-    ) -> Result<GetContextVisibilityApiResponse> {
-        let response = self
-            .connection
-            .get(&format!(
-                "admin-api/groups/{group_id}/contexts/{context_id}/visibility"
-            ))
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn manage_context_allowlist(
-        &self,
-        group_id: &str,
-        context_id: &str,
-        request: ManageContextAllowlistApiRequest,
-    ) -> Result<ManageContextAllowlistApiResponse> {
-        let response = self
-            .connection
-            .post(
-                &format!("admin-api/groups/{group_id}/contexts/{context_id}/allowlist"),
-                request,
-            )
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn get_context_allowlist(
-        &self,
-        group_id: &str,
-        context_id: &str,
-    ) -> Result<GetContextAllowlistApiResponse> {
-        let response = self
-            .connection
-            .get(&format!(
-                "admin-api/groups/{group_id}/contexts/{context_id}/allowlist"
             ))
             .await?;
         Ok(response)

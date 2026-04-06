@@ -102,6 +102,8 @@ pub struct BufferedDelta {
     pub events: Option<Vec<u8>>,
     /// Source peer ID (for requesting sender key if needed).
     pub source_peer: libp2p::PeerId,
+    /// Group key identifier for decryption.
+    pub key_id: [u8; 32],
 }
 
 /// Buffer for storing deltas during snapshot sync.
@@ -276,6 +278,7 @@ mod tests {
             root_hash: Hash::from([0; 32]),
             events: None,
             source_peer: libp2p::PeerId::random(),
+            key_id: [0; 32],
         }
     }
 

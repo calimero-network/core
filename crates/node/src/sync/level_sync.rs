@@ -781,12 +781,15 @@ fn get_nodes_at_level(
                 // Get leaf data for CRDT merge
                 if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(child_storage_id)
                 {
-                    let crdt_type = child_index.metadata.crdt_type.clone().ok_or_else(|| {
-                        eyre::eyre!(
-                            "Missing CRDT type metadata for leaf entity {}: data integrity issue",
-                            child_storage_id
-                        )
-                    })?;
+                    let Some(crdt_type) = child_index.metadata.crdt_type.clone() else {
+                        // No CRDT type — skip; synced via delta exchange, not level-wise push.
+                        warn!(
+                            %context_id,
+                            child_id = %hex::encode(&child_id[..8]),
+                            "leaf has no CRDT type, skipping in level sync"
+                        );
+                        continue;
+                    };
 
                     let metadata = calimero_node_primitives::sync::LeafMetadata::new(
                         crdt_type,

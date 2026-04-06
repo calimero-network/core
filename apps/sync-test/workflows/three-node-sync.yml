@@ -45,10 +45,18 @@ steps:
   # Phase 1: Fran creates context, Matea joins
   # ============================================
 
+  - name: Fran creates namespace
+    type: create_namespace
+    node: sync-test-node-1
+    application_id: "{{app_id_1}}"
+    outputs:
+      namespace_id: namespaceId
+
   - name: Fran creates context
     type: create_context
     node: sync-test-node-1
     application_id: "{{app_id_1}}"
+    group_id: "{{namespace_id}}"
     outputs:
       context_id: contextId
       fran_key: memberPublicKey
@@ -59,33 +67,21 @@ steps:
       - "is_set({{context_id}})"
       - "is_set({{fran_key}})"
 
-  # Matea creates identity and joins
-  - name: Matea creates identity
-    type: create_identity
-    node: sync-test-node-2
-    outputs:
-      matea_key: publicKey
-
-  - name: Wait for identity
-    type: wait
-    seconds: 3
-
-  - name: Fran invites Matea
-    type: invite_identity
+  # Matea joins via invitation
+  - name: Invite Matea to Namespace
+    type: create_namespace_invitation
     node: sync-test-node-1
-    context_id: "{{context_id}}"
-    grantee_id: "{{matea_key}}"
-    granter_id: "{{fran_key}}"
-    capability: member
+    namespace_id: "{{namespace_id}}"
     outputs:
       matea_invitation: invitation
 
-  - name: Matea joins context
-    type: join_context
+  - name: Matea joins namespace
+    type: join_namespace
     node: sync-test-node-2
-    context_id: "{{context_id}}"
-    invitee_id: "{{matea_key}}"
+    namespace_id: "{{namespace_id}}"
     invitation: "{{matea_invitation}}"
+    outputs:
+      matea_key: memberIdentity
 
   - name: Wait for Matea join to sync
     type: wait_for_sync
@@ -166,32 +162,20 @@ steps:
   # Phase 3: Sandi joins AFTER existing writes
   # ============================================
 
-  - name: Sandi creates identity
-    type: create_identity
-    node: sync-test-node-3
-    outputs:
-      sandi_key: publicKey
-
-  - name: Wait for identity
-    type: wait
-    seconds: 3
-
-  - name: Fran invites Sandi
-    type: invite_identity
+  - name: Invite Sandi to Namespace
+    type: create_namespace_invitation
     node: sync-test-node-1
-    context_id: "{{context_id}}"
-    grantee_id: "{{sandi_key}}"
-    granter_id: "{{fran_key}}"
-    capability: member
+    namespace_id: "{{namespace_id}}"
     outputs:
       sandi_invitation: invitation
 
-  - name: Sandi joins context
-    type: join_context
+  - name: Sandi joins namespace
+    type: join_namespace
     node: sync-test-node-3
-    context_id: "{{context_id}}"
-    invitee_id: "{{sandi_key}}"
+    namespace_id: "{{namespace_id}}"
     invitation: "{{sandi_invitation}}"
+    outputs:
+      sandi_key: memberIdentity
 
   - name: Wait for Sandi join to sync
     type: wait_for_sync

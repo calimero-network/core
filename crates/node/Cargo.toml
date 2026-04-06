@@ -32,7 +32,7 @@ tracing.workspace = true
 
 calimero-context.workspace = true
 calimero-context-config.workspace = true
-calimero-context-primitives.workspace = true
+calimero-context-client.workspace = true
 calimero-crypto.workspace = true
 calimero-blobstore.workspace = true
 calimero-network.workspace = true

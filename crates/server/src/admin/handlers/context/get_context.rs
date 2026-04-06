@@ -26,13 +26,10 @@ pub async fn handler(
     #[expect(clippy::option_if_let_else, reason = "Clearer here")]
     match context {
         Ok(ctx) => match ctx {
-            Some(context) => {
-                info!(context_id=%context_id, "Context retrieved successfully");
-                ApiResponse {
-                    payload: GetContextResponse { data: context },
-                }
-                .into_response()
+            Some(context) => ApiResponse {
+                payload: GetContextResponse { data: context },
             }
+            .into_response(),
             None => {
                 info!(context_id=%context_id, "Context not found");
                 ApiError {

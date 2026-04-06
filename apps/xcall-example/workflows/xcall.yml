@@ -24,63 +24,69 @@ steps:
     path: res/xcall_example.wasm
     dev: true
 
+  - name: Create Namespace A
+    type: create_namespace
+    node: rust-xcall-1
+    application_id: "{{app_id_node1}}"
+    outputs:
+      namespace_id_a: namespaceId
+
   - name: Create Context A
     type: create_context
     node: rust-xcall-1
     application_id: "{{app_id_node1}}"
+    group_id: "{{namespace_id_a}}"
     outputs:
       context_a_id: contextId
       context_a_member_key: memberPublicKey
+      group_id_a: groupId
+
+  - name: Create Namespace B
+    type: create_namespace
+    node: rust-xcall-1
+    application_id: "{{app_id_node1}}"
+    outputs:
+      namespace_id_b: namespaceId
 
   - name: Create Context B
     type: create_context
     node: rust-xcall-1
     application_id: "{{app_id_node1}}"
+    group_id: "{{namespace_id_b}}"
     outputs:
       context_b_id: contextId
       context_b_member_key: memberPublicKey
+      group_id_b: groupId
 
-  - name: Create identity for Context A on Node 2
-    type: create_identity
-    node: rust-xcall-2
-    outputs:
-      identity_a: publicKey
-
-  - name: Create identity for Context B on Node 2
-    type: create_identity
-    node: rust-xcall-2
-    outputs:
-      identity_b: publicKey
-
-  - name: Invite identity A to Context A
-    type: invite
+  - name: Create namespace invitation for Context A
+    type: create_namespace_invitation
     node: rust-xcall-1
-    context_id: "{{context_a_id}}"
-    granter_id: "{{context_a_member_key}}"
-    valid_for_seconds: 3600
+    namespace_id: "{{namespace_id_a}}"
     outputs:
       invitation_a: invitation
 
-  - name: Invite identity B to Context B
-    type: invite
+  - name: Create namespace invitation for Context B
+    type: create_namespace_invitation
     node: rust-xcall-1
-    context_id: "{{context_b_id}}"
-    granter_id: "{{context_b_member_key}}"
-    valid_for_seconds: 3600
+    namespace_id: "{{namespace_id_b}}"
     outputs:
       invitation_b: invitation
 
-  - name: Join Context A from Node 2
-    type: join
+  - name: Node 2 joins namespace A
+    type: join_namespace
     node: rust-xcall-2
-    invitee_id: "{{identity_a}}"
+    namespace_id: "{{namespace_id_a}}"
     invitation: "{{invitation_a}}"
+    outputs:
+      identity_a: memberIdentity
 
-  - name: Join Context B from Node 2
-    type: join
+  - name: Node 2 joins namespace B
+    type: join_namespace
     node: rust-xcall-2
-    invitee_id: "{{identity_b}}"
+    namespace_id: "{{namespace_id_b}}"
     invitation: "{{invitation_b}}"
+    outputs:
+      identity_b: memberIdentity
 
   - name: Wait for memberships to propagate - Context A
     type: wait_for_sync

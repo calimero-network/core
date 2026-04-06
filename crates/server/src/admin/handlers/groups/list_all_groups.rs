@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::Query;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_primitives::group::ListAllGroupsRequest;
+use calimero_context_client::group::ListAllGroupsRequest;
 use calimero_server_primitives::admin::{
     GroupSummaryApiData, ListAllGroupsApiResponse, ListAllGroupsQuery,
 };

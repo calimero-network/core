@@ -31,6 +31,8 @@ const CALIMERO_WEBUI_RELEASE_DOWNLOAD_LATEST_URL: &str =
     "https://github.com/{repo}/releases/latest/download/{asset}";
 const CALIMERO_WEBUI_RELEASE_DOWNLOAD_TAG_URL: &str =
     "https://github.com/{repo}/releases/download/{version}/{asset}";
+const CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS: u32 = 4;
+const CALIMERO_WEBUI_FETCH_RETRY_INITIAL_DELAY_SECS: u64 = 2;
 
 fn main() {
     if let Err(e) = try_main() {
@@ -155,7 +157,7 @@ fn try_main() -> eyre::Result<()> {
             options = options.force();
         }
 
-        let workdir = cache.cached_path_with_options(&src, &options)?;
+        let workdir = cached_path_with_retry(&cache, &src, &options)?;
 
         workdir.into()
     };
@@ -167,6 +169,33 @@ fn try_main() -> eyre::Result<()> {
     );
 
     Ok(())
+}
+
+fn cached_path_with_retry(cache: &Cache, src: &str, options: &Options) -> eyre::Result<PathBuf> {
+    let mut delay_secs = CALIMERO_WEBUI_FETCH_RETRY_INITIAL_DELAY_SECS;
+
+    for attempt in 1..=CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS {
+        match cache.cached_path_with_options(src, options) {
+            Ok(path) => return Ok(path),
+            Err(err) => {
+                let report = eyre::Report::new(err).wrap_err(format!(
+                    "failed to fetch CALIMERO_WEBUI_SRC from {src} (attempt {attempt}/{})",
+                    CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS
+                ));
+
+                if attempt == CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS {
+                    return Err(report);
+                }
+
+                eprintln!("cargo:warning={report:#}");
+                eprintln!("cargo:warning=retrying CALIMERO_WEBUI fetch in {delay_secs}s");
+                std::thread::sleep(std::time::Duration::from_secs(delay_secs));
+                delay_secs = delay_secs.saturating_mul(2);
+            }
+        }
+    }
+
+    unreachable!("webui fetch retry loop should have returned")
 }
 
 // https://github.com/rust-lang/cargo/issues/9661#issuecomment-1722358176

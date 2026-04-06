@@ -23,7 +23,7 @@ type Hash = [u8; 32];
 pub struct FrozenStorage<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor = MainStorage> {
     /// The underlying map storing immutable data.
     #[borsh(bound(serialize = "", deserialize = ""))]
-    pub(crate) inner: UnorderedMap<Hash, FrozenValue<T>, S>,
+    inner: UnorderedMap<Hash, FrozenValue<T>, S>,
     /// The storage element for this FrozenStorage instance itself.
     storage: Element,
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use calimero_blobstore::{Blob, Size};
+use calimero_blobstore::{Blob, BlobManager as BlobStore, Size};
 use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload};
 use calimero_primitives::{
     blobs::{BlobId, BlobInfo, BlobMetadata},
@@ -11,6 +11,7 @@ use calimero_primitives::{
 };
 use calimero_store::key;
 use calimero_store::layer::LayerExt;
+use camino::Utf8PathBuf;
 use eyre::bail;
 use futures_util::{AsyncRead, StreamExt};
 use libp2p::PeerId;
@@ -21,11 +22,24 @@ use super::NodeClient;
 use crate::messages::get_blob_bytes::GetBlobBytesRequest;
 use crate::messages::NodeMessage::GetBlobBytes;
 
-impl NodeClient {
-    // todo! maybe this should be an actor method?
-    // todo! so we can cache the blob in case it's
-    // todo! to be immediately used? might require
-    // todo! refactoring the blobstore API
+/// Facade for blob storage used by [`NodeClient`].
+///
+/// Wraps [`calimero_blobstore::BlobManager`] (the store + filesystem implementation).
+#[derive(Clone, Debug)]
+pub struct BlobManager {
+    pub(crate) blobstore: BlobStore,
+}
+
+impl BlobManager {
+    #[must_use]
+    pub fn new(blobstore: BlobStore) -> Self {
+        Self { blobstore }
+    }
+
+    pub fn root_path(&self) -> Utf8PathBuf {
+        self.blobstore.root_path()
+    }
+
     pub async fn add_blob<S: AsyncRead>(
         &self,
         stream: S,
@@ -75,6 +89,35 @@ impl NodeClient {
         Ok((blob_id, size))
     }
 
+    pub fn has_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {
+        self.blobstore.has(*blob_id)
+    }
+
+    pub fn get_blob_stream(&self, blob_id: BlobId) -> eyre::Result<Option<Blob>> {
+        self.blobstore.get(blob_id)
+    }
+
+    pub async fn delete_blob_file(&self, blob_id: BlobId) -> eyre::Result<bool> {
+        self.blobstore.delete(blob_id).await
+    }
+}
+
+impl NodeClient {
+    // todo! maybe this should be an actor method?
+    // todo! so we can cache the blob in case it's
+    // todo! to be immediately used? might require
+    // todo! refactoring the blobstore API
+    pub async fn add_blob<S: AsyncRead>(
+        &self,
+        stream: S,
+        expected_size: Option<u64>,
+        expected_hash: Option<&Hash>,
+    ) -> eyre::Result<(BlobId, u64)> {
+        self.blob_manager
+            .add_blob(stream, expected_size, expected_hash)
+            .await
+    }
+
     /// Get blob from local storage or network if context_id is provided
     /// Returns a streaming Blob that can be used to read the data
     pub async fn get_blob<'a>(
@@ -83,7 +126,7 @@ impl NodeClient {
         context_id: Option<&'a ContextId>,
     ) -> eyre::Result<Option<Blob>> {
         // First try to get locally
-        let Some(stream) = self.blobstore.get(*blob_id)? else {
+        let Some(stream) = self.blob_manager.get_blob_stream(*blob_id)? else {
             // If no context provided or blob not found locally, return None
             if context_id.is_none() {
                 return Ok(None);
@@ -196,7 +239,7 @@ impl NodeClient {
                             }
 
                             // Return the newly stored blob as a stream
-                            return self.blobstore.get(*blob_id);
+                            return self.blob_manager.get_blob_stream(*blob_id);
                         }
                         Ok(None) => {
                             tracing::debug!(
@@ -286,7 +329,7 @@ impl NodeClient {
 
         // Fallback to direct blobstore access if NodeManager is unavailable or blob not in cache
         // This ensures we can still retrieve blobs even if NodeManager is down (e.g., in tests)
-        if let Some(mut stream) = self.blobstore.get(blob_id)? {
+        if let Some(mut stream) = self.blob_manager.get_blob_stream(blob_id)? {
             let mut data = Vec::new();
             while let Some(chunk) = stream.next().await {
                 data.extend_from_slice(&chunk?);
@@ -336,7 +379,7 @@ impl NodeClient {
     }
 
     pub fn has_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {
-        self.blobstore.has(*blob_id)
+        self.blob_manager.has_blob(blob_id)
     }
 
     /// List all root blobs
@@ -459,7 +502,7 @@ impl NodeClient {
 
         // Delete blob files first
         for current_blob_id in &blobs_to_delete {
-            match self.blobstore.delete(*current_blob_id).await {
+            match self.blob_manager.delete_blob_file(*current_blob_id).await {
                 Ok(true) => {
                     deleted_files_count += 1;
                     tracing::debug!("Successfully deleted blob file {}", current_blob_id);

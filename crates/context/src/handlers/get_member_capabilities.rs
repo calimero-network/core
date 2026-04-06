@@ -1,7 +1,5 @@
 use actix::{ActorResponse, Handler, Message};
-use calimero_context_primitives::group::{
-    GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
-};
+use calimero_context_client::group::{GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse};
 use eyre::bail;
 
 use crate::group_store;

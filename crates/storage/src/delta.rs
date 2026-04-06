@@ -10,7 +10,7 @@ use crate::action::Action;
 use crate::entities::{Metadata, SignatureData, StorageType};
 use crate::env;
 use crate::integration::Comparison;
-use crate::logical_clock::{logical_counter, HybridTimestamp};
+use crate::logical_clock::HybridTimestamp;
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 

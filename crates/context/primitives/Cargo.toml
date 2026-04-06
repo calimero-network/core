@@ -1,5 +1,5 @@
 [package]
-name = "calimero-context-primitives"
+name = "calimero-context-client"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

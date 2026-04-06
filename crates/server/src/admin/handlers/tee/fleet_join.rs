@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
+use calimero_context::group_store;
+use calimero_context_client::group::{JoinContextRequest, ListGroupContextsRequest};
+use calimero_context_config::types::ContextGroupId;
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_server_primitives::admin::FleetJoinRequest;
@@ -33,26 +36,33 @@ pub async fn handler(
         }
     };
 
+    let group_id = ContextGroupId::from(group_id_bytes);
+
     info!(
         group_id = %req.group_id,
-        "Fleet join: generating attestation and subscribing to group"
+        "Fleet join: resolving namespace identity and generating attestation"
     );
 
-    // Create identity first (before subscribe, so we can clean up if needed)
-    let our_public_key = match state.ctx_client.new_identity() {
-        Ok(pk) => pk,
-        Err(err) => {
-            error!(error=?err, "Failed to create identity for fleet join");
-            return ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "Failed to create identity".to_owned(),
+    // Use namespace identity (per-root-group keypair) instead of a throwaway identity
+    let (ns_id, our_public_key, _sk, _sender) =
+        match group_store::get_or_create_namespace_identity(&state.store, &group_id) {
+            Ok(result) => result,
+            Err(err) => {
+                error!(error=?err, "Failed to resolve namespace identity");
+                return ApiError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: "Failed to resolve namespace identity".to_owned(),
+                }
+                .into_response();
             }
-            .into_response();
-        }
-    };
+        };
 
-    // Generate attestation BEFORE subscribing -- this is the expensive step
-    // and if it fails we haven't leaked a subscription
+    info!(
+        %our_public_key,
+        namespace_id = %hex::encode(ns_id.to_bytes()),
+        "Using namespace identity for fleet join"
+    );
+
     let pk_hash: [u8; 32] = Sha256::digest(&*our_public_key).into();
     let nonce: [u8; 32] = rand::random();
     let report_data = build_report_data(&nonce, Some(&pk_hash));
@@ -80,7 +90,6 @@ pub async fn handler(
         }
     };
 
-    // Serialize the broadcast payload BEFORE subscribing
     let broadcast = BroadcastMessage::TeeAttestationAnnounce {
         quote_bytes: attestation.quote_bytes,
         public_key: our_public_key,
@@ -100,44 +109,114 @@ pub async fn handler(
         }
     };
 
-    // NOW subscribe -- all preparation succeeded
-    if let Err(err) = state.node_client.subscribe_group(group_id_bytes).await {
-        error!(error=?err, "Failed to subscribe to group topic");
+    if let Err(err) = state.node_client.subscribe_namespace(group_id_bytes).await {
+        error!(error=?err, "Failed to subscribe to namespace topic");
         return ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "Failed to subscribe to group".to_owned(),
+            message: "Failed to subscribe to namespace".to_owned(),
         }
         .into_response();
     }
 
-    match state
+    if let Err(err) = state
         .node_client
-        .publish_on_group(group_id_bytes, payload)
+        .publish_on_namespace(group_id_bytes, payload)
         .await
     {
-        Ok(_) => {
-            info!(
-                group_id = %req.group_id,
-                %our_public_key,
-                "TeeAttestationAnnounce broadcast on group topic"
-            );
-            ApiResponse {
-                payload: serde_json::json!({
-                    "status": "announced",
-                    "group_id": req.group_id,
-                    "public_key": our_public_key.to_string(),
-                }),
-            }
-            .into_response()
+        warn!(error=?err, "Failed to broadcast, unsubscribing from namespace");
+        let _ = state
+            .node_client
+            .unsubscribe_namespace(group_id_bytes)
+            .await;
+        return ApiError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            message: "Failed to broadcast attestation".to_owned(),
         }
-        Err(err) => {
-            warn!(error=?err, "Failed to broadcast, unsubscribing from group");
-            let _ = state.node_client.unsubscribe_group(group_id_bytes).await;
-            ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "Failed to broadcast attestation".to_owned(),
+        .into_response();
+    }
+
+    info!(
+        group_id = %req.group_id,
+        %our_public_key,
+        "TeeAttestationAnnounce broadcast; waiting for admission then joining contexts"
+    );
+
+    // Poll for group admission, then auto-join all contexts in the namespace
+    let mut contexts_joined = Vec::new();
+    let mut admitted = false;
+
+    const MAX_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+    const ADMISSION_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+    let deadline = tokio::time::Instant::now() + MAX_ADMISSION_WAIT;
+
+    while tokio::time::Instant::now() < deadline {
+        match state
+            .ctx_client
+            .list_group_contexts(ListGroupContextsRequest {
+                group_id,
+                offset: 0,
+                limit: 100,
+            })
+            .await
+        {
+            Ok(entries) => {
+                info!(
+                    group_id = %req.group_id,
+                    context_count = entries.len(),
+                    "Admitted to group, joining contexts"
+                );
+                admitted = true;
+
+                for entry in &entries {
+                    match state
+                        .ctx_client
+                        .join_context(JoinContextRequest {
+                            context_id: entry.context_id,
+                        })
+                        .await
+                    {
+                        Ok(resp) => {
+                            info!(
+                                context_id = %hex::encode(*resp.context_id),
+                                "Joined context via group membership"
+                            );
+                            contexts_joined.push(hex::encode(*resp.context_id));
+                        }
+                        Err(err) => {
+                            warn!(
+                                context_id = %hex::encode(*entry.context_id),
+                                error = ?err,
+                                "Failed to join context (may already be joined)"
+                            );
+                        }
+                    }
+                }
+                break;
             }
-            .into_response()
+            Err(err) => {
+                tracing::debug!(error=?err, "Admission check not yet successful, retrying...");
+                tokio::time::sleep(ADMISSION_POLL).await;
+            }
         }
     }
+
+    if !admitted {
+        warn!(
+            group_id = %req.group_id,
+            "Timed out waiting for group admission"
+        );
+    }
+
+    ApiResponse {
+        payload: serde_json::json!({
+            "status": if admitted { "joined" } else { "announced" },
+            "group_id": req.group_id,
+            "namespace_id": hex::encode(ns_id.to_bytes()),
+            "public_key": our_public_key.to_string(),
+            "admitted": admitted,
+            "contexts_joined": contexts_joined,
+        }),
+    }
+    .into_response()
 }

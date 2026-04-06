@@ -137,7 +137,7 @@ impl PublicKey {
         message: &[u8],
         signature_bytes: &[u8; 64],
     ) -> Result<(), SignatureError> {
-        let signature = Signature::from_bytes(&signature_bytes);
+        let signature = Signature::from_bytes(signature_bytes);
         self.verify(message, &signature)
     }
 

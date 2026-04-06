@@ -1,7 +1,7 @@
 //! Two logical nodes (separate stores) receive the same gossip payloads and converge to identical group membership.
 //!
-//! Mirrors the node path: `BroadcastMessage::SignedGroupOpV1` carries `borsh(SignedGroupOp)` bytes; each peer decodes
-//! and applies via `group_store::apply_local_signed_group_op` (see `network_event.rs` + `apply_signed_group_op` handler).
+//! Each peer applies `borsh(SignedGroupOp)` payloads via `group_store::apply_local_signed_group_op`
+//! (same path as `ContextClient::apply_signed_group_op`).
 //! Real libp2p gossip on `group/<hex>` is covered by `calimero-network` (`tests/gossipsub_group_topic.rs`).
 
 use std::sync::Arc;
@@ -12,12 +12,11 @@ use calimero_context::group_store::{
     self, add_group_member, apply_local_signed_group_op, compute_group_state_hash, get_op_head,
     list_group_members, load_group_meta, read_op_log_after, save_group_meta,
 };
+use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::{
-    ContextGroupId, GroupInvitationFromAdmin, GroupRevealPayloadData, SignedGroupOpenInvitation,
-    SignerId,
+    ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::MemberCapabilities;
-use calimero_context_primitives::local_governance::{GroupOp, SignedGroupOp};
 use calimero_dag::DagStore;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
@@ -196,10 +195,12 @@ fn two_nodes_converge_on_target_application_and_migration() {
 }
 
 #[test]
-fn two_nodes_converge_on_join_with_invitation_claim() {
+fn two_nodes_converge_on_namespace_member_joined() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
     let mut rng = OsRng;
     let gid = sample_group_id();
-    let gid_bytes = gid.to_bytes();
+    let ns_id = gid.to_bytes();
 
     let store_a = empty_store();
     let store_b = empty_store();
@@ -217,8 +218,9 @@ fn two_nodes_converge_on_join_with_invitation_claim() {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_pk.digest()),
         group_id: gid,
-        expiration_timestamp: 9_999_999,
+        expiration_timestamp: 9_999_999_999,
         secret_salt: [0x42; 32],
+        invited_role: 1,
     };
 
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
@@ -229,184 +231,145 @@ fn two_nodes_converge_on_join_with_invitation_claim() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
     };
 
-    let reveal = GroupRevealPayloadData {
-        signed_open_invitation: signed_invitation.clone(),
-        new_member_identity: SignerId::from(*joiner_pk.digest()),
-    };
-    let reveal_bytes = borsh::to_vec(&reveal).expect("borsh reveal");
-    let reveal_hash = Sha256::digest(&reveal_bytes);
-    let join_sig = joiner_sk.sign(&reveal_hash).expect("sign reveal");
-    let invitee_signature_hex = hex::encode(join_sig.to_bytes());
-
-    let op = SignedGroupOp::sign(
+    let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
-        gid_bytes,
+        ns_id,
         vec![],
         [0u8; 32],
         1,
-        GroupOp::JoinWithInvitationClaim {
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: joiner_pk,
             signed_invitation,
-            invitee_signature_hex,
-        },
+        }),
     )
-    .expect("sign JoinWithInvitationClaim");
+    .expect("sign MemberJoined");
 
-    let payload = borsh_to_vec(&op).expect("encode join op");
+    group_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
+    group_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
 
-    apply_wire_payload(&store_a, &payload);
-    apply_wire_payload(&store_b, &payload);
-
-    assert_same_group_view(&store_a, &store_b, &gid);
     assert!(group_store::check_group_membership(&store_a, &gid, &joiner_pk).unwrap());
     assert!(group_store::check_group_membership(&store_b, &gid, &joiner_pk).unwrap());
 }
 
-/// Same op order as `create_context` under local governance when default visibility is set:
-/// `ContextRegistered` → `ContextVisibilitySet` (group default applied to new context).
 #[test]
-fn two_nodes_converge_on_context_visibility_after_create() {
+fn recursive_invite_joins_all_descendant_groups() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
     let mut rng = OsRng;
-    let gid = sample_group_id();
-    let gid_bytes = gid.to_bytes();
+    let ns_id = sample_group_id();
+    let child_a = ContextGroupId::from([0xAA; 32]);
+    let child_b = ContextGroupId::from([0xBB; 32]);
+    let grandchild = ContextGroupId::from([0xCC; 32]);
 
-    let store_a = empty_store();
-    let store_b = empty_store();
+    let store = empty_store();
 
-    let admin_pk = PrivateKey::random(&mut rng).public_key();
-    let creator_sk = PrivateKey::random(&mut rng);
-    let creator_pk = creator_sk.public_key();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner_pk = joiner_sk.public_key();
 
-    let context_id = ContextId::from([0xCD; 32]);
+    // Setup: create namespace root + child groups, add admin to all
+    for gid in [&ns_id, &child_a, &child_b, &grandchild] {
+        save_group_meta(&store, gid, &sample_meta(admin_pk)).unwrap();
+        add_group_member(&store, gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    }
 
-    for store in [&store_a, &store_b] {
-        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
-        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-        add_group_member(store, &gid, &creator_pk, GroupMemberRole::Member).unwrap();
-        group_store::set_member_capability(
-            store,
-            &gid,
-            &creator_pk,
-            MemberCapabilities::CAN_CREATE_CONTEXT,
+    // Setup nesting: ns_id → child_a → grandchild, ns_id → child_b
+    group_store::nest_group(&store, &ns_id, &child_a).unwrap();
+    group_store::nest_group(&store, &ns_id, &child_b).unwrap();
+    group_store::nest_group(&store, &child_a, &grandchild).unwrap();
+
+    // Verify tree structure
+    let children = group_store::list_child_groups(&store, &ns_id).unwrap();
+    assert_eq!(children.len(), 2);
+    let descendants = group_store::collect_descendant_groups(&store, &ns_id).unwrap();
+    assert_eq!(descendants.len(), 3); // child_a, child_b, grandchild
+
+    // Recursive invite for ns_id (covers all 4 groups including ns_id itself)
+    let invitations = group_store::create_recursive_invitations(
+        &store,
+        &ns_id,
+        &admin_sk,
+        365 * 24 * 3600,
+        1, // Member
+    )
+    .unwrap();
+
+    assert_eq!(invitations.len(), 4); // ns_id + child_a + child_b + grandchild
+
+    // Joiner publishes MemberJoined for each invitation
+    for (i, (_gid, signed_inv)) in invitations.iter().enumerate() {
+        let ns_op = SignedNamespaceOp::sign(
+            &joiner_sk,
+            ns_id.to_bytes(),
+            vec![],
+            [0u8; 32],
+            (i + 1) as u64,
+            NamespaceOp::Root(RootOp::MemberJoined {
+                member: joiner_pk,
+                signed_invitation: signed_inv.clone(),
+            }),
         )
-        .unwrap();
-        group_store::set_default_visibility(store, &gid, 0).unwrap();
+        .expect("sign MemberJoined");
+
+        group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     }
 
-    let op1 = SignedGroupOp::sign(
-        &creator_sk,
-        gid_bytes,
-        vec![],
-        [0u8; 32],
-        1,
-        GroupOp::ContextRegistered { context_id },
-    )
-    .expect("sign ContextRegistered");
-    let op2 = SignedGroupOp::sign(
-        &creator_sk,
-        gid_bytes,
-        vec![],
-        [0u8; 32],
-        2,
-        GroupOp::ContextVisibilitySet {
-            context_id,
-            mode: 0,
-            creator: creator_pk,
-        },
-    )
-    .expect("sign ContextVisibilitySet");
+    // Verify joiner is member of ALL groups
+    assert!(group_store::check_group_membership(&store, &ns_id, &joiner_pk).unwrap());
+    assert!(group_store::check_group_membership(&store, &child_a, &joiner_pk).unwrap());
+    assert!(group_store::check_group_membership(&store, &child_b, &joiner_pk).unwrap());
+    assert!(group_store::check_group_membership(&store, &grandchild, &joiner_pk).unwrap());
 
-    for payload in [
-        borsh_to_vec(&op1).expect("encode op1"),
-        borsh_to_vec(&op2).expect("encode op2"),
-    ] {
-        apply_wire_payload(&store_a, &payload);
-        apply_wire_payload(&store_b, &payload);
-    }
+    // Recursive remove from ns_id (should remove from all 4)
+    let removed = group_store::recursive_remove_member(&store, &ns_id, &joiner_pk).unwrap();
+    assert_eq!(removed.len(), 4);
 
-    let vis_a = group_store::get_context_visibility(&store_a, &gid, &context_id)
-        .unwrap()
-        .expect("visibility on a");
-    let vis_b = group_store::get_context_visibility(&store_b, &gid, &context_id)
-        .unwrap()
-        .expect("visibility on b");
-    assert_eq!(vis_a, vis_b);
-    assert_eq!(vis_a.0, 0);
-    assert_eq!(vis_a.1, *creator_pk);
-}
-
-/// `create_context` uses **Open (0)** when the group has no `GroupDefaultVis`; same wire shape.
-#[test]
-fn two_nodes_converge_on_context_visibility_without_group_default() {
-    let mut rng = OsRng;
-    let gid = sample_group_id();
-    let gid_bytes = gid.to_bytes();
-
-    let store_a = empty_store();
-    let store_b = empty_store();
-
-    let admin_pk = PrivateKey::random(&mut rng).public_key();
-    let creator_sk = PrivateKey::random(&mut rng);
-    let creator_pk = creator_sk.public_key();
-
-    let context_id = ContextId::from([0xCE; 32]);
-
-    for store in [&store_a, &store_b] {
-        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
-        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-        add_group_member(store, &gid, &creator_pk, GroupMemberRole::Member).unwrap();
-        group_store::set_member_capability(
-            store,
-            &gid,
-            &creator_pk,
-            MemberCapabilities::CAN_CREATE_CONTEXT,
-        )
-        .unwrap();
-    }
-
-    let op1 = SignedGroupOp::sign(
-        &creator_sk,
-        gid_bytes,
-        vec![],
-        [0u8; 32],
-        1,
-        GroupOp::ContextRegistered { context_id },
-    )
-    .expect("sign ContextRegistered");
-    let op2 = SignedGroupOp::sign(
-        &creator_sk,
-        gid_bytes,
-        vec![],
-        [0u8; 32],
-        2,
-        GroupOp::ContextVisibilitySet {
-            context_id,
-            mode: 0,
-            creator: creator_pk,
-        },
-    )
-    .expect("sign ContextVisibilitySet");
-
-    for payload in [
-        borsh_to_vec(&op1).expect("encode op1"),
-        borsh_to_vec(&op2).expect("encode op2"),
-    ] {
-        apply_wire_payload(&store_a, &payload);
-        apply_wire_payload(&store_b, &payload);
-    }
-
-    let vis_a = group_store::get_context_visibility(&store_a, &gid, &context_id)
-        .unwrap()
-        .expect("visibility on a");
-    let vis_b = group_store::get_context_visibility(&store_b, &gid, &context_id)
-        .unwrap()
-        .expect("visibility on b");
-    assert_eq!(vis_a, vis_b);
-    assert_eq!(vis_a.0, 0);
-    assert_eq!(vis_a.1, *creator_pk);
+    assert!(!group_store::check_group_membership(&store, &ns_id, &joiner_pk).unwrap());
+    assert!(!group_store::check_group_membership(&store, &child_a, &joiner_pk).unwrap());
+    assert!(!group_store::check_group_membership(&store, &child_b, &joiner_pk).unwrap());
+    assert!(!group_store::check_group_membership(&store, &grandchild, &joiner_pk).unwrap());
 }
 
 #[test]
-fn two_nodes_converge_on_context_alias_as_creator() {
+fn nest_group_rejects_cycles() {
+    let store = empty_store();
+
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+
+    let group_a = ContextGroupId::from([0xA0; 32]);
+    let group_b = ContextGroupId::from([0xB0; 32]);
+    let group_c = ContextGroupId::from([0xC0; 32]);
+
+    for gid in [&group_a, &group_b, &group_c] {
+        save_group_meta(&store, gid, &sample_meta(admin_pk)).unwrap();
+    }
+
+    // A → B → C
+    group_store::nest_group(&store, &group_a, &group_b).unwrap();
+    group_store::nest_group(&store, &group_b, &group_c).unwrap();
+
+    // C → A would create A → B → C → A cycle
+    let result = group_store::nest_group(&store, &group_c, &group_a);
+    assert!(result.is_err(), "should reject cycle");
+    assert!(
+        result.unwrap_err().to_string().contains("cycle"),
+        "error should mention cycle"
+    );
+
+    // Self-nesting
+    let result = group_store::nest_group(&store, &group_a, &group_a);
+    assert!(result.is_err(), "should reject self-nesting");
+
+    // B already has a parent (A), can't give it a second
+    let result = group_store::nest_group(&store, &group_c, &group_b);
+    assert!(result.is_err(), "should reject double-parent");
+}
+
+#[test]
+fn two_nodes_converge_on_context_alias_as_admin() {
     let mut rng = OsRng;
     let gid = sample_group_id();
     let gid_bytes = gid.to_bytes();
@@ -440,28 +403,20 @@ fn two_nodes_converge_on_context_alias_as_creator() {
         vec![],
         [0u8; 32],
         1,
-        GroupOp::ContextRegistered { context_id },
+        GroupOp::ContextRegistered {
+            context_id,
+            application_id: calimero_primitives::application::ApplicationId::from([0xAA; 32]),
+            blob_id: calimero_primitives::blobs::BlobId::from([0xBB; 32]),
+            source: String::new(),
+        },
     )
     .expect("sign ContextRegistered");
     let op2 = SignedGroupOp::sign(
-        &creator_sk,
+        &admin_sk,
         gid_bytes,
         vec![],
         [0u8; 32],
-        2,
-        GroupOp::ContextVisibilitySet {
-            context_id,
-            mode: 0,
-            creator: creator_pk,
-        },
-    )
-    .expect("sign ContextVisibilitySet");
-    let op3 = SignedGroupOp::sign(
-        &creator_sk,
-        gid_bytes,
-        vec![],
-        [0u8; 32],
-        3,
+        1,
         GroupOp::ContextAliasSet {
             context_id,
             alias: "wire-alias".to_owned(),
@@ -472,7 +427,6 @@ fn two_nodes_converge_on_context_alias_as_creator() {
     for payload in [
         borsh_to_vec(&op1).expect("encode op1"),
         borsh_to_vec(&op2).expect("encode op2"),
-        borsh_to_vec(&op3).expect("encode op3"),
     ] {
         apply_wire_payload(&store_a, &payload);
         apply_wire_payload(&store_b, &payload);

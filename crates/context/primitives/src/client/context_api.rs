@@ -15,7 +15,7 @@ impl ContextClient {
         &self,
         context_id: &ContextId,
     ) -> eyre::Result<Option<ContextConfigParams>> {
-        let handle = self.datastore.handle();
+        let handle = self.registry.datastore.handle();
 
         let key = key::ContextConfig::new(*context_id);
 
@@ -36,7 +36,7 @@ impl ContextClient {
         &self,
         context_id: &ContextId,
     ) -> eyre::Result<Application> {
-        let handle = self.datastore.handle();
+        let handle = self.registry.datastore.handle();
         let meta = handle
             .get(&key::ContextMeta::new(*context_id))?
             .ok_or_eyre("context meta not found")?;

@@ -60,7 +60,7 @@ impl ContextClient {
     ///
     /// Returns an error if there is an issue writing the new identity to the datastore.
     pub fn new_identity(&self) -> eyre::Result<PublicKey> {
-        let mut handle = self.datastore.handle();
+        let mut handle = self.registry.datastore.handle();
 
         let private_key = PrivateKey::random(&mut rand::thread_rng());
         let public_key = private_key.public_key();
@@ -95,7 +95,7 @@ impl ContextClient {
         context_id: &ContextId,
         public_key: &PublicKey,
     ) -> eyre::Result<Option<ContextIdentity>> {
-        let handle = self.datastore.handle();
+        let handle = self.registry.datastore.handle();
 
         let key = key::ContextIdentity::new(*context_id, *public_key);
 
@@ -130,7 +130,7 @@ impl ContextClient {
         context_id: &ContextId,
         new_identity: &ContextIdentity,
     ) -> eyre::Result<()> {
-        let mut handle = self.datastore.handle();
+        let mut handle = self.registry.datastore.handle();
 
         let key = key::ContextIdentity::new(*context_id, new_identity.public_key);
 
@@ -167,7 +167,7 @@ impl ContextClient {
         context_id: &ContextId,
         public_key: &PublicKey,
     ) -> eyre::Result<()> {
-        let mut handle = self.datastore.handle();
+        let mut handle = self.registry.datastore.handle();
 
         let key = key::ContextIdentity::new(*context_id, *public_key);
 
@@ -181,9 +181,12 @@ impl ContextClient {
 mod tests {
     use super::*;
     use crate::client::ContextClient;
-    use calimero_blobstore::{config::BlobStoreConfig, BlobManager, FileSystem};
+    use calimero_blobstore::{config::BlobStoreConfig, BlobManager as BlobStore, FileSystem};
     use calimero_network_primitives::client::NetworkClient;
-    use calimero_node_primitives::{client::NodeClient, messages::NodeMessage};
+    use calimero_node_primitives::{
+        client::{BlobManager, NodeClient, SyncClient},
+        messages::NodeMessage,
+    };
     use calimero_primitives::common::DIGEST_SIZE;
     use calimero_store::{db::InMemoryDB, key, types, Store};
     use calimero_utils_actix::LazyRecipient;
@@ -202,12 +205,16 @@ mod tests {
         let blob_store_config =
             BlobStoreConfig::new(tmp_dir.path().to_path_buf().try_into().unwrap());
         let file_system = FileSystem::new(&blob_store_config).await.unwrap();
-        let blob_manager = BlobManager::new(store.clone(), file_system);
+        let blob_store = BlobStore::new(store.clone(), file_system);
+        let blob_manager = BlobManager::new(blob_store);
 
         // 3. Mock/dummy network and actor dependencies.
         let network_client = NetworkClient::new(LazyRecipient::new());
         let (event_sender, _) = broadcast::channel(16);
         let (ctx_sync_tx, _) = mpsc::channel(16);
+        let (ns_sync_tx, _) = mpsc::channel(16);
+        let (ns_join_tx, _) = mpsc::channel(16);
+        let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx);
         let node_manager = LazyRecipient::<NodeMessage>::new();
 
         // 4. Construct the real NodeClient.
@@ -217,7 +224,7 @@ mod tests {
             network_client,
             node_manager,
             event_sender,
-            ctx_sync_tx,
+            sync_client,
             String::new(), // Not used in tests
         );
 
@@ -248,7 +255,7 @@ mod tests {
         let public_key = client.new_identity().unwrap();
 
         let private_key_bytes: [u8; DIGEST_SIZE] = [1; DIGEST_SIZE];
-        let mut handle = client.datastore.handle();
+        let mut handle = client.registry.datastore.handle();
         let key = key::ContextIdentity::new(context_id, public_key);
         let id_data = types::ContextIdentity {
             private_key: Some(private_key_bytes.into()),
