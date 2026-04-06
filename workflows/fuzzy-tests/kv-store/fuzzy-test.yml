@@ -26,6 +26,7 @@ steps:
     type: create_mesh
     context_node: fuzzy-kv-node-1
     application_id: "{{kv_app_id}}"
+    path: ../../../apps/kv-store/res/kv_store.wasm
     protocol: near
     nodes:
       - fuzzy-kv-node-2

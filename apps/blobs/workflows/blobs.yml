@@ -22,6 +22,7 @@ steps:
     type: create_mesh
     context_node: rust-blob-1
     application_id: "{{app_id}}"
+    path: "res/blobs.wasm"
     nodes:
       - rust-blob-2
     capability: member
