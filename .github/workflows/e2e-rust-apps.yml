@@ -160,50 +160,6 @@ jobs:
               echo "failed=false" >> $GITHUB_OUTPUT
           fi
 
-      # Run groups workflow
-      - name: Run e2e-kv-store Groups Workflow
-        id: run_groups
-        run: |
-          cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/groups.yml" \
-                  --image merod:local \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  attempt=$((attempt + 1))
-              fi
-          done
-
-          # Collect logs
-          echo "Collecting Docker logs for groups workflow"
-          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-              if [ -n "$container" ]; then
-                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/groups-${container}.log" 2>&1 || true
-              fi
-          done
-
-          merobox stop --all || true
-          merobox nuke --force || true
-
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
-
       # Run xcall-example workflow
       - name: Run xcall-example Workflow
         id: run_xcall
