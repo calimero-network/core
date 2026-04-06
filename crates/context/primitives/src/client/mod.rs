@@ -1,0 +1,1311 @@
+#![allow(clippy::multiple_inherent_impl, reason = "better readability")]
+
+use async_stream::try_stream;
+use borsh::BorshDeserialize;
+use calimero_context_config::types::{ContextGroupId, InvitationFromMember, SignedOpenInvitation};
+use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::alias::Alias;
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::common::DIGEST_SIZE;
+use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_store::{key, Store};
+use calimero_utils_actix::LazyRecipient;
+use eyre::{ContextCompat, WrapErr};
+use futures_util::Stream;
+use rand::Rng;
+use sha2::{Digest, Sha256};
+use tokio::sync::oneshot;
+
+use crate::group::{
+    AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupAliasesRequest,
+    BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
+    CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
+    DetachContextFromGroupRequest, GetGroupForContextRequest, GetGroupInfoRequest,
+    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
+    GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse, GroupSummary,
+    GroupUpgradeInfo, JoinContextRequest, JoinContextResponse, JoinGroupRequest, JoinGroupResponse,
+    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    ListGroupMembersResponse, ListNamespacesForApplicationRequest, ListNamespacesRequest,
+    NamespaceSummary, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
+    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetGroupAliasRequest,
+    SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextAliasRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
+    StoreGroupAliasRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
+    StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+};
+use crate::messages::{
+    ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest, ContextMessage, CreateContextRequest,
+    CreateContextResponse, DeleteContextRequest, DeleteContextResponse, ExecuteError,
+    ExecuteRequest, ExecuteResponse, MigrationParams, UpdateApplicationRequest,
+};
+use crate::ContextAtomic;
+
+mod context_api;
+pub mod crypto;
+mod sync;
+
+/// A registry of context metadata backed by a key-value store.
+///
+/// Provides synchronous read/write access to context metadata, DAG heads,
+/// root hashes, and membership information without requiring the actor mailbox.
+#[derive(Clone, Debug)]
+pub struct ContextRegistry {
+    datastore: Store,
+}
+
+impl ContextRegistry {
+    #[must_use]
+    pub const fn new(datastore: Store) -> Self {
+        Self { datastore }
+    }
+
+    /// Returns a handle to the datastore for direct access.
+    /// Used by node components that need to read stored data.
+    pub fn datastore_handle(&self) -> calimero_store::Handle<Store> {
+        self.datastore.handle()
+    }
+
+    /// Returns a reference to the underlying `Store`.
+    /// Used by governance operations that need direct store access.
+    pub fn datastore(&self) -> &Store {
+        &self.datastore
+    }
+
+    /// Checks if a context's metadata exists in the local datastore.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context to check for.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing `true` if the context exists locally, `false` otherwise.
+    pub fn has_context(&self, context_id: &ContextId) -> eyre::Result<bool> {
+        let handle = self.datastore.handle();
+
+        let key = key::ContextMeta::new(*context_id);
+
+        Ok(handle.has(&key)?)
+    }
+
+    /// Retrieves a context metadata from the local datastore.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context to retrieve.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing `Some(Context)` if the context is found, or `None` if it is not.
+    pub fn get_context(&self, context_id: &ContextId) -> eyre::Result<Option<Context>> {
+        let handle = self.datastore.handle();
+
+        let key = key::ContextMeta::new(*context_id);
+
+        let Some(meta) = handle.get(&key)? else {
+            return Ok(None);
+        };
+
+        let context = Context::with_service(
+            *context_id,
+            meta.application.application_id(),
+            meta.root_hash.into(),
+            meta.dag_heads.clone(),
+            meta.service_name.as_deref().map(String::from),
+        );
+
+        tracing::debug!(
+            %context_id,
+            dag_heads_count = meta.dag_heads.len(),
+            "Loaded context from database"
+        );
+
+        Ok(Some(context))
+    }
+
+    /// Updates the DAG heads for a context after applying a delta.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context to update.
+    /// * `dag_heads` - The new DAG heads (typically the delta ID that was just applied).
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or failure.
+    pub fn update_dag_heads(
+        &self,
+        context_id: &ContextId,
+        dag_heads: Vec<[u8; 32]>,
+    ) -> eyre::Result<()> {
+        let handle = self.datastore.handle();
+
+        let key = key::ContextMeta::new(*context_id);
+
+        let Some(mut meta) = handle.get(&key)? else {
+            eyre::bail!("Context not found: {}", context_id);
+        };
+
+        // Update dag_heads
+        meta.dag_heads = dag_heads.clone();
+
+        // Write back to database
+        self.datastore.clone().handle().put(&key, &meta)?;
+
+        tracing::debug!(
+            %context_id,
+            dag_heads_count = dag_heads.len(),
+            "Updated dag_heads in database"
+        );
+
+        Ok(())
+    }
+
+    /// Updates the ApplicationId for a context.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context to update.
+    /// * `application_id` - The new ApplicationId.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or failure.
+    pub fn update_context_application_id(
+        &self,
+        context_id: &ContextId,
+        application_id: ApplicationId,
+    ) -> eyre::Result<()> {
+        let handle = self.datastore.handle();
+
+        let key = key::ContextMeta::new(*context_id);
+
+        let Some(mut meta) = handle.get(&key)? else {
+            eyre::bail!("Context not found: {}", context_id);
+        };
+
+        // Update application_id
+        meta.application = key::ApplicationMeta::new(application_id);
+
+        // Write back to database
+        self.datastore.clone().handle().put(&key, &meta)?;
+
+        tracing::debug!(
+            %context_id,
+            %application_id,
+            "Updated application_id in database"
+        );
+
+        Ok(())
+    }
+
+    /// Computes the actual root hash from storage by reading the root Index entry.
+    ///
+    /// This reads the EntityIndex for Id::root() from RocksDB and extracts the
+    /// Merkle full_hash. This is the authoritative hash computed from the actual
+    /// state, not a claimed value.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context to compute the root hash for.
+    ///
+    /// # Returns
+    ///
+    /// The computed root hash, or `[0; 32]` if no root index exists (empty state).
+    pub fn compute_root_hash(&self, context_id: &ContextId) -> eyre::Result<[u8; 32]> {
+        // Compute the state_key for Key::Index(Id::root())
+        // Id::root() = Id::new(context_id) in WASM context
+        // Key::Index(id).to_bytes() = SHA256([0] || id.as_bytes())
+        let root_id: [u8; 32] = **context_id;
+        let mut key_bytes = [0u8; 33];
+        key_bytes[0] = 0; // Index discriminant
+        key_bytes[1..33].copy_from_slice(&root_id);
+        let state_key: [u8; 32] = Sha256::digest(key_bytes).into();
+
+        let handle = self.datastore.handle();
+        let db_key = key::ContextState::new(*context_id, state_key);
+
+        // Get data and convert to owned bytes to avoid lifetime issues
+        let data_opt = handle.get(&db_key)?;
+
+        match data_opt {
+            Some(data) => {
+                // Convert to owned Vec<u8> to avoid lifetime issues
+                let bytes: Vec<u8> = data.as_ref().to_vec();
+                drop(data); // Explicitly drop the borrowed data
+
+                self.parse_entity_index_root_hash(context_id, &bytes)
+            }
+            None => {
+                // No root index exists - empty state
+                tracing::debug!(
+                    %context_id,
+                    "No root index found, returning zero hash"
+                );
+                Ok([0; 32])
+            }
+        }
+    }
+
+    /// Parse EntityIndex bytes to extract the root hash.
+    fn parse_entity_index_root_hash(
+        &self,
+        context_id: &ContextId,
+        bytes: &[u8],
+    ) -> eyre::Result<[u8; 32]> {
+        // Deserialize EntityIndex and extract full_hash
+        // EntityIndex is borsh-serialized with full_hash at a known offset
+        // Structure: id(32) + parent_id(Option<32>) + children(Option<Vec>) + full_hash(32) + ...
+
+        if bytes.len() < 68 {
+            // Minimum size: id(32) + parent_id_tag(1) + children_tag(1) + full_hash(32) + own_hash(32) = 98
+            // But we check for 68 to be safe (id + tags + full_hash)
+            eyre::bail!(
+                "EntityIndex too small: {} bytes, expected at least 68",
+                bytes.len()
+            );
+        }
+
+        // Parse the EntityIndex structure manually for efficiency
+        // id: [u8; 32]
+        // parent_id: Option<Id> - 1 byte tag + optional 32 bytes
+        // children: Option<Vec<ChildInfo>> - 1 byte tag + optional length + data
+        // full_hash: [u8; 32]
+
+        let mut offset = 32; // Skip id
+
+        // Skip parent_id (Option<Id>)
+        let parent_tag = bytes[offset];
+        offset += 1;
+        if parent_tag == 1 {
+            offset += 32; // Skip the Id bytes
+        }
+
+        // Skip children (Option<Vec<ChildInfo>>)
+        let children_tag = bytes[offset];
+        offset += 1;
+        if children_tag == 1 {
+            // Children present - use full borsh deserialization for correctness
+            return self.compute_root_hash_via_borsh(context_id, bytes);
+        }
+
+        // Now at full_hash position
+        if offset + 32 > bytes.len() {
+            eyre::bail!(
+                "EntityIndex full_hash truncated at offset {}, len {}",
+                offset,
+                bytes.len()
+            );
+        }
+
+        let mut full_hash = [0u8; 32];
+        full_hash.copy_from_slice(&bytes[offset..offset + 32]);
+
+        tracing::debug!(
+            %context_id,
+            computed_root = ?Hash::from(full_hash),
+            "Computed root hash from storage"
+        );
+
+        Ok(full_hash)
+    }
+
+    /// Helper to compute root hash using full borsh deserialization.
+    ///
+    /// The minimal structs below MUST match the borsh layout of the real types in
+    /// `calimero-storage/src/entities.rs` and `calimero-storage/src/index.rs`.
+    /// We use `deserialize_reader` (not `try_from_slice`) so that trailing fields
+    /// after `full_hash` (own_hash, metadata, deleted_at) don't cause
+    /// "Not all bytes read" errors.
+    ///
+    /// **SYNC NOTE**: An identical copy of these minimal structs lives in
+    /// `calimero-storage/src/tests/index.rs` (`minimal_struct_layout_compat`).
+    /// When modifying the structs here, update the test copy too (and vice-versa).
+    fn compute_root_hash_via_borsh(
+        &self,
+        context_id: &ContextId,
+        bytes: &[u8],
+    ) -> eyre::Result<[u8; 32]> {
+        use calimero_primitives::crdt::CrdtType;
+
+        // EntityIndex: we only need fields through full_hash.
+        // Remaining fields (own_hash, metadata, deleted_at) are skipped by
+        // using deserialize_reader which doesn't require all bytes consumed.
+        #[derive(BorshDeserialize)]
+        struct EntityIndexMinimal {
+            _id: [u8; 32],
+            _parent_id: Option<[u8; 32]>,
+            _children: Option<Vec<ChildInfoMinimal>>,
+            full_hash: [u8; 32],
+        }
+
+        // Must match ChildInfo in calimero-storage/src/entities.rs
+        #[derive(BorshDeserialize)]
+        struct ChildInfoMinimal {
+            _id: [u8; 32],
+            _merkle_hash: [u8; 32],
+            _metadata: MetadataMinimal,
+        }
+
+        // Must match Metadata in calimero-storage/src/entities.rs
+        // Fields: created_at, updated_at, storage_type, crdt_type, field_name
+        #[derive(BorshDeserialize)]
+        struct MetadataMinimal {
+            _created_at: u64,
+            _updated_at: u64, // UpdatedAt is a newtype over u64
+            _storage_type: StorageTypeMinimal,
+            _crdt_type: Option<CrdtType>,
+            _field_name: Option<String>,
+        }
+
+        // Must match StorageType enum in calimero-storage/src/entities.rs
+        #[derive(BorshDeserialize)]
+        #[allow(
+            dead_code,
+            reason = "fields required for correct borsh layout deserialization"
+        )]
+        enum StorageTypeMinimal {
+            Public,
+            User {
+                owner: [u8; 32], // PublicKey = Hash = 32 bytes in borsh
+                signature_data: Option<SignatureDataMinimal>,
+            },
+            Frozen,
+        }
+
+        // Must match SignatureData in calimero-storage/src/entities.rs
+        #[derive(BorshDeserialize)]
+        struct SignatureDataMinimal {
+            _signature: [u8; 64],
+            _nonce: u64,
+        }
+
+        let mut reader: &[u8] = bytes;
+        let index = EntityIndexMinimal::deserialize_reader(&mut reader)
+            .map_err(|e| eyre::eyre!("Failed to deserialize EntityIndex: {}", e))?;
+
+        let trailing = reader.len();
+        if trailing > 0 {
+            tracing::debug!(
+                %context_id,
+                trailing_bytes = trailing,
+                total_bytes = bytes.len(),
+                "EntityIndex deserialization skipped trailing bytes"
+            );
+        }
+
+        tracing::debug!(
+            %context_id,
+            computed_root = ?Hash::from(index.full_hash),
+            "Computed root hash from storage (via borsh)"
+        );
+
+        Ok(index.full_hash)
+    }
+
+    /// Forces the root hash for a context to a specific value.
+    ///
+    /// **WARNING**: This bypasses verification and should only be used when
+    /// the hash has already been verified or during controlled operations.
+    /// Prefer `compute_root_hash` + `set_root_hash` for safety.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context to update.
+    /// * `root_hash` - The root hash to set.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or failure.
+    pub fn force_root_hash(&self, context_id: &ContextId, root_hash: Hash) -> eyre::Result<()> {
+        let handle = self.datastore.handle();
+
+        let key = key::ContextMeta::new(*context_id);
+
+        let Some(mut meta) = handle.get(&key)? else {
+            eyre::bail!("Context not found: {}", context_id);
+        };
+
+        tracing::debug!(
+            %context_id,
+            old_root = ?Hash::from(meta.root_hash),
+            new_root = ?root_hash,
+            "Setting root hash"
+        );
+
+        meta.root_hash = *root_hash;
+
+        self.datastore.clone().handle().put(&key, &meta)?;
+
+        Ok(())
+    }
+
+    /// Verifies that the stored root hash matches the actual state.
+    ///
+    /// Computes the root hash from storage and compares with the claimed hash.
+    /// Returns Ok(()) if they match, or an error describing the mismatch.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context to verify.
+    /// * `claimed_hash` - The hash to verify against.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success if hashes match, or an error if they don't.
+    pub fn verify_root_hash(
+        &self,
+        context_id: &ContextId,
+        claimed_hash: [u8; 32],
+    ) -> eyre::Result<()> {
+        let computed = self.compute_root_hash(context_id)?;
+
+        if computed != claimed_hash {
+            eyre::bail!(
+                "Root hash verification failed for context {}: computed {} != claimed {}",
+                context_id,
+                hex::encode(computed),
+                hex::encode(claimed_hash)
+            );
+        }
+
+        tracing::debug!(
+            %context_id,
+            hash = ?Hash::from(computed),
+            "Root hash verified successfully"
+        );
+
+        Ok(())
+    }
+
+    /// Returns a stream of all context IDs stored locally.
+    ///
+    /// # Arguments
+    ///
+    /// * `start` - An optional `ContextId` from which to begin the stream. If `None`,
+    ///    the stream starts from the beginning.
+    ///
+    /// # Returns
+    ///
+    /// An implementation of `Stream` that yields `Result<ContextId>`.
+    pub fn get_context_ids(
+        &self,
+        start: Option<ContextId>,
+    ) -> impl Stream<Item = eyre::Result<ContextId>> {
+        let handle = self.datastore.handle();
+
+        try_stream! {
+            let mut iter = handle.iter::<key::ContextMeta>()?;
+
+            let start = start.and_then(|s| iter.seek(key::ContextMeta::new(s)).transpose());
+
+            for key in start.into_iter().chain(iter.keys()) {
+                yield key?.context_id();
+            }
+        }
+    }
+
+    /// Checks if a given public key is a member of a context in the local datastore.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The context to check within.
+    /// * `public_key` - The public key of the potential member.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing `true` if the identity is a known member, `false` otherwise.
+    pub fn has_member(&self, context_id: &ContextId, public_key: &PublicKey) -> eyre::Result<bool> {
+        let handle = self.datastore.handle();
+
+        // Check ContextIdentity first (fast path, covers locally-written entries).
+        let ci_key = key::ContextIdentity::new(*context_id, *public_key);
+        if handle.has(&ci_key)? {
+            return Ok(true);
+        }
+
+        // Fall back to group membership: if the identity is a member of the
+        // group that owns this context, they are implicitly a context member.
+        let ref_key = key::ContextGroupRef::new(*context_id);
+        if let Some(group_id_bytes) = handle.get(&ref_key)? {
+            let gm_key = key::GroupMember::new(group_id_bytes, *public_key);
+            if handle.has(&gm_key)? {
+                return Ok(true);
+            }
+
+            // The group admin/creator never publishes a MemberJoined governance
+            // op for themselves, so joining nodes never store a GroupMember entry
+            // for the creator. Fall back to GroupMeta.admin_identity so that the
+            // creator's identity is recognised as a valid member on all nodes.
+            let meta_key = key::GroupMeta::new(group_id_bytes);
+            if let Some(meta) = handle.get(&meta_key)? {
+                let meta: key::GroupMetaValue = meta;
+                if meta.admin_identity == *public_key {
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Returns the group/namespace ID for a context, if the context is owned by a group.
+    ///
+    /// The sync manager uses this as a fallback for peer discovery when the
+    /// context-specific gossipsub mesh has not formed yet (e.g., just after a join).
+    /// The namespace gossipsub topic establishes its mesh during join with a grace period,
+    /// so namespace peers are reachable for direct-stream context sync even before the
+    /// context topic mesh exists.
+    pub fn get_context_group_id(&self, context_id: &ContextId) -> eyre::Result<Option<[u8; 32]>> {
+        let handle = self.datastore.handle();
+        let ref_key = key::ContextGroupRef::new(*context_id);
+        Ok(handle.get(&ref_key)?)
+    }
+
+    /// Retrieves and returns a stream of all members of a given context.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The context to query for members.
+    /// * `owned` - If `Some(true)`, the stream returns only members for which this node holds
+    ///    the private key. If `Some(false)` or `None`, it returns all members.
+    ///
+    /// # Returns
+    ///
+    /// A stream of tuples `(PublicKey, bool)`, where the boolean indicates if the identity is owned.
+    pub fn get_context_members(
+        &self,
+        context_id: &ContextId,
+        owned: Option<bool>,
+    ) -> impl Stream<Item = eyre::Result<(PublicKey, bool)>> {
+        let handle = self.datastore.handle();
+        let context_id = *context_id;
+        let only_owned = owned.unwrap_or(false);
+
+        try_stream! {
+            let mut iter = handle.iter::<key::ContextIdentity>()?;
+
+            let first = iter
+                .seek(key::ContextIdentity::new(context_id, [0; DIGEST_SIZE].into()))
+                .transpose()
+                .map(|k| (k, iter.read()));
+
+            for (k, v) in first.into_iter().chain(iter.entries()) {
+                let (k, v) = (k?, v?);
+
+                if k.context_id() != context_id {
+                    break;
+                }
+
+                let is_owned = v.private_key.is_some();
+                if !only_owned || is_owned {
+                    yield (k.public_key(), is_owned);
+                }
+            }
+        }
+    }
+}
+
+/// A client for interacting with the context management system.
+///
+/// This struct serves as the primary public API, providing methods to create,
+/// join, query, and manage contexts and their members. It orchestrates
+/// interactions between the datastore, background actors, and external networks.
+#[derive(Clone, Debug)]
+pub struct ContextClient {
+    /// A registry providing synchronous read/write access to context metadata.
+    registry: ContextRegistry,
+    /// A client for communicating with the underlying Calimero node.
+    node_client: NodeClient,
+    /// A lazy-initialized sender handle to the `ContextManager` actor. This is used
+    /// to send asynchronous messages for processing.
+    context_manager: LazyRecipient<ContextMessage>,
+}
+
+/// Generates a simple async send method on `ContextClient` that forwards a request
+/// to the `ContextManager` actor via `ContextMessage` and awaits the response.
+///
+/// Usage: `forward_to_actor!(method_name, VariantName, RequestType, ReturnType);`
+macro_rules! forward_to_actor {
+    ($method:ident, $variant:ident, $request_ty:ty, $return_ty:ty) => {
+        pub async fn $method(&self, request: $request_ty) -> $return_ty {
+            let (sender, receiver) = oneshot::channel();
+            self.context_manager
+                .send(ContextMessage::$variant {
+                    request,
+                    outcome: sender,
+                })
+                .await
+                .expect("Mailbox not to be dropped");
+            receiver.await.expect("Mailbox not to be dropped")
+        }
+    };
+}
+
+impl ContextClient {
+    #[must_use]
+    pub const fn new(
+        datastore: Store,
+        node_client: NodeClient,
+        context_manager: LazyRecipient<ContextMessage>,
+    ) -> Self {
+        Self {
+            registry: ContextRegistry::new(datastore),
+            node_client,
+            context_manager,
+        }
+    }
+
+    /// Returns a reference to the underlying `ContextRegistry`.
+    pub const fn registry(&self) -> &ContextRegistry {
+        &self.registry
+    }
+
+    /// Returns a handle to the datastore for direct access.
+    /// Used by node components that need to read stored data.
+    pub fn datastore_handle(&self) -> calimero_store::Handle<Store> {
+        self.registry.datastore_handle()
+    }
+
+    /// Returns a reference to the underlying `Store`.
+    /// Used by governance operations that need direct store access.
+    pub fn datastore(&self) -> &Store {
+        self.registry.datastore()
+    }
+
+    pub(crate) const fn node_client(&self) -> &NodeClient {
+        &self.node_client
+    }
+
+    /// Sends a request to create a new context.
+    ///
+    /// This operation is asynchronous and is handled by the `ContextManager` actor.
+    ///
+    /// # Arguments
+    ///
+    /// * `protocol` - The name of the protocol that will be used for the new context.
+    /// * `application_id` - The ID of the application that will run in the context.
+    /// * `identity_secret` - An optional private key to use for the initial identity. If not
+    ///   provided, a new identity will be generated.
+    /// * `init_params` - Raw byte parameters for initializing the application state.
+    /// * `seed` - An optional 32-byte seed for deterministic context ID and identity creation.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the `CreateContextResponse` from the actor upon completion.
+    pub async fn create_context(
+        &self,
+        protocol: String,
+        application_id: &ApplicationId,
+        service_name: Option<String>,
+        identity_secret: Option<PrivateKey>,
+        init_params: Vec<u8>,
+        seed: Option<[u8; DIGEST_SIZE]>,
+        group_id: ContextGroupId,
+        alias: Option<String>,
+    ) -> eyre::Result<CreateContextResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::CreateContext {
+                request: CreateContextRequest {
+                    protocol,
+                    seed,
+                    application_id: *application_id,
+                    service_name,
+                    identity_secret,
+                    init_params,
+                    group_id,
+                    alias,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Creates and signs a one-time, expiring open invitation for a new member.
+    ///
+    /// This method allows an existing member of a context (the inviter) to generate a
+    /// shareable invitation. The method fetches the inviter's private key managed
+    /// by the local node, signs the invitation details, and returns the resulting
+    /// payload and signature.
+    ///
+    /// # Arguments
+    /// * `context_id` - The context to invite the new member to.
+    /// * `inviter_id` - The public key of the existing member creating the invitation.
+    ///                  This node must have the corresponding private key for this identity.
+    /// * `valid_for_seconds` - How long (in seconds) the invitation remains valid.
+    /// * `_secret_salt` - Unused; a fresh random salt is generated internally.
+    ///
+    /// # Returns
+    /// * A `Result` containing the `SignedOpenInvitation` if successful, or an error if
+    /// the inviter's private key is not found or signing fails.
+    /// * Returns `Ok(None)` if the context configuration cannot be found locally.
+    pub async fn invite_member(
+        &self,
+        context_id: &ContextId,
+        inviter_id: &PublicKey,
+        valid_for_seconds: u64,
+        _secret_salt: [u8; DIGEST_SIZE],
+    ) -> eyre::Result<Option<SignedOpenInvitation>> {
+        let secret_salt = {
+            let mut rng = rand::thread_rng();
+            rng.gen::<[u8; DIGEST_SIZE]>()
+        };
+
+        let ctx_exists = self.has_context(context_id)?;
+        tracing::info!(
+            %context_id,
+            %inviter_id,
+            ctx_exists,
+            "invite_member: starting"
+        );
+        if !ctx_exists {
+            return Ok(None);
+        };
+
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .as_secs();
+        let expiration_timestamp = now_secs + valid_for_seconds;
+
+        let inviter_identity = self
+            .get_identity(context_id, inviter_id)?
+            .with_context(|| {
+                format!("Inviter identity {inviter_id} not found for context {context_id}")
+            })?;
+        let inviter_private_key = inviter_identity.private_key().map_err(|e| {
+            eyre::eyre!("inviter {inviter_id} has no private key for context {context_id}: {e}")
+        })?;
+
+        let inviter_identity: [u8; DIGEST_SIZE] = **inviter_id;
+        let inviter_identity_context_type = inviter_identity.into();
+        let context_id = **context_id;
+
+        let invitation = InvitationFromMember {
+            inviter_identity: inviter_identity_context_type,
+            context_id: context_id.into(),
+            expiration_timestamp,
+            secret_salt,
+        };
+
+        let invitation_bytes =
+            borsh::to_vec(&invitation).context("Failed to serialize invitation")?;
+        let hash = Sha256::digest(&invitation_bytes);
+        let signature = inviter_private_key.sign(&hash).context("Signing failed")?;
+
+        let (application_id, blob_id, source) = {
+            let ctx_id = calimero_primitives::context::ContextId::from(context_id);
+            match self.get_context_application(&ctx_id).await {
+                Ok(app) => (
+                    Some(*app.id),
+                    Some(*app.blob.bytecode),
+                    Some(app.source.to_string()),
+                ),
+                Err(_) => (None, None, None),
+            }
+        };
+
+        let group_id = {
+            let ctx_id = calimero_primitives::context::ContextId::from(context_id);
+            let handle = self.registry.datastore.handle();
+            handle.get(&key::ContextGroupRef::new(ctx_id))?
+        };
+
+        tracing::info!(
+            ?application_id,
+            ?blob_id,
+            ?source,
+            ?group_id,
+            "invite_member: populated invitation metadata"
+        );
+
+        Ok(Some(SignedOpenInvitation {
+            invitation,
+            inviter_signature: hex::encode(signature.to_bytes()),
+            application_id,
+            blob_id,
+            source,
+            group_id,
+        }))
+    }
+
+    // --- Delegation methods for ContextRegistry ---
+
+    /// Checks if a context's metadata exists in the local datastore.
+    pub fn has_context(&self, context_id: &ContextId) -> eyre::Result<bool> {
+        self.registry.has_context(context_id)
+    }
+
+    /// Retrieves a context metadata from the local datastore.
+    pub fn get_context(&self, context_id: &ContextId) -> eyre::Result<Option<Context>> {
+        self.registry.get_context(context_id)
+    }
+
+    /// Updates the DAG heads for a context after applying a delta.
+    pub fn update_dag_heads(
+        &self,
+        context_id: &ContextId,
+        dag_heads: Vec<[u8; 32]>,
+    ) -> eyre::Result<()> {
+        self.registry.update_dag_heads(context_id, dag_heads)
+    }
+
+    /// Updates the ApplicationId for a context.
+    pub fn update_context_application_id(
+        &self,
+        context_id: &ContextId,
+        application_id: ApplicationId,
+    ) -> eyre::Result<()> {
+        self.registry
+            .update_context_application_id(context_id, application_id)
+    }
+
+    /// Computes the actual root hash from storage by reading the root Index entry.
+    pub fn compute_root_hash(&self, context_id: &ContextId) -> eyre::Result<[u8; 32]> {
+        self.registry.compute_root_hash(context_id)
+    }
+
+    /// Forces the root hash for a context to a specific value.
+    pub fn force_root_hash(&self, context_id: &ContextId, root_hash: Hash) -> eyre::Result<()> {
+        self.registry.force_root_hash(context_id, root_hash)
+    }
+
+    /// Verifies that the stored root hash matches the actual state.
+    pub fn verify_root_hash(
+        &self,
+        context_id: &ContextId,
+        claimed_hash: [u8; 32],
+    ) -> eyre::Result<()> {
+        self.registry.verify_root_hash(context_id, claimed_hash)
+    }
+
+    /// Returns a stream of all context IDs stored locally.
+    pub fn get_context_ids(
+        &self,
+        start: Option<ContextId>,
+    ) -> impl Stream<Item = eyre::Result<ContextId>> {
+        self.registry.get_context_ids(start)
+    }
+
+    /// Checks if a given public key is a member of a context in the local datastore.
+    pub fn has_member(&self, context_id: &ContextId, public_key: &PublicKey) -> eyre::Result<bool> {
+        self.registry.has_member(context_id, public_key)
+    }
+
+    /// Returns the group/namespace ID for a context, if the context belongs to a group.
+    pub fn get_context_group_id(&self, context_id: &ContextId) -> eyre::Result<Option<[u8; 32]>> {
+        self.registry.get_context_group_id(context_id)
+    }
+
+    /// Retrieves and returns a stream of all members of a given context.
+    pub fn get_context_members(
+        &self,
+        context_id: &ContextId,
+        owned: Option<bool>,
+    ) -> impl Stream<Item = eyre::Result<(PublicKey, bool)>> {
+        self.registry.get_context_members(context_id, owned)
+    }
+
+    /// Sends a request to execute a method within a context.
+    ///
+    /// This is the primary way to interact with the application running inside a context.
+    /// The request is handled asynchronously by the `ContextManager` actor.
+    ///
+    /// # Arguments
+    ///
+    /// * `context_id` - The ID of the context where the execution should occur.
+    /// * `executor` - The public key of the identity performing the execution. The executor
+    ///   must be a member of the context.
+    /// * `method` - The string name of the application method to call.
+    /// * `payload` - The input data (e.g., serialized JSON) for the method.
+    /// * `aliases` - A list of public key aliases to use for this specific execution.
+    /// * `atomic` - An optional handle for batching multiple executions into an atomic transaction.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the `ExecuteResponse` on success, or an `ExecuteError` on failure.
+    pub async fn execute(
+        &self,
+        context_id: &ContextId,
+        executor: &PublicKey,
+        method: String,
+        payload: Vec<u8>,
+        aliases: Vec<Alias<PublicKey>>,
+        atomic: Option<ContextAtomic>,
+    ) -> Result<ExecuteResponse, ExecuteError> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::Execute {
+                request: ExecuteRequest {
+                    context: *context_id,
+                    executor: *executor,
+                    method,
+                    payload,
+                    aliases,
+                    atomic,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Sends a request to update the application for a given context.
+    /// This is an asynchronous operation handled by the `ContextManager` actor.
+    ///
+    /// # Arguments
+    /// * `context_id` - The ID of the context where to update the application.
+    /// * `application_id` - The ID of the new application to switch to.
+    /// * `identity` - The public key of the member authorizing the update.
+    /// * `migrate_method` - Optional name of the migration function to execute.
+    ///
+    /// # Returns
+    ///
+    /// An empty `Result` indicating the outcome of the application update request.
+    pub async fn update_application(
+        &self,
+        context_id: &ContextId,
+        application_id: &ApplicationId,
+        identity: &PublicKey,
+        migrate_method: Option<String>,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        let migration = migrate_method.map(|method| MigrationParams { method });
+
+        self.context_manager
+            .send(ContextMessage::UpdateApplication {
+                request: UpdateApplicationRequest {
+                    context_id: *context_id,
+                    application_id: *application_id,
+                    public_key: *identity,
+                    migration,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Sends a request to delete a context from the local node.
+    /// This is an asynchronous operation handled by the `ContextManager` actor. It will remove
+    /// all associated data for the context from the local datastore.
+    ///
+    /// # Arguments
+    /// * `context_id` - The ID of the context to delete.
+    ///
+    /// # Returns
+    ///
+    ///A `Result` containing the `DeleteContextResponse` from the actor.
+    pub async fn delete_context(
+        &self,
+        context_id: &ContextId,
+        requester: Option<PublicKey>,
+    ) -> eyre::Result<DeleteContextResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::DeleteContext {
+                request: DeleteContextRequest {
+                    context_id: *context_id,
+                    requester,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    // --- Simple forwarding methods (generated by forward_to_actor! macro) ---
+    forward_to_actor!(
+        create_group,
+        CreateGroup,
+        CreateGroupRequest,
+        eyre::Result<CreateGroupResponse>
+    );
+    forward_to_actor!(
+        delete_group,
+        DeleteGroup,
+        DeleteGroupRequest,
+        eyre::Result<DeleteGroupResponse>
+    );
+    forward_to_actor!(
+        add_group_members,
+        AddGroupMembers,
+        AddGroupMembersRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        remove_group_members,
+        RemoveGroupMembers,
+        RemoveGroupMembersRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        get_group_info,
+        GetGroupInfo,
+        GetGroupInfoRequest,
+        eyre::Result<GroupInfoResponse>
+    );
+    forward_to_actor!(
+        list_group_members,
+        ListGroupMembers,
+        ListGroupMembersRequest,
+        eyre::Result<ListGroupMembersResponse>
+    );
+    forward_to_actor!(
+        list_group_contexts,
+        ListGroupContexts,
+        ListGroupContextsRequest,
+        eyre::Result<Vec<GroupContextEntry>>
+    );
+    forward_to_actor!(
+        store_context_alias,
+        StoreContextAlias,
+        StoreContextAliasRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        broadcast_group_aliases,
+        BroadcastGroupAliases,
+        BroadcastGroupAliasesRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        broadcast_group_local_state,
+        BroadcastGroupLocalState,
+        BroadcastGroupLocalStateRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        store_member_capability,
+        StoreMemberCapability,
+        StoreMemberCapabilityRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        store_default_capabilities,
+        StoreDefaultCapabilities,
+        StoreDefaultCapabilitiesRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        store_default_visibility,
+        StoreDefaultVisibility,
+        StoreDefaultVisibilityRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        set_member_alias,
+        SetMemberAlias,
+        SetMemberAliasRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        store_member_alias,
+        StoreMemberAlias,
+        StoreMemberAliasRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        set_group_alias,
+        SetGroupAlias,
+        SetGroupAliasRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        store_group_alias,
+        StoreGroupAlias,
+        StoreGroupAliasRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        store_group_context,
+        StoreGroupContext,
+        StoreGroupContextRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        store_group_meta,
+        StoreGroupMeta,
+        StoreGroupMetaRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        upgrade_group,
+        UpgradeGroup,
+        UpgradeGroupRequest,
+        eyre::Result<UpgradeGroupResponse>
+    );
+    forward_to_actor!(
+        get_group_upgrade_status,
+        GetGroupUpgradeStatus,
+        GetGroupUpgradeStatusRequest,
+        eyre::Result<Option<GroupUpgradeInfo>>
+    );
+    forward_to_actor!(
+        retry_group_upgrade,
+        RetryGroupUpgrade,
+        RetryGroupUpgradeRequest,
+        eyre::Result<UpgradeGroupResponse>
+    );
+    forward_to_actor!(
+        create_group_invitation,
+        CreateGroupInvitation,
+        CreateGroupInvitationRequest,
+        eyre::Result<CreateGroupInvitationResponse>
+    );
+    forward_to_actor!(
+        join_group,
+        JoinGroup,
+        JoinGroupRequest,
+        eyre::Result<JoinGroupResponse>
+    );
+    forward_to_actor!(
+        list_all_groups,
+        ListAllGroups,
+        ListAllGroupsRequest,
+        eyre::Result<Vec<GroupSummary>>
+    );
+    forward_to_actor!(
+        update_group_settings,
+        UpdateGroupSettings,
+        UpdateGroupSettingsRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        update_member_role,
+        UpdateMemberRole,
+        UpdateMemberRoleRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        detach_context_from_group,
+        DetachContextFromGroup,
+        DetachContextFromGroupRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        get_group_for_context,
+        GetGroupForContext,
+        GetGroupForContextRequest,
+        eyre::Result<Option<ContextGroupId>>
+    );
+    forward_to_actor!(
+        sync_group,
+        SyncGroup,
+        SyncGroupRequest,
+        eyre::Result<SyncGroupResponse>
+    );
+    forward_to_actor!(
+        join_context,
+        JoinContext,
+        JoinContextRequest,
+        eyre::Result<JoinContextResponse>
+    );
+    forward_to_actor!(
+        set_member_capabilities,
+        SetMemberCapabilities,
+        SetMemberCapabilitiesRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        get_member_capabilities,
+        GetMemberCapabilities,
+        GetMemberCapabilitiesRequest,
+        eyre::Result<GetMemberCapabilitiesResponse>
+    );
+    forward_to_actor!(
+        set_default_capabilities,
+        SetDefaultCapabilities,
+        SetDefaultCapabilitiesRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        set_tee_admission_policy,
+        SetTeeAdmissionPolicy,
+        SetTeeAdmissionPolicyRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        admit_tee_node,
+        AdmitTeeNode,
+        AdmitTeeNodeRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        set_default_visibility,
+        SetDefaultVisibility,
+        SetDefaultVisibilityRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        list_namespaces,
+        ListNamespaces,
+        ListNamespacesRequest,
+        eyre::Result<Vec<NamespaceSummary>>
+    );
+    forward_to_actor!(
+        get_namespace_identity,
+        GetNamespaceIdentity,
+        GetNamespaceIdentityRequest,
+        eyre::Result<Option<(ContextGroupId, PublicKey)>>
+    );
+    forward_to_actor!(
+        list_namespaces_for_application,
+        ListNamespacesForApplication,
+        ListNamespacesForApplicationRequest,
+        eyre::Result<Vec<NamespaceSummary>>
+    );
+
+    // --- Methods with custom parameter handling (not suitable for forward_to_actor!) ---
+
+    pub async fn apply_signed_group_op(
+        &self,
+        op: crate::local_governance::SignedGroupOp,
+    ) -> eyre::Result<bool> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::ApplySignedGroupOp {
+                request: ApplySignedGroupOpRequest { op },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn apply_signed_namespace_op(
+        &self,
+        op: crate::local_governance::SignedNamespaceOp,
+    ) -> eyre::Result<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::ApplySignedNamespaceOp {
+                request: ApplySignedNamespaceOpRequest { op },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+}

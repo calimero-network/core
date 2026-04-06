@@ -21,27 +21,26 @@ use crate::traits::ClientStorage;
 
 use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::ContextId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
-use calimero_server_primitives::admin::CreateGroupApiRequest;
 use calimero_server_primitives::admin::CreateGroupInvitationApiRequest;
+use calimero_server_primitives::admin::CreateNamespaceApiRequest;
 use calimero_server_primitives::admin::DeleteGroupApiRequest;
+use calimero_server_primitives::admin::DeleteNamespaceApiRequest;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use calimero_server_primitives::admin::GroupMemberApiInput;
 use calimero_server_primitives::admin::JoinGroupApiRequest;
-use calimero_server_primitives::admin::JoinGroupContextApiRequest;
-use calimero_server_primitives::admin::ManageContextAllowlistApiRequest;
+use calimero_server_primitives::admin::NestGroupApiRequest;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
-use calimero_server_primitives::admin::SetContextVisibilityApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultVisibilityApiRequest;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SyncGroupApiRequest;
+use calimero_server_primitives::admin::UnnestGroupApiRequest;
 use calimero_server_primitives::admin::UpdateGroupSettingsApiRequest;
 use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
 use calimero_server_primitives::admin::UpgradeGroupApiRequest;
@@ -109,50 +108,6 @@ fn make_client(base_url: &Url) -> Client<NoopAuth, NoopStorage> {
 // ---- Group CRUD ----
 
 #[tokio::test]
-async fn list_groups() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/admin-api/groups"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    let resp = client.list_groups().await.unwrap();
-
-    assert!(resp.data.is_empty());
-}
-
-#[tokio::test]
-async fn create_group() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/admin-api/groups"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "data": {"groupId": GID}
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    let resp = client
-        .create_group(CreateGroupApiRequest {
-            group_id: None,
-            app_key: None,
-            application_id: ApplicationId::from([0u8; 32]),
-            upgrade_policy: UpgradePolicy::Automatic,
-            alias: None,
-            parent_group_id: None,
-        })
-        .await
-        .unwrap();
-
-    assert_eq!(resp.data.group_id, GID);
-}
-
-#[tokio::test]
 async fn get_group_info() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -206,7 +161,7 @@ async fn update_group_settings() {
     let server = MockServer::start().await;
     Mock::given(method("PATCH"))
         .and(path(format!("/admin-api/groups/{GID}")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -247,7 +202,7 @@ async fn add_group_members() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/members")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -273,7 +228,7 @@ async fn remove_group_members() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/members/remove")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -298,7 +253,7 @@ async fn update_member_role() {
         .and(path(format!(
             "/admin-api/groups/{GID}/members/{IDENT}/role"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -342,7 +297,7 @@ async fn detach_context_from_group() {
         .and(path(format!(
             "/admin-api/groups/{GID}/contexts/{CID}/remove"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -359,10 +314,10 @@ async fn detach_context_from_group() {
 }
 
 #[tokio::test]
-async fn join_group_context() {
+async fn join_context() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path(format!("/admin-api/groups/{GID}/join-context")))
+        .and(path(format!("/admin-api/contexts/{CID}/join")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": {
                 "contextId": ZERO_BS58,
@@ -374,15 +329,7 @@ async fn join_group_context() {
         .await;
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
-    let resp = client
-        .join_group_context(
-            GID,
-            JoinGroupContextApiRequest {
-                context_id: ContextId::from([0u8; 32]),
-            },
-        )
-        .await
-        .unwrap();
+    let resp = client.join_context(CID).await.unwrap();
 
     assert_eq!(resp.data.member_public_key, PublicKey::from([0u8; 32]));
 }
@@ -390,13 +337,160 @@ async fn join_group_context() {
 // ---- Invitations & Joining ----
 
 #[tokio::test]
-async fn create_group_invitation() {
-    // `SignedGroupOpenInvitation` fields are snake_case (no rename_all on that
-    // struct), so the mock body uses the raw field names from the types crate.
+async fn nest_group() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/admin-api/groups/{GID}/nest")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    client
+        .nest_group(
+            GID,
+            NestGroupApiRequest {
+                child_group_id: "child-group-id".to_owned(),
+                requester: None,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn unnest_group() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/admin-api/groups/{GID}/unnest")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    client
+        .unnest_group(
+            GID,
+            UnnestGroupApiRequest {
+                child_group_id: "child-group-id".to_owned(),
+                requester: None,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn list_subgroups() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/admin-api/groups/{GID}/subgroups")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client.list_subgroups(GID).await.unwrap();
+    assert!(resp.data.is_empty());
+}
+
+// ---- Namespaces ----
+
+#[tokio::test]
+async fn list_namespaces() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/admin-api/namespaces"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client.list_namespaces().await.unwrap();
+    assert!(resp.data.is_empty());
+}
+
+#[tokio::test]
+async fn create_namespace() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/admin-api/namespaces"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {"namespaceId": GID}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client
+        .create_namespace(CreateNamespaceApiRequest {
+            application_id: ApplicationId::from([0u8; 32]),
+            upgrade_policy: UpgradePolicy::Automatic,
+            alias: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(resp.data.namespace_id, GID);
+}
+
+#[tokio::test]
+async fn get_namespace() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/admin-api/namespaces/{GID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "namespaceId": GID,
+                "appKey": "testkey",
+                "targetApplicationId": ZERO_BS58,
+                "upgradePolicy": "Automatic",
+                "createdAt": 0,
+                "alias": null,
+                "memberCount": 0,
+                "contextCount": 0,
+                "subgroupCount": 0
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client.get_namespace(GID).await.unwrap();
+    assert_eq!(resp.namespace_id, GID);
+}
+
+#[tokio::test]
+async fn delete_namespace() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("/admin-api/namespaces/{GID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {"isDeleted": true}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client
+        .delete_namespace(GID, DeleteNamespaceApiRequest { requester: None })
+        .await
+        .unwrap();
+    assert!(resp.data.is_deleted);
+}
+
+#[tokio::test]
+async fn create_namespace_invitation() {
     let zeros: Vec<u8> = vec![0; 32];
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path(format!("/admin-api/groups/{GID}/invite")))
+        .and(path(format!("/admin-api/namespaces/{GID}/invite")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": {
                 "invitation": {
@@ -416,23 +510,25 @@ async fn create_group_invitation() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client
-        .create_group_invitation(
+        .create_namespace_invitation(
             GID,
             CreateGroupInvitationApiRequest {
                 requester: None,
                 expiration_timestamp: None,
+                recursive: None,
             },
         )
         .await
         .unwrap();
 
-    assert_eq!(resp.data.invitation.inviter_signature, "testsig");
+    assert_eq!(
+        resp["data"]["invitation"]["inviter_signature"],
+        serde_json::Value::String("testsig".to_owned())
+    );
 }
 
 #[tokio::test]
-async fn join_group() {
-    // Build the invitation by deserializing from JSON so we avoid private-field
-    // construction of the inner Identity/SignerId newtypes.
+async fn join_namespace() {
     let zeros: Vec<u8> = vec![0; 32];
     let invitation: SignedGroupOpenInvitation = serde_json::from_value(serde_json::json!({
         "invitation": {
@@ -447,11 +543,12 @@ async fn join_group() {
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/admin-api/groups/join"))
+        .and(path(format!("/admin-api/namespaces/{GID}/join")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": {
                 "groupId": GID,
-                "memberIdentity": ZERO_BS58
+                "memberIdentity": ZERO_BS58,
+                "governanceOp": "deadbeef"
             }
         })))
         .expect(1)
@@ -460,14 +557,32 @@ async fn join_group() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client
-        .join_group(JoinGroupApiRequest {
-            invitation,
-            group_alias: None,
-        })
+        .join_namespace(
+            GID,
+            JoinGroupApiRequest {
+                invitation,
+                group_alias: None,
+            },
+        )
         .await
         .unwrap();
 
     assert_eq!(resp.data.group_id, GID);
+}
+
+#[tokio::test]
+async fn list_namespace_groups() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/admin-api/namespaces/{GID}/groups")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client.list_namespace_groups(GID).await.unwrap();
+    assert!(resp.data.is_empty());
 }
 
 // ---- Upgrade ----
@@ -613,7 +728,7 @@ async fn set_member_capabilities() {
         .and(path(format!(
             "/admin-api/groups/{GID}/members/{IDENT}/capabilities"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -652,102 +767,6 @@ async fn get_member_capabilities() {
     assert_eq!(resp.data.capabilities, 42);
 }
 
-#[tokio::test]
-async fn set_context_visibility() {
-    let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .and(path(format!(
-            "/admin-api/groups/{GID}/contexts/{CID}/visibility"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    client
-        .set_context_visibility(
-            GID,
-            CID,
-            SetContextVisibilityApiRequest {
-                mode: "open".to_string(),
-                requester: None,
-            },
-        )
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn get_context_visibility() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(format!(
-            "/admin-api/groups/{GID}/contexts/{CID}/visibility"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "data": {
-                "mode": "open",
-                "creator": ZERO_BS58
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    let resp = client.get_context_visibility(GID, CID).await.unwrap();
-
-    assert_eq!(resp.data.mode, "open");
-}
-
-// ---- Allowlist ----
-
-#[tokio::test]
-async fn manage_context_allowlist() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(format!(
-            "/admin-api/groups/{GID}/contexts/{CID}/allowlist"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    client
-        .manage_context_allowlist(
-            GID,
-            CID,
-            ManageContextAllowlistApiRequest {
-                add: vec![],
-                remove: vec![],
-                requester: None,
-            },
-        )
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn get_context_allowlist() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(format!(
-            "/admin-api/groups/{GID}/contexts/{CID}/allowlist"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    let resp = client.get_context_allowlist(GID, CID).await.unwrap();
-
-    assert!(resp.data.is_empty());
-}
-
 // ---- Group Settings ----
 
 #[tokio::test]
@@ -757,7 +776,7 @@ async fn set_default_capabilities() {
         .and(path(format!(
             "/admin-api/groups/{GID}/settings/default-capabilities"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -782,7 +801,7 @@ async fn set_default_visibility() {
         .and(path(format!(
             "/admin-api/groups/{GID}/settings/default-visibility"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Null))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -803,10 +822,10 @@ async fn set_default_visibility() {
 // ---- Error handling ----
 
 #[tokio::test]
-async fn create_group_returns_err_on_server_error() {
+async fn create_namespace_returns_err_on_server_error() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/admin-api/groups"))
+        .and(path("/admin-api/namespaces"))
         .respond_with(
             ResponseTemplate::new(500)
                 .set_body_json(serde_json::json!({"error": "internal server error"})),
@@ -817,13 +836,10 @@ async fn create_group_returns_err_on_server_error() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let result = client
-        .create_group(CreateGroupApiRequest {
-            group_id: None,
-            app_key: None,
+        .create_namespace(CreateNamespaceApiRequest {
             application_id: ApplicationId::from([0u8; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             alias: None,
-            parent_group_id: None,
         })
         .await;
 

@@ -1,5 +1,5 @@
 use actix::{ActorResponse, Handler, Message};
-use calimero_context_primitives::group::StoreGroupAliasRequest;
+use calimero_context_client::group::StoreGroupAliasRequest;
 
 use crate::{group_store, ContextManager};
 

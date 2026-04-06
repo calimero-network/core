@@ -26,11 +26,11 @@
 ├── <span class="field">HR &amp; People</span><br>
 └── <span class="field">Company Handbook</span>
 </div>
-<p>Each <strong>document</strong> is its own <span class="code">context</span> (WASM app + CRDT state). <strong>Subgroups</strong> segment collections without merging doc state. Sensitive folders sit under HR with Restricted visibility: HR admins control membership and allowlists; the CEO keeps org-wide structural powers but <em>cannot</em> read those doc contexts.</p>
+<p>Each <strong>document</strong> is its own <span class="code">context</span> (WASM app + CRDT state). <strong>Subgroups</strong> segment collections without merging doc state. Sensitive folders sit under HR as a dedicated subgroup: HR admins control membership; the CEO keeps org-wide structural powers but <em>cannot</em> access those doc contexts without being added to the HR subgroup.</p>
 <ul>
 <li><strong>One context per doc</strong> &mdash; replication, permissions, and WASM bytecode are scoped per document; moving a doc between folders is a registry update in <span class="code">doc-index</span>, not a state merge.</li>
 <li><strong>Nested groups</strong> &mdash; Engineering Docs and Architecture RFCs are separate groups linked under Acme; RFC admins need not be Marketing admins.</li>
-<li><strong>Policy isolation</strong> &mdash; Restricted + allowlist on HR contexts enforces confidentiality even when the CEO is root-group admin elsewhere.</li>
+<li><strong>Policy isolation</strong> &mdash; Subgroup membership on HR contexts enforces confidentiality even when the CEO is root-group admin elsewhere.</li>
 </ul>
 <details>
 <summary>Why not one giant doc context?</summary>
@@ -42,17 +42,17 @@
 
 <div class="card gb">
 <h2>Context layout</h2>
-<p>Contexts are registered under their subgroup; visibility tags drive Open vs Restricted join and ReadOnly vs Member roles. The index context lives at the workspace root so every member can resolve &ldquo;what exists&rdquo; without opening each WASM state.</p>
+<p>Contexts are registered under their subgroup; group membership determines access and ReadOnly vs Member roles. The index context lives at the workspace root so every member can resolve &ldquo;what exists&rdquo; without opening each WASM state.</p>
 <h3>Registry and documents</h3>
-<div class="fr"><div class="fp">Root · doc-index</div><div class="fd"><span class="code">Open</span>, <span class="code">auto_join</span> &mdash; cross-workspace metadata registry (recent edits, titles, folder graph).</div></div>
-<div class="fr"><div class="fp">Marketing Docs · doc-brand-voice</div><div class="fd"><span class="code">Open</span> &mdash; tone guidelines; marketing leads are <span class="code">Member</span>.</div></div>
-<div class="fr"><div class="fp">Engineering Docs · doc-api-guide</div><div class="fd"><span class="code">Open</span> &mdash; shared API reference.</div></div>
-<div class="fr"><div class="fp">Engineering Docs · doc-postmortem-42</div><div class="fd"><span class="code">Restricted</span> &mdash; allowlist: incident responders only.</div></div>
-<div class="fr"><div class="fp">Architecture RFCs · doc-rfc-subgroups</div><div class="fd"><span class="code">Open</span> &mdash; design notes for nested groups.</div></div>
-<div class="fr"><div class="fp">Architecture RFCs · doc-rfc-security</div><div class="fd"><span class="code">Restricted</span> &mdash; allowlist: security reviewers.</div></div>
-<div class="fr"><div class="fp">HR &amp; People · doc-comp-bands</div><div class="fd"><span class="code">Restricted</span>, HR-only allowlist &mdash; CEO explicitly <em>not</em> on list.</div></div>
-<div class="fr"><div class="fp">HR &amp; People · doc-hiring-plan</div><div class="fd"><span class="code">Restricted</span> &mdash; recruiting + HR.</div></div>
-<div class="fr"><div class="fp">Company Handbook · doc-employee-handbook</div><div class="fd"><span class="code">Open</span>; HR = <span class="code">Member</span> (edits), all employees = <span class="code">ReadOnly</span> (reads).</div></div>
+<div class="fr"><div class="fp">Root · doc-index</div><div class="fd"><span class="code">auto_join</span> &mdash; cross-workspace metadata registry (recent edits, titles, folder graph).</div></div>
+<div class="fr"><div class="fp">Marketing Docs · doc-brand-voice</div><div class="fd">Group members can join; marketing leads are <span class="code">Member</span>.</div></div>
+<div class="fr"><div class="fp">Engineering Docs · doc-api-guide</div><div class="fd">Group members can join &mdash; shared API reference.</div></div>
+<div class="fr"><div class="fp">Engineering Docs · doc-postmortem-42</div><div class="fd">In a dedicated subgroup &mdash; incident responders only.</div></div>
+<div class="fr"><div class="fp">Architecture RFCs · doc-rfc-subgroups</div><div class="fd">Group members can join &mdash; design notes for nested groups.</div></div>
+<div class="fr"><div class="fp">Architecture RFCs · doc-rfc-security</div><div class="fd">In a dedicated subgroup &mdash; security reviewers only.</div></div>
+<div class="fr"><div class="fp">HR &amp; People · doc-comp-bands</div><div class="fd">In HR subgroup &mdash; CEO explicitly <em>not</em> a subgroup member.</div></div>
+<div class="fr"><div class="fp">HR &amp; People · doc-hiring-plan</div><div class="fd">In HR subgroup &mdash; recruiting + HR.</div></div>
+<div class="fr"><div class="fp">Company Handbook · doc-employee-handbook</div><div class="fd">Root group context; HR = <span class="code">Member</span> (edits), all employees = <span class="code">ReadOnly</span> (reads).</div></div>
 <details>
 <summary>Folder graph vs WASM</summary>
 <div class="detail-body">
@@ -79,7 +79,7 @@
 </div>
 <h3>What the index stores</h3>
 <ul>
-<li><span class="code">DocumentMeta</span> &mdash; title snapshot, owning subgroup id, visibility enum, optional alias for deep links.</li>
+<li><span class="code">DocumentMeta</span> &mdash; title snapshot, owning subgroup id, optional alias for deep links.</li>
 <li><span class="code">EditEvent</span> &mdash; compact audit trail (actor, monotonic counter, HLC) for &ldquo;activity&rdquo; sidebars without shipping character payloads.</li>
 <li><span class="code">FolderEntry</span> &mdash; ordered child ids so the SPA can render the same tree the governance graph exposes.</li>
 </ul>
@@ -123,8 +123,8 @@
 <p>Roles stack: workspace membership grants a default lane; subgroup admin overrides inside that subtree; per-context allowlists carve exceptions for Restricted docs.</p>
 <div class="fr"><div class="fp">CEO</div><div class="fd">Structural control (subgroups, policies, org-wide Open contexts). <strong>No</strong> access to HR Restricted doc contexts or comp-bands allowlist.</div></div>
 <div class="fr"><div class="fp">VP Engineering</div><div class="fd">Subgroup admin over Engineering Docs + Architecture RFCs; manages eng doc visibility and invites.</div></div>
-<div class="fr"><div class="fp">Engineer</div><div class="fd"><span class="code">Member</span> on eng tree + <span class="code">CAN_CREATE_CONTEXT</span> + <span class="code">CAN_JOIN_OPEN_CONTEXTS</span> for new docs.</div></div>
-<div class="fr"><div class="fp">HR director</div><div class="fd">Admin on HR &amp; People; owns <span class="code">doc-comp-bands</span> allowlist. CEO cannot override Restricted membership without a governance change visible to HR admins.</div></div>
+<div class="fr"><div class="fp">Engineer</div><div class="fd"><span class="code">Member</span> on eng tree + <span class="code">CAN_CREATE_CONTEXT</span> for new docs.</div></div>
+<div class="fr"><div class="fp">HR director</div><div class="fd">Admin on HR &amp; People subgroup; controls membership. CEO cannot join HR subgroup contexts without being added by an HR admin.</div></div>
 <div class="fr"><div class="fp">Employee</div><div class="fd"><span class="code">ReadOnly</span> on Acme Workspace; reads all <span class="code">Open</span> docs including handbook; no write on handbook.</div></div>
 <div class="fr"><div class="fp">External reviewer</div><div class="fd"><span class="code">ReadOnly</span> on Architecture RFCs; added per-document or per-folder allowlists for sensitive RFCs.</div></div>
 <details>
@@ -156,7 +156,7 @@
 <h3>Read path</h3>
 <ol>
 <li>Client resolves <span class="code">doc-index</span> for titles, paths, and recency.</li>
-<li>Opening a row triggers context join per visibility rules (Open auto-join vs Restricted allowlist).</li>
+<li>Opening a row triggers context join (requires group membership; <code>auto_join</code> handles this automatically).</li>
 <li>Live typing subscribes to the target doc context; index rows update asynchronously via <span class="code">xcall</span> receipts.</li>
 </ol>
 <p>Comment proxies validate <span class="code">ReadOnly</span> membership on the handbook (or RFC) context, then perform a privileged append into <span class="code">comments</span> so thread data stays CRDT-consistent with the body.</p>
@@ -169,7 +169,7 @@
 <div class="cb"><h4>RGA</h4><p>Character-level real-time collaborative editing with causal, convergent merges; scales per document instead of one global sequence.</p></div>
 <div class="cb"><h4>Subgroups</h4><p>Workspace &rarr; doc collections &rarr; sub-collections without fusing WASM state; mirrors how companies carve ACLs today.</p></div>
 <div class="cb"><h4>ReadOnly</h4><p>Handbook readers and external reviewers; enforced by the platform role model so UI cannot accidentally grant write RPCs.</p></div>
-<div class="cb"><h4>Privacy boundary</h4><p>HR Restricted contexts stay opaque to execs; metadata xcalls carry only agreed fields (no body text leakage).</p></div>
+<div class="cb"><h4>Privacy boundary</h4><p>HR subgroup contexts stay opaque to execs not in the subgroup; metadata xcalls carry only agreed fields (no body text leakage).</p></div>
 <div class="cb"><h4>xcall</h4><p>doc-index updates, title sync, comment proxy indirection; keeps secondary indices consistent with primary doc state.</p></div>
 <div class="cb"><h4>CRDTs</h4><p><span class="code">Counter</span> (edits), <span class="code">LwwRegister</span> (title, cursors), <span class="code">Vector</span> (comments), <span class="code">UnorderedMap</span> (per-user cursors).</p></div>
 </div>

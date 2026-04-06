@@ -4,7 +4,6 @@ use std::borrow::Cow;
 // Removed: NonZeroUsize (no longer using height)
 
 use async_stream::stream;
-use calimero_blobstore::BlobManager;
 use calimero_crypto::SharedKey;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_primitives::context::{Context, ContextId};
@@ -21,24 +20,111 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
+use tokio::sync::oneshot;
 
 use crate::messages::{
     NodeMessage, RegisterPendingSpecializedNodeInvite, RemovePendingSpecializedNodeInvite,
 };
 use crate::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
+use crate::TopicManager;
+
+pub use crate::join_bundle::JoinBundle;
 
 mod alias;
 mod application;
 mod blob;
 
+pub use blob::BlobManager;
+
+/// Parameters for a direct namespace join request.
+#[derive(Debug)]
+pub struct NamespaceJoinParams {
+    pub namespace_id: [u8; 32],
+    pub invitation_bytes: Vec<u8>,
+    pub joiner_public_key: PublicKey,
+}
+
+#[derive(Clone, Debug)]
+pub struct SyncClient {
+    ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
+    ns_sync_tx: mpsc::Sender<[u8; 32]>,
+    ns_join_tx: mpsc::Sender<(
+        NamespaceJoinParams,
+        oneshot::Sender<eyre::Result<JoinBundle>>,
+    )>,
+}
+
+impl SyncClient {
+    #[must_use]
+    pub fn new(
+        ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
+        ns_sync_tx: mpsc::Sender<[u8; 32]>,
+        ns_join_tx: mpsc::Sender<(
+            NamespaceJoinParams,
+            oneshot::Sender<eyre::Result<JoinBundle>>,
+        )>,
+    ) -> Self {
+        Self {
+            ctx_sync_tx,
+            ns_sync_tx,
+            ns_join_tx,
+        }
+    }
+
+    pub async fn sync(
+        &self,
+        context_id: Option<&ContextId>,
+        peer_id: Option<&PeerId>,
+    ) -> eyre::Result<()> {
+        self.ctx_sync_tx
+            .send((context_id.copied(), peer_id.copied()))
+            .await?;
+
+        Ok(())
+    }
+
+    /// Request a full namespace governance sync from any available peer.
+    ///
+    /// Opens a stream to a mesh peer on the namespace topic and pulls
+    /// all governance ops via `NamespaceBackfillRequest`. The ops are
+    /// applied locally via `apply_signed_namespace_op`.
+    pub async fn sync_namespace(&self, namespace_id: [u8; 32]) -> eyre::Result<()> {
+        self.ns_sync_tx.send(namespace_id).await?;
+        Ok(())
+    }
+
+    /// Send a direct namespace join request to a mesh peer and await the
+    /// response. The SyncManager handles the actual stream I/O.
+    pub async fn request_namespace_join(
+        &self,
+        namespace_id: [u8; 32],
+        invitation_bytes: Vec<u8>,
+        joiner_public_key: PublicKey,
+    ) -> eyre::Result<JoinBundle> {
+        let (tx, rx) = oneshot::channel();
+        let params = NamespaceJoinParams {
+            namespace_id,
+            invitation_bytes,
+            joiner_public_key,
+        };
+        self.ns_join_tx
+            .send((params, tx))
+            .await
+            .map_err(|_| eyre::eyre!("namespace join channel closed"))?;
+        rx.await
+            .map_err(|_| eyre::eyre!("namespace join response channel dropped"))?
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct NodeClient {
     datastore: Store,
-    blobstore: BlobManager,
+    blob_manager: BlobManager,
     network_client: NetworkClient,
+    topic_manager: TopicManager,
     node_manager: LazyRecipient<NodeMessage>,
     event_sender: broadcast::Sender<NodeEvent>,
-    ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
+    sync_client: SyncClient,
     specialized_node_invite_topic: String,
 }
 
@@ -46,60 +132,69 @@ impl NodeClient {
     #[must_use]
     pub fn new(
         datastore: Store,
-        blobstore: BlobManager,
+        blob_manager: BlobManager,
         network_client: NetworkClient,
         node_manager: LazyRecipient<NodeMessage>,
         event_sender: broadcast::Sender<NodeEvent>,
-        ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
+        sync_client: SyncClient,
         specialized_node_invite_topic: String,
     ) -> Self {
+        let topic_manager = TopicManager::new(network_client.clone());
         Self {
             datastore,
-            blobstore,
+            blob_manager,
             network_client,
+            topic_manager,
             node_manager,
             event_sender,
-            ctx_sync_tx,
+            sync_client,
             specialized_node_invite_topic,
         }
     }
 
     pub async fn subscribe(&self, context_id: &ContextId) -> eyre::Result<()> {
-        let topic = IdentTopic::new(context_id);
-
-        let _ignored = self.network_client.subscribe(topic).await?;
-
+        let topic = String::from(context_id);
+        self.topic_manager.ensure_subscribed(&topic).await?;
         info!(%context_id, "Subscribed to context");
-
         Ok(())
     }
 
     pub async fn unsubscribe(&self, context_id: &ContextId) -> eyre::Result<()> {
-        let topic = IdentTopic::new(context_id);
-
-        let _ignored = self.network_client.unsubscribe(topic).await?;
-
+        let topic = String::from(context_id);
+        self.topic_manager.unsubscribe(&topic).await?;
         info!(%context_id, "Unsubscribed from context");
-
         Ok(())
     }
 
-    pub async fn subscribe_group(&self, group_id: [u8; 32]) -> eyre::Result<()> {
-        let topic = IdentTopic::new(format!("group/{}", hex::encode(group_id)));
-        let _ignored = self.network_client.subscribe(topic).await?;
-        info!(?group_id, "Subscribed to group topic");
+    /// Subscribe to the namespace governance topic `ns/<hex(namespace_id)>`.
+    pub async fn subscribe_namespace(&self, namespace_id: [u8; 32]) -> eyre::Result<()> {
+        let topic = format!("ns/{}", hex::encode(namespace_id));
+        self.topic_manager.ensure_subscribed(&topic).await?;
+        info!(
+            namespace_id = %hex::encode(namespace_id),
+            "Subscribed to namespace topic"
+        );
         Ok(())
     }
 
-    pub async fn unsubscribe_group(&self, group_id: [u8; 32]) -> eyre::Result<()> {
-        let topic = IdentTopic::new(format!("group/{}", hex::encode(group_id)));
-        let _ignored = self.network_client.unsubscribe(topic).await?;
-        info!(?group_id, "Unsubscribed from group topic");
+    /// Unsubscribe from the namespace governance topic.
+    pub async fn unsubscribe_namespace(&self, namespace_id: [u8; 32]) -> eyre::Result<()> {
+        let topic = format!("ns/{}", hex::encode(namespace_id));
+        self.topic_manager.unsubscribe(&topic).await?;
+        info!(
+            namespace_id = %hex::encode(namespace_id),
+            "Unsubscribed from namespace topic"
+        );
         Ok(())
     }
 
-    pub async fn publish_on_group(&self, group_id: [u8; 32], payload: Vec<u8>) -> eyre::Result<()> {
-        let topic_str = format!("group/{}", hex::encode(group_id));
+    /// Publish raw payload on the namespace topic `ns/<hex(namespace_id)>`.
+    pub async fn publish_on_namespace(
+        &self,
+        namespace_id: [u8; 32],
+        payload: Vec<u8>,
+    ) -> eyre::Result<()> {
+        let topic_str = format!("ns/{}", hex::encode(namespace_id));
         let topic = TopicHash::from_raw(topic_str);
 
         const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -113,7 +208,7 @@ impl NodeClient {
             }
             if tokio::time::Instant::now() >= deadline {
                 warn!(
-                    ?group_id,
+                    ?namespace_id,
                     "no mesh peers after {MAX_WAIT:?}, publishing anyway"
                 );
                 break;
@@ -146,6 +241,7 @@ impl NodeClient {
         hlc: calimero_storage::logical_clock::HybridTimestamp,
         events: Option<Vec<u8>>,
         governance_epoch: Vec<[u8; 32]>,
+        key_id: [u8; 32],
     ) -> eyre::Result<()> {
         info!(
             context_id=%context.id,
@@ -179,6 +275,7 @@ impl NodeClient {
             nonce,
             events: events.map(Cow::from),
             governance_epoch,
+            key_id,
         };
 
         let payload = borsh::to_vec(&payload)?;
@@ -214,72 +311,37 @@ impl NodeClient {
         Ok(())
     }
 
-    pub async fn broadcast_group_mutation(
-        &self,
-        group_id: [u8; 32],
-        mutation_kind: crate::sync::GroupMutationKind,
-    ) -> eyre::Result<()> {
-        let topic_str = format!("group/{}", hex::encode(group_id));
-        let topic = TopicHash::from_raw(topic_str);
-
-        let peers = self.network_client.mesh_peer_count(topic.clone()).await;
-        if peers == 0 {
-            debug!(
-                ?mutation_kind,
-                "no peers on group topic, skipping broadcast"
-            );
-            return Ok(());
-        }
-
-        let payload = BroadcastMessage::GroupMutationNotification {
-            group_id,
-            mutation_kind,
-        };
-        let payload_bytes = borsh::to_vec(&payload)?;
-
-        if let Err(err) = self.network_client.publish(topic, payload_bytes).await {
-            warn!(?group_id, %err, "failed to publish group mutation notification");
-        }
-
-        Ok(())
-    }
-
-    /// Publish a borsh-encoded `SignedGroupOp` (`calimero_context_primitives::local_governance`)
-    /// on the group gossip topic `group/<hex(group_id)>`.
+    /// Publish a borsh-encoded `SignedNamespaceOp` on the namespace topic `ns/<hex>`.
     ///
-    /// Enforces [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`] on `signed_op_borsh`.
-    ///
-    /// If there are no mesh peers on the group topic, the publish is skipped and a **warn** is
-    /// logged (silent skips make ops easy to miss in production).
-    pub async fn publish_signed_group_op(
+    /// Enforces [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`] on the payload.
+    pub async fn publish_signed_namespace_op(
         &self,
-        group_id: [u8; 32],
+        namespace_id: [u8; 32],
         delta_id: [u8; 32],
         parent_ids: Vec<[u8; 32]>,
         signed_op_borsh: Vec<u8>,
     ) -> eyre::Result<()> {
         if signed_op_borsh.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
             eyre::bail!(
-                "signed group op payload exceeds max ({} > {})",
+                "signed namespace op payload exceeds max ({} > {})",
                 signed_op_borsh.len(),
                 MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES
             );
         }
 
-        let topic_str = format!("group/{}", hex::encode(group_id));
+        let topic_str = format!("ns/{}", hex::encode(namespace_id));
         let topic = TopicHash::from_raw(topic_str);
 
         let peers = self.network_client.mesh_peer_count(topic.clone()).await;
         if peers == 0 {
             warn!(
-                ?group_id,
-                "no peers on group topic, skipping signed group op broadcast"
+                namespace_id = %hex::encode(namespace_id),
+                "no mesh peers on namespace topic, governance op publish is best-effort"
             );
-            return Ok(());
         }
 
-        let payload = BroadcastMessage::GroupGovernanceDelta {
-            group_id,
+        let payload = BroadcastMessage::NamespaceGovernanceDelta {
+            namespace_id,
             delta_id,
             parent_ids,
             payload: signed_op_borsh,
@@ -287,29 +349,36 @@ impl NodeClient {
         let payload_bytes = borsh::to_vec(&payload)?;
 
         if let Err(err) = self.network_client.publish(topic, payload_bytes).await {
-            warn!(?group_id, %err, "failed to publish signed group op");
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                %err,
+                "failed to publish signed namespace op"
+            );
         }
 
         Ok(())
     }
 
-    pub async fn publish_group_heartbeat(
+    /// Publish a namespace governance heartbeat for DAG divergence detection.
+    pub async fn publish_namespace_heartbeat(
         &self,
-        group_id: [u8; 32],
+        namespace_id: [u8; 32],
         dag_heads: Vec<[u8; 32]>,
-        member_count: u32,
     ) -> eyre::Result<()> {
-        let topic_str = format!("group/{}", hex::encode(group_id));
+        let topic_str = format!("ns/{}", hex::encode(namespace_id));
         let topic = TopicHash::from_raw(topic_str);
 
-        let payload = BroadcastMessage::GroupStateHeartbeat {
-            group_id,
+        let payload = BroadcastMessage::NamespaceStateHeartbeat {
+            namespace_id,
             dag_heads,
-            member_count,
         };
         let payload_bytes = borsh::to_vec(&payload)?;
         if let Err(err) = self.network_client.publish(topic, payload_bytes).await {
-            debug!(?group_id, %err, "failed to publish group heartbeat");
+            debug!(
+                namespace_id = %hex::encode(namespace_id),
+                %err,
+                "failed to publish namespace heartbeat"
+            );
         }
         Ok(())
     }
@@ -408,15 +477,31 @@ impl NodeClient {
         }
     }
 
+    #[must_use]
+    pub fn sync_client(&self) -> &SyncClient {
+        &self.sync_client
+    }
+
     pub async fn sync(
         &self,
         context_id: Option<&ContextId>,
         peer_id: Option<&PeerId>,
     ) -> eyre::Result<()> {
-        self.ctx_sync_tx
-            .send((context_id.copied(), peer_id.copied()))
-            .await?;
+        self.sync_client.sync(context_id, peer_id).await
+    }
 
-        Ok(())
+    pub async fn sync_namespace(&self, namespace_id: [u8; 32]) -> eyre::Result<()> {
+        self.sync_client.sync_namespace(namespace_id).await
+    }
+
+    pub async fn request_namespace_join(
+        &self,
+        namespace_id: [u8; 32],
+        invitation_bytes: Vec<u8>,
+        joiner_public_key: PublicKey,
+    ) -> eyre::Result<JoinBundle> {
+        self.sync_client
+            .request_namespace_join(namespace_id, invitation_bytes, joiner_public_key)
+            .await
     }
 }

@@ -1,11 +1,13 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
+use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
+use calimero_context_client::local_governance::{NamespaceOp, RootOp};
 use calimero_context_config::types::AppKey;
-use calimero_context_primitives::group::{CreateGroupRequest, CreateGroupResponse};
 use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::identity::PrivateKey;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use rand::Rng;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::group_store;
 use crate::ContextManager;
@@ -25,29 +27,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_group_identity();
-
-        // Resolve admin_identity from node group identity
-        let admin_identity = match node_identity {
-            Some((pk, _)) => pk,
-            None => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "admin_identity not provided and node has no configured group identity"
-                )))
-            }
-        };
-
         // Resolve app_key: use provided value or generate random
         let app_key = app_key.unwrap_or_else(|| {
             let bytes: [u8; 32] = rand::thread_rng().gen();
             AppKey::from(bytes)
         });
 
-        // Resolve signing_key: node identity key or stored key
-        let node_sk = node_identity.map(|(_, sk)| sk);
-        let signing_key = node_sk;
-
-        // Sync validation
         let group_id = group_id.unwrap_or_else(|| {
             let bytes: [u8; 32] = rand::thread_rng().gen();
             bytes.into()
@@ -57,23 +42,40 @@ impl Handler<CreateGroupRequest> for ContextManager {
             return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
         }
 
-        if let Some(ref parent_id) = parent_group_id {
-            match group_store::load_group_meta(&self.datastore, parent_id) {
-                Ok(Some(_)) => {}
+        let namespace_anchor_group_id = parent_group_id.as_ref().unwrap_or(&group_id);
+        let (namespace_id, admin_identity, sk_bytes, _sender) =
+            match self.get_or_create_namespace_identity(namespace_anchor_group_id) {
+                Ok(result) => result,
+                Err(err) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "failed to resolve namespace identity: {err}"
+                    )))
+                }
+            };
+
+        let signing_key = Some(sk_bytes);
+
+        // Subgroups inherit target_application_id from the parent (namespace root owns the app).
+        let effective_application_id = if let Some(ref parent_id) = parent_group_id {
+            let parent_meta = match group_store::load_group_meta(&self.datastore, parent_id) {
+                Ok(Some(m)) => m,
                 _ => {
                     return ActorResponse::reply(Err(eyre::eyre!(
                         "parent group '{parent_id:?}' not found"
                     )));
                 }
-            }
+            };
             if let Err(err) =
                 group_store::require_group_admin(&self.datastore, parent_id, &admin_identity)
             {
                 return ActorResponse::reply(Err(err));
             }
-        }
+            parent_meta.target_application_id
+        } else {
+            application_id
+        };
 
-        if let Err(err) = load_app_meta(&self.datastore, &application_id) {
+        if let Err(err) = load_app_meta(&self.datastore, &effective_application_id) {
             return ActorResponse::reply(Err(err));
         }
 
@@ -101,7 +103,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
                 let meta = GroupMetaValue {
                     app_key: app_key.to_bytes(),
-                    target_application_id: application_id,
+                    target_application_id: effective_application_id,
                     upgrade_policy,
                     created_at: now,
                     admin_identity: admin_identity.into(),
@@ -124,31 +126,64 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_CONTEXTS,
                 )?;
 
+                // Generate and store the group encryption key.
+                let group_key: [u8; 32] = rand::thread_rng().gen();
+                let key_id = group_store::store_group_key(&datastore, &group_id, &group_key)?;
+                tracing::debug!(
+                    ?group_id,
+                    key_id = %hex::encode(key_id),
+                    "stored initial group key"
+                );
+
                 if let Some(ref alias_str) = alias {
                     group_store::set_group_alias(&datastore, &group_id, alias_str)?;
                 }
 
-                if let Some(ref parent_id) = parent_group_id {
-                    group_store::set_parent_group(&datastore, &group_id, parent_id)?;
-
-                    if let Some(ref sk) = signing_key {
-                        use calimero_context_primitives::local_governance::GroupOp;
-                        use calimero_primitives::identity::PrivateKey;
-
-                        let _ = group_store::sign_apply_and_publish(
-                            &datastore,
-                            &node_client,
-                            parent_id,
-                            &PrivateKey::from(*sk),
-                            GroupOp::SubgroupCreated {
-                                child_group_id: group_id.to_bytes(),
-                            },
-                        )
-                        .await;
-                    }
+                // In the namespace model, group hierarchy is tracked in the
+                // namespace DAG (RootOp::GroupCreated), not via parent refs.
+                if let Err(err) = node_client
+                    .subscribe_namespace(namespace_id.to_bytes())
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        namespace_id=%hex::encode(namespace_id.to_bytes()),
+                        "failed to subscribe to namespace before publishing governance ops"
+                    );
                 }
 
-                let _ = node_client.subscribe_group(group_id.to_bytes()).await;
+                let signer_sk = PrivateKey::from(sk_bytes);
+                let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+                    group_id: group_id.to_bytes(),
+                });
+                if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
+                    &datastore,
+                    &node_client,
+                    namespace_id.to_bytes(),
+                    &signer_sk,
+                    create_op,
+                )
+                .await
+                {
+                    tracing::warn!(?e, "failed to publish GroupCreated on namespace DAG");
+                }
+                if let Some(ref parent_id) = parent_group_id {
+                    let nest_op = NamespaceOp::Root(RootOp::GroupNested {
+                        parent_group_id: parent_id.to_bytes(),
+                        child_group_id: group_id.to_bytes(),
+                    });
+                    if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
+                        &datastore,
+                        &node_client,
+                        namespace_id.to_bytes(),
+                        &signer_sk,
+                        nest_op,
+                    )
+                    .await
+                    {
+                        tracing::warn!(?e, "failed to publish GroupNested on namespace DAG");
+                    }
+                }
 
                 info!(?group_id, ?parent_group_id, %admin_identity, "group created");
 

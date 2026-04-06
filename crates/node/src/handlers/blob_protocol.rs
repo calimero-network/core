@@ -5,13 +5,12 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 use calimero_network_primitives::{
     blob_types::{BlobAuthPayload, BlobChunk, BlobRequest, BlobResponse},
     stream::{Message as StreamMessage, Stream},
 };
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::blobs::BlobId;
 use futures_util::{SinkExt, StreamExt};
 use libp2p::PeerId;
 use tokio::time::{sleep, timeout};
@@ -103,17 +102,13 @@ async fn handle_blob_request_stream(
     let serve_result = timeout(BLOB_SERVE_TIMEOUT, async {
         // Try to get the blob as a stream (handles chunked blobs efficiently)
         info!(%peer_id, blob_id = %blob_request.blob_id, "Attempting to get blob from local storage");
-        let blob_stream = node_client
-            .get_blob(&BlobId::from(blob_request.blob_id), None)
-            .await?;
+        let blob_stream = node_client.get_blob(&blob_request.blob_id, None).await?;
 
         let (response, blob_stream) = if let Some(blob_stream) = blob_stream {
             info!(%peer_id, "Blob found, will stream chunks");
 
             // Get blob metadata to determine size
-            let blob_metadata = node_client
-                .get_blob_info(BlobId::from(blob_request.blob_id))
-                .await?;
+            let blob_metadata = node_client.get_blob_info(blob_request.blob_id).await?;
 
             let total_size = blob_metadata.map(|meta| meta.size).unwrap_or(0);
 
@@ -283,7 +278,7 @@ async fn is_blob_access_authorized(
         .await;
 
     if let Ok(app) = app_config {
-        let requested_blob = BlobId::from(request.blob_id);
+        let requested_blob = request.blob_id;
         // Allow if it matches the bytecode or compiled artifact
         if requested_blob == app.blob.bytecode || requested_blob == app.blob.compiled {
             debug!(blob_id=%request.blob_id, "Access granted: Blob is public Application Bundle");

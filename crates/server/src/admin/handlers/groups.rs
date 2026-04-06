@@ -3,21 +3,18 @@ pub mod create_group;
 pub mod create_group_invitation;
 pub mod delete_group;
 pub mod detach_context_from_group;
-pub mod get_context_allowlist;
-pub mod get_context_visibility;
 pub mod get_group_info;
 pub mod get_group_upgrade_status;
 pub mod get_member_capabilities;
 pub mod join_group;
-pub mod join_group_context;
 pub mod list_all_groups;
 pub mod list_group_contexts;
 pub mod list_group_members;
-pub mod manage_context_allowlist;
+pub mod list_subgroups;
+pub mod nest_group;
 pub mod register_signing_key;
 pub mod remove_group_members;
 pub mod retry_group_upgrade;
-pub mod set_context_visibility;
 pub mod set_default_capabilities;
 pub mod set_default_visibility;
 pub mod set_group_alias;
@@ -25,12 +22,13 @@ pub mod set_member_alias;
 pub mod set_member_capabilities;
 pub mod set_tee_admission_policy;
 pub mod sync_group;
+pub mod unnest_group;
 pub mod update_group_settings;
 pub mod update_member_role;
 pub mod upgrade_group;
 
+use calimero_context_client::group::{GroupUpgradeInfo, GroupUpgradeStatus};
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_primitives::group::{GroupUpgradeInfo, GroupUpgradeStatus};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GroupUpgradeStatusApiData;
@@ -69,7 +67,7 @@ fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiDat
     }
 }
 
-fn parse_group_id(s: &str) -> Result<ContextGroupId, ApiError> {
+pub fn parse_group_id(s: &str) -> Result<ContextGroupId, ApiError> {
     let bytes = hex::decode(s).map_err(|_| ApiError {
         status_code: StatusCode::BAD_REQUEST,
         message: "Invalid group id format: expected hex-encoded 32 bytes".into(),
@@ -81,7 +79,7 @@ fn parse_group_id(s: &str) -> Result<ContextGroupId, ApiError> {
     Ok(ContextGroupId::from(arr))
 }
 
-fn parse_context_id(s: &str) -> Result<ContextId, ApiError> {
+pub(crate) fn parse_context_id(s: &str) -> Result<ContextId, ApiError> {
     if let Ok(context_id) = s.parse::<ContextId>() {
         return Ok(context_id);
     }

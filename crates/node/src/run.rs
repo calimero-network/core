@@ -9,14 +9,14 @@ use std::time::Duration;
 
 use actix::Actor;
 use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager, FileSystem};
+use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 use calimero_network::NetworkManager;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::config::NetworkConfig;
-use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::Database;
@@ -53,7 +53,6 @@ pub struct SpecializedNodeConfig {
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
-    pub group_identity: Option<calimero_node_primitives::GroupIdentityConfig>,
     pub network: NetworkConfig,
     pub sync: SyncConfig,
     pub datastore: StoreConfig,
@@ -82,7 +81,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         Store::open::<RocksDB>(&config.datastore)?
     };
 
-    let blobstore = BlobManager::new(datastore.clone(), FileSystem::new(&config.blobstore).await?);
+    let blob_store = BlobStore::new(datastore.clone(), FileSystem::new(&config.blobstore).await?);
+    let blob_manager = BlobManager::new(blob_store.clone());
 
     let node_recipient = LazyRecipient::new();
     let network_recipient = LazyRecipient::new();
@@ -132,14 +132,18 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let (event_sender, _) = broadcast::channel(256);
 
     let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(64);
+    let (ns_sync_tx, ns_sync_rx) = mpsc::channel(16);
+    let (ns_join_tx, ns_join_rx) = mpsc::channel(16);
+
+    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx);
 
     let node_client = NodeClient::new(
         datastore.clone(),
-        blobstore.clone(),
+        blob_manager.clone(),
         network_client.clone(),
         node_recipient.clone(),
         event_sender,
-        ctx_sync_tx,
+        sync_client,
         config.specialized_node.invite_topic.clone(),
     );
 
@@ -153,7 +157,6 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         datastore.clone(),
         node_client.clone(),
         context_client.clone(),
-        config.group_identity.clone(),
         Some(&mut registry),
     );
 
@@ -171,10 +174,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         network_client.clone(),
         node_state.clone(),
         ctx_sync_rx,
+        ns_sync_rx,
+        ns_join_rx,
     );
 
     let node_manager = NodeManager::new(
-        blobstore.clone(),
+        blob_store.clone(),
         sync_manager.clone(),
         context_client.clone(),
         node_client.clone(),

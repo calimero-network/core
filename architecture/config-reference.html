@@ -93,7 +93,7 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
 <div class="card gb" style="margin-bottom:32px;">
 <h2>Top-Level Structure</h2>
 <div class="toml-example"><span class="tc"># config.toml — Top-level sections</span>
-<span class="ts">[identity]</span>         <span class="tc"># Ed25519 keypair + optional group identity</span>
+<span class="ts">[identity]</span>         <span class="tc"># libp2p Ed25519 keypair (namespace identities are per root group in the datastore)</span>
 <span class="ts">[swarm]</span>            <span class="tc"># libp2p listen addresses</span>
 <span class="ts">[bootstrap]</span>        <span class="tc"># bootstrap node list</span>
 <span class="ts">[discovery]</span>        <span class="tc"># mDNS, rendezvous, relay, autonat</span>
@@ -131,10 +131,10 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
   <div class="cf-desc">Ed25519 secret key in hex. Auto-generated on init, never commit to source control.</div>
 </div>
 <div class="config-field">
-  <div class="cf-key">group_identity</div>
-  <div class="cf-type">Option&lt;GroupIdentity&gt;</div>
-  <div class="cf-default">None</div>
-  <div class="cf-desc">Optional group-scoped identity for specialized nodes.</div>
+  <div class="cf-key"><em>(removed)</em></div>
+  <div class="cf-type">&mdash;</div>
+  <div class="cf-default">&mdash;</div>
+  <div class="cf-desc">Group/namespace identities are now auto-generated per namespace and stored in the datastore (not in config). See <a href="concepts.html">Namespaces</a>.</div>
 </div>
 
 <div class="toml-example"><span class="ts">[identity]</span>

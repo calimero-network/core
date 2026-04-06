@@ -11,7 +11,7 @@ pub mod types;
 use repr::Repr;
 use types::{
     AppKey, Application, Capability, ContextGroupId, ContextId, ContextIdentity,
-    ExpirationTimestamp, SignedGroupRevealPayload, SignedRevealPayload, SignerId,
+    ExpirationTimestamp, SignedRevealPayload, SignerId,
 };
 
 pub type Timestamp = u64;
@@ -158,7 +158,6 @@ pub enum GroupRequestKind<'a> {
     },
     RegisterContext {
         context_id: Repr<ContextId>,
-        visibility_mode: Option<VisibilityMode>,
     },
     UnregisterContext {
         context_id: Repr<ContextId>,
@@ -173,13 +172,6 @@ pub enum GroupRequestKind<'a> {
     ApproveContextRegistration {
         context_id: Repr<ContextId>,
     },
-    CommitGroupInvitation {
-        commitment_hash: String,
-        expiration_timestamp: ExpirationTimestamp,
-    },
-    RevealGroupInvitation {
-        payload: SignedGroupRevealPayload,
-    },
     /// Join a context within a group using group membership as authorization.
     /// Caller must be a group member; the context must belong to the group.
     JoinContextViaGroup {
@@ -191,24 +183,9 @@ pub enum GroupRequestKind<'a> {
         member: Repr<SignerId>,
         capabilities: u32,
     },
-    /// Set visibility mode for a context (creator or admin).
-    SetContextVisibility {
-        context_id: Repr<ContextId>,
-        mode: VisibilityMode,
-    },
-    /// Add/remove members from a context's allowlist (creator or admin).
-    ManageContextAllowlist {
-        context_id: Repr<ContextId>,
-        add: Vec<Repr<SignerId>>,
-        remove: Vec<Repr<SignerId>>,
-    },
     /// Set the default capability bits for new members (admin-only).
     SetDefaultCapabilities {
         default_capabilities: u32,
-    },
-    /// Set the default visibility mode for new contexts (admin-only).
-    SetDefaultVisibility {
-        default_visibility: VisibilityMode,
     },
 }
 

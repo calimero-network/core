@@ -291,7 +291,7 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
         } else {
             CrdtType::GCounter
         };
-        self.positive.inner.storage.metadata.crdt_type = Some(crdt_type);
+        self.positive.set_collection_crdt_type(crdt_type);
 
         // Negative map: only for PNCounter (ALLOW_DECREMENT = true)
         // GCounter's negative map is detached and never used, so skip it

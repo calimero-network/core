@@ -3,14 +3,16 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_primitives::group::UpdateMemberRoleRequest;
+use calimero_context_client::group::UpdateMemberRoleRequest;
 use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
 use tracing::{error, info};
 
 use super::{parse_group_id, parse_identity};
 use crate::admin::handlers::validation::ValidatedJson;
-use crate::admin::service::{parse_api_error, ApiResponse, Empty};
+use crate::admin::service::parse_api_error;
+use crate::admin::service::ApiResponse;
 use crate::AdminState;
+use calimero_server_primitives::admin::UpdateMemberRoleApiResponse;
 
 pub async fn handler(
     Path((group_id_str, identity_str)): Path<(String, String)>,
@@ -43,7 +45,10 @@ pub async fn handler(
     match result {
         Ok(()) => {
             info!(group_id=%group_id_str, identity=%identity_str, "Member role updated successfully");
-            ApiResponse { payload: Empty }.into_response()
+            ApiResponse {
+                payload: UpdateMemberRoleApiResponse {},
+            }
+            .into_response()
         }
         Err(err) => {
             error!(group_id=%group_id_str, identity=%identity_str, error=?err, "Failed to update member role");

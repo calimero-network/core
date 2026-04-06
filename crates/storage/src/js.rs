@@ -183,6 +183,7 @@ pub struct JsVector {
 }
 
 impl JsVector {
+    /// Creates a new byte-oriented vector wrapper.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -203,6 +204,7 @@ impl JsVector {
         }
     }
 
+    /// Returns the unique identifier of this vector collection.
     #[must_use]
     pub fn id(&self) -> Id {
         self.storage.id()
@@ -297,6 +299,7 @@ pub struct JsUnorderedSet {
 }
 
 impl JsUnorderedSet {
+    /// Creates a new byte-oriented set wrapper.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -317,6 +320,7 @@ impl JsUnorderedSet {
         }
     }
 
+    /// Returns the unique identifier of this set collection.
     #[must_use]
     pub fn id(&self) -> Id {
         self.storage.id()
@@ -412,6 +416,7 @@ pub struct JsLwwRegister {
 }
 
 impl JsLwwRegister {
+    /// Creates a new LWW register wrapper storing optional byte values.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -432,11 +437,13 @@ impl JsLwwRegister {
         }
     }
 
+    /// Returns the unique identifier of this register.
     #[must_use]
     pub fn id(&self) -> Id {
         self.storage.id()
     }
 
+    /// Updates the register value and bumps the wrapper storage metadata timestamp.
     pub fn set(&mut self, value: Option<&[u8]>) {
         self.storage.update();
         match value {
@@ -445,15 +452,18 @@ impl JsLwwRegister {
         }
     }
 
+    /// Returns the current register value.
     pub fn get(&self) -> Option<Vec<u8>> {
         self.register.get().clone()
     }
 
+    /// Clears the register value (`None`) and updates metadata timestamp.
     pub fn clear(&mut self) {
         self.storage.update();
         self.register.set(None);
     }
 
+    /// Returns the logical timestamp tracked by the underlying LWW register.
     pub fn timestamp(&self) -> crate::logical_clock::HybridTimestamp {
         self.register.timestamp()
     }
@@ -493,6 +503,7 @@ pub struct JsCounter {
 }
 
 impl JsCounter {
+    /// Creates a new grow-only counter wrapper.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -510,6 +521,7 @@ impl JsCounter {
         }
     }
 
+    /// Returns the unique identifier of this counter collection.
     #[must_use]
     pub fn id(&self) -> Id {
         self.storage.id()
@@ -670,6 +682,16 @@ impl JsUserStorage {
         self.user_storage.contains_user(&public_key)
     }
 
+    /// Returns all user/value pairs currently stored.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if reading from storage fails.
+    pub fn entries(&self) -> Result<Vec<(PublicKey, Vec<u8>)>, StoreError> {
+        let iter = self.user_storage.entries()?;
+        Ok(iter.collect())
+    }
+
     /// Removes the value for the current executor, returning the previous value if it existed.
     ///
     /// # Errors
@@ -684,10 +706,11 @@ impl JsUserStorage {
     /// # Errors
     ///
     /// Propagates [`StoreError`] if reading from storage fails.
-    pub fn entries(&self) -> Result<Vec<([u8; 32], Vec<u8>)>, StoreError> {
-        let iter = self.user_storage.inner.entries()?;
+    pub fn entries_raw(&self) -> Result<Vec<([u8; 32], Vec<u8>)>, StoreError> {
+        let iter = self.entries()?;
         Ok(iter
-            .map(|(public_key, value)| (*public_key, value))
+            .into_iter()
+            .map(|(public_key, value)| (*public_key.as_ref(), value))
             .collect())
     }
 

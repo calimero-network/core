@@ -28,6 +28,7 @@ steps:
     outputs:
       context_id: contextId
       node1_key: memberPublicKey
+      node2_key: memberIdentity
 
   # Simple set on node-1
   - name: Set value on node-1

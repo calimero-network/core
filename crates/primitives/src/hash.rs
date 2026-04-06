@@ -37,6 +37,23 @@ impl Hash {
         &self.bytes
     }
 
+    /// All-zero digest, with base58 cache matching [`From<[u8; BYTES_LEN]>`](Self).
+    #[must_use]
+    pub const fn zero() -> Self {
+        const ZERO_BS58: &[u8] = b"11111111111111111111111111111111";
+        let mut bs58_cache = [0u8; MAX_STR_LEN];
+        let mut i = 0;
+        while i < ZERO_BS58.len() {
+            bs58_cache[i] = ZERO_BS58[i];
+            i += 1;
+        }
+        Self {
+            bytes: [0u8; BYTES_LEN],
+            bs58_cache,
+            bs58_len: ZERO_BS58.len() as u8,
+        }
+    }
+
     #[must_use]
     pub fn new(data: &[u8]) -> Self {
         let hash_bytes: [u8; BYTES_LEN] = Sha256::digest(data).into();

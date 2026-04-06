@@ -95,7 +95,7 @@ pub enum NodeCommand {
     #[command(alias = "ls")]
     List,
 
-    /// Display the node's group identity public key
+    /// Display the node's peer ID (namespace identities are stored per-group in the datastore)
     #[command(alias = "id")]
     Identity,
 }
@@ -227,12 +227,9 @@ impl NodeCommand {
                     load_config(path, active).await?
                 };
 
-                match node_config.identity.group {
-                    Some(gi) => println!("{}", gi.public_key),
-                    None => {
-                        bail!("no group identity configured (node may need re-initialization)")
-                    }
-                }
+                let peer_id = node_config.identity.keypair.public().to_peer_id();
+                println!("peer_id: {peer_id}");
+                println!("(namespace identities are stored per-group in the datastore)");
                 return Ok(());
             }
         }

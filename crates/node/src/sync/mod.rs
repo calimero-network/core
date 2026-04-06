@@ -18,7 +18,6 @@
 //! │   ├── hash_comparison_protocol.rs - Merkle tree traversal (DFS)
 //! │   ├── level_sync.rs               - Level-wise sync (BFS for wide trees)
 //! │   ├── snapshot.rs                 - Snapshot transfer protocol
-//! │   ├── key.rs                      - Key sharing
 //! │   └── blobs.rs                    - Blob sharing
 //! ├── Tracks: tracking.rs (per-peer sync history)
 //! └── Observes: metrics.rs (protocol cost, safety invariants)
@@ -39,7 +38,6 @@ mod delta_request;
 mod hash_comparison;
 pub mod hash_comparison_protocol;
 mod helpers;
-mod key;
 pub mod level_sync;
 mod manager;
 pub mod metrics;
@@ -56,5 +54,3 @@ pub use level_sync::{LevelWiseConfig, LevelWiseFirstRequest, LevelWiseProtocol, 
 pub use manager::SyncManager;
 pub use metrics::{no_op_metrics, NoOpMetrics, PhaseTimer, SharedMetrics, SyncMetricsCollector};
 pub use prometheus_metrics::PrometheusSyncMetrics;
-
-pub use key::CHALLENGE_DOMAIN;

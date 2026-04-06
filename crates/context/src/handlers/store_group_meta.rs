@@ -1,6 +1,6 @@
 use actix::{ActorResponse, Handler, Message};
+use calimero_context_client::group::StoreGroupMetaRequest;
 use calimero_context_config::MemberCapabilities;
-use calimero_context_primitives::group::StoreGroupMetaRequest;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_store::key::GroupMetaValue;
 use tracing::{info, warn};

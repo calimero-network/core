@@ -7,6 +7,9 @@ use url::Url;
 /// The digest is used everywhere: for context, public key, proposals, etc.
 pub const DIGEST_SIZE: usize = 32;
 
+/// All-zero 32-byte digest (e.g. sentinel / uninitialized hash).
+pub const ZERO_HASH: [u8; DIGEST_SIZE] = [0u8; DIGEST_SIZE];
+
 #[must_use]
 pub const fn bool_true() -> bool {
     true

@@ -64,63 +64,52 @@ steps:
   # Phase 1: Node 1 creates context, Nodes 2-3 join
   # ============================================
 
+  - name: Create namespace
+    type: create_namespace
+    node: sync6-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id: namespaceId
+
   - name: Node 1 creates context
     type: create_context
     node: sync6-1
     application_id: "{{app_id}}"
+    group_id: "{{namespace_id}}"
     outputs:
       ctx: contextId
       key1: memberPublicKey
+      group_id: groupId
 
-  - name: Node 2 identity
-    type: create_identity
-    node: sync6-2
-    outputs:
-      key2: publicKey
-
-  - name: Node 3 identity
-    type: create_identity
-    node: sync6-3
-    outputs:
-      key3: publicKey
-
-  - name: Wait identities
-    type: wait
-    seconds: 3
-
-  - name: Invite Node 2
-    type: invite_identity
+  - name: Invite Node 2 to Namespace
+    type: create_namespace_invitation
     node: sync6-1
-    context_id: "{{ctx}}"
-    grantee_id: "{{key2}}"
-    granter_id: "{{key1}}"
-    capability: member
+    namespace_id: "{{namespace_id}}"
     outputs:
       inv2: invitation
 
-  - name: Invite Node 3
-    type: invite_identity
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: sync6-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{inv2}}"
+    outputs:
+      key2: memberIdentity
+
+  - name: Invite Node 3 to Namespace
+    type: create_namespace_invitation
     node: sync6-1
-    context_id: "{{ctx}}"
-    grantee_id: "{{key3}}"
-    granter_id: "{{key1}}"
-    capability: member
+    namespace_id: "{{namespace_id}}"
     outputs:
       inv3: invitation
 
-  - name: Node 2 joins
-    type: join_context
-    node: sync6-2
-    context_id: "{{ctx}}"
-    invitee_id: "{{key2}}"
-    invitation: "{{inv2}}"
-
-  - name: Node 3 joins
-    type: join_context
+  - name: Node 3 joins namespace
+    type: join_namespace
     node: sync6-3
-    context_id: "{{ctx}}"
-    invitee_id: "{{key3}}"
+    namespace_id: "{{namespace_id}}"
     invitation: "{{inv3}}"
+    outputs:
+      key3: memberIdentity
 
   - name: Wait for 3-node sync
     type: wait_for_sync
@@ -184,78 +173,50 @@ steps:
   # Phase 3: Nodes 4-6 join LATE (must snapshot existing state)
   # ============================================
 
-  - name: Node 4 identity
-    type: create_identity
-    node: sync6-4
-    outputs:
-      key4: publicKey
-
-  - name: Node 5 identity
-    type: create_identity
-    node: sync6-5
-    outputs:
-      key5: publicKey
-
-  - name: Node 6 identity
-    type: create_identity
-    node: sync6-6
-    outputs:
-      key6: publicKey
-
-  - name: Wait identities
-    type: wait
-    seconds: 3
-
-  - name: Invite Node 4
-    type: invite_identity
+  - name: Invite Node 4 to Namespace
+    type: create_namespace_invitation
     node: sync6-1
-    context_id: "{{ctx}}"
-    grantee_id: "{{key4}}"
-    granter_id: "{{key1}}"
-    capability: member
+    namespace_id: "{{namespace_id}}"
     outputs:
       inv4: invitation
 
-  - name: Invite Node 5
-    type: invite_identity
+  - name: Node 4 joins namespace
+    type: join_namespace
+    node: sync6-4
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{inv4}}"
+    outputs:
+      key4: memberIdentity
+
+  - name: Invite Node 5 to Namespace
+    type: create_namespace_invitation
     node: sync6-1
-    context_id: "{{ctx}}"
-    grantee_id: "{{key5}}"
-    granter_id: "{{key1}}"
-    capability: member
+    namespace_id: "{{namespace_id}}"
     outputs:
       inv5: invitation
 
-  - name: Invite Node 6
-    type: invite_identity
+  - name: Node 5 joins namespace
+    type: join_namespace
+    node: sync6-5
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{inv5}}"
+    outputs:
+      key5: memberIdentity
+
+  - name: Invite Node 6 to Namespace
+    type: create_namespace_invitation
     node: sync6-1
-    context_id: "{{ctx}}"
-    grantee_id: "{{key6}}"
-    granter_id: "{{key1}}"
-    capability: member
+    namespace_id: "{{namespace_id}}"
     outputs:
       inv6: invitation
 
-  - name: Node 4 joins
-    type: join_context
-    node: sync6-4
-    context_id: "{{ctx}}"
-    invitee_id: "{{key4}}"
-    invitation: "{{inv4}}"
-
-  - name: Node 5 joins
-    type: join_context
-    node: sync6-5
-    context_id: "{{ctx}}"
-    invitee_id: "{{key5}}"
-    invitation: "{{inv5}}"
-
-  - name: Node 6 joins
-    type: join_context
+  - name: Node 6 joins namespace
+    type: join_namespace
     node: sync6-6
-    context_id: "{{ctx}}"
-    invitee_id: "{{key6}}"
+    namespace_id: "{{namespace_id}}"
     invitation: "{{inv6}}"
+    outputs:
+      key6: memberIdentity
 
   - name: Wait for 6-node sync (late joiners must snapshot 3 entries)
     type: wait_for_sync

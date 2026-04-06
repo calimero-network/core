@@ -98,15 +98,56 @@ jobs:
                   success=true
                   break
               else
+                  # Capture logs immediately before containers are destroyed
+                  echo "Collecting Docker logs for e2e-kv-store attempt $attempt"
+                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
+                      if [ -n "$container" ]; then
+                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/e2e-kv-store-attempt${attempt}-${container}.log" 2>&1 || true
+                      fi
+                  done
                   attempt=$((attempt + 1))
               fi
           done
 
-          # Collect logs
-          echo "Collecting Docker logs for e2e-kv-store workflow"
-          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-              if [ -n "$container" ]; then
-                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/e2e-kv-store-${container}.log" 2>&1 || true
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
+          else
+              echo "failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Run groups workflow
+      - name: Run e2e-kv-store Groups Workflow
+        id: run_groups
+        run: |
+          cd apps/e2e-kv-store
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+
+              if merobox bootstrap run \
+                  "workflows/groups.yml" \
+                  --image merod:local \
+                  --e2e-mode; then
+                  success=true
+                  break
+              else
+                  echo "Collecting Docker logs for groups attempt $attempt"
+                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
+                      if [ -n "$container" ]; then
+                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/groups-attempt${attempt}-${container}.log" 2>&1 || true
+                      fi
+                  done
+                  attempt=$((attempt + 1))
               fi
           done
 
@@ -186,15 +227,13 @@ jobs:
                   success=true
                   break
               else
+                  echo "Collecting Docker logs for xcall attempt $attempt"
+                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
+                      if [ -n "$container" ]; then
+                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/xcall-attempt${attempt}-${container}.log" 2>&1 || true
+                      fi
+                  done
                   attempt=$((attempt + 1))
-              fi
-          done
-
-          # Collect logs
-          echo "Collecting Docker logs for xcall-example workflow"
-          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
-              if [ -n "$container" ]; then
-                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/xcall-${container}.log" 2>&1 || true
               fi
           done
 

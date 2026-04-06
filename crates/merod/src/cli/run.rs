@@ -144,7 +144,6 @@ impl RunCommand {
         start(NodeConfig {
             home: path.clone(),
             identity: config.identity.keypair.clone(),
-            group_identity: config.identity.group.clone(),
             network: NetworkConfig::new(
                 config.identity.keypair.clone(),
                 network.swarm,

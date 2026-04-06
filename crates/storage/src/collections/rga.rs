@@ -207,9 +207,8 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this RGA
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {
-        self.chars
-            .inner
-            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::Rga);
+        self.chars.reassign_deterministic_id(field_name);
+        self.chars.set_collection_crdt_type(CrdtType::Rga);
     }
 
     /// Insert a character at the given visible position

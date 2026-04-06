@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use eyre::Result as EyreResult;
 
+#[cfg(feature = "datatypes")]
+pub mod batch;
 pub mod config;
 pub mod db;
 pub mod entry;
@@ -18,6 +20,9 @@ pub use handle::Handle;
 
 #[cfg(feature = "datatypes")]
 pub mod types;
+
+#[cfg(feature = "datatypes")]
+pub use batch::StoreBatch;
 
 #[derive(Clone, Debug)]
 pub struct Store {

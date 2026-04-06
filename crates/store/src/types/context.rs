@@ -15,6 +15,7 @@ pub struct ContextMeta {
     pub application: key::ApplicationMeta,
     pub root_hash: Hash,
     pub dag_heads: Vec<[u8; 32]>,
+    pub service_name: Option<Box<str>>,
 }
 
 impl ContextMeta {
@@ -23,11 +24,13 @@ impl ContextMeta {
         application: key::ApplicationMeta,
         root_hash: Hash,
         dag_heads: Vec<[u8; 32]>,
+        service_name: Option<Box<str>>,
     ) -> Self {
         Self {
             application,
             root_hash,
             dag_heads,
+            service_name,
         }
     }
 }

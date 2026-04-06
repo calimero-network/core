@@ -98,7 +98,7 @@
       <!-- Context Create -->
       <div class="panel on" id="p-ctx-create">
         <div class="card ga">
-          <p class="diagram-desc">Admin creates a new context with a generated identity, registers it in the group store, sets visibility, and publishes the operation across the network.</p>
+          <p class="diagram-desc">Admin creates a new context with a generated identity, registers it in the group store, and publishes the operation across the network.</p>
           <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-ctx-create')">&#9654; Replay</button></div>
           <div class="diagram-container animating" id="d-ctx-create"></div>
         </div>
@@ -152,7 +152,7 @@
       <!-- Join Group Context -->
       <div class="panel" id="p-join-group-ctx">
         <div class="card gc">
-          <p class="diagram-desc">A group member joins a context within their group. Checks visibility, capabilities, and allowlist before generating a context identity and publishing a governance op.</p>
+          <p class="diagram-desc">A group member joins a context within their group. Verifies group membership before generating a context identity and subscribing to the context topic.</p>
           <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-join-group-ctx')">&#9654; Replay</button></div>
           <div class="diagram-container animating" id="d-join-group-ctx"></div>
         </div>
@@ -260,7 +260,7 @@
       <!-- Privacy Boundary -->
       <div class="panel" id="p-privacy-boundary">
         <div class="card ga">
-          <p class="diagram-desc">A parent admin tries to join a Restricted context in a child group. The platform enforces that only direct group admins or context creators can manage allowlists and access Restricted contexts.</p>
+          <p class="diagram-desc">A parent admin tries to join a context in a child subgroup where they lack direct membership. The platform enforces that context access requires membership in the owning group.</p>
           <div class="diagram-tools"><button class="replay-btn" onclick="replay('d-privacy-boundary')">&#9654; Replay</button></div>
           <div class="diagram-container" id="d-privacy-boundary"></div>
         </div>
@@ -424,7 +424,6 @@
           { from: 2, to: 3, label: 'CreateContext handler' },
           { from: 3, to: 3, label: 'generate identity' },
           { from: 3, to: 4, label: 'sign_apply(CtxRegistered)' },
-          { from: 3, to: 4, label: 'sign_apply(VisibilitySet)' },
           { from: 3, to: 5, label: 'publish(SignedGroupOpV1)' },
           { from: 5, to: 6, label: 'publish(group topic)' },
           { from: 3, to: 3, label: 'sync_context_config' },
@@ -568,7 +567,6 @@
         steps: [
           { from: 0, to: 1, label: 'JoinGroupContextReq' },
           { from: 1, to: 2, label: 'check_membership' },
-          { from: 1, to: 2, label: 'check visibility + caps' },
           { from: 1, to: 1, label: 'gen keypair' },
           { from: 1, to: 2, label: 'add context membership', color: '#A5FF11' },
           { from: 2, to: 3, label: 'publish SignedGroupOpV1' },
@@ -821,15 +819,15 @@
           { label: 'GroupStore',  color: '#3b82f6' }
         ],
         steps: [
-          { from: 0, to: 1, label: 'join_group_context(restricted_ctx)' },
-          { from: 1, to: 2, label: 'check_group_membership → true (inherited)' },
-          { from: 1, to: 2, label: 'get visibility → Restricted' },
-          { from: 1, to: 2, label: 'check_context_allowlist → false' },
-          { from: 1, to: 0, label: 'REJECTED: not on allowlist', color: '#f85149' },
-          { type: 'divider', label: 'Parent admin tries to modify allowlist' },
-          { from: 0, to: 1, label: 'ContextAllowlistReplaced { members }' },
-          { from: 1, to: 2, label: 'is_direct_group_admin? → false (inherited only)' },
-          { from: 1, to: 0, label: 'REJECTED: direct admin required', color: '#f85149' }
+          { from: 0, to: 1, label: 'join_group_context(subgroup_ctx)' },
+          { from: 1, to: 2, label: 'check_group_membership(subgroup)' },
+          { from: 1, to: 2, label: 'not a direct member of subgroup' },
+          { from: 1, to: 0, label: 'REJECTED: not a subgroup member', color: '#f85149' },
+          { type: 'divider', label: 'Solution: add parent admin to subgroup' },
+          { from: 0, to: 1, label: 'admin adds self to subgroup' },
+          { from: 1, to: 2, label: 'MemberAdded to subgroup' },
+          { from: 0, to: 1, label: 'join_group_context(subgroup_ctx)' },
+          { from: 1, to: 0, label: 'OK: now a subgroup member', color: '#A5FF11' }
         ]
       },
       {

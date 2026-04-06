@@ -12,7 +12,7 @@ nodes:
   prefix: e2e-node
 
 steps:
-  # --- SCENARIO 1: Full group lifecycle ---
+  # --- SCENARIO 1: Full namespace lifecycle ---
 
   - name: Install application on node-1
     type: install_application
@@ -27,45 +27,41 @@ steps:
     statements:
       - "is_set({{app_id}})"
 
-  - name: Create group on node-1
-    type: create_group
+  - name: Create namespace on node-1
+    type: create_namespace
     node: e2e-node-1
     application_id: '{{app_id}}'
     outputs:
-      group_id: groupId
+      namespace_id: namespaceId
 
-  - name: Assert group created
+  - name: Assert namespace created
     type: assert
     statements:
-      - "is_set({{group_id_e2e-node-1}})"
+      - "is_set({{namespace_id}})"
 
-  - name: Create context 1 in group on node-1
+  - name: Create context 1 in namespace on node-1
     type: create_context
     node: e2e-node-1
     application_id: '{{app_id}}'
-    group_id: '{{group_id_e2e-node-1}}'
+    group_id: '{{namespace_id}}'
     outputs:
       ctx1_id: contextId
       ctx1_key_node1: memberPublicKey
 
-  - name: Create group invitation on node-1
-    type: create_group_invitation
+  - name: Create namespace invitation on node-1
+    type: create_namespace_invitation
     node: e2e-node-1
-    group_id: '{{group_id_e2e-node-1}}'
-
-  - name: Node-2 joins group
-    type: join_group
-    node: e2e-node-2
-    invitation: '{{group_invitation_e2e-node-1}}'
-
-  - name: Node-2 joins context 1 via group
-    type: join_group_context
-    node: e2e-node-2
-    group_id: '{{group_id_e2e-node-1}}'
-    context_id: '{{ctx1_id}}'
+    namespace_id: '{{namespace_id}}'
     outputs:
-      ctx1_id_n2: contextId
-      ctx1_key_node2: memberPublicKey
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+    outputs:
+      member_identity_node2: memberIdentity
 
   - name: Node-1 writes to context 1
     type: call
@@ -91,7 +87,7 @@ steps:
     type: call
     node: e2e-node-2
     context_id: '{{ctx1_id}}'
-    executor_public_key: '{{ctx1_key_node2}}'
+    executor_public_key: '{{member_identity_node2}}'
     method: get
     args:
       key: "group_key1"
@@ -107,7 +103,7 @@ steps:
     type: call
     node: e2e-node-2
     context_id: '{{ctx1_id}}'
-    executor_public_key: '{{ctx1_key_node2}}'
+    executor_public_key: '{{member_identity_node2}}'
     method: set
     args:
       key: "group_key2"
@@ -140,37 +136,21 @@ steps:
       - 'json_equal({{get_result_2}}, {"output": "from_node2"})'
 
 
-  # --- SCENARIO 2 : Context invitation within group ---
+  # --- SCENARIO 2 : Context invitation within namespace ---
 
-  - name: Create context 3 in same group
+  - name: Create context 3 in same namespace
     type: create_context
     node: e2e-node-1
     application_id: '{{app_id}}'
-    group_id: '{{group_id_e2e-node-1}}'
+    group_id: '{{namespace_id}}'
     outputs:
       ctx3_id: contextId
       ctx3_key_node1: memberPublicKey
 
-  - name: Create identity on node-2 for invite flow
-    type: create_identity
+  - name: Node-2 joins context 3 via group membership
+    type: join_context
     node: e2e-node-2
-    outputs:
-      identity_node2_ctx3: publicKey
-
-  - name: Create context invitation on node-1
-    type: invite
-    node: e2e-node-1
     context_id: '{{ctx3_id}}'
-    granter_id: '{{ctx3_key_node1}}'
-    valid_for_seconds: 3600
-    outputs:
-      ctx3_invitation: invitation
-
-  - name: Node-2 joins context 3 via context invitation
-    type: join
-    node: e2e-node-2
-    invitee_id: '{{identity_node2_ctx3}}'
-    invitation: '{{ctx3_invitation}}'
     outputs:
       ctx3_key_node2: memberPublicKey
 

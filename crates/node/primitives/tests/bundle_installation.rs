@@ -7,12 +7,12 @@ use std::sync::Arc;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager, FileSystem};
+use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::bundle::{
     derive_signer_id_did_key, sign_manifest_json, BundleManifest,
 };
-use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
@@ -80,6 +80,7 @@ fn create_test_bundle(
             )
             .collect(),
         links: None,
+        services: None,
         signature: None,
     };
 
@@ -139,7 +140,7 @@ async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempD
     // Default to InMemoryDB if no store is provided (avoids dependency on calimero-store-rocksdb)
     let datastore = datastore.unwrap_or_else(|| Store::new(Arc::new(InMemoryDB::owned())));
 
-    let blobstore = BlobManager::new(
+    let blob_store = BlobStore::new(
         datastore.clone(),
         FileSystem::new(&BlobStoreConfig::new(
             blob_dir.path().to_path_buf().try_into().unwrap(),
@@ -147,17 +148,21 @@ async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempD
         .await
         .unwrap(),
     );
+    let blob_manager = BlobManager::new(blob_store);
 
     let (event_sender, _) = broadcast::channel(256);
     let (ctx_sync_tx, _) = mpsc::channel(64);
+    let (ns_sync_tx, _) = mpsc::channel(64);
+    let (ns_join_tx, _) = mpsc::channel(16);
+    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx);
 
     let node_client = NodeClient::new(
         datastore,
-        blobstore,
+        blob_manager,
         NetworkClient::new(LazyRecipient::new()),
         LazyRecipient::new(),
         event_sender,
-        ctx_sync_tx,
+        sync_client,
         String::new(), // Not used in tests
     );
 
@@ -541,6 +546,7 @@ fn create_test_bundle_custom_wasm_path(
         abi: None,
         migrations: vec![],
         links: None,
+        services: None,
         signature: None,
     };
 
@@ -1672,6 +1678,7 @@ fn create_test_bundle_with_key(
         abi: None,
         migrations: vec![],
         links: None,
+        services: None,
         signature: None,
     })
     .unwrap();

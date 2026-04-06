@@ -1,46 +1,20 @@
 use calimero_server_primitives::admin::{
     AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
-    DeleteGroupApiResponse, DetachContextFromGroupApiResponse, GetContextAllowlistApiResponse,
-    GetContextVisibilityApiResponse, GetGroupUpgradeStatusApiResponse,
-    GetMemberCapabilitiesApiResponse, GroupInfoApiResponse, JoinGroupApiResponse,
-    JoinGroupContextApiResponse, ListAllGroupsApiResponse, ListGroupContextsApiResponse,
-    ListGroupMembersApiResponse, ManageContextAllowlistApiResponse,
+    CreateNamespaceApiResponse, DeleteGroupApiResponse, DeleteNamespaceApiResponse,
+    DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
+    GetMemberCapabilitiesApiResponse, GroupInfoApiResponse, JoinContextApiResponse,
+    JoinGroupApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
+    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
+    NamespaceApiResponse, NamespaceIdentityApiResponse, NestGroupApiResponse,
     RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse,
-    SetContextVisibilityApiResponse, SetDefaultCapabilitiesApiResponse,
-    SetDefaultVisibilityApiResponse, SetMemberCapabilitiesApiResponse, SyncGroupApiResponse,
+    SetDefaultCapabilitiesApiResponse, SetDefaultVisibilityApiResponse,
+    SetMemberCapabilitiesApiResponse, SyncGroupApiResponse, UnnestGroupApiResponse,
     UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
 
 use super::Report;
-
-impl Report for ListAllGroupsApiResponse {
-    fn report(&self) {
-        if self.data.is_empty() {
-            println!("No groups found");
-        } else {
-            let mut table = Table::new();
-            let _ = table.set_header(vec![
-                Cell::new("Group ID").fg(Color::Blue),
-                Cell::new("App Key").fg(Color::Blue),
-                Cell::new("Application ID").fg(Color::Blue),
-                Cell::new("Upgrade Policy").fg(Color::Blue),
-                Cell::new("Created At").fg(Color::Blue),
-            ]);
-            for group in &self.data {
-                let _ = table.add_row(vec![
-                    group.group_id.clone(),
-                    group.app_key.clone(),
-                    group.target_application_id.to_string(),
-                    format!("{:?}", group.upgrade_policy),
-                    group.created_at.to_string(),
-                ]);
-            }
-            println!("{table}");
-        }
-    }
-}
 
 impl Report for CreateGroupApiResponse {
     fn report(&self) {
@@ -71,6 +45,159 @@ impl Report for GroupInfoApiResponse {
         if let Some(ref upgrade) = d.active_upgrade {
             let _ = table.add_row(vec!["Active Upgrade Status", &upgrade.status]);
         }
+        println!("{table}");
+    }
+}
+
+impl Report for CreateNamespaceApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Namespace Created").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Namespace ID", &self.data.namespace_id]);
+        println!("{table}");
+    }
+}
+
+impl Report for DeleteNamespaceApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Namespace Deleted").fg(Color::Green)]);
+        let _ = table.add_row(vec![format!(
+            "Successfully deleted namespace (deleted: {})",
+            self.data.is_deleted
+        )]);
+        println!("{table}");
+    }
+}
+
+impl Report for NamespaceApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Field").fg(Color::Blue),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Namespace ID", &self.namespace_id]);
+        let _ = table.add_row(vec!["App Key", &self.app_key]);
+        let _ = table.add_row(vec!["Application ID", &self.target_application_id]);
+        let _ = table.add_row(vec!["Upgrade Policy", &self.upgrade_policy]);
+        let _ = table.add_row(vec!["Created At", &self.created_at.to_string()]);
+        let _ = table.add_row(vec!["Members", &self.member_count.to_string()]);
+        let _ = table.add_row(vec!["Contexts", &self.context_count.to_string()]);
+        let _ = table.add_row(vec!["Subgroups", &self.subgroup_count.to_string()]);
+        if let Some(ref alias) = self.alias {
+            let _ = table.add_row(vec!["Alias", alias]);
+        }
+        println!("{table}");
+    }
+}
+
+impl Report for ListNamespacesApiResponse {
+    fn report(&self) {
+        if self.data.is_empty() {
+            println!("No namespaces found");
+            return;
+        }
+
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Namespace ID").fg(Color::Blue),
+            Cell::new("Application ID").fg(Color::Blue),
+            Cell::new("Upgrade Policy").fg(Color::Blue),
+            Cell::new("Members").fg(Color::Blue),
+            Cell::new("Contexts").fg(Color::Blue),
+            Cell::new("Subgroups").fg(Color::Blue),
+            Cell::new("Alias").fg(Color::Blue),
+        ]);
+        for ns in &self.data {
+            let _ = table.add_row(vec![
+                ns.namespace_id.clone(),
+                ns.target_application_id.clone(),
+                ns.upgrade_policy.clone(),
+                ns.member_count.to_string(),
+                ns.context_count.to_string(),
+                ns.subgroup_count.to_string(),
+                ns.alias.clone().unwrap_or_else(|| "-".to_owned()),
+            ]);
+        }
+        println!("{table}");
+    }
+}
+
+impl Report for NamespaceIdentityApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Namespace Identity").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Namespace ID", &self.namespace_id]);
+        let _ = table.add_row(vec!["Public Key", &self.public_key]);
+        println!("{table}");
+    }
+}
+
+impl Report for ListNamespaceGroupsApiResponse {
+    fn report(&self) {
+        if self.data.is_empty() {
+            println!("No groups found in namespace");
+            return;
+        }
+
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Group ID").fg(Color::Blue),
+            Cell::new("Alias").fg(Color::Blue),
+        ]);
+        for group in &self.data {
+            let _ = table.add_row(vec![
+                group.group_id.clone(),
+                group.alias.clone().unwrap_or_else(|| "-".to_owned()),
+            ]);
+        }
+        println!("{table}");
+    }
+}
+
+impl Report for ListSubgroupsApiResponse {
+    fn report(&self) {
+        if self.data.is_empty() {
+            println!("No subgroups found");
+            return;
+        }
+
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Group ID").fg(Color::Blue),
+            Cell::new("Alias").fg(Color::Blue),
+        ]);
+        for group in &self.data {
+            let _ = table.add_row(vec![
+                group.group_id.clone(),
+                group.alias.clone().unwrap_or_else(|| "-".to_owned()),
+            ]);
+        }
+        println!("{table}");
+    }
+}
+
+impl Report for NestGroupApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Group Nested").fg(Color::Green)]);
+        let _ = table.add_row(vec!["Successfully nested group"]);
+        println!("{table}");
+    }
+}
+
+impl Report for UnnestGroupApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Group Unnested").fg(Color::Green)]);
+        let _ = table.add_row(vec!["Successfully unnested group"]);
         println!("{table}");
     }
 }
@@ -270,7 +397,7 @@ impl Report for GetGroupUpgradeStatusApiResponse {
     }
 }
 
-impl Report for JoinGroupContextApiResponse {
+impl Report for JoinContextApiResponse {
     fn report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![
@@ -336,46 +463,6 @@ impl Report for GetMemberCapabilitiesApiResponse {
             format!("{caps} (0b{caps:03b})"),
         ]);
         println!("{table}");
-    }
-}
-
-impl Report for SetContextVisibilityApiResponse {
-    fn report(&self) {
-        println!("{}", "Context visibility updated successfully".green());
-    }
-}
-
-impl Report for GetContextVisibilityApiResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![
-            Cell::new("Field").fg(Color::Blue),
-            Cell::new("Value").fg(Color::Blue),
-        ]);
-        let _ = table.add_row(vec!["Mode", &self.data.mode]);
-        let _ = table.add_row(vec!["Creator", &self.data.creator.to_string()]);
-        println!("{table}");
-    }
-}
-
-impl Report for ManageContextAllowlistApiResponse {
-    fn report(&self) {
-        println!("{}", "Context allowlist updated successfully".green());
-    }
-}
-
-impl Report for GetContextAllowlistApiResponse {
-    fn report(&self) {
-        if self.data.is_empty() {
-            println!("Allowlist is empty");
-        } else {
-            let mut table = Table::new();
-            let _ = table.set_header(vec![Cell::new("Allowed Member").fg(Color::Blue)]);
-            for member in &self.data {
-                let _ = table.add_row(vec![member.to_string()]);
-            }
-            println!("{table}");
-        }
     }
 }
 

@@ -1,5 +1,5 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_primitives::group::{SyncGroupRequest, SyncGroupResponse};
+use calimero_context_client::group::{SyncGroupRequest, SyncGroupResponse};
 use tracing::{info, warn};
 
 use crate::{group_store, ContextManager};

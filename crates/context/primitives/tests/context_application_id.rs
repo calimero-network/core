@@ -6,9 +6,9 @@
 use std::sync::Arc;
 
 use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager, FileSystem};
+use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_network_primitives::client::NetworkClient;
-use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_node_primitives::messages::NodeMessage;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
@@ -21,7 +21,7 @@ use calimero_utils_actix::LazyRecipient;
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
 
-use calimero_context_primitives::client::ContextClient;
+use calimero_context_client::client::ContextClient;
 
 /// Setup a test ContextClient with in-memory storage
 async fn setup_test_context_client() -> (ContextClient, TempDir) {
@@ -34,12 +34,16 @@ async fn setup_test_context_client() -> (ContextClient, TempDir) {
     // 2. Setup BlobManager
     let blob_store_config = BlobStoreConfig::new(tmp_dir.path().to_path_buf().try_into().unwrap());
     let file_system = FileSystem::new(&blob_store_config).await.unwrap();
-    let blob_manager = BlobManager::new(store.clone(), file_system);
+    let blob_store = BlobStore::new(store.clone(), file_system);
+    let blob_manager = BlobManager::new(blob_store);
 
     // 3. Setup network and actor dependencies
     let network_client = NetworkClient::new(LazyRecipient::new());
     let (event_sender, _) = broadcast::channel(16);
     let (ctx_sync_tx, _) = mpsc::channel(16);
+    let (ns_sync_tx, _) = mpsc::channel(16);
+    let (ns_join_tx, _) = mpsc::channel(16);
+    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx);
     let node_manager = LazyRecipient::<NodeMessage>::new();
 
     // 4. Construct NodeClient
@@ -49,8 +53,8 @@ async fn setup_test_context_client() -> (ContextClient, TempDir) {
         network_client,
         node_manager,
         event_sender,
-        ctx_sync_tx,
-        String::new(), // Not used in tests
+        sync_client,
+        String::new(),
     );
 
     let context_manager = LazyRecipient::new();
@@ -72,6 +76,7 @@ fn create_test_context(
         key::ApplicationMeta::new(application_id),
         *Hash::default(),
         vec![],
+        None,
     );
 
     handle.put(&key, &meta)?;

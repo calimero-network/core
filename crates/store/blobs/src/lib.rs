@@ -337,7 +337,6 @@ impl Blob {
                     chunk_size = blob.len(),
                     "serving single blob chunk"
                 );
-                chunk_index += 1;
                 return yield blob;
             }
 

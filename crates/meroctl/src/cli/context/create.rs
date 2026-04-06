@@ -65,8 +65,18 @@ pub struct CreateCommand {
     #[clap(long = "name", help = "Create an alias for the context")]
     pub context: Option<Alias<ContextId>>,
 
-    #[clap(long, help = "Group ID (hex) to attach this context to")]
-    pub group_id: Option<String>,
+    #[clap(
+        long,
+        help = "Service name from the application bundle (for multi-service apps)"
+    )]
+    pub service: Option<String>,
+
+    #[clap(
+        long,
+        required = true,
+        help = "Group ID (hex) to attach this context to"
+    )]
+    pub group_id: String,
 
     #[clap(long, help = "Identity secret (hex) for signing group membership")]
     pub identity_secret: Option<String>,
@@ -89,6 +99,7 @@ impl CreateCommand {
                 params,
                 identity,
                 context,
+                service,
                 group_id,
                 identity_secret,
                 alias,
@@ -98,6 +109,7 @@ impl CreateCommand {
                     &client_clone,
                     context_seed,
                     app_id,
+                    service,
                     params,
                     identity,
                     context,
@@ -115,6 +127,7 @@ impl CreateCommand {
                 params,
                 identity,
                 context,
+                service,
                 group_id,
                 identity_secret,
                 alias,
@@ -141,6 +154,7 @@ impl CreateCommand {
                     &client_clone,
                     context_seed,
                     application_id,
+                    service,
                     params,
                     identity,
                     context,
@@ -172,10 +186,11 @@ pub async fn create_context(
     client: &Client,
     context_seed: Option<Hash>,
     application_id: ApplicationId,
+    service: Option<String>,
     params: Option<String>,
     identity: Option<Alias<PublicKey>>,
     context: Option<Alias<ContextId>>,
-    group_id: Option<String>,
+    group_id: String,
     identity_secret: Option<String>,
     alias: Option<String>,
 ) -> Result<(ContextId, PublicKey)> {
@@ -193,6 +208,7 @@ pub async fn create_context(
         identity_secret,
     );
     request.alias = alias;
+    request.service_name = service;
 
     let response: CreateContextResponse = client.create_context(request).await?;
 

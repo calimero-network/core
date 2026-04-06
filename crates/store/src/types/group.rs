@@ -39,16 +39,6 @@ impl PredefinedEntry for key::GroupMemberCapability {
     type DataType<'a> = key::GroupMemberCapabilityValue;
 }
 
-impl PredefinedEntry for key::GroupContextVisibility {
-    type Codec = Borsh;
-    type DataType<'a> = key::GroupContextVisibilityValue;
-}
-
-impl PredefinedEntry for key::GroupContextAllowlist {
-    type Codec = Borsh;
-    type DataType<'a> = ();
-}
-
 impl PredefinedEntry for key::GroupDefaultCaps {
     type Codec = Borsh;
     type DataType<'a> = key::GroupDefaultCapsValue;
@@ -112,4 +102,24 @@ impl PredefinedEntry for key::GroupParentRef {
 impl PredefinedEntry for key::GroupChildIndex {
     type Codec = Borsh;
     type DataType<'a> = ();
+}
+
+impl PredefinedEntry for key::NamespaceIdentity {
+    type Codec = Borsh;
+    type DataType<'a> = key::NamespaceIdentityValue;
+}
+
+impl PredefinedEntry for key::NamespaceGovOp {
+    type Codec = Borsh;
+    type DataType<'a> = key::NamespaceGovOpValue;
+}
+
+impl PredefinedEntry for key::NamespaceGovHead {
+    type Codec = Borsh;
+    type DataType<'a> = key::NamespaceGovHeadValue;
+}
+
+impl PredefinedEntry for key::GroupKeyEntry {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupKeyValue;
 }
