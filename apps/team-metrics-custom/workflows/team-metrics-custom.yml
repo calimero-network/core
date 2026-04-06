@@ -22,7 +22,6 @@ steps:
     type: create_mesh
     context_node: team-custom-node-1
     application_id: "{{app_id}}"
-    path: res/team_metrics_custom.wasm
     nodes:
       - team-custom-node-2
     capability: member

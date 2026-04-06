@@ -43,7 +43,6 @@ steps:
     type: create_mesh
     context_node: calimero-node-1
     application_id: "{{bundle_app_id}}"
-    path: res/kv-store-1.0.0.mpk
     nodes:
       - calimero-node-2
     capability: member

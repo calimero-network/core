@@ -22,7 +22,6 @@ steps:
     type: create_mesh
     context_node: rust-private-data-1
     application_id: "{{app_id}}"
-    path: res/private_data.wasm
     nodes:
       - rust-private-data-2
     capability: member

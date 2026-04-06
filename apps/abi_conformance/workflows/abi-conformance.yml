@@ -22,7 +22,6 @@ steps:
     type: create_mesh
     context_node: abi-conformance-node-1
     application_id: "{{app_id}}"
-    path: res/abi_conformance.wasm
     nodes:
       - abi-conformance-node-2
     capability: member

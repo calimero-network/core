@@ -26,7 +26,6 @@ steps:
     type: create_mesh
     context_node: calimero-node-1
     application_id: "{{app_id}}"
-    path: res/private_data.wasm
     nodes:
       - calimero-node-2
     capability: member

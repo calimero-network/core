@@ -22,7 +22,6 @@ steps:
     type: create_mesh
     context_node: e2e-node-1
     application_id: "{{app_id}}"
-    path: res/e2e_kv_store.wasm
     nodes:
       - e2e-node-2
     capability: member
