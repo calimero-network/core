@@ -1184,7 +1184,7 @@ steps:
     statements:
       - 'json_equal({{pn_counter_final_node3}}, {"output": 1})'
 
-  # NESTED CRDT - LWW REGISTERS (concurrent writes - later timestamp wins)
+  # NESTED CRDT - LWW REGISTERS (sequential writes - later timestamp wins)
 
   - name: Set register on node-1
     type: call
@@ -1196,9 +1196,16 @@ steps:
       key: "status"
       value: "online"
 
-  - name: Wait for timestamp separation
-    type: wait
-    seconds: 2
+  - name: Wait for node-1 register to propagate
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   - name: Set register on node-2 (later timestamp wins)
     type: call
@@ -1210,7 +1217,7 @@ steps:
       key: "status"
       value: "busy"
 
-  - name: Wait for sync after concurrent register writes
+  - name: Wait for sync after register writes
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
