@@ -29,6 +29,7 @@ steps:
     type: create_mesh
     context_node: calimero-node-1
     application_id: "{{app_id}}"
+    path: res/collaborative_editor.wasm
     nodes:
       - calimero-node-2
     capability: member

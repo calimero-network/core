@@ -32,6 +32,7 @@ steps:
     type: create_mesh
     context_node: node-blob-1
     application_id: "{{app_id}}"
+    path: "res/blobs.wasm"
     nodes:
       - node-blob-2
     capability: member
