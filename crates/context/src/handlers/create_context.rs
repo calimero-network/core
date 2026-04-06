@@ -442,7 +442,6 @@ async fn create_context(
             },
         )
         .await?;
-
     }
 
     // Write ContextIdentity so the sync key-share can find keys for this context.
