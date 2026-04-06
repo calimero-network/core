@@ -101,7 +101,6 @@ steps:
     type: call
     node: sync-test-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{fran_key}}"
     method: write
     args:
       key: "key1"
@@ -112,7 +111,6 @@ steps:
     type: call
     node: sync-test-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{matea_key}}"
     method: write
     args:
       key: "key2"
@@ -134,7 +132,6 @@ steps:
     type: call
     node: sync-test-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{fran_key}}"
     method: count
     outputs:
       fran_count_1: result
@@ -148,7 +145,6 @@ steps:
     type: call
     node: sync-test-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{matea_key}}"
     method: count
     outputs:
       matea_count_1: result
@@ -193,7 +189,6 @@ steps:
     type: call
     node: sync-test-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{sandi_key}}"
     method: count
     outputs:
       sandi_count_1: result
@@ -211,7 +206,6 @@ steps:
     type: call
     node: sync-test-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{fran_key}}"
     method: write
     args:
       key: "key3"
@@ -222,7 +216,6 @@ steps:
     type: call
     node: sync-test-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{matea_key}}"
     method: write
     args:
       key: "key4"
@@ -233,7 +226,6 @@ steps:
     type: call
     node: sync-test-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{sandi_key}}"
     method: write
     args:
       key: "key5"
@@ -259,7 +251,6 @@ steps:
     type: call
     node: sync-test-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{fran_key}}"
     method: count
     outputs:
       fran_final: result
@@ -273,7 +264,6 @@ steps:
     type: call
     node: sync-test-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{matea_key}}"
     method: count
     outputs:
       matea_final: result
@@ -287,7 +277,6 @@ steps:
     type: call
     node: sync-test-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{sandi_key}}"
     method: count
     outputs:
       sandi_final: result
@@ -302,7 +291,6 @@ steps:
     type: call
     node: sync-test-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{fran_key}}"
     method: snapshot
     outputs:
       fran_snapshot: result
@@ -311,7 +299,6 @@ steps:
     type: call
     node: sync-test-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{sandi_key}}"
     method: snapshot
     outputs:
       sandi_snapshot: result
@@ -333,7 +320,6 @@ steps:
     type: call
     node: sync-test-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{sandi_key}}"
     method: create_invitation
     args:
       inviter: "sandi"
@@ -344,7 +330,6 @@ steps:
     type: call
     node: sync-test-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{sandi_key}}"
     method: create_invitation
     args:
       inviter: "sandi"
@@ -367,7 +352,6 @@ steps:
     type: call
     node: sync-test-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{matea_key}}"
     method: read_invitation
     args:
       inviter: "sandi"
@@ -385,7 +369,6 @@ steps:
     type: call
     node: sync-test-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{fran_key}}"
     method: read_invitation
     args:
       inviter: "sandi"
@@ -403,7 +386,6 @@ steps:
     type: call
     node: sync-test-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{matea_key}}"
     method: all_invitations
     outputs:
       matea_all_invitations: result
@@ -412,7 +394,6 @@ steps:
     type: call
     node: sync-test-node-3
     context_id: "{{context_id}}"
-    executor_public_key: "{{sandi_key}}"
     method: all_invitations
     outputs:
       sandi_all_invitations: result

@@ -34,7 +34,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: get_handler_execution_count
     outputs:
       initial_handlers_node1: result
@@ -48,7 +47,6 @@ steps:
     type: call
     node: kvh-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_kvh-node-2}}"
     method: get_handler_execution_count
     outputs:
       initial_handlers_node2: result
@@ -62,7 +60,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: set
     args:
       key: test_key
@@ -85,7 +82,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: get_handler_execution_count
     outputs:
       handlers_after_insert_node1: result
@@ -94,7 +90,6 @@ steps:
     type: call
     node: kvh-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_kvh-node-2}}"
     method: get_handler_execution_count
     outputs:
       handlers_after_insert_node2: result
@@ -108,7 +103,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: set
     args:
       key: test_key
@@ -131,7 +125,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: get_handler_execution_count
     outputs:
       handlers_after_update_node1: result
@@ -140,7 +133,6 @@ steps:
     type: call
     node: kvh-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_kvh-node-2}}"
     method: get_handler_execution_count
     outputs:
       handlers_after_update_node2: result
@@ -154,7 +146,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: remove
     args:
       key: test_key
@@ -181,7 +172,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: get_handler_execution_count
     outputs:
       handlers_after_remove_node1: result
@@ -190,7 +180,6 @@ steps:
     type: call
     node: kvh-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_kvh-node-2}}"
     method: get_handler_execution_count
     outputs:
       handlers_after_remove_node2: result
@@ -204,7 +193,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: set
     args:
       key: another_key
@@ -227,7 +215,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: clear
     outputs:
       clear_result: result
@@ -247,7 +234,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: get_handler_execution_count
     outputs:
       handlers_after_clear_node1: result
@@ -256,7 +242,6 @@ steps:
     type: call
     node: kvh-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_kvh-node-2}}"
     method: get_handler_execution_count
     outputs:
       handlers_after_clear_node2: result
@@ -270,7 +255,6 @@ steps:
     type: call
     node: kvh-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_kvh-node-2}}"
     method: set
     args:
       key: node2_key
@@ -290,7 +274,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: get
     args:
       key: node2_key
@@ -306,7 +289,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: get_handler_execution_count
     outputs:
       final_handlers_node1: result
@@ -320,7 +302,6 @@ steps:
     type: call
     node: kvh-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_kvh-node-2}}"
     method: get_handler_execution_count
     outputs:
       final_handlers_node2: result
@@ -334,7 +315,6 @@ steps:
     type: call
     node: kvh-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{member_public_key}}"
     method: entries
     outputs:
       final_entries_node1: result.output
@@ -348,7 +328,6 @@ steps:
     type: call
     node: kvh-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_kvh-node-2}}"
     method: entries
     outputs:
       final_entries_node2: result.output

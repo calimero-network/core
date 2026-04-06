@@ -49,10 +49,9 @@ pub struct CallCommand {
 
     #[arg(
         long = "as",
-        help = "The identity of the executor",
-        default_value = "default"
+        help = "The identity of the executor (auto-resolved if omitted)"
     )]
-    pub executor: Alias<PublicKey>,
+    pub executor: Option<Alias<PublicKey>>,
 
     #[arg(long, help = "Id of the JsonRpc call")]
     pub id: Option<String>,
@@ -80,18 +79,15 @@ impl CallCommand {
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
 
-        let executor = client
-            .resolve_alias(self.executor, Some(context_id))
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve")?;
+        // executor_public_key is always auto-resolved by the node.
+        // The --as flag is kept for backward compatibility but ignored.
+        let _ = self.executor;
 
         let payload = RequestPayload::Execute(ExecutionRequest::new(
             context_id,
             self.method,
             self.args.unwrap_or(json!({})),
-            executor,
+            None,
             self.substitute,
         ));
 

@@ -43,7 +43,6 @@ steps:
     type: call
     node: rust-blob-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
     method: upload_file
     args:
       name: screenshot.png
@@ -71,7 +70,6 @@ steps:
     type: call
     node: rust-blob-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
     method: upload_file
     args:
       name: readme.txt
@@ -100,7 +98,6 @@ steps:
     type: call
     node: rust-blob-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
     method: list_files
     outputs:
       inviter_files: result.output
@@ -115,7 +112,6 @@ steps:
     type: call
     node: rust-blob-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_rust-blob-2}}"
     method: list_files
     outputs:
       invitee_files: result.output
@@ -130,7 +126,6 @@ steps:
     type: call
     node: rust-blob-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
     method: get_blob_id_b58
     args:
       file_id: "{{png_file_id}}"
@@ -146,7 +141,6 @@ steps:
     type: call
     node: rust-blob-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_key}}"
     method: delete_file
     args:
       file_id: "{{png_file_id}}"
@@ -165,7 +159,6 @@ steps:
     type: call
     node: rust-blob-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_rust-blob-2}}"
     method: list_files
     outputs:
       final_files: result.output

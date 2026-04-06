@@ -74,7 +74,6 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_calimero-node-2}}"
     method: set
     args:
       key: "test_key"
@@ -102,7 +101,6 @@ steps:
     type: call
     node: calimero-node-2
     context_id: "{{context_id}}"
-    executor_public_key: "{{public_key_calimero-node-2}}"
     method: get
     args:
       key: "test_key"
@@ -119,7 +117,6 @@ steps:
     type: call
     node: calimero-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{inviter_public_key}}"
     method: get
     args:
       key: "test_key"

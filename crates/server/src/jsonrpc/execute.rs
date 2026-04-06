@@ -1,6 +1,8 @@
+use std::pin::pin;
 use std::sync::Arc;
 
 use calimero_server_primitives::jsonrpc::{ExecutionError, ExecutionRequest, ExecutionResponse};
+use futures_util::StreamExt;
 use tracing::{error, info};
 
 use super::{Request, RpcError, ServiceState};
@@ -14,10 +16,9 @@ impl Request for ExecutionRequest {
         state: Arc<ServiceState>,
     ) -> Result<Self::Response, RpcError<Self::Error>> {
         let context_id = self.context_id;
-        let executor_id = self.executor_public_key;
 
         handle(self, &state).await.map_err(|err| {
-            error!(%context_id, %executor_id, %err, "Failed to execute request");
+            error!(%context_id, %err, "Failed to execute request");
 
             RpcError::MethodCallError(err)
         })
@@ -33,11 +34,29 @@ async fn handle(
             message: err.to_string(),
         })?;
 
+    // Always auto-resolve the executor identity. Each node has exactly one
+    // owned identity per context (the namespace identity). The caller should
+    // not need to specify it.
+    let executor = {
+        let members = state
+            .ctx_client
+            .get_context_members(&request.context_id, Some(true));
+        let mut members = pin!(members);
+        match members.next().await {
+            Some(Ok((public_key, _))) => public_key,
+            _ => {
+                return Err(ExecutionError::FunctionCallError(
+                    "No owned identity found for this context".to_string(),
+                ));
+            }
+        }
+    };
+
     let outcome = state
         .ctx_client
         .execute(
             &request.context_id,
-            &request.executor_public_key,
+            &executor,
             request.method,
             args,
             request.substitute,

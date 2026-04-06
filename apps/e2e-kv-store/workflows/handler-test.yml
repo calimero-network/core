@@ -35,7 +35,6 @@ steps:
     type: call
     node: e2e-node-1
     context_id: "{{context_id}}"
-    executor_public_key: "{{node1_key}}"
     method: set_with_handler
     args:
       key: "test_key"
