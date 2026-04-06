@@ -426,6 +426,20 @@ pub async fn handle_state_delta(
     )
     .await?;
 
+    // After successfully applying a remote delta, immediately broadcast our
+    // updated root hash so lagging peers detect the divergence without waiting
+    // for the 30-second periodic heartbeat.
+    if applied {
+        if let Ok(Some(ctx)) = node_clients.context.get_context(&context_id) {
+            if !ctx.root_hash.is_zero() {
+                let _ = node_clients
+                    .node
+                    .broadcast_heartbeat(&context_id, ctx.root_hash, ctx.dag_heads.clone())
+                    .await;
+            }
+        }
+    }
+
     Ok(())
 }
 
