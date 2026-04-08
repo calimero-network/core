@@ -263,8 +263,8 @@
 <div class="term-row" data-term="namespace">
   <div class="term-name">Namespace</div>
   <div class="term-body">
-    A root group (no parent) that serves as the application instance boundary and identity scope. Each namespace gets its own Ed25519 keypair. Subgroups and contexts within the namespace share that identity. Different namespaces have different keys. Subgroups inherit the namespace's target_application_id. An application bundle may contain multiple named services.
-    <div class="term-source">Store key: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/key/group.rs" target="_blank" rel="noopener">NamespaceIdentity (0x36)</a> &bull; API: <code>GET /admin-api/namespaces</code></div>
+    A root group (no parent) that serves as the application instance boundary and identity scope. Each namespace gets its own Ed25519 keypair (auto-generated on first create/join). Subgroups and contexts within the namespace share that identity. Different namespaces have different keys. All groups within a namespace share a <strong>single governance DAG</strong>. Operations are either cleartext RootOps (structural changes, key delivery) or encrypted GroupOps (membership, capabilities). New members receive group keys via ECDH-wrapped KeyDelivery.
+    <div class="term-source">Store key: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/key/group/mod.rs" target="_blank" rel="noopener">NamespaceIdentity (0x37)</a> &bull; API: <code>GET/POST /admin-api/namespaces</code></div>
   </div>
 </div>
 
@@ -296,6 +296,44 @@
   <div class="term-name">GroupGovernanceDelta</div>
   <div class="term-body">
     Gossip message carrying a signed governance operation with explicit DAG metadata (delta_id, parent_ids) for replication and catch-up.
+  </div>
+</div>
+
+<div class="term-row" data-term="namespacegovernancedelta">
+  <div class="term-name">NamespaceGovernanceDelta</div>
+  <div class="term-body">
+    Gossip message carrying a <code>SignedNamespaceOp</code> on namespace topics. Published when namespace governance operations are created. Receivers verify, apply to the namespace DAG, and may trigger key delivery.
+  </div>
+</div>
+
+<div class="term-row" data-term="signednamespaceop">
+  <div class="term-name">SignedNamespaceOp</div>
+  <div class="term-body">
+    A signed namespace governance operation containing a <code>NamespaceOp</code> (either a cleartext RootOp or an encrypted GroupOp). Signed with the node's namespace identity private key. Forms a single causal DAG per namespace.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/context/primitives/src/local_governance/mod.rs" target="_blank" rel="noopener">crates/context/primitives/src/local_governance/mod.rs</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="keydelivery">
+  <div class="term-name">KeyDelivery</div>
+  <div class="term-body">
+    A cleartext RootOp in the namespace governance DAG. Delivers an ECDH-wrapped group encryption key to a newly joined member. The sender wraps the key using <code>ECDH(sender_sk, joiner_pk)</code>; the joiner unwraps using <code>ECDH(joiner_sk, sender_pk)</code>.
+  </div>
+</div>
+
+<div class="term-row" data-term="namespaceidentity">
+  <div class="term-name">NamespaceIdentity</div>
+  <div class="term-body">
+    A per-namespace Ed25519 keypair automatically generated on first create/join and persisted in the datastore (key prefix 0x37). Used for signing namespace governance ops and unwrapping group keys via ECDH. Shared across all subgroups and contexts in the namespace.
+    <div class="term-source">Store key: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/key/group/mod.rs" target="_blank" rel="noopener">NamespaceIdentity (0x37)</a></div>
+  </div>
+</div>
+
+<div class="term-row" data-term="topicmanager">
+  <div class="term-name">TopicManager</div>
+  <div class="term-body">
+    Deduplication-aware gossipsub subscription manager. Uses a <code>RwLock&lt;HashSet&gt;</code> to track active subscriptions and avoid redundant network calls. Supports namespace, group, and context topics.
+    <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/topic_manager.rs" target="_blank" rel="noopener">crates/node/primitives/src/topic_manager.rs</a></div>
   </div>
 </div>
 
@@ -731,7 +769,7 @@
 <div class="term-row" data-term="vmcontext">
   <div class="term-name">VMContext</div>
   <div class="term-body">
-    Runtime execution context: input, context_id, executor_public_key, governance_epoch.
+    Runtime execution context: input, context_id, executor identity (auto-resolved from namespace identity), governance_epoch.
     <div class="term-source">Defined in: <a href="https://github.com/calimero-network/core/blob/master/crates/runtime/src/logic.rs" target="_blank" rel="noopener">crates/runtime/src/logic.rs</a></div>
   </div>
 </div>

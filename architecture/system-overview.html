@@ -71,17 +71,17 @@
   <text x="55" y="222" fill="#3b82f6" font-family="JetBrains Mono" font-size="14" font-weight="700">NodeManager</text>
   <rect x="195" y="208" width="55" height="18" rx="4" fill="#3b82f620"/>
   <text x="222" y="220" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="9" font-weight="600">actor</text>
-  <text x="55" y="244" fill="#6b6b80" font-family="DM Sans" font-size="10">Network event dispatch, blob cache, heartbeat</text>
-  <text x="55" y="260" fill="#6b6b80" font-family="DM Sans" font-size="10">Delta handling, stream routing, join/leave</text>
-  <text x="55" y="276" fill="#6b6b80" font-family="DM Sans" font-size="10">Startup orchestration, context boot</text>
+  <text x="55" y="244" fill="#6b6b80" font-family="DM Sans" font-size="10">SRP split: NodeClients + NodeManagers + NodeState</text>
+  <text x="55" y="260" fill="#6b6b80" font-family="DM Sans" font-size="10">Delta handling, namespace events, key delivery</text>
+  <text x="55" y="276" fill="#6b6b80" font-family="DM Sans" font-size="10">Blob cache (LRU), sync sessions, heartbeat</text>
   <text x="55" y="294" fill="#3b82f680" font-family="JetBrains Mono" font-size="8">crates/node · Handler&lt;NodeMessage&gt;</text>
 
   <!-- ContextManager -->
   <rect x="400" y="195" width="340" height="110" rx="12" fill="#10b98110" stroke="#10b981" stroke-width="1.5" filter="url(#glow-green)"/>
   <text x="425" y="222" fill="#10b981" font-family="JetBrains Mono" font-size="14" font-weight="700">ContextManager</text>
-  <text x="425" y="244" fill="#6b6b80" font-family="DM Sans" font-size="10">Contexts, groups, governance DAGs</text>
-  <text x="425" y="260" fill="#6b6b80" font-family="DM Sans" font-size="10">Application lifecycle, 20+ message handlers</text>
-  <text x="425" y="276" fill="#6b6b80" font-family="DM Sans" font-size="10">GroupStore, upgrades, member management</text>
+  <text x="425" y="244" fill="#6b6b80" font-family="DM Sans" font-size="10">Contexts, groups, namespace governance DAGs</text>
+  <text x="425" y="260" fill="#6b6b80" font-family="DM Sans" font-size="10">Lifecycle recovery, metrics, 30+ handlers</text>
+  <text x="425" y="276" fill="#6b6b80" font-family="DM Sans" font-size="10">GroupStore (modular), namespace identity</text>
   <text x="425" y="294" fill="#10b98180" font-family="JetBrains Mono" font-size="8">crates/context · Handler&lt;ContextMessage&gt;</text>
   <rect x="575" y="208" width="55" height="18" rx="4" fill="#10b98120"/>
   <text x="602" y="220" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono" font-size="9" font-weight="600">actor</text>
@@ -318,23 +318,23 @@
 <div class="g3" style="margin-bottom:24px;">
   <div class="cb">
     <h4 style="color:#3b82f6;">NodeManager <span class="tag tag-actor">actor</span></h4>
-    <p style="margin-top:8px;">Central orchestrator. Handles network events (peer join/leave, stream open), dispatches deltas to the right context, manages blob cache and heartbeat intervals. Owns <span class="code">LazyRecipient&lt;ContextMessage&gt;</span> and <span class="code">LazyRecipient&lt;NetworkMessage&gt;</span>.</p>
+    <p style="margin-top:8px;">Central orchestrator, decomposed into three layers: <span class="code">NodeClients</span> (injected service facades), <span class="code">NodeManagers</span> (BlobStore, SyncManager), and <span class="code">NodeState</span> (mutable runtime state with DashMap for lock-free concurrent access). Handles namespace events, key delivery, and blob cache with multi-phase LRU eviction.</p>
     <p style="margin-top:8px;"><strong>Key messages:</strong></p>
     <ul>
-      <li><span class="code">HandleNetworkEvent</span> — process gossip, stream, discovery events</li>
+      <li><span class="code">HandleNetworkEvent</span> — process gossip, stream, namespace, specialized node events</li>
       <li><span class="code">HandleStateDelta</span> — route incoming delta to context</li>
-      <li><span class="code">HandleGroupOp</span> — forward signed group ops</li>
+      <li><span class="code">HandleNamespaceOp</span> — forward namespace governance ops, trigger key delivery</li>
       <li><span class="code">BootContext</span> — initialize context after creation</li>
     </ul>
   </div>
   <div class="cb">
     <h4 style="color:#10b981;">ContextManager <span class="tag tag-actor">actor</span></h4>
-    <p style="margin-top:8px;">Manages all contexts and their groups. 20+ message handlers for execution, governance, membership, upgrades. Owns GroupStore instances per context. Coordinates with the runtime for WASM execution.</p>
+    <p style="margin-top:8px;">Manages all contexts, groups, and namespace governance. 30+ message handlers for execution, governance, membership, upgrades, and namespace operations. Holds per-namespace <span class="code">DagStore</span>s (via <span class="code">HashMap&lt;namespace_id, Arc&lt;Mutex&lt;DagStore&gt;&gt;&gt;</span>). Lifecycle module handles startup recovery and 30s namespace heartbeat. Prometheus metrics for execution and governance events.</p>
     <p style="margin-top:8px;"><strong>Key messages:</strong></p>
     <ul>
-      <li><span class="code">ExecuteMethod</span> — run WASM method, produce delta</li>
-      <li><span class="code">HandleGroupOp</span> — ingest governance operation</li>
-      <li><span class="code">CreateContext</span> / <span class="code">JoinGroup</span> / <span class="code">JoinGroupContext</span></li>
+      <li><span class="code">ExecuteMethod</span> — run WASM method, produce delta (auto-resolves executor identity)</li>
+      <li><span class="code">ApplySignedNamespaceOp</span> — ingest namespace governance op into namespace DAG</li>
+      <li><span class="code">CreateContext</span> / <span class="code">JoinGroup</span> / <span class="code">ListNamespaces</span></li>
       <li><span class="code">UpdateApplication</span> — upgrade WASM binary</li>
     </ul>
   </div>
@@ -601,13 +601,13 @@
   <div class="cb">
     <h4 style="color:#10b981;">ContextClient</h4>
     <p style="margin-top:4px;font-size:.78rem;color:var(--text-dim);font-family:'JetBrains Mono',monospace;">LazyRecipient&lt;ContextMessage&gt;</p>
-    <p style="margin-top:8px;">Used by Server (for RPC execution) and NodeManager (for delta routing) to invoke context-level operations.</p>
+    <p style="margin-top:8px;">Used by Server (for RPC execution) and NodeManager (for delta routing and namespace governance) to invoke context-level operations.</p>
     <h4 style="margin-top:12px;">Key Methods</h4>
     <ul>
       <li><span class="code">execute_method()</span></li>
       <li><span class="code">create_context()</span></li>
-      <li><span class="code">join_group()</span> / <span class="code">join_group_context()</span></li>
-      <li><span class="code">handle_group_op()</span></li>
+      <li><span class="code">join_group()</span> / <span class="code">list_namespaces()</span></li>
+      <li><span class="code">apply_signed_namespace_op()</span></li>
       <li><span class="code">update_application()</span></li>
       <li><span class="code">get_context_info()</span></li>
     </ul>
@@ -698,10 +698,11 @@
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">ExecuteMethod</span> { ctx: ContextId, method: String, args: Vec&lt;u8&gt; },<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">CreateContext</span> { params: CreateParams },<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">JoinGroup</span> { invitation: GroupInvitation },<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">JoinGroupContext</span> { group_id: GroupId, context_id: ContextId },<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">ApplySignedNamespaceOp</span> { namespace_id: [u8; 32], op: SignedNamespaceOp },<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">HandleGroupOp</span> { op: SignedGroupOpV1 },<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">ListNamespaces</span> { filter: NamespaceFilter },<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">UpdateApplication</span> { ctx: ContextId, blob: BlobId },<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// ... 15+ more variants</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// ... 25+ more variants</span><br>
 }
     </div>
   </div>

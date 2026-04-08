@@ -15,7 +15,7 @@
 
 <div class="g4" style="margin-bottom:36px;">
   <div class="stat"><div class="v">5</div><div class="l">HTTP surfaces</div></div>
-  <div class="stat"><div class="v">30+</div><div class="l">admin endpoints</div></div>
+  <div class="stat"><div class="v">60+</div><div class="l">admin endpoints</div></div>
   <div class="stat"><div class="v">Axum</div><div class="l">framework</div></div>
   <div class="stat"><div class="v">2</div><div class="l">auth modes</div></div>
 </div>
@@ -168,6 +168,25 @@
     <div class="fr"><div class="fp">POST /groups/:id/upgrade</div><div class="fd">Propose a group app upgrade</div></div>
     <div class="fr"><div class="fp">POST /groups/:id/sync</div><div class="fd">Trigger group governance sync</div></div>
     <div class="fr"><div class="fp">PUT /groups/:id/settings</div><div class="fd">Update group settings</div></div>
+    <div class="fr"><div class="fp">POST /groups/:id/nest</div><div class="fd">Nest a child group under this parent</div></div>
+    <div class="fr"><div class="fp">POST /groups/:id/unnest</div><div class="fd">Unnest a child group from parent</div></div>
+    <div class="fr"><div class="fp">GET /groups/:id/subgroups</div><div class="fd">List subgroups of this group</div></div>
+  </div>
+</details>
+
+<details>
+  <summary>Namespaces</summary>
+  <div class="detail-body">
+    <div class="fr"><div class="fp">GET /namespaces</div><div class="fd">List all namespaces</div></div>
+    <div class="fr"><div class="fp">POST /namespaces</div><div class="fd">Create a new namespace (root group)</div></div>
+    <div class="fr"><div class="fp">GET /namespaces/:id</div><div class="fd">Get namespace details (app, members, contexts, subgroups)</div></div>
+    <div class="fr"><div class="fp">DELETE /namespaces/:id</div><div class="fd">Delete a namespace (requires no registered contexts)</div></div>
+    <div class="fr"><div class="fp">POST /namespaces/:id/invite</div><div class="fd">Create namespace invitation (supports recursive for all subgroups)</div></div>
+    <div class="fr"><div class="fp">POST /namespaces/:id/join</div><div class="fd">Join a namespace via invitation</div></div>
+    <div class="fr"><div class="fp">GET /namespaces/:id/identity</div><div class="fd">Get this node's namespace identity (public key)</div></div>
+    <div class="fr"><div class="fp">GET /namespaces/:id/groups</div><div class="fd">List groups within this namespace</div></div>
+    <div class="fr"><div class="fp">POST /namespaces/:id/groups</div><div class="fd">Create a new group within this namespace</div></div>
+    <div class="fr"><div class="fp">GET /namespaces/for-application/:app_id</div><div class="fd">List namespaces for a specific application</div></div>
   </div>
 </details>
 

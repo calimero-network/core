@@ -18,7 +18,7 @@
      ════════════════════════════════════════════════════════ -->
 <div class="card ga">
 <h2>Purpose</h2>
-<p style="margin-bottom:14px;"><span class="code">ContextManager</span> is an <strong>Actix actor</strong> that manages <em>contexts</em> (application instances), <em>groups</em> (governance units), and the <em>governance DAG</em>. Every context belongs to a group. The manager holds per-group <span class="code">DagStore</span>s, handles 20+ message types, and coordinates with <span class="code">GroupStore</span> for persistence.</p>
+<p style="margin-bottom:14px;"><span class="code">ContextManager</span> is an <strong>Actix actor</strong> that manages <em>contexts</em> (application instances), <em>groups</em> (governance units), and <em>namespace governance DAGs</em>. Every context belongs to a group within a namespace. The manager holds per-namespace <span class="code">DagStore</span>s (via <span class="code">HashMap&lt;namespace_id, Arc&lt;Mutex&lt;DagStore&gt;&gt;&gt;</span>), handles 30+ message types, coordinates with a modular <span class="code">GroupStore</span> for persistence, and runs lifecycle recovery and Prometheus metrics collection.</p>
 
 <svg viewBox="0 0 1060 220" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
@@ -32,10 +32,10 @@
   <rect x="600" y="44" width="55" height="18" rx="4" fill="#10b98120"/>
   <text x="627" y="56" text-anchor="middle" fill="#10b981" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">actor</text>
 
-  <text x="370" y="90" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">contexts cache &middot; group_dags HashMap</text>
-  <text x="370" y="110" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">GroupStore persistence &middot; OpLog DAGs</text>
-  <text x="370" y="130" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">20+ Handler&lt;ContextMessage&gt; variants</text>
-  <text x="370" y="150" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">upgrade propagators &middot; 30s heartbeat</text>
+  <text x="370" y="90" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">contexts cache &middot; namespace_dags HashMap</text>
+  <text x="370" y="110" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">GroupStore (modular) &middot; namespace governance</text>
+  <text x="370" y="130" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">30+ Handler&lt;ContextMessage&gt; variants</text>
+  <text x="370" y="150" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="11">lifecycle recovery &middot; metrics &middot; 30s heartbeat</text>
   <text x="370" y="176" fill="#10b98180" font-family="JetBrains Mono, monospace" font-size="8">crates/context/src/lib.rs</text>
 
   <!-- Incoming: Server -->
@@ -71,19 +71,30 @@
 <h2>Module Structure</h2>
 
 <h3 style="color:#10b981;">calimero-context</h3>
-<div class="fr"><div class="fp">lib.rs</div><div class="fd"><span class="code">ContextManager</span> actor &mdash; startup, fields, Actix lifecycle, heartbeat timer, DAG reload</div></div>
-<div class="fr"><div class="fp">group_store.rs</div><div class="fd">Authoritative persistence layer &mdash; <span class="code">apply_local_signed_group_op</span>, op log, DAG heads, nonce management</div></div>
-<div class="fr"><div class="fp">governance_dag.rs</div><div class="fd">DAG bridge &mdash; <span class="code">GroupGovernanceApplier</span> converts <span class="code">SignedGroupOp</span> to <span class="code">CausalDelta</span></div></div>
-<div class="fr"><div class="fp">handlers/</div><div class="fd">20+ handler files, one per <span class="code">ContextMessage</span> variant (create, join, delete, execute, group ops, etc.)</div></div>
+<div class="fr"><div class="fp">lib.rs</div><div class="fd"><span class="code">ContextManager</span> actor &mdash; startup, fields, Actix lifecycle, namespace DAG management</div></div>
+<div class="fr"><div class="fp">lifecycle.rs</div><div class="fd">Startup recovery: <span class="code">recover_in_progress_upgrades()</span>, <span class="code">start_namespace_heartbeat()</span> (30s periodic)</div></div>
+<div class="fr"><div class="fp">metrics.rs</div><div class="fd">Prometheus metrics: execution count/duration, namespace retry/decode events, membership policy rejections</div></div>
+<div class="fr"><div class="fp">group_store/mod.rs</div><div class="fd">Authoritative persistence layer (refactored into modules) &mdash; <span class="code">apply_local_signed_group_op</span></div></div>
+<div class="fr"><div class="fp">group_store/namespace.rs</div><div class="fd">Namespace identity resolution: <span class="code">resolve_namespace()</span>, <span class="code">get_or_create_namespace_identity_bundle()</span></div></div>
+<div class="fr"><div class="fp">group_store/namespace_governance.rs</div><div class="fd">Namespace governance DAG application, key unwrapping, skeleton storage</div></div>
+<div class="fr"><div class="fp">group_store/namespace_membership.rs</div><div class="fd">Namespace membership tracking and policy enforcement</div></div>
+<div class="fr"><div class="fp">group_store/membership.rs</div><div class="fd">Group membership management with parent chain walking (max depth 16)</div></div>
+<div class="fr"><div class="fp">group_store/group_keys.rs</div><div class="fd">Group encryption key management: generate, store, wrap/unwrap via ECDH</div></div>
+<div class="fr"><div class="fp">group_store/capabilities.rs</div><div class="fd">Per-member capability bitmask management</div></div>
+<div class="fr"><div class="fp">group_store/context_tree.rs</div><div class="fd">Context-group binding: register, detach, list contexts per group</div></div>
+<div class="fr"><div class="fp">group_store/tests.rs</div><div class="fd">Comprehensive group store tests including namespace identity, governance, key delivery</div></div>
+<div class="fr"><div class="fp">governance_dag.rs</div><div class="fd">DAG bridge &mdash; <span class="code">GroupGovernanceApplier</span> + <span class="code">NamespaceGovernanceApplier</span></div></div>
+<div class="fr"><div class="fp">handlers/</div><div class="fd">30+ handler files, one per <span class="code">ContextMessage</span> variant (create, join, delete, execute, namespace ops, etc.)</div></div>
 
 <h3 style="color:#10b981;margin-top:20px;">calimero-context-primitives</h3>
-<div class="fr"><div class="fp">client.rs</div><div class="fd"><span class="code">ContextClient</span> typedef &mdash; thin async fa&ccedil;ade wrapping <span class="code">LazyRecipient&lt;ContextMessage&gt;</span></div></div>
+<div class="fr"><div class="fp">client/mod.rs</div><div class="fd"><span class="code">ContextClient</span> typedef &mdash; thin async fa&ccedil;ade wrapping <span class="code">LazyRecipient&lt;ContextMessage&gt;</span></div></div>
 <div class="fr"><div class="fp">client/sync.rs</div><div class="fd">Sync-related client helpers (group delta request/response coordination)</div></div>
 <div class="fr"><div class="fp">client/context_api.rs</div><div class="fd">Context-level API methods (create, join, delete, execute, config queries)</div></div>
-<div class="fr"><div class="fp">client/crypto.rs</div><div class="fd">Cryptographic helpers (signing, key derivation, invitation tokens)</div></div>
-<div class="fr"><div class="fp">local_governance.rs</div><div class="fd">Wire types: <span class="code">SignedGroupOp</span>, <span class="code">GroupOp</span>, <span class="code">SignableGroupOp</span> &mdash; Ed25519, borsh, schema v3</div></div>
-<div class="fr"><div class="fp">group.rs</div><div class="fd">Actix messages &mdash; group-level message types for actor communication</div></div>
-<div class="fr"><div class="fp">messages.rs</div><div class="fd"><span class="code">ContextMessage</span> enum &mdash; top-level message envelope with 20+ variants</div></div>
+<div class="fr"><div class="fp">client/crypto.rs</div><div class="fd">Cryptographic helpers (signing, key derivation, namespace identity)</div></div>
+<div class="fr"><div class="fp">local_governance/mod.rs</div><div class="fd">Wire types: <span class="code">SignedGroupOp</span>, <span class="code">GroupOp</span>, <span class="code">SignedNamespaceOp</span>, <span class="code">NamespaceOp</span> &mdash; Ed25519, borsh, schema v3</div></div>
+<div class="fr"><div class="fp">local_governance/tests.rs</div><div class="fd">Unit tests for governance wire types and signing</div></div>
+<div class="fr"><div class="fp">group.rs</div><div class="fd">Actix messages &mdash; group-level and namespace-level message types for actor communication</div></div>
+<div class="fr"><div class="fp">messages.rs</div><div class="fd"><span class="code">ContextMessage</span> enum &mdash; top-level message envelope with 30+ variants (including namespace ops)</div></div>
 
 <h3 style="color:#10b981;margin-top:20px;">calimero-context-config</h3>
 <div class="fr"><div class="fp">client_config.rs</div><div class="fd">Configuration for context client connections and transport settings</div></div>
@@ -388,22 +399,23 @@
   <div>
     <h3 style="color:#3b82f6;">Context Operations</h3>
     <div class="fr"><div class="fp">create_context</div><div class="fd">Create new context bound to group</div></div>
-    <div class="fr"><div class="fp">join_group_context</div><div class="fd">Join a context within a group</div></div>
     <div class="fr"><div class="fp">delete_context</div><div class="fd">Remove context and clean up state</div></div>
-    <div class="fr"><div class="fp">execute</div><div class="fd">Run WASM method, produce delta</div></div>
+    <div class="fr"><div class="fp">execute</div><div class="fd">Run WASM method, produce delta (auto-resolves executor identity)</div></div>
     <div class="fr"><div class="fp">get_context</div><div class="fd">Query context metadata</div></div>
 
     <h3 style="color:#10b981;margin-top:16px;">Group Operations</h3>
     <div class="fr"><div class="fp">add_group_members</div><div class="fd">Add members to a group</div></div>
     <div class="fr"><div class="fp">remove_group_members</div><div class="fd">Remove members with cascade</div></div>
-    <div class="fr"><div class="fp">apply_signed_group_op</div><div class="fd">Ingest signed op into DAG</div></div>
+    <div class="fr"><div class="fp">apply_signed_group_op</div><div class="fd">Ingest signed op into group DAG</div></div>
+    <div class="fr"><div class="fp">apply_signed_namespace_op</div><div class="fd">Ingest signed op into namespace DAG</div></div>
     <div class="fr"><div class="fp">set_member_capabilities</div><div class="fd">Set capability flags for member</div></div>
   </div>
   <div>
     <h3 style="color:#8b5cf6;">Membership</h3>
-    <div class="fr"><div class="fp">join_group</div><div class="fd">Join group via invitation claim</div></div>
-    <div class="fr"><div class="fp">join_group_context</div><div class="fd">Join context within group</div></div>
+    <div class="fr"><div class="fp">join_group</div><div class="fd">Join group/namespace via invitation (generates namespace identity, unwraps group key)</div></div>
     <div class="fr"><div class="fp">create_group_invitation</div><div class="fd">Generate invitation token</div></div>
+    <div class="fr"><div class="fp">list_namespaces</div><div class="fd">List namespaces with identity info</div></div>
+    <div class="fr"><div class="fp">get_namespace_identity</div><div class="fd">Get this node's namespace identity public key</div></div>
 
     <h3 style="color:#f59e0b;margin-top:16px;">Configuration</h3>
     <div class="fr"><div class="fp">sync_group</div><div class="fd">Trigger group sync with peers</div></div>

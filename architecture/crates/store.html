@@ -15,7 +15,7 @@
 
 <div class="g4" style="margin-bottom:36px;">
   <div class="stat"><div class="v">10</div><div class="l">column families</div></div>
-  <div class="stat"><div class="v">20+</div><div class="l">group key prefixes</div></div>
+  <div class="stat"><div class="v">26+</div><div class="l">group key prefixes</div></div>
   <div class="stat"><div class="v">4</div><div class="l">crates</div></div>
   <div class="stat"><div class="v">AES-GCM</div><div class="l">optional encryption</div></div>
 </div>
@@ -42,7 +42,7 @@
      ════════════════════════════════════════════════════════ -->
 <div class="card ga">
 <h2>Column Architecture</h2>
-<p style="margin-bottom:18px;">All persistent data is partitioned into 10 column families. Each maps to a dedicated RocksDB column family with independent compaction and bloom filters. The <span class="code">Group</span> column is the most complex, containing 20+ logical key prefixes for governance state.</p>
+<p style="margin-bottom:18px;">All persistent data is partitioned into 11 column families. Each maps to a dedicated RocksDB column family with independent compaction and bloom filters. The <span class="code">Group</span> column is the most complex, containing 26+ logical key prefixes for governance state including namespace identity, namespace governance ops, group hierarchy, and group encryption keys.</p>
 
 <svg viewBox="0 0 1000 520" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>

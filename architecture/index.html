@@ -172,8 +172,8 @@
     <p>A context binds a <strong>group</strong> (governance) to an <strong>application</strong> (WASM). Members join via the group, execute methods against the application, and state is replicated across all nodes via the sync engine. Each context has its own DAG of state deltas.</p>
   </div>
   <div>
-    <h3>Group</h3>
-    <p>A group owns one or more contexts. Group membership, capabilities, visibility, and access control are managed via <strong>signed governance operations</strong> (SignedGroupOp) that form a causal DAG. Managed locally via signed governance operations that propagate via gossipsub and catch-up protocols.</p>
+    <h3>Namespace &amp; Group</h3>
+    <p>A <strong>namespace</strong> is a root group that serves as the application boundary and identity scope. Each namespace gets its own Ed25519 keypair. Groups within a namespace share a <strong>single governance DAG</strong> with cleartext RootOps and encrypted GroupOps. Membership, capabilities, and access control propagate via gossipsub.</p>
   </div>
   <div>
     <h3>State Sync</h3>

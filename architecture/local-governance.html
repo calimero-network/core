@@ -77,7 +77,7 @@
   <line x1="520" y1="170" x2="420" y2="170" stroke="#f59e0b" stroke-width="2"/>
   <polygon points="422,166 412,170 422,174" fill="#f59e0b"/>
   <text x="470" y="130" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600">gossipsub</text>
-  <text x="470" y="188" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">group/&lt;hex&gt; topic</text>
+  <text x="470" y="188" text-anchor="middle" fill="#6b6b80" font-family="JetBrains Mono, monospace" font-size="8">namespace/&lt;hex&gt; topic</text>
 </svg>
 
 <div class="legend">
@@ -293,8 +293,8 @@
 <!-- 6c. Join Context within Group -->
 <div class="card gc">
 <h2>Join Context (within Group)</h2>
-<div class="step"><div class="n">1</div><h4>Member calls join_group_context</h4><p>Must already be a group member. Handler verifies group membership (simple check).</p></div>
-<div class="step"><div class="n">2</div><h4>Context identity created</h4><p>Adds local context membership. Context membership is implicit from group membership &mdash; no separate governance op is required.</p></div>
+<div class="step"><div class="n">1</div><h4>Group membership implies context access</h4><p>Context membership is implicit from group membership &mdash; no separate governance op or explicit join is required. When a member joins a group with <span class="code">auto_join: true</span> (default), they automatically subscribe to all contexts in that group and its descendant subgroups.</p></div>
+<div class="step"><div class="n">2</div><h4>Context identity resolved</h4><p>The node uses its <strong>namespace identity</strong> as the context member identity. No per-context keypair generation needed.</p></div>
 </div>
 
 <!-- 6d. Member Removal Cascade -->
@@ -398,10 +398,51 @@
 <div class="card ga">
 <h2>Startup Recovery</h2>
 <div class="g3">
-  <div class="step"><div class="n">1</div><h4>reload_group_dags</h4><p>On node start, for each group in the store, reads the full <span class="code">OpLog</span> and rebuilds the in-memory <span class="code">DagStore</span> via <span class="code">restore_applied_delta</span>. Reconstructs pending parent resolution state.</p></div>
-  <div class="step"><div class="n">2</div><h4>start_group_heartbeat</h4><p>Starts a 30-second periodic timer. Each tick publishes <span class="code">GroupStateHeartbeat</span> with current <span class="code">dag_heads</span> for every group.</p></div>
-  <div class="step"><div class="n">3</div><h4>Peers respond with deltas</h4><p>Peers compare heads against their own. For any ops the restarted node is missing, they serve them via <span class="code">GroupDeltaRequest/Response</span> streams.</p></div>
+  <div class="step"><div class="n">1</div><h4>reload_group_dags + recover_in_progress_upgrades</h4><p>On node start, for each group in the store, reads the full <span class="code">OpLog</span> and rebuilds the in-memory <span class="code">DagStore</span> via <span class="code">restore_applied_delta</span>. Reconstructs pending parent resolution state. Re-spawns propagators for any in-progress group upgrades (crash recovery).</p></div>
+  <div class="step"><div class="n">2</div><h4>start_namespace_heartbeat</h4><p>Starts a 30-second periodic timer. Each tick collects unique namespaces from all groups and publishes <span class="code">NamespaceStateHeartbeat</span> with current namespace DAG <span class="code">dag_heads</span>. Also publishes <span class="code">GroupStateHeartbeat</span> per group for backward compat.</p></div>
+  <div class="step"><div class="n">3</div><h4>Peers respond with deltas</h4><p>Peers compare heads against their own. For any ops the restarted node is missing, they serve them via <span class="code">NamespaceBackfillRequest/Response</span> streams (or legacy <span class="code">GroupDeltaRequest/Response</span>).</p></div>
 </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     8b. NAMESPACE GOVERNANCE
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Namespace Governance</h2>
+<p style="margin-bottom:18px;">Since the namespace identity model, governance has moved to a <strong>single DAG per namespace</strong> (root group). All groups within a namespace share one governance DAG, stored in <span class="code">NamespaceGovOp</span> / <span class="code">NamespaceGovHead</span> storage keys. Operations are either <strong>cleartext RootOps</strong> (visible to all namespace members) or <strong>encrypted GroupOps</strong> (only readable by group members).</p>
+
+<div class="g2" style="margin-bottom:20px;">
+  <div>
+    <h3>RootOps (Cleartext)</h3>
+    <p style="margin-bottom:8px;font-size:.82rem;">Visible to all namespace members. Used for structural changes and key distribution:</p>
+    <div class="fr"><div class="fp">GroupCreated</div><div class="fd">Announces a new group in the namespace</div></div>
+    <div class="fr"><div class="fp">GroupDeleted</div><div class="fd">Removes a group from the namespace</div></div>
+    <div class="fr"><div class="fp">GroupNested / GroupUnnested</div><div class="fd">Manage parent-child relationships</div></div>
+    <div class="fr"><div class="fp">MemberJoined</div><div class="fd">Cleartext join notification (joiner doesn&rsquo;t have group key yet)</div></div>
+    <div class="fr"><div class="fp">KeyDelivery</div><div class="fd">ECDH-wrapped group key delivery to a specific member</div></div>
+    <div class="fr"><div class="fp">AdminChanged</div><div class="fd">Changes namespace admin</div></div>
+    <div class="fr"><div class="fp">PolicyUpdated</div><div class="fd">Extensible policy mutations</div></div>
+  </div>
+  <div>
+    <h3>GroupOps (Encrypted)</h3>
+    <p style="margin-bottom:8px;font-size:.82rem;">Encrypted with the group&rsquo;s key. Non-members store an opaque <strong>skeleton</strong> (causal structure preserved, content unknown):</p>
+    <div class="fr"><div class="fp">Group { group_id, key_id, encrypted }</div><div class="fd">Wrapper containing an encrypted inner <span class="code">GroupOp</span></div></div>
+    <p style="margin-top:12px;font-size:.82rem;">Inner <span class="code">GroupOp</span> variants (after decryption) are the same as the per-group ops: <span class="code">MemberAdded</span>, <span class="code">MemberRemoved</span>, <span class="code">ContextRegistered</span>, etc.</p>
+
+    <h3 style="margin-top:16px;">Key Delivery Mechanism</h3>
+    <div class="step" style="padding:10px 14px;">
+      <p style="font-size:.82rem;"><strong>1.</strong> Joiner publishes <span class="code">RootOp::MemberJoined</span> (signed by joiner&rsquo;s namespace identity)</p>
+      <p style="font-size:.82rem;"><strong>2.</strong> Existing member sees <span class="code">MemberJoined</span> on the namespace DAG</p>
+      <p style="font-size:.82rem;"><strong>3.</strong> Member wraps group key via ECDH: <span class="code">shared = ECDH(sender_sk, joiner_pk)</span></p>
+      <p style="font-size:.82rem;"><strong>4.</strong> Member publishes <span class="code">RootOp::KeyDelivery { envelope }</span></p>
+      <p style="font-size:.82rem;"><strong>5.</strong> Joiner unwraps using <span class="code">ECDH(joiner_sk, sender_pk)</span></p>
+      <p style="font-size:.82rem;"><strong>6.</strong> Joiner can now decrypt <span class="code">GroupOp</span> payloads and participate fully</p>
+    </div>
+  </div>
+</div>
+
+<h3>Namespace Governance Epoch</h3>
+<p style="font-size:.88rem;">Context state deltas carry a <span class="code">governance_epoch</span> field. This is now computed from the <strong>namespace DAG heads</strong> (not per-group heads), ensuring a consistent governance state reference across all groups in a namespace. Computed via <span class="code">compute_namespace_governance_epoch(store, context_id)</span>.</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
@@ -422,28 +463,37 @@
 <h2>Key File Map</h2>
 
 <h3>Core Governance</h3>
-<div class="fr"><div class="fp">context/primitives/src/local_governance.rs</div><div class="fd">Wire types: <span class="code">SignedGroupOp</span>, <span class="code">GroupOp</span>, <span class="code">SignableGroupOp</span>. Ed25519 signing/verification, content hashing, schema v3.</div></div>
-<div class="fr"><div class="fp">context/src/governance_dag.rs</div><div class="fd"><span class="code">GroupGovernanceApplier</span> bridges <span class="code">calimero_dag</span>: converts <span class="code">SignedGroupOp</span> to <span class="code">CausalDelta</span>, delegates apply to group_store.</div></div>
-<div class="fr"><div class="fp">context/src/group_store.rs</div><div class="fd">Authoritative persistence. <span class="code">apply_local_signed_group_op</span> handles all GroupOp variants, manages op log, DAG heads, nonces, cascades.</div></div>
-<div class="fr"><div class="fp">context/src/lib.rs</div><div class="fd"><span class="code">ContextManager</span> actor. Holds per-group <span class="code">DagStore</span>s, runs <span class="code">reload_group_dags</span> on startup, starts heartbeat timer.</div></div>
+<div class="fr"><div class="fp">context/primitives/src/local_governance/mod.rs</div><div class="fd">Wire types: <span class="code">SignedGroupOp</span>, <span class="code">GroupOp</span>, <span class="code">SignableGroupOp</span>, <span class="code">SignedNamespaceOp</span>, <span class="code">NamespaceOp</span> (RootOp/GroupOp). Ed25519 signing/verification, content hashing, schema v3.</div></div>
+<div class="fr"><div class="fp">context/src/governance_dag.rs</div><div class="fd"><span class="code">GroupGovernanceApplier</span> and <span class="code">NamespaceGovernanceApplier</span> bridge <span class="code">calimero_dag</span>: converts ops to <span class="code">CausalDelta</span>, delegates apply to group_store.</div></div>
+<div class="fr"><div class="fp">context/src/group_store/mod.rs</div><div class="fd">Authoritative persistence (refactored into modules). <span class="code">apply_local_signed_group_op</span> handles all GroupOp variants, manages op log, DAG heads, nonces, cascades.</div></div>
+<div class="fr"><div class="fp">context/src/group_store/namespace.rs</div><div class="fd">Namespace identity resolution: <span class="code">resolve_namespace()</span>, <span class="code">get_or_create_namespace_identity_bundle()</span>, parent chain walking.</div></div>
+<div class="fr"><div class="fp">context/src/group_store/namespace_governance.rs</div><div class="fd">Namespace governance DAG application: <span class="code">apply_signed_namespace_op()</span>, key unwrapping, skeleton storage for encrypted ops.</div></div>
+<div class="fr"><div class="fp">context/src/group_store/namespace_membership.rs</div><div class="fd">Namespace membership tracking and policy enforcement.</div></div>
+<div class="fr"><div class="fp">context/src/lib.rs</div><div class="fd"><span class="code">ContextManager</span> actor. Holds per-namespace <span class="code">DagStore</span>s, runs recovery on startup, starts namespace heartbeat timer.</div></div>
+<div class="fr"><div class="fp">context/src/lifecycle.rs</div><div class="fd">Startup recovery: <span class="code">recover_in_progress_upgrades()</span>, <span class="code">start_namespace_heartbeat()</span> (30s periodic).</div></div>
+<div class="fr"><div class="fp">context/src/metrics.rs</div><div class="fd">Prometheus metrics: execution count/duration, namespace retry/decode events, membership policy rejections.</div></div>
 
 <h3>Storage Layer</h3>
-<div class="fr"><div class="fp">store/src/key/group.rs</div><div class="fd">20+ typed key prefixes for Column::Group: GroupMeta, GroupMember, OpLog, OpHead, Nonce, Context indexes, capabilities, aliases.</div></div>
-<div class="fr"><div class="fp">store/src/types/group.rs</div><div class="fd">Value types: <span class="code">GroupOpHeadValue</span> (sequence + dag_heads), <span class="code">GroupMetaValue</span>, <span class="code">GroupUpgradeValue</span>.</div></div>
+<div class="fr"><div class="fp">store/src/key/group/mod.rs</div><div class="fd">26+ typed key prefixes for Column::Group: GroupMeta, GroupMember, OpLog, OpHead, Nonce, Context indexes, capabilities, aliases, <strong>NamespaceIdentity (0x37), NamespaceGovOp (0x38), NamespaceGovHead (0x39), GroupKeyEntry (0x3A), GroupParentRef (0x36), GroupChildIndex (0x35)</strong>.</div></div>
+<div class="fr"><div class="fp">store/src/types/group.rs</div><div class="fd">Value types: <span class="code">GroupOpHeadValue</span>, <span class="code">GroupMetaValue</span>, <span class="code">GroupUpgradeValue</span>, <span class="code">NamespaceIdentityValue</span>, <span class="code">NamespaceGovHeadValue</span>.</div></div>
 
 <h3>Network Integration</h3>
-<div class="fr"><div class="fp">node/src/handlers/network_event.rs</div><div class="fd">Gossip ingestion: <span class="code">SignedGroupOpV1</span>, <span class="code">GroupGovernanceDelta</span>, <span class="code">GroupStateHeartbeat</span> &rarr; apply or stream-request missing ops.</div></div>
-<div class="fr"><div class="fp">node/src/sync/manager.rs</div><div class="fd">Responds to <span class="code">GroupDeltaRequest</span> by scanning op log and sending <span class="code">GroupDeltaResponse</span>.</div></div>
+<div class="fr"><div class="fp">node/src/handlers/network_event/namespace.rs</div><div class="fd">Namespace gossip ingestion: <span class="code">NamespaceGovernanceDelta</span>, <span class="code">NamespaceStateHeartbeat</span> &rarr; apply ops, trigger key delivery, or backfill via P2P streams.</div></div>
+<div class="fr"><div class="fp">node/src/handlers/network_event/specialized.rs</div><div class="fd">Specialized node discovery, TEE attestation, join confirmation handling.</div></div>
+<div class="fr"><div class="fp">node/src/key_delivery.rs</div><div class="fd">Automatic key delivery: on <span class="code">MemberJoined</span>, wraps group key via ECDH and publishes <span class="code">RootOp::KeyDelivery</span>.</div></div>
+<div class="fr"><div class="fp">node/src/sync/manager/mod.rs</div><div class="fd">Responds to <span class="code">GroupDeltaRequest</span> and <span class="code">NamespaceBackfillRequest</span> by scanning op log and sending responses.</div></div>
 
 <h3>Handlers</h3>
-<div class="fr"><div class="fp">context/src/handlers/create_context.rs</div><div class="fd">Emits ContextRegistered + optional alias as signed ops.</div></div>
-<div class="fr"><div class="fp">context/src/handlers/join_group.rs</div><div class="fd">Invitation claim flow: validate <span class="code">SignedGroupOpenInvitation</span>, build reveal payload, submit <span class="code">JoinWithInvitationClaim</span>.</div></div>
-<div class="fr"><div class="fp">context/src/handlers/join_group_context.rs</div><div class="fd">Context membership with group membership check.</div></div>
-<div class="fr"><div class="fp">context/src/handlers/apply_signed_group_op.rs</div><div class="fd">DagStore integration: feeds op into DAG, handles pending/applied/error states.</div></div>
+<div class="fr"><div class="fp">context/src/handlers/create_context.rs</div><div class="fd">Emits ContextRegistered + optional alias as signed ops. Uses namespace identity for signing.</div></div>
+<div class="fr"><div class="fp">context/src/handlers/join_group.rs</div><div class="fd">Invitation claim flow: generates/retrieves namespace identity, subscribes to namespace topic, stream-requests join, unwraps group key, applies governance ops snapshot, auto-joins contexts.</div></div>
+<div class="fr"><div class="fp">context/src/handlers/apply_signed_namespace_op.rs</div><div class="fd">Namespace DagStore integration: feeds namespace ops into the namespace-level DAG.</div></div>
+<div class="fr"><div class="fp">context/src/handlers/apply_signed_group_op.rs</div><div class="fd">Group DagStore integration: feeds op into DAG, handles pending/applied/error states.</div></div>
+<div class="fr"><div class="fp">context/src/handlers/list_namespaces.rs</div><div class="fd">Namespace listing, querying, and identity resolution for the admin API.</div></div>
 <div class="fr"><div class="fp">context/src/handlers/upgrade_group.rs</div><div class="fd">Application upgrade propagation across group contexts.</div></div>
 
 <h3>Tests</h3>
-<div class="fr"><div class="fp">context/tests/local_group_governance_convergence.rs</div><div class="fd">21 tests: two-node convergence, op log, idempotency, DAG ordering, state_hash conflict prevention, cascade removal, head capping.</div></div>
+<div class="fr"><div class="fp">context/src/group_store/tests.rs</div><div class="fd">Comprehensive group store tests including namespace identity, governance, key delivery, and membership policy.</div></div>
+<div class="fr"><div class="fp">context/tests/local_group_governance_convergence.rs</div><div class="fd">Two-node convergence, op log, idempotency, DAG ordering, state_hash conflict prevention, cascade removal, head capping.</div></div>
 <div class="fr"><div class="fp">node/src/local_governance_node_e2e.rs</div><div class="fd">E2E: gossip message &rarr; node manager &rarr; context apply &rarr; membership verified.</div></div>
 
 </div>
