@@ -21,6 +21,8 @@
 <li>Different namespaces have different keys &mdash; identity isolation across application instances.</li>
 <li>Subgroups inherit the namespace&rsquo;s <code>target_application_id</code>; upgrading the root upgrades the entire tree.</li>
 <li>The admin API exposes <code>GET /admin-api/namespaces</code> to list, query, and inspect namespace identity.</li>
+<li>All groups within a namespace share a <strong>single governance DAG</strong>. Operations are either cleartext (RootOps: group creation, member join, key delivery) or encrypted (GroupOps: membership changes, capabilities).</li>
+<li>New members receive group encryption keys via <strong>ECDH-wrapped KeyDelivery</strong> on the namespace DAG.</li>
 </ul>
 </div>
 
@@ -104,7 +106,7 @@
 <div class="card gc">
 <h2>Context access</h2>
 <p>Context access is determined entirely by <strong>group membership</strong>. Any member of a group can join any context within that group. To restrict access to a subset of contexts, create a <strong>subgroup</strong> and register those contexts there &mdash; only subgroup members (direct or inherited) can join them.</p>
-<p>By default, <code>auto_join: true</code> causes joining a group to automatically subscribe to all its contexts. Members can also explicitly join individual contexts via <code>join_group_context</code>.</p>
+<p>By default, <code>auto_join: true</code> causes joining a group to automatically subscribe to all its contexts. Context membership is implicit from group membership &mdash; no separate governance op is required.</p>
 </div>
 
 <div class="card gd">

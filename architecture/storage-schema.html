@@ -51,7 +51,7 @@
 
 <div class="g4" style="margin-bottom:36px;">
   <div class="stat"><div class="v">11</div><div class="l">column families</div></div>
-  <div class="stat"><div class="v">20</div><div class="l">group prefixes</div></div>
+  <div class="stat"><div class="v">26</div><div class="l">group prefixes</div></div>
   <div class="stat"><div class="v">Borsh</div><div class="l">default codec</div></div>
   <div class="stat"><div class="v">RocksDB</div><div class="l">storage engine</div></div>
 </div>
@@ -464,16 +464,58 @@
 </table>
 </div>
 
-<h3>Namespace Identity (0x36)</h3>
+<h3>Subgroup Hierarchy (0x35–0x36)</h3>
 <table class="schema-table">
 <thead><tr><th>Prefix</th><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Description</th></tr></thead>
 <tbody>
 <tr>
+  <td class="sp">0x35</td>
+  <td class="sk">GroupChildIndex</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x35</span><span class="plus">+</span><span class="seg seg-id">parent_id (32)</span><span class="plus">+</span><span class="seg seg-id2">child_id (32)</span></span></td>
+  <td class="sv">()</td>
+  <td class="sd">Bidirectional index: lists children of a group (presence key). Used by <code>collect_descendant_groups()</code> for cascade operations.</td>
+</tr>
+<tr>
   <td class="sp">0x36</td>
+  <td class="sk">GroupParentRef</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x36</span><span class="plus">+</span><span class="seg seg-id">child_id (32)</span></span></td>
+  <td class="sv">[u8; 32]</td>
+  <td class="sd">Maps child group &rarr; parent group. Used by <code>resolve_namespace()</code> to walk up the tree and find the root (namespace).</td>
+</tr>
+</tbody>
+</table>
+
+<h3>Namespace Identity &amp; Keys (0x37–0x3A)</h3>
+<table class="schema-table">
+<thead><tr><th>Prefix</th><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr>
+  <td class="sp">0x37</td>
   <td class="sk">NamespaceIdentity</td>
-  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x36</span><span class="plus">+</span><span class="seg seg-id">namespace_id (32)</span></span></td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x37</span><span class="plus">+</span><span class="seg seg-id">namespace_id (32)</span></span></td>
   <td class="sv">NamespaceIdentityValue</td>
   <td class="sd">Node's Ed25519 keypair for this namespace (root group). Auto-generated on first create/join, shared across all subgroups and contexts in the namespace.</td>
+</tr>
+<tr>
+  <td class="sp">0x38</td>
+  <td class="sk">NamespaceGovOp</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x38</span><span class="plus">+</span><span class="seg seg-id">namespace_id (32)</span><span class="plus">+</span><span class="seg seg-id2">delta_id (32)</span></span></td>
+  <td class="sv">NamespaceGovOpValue</td>
+  <td class="sd">Namespace governance operation log entry. Stores <code>SignedNamespaceOp</code> or opaque skeleton (for ops the node cannot decrypt).</td>
+</tr>
+<tr>
+  <td class="sp">0x39</td>
+  <td class="sk">NamespaceGovHead</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x39</span><span class="plus">+</span><span class="seg seg-id">namespace_id (32)</span></span></td>
+  <td class="sv">NamespaceGovHeadValue</td>
+  <td class="sd">DAG head tracking for the namespace governance DAG: next nonce and current head delta IDs.</td>
+</tr>
+<tr>
+  <td class="sp">0x3A</td>
+  <td class="sk">GroupKeyEntry</td>
+  <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x3A</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">key_id (32)</span></span></td>
+  <td class="sv">Vec&lt;u8&gt;</td>
+  <td class="sd">Per-group encryption key, indexed by key_id. Used for encrypting <code>GroupOp</code> payloads within namespace governance. Rotated on member removal.</td>
 </tr>
 </tbody>
 </table>
@@ -481,10 +523,26 @@
 <details open><summary>NamespaceIdentityValue fields</summary>
 <div class="typedef">
 <span class="kw">struct</span> <span class="tp">NamespaceIdentityValue</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">public_key</span>: [u8; 32],<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">private_key</span>: [u8; 32],<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sender_key</span>: [u8; 32],<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">public_key</span>: [u8; 32],&nbsp;&nbsp;&nbsp;<span class="comment">// Ed25519 public key (node's member identity in namespace)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">private_key</span>: [u8; 32],&nbsp;&nbsp;<span class="comment">// Ed25519 private key (signs ops, unwraps group keys via ECDH)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sender_key</span>: [u8; 32],&nbsp;&nbsp;&nbsp;<span class="comment">// additional sender key for encrypted sync</span><br>
 }
+</div>
+</details>
+
+<details><summary>NamespaceGovOpValue &amp; NamespaceGovHeadValue definitions</summary>
+<div class="detail-body">
+<div class="typedef">
+<span class="kw">struct</span> <span class="tp">NamespaceGovOpValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">skeleton_bytes</span>: Vec&lt;u8&gt;,&nbsp;&nbsp;<span class="comment">// borsh(SignedNamespaceOp) or OpaqueSkeleton</span><br>
+}
+</div>
+<div class="typedef" style="margin-top:10px;">
+<span class="kw">struct</span> <span class="tp">NamespaceGovHeadValue</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">sequence</span>: u64,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// next nonce for ops</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">dag_heads</span>: Vec&lt;[u8; 32]&gt;,&nbsp;&nbsp;&nbsp;<span class="comment">// current DAG heads (multi-parent support)</span><br>
+}
+</div>
 </div>
 </details>
 

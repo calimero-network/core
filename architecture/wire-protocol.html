@@ -30,8 +30,8 @@
 <p class="page-subtitle">Every message type with field-level documentation</p>
 
 <div class="g3" style="margin-bottom:36px;">
-  <div class="stat"><div class="v">8</div><div class="l">gossipsub variants</div></div>
-  <div class="stat"><div class="v">11</div><div class="l">stream init types</div></div>
+  <div class="stat"><div class="v">10</div><div class="l">gossipsub variants</div></div>
+  <div class="stat"><div class="v">13</div><div class="l">stream init types</div></div>
   <div class="stat"><div class="v">24</div><div class="l">GroupOp variants</div></div>
 </div>
 
@@ -46,8 +46,8 @@
      1. BROADCAST MESSAGE (GOSSIPSUB)
      ═══════════════════════════════════════════════════════════ -->
 <div class="card ga">
-<h2>BroadcastMessage <span class="transport-badge badge-gossip">gossipsub</span> <span class="variant-count">8 variants</span></h2>
-<p class="section-intro">Top-level enum for all messages published via gossipsub topics. Each variant is Borsh-serialized before being sent as a gossipsub message payload. Context topics use <span class="code">context/&lt;hex&gt;</span>, group topics use <span class="code">group/&lt;hex&gt;</span>.</p>
+<h2>BroadcastMessage <span class="transport-badge badge-gossip">gossipsub</span> <span class="variant-count">10 variants</span></h2>
+<p class="section-intro">Top-level enum for all messages published via gossipsub topics. Each variant is Borsh-serialized before being sent as a gossipsub message payload. Context topics use <span class="code">context/&lt;hex&gt;</span>, group topics use <span class="code">group/&lt;hex&gt;</span>, namespace topics use <span class="code">namespace/&lt;hex&gt;</span>.</p>
 
 <details open>
   <summary>StateDelta <span class="variant-count">— application state replication</span></summary>
@@ -146,6 +146,29 @@
 }</div>
   </div>
 </details>
+
+<details>
+  <summary>NamespaceGovernanceDelta <span class="variant-count">— namespace governance op</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Carries a <span class="code">SignedNamespaceOp</span> on namespace gossipsub topics. Published when a namespace governance operation is created (group creation, member join, key delivery, etc.). Receivers verify the signature, apply to the namespace DAG, and may trigger key delivery.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">NamespaceGovernanceDelta</span> {
+    <span class="field">namespace_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// target namespace (root group)</span>
+    <span class="field">payload</span>:      <span class="ty">Vec&lt;u8&gt;</span>,   <span class="comment">// borsh(SignedNamespaceOp)</span>
+}</div>
+    <div class="borsh-note">Payload size capped by MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES &middot; Published on namespace/&lt;hex&gt; topic</div>
+  </div>
+</details>
+
+<details>
+  <summary>NamespaceStateHeartbeat <span class="variant-count">— namespace governance comparison</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Periodic heartbeat for namespace governance DAG state. Published every 30s on namespace topics. Peers compare <span class="code">dag_heads</span> (capped at 256) to detect missing ops. Split logic: gossipsub for ops the peer needs, P2P stream for backfill of ops we need.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">NamespaceStateHeartbeat</span> {
+    <span class="field">namespace_id</span>: <span class="ty">[u8; 32]</span>,      <span class="comment">// which namespace</span>
+    <span class="field">dag_heads</span>:    <span class="ty">Vec&lt;[u8; 32]&gt;</span>, <span class="comment">// current namespace governance DAG heads</span>
+}</div>
+  </div>
+</details>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════
@@ -196,7 +219,7 @@
      4. INIT PAYLOAD
      ═══════════════════════════════════════════════════════════ -->
 <div class="card gd">
-<h2>InitPayload <span class="transport-badge badge-stream">stream init</span> <span class="variant-count">11 variants</span></h2>
+<h2>InitPayload <span class="transport-badge badge-stream">stream init</span> <span class="variant-count">13 variants</span></h2>
 <p class="section-intro">Sent as the first message on a new stream. Determines the protocol/purpose of the stream and carries initial handshake data.</p>
 
 <details open>
@@ -299,6 +322,29 @@
 }</div>
   </div>
 </details>
+
+<details>
+  <summary>NamespaceBackfillRequest <span class="variant-count">— fetch namespace governance ops</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Requests one or more namespace governance operations by delta ID. Opened as a P2P stream when <span class="code">NamespaceStateHeartbeat</span> comparison reveals ops we are missing. The peer responds with <span class="code">NamespaceBackfillResponse</span> messages.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">NamespaceBackfillRequest</span> {
+    <span class="field">namespace_id</span>: <span class="ty">[u8; 32]</span>,          <span class="comment">// which namespace</span>
+    <span class="field">delta_ids</span>:    <span class="ty">Vec&lt;[u8; 32]&gt;</span>,     <span class="comment">// content hashes of requested ops</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>NamespaceJoinRequest <span class="variant-count">— join namespace via invitation</span></summary>
+  <div class="detail-body">
+    <p style="margin-bottom:10px;">Sent by a joiner to an existing namespace member after subscribing to the namespace topic and forming a mesh. The peer responds with the group key (wrapped via ECDH), a snapshot of governance ops, and a list of context IDs to auto-join.</p>
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">NamespaceJoinRequest</span> {
+    <span class="field">namespace_id</span>: <span class="ty">[u8; 32]</span>,                    <span class="comment">// which namespace</span>
+    <span class="field">invitation</span>:   <span class="ty">SignedGroupOpenInvitation</span>,    <span class="comment">// proof of valid invitation</span>
+    <span class="field">joiner_pk</span>:    <span class="ty">PublicKey</span>,                     <span class="comment">// joiner's namespace identity public key</span>
+}</div>
+  </div>
+</details>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════
@@ -391,6 +437,15 @@
   <div class="detail-body">
     <div class="typedef"><span class="kw">struct</span> <span class="ty">GroupDeltaResponse</span> {
     <span class="field">payload</span>: <span class="ty">Option&lt;Vec&lt;u8&gt;&gt;</span>,  <span class="comment">// borsh(SignedGroupOp), or None if not found</span>
+}</div>
+  </div>
+</details>
+
+<details>
+  <summary>NamespaceBackfillResponse <span class="variant-count">— namespace governance ops</span></summary>
+  <div class="detail-body">
+    <div class="typedef"><span class="kw">struct</span> <span class="ty">NamespaceBackfillResponse</span> {
+    <span class="field">deltas</span>: <span class="ty">Vec&lt;Vec&lt;u8&gt;&gt;</span>,  <span class="comment">// borsh(SignedNamespaceOp) for each requested delta_id</span>
 }</div>
   </div>
 </details>
@@ -648,7 +703,86 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════
-     8. NETWORK MESSAGE
+     8. SIGNED NAMESPACE OP
+     ═══════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>SignedNamespaceOp Schema <span class="variant-count">namespace governance</span></h2>
+<p class="section-intro">Namespace-level governance operations. Each namespace has a <strong>single DAG</strong> shared by all groups within it. Operations are either <strong>RootOps</strong> (cleartext, visible to all namespace members) or <strong>GroupOps</strong> (encrypted with the group key, only readable by group members).</p>
+
+<div class="g2">
+  <div>
+    <h3>NamespaceOp — RootOp Variants</h3>
+    <p style="margin-bottom:10px;font-size:.82rem;color:var(--text-dim);">Cleartext operations visible to all namespace members. Used for structural changes and key distribution.</p>
+    <div class="typedef"><span class="field">GroupCreated</span> {
+    <span class="field">group_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// announces a new group in namespace</span>
+}
+
+<span class="field">GroupDeleted</span> {
+    <span class="field">group_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// removes a group from namespace</span>
+}
+
+<span class="field">GroupNested</span> {
+    <span class="field">parent_group_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// link parent</span>
+    <span class="field">child_group_id</span>:  <span class="ty">[u8; 32]</span>,  <span class="comment">// link child</span>
+}
+
+<span class="field">GroupUnnested</span> {
+    <span class="field">parent_group_id</span>: <span class="ty">[u8; 32]</span>,
+    <span class="field">child_group_id</span>:  <span class="ty">[u8; 32]</span>,
+}
+
+<span class="field">MemberJoined</span> {
+    <span class="field">member</span>:            <span class="ty">PublicKey</span>,            <span class="comment">// joiner's namespace identity</span>
+    <span class="field">signed_invitation</span>: <span class="ty">SignedInvitation</span>,     <span class="comment">// proof of valid invitation</span>
+}
+
+<span class="field">KeyDelivery</span> {
+    <span class="field">group_id</span>: <span class="ty">[u8; 32]</span>,     <span class="comment">// target group</span>
+    <span class="field">envelope</span>: <span class="ty">KeyEnvelope</span>,  <span class="comment">// ECDH-wrapped group key for joiner</span>
+}
+
+<span class="field">AdminChanged</span> { <span class="field">new_admin</span>: <span class="ty">PublicKey</span> }
+<span class="field">PolicyUpdated</span> { <span class="field">policy_bytes</span>: <span class="ty">Vec&lt;u8&gt;</span> }</div>
+  </div>
+  <div>
+    <h3>NamespaceOp — GroupOp Variant</h3>
+    <p style="margin-bottom:10px;font-size:.82rem;color:var(--text-dim);">Encrypted operations only readable by members of the target group. Non-members store an opaque <strong>skeleton</strong> (preserving causal structure).</p>
+    <div class="typedef"><span class="field">Group</span> {
+    <span class="field">group_id</span>:     <span class="ty">[u8; 32]</span>,  <span class="comment">// target group</span>
+    <span class="field">key_id</span>:       <span class="ty">[u8; 32]</span>,  <span class="comment">// which group key was used</span>
+    <span class="field">encrypted</span>:    <span class="ty">Vec&lt;u8&gt;</span>,   <span class="comment">// encrypted inner GroupOp</span>
+    <span class="field">key_rotation</span>: <span class="ty">Option&lt;..&gt;</span>, <span class="comment">// optional key rotation</span>
+}
+
+<span class="comment">// Inner GroupOp (after decryption):</span>
+<span class="comment">// MemberAdded, MemberRemoved, MemberRoleSet,</span>
+<span class="comment">// ContextRegistered, ContextDetached,</span>
+<span class="comment">// UpgradePolicySet, TargetApplicationSet,</span>
+<span class="comment">// ... (same variants as GroupOp above)</span></div>
+
+    <h3 style="margin-top:20px;">Key Delivery Flow</h3>
+    <div class="typedef" style="font-size:.78rem;">
+<span class="comment">// 1. Joiner publishes RootOp::MemberJoined</span>
+<span class="comment">// 2. Existing member sees MemberJoined on DAG</span>
+<span class="comment">// 3. Member wraps group key via ECDH:</span>
+<span class="comment">//    shared = ECDH(sender_sk, joiner_pk)</span>
+<span class="comment">//    envelope = encrypt(shared, group_key)</span>
+<span class="comment">// 4. Member publishes RootOp::KeyDelivery</span>
+<span class="comment">// 5. Joiner unwraps: ECDH(joiner_sk, sender_pk)</span>
+<span class="comment">// 6. Joiner can now decrypt GroupOp payloads</span></div>
+  </div>
+</div>
+
+<div class="signing-box" style="margin-top:16px;">
+  <h4>Signing Process (Namespace Ops)</h4>
+  <p><strong>1.</strong> Build <span class="code">SignedNamespaceOp</span> with: namespace_id, parent_hashes, state_hash, nonce, op.</p>
+  <p><strong>2.</strong> Sign with the node's <strong>namespace identity private key</strong> (not the group signing key).</p>
+  <p><strong>3.</strong> Content hash <span class="code">delta_id = SHA-256(signable_bytes)</span> for DAG identity.</p>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     9. NETWORK MESSAGE
      ═══════════════════════════════════════════════════════════ -->
 <div class="card gd">
 <h2>NetworkMessage <span class="transport-badge badge-internal">internal</span> <span class="variant-count">15 variants</span></h2>
