@@ -767,6 +767,7 @@ impl ContextManager {
         application_id: ApplicationId,
         service_name: Option<String>,
     ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
+        let service_name_for_bytes = service_name.clone();
         let blob_task = async {}.into_actor(self).map(move |_, act, _ctx| {
             let app = match act.applications.entry(application_id) {
                 btree_map::Entry::Vacant(vacant) => {
@@ -830,7 +831,9 @@ impl ContextManager {
 
                 // Use get_application_bytes instead of get_blob_bytes for bytecode
                 // because get_application_bytes knows how to extract WASM from bundles
-                let Some(bytecode) = node_client.get_application_bytes(&application_id).await?
+                let Some(bytecode) = node_client
+                    .get_application_bytes(&application_id, service_name_for_bytes.as_deref())
+                    .await?
                 else {
                     bail!(ExecuteError::ApplicationNotInstalled { application_id });
                 };
@@ -849,18 +852,31 @@ impl ContextManager {
 
                 blob.compiled = blob_id;
 
-                node_client.update_compiled_app(&application_id, &blob_id)?;
+                node_client.update_compiled_app(
+                    &application_id,
+                    &blob_id,
+                    service_name_for_bytes.as_deref(),
+                )?;
 
-                Ok((module, Some(blob)))
+                Ok((module, Some((blob, service_name_for_bytes))))
             }
             .into_actor(act)
         });
 
         module_task
-            .map_ok(move |(module, blob), act, _ctx| {
-                if let Some(blob) = blob {
+            .map_ok(move |(module, blob_info), act, _ctx| {
+                if let Some((blob, svc_name)) = blob_info {
                     if let Some(app) = act.applications.get_mut(&application_id) {
-                        app.blob = blob;
+                        match svc_name.as_deref() {
+                            Some(name) => {
+                                if let Some(svc_blob) = app.services.get_mut(name) {
+                                    *svc_blob = blob;
+                                }
+                            }
+                            None => {
+                                app.blob = blob;
+                            }
+                        }
                     }
                 }
 
