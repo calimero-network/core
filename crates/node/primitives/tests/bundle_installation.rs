@@ -302,7 +302,7 @@ async fn test_bundle_get_application_bytes() {
 
     // Get application bytes (should read from extracted directory)
     let bytes = node_client
-        .get_application_bytes(&application_id)
+        .get_application_bytes(&application_id, None)
         .await
         .expect("Should get application bytes")
         .expect("Application bytes should exist");
@@ -504,7 +504,7 @@ async fn test_bundle_backward_compatibility() {
 
     // Verify we can get bytes
     let bytes = node_client
-        .get_application_bytes(&application_id)
+        .get_application_bytes(&application_id, None)
         .await
         .expect("Should get application bytes")
         .expect("Application bytes should exist");
@@ -609,7 +609,7 @@ async fn test_bundle_custom_wasm_path() {
 
     // Verify get_application_bytes reads from custom path
     let bytes = node_client
-        .get_application_bytes(&application_id)
+        .get_application_bytes(&application_id, None)
         .await
         .expect("Should get application bytes")
         .expect("Application bytes should exist");
@@ -1098,7 +1098,7 @@ async fn test_install_application_from_bundle_blob() {
 
     // Verify we can get application bytes
     let bytes = node_client
-        .get_application_bytes(&application_id)
+        .get_application_bytes(&application_id, None)
         .await
         .expect("Should get application bytes")
         .expect("Application bytes should exist");
@@ -1213,7 +1213,7 @@ async fn test_simple_wasm_installation_still_works() {
 
     // Verify we can get bytes
     let bytes = node_client
-        .get_application_bytes(&application_id)
+        .get_application_bytes(&application_id, None)
         .await
         .expect("Should get application bytes")
         .expect("Application bytes should exist");
@@ -1403,7 +1403,7 @@ async fn test_bundle_blob_sharing_integration() {
 
     // Step 6: Verify User 2 can get application bytes (WASM)
     let bytes_user2 = node_client_2
-        .get_application_bytes(&application_id_user2)
+        .get_application_bytes(&application_id_user2, None)
         .await
         .expect("Should get application bytes")
         .expect("Application bytes should exist");
@@ -1977,7 +1977,7 @@ async fn test_bundle_get_application_bytes_fallback() {
     // Get application bytes - should fallback to re-extract from bundle blob
     // Note: fallback now extracts entire bundle to disk for persistence
     let bytes = node_client
-        .get_application_bytes(&application_id)
+        .get_application_bytes(&application_id, None)
         .await
         .expect("Should get application bytes via fallback")
         .expect("Application bytes should exist");

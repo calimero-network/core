@@ -76,6 +76,7 @@ impl NodeClient {
     pub async fn get_application_bytes(
         &self,
         application_id: &ApplicationId,
+        service_name: Option<&str>,
     ) -> eyre::Result<Option<Arc<[u8]>>> {
         let handle = self.datastore.handle();
 
@@ -123,12 +124,28 @@ impl NodeClient {
                 .join(version)
                 .join("extracted");
 
-            // Get WASM path from manifest (fallback to "app.wasm" for backward compatibility)
-            let wasm_relative_path = manifest
-                .wasm
-                .as_ref()
-                .map(|w| w.path.as_str())
-                .unwrap_or("app.wasm");
+            // Resolve WASM path from manifest, supporting both single and multi-service bundles
+            let wasm_relative_path = match service_name {
+                Some(name) => {
+                    // Multi-service: find the named service in the services array
+                    manifest
+                        .services
+                        .as_ref()
+                        .and_then(|svcs| svcs.iter().find(|s| s.name == name))
+                        .map(|s| s.wasm.path.as_str())
+                        .ok_or_else(|| {
+                            eyre::eyre!("service '{}' not found in bundle manifest", name)
+                        })?
+                }
+                None => {
+                    // Single-service: use top-level wasm field (fallback to "app.wasm")
+                    manifest
+                        .wasm
+                        .as_ref()
+                        .map(|w| w.path.as_str())
+                        .unwrap_or("app.wasm")
+                }
+            };
 
             // Validate WASM path to prevent path traversal attacks
             // Check that the relative path doesn't contain ".." components that would escape
@@ -1313,6 +1330,7 @@ impl NodeClient {
         &self,
         application_id: &ApplicationId,
         compiled_blob_id: &BlobId,
+        service_name: Option<&str>,
     ) -> eyre::Result<()> {
         let mut handle = self.datastore.handle();
 
@@ -1322,7 +1340,18 @@ impl NodeClient {
             bail!("application not found");
         };
 
-        application.compiled = key::BlobMeta::new(*compiled_blob_id);
+        match service_name {
+            Some(name) => {
+                if let Some(svc) = application.services.iter_mut().find(|s| &*s.name == name) {
+                    svc.compiled = key::BlobMeta::new(*compiled_blob_id);
+                } else {
+                    application.compiled = key::BlobMeta::new(*compiled_blob_id);
+                }
+            }
+            None => {
+                application.compiled = key::BlobMeta::new(*compiled_blob_id);
+            }
+        }
 
         handle.put(&key, &application)?;
 
