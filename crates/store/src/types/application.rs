@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::entry::Borsh;
@@ -12,7 +14,7 @@ pub struct ServiceMeta {
     pub compiled: key::BlobMeta,
 }
 
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+#[derive(BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ApplicationMeta {
     pub bytecode: key::BlobMeta,
@@ -26,6 +28,47 @@ pub struct ApplicationMeta {
     /// Named services within this application. Empty for single-service apps.
     /// When non-empty, `bytecode`/`compiled` above point to the first (default) service.
     pub services: Vec<ServiceMeta>,
+}
+
+// Custom deserialization: handle backwards compatibility for old data
+// that doesn't have the `services` field (added in rc.19).
+impl BorshDeserialize for ApplicationMeta {
+    fn deserialize_reader<R: Read>(reader: &mut R) -> std::io::Result<Self> {
+        let bytecode = key::BlobMeta::deserialize_reader(reader)?;
+        let size = u64::deserialize_reader(reader)?;
+        let source = Box::<str>::deserialize_reader(reader)?;
+        let metadata = Box::<[u8]>::deserialize_reader(reader)?;
+        let compiled = key::BlobMeta::deserialize_reader(reader)?;
+        let package = Box::<str>::deserialize_reader(reader)?;
+        let version = Box::<str>::deserialize_reader(reader)?;
+        let signer_id = Box::<str>::deserialize_reader(reader)?;
+
+        // `services` was added after the initial schema. Old records end after `signer_id`.
+        // Try to read it; if there's no more data, default to an empty Vec.
+        let services = match Vec::<ServiceMeta>::deserialize_reader(reader) {
+            Ok(v) => v,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Vec::new(),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::InvalidData
+                    && e.to_string().contains("Unexpected length") =>
+            {
+                Vec::new()
+            }
+            Err(e) => return Err(e),
+        };
+
+        Ok(Self {
+            bytecode,
+            size,
+            source,
+            metadata,
+            compiled,
+            package,
+            version,
+            signer_id,
+            services,
+        })
+    }
 }
 
 impl ApplicationMeta {
