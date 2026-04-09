@@ -354,6 +354,10 @@ impl<'a> NamespaceGovernance<'a> {
             ..
         } = op
         {
+            // service_name is stored by apply_group_op_mutations (called below)
+            // via set_context_service_name. We intentionally do NOT write
+            // ContextMeta here — that would cause has_context() to return true
+            // and skip the bootstrap path in join_context.
             if *application_id != ZERO_APPLICATION_ID {
                 let app_key = calimero_store::key::ApplicationMeta::new(*application_id);
                 let handle = self.store.handle();

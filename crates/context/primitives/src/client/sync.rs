@@ -360,7 +360,7 @@ impl ContextClient {
                 key::ApplicationMeta::new(application_id),
                 *root_hash,
                 dag_heads.clone(),
-                None,
+                config.service_name.as_deref().map(Box::from),
             ),
         )?;
 
@@ -384,7 +384,7 @@ impl ContextClient {
             application_id,
             root_hash,
             dag_heads,
-            None,
+            config.service_name,
         ))
     }
 }

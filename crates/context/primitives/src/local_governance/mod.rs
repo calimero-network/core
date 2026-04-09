@@ -79,6 +79,9 @@ pub enum GroupOp {
         /// Source URL for the application (registry URL or `file://` for dev).
         /// Joiners use this to install the app directly without blob sharing.
         source: String,
+        /// Which service from the application bundle this context runs.
+        /// None for single-service applications.
+        service_name: Option<String>,
     },
     /// Unregister a context from this group.
     ContextDetached { context_id: ContextId },

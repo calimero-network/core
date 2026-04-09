@@ -27,6 +27,7 @@ impl ContextClient {
             application_id: None,
             application_revision: config.application_revision,
             members_revision: config.members_revision,
+            service_name: None,
         };
 
         Ok(Some(context_config))
