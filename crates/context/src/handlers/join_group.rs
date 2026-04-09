@@ -219,10 +219,13 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                         .map(|m| m.target_application_id)
                                         .filter(|id| *id != zero_app)
                                 };
+                                let svc_name =
+                                    group_store::get_context_service_name(&datastore, context_id)?;
                                 Some(ContextConfigParams {
                                     application_id: resolved,
                                     application_revision: 0,
                                     members_revision: 0,
+                                    service_name: svc_name,
                                 })
                             } else {
                                 None

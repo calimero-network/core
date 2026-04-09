@@ -892,9 +892,13 @@ fn apply_group_op_mutations(
         GroupOp::ContextRegistered {
             context_id,
             application_id,
+            service_name,
             ..
         } => {
             context_registration.register(&permissions, signer, context_id, application_id)?;
+            if let Some(name) = service_name {
+                set_context_service_name(store, context_id, name)?;
+            }
         }
         GroupOp::ContextDetached { context_id } => {
             context_registration.detach(&permissions, signer, context_id)?;
@@ -1177,6 +1181,38 @@ fn cascade_target_application(
     _app_key: &[u8; 32],
 ) -> EyreResult<()> {
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Context service name (multi-service bundles)
+// ---------------------------------------------------------------------------
+
+/// Store which service from a multi-service bundle a context runs.
+/// Called during `ContextRegistered` governance application.
+pub fn set_context_service_name(
+    store: &Store,
+    context_id: &calimero_primitives::context::ContextId,
+    service_name: &str,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = calimero_store::key::ContextServiceName::new(*context_id);
+    handle.put(
+        &key,
+        &calimero_store::key::ContextServiceNameValue {
+            service_name: service_name.into(),
+        },
+    )?;
+    Ok(())
+}
+
+/// Read the service name for a context (if it was created with one).
+pub fn get_context_service_name(
+    store: &Store,
+    context_id: &calimero_primitives::context::ContextId,
+) -> EyreResult<Option<String>> {
+    let handle = store.handle();
+    let key = calimero_store::key::ContextServiceName::new(*context_id);
+    Ok(handle.get(&key)?.map(|v| v.service_name.to_string()))
 }
 
 #[cfg(test)]

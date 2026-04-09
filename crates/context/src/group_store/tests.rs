@@ -1117,6 +1117,7 @@ fn apply_local_context_alias_admin_or_creator() {
             application_id: calimero_primitives::application::ApplicationId::from([0u8; 32]),
             blob_id: calimero_primitives::blobs::BlobId::from([0u8; 32]),
             source: String::new(),
+            service_name: None,
         },
     )
     .unwrap();

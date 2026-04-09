@@ -919,6 +919,9 @@ pub const GROUP_PARENT_REF_PREFIX: u8 = 0x34;
 pub const GROUP_CHILD_INDEX_PREFIX: u8 = 0x35;
 /// Per-namespace (root group) node identity keypair.
 pub const NAMESPACE_IDENTITY_PREFIX: u8 = 0x36;
+/// Which service from a multi-service bundle a context runs.
+/// Key: `prefix(1) + context_id(32)` → `ContextServiceNameValue`.
+pub const CONTEXT_SERVICE_NAME_PREFIX: u8 = 0x37;
 
 /// Stores the latest applied op sequence and content hash for a group.
 /// Key: `prefix(1) + group_id(32)` → `GroupOpHeadValue`.
@@ -1378,6 +1381,67 @@ pub struct NamespaceIdentityValue {
     pub public_key: [u8; 32],
     pub private_key: [u8; 32],
     pub sender_key: [u8; 32],
+}
+
+// ---------------------------------------------------------------------------
+// Context service name (multi-service bundles)
+// ---------------------------------------------------------------------------
+
+/// Stores which service from a multi-service bundle a context runs.
+/// Written during `ContextRegistered` governance application so joining
+/// nodes know the service_name before `ContextMeta` is created.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextServiceName(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl ContextServiceName {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId) -> Self {
+        Self(Key(GenericArray::from([CONTEXT_SERVICE_NAME_PREFIX])
+            .concat(GenericArray::from(*context_id))))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id.into()
+    }
+}
+
+impl AsKeyParts for ContextServiceName {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for ContextServiceName {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for ContextServiceName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextServiceName")
+            .field("context_id", &self.context_id())
+            .finish()
+    }
+}
+
+/// Value stored for a context service name.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextServiceNameValue {
+    pub service_name: Box<str>,
 }
 
 // ---------------------------------------------------------------------------

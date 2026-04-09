@@ -77,10 +77,15 @@ impl Handler<JoinContextRequest> for ContextManager {
                         .map(|meta| meta.target_application_id)
                         .filter(|id| *id != zero_app);
 
+                    // Read service_name from the dedicated context service name key,
+                    // written during ContextRegistered governance application.
+                    let svc_name = group_store::get_context_service_name(&datastore, &context_id)?;
+
                     Some(ContextConfigParams {
                         application_id: app_id,
                         application_revision: 0,
                         members_revision: 0,
+                        service_name: svc_name,
                     })
                 } else {
                     None

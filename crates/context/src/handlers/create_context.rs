@@ -169,6 +169,7 @@ impl Prepared<'_> {
             application_id: None,
             application_revision: 0,
             members_revision: 0,
+            service_name: None,
         };
 
         let mut effective_app_id = *application_id;
@@ -440,6 +441,7 @@ async fn create_context(
                 application_id: context.application_id,
                 blob_id: application.blob.bytecode,
                 source: application.source.to_string(),
+                service_name: context.service_name.clone(),
             },
         )
         .await?;

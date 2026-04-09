@@ -187,6 +187,9 @@ pub struct ContextConfigParams {
     pub application_revision: u64,
     /// A revision number for the members list, used for tracking membership changes.
     pub members_revision: u64,
+    /// Which service from the application bundle this context runs.
+    /// None for single-service applications.
+    pub service_name: Option<String>,
 }
 
 /// Controls how application upgrades propagate across contexts in a group.

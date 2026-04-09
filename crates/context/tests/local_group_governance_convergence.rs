@@ -408,6 +408,7 @@ fn two_nodes_converge_on_context_alias_as_admin() {
             application_id: calimero_primitives::application::ApplicationId::from([0xAA; 32]),
             blob_id: calimero_primitives::blobs::BlobId::from([0xBB; 32]),
             source: String::new(),
+            service_name: None,
         },
     )
     .expect("sign ContextRegistered");
