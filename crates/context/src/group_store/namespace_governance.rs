@@ -348,20 +348,16 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         if let GroupOp::ContextRegistered {
-            context_id,
             application_id,
             blob_id,
             source,
-            service_name,
+            ..
         } = op
         {
-            // Store service_name in a dedicated key so join_context can read it
-            // later. We intentionally do NOT write ContextMeta here — that would
-            // cause has_context() to return true and skip the bootstrap path
-            // (ContextConfig creation, app installation, sync trigger).
-            if let Some(name) = service_name {
-                super::set_context_service_name(self.store, context_id, name)?;
-            }
+            // service_name is stored by apply_group_op_mutations (called below)
+            // via set_context_service_name. We intentionally do NOT write
+            // ContextMeta here — that would cause has_context() to return true
+            // and skip the bootstrap path in join_context.
             if *application_id != ZERO_APPLICATION_ID {
                 let app_key = calimero_store::key::ApplicationMeta::new(*application_id);
                 let handle = self.store.handle();
