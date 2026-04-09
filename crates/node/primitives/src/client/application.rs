@@ -1342,11 +1342,17 @@ impl NodeClient {
 
         match service_name {
             Some(name) => {
-                if let Some(svc) = application.services.iter_mut().find(|s| &*s.name == name) {
-                    svc.compiled = key::BlobMeta::new(*compiled_blob_id);
-                } else {
-                    application.compiled = key::BlobMeta::new(*compiled_blob_id);
-                }
+                let svc = application
+                    .services
+                    .iter_mut()
+                    .find(|s| &*s.name == name)
+                    .ok_or_else(|| {
+                        eyre::eyre!(
+                            "service '{}' not found in application when updating compiled blob",
+                            name
+                        )
+                    })?;
+                svc.compiled = key::BlobMeta::new(*compiled_blob_id);
             }
             None => {
                 application.compiled = key::BlobMeta::new(*compiled_blob_id);
