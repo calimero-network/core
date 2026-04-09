@@ -121,6 +121,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         // re-create it with data from the store, so it's not a problem
 
                         meta.meta.root_hash = root_hash;
+                        meta.meta.service_name = context_meta_for_map_ok.service_name.clone();
                     }
 
                     CreateContextResponse {
