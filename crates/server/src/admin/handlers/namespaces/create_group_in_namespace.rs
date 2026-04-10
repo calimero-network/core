@@ -133,9 +133,11 @@ pub async fn handler(
                     use rand::Rng;
                     rand::thread_rng().gen()
                 };
-                if let Err(err) =
-                    calimero_context::group_store::store_group_key(&state.store, &group_id, &group_key)
-                {
+                if let Err(err) = calimero_context::group_store::store_group_key(
+                    &state.store,
+                    &group_id,
+                    &group_key,
+                ) {
                     warn!(
                         group_id=%hex::encode(group_id.to_bytes()),
                         ?err,

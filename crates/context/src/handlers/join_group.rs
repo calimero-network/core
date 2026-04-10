@@ -90,7 +90,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                     // Add the namespace admin to the member list so joining
                     // nodes see the creator in /admin-api/groups/:id/members.
-                    if !group_store::check_group_membership(&datastore, &group_id, &admin_identity)? {
+                    if !group_store::check_group_membership(&datastore, &group_id, &admin_identity)?
+                    {
                         group_store::add_group_member(
                             &datastore,
                             &group_id,
