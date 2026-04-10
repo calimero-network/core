@@ -115,10 +115,12 @@ pub async fn handler(
             )
             .await
             {
-                warn!(
+                error!(
                     ?err,
-                    "Group created but failed to nest under namespace"
+                    "Group created but failed to nest under namespace — \
+                     the group will not be usable without a parent link"
                 );
+                return parse_api_error(err).into_response();
             }
 
             let group_id = calimero_context_config::types::ContextGroupId::from(group_id);
