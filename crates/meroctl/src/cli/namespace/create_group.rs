@@ -7,13 +7,18 @@ use crate::output::Report;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CreateGroupInNamespaceResponse {
+struct CreateGroupInNamespaceResponseData {
     group_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CreateGroupInNamespaceResponse {
+    data: CreateGroupInNamespaceResponseData,
 }
 
 impl Report for CreateGroupInNamespaceResponse {
     fn report(&self) {
-        println!("Created group: {}", self.group_id);
+        println!("Created group: {}", self.data.group_id);
     }
 }
 
