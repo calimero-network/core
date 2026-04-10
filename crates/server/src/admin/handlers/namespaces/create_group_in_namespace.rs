@@ -97,6 +97,30 @@ pub async fn handler(
     .await
     {
         Ok(()) => {
+            // Nest the new group under the namespace root so that
+            // resolve_namespace() can walk up to find the namespace identity.
+            let nest_op = calimero_context_client::local_governance::NamespaceOp::Root(
+                calimero_context_client::local_governance::RootOp::GroupNested {
+                    parent_group_id: namespace_id.to_bytes(),
+                    child_group_id: group_id,
+                },
+            );
+
+            if let Err(err) = calimero_context::group_store::sign_apply_and_publish_namespace_op(
+                &state.store,
+                &state.node_client,
+                resolved_ns_id.to_bytes(),
+                &signer_sk,
+                nest_op,
+            )
+            .await
+            {
+                warn!(
+                    ?err,
+                    "Group created but failed to nest under namespace"
+                );
+            }
+
             let group_id = calimero_context_config::types::ContextGroupId::from(group_id);
 
             if let Some(alias) = body.group_alias.as_deref() {
