@@ -20,8 +20,13 @@ pub struct CreateGroupInNamespaceBody {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateGroupInNamespaceResponse {
+pub struct CreateGroupInNamespaceResponseData {
     pub group_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateGroupInNamespaceResponse {
+    pub data: CreateGroupInNamespaceResponseData,
 }
 
 pub async fn handler(
@@ -92,7 +97,54 @@ pub async fn handler(
     .await
     {
         Ok(()) => {
+            // Nest the new group under the namespace root so that
+            // resolve_namespace() can walk up to find the namespace identity.
+            let nest_op = calimero_context_client::local_governance::NamespaceOp::Root(
+                calimero_context_client::local_governance::RootOp::GroupNested {
+                    parent_group_id: namespace_id.to_bytes(),
+                    child_group_id: group_id,
+                },
+            );
+
+            if let Err(err) = calimero_context::group_store::sign_apply_and_publish_namespace_op(
+                &state.store,
+                &state.node_client,
+                resolved_ns_id.to_bytes(),
+                &signer_sk,
+                nest_op,
+            )
+            .await
+            {
+                error!(
+                    ?err,
+                    "Group created but failed to nest under namespace — \
+                     the group will not be usable without a parent link"
+                );
+                return parse_api_error(err).into_response();
+            }
+
             let group_id = calimero_context_config::types::ContextGroupId::from(group_id);
+
+            // Generate a group key for the subgroup so that encrypted
+            // group-scoped governance ops (MemberAdded, ContextRegistered)
+            // can be published and later decrypted by members.
+            {
+                let group_key: [u8; 32] = {
+                    use rand::Rng;
+                    rand::thread_rng().gen()
+                };
+                if let Err(err) = calimero_context::group_store::store_group_key(
+                    &state.store,
+                    &group_id,
+                    &group_key,
+                ) {
+                    warn!(
+                        group_id=%hex::encode(group_id.to_bytes()),
+                        ?err,
+                        "Group created but failed to generate group key"
+                    );
+                }
+            }
 
             if let Some(alias) = body.group_alias.as_deref() {
                 if let Err(err) =
@@ -108,7 +160,9 @@ pub async fn handler(
 
             ApiResponse {
                 payload: CreateGroupInNamespaceResponse {
-                    group_id: hex::encode(group_id.to_bytes()),
+                    data: CreateGroupInNamespaceResponseData {
+                        group_id: hex::encode(group_id.to_bytes()),
+                    },
                 },
             }
             .into_response()

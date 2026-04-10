@@ -44,7 +44,7 @@ pub async fn handler(
             let data = entries
                 .into_iter()
                 .map(|e| GroupContextEntryResponse {
-                    context_id: hex::encode(*e.context_id),
+                    context_id: e.context_id.to_string(),
                     alias: e.alias,
                 })
                 .collect();
