@@ -125,6 +125,25 @@ pub async fn handler(
 
             let group_id = calimero_context_config::types::ContextGroupId::from(group_id);
 
+            // Generate a group key for the subgroup so that encrypted
+            // group-scoped governance ops (MemberAdded, ContextRegistered)
+            // can be published and later decrypted by members.
+            {
+                let group_key: [u8; 32] = {
+                    use rand::Rng;
+                    rand::thread_rng().gen()
+                };
+                if let Err(err) =
+                    calimero_context::group_store::store_group_key(&state.store, &group_id, &group_key)
+                {
+                    warn!(
+                        group_id=%hex::encode(group_id.to_bytes()),
+                        ?err,
+                        "Group created but failed to generate group key"
+                    );
+                }
+            }
+
             if let Some(alias) = body.group_alias.as_deref() {
                 if let Err(err) =
                     calimero_context::group_store::set_group_alias(&state.store, &group_id, alias)
