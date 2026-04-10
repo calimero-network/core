@@ -448,9 +448,16 @@ impl<'a> NamespaceGovernance<'a> {
             return Ok(());
         }
 
+        // Inherit application ID from the namespace root group so that
+        // subgroups can create contexts with the correct application.
+        let ns_gid = ContextGroupId::from(op.namespace_id);
+        let parent_app_id = load_group_meta(self.store, &ns_gid)?
+            .map(|m| m.target_application_id)
+            .unwrap_or_else(|| calimero_primitives::application::ApplicationId::from([0u8; 32]));
+
         let meta = calimero_store::key::GroupMetaValue {
             admin_identity: op.signer,
-            target_application_id: calimero_primitives::application::ApplicationId::from([0u8; 32]),
+            target_application_id: parent_app_id,
             app_key: [0u8; 32],
             upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
             migration: None,
