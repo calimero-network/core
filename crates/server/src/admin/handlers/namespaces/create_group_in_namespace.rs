@@ -20,8 +20,13 @@ pub struct CreateGroupInNamespaceBody {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateGroupInNamespaceResponse {
+pub struct CreateGroupInNamespaceResponseData {
     pub group_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateGroupInNamespaceResponse {
+    pub data: CreateGroupInNamespaceResponseData,
 }
 
 pub async fn handler(
@@ -108,7 +113,9 @@ pub async fn handler(
 
             ApiResponse {
                 payload: CreateGroupInNamespaceResponse {
-                    group_id: hex::encode(group_id.to_bytes()),
+                    data: CreateGroupInNamespaceResponseData {
+                        group_id: hex::encode(group_id.to_bytes()),
+                    },
                 },
             }
             .into_response()
