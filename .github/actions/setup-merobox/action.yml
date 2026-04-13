@@ -17,13 +17,20 @@ runs:
 
     - name: Install merobox from git
       shell: bash
+      # Force RUST_LOG=warn for the install: callers (e.g. fuzzy-load-test)
+      # set RUST_LOG=info for the merod runtime, which leaks into maturin
+      # while it builds calimero-client-py's sdist. Maturin's Python PEP 517
+      # wrapper parses its own stdout to locate the built wheel, and an INFO
+      # tracing line gets mistaken for the wheel path -> FileNotFoundError.
+      # Use `uv` rather than pip; pip's warn_on_mismatching_name path crashes
+      # on this same sdist on the self-hosted runner.
+      env:
+        RUST_LOG: warn
       run: |
-        # Use `python -m pip` to upgrade pip itself: plain `pip install --upgrade pip`
-        # can leave pip unchanged on some runners, which then hits a pip/setuptools
-        # metadata bug (`AttributeError: 'NoneType' object has no attribute 'lower'`)
-        # when installing from a git+ URL.
-        python -m pip install --upgrade pip setuptools wheel
-        python -m pip install "merobox @ git+https://github.com/calimero-network/merobox.git@master"
+        python -m pip install --upgrade pip
+        python -m pip install uv
+        uv pip install --system \
+          "merobox @ git+https://github.com/calimero-network/merobox.git@master"
 
     - name: Verify merobox installation
       shell: bash
