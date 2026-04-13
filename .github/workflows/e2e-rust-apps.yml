@@ -178,6 +178,159 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      # Run group-3node workflow
+      - name: Run group-3node Workflow
+        id: run_group_3node
+        run: |
+          cd apps/e2e-kv-store
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+
+              if merobox bootstrap run \
+                  "workflows/group-3node.yml" \
+                  --image merod:local \
+                  --e2e-mode; then
+                  success=true
+                  break
+              else
+                  echo "Collecting Docker logs for group-3node attempt $attempt"
+                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
+                      if [ -n "$container" ]; then
+                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/group-3node-attempt${attempt}-${container}.log" 2>&1 || true
+                      fi
+                  done
+                  attempt=$((attempt + 1))
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
+          else
+              echo "failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload group-3node logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-group-3node-${{ github.sha }}
+          path: docker-logs/group-3node*
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # Run group-context-isolation workflow
+      - name: Run group-context-isolation Workflow
+        id: run_group_context_isolation
+        run: |
+          cd apps/e2e-kv-store
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+
+              if merobox bootstrap run \
+                  "workflows/group-context-isolation.yml" \
+                  --image merod:local \
+                  --e2e-mode; then
+                  success=true
+                  break
+              else
+                  echo "Collecting Docker logs for group-context-isolation attempt $attempt"
+                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
+                      if [ -n "$container" ]; then
+                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/group-context-isolation-attempt${attempt}-${container}.log" 2>&1 || true
+                      fi
+                  done
+                  attempt=$((attempt + 1))
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
+          else
+              echo "failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload group-context-isolation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-group-context-isolation-${{ github.sha }}
+          path: docker-logs/group-context-isolation*
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # Run group-late-joiner workflow
+      - name: Run group-late-joiner Workflow
+        id: run_group_late_joiner
+        run: |
+          cd apps/e2e-kv-store
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+
+              if merobox bootstrap run \
+                  "workflows/group-late-joiner.yml" \
+                  --image merod:local \
+                  --e2e-mode; then
+                  success=true
+                  break
+              else
+                  echo "Collecting Docker logs for group-late-joiner attempt $attempt"
+                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
+                      if [ -n "$container" ]; then
+                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/group-late-joiner-attempt${attempt}-${container}.log" 2>&1 || true
+                      fi
+                  done
+                  attempt=$((attempt + 1))
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
+          else
+              echo "failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload group-late-joiner logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-group-late-joiner-${{ github.sha }}
+          path: docker-logs/group-late-joiner*
+          retention-days: 7
+          if-no-files-found: ignore
+
       # Run xcall-example workflow
       - name: Run xcall-example Workflow
         id: run_xcall
@@ -255,7 +408,13 @@ jobs:
           if-no-files-found: warn
 
       - name: Check workflow results
-        if: steps.run_e2e_kv_store.outputs.failed == 'true' || steps.run_groups.outputs.failed == 'true' || steps.run_xcall.outputs.failed == 'true'
+        if: |
+          steps.run_e2e_kv_store.outputs.failed == 'true' ||
+          steps.run_groups.outputs.failed == 'true' ||
+          steps.run_group_3node.outputs.failed == 'true' ||
+          steps.run_group_context_isolation.outputs.failed == 'true' ||
+          steps.run_group_late_joiner.outputs.failed == 'true' ||
+          steps.run_xcall.outputs.failed == 'true'
         run: |
           echo "Workflow failures detected:"
           if [ "${{ steps.run_e2e_kv_store.outputs.failed }}" == "true" ]; then
@@ -263,6 +422,15 @@ jobs:
           fi
           if [ "${{ steps.run_groups.outputs.failed }}" == "true" ]; then
             echo "  - groups workflow failed"
+          fi
+          if [ "${{ steps.run_group_3node.outputs.failed }}" == "true" ]; then
+            echo "  - group-3node workflow failed"
+          fi
+          if [ "${{ steps.run_group_context_isolation.outputs.failed }}" == "true" ]; then
+            echo "  - group-context-isolation workflow failed"
+          fi
+          if [ "${{ steps.run_group_late_joiner.outputs.failed }}" == "true" ]; then
+            echo "  - group-late-joiner workflow failed"
           fi
           if [ "${{ steps.run_xcall.outputs.failed }}" == "true" ]; then
             echo "  - xcall-example workflow failed"

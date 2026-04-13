@@ -1,0 +1,246 @@
+name: E2E KV Store - Group Late Joiner State Catch-Up
+description: >
+  Tests that a node joining a namespace after data already exists in a context
+  correctly catches up to the pre-existing state. Node-1 writes several keys
+  before node-2 joins, then node-2 joins and must see all pre-existing data as
+  well as new writes after joining.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup: node-1 alone creates namespace and context ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  # --- SCENARIO 1: node-1 writes data before anyone else joins ---
+
+  - name: Node-1 writes pre-join key-1
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "pre_join_1"
+      value: "written_before_join"
+
+  - name: Node-1 writes pre-join key-2
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "pre_join_2"
+      value: "also_before_join"
+
+  - name: Node-1 writes pre-join key-3
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "pre_join_3"
+      value: "third_before_join"
+
+  # --- Node-2 joins after data exists ---
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+
+  - name: Node-2 joins context via group membership
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+
+  - name: Wait for node-2 to catch up to existing state
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 90
+    check_interval: 3
+    trigger_sync: true
+
+  # --- Verify node-2 sees all pre-existing state ---
+
+  - name: Node-2 reads pre-join key-1
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "pre_join_1"
+    outputs:
+      pre1_node2: result
+
+  - name: Assert pre-join key-1 on node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{pre1_node2}}, {"output": "written_before_join"})'
+
+  - name: Node-2 reads pre-join key-2
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "pre_join_2"
+    outputs:
+      pre2_node2: result
+
+  - name: Assert pre-join key-2 on node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{pre2_node2}}, {"output": "also_before_join"})'
+
+  - name: Node-2 reads pre-join key-3
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "pre_join_3"
+    outputs:
+      pre3_node2: result
+
+  - name: Assert pre-join key-3 on node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{pre3_node2}}, {"output": "third_before_join"})'
+
+  # --- SCENARIO 2: writes after join sync normally ---
+
+  - name: Node-1 writes post-join key
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "post_join"
+      value: "written_after_join"
+
+  - name: Wait for post-join sync
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads post-join key
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "post_join"
+    outputs:
+      post_join_node2: result
+
+  - name: Assert post-join key on node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{post_join_node2}}, {"output": "written_after_join"})'
+
+  - name: Node-2 writes after joining
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "node2_post_join"
+      value: "node2_wrote_this"
+
+  - name: Wait for node-2 post-join write to sync
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-1 reads node-2 post-join key
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "node2_post_join"
+    outputs:
+      node2_post_join_node1: result
+
+  - name: Assert node-2 post-join write visible on node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_post_join_node1}}, {"output": "node2_wrote_this"})'
+
+  # --- SCENARIO 3: verify full entry count matches across both nodes ---
+
+  - name: Node-1 reads entry count
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: len
+    outputs:
+      len_node1: result
+
+  - name: Node-2 reads entry count
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: len
+    outputs:
+      len_node2: result
+
+  - name: Assert both nodes see same entry count
+    type: json_assert
+    statements:
+      - 'json_equal({{len_node1}}, {{len_node2}})'
+
+stop_all_nodes: false

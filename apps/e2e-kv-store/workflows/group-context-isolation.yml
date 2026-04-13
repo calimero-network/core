@@ -1,0 +1,273 @@
+name: E2E KV Store - Group Context Isolation
+description: >
+  Tests that two contexts within the same namespace are fully isolated from each
+  other. Writes to context-A must not be visible in context-B and vice versa.
+  Also verifies that a node which is a member of both contexts sees the correct
+  state in each independently.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context-A in namespace
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_a_id: contextId
+
+  - name: Create context-B in namespace
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_b_id: contextId
+
+  - name: Assert both contexts created
+    type: assert
+    statements:
+      - "is_set({{ctx_a_id}})"
+      - "is_set({{ctx_b_id}})"
+
+  # --- Node-2 joins namespace and both contexts ---
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+
+  - name: Node-2 joins context-A via group membership
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_a_id}}'
+
+  - name: Node-2 joins context-B via group membership
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_b_id}}'
+
+  # --- SCENARIO 1: write to context-A, assert not visible in context-B ---
+
+  - name: Node-1 writes to context-A
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_a_id}}'
+    method: set
+    args:
+      key: "shared_key"
+      value: "context_a_value"
+
+  - name: Wait for context-A sync
+    type: wait_for_sync
+    context_id: '{{ctx_a_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads shared_key from context-A
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_a_id}}'
+    method: get
+    args:
+      key: "shared_key"
+    outputs:
+      key_in_ctx_a: result
+
+  - name: Assert context-A value correct on node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{key_in_ctx_a}}, {"output": "context_a_value"})'
+
+  - name: Node-1 reads shared_key from context-B (should be absent)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_b_id}}'
+    method: get
+    args:
+      key: "shared_key"
+    outputs:
+      key_in_ctx_b_node1: result
+
+  - name: Assert shared_key absent in context-B on node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{key_in_ctx_b_node1}}, {"output": null})'
+
+  - name: Node-2 reads shared_key from context-B (should be absent)
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_b_id}}'
+    method: get
+    args:
+      key: "shared_key"
+    outputs:
+      key_in_ctx_b_node2: result
+
+  - name: Assert shared_key absent in context-B on node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{key_in_ctx_b_node2}}, {"output": null})'
+
+  # --- SCENARIO 2: write to context-B, assert not visible in context-A ---
+
+  - name: Node-2 writes to context-B
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_b_id}}'
+    method: set
+    args:
+      key: "shared_key"
+      value: "context_b_value"
+
+  - name: Wait for context-B sync
+    type: wait_for_sync
+    context_id: '{{ctx_b_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-1 reads shared_key from context-B
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_b_id}}'
+    method: get
+    args:
+      key: "shared_key"
+    outputs:
+      ctx_b_key_node1: result
+
+  - name: Assert context-B value correct on node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{ctx_b_key_node1}}, {"output": "context_b_value"})'
+
+  - name: Node-1 re-reads shared_key from context-A (must still be context-A value)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_a_id}}'
+    method: get
+    args:
+      key: "shared_key"
+    outputs:
+      ctx_a_key_after_b_write: result
+
+  - name: Assert context-A value unchanged after context-B write
+    type: json_assert
+    statements:
+      - 'json_equal({{ctx_a_key_after_b_write}}, {"output": "context_a_value"})'
+
+  # --- SCENARIO 3: distinct keys per context, verify no bleed ---
+
+  - name: Node-1 writes ctx-A-only key
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_a_id}}'
+    method: set
+    args:
+      key: "ctx_a_only"
+      value: "only_in_a"
+
+  - name: Node-1 writes ctx-B-only key
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_b_id}}'
+    method: set
+    args:
+      key: "ctx_b_only"
+      value: "only_in_b"
+
+  - name: Wait for both contexts to sync
+    type: wait_for_sync
+    context_id: '{{ctx_a_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Wait for context-B to sync
+    type: wait_for_sync
+    context_id: '{{ctx_b_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads ctx-A-only key from context-B (should be absent)
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_b_id}}'
+    method: get
+    args:
+      key: "ctx_a_only"
+    outputs:
+      ctx_a_key_in_b: result
+
+  - name: Assert ctx-A-only key absent in context-B
+    type: json_assert
+    statements:
+      - 'json_equal({{ctx_a_key_in_b}}, {"output": null})'
+
+  - name: Node-2 reads ctx-B-only key from context-A (should be absent)
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_a_id}}'
+    method: get
+    args:
+      key: "ctx_b_only"
+    outputs:
+      ctx_b_key_in_a: result
+
+  - name: Assert ctx-B-only key absent in context-A
+    type: json_assert
+    statements:
+      - 'json_equal({{ctx_b_key_in_a}}, {"output": null})'
+
+stop_all_nodes: false

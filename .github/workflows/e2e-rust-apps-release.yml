@@ -181,6 +181,129 @@ jobs:
               echo "failed=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Run group-3node Workflow
+        id: run_group_3node
+        run: |
+          cd apps/e2e-kv-store
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+
+              if merobox bootstrap run \
+                  "workflows/group-3node.yml" \
+                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+                  --e2e-mode; then
+                  success=true
+                  break
+              else
+                  attempt=$((attempt + 1))
+              fi
+          done
+
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+              if [ -n "$container" ]; then
+                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/group-3node-${container}.log" 2>&1 || true
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
+          else
+              echo "failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run group-context-isolation Workflow
+        id: run_group_context_isolation
+        run: |
+          cd apps/e2e-kv-store
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+
+              if merobox bootstrap run \
+                  "workflows/group-context-isolation.yml" \
+                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+                  --e2e-mode; then
+                  success=true
+                  break
+              else
+                  attempt=$((attempt + 1))
+              fi
+          done
+
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+              if [ -n "$container" ]; then
+                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/group-context-isolation-${container}.log" 2>&1 || true
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
+          else
+              echo "failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run group-late-joiner Workflow
+        id: run_group_late_joiner
+        run: |
+          cd apps/e2e-kv-store
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+
+              if merobox bootstrap run \
+                  "workflows/group-late-joiner.yml" \
+                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+                  --e2e-mode; then
+                  success=true
+                  break
+              else
+                  attempt=$((attempt + 1))
+              fi
+          done
+
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+              if [ -n "$container" ]; then
+                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/group-late-joiner-${container}.log" 2>&1 || true
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "failed=true" >> $GITHUB_OUTPUT
+          else
+              echo "failed=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Run xcall-example Workflow
         id: run_xcall
         run: |
@@ -249,7 +372,13 @@ jobs:
           if-no-files-found: warn
 
       - name: Check workflow results
-        if: steps.run_e2e_kv_store.outputs.failed == 'true' || steps.run_groups.outputs.failed == 'true' || steps.run_xcall.outputs.failed == 'true'
+        if: |
+          steps.run_e2e_kv_store.outputs.failed == 'true' ||
+          steps.run_groups.outputs.failed == 'true' ||
+          steps.run_group_3node.outputs.failed == 'true' ||
+          steps.run_group_context_isolation.outputs.failed == 'true' ||
+          steps.run_group_late_joiner.outputs.failed == 'true' ||
+          steps.run_xcall.outputs.failed == 'true'
         run: |
           echo "Workflow failures detected:"
           if [ "${{ steps.run_e2e_kv_store.outputs.failed }}" == "true" ]; then
@@ -257,6 +386,15 @@ jobs:
           fi
           if [ "${{ steps.run_groups.outputs.failed }}" == "true" ]; then
             echo "  - groups workflow failed"
+          fi
+          if [ "${{ steps.run_group_3node.outputs.failed }}" == "true" ]; then
+            echo "  - group-3node workflow failed"
+          fi
+          if [ "${{ steps.run_group_context_isolation.outputs.failed }}" == "true" ]; then
+            echo "  - group-context-isolation workflow failed"
+          fi
+          if [ "${{ steps.run_group_late_joiner.outputs.failed }}" == "true" ]; then
+            echo "  - group-late-joiner workflow failed"
           fi
           if [ "${{ steps.run_xcall.outputs.failed }}" == "true" ]; then
             echo "  - xcall-example workflow failed"
