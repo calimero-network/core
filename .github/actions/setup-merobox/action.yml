@@ -15,14 +15,23 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
+    - name: Ensure Rust toolchain is on PATH
+      shell: bash
+      # calimero-client-py (a merobox sdist dep) is a maturin-built Rust
+      # extension; without cargo/rustc the PEP 517 metadata hook produces
+      # `Name: None` and the later pip install crashes. GitHub-hosted
+      # runners ship Rust; self-hosted ones may not.
+      run: |
+        if ! command -v cargo >/dev/null 2>&1; then
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        fi
+
     - name: Install merobox from git
       shell: bash
       run: |
-        # Pin pip<26: pip 26.x crashes in `warn_on_mismatching_name` when a
-        # transitive sdist (calimero-client-py) reports `Name: None` during
-        # PEP 517 metadata extraction. Reproducible on our self-hosted
-        # runner; pip 25.x ships without that check.
-        python -m pip install --upgrade 'pip<26' setuptools wheel
+        python -m pip install --upgrade pip setuptools wheel
         python -m pip install "merobox @ git+https://github.com/calimero-network/merobox.git@master"
 
     - name: Verify merobox installation
