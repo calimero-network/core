@@ -118,6 +118,7 @@ Node B requests missing deltas from Node C
 MessagePayload::DeltaResponse {
     delta: Cow<'a, [u8]>,
     events: Option<Cow<'a, [u8]>>,  // NEW — optional, old nodes send None
+    handler_depth: u8,  // NEW — tracks handler chain depth, defaults to 0
 }
 ```
 
@@ -131,7 +132,7 @@ MessagePayload::EventRequest {
 
 MessagePayload::EventResponse {
     // Only includes entries where responder has events
-    entries: Cow<'a, [(/* delta_id */ [u8; 32], /* serialized events */ Vec<u8>)]>,
+    entries: Cow<'a, [(/* delta_id */ [u8; 32], /* serialized events */ Vec<u8>, /* handler_depth */ u8)]>,
 }
 ```
 
@@ -182,7 +183,7 @@ For each delta_id in event sidecar:
 ```
 Column Family: "context_delta_events"
 Key:   (context_id: [u8; 32], delta_id: [u8; 32])
-Value: Vec<u8>  // borsh-serialized Vec<ExecutionEvent>
+Value: (Vec<u8>, u8)  // borsh-serialized (Vec<ExecutionEvent>, handler_depth)
 ```
 
 **Write points:**
@@ -222,7 +223,7 @@ Value: Vec<u8>  // borsh-serialized Vec<ExecutionEvent>
 
 - `DeltaResponse.events` is an `Option` — old nodes send `None`, new nodes handle `None` gracefully (fallback to `EventRequest`)
 - `EventRequest`/`EventResponse` are new message variants — old nodes ignore unknown variants
-- `handler_depth` defaults to `0` — old nodes that don't send it are treated as user-initiated executions
+- `handler_depth` defaults to `0` in all wire protocol messages and storage — old nodes that don't send it are treated as user-initiated executions
 - No storage migration — sidecar is a new column family, populated going forward
 - Mixed-version contexts degrade to current behavior (events only via gossipsub) until all nodes upgrade
 
