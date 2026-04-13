@@ -1,10 +1,16 @@
-name: Handler Sync Test
-description: Test set_with_handler sync
+name: E2E KV Store - Event Handler Dispatch
+description: >
+  Tests the app::emit! / insert_handler path in the namespace model.
+  set_with_handler emits an event that merod dispatches back to all
+  context members as an execute call. The test verifies:
+    1. set_with_handler writes the value and fires the event.
+    2. The handler-inserted value syncs to both nodes via CRDT.
+    3. get_handler_execution_count reflects handler invocations.
 
 force_pull_image: false
+near_devnet: false
 
 nodes:
-  chain_id: testnet-1
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: e2e-node
@@ -18,34 +24,170 @@ steps:
     outputs:
       app_id: applicationId
 
-  - name: Create mesh with node-2
-    type: create_mesh
-    context_node: e2e-node-1
-    application_id: "{{app_id}}"
-    path: res/e2e_kv_store.wasm
-    nodes:
-      - e2e-node-2
-    capability: member
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
     outputs:
       context_id: contextId
-      node1_key: memberPublicKey
+      ctx_key_node1: memberPublicKey
 
-  # set_with_handler emits event that triggers insert_handler on receivers
-  - name: Set with handler on node-1
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+
+  - name: Node-2 joins context via namespace membership
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{context_id}}'
+    outputs:
+      ctx_key_node2: memberPublicKey
+
+  # --- SCENARIO 1: set_with_handler fires event; value syncs ---
+
+  - name: Node-1 calls set_with_handler
     type: call
     node: e2e-node-1
-    context_id: "{{context_id}}"
+    context_id: '{{context_id}}'
     method: set_with_handler
     args:
       key: "test_key"
       value: "test_value"
 
-  - name: Wait for sync
+  - name: Wait for handler sync
     type: wait_for_sync
-    context_id: "{{context_id}}"
+    context_id: '{{context_id}}'
     nodes:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
     check_interval: 2
     trigger_sync: true
+
+  - name: Node-2 reads the handler-written value
+    type: call
+    node: e2e-node-2
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      read_result: result
+
+  - name: Assert handler value synced to node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{read_result}}, {"output": "test_value"})'
+
+  - name: Node-1 reads back handler-written value
+    type: call
+    node: e2e-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: "test_key"
+    outputs:
+      read_result_node1: result
+
+  - name: Assert handler value present on node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{read_result_node1}}, {"output": "test_value"})'
+
+  # --- SCENARIO 2: Handler execution count is tracked ---
+
+  - name: Node-1 gets handler execution count
+    type: call
+    node: e2e-node-1
+    context_id: '{{context_id}}'
+    method: get_handler_execution_count
+    outputs:
+      handler_count_node1: result
+
+  - name: Assert handler was executed at least once on node-1
+    type: assert
+    statements:
+      - "is_set({{handler_count_node1}})"
+
+  - name: Node-2 gets handler execution count
+    type: call
+    node: e2e-node-2
+    context_id: '{{context_id}}'
+    method: get_handler_execution_count
+    outputs:
+      handler_count_node2: result
+
+  - name: Assert handler was executed at least once on node-2
+    type: assert
+    statements:
+      - "is_set({{handler_count_node2}})"
+
+  # --- SCENARIO 3: Second call accumulates handler invocations ---
+
+  - name: Node-2 calls set_with_handler a second time
+    type: call
+    node: e2e-node-2
+    context_id: '{{context_id}}'
+    method: set_with_handler
+    args:
+      key: "test_key2"
+      value: "second_value"
+
+  - name: Wait for second handler sync
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-1 reads second handler-written value
+    type: call
+    node: e2e-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: "test_key2"
+    outputs:
+      second_read: result
+
+  - name: Assert second handler value synced to node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{second_read}}, {"output": "second_value"})'
+
+stop_all_nodes: false

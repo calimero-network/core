@@ -1,0 +1,271 @@
+name: E2E KV Store - Multi-Service Bundle
+description: >
+  Tests the multi-service bundle install and service_name context selection.
+  Both services (store-a, store-b) are backed by the same e2e_kv_store WASM
+  but are treated as independent services by merod. The test verifies:
+    1. A multi-service .mpk bundle can be installed.
+    2. Contexts can be pinned to a named service via service_name.
+    3. Contexts on different services are fully isolated — writes in store-a
+       are NOT visible in store-b and vice versa.
+    4. CRDT sync works correctly within each service's context.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup: install multi-service bundle ---
+
+  - name: Install multi-service bundle on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e-kv-store-multi-0.1.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert bundle installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  # --- Create two contexts, one per service ---
+
+  - name: Create context for service store-a on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    service_name: store-a
+    outputs:
+      ctx_a_id: contextId
+      ctx_a_key_node1: memberPublicKey
+
+  - name: Create context for service store-b on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    service_name: store-b
+    outputs:
+      ctx_b_id: contextId
+      ctx_b_key_node1: memberPublicKey
+
+  - name: Assert both contexts created
+    type: assert
+    statements:
+      - "is_set({{ctx_a_id}})"
+      - "is_set({{ctx_b_id}})"
+
+  # --- Node-2 joins namespace and both contexts ---
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+
+  - name: Node-2 joins context-A via namespace membership
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_a_id}}'
+    outputs:
+      ctx_a_key_node2: memberPublicKey
+
+  - name: Node-2 joins context-B via namespace membership
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_b_id}}'
+    outputs:
+      ctx_b_key_node2: memberPublicKey
+
+  # --- SCENARIO 1: Write to store-a, verify isolation from store-b ---
+
+  - name: Node-1 writes to store-a context
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_a_id}}'
+    method: set
+    args:
+      key: "service_key"
+      value: "in_store_a"
+
+  - name: Wait for store-a sync
+    type: wait_for_sync
+    context_id: '{{ctx_a_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads service_key from store-a (must be set)
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_a_id}}'
+    method: get
+    args:
+      key: "service_key"
+    outputs:
+      key_in_a: result
+
+  - name: Assert store-a value visible on node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{key_in_a}}, {"output": "in_store_a"})'
+
+  - name: Node-1 reads service_key from store-b (must be absent)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_b_id}}'
+    method: get
+    args:
+      key: "service_key"
+    outputs:
+      key_in_b_node1: result
+
+  - name: Assert store-a write did NOT bleed into store-b on node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{key_in_b_node1}}, {"output": null})'
+
+  - name: Node-2 reads service_key from store-b (must also be absent)
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_b_id}}'
+    method: get
+    args:
+      key: "service_key"
+    outputs:
+      key_in_b_node2: result
+
+  - name: Assert store-a write did NOT bleed into store-b on node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{key_in_b_node2}}, {"output": null})'
+
+  # --- SCENARIO 2: Write to store-b, verify isolation from store-a ---
+
+  - name: Node-2 writes to store-b context
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_b_id}}'
+    method: set
+    args:
+      key: "service_key"
+      value: "in_store_b"
+
+  - name: Wait for store-b sync
+    type: wait_for_sync
+    context_id: '{{ctx_b_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-1 reads service_key from store-b (must be set)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_b_id}}'
+    method: get
+    args:
+      key: "service_key"
+    outputs:
+      b_key_on_node1: result
+
+  - name: Assert store-b value visible on node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{b_key_on_node1}}, {"output": "in_store_b"})'
+
+  - name: Node-1 re-reads service_key from store-a (must still be store-a value)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_a_id}}'
+    method: get
+    args:
+      key: "service_key"
+    outputs:
+      a_key_after_b_write: result
+
+  - name: Assert store-b write did NOT overwrite store-a value
+    type: json_assert
+    statements:
+      - 'json_equal({{a_key_after_b_write}}, {"output": "in_store_a"})'
+
+  # --- SCENARIO 3: Event handler dispatch within a service context ---
+
+  - name: Node-1 calls set_with_handler in store-a context
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_a_id}}'
+    method: set_with_handler
+    args:
+      key: "handler_key"
+      value: "handler_value"
+
+  - name: Wait for handler sync in store-a
+    type: wait_for_sync
+    context_id: '{{ctx_a_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 verifies handler_key synced in store-a
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_a_id}}'
+    method: get
+    args:
+      key: "handler_key"
+    outputs:
+      handler_read: result
+
+  - name: Assert handler dispatch synced the value in store-a
+    type: json_assert
+    statements:
+      - 'json_equal({{handler_read}}, {"output": "handler_value"})'
+
+  - name: Node-2 checks handler execution count in store-a
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_a_id}}'
+    method: get_handler_execution_count
+    outputs:
+      handler_count: result
+
+  - name: Assert handler was executed at least once
+    type: assert
+    statements:
+      - "is_set({{handler_count}})"
+
+stop_all_nodes: false
