@@ -18,10 +18,15 @@ runs:
     - name: Install merobox from git
       shell: bash
       run: |
-        # Pin setuptools<80: 80+ makes calimero-client-py's sdist expose
-        # `Name: None`, which crashes pip's warn_on_mismatching_name.
-        python -m pip install --upgrade pip 'setuptools<80' wheel
-        python -m pip install "merobox @ git+https://github.com/calimero-network/merobox.git@master"
+        # Self-hosted runners reuse pip's cache between runs, and a stale
+        # entry for calimero-client-py's sdist makes pip 26.x crash in
+        # `warn_on_mismatching_name` (`metadata["Name"]` comes back as None).
+        # Purge the cache and install with --no-cache-dir to force a clean
+        # PEP 517 build. GitHub-hosted runners are unaffected either way.
+        python -m pip cache purge || true
+        python -m pip install --upgrade pip setuptools wheel
+        python -m pip install --no-cache-dir \
+          "merobox @ git+https://github.com/calimero-network/merobox.git@master"
 
     - name: Verify merobox installation
       shell: bash
