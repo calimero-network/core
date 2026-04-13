@@ -18,11 +18,9 @@ runs:
     - name: Install merobox from git
       shell: bash
       run: |
-        # Use `python -m pip` to upgrade pip itself: plain `pip install --upgrade pip`
-        # can leave pip unchanged on some runners, which then hits a pip/setuptools
-        # metadata bug (`AttributeError: 'NoneType' object has no attribute 'lower'`)
-        # when installing from a git+ URL.
-        python -m pip install --upgrade pip setuptools wheel
+        # Pin setuptools<80: 80+ makes calimero-client-py's sdist expose
+        # `Name: None`, which crashes pip's warn_on_mismatching_name.
+        python -m pip install --upgrade pip 'setuptools<80' wheel
         python -m pip install "merobox @ git+https://github.com/calimero-network/merobox.git@master"
 
     - name: Verify merobox installation
