@@ -365,10 +365,14 @@ steps:
     outputs:
       handler_count_after_insert: result
 
-  - name: Assert handler count is 1 after insert on node-2
+  # Handlers execute on RECEIVING nodes (node-2, node-3). Each receiver
+  # increments its own G-Counter slot by 1, and `value()` sums across slots,
+  # so after 1 handler action across a 3-node context (1 sender + 2 receivers)
+  # the merged count is 2.
+  - name: Assert handler count is 2 after insert on node-2
     type: json_assert
     statements:
-      - 'json_equal({{handler_count_after_insert}}, {"output": 1})'
+      - 'json_equal({{handler_count_after_insert}}, {"output": 2})'
 
   - name: Get handler count after insert on Node 3
     type: call
@@ -378,10 +382,10 @@ steps:
     outputs:
       handler_count_after_insert_node3: result
 
-  - name: Assert handler count is 1 after insert on node-3
+  - name: Assert handler count is 2 after insert on node-3
     type: json_assert
     statements:
-      - 'json_equal({{handler_count_after_insert_node3}}, {"output": 1})'
+      - 'json_equal({{handler_count_after_insert_node3}}, {"output": 2})'
 
   - name: Set with handler again (triggers update_handler on receivers)
     type: call
@@ -411,10 +415,10 @@ steps:
     outputs:
       handler_count_after_update: result
 
-  - name: Assert handler count is 2 after update on node-2
+  - name: Assert handler count is 4 after update on node-2
     type: json_assert
     statements:
-      - 'json_equal({{handler_count_after_update}}, {"output": 2})'
+      - 'json_equal({{handler_count_after_update}}, {"output": 4})'
 
   - name: Get handler count after update on Node 3
     type: call
@@ -424,10 +428,10 @@ steps:
     outputs:
       handler_count_after_update_node3: result
 
-  - name: Assert handler count is 2 after update on node-3
+  - name: Assert handler count is 4 after update on node-3
     type: json_assert
     statements:
-      - 'json_equal({{handler_count_after_update_node3}}, {"output": 2})'
+      - 'json_equal({{handler_count_after_update_node3}}, {"output": 4})'
 
   - name: Remove with handler (triggers remove_handler on receivers)
     type: call
@@ -456,10 +460,10 @@ steps:
     outputs:
       handler_count_after_remove: result
 
-  - name: Assert handler count is 3 after remove on node-2
+  - name: Assert handler count is 6 after remove on node-2
     type: json_assert
     statements:
-      - 'json_equal({{handler_count_after_remove}}, {"output": 3})'
+      - 'json_equal({{handler_count_after_remove}}, {"output": 6})'
 
   - name: Get handler count after remove on Node 3
     type: call
@@ -469,10 +473,10 @@ steps:
     outputs:
       handler_count_after_remove_node3: result
 
-  - name: Assert handler count is 3 after remove on node-3
+  - name: Assert handler count is 6 after remove on node-3
     type: json_assert
     statements:
-      - 'json_equal({{handler_count_after_remove_node3}}, {"output": 3})'
+      - 'json_equal({{handler_count_after_remove_node3}}, {"output": 6})'
 
   - name: Set some test values for clear
     type: call
@@ -528,10 +532,10 @@ steps:
     outputs:
       handler_count_after_clear: result
 
-  - name: Assert handler count is 4 after clear on node-2
+  - name: Assert handler count is 8 after clear on node-2
     type: json_assert
     statements:
-      - 'json_equal({{handler_count_after_clear}}, {"output": 4})'
+      - 'json_equal({{handler_count_after_clear}}, {"output": 8})'
 
   - name: Get handler count after clear on Node 3
     type: call
@@ -541,10 +545,10 @@ steps:
     outputs:
       handler_count_after_clear_node3: result
 
-  - name: Assert handler count is 4 after clear on node-3
+  - name: Assert handler count is 8 after clear on node-3
     type: json_assert
     statements:
-      - 'json_equal({{handler_count_after_clear_node3}}, {"output": 4})'
+      - 'json_equal({{handler_count_after_clear_node3}}, {"output": 8})'
 
   # USER STORAGE - SIMPLE
 
