@@ -17,11 +17,15 @@ runs:
 
     - name: Install merobox from git
       shell: bash
-      # Use `uv` instead of pip. pip 26.x's `warn_on_mismatching_name` crashes
-      # on the maturin-built `calimero-client-py` sdist on our self-hosted
-      # runner (`metadata["Name"]` comes back as None), regardless of pip /
-      # setuptools / cargo state. `uv` uses its own resolver/metadata path
-      # and installs the same package cleanly.
+      # Force RUST_LOG=warn for the install: callers (e.g. fuzzy-load-test)
+      # set RUST_LOG=info for the merod runtime, which leaks into maturin
+      # while it builds calimero-client-py's sdist. Maturin's Python PEP 517
+      # wrapper parses its own stdout to locate the built wheel, and an INFO
+      # tracing line gets mistaken for the wheel path -> FileNotFoundError.
+      # Use `uv` rather than pip; pip's warn_on_mismatching_name path crashes
+      # on this same sdist on the self-hosted runner.
+      env:
+        RUST_LOG: warn
       run: |
         python -m pip install --upgrade pip
         python -m pip install uv
