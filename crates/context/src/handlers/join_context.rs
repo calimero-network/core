@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{JoinContextRequest, JoinContextResponse};
 use calimero_context_config::types::ContextGroupId;
@@ -6,6 +8,27 @@ use eyre::bail;
 use tracing::{info, warn};
 
 use crate::{group_store, ContextManager};
+
+/// Per-attempt sleep schedule for resolving the context->group mapping.
+///
+/// The mapping is delivered by the `ContextRegistered` governance op, which
+/// propagates asynchronously over gossipsub from the creating node.
+///
+/// Exponential-ish backoff is used so we:
+/// 1. Wake fast for the common case where the op arrives within a few hundred
+///    ms of `join_context` being called (CI evidence: ops observed arriving
+///    ~40ms after the previous flat 1.8s budget expired).
+/// 2. Still cover the slow-propagation tail (~10s total budget) without
+///    waiting the full budget on every successful join.
+///
+/// Total worst-case wait ≈ 150ms + 400ms + 1s + 2.5s + 6s = ~10s.
+const GROUP_LOOKUP_BACKOFF: &[Duration] = &[
+    Duration::from_millis(150),
+    Duration::from_millis(400),
+    Duration::from_secs(1),
+    Duration::from_millis(2500),
+    Duration::from_secs(6),
+];
 
 impl Handler<JoinContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <JoinContextRequest as Message>::Result>;
@@ -28,8 +51,8 @@ impl Handler<JoinContextRequest> for ContextManager {
                     );
                     sync_known_namespaces(&datastore, &node_client).await;
 
-                    for attempt in 0..3 {
-                        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                    for (attempt, delay) in GROUP_LOOKUP_BACKOFF.iter().enumerate() {
+                        tokio::time::sleep(*delay).await;
                         group_id = group_store::get_group_for_context(&datastore, &context_id)?;
                         if group_id.is_some() {
                             info!(
