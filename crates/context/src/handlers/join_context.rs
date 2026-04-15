@@ -5,30 +5,22 @@ use calimero_context_client::group::{JoinContextRequest, JoinContextResponse};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextConfigParams;
 use eyre::bail;
+use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
-use crate::{group_store, ContextManager};
+use crate::{group_store, registration_notify, ContextManager};
 
-/// Per-attempt sleep schedule for resolving the context->group mapping.
-///
-/// The mapping is delivered by the `ContextRegistered` governance op, which
-/// propagates asynchronously over gossipsub from the creating node.
-///
-/// Exponential-ish backoff is used so we:
-/// 1. Wake fast for the common case where the op arrives within a few hundred
-///    ms of `join_context` being called (CI evidence: ops observed arriving
-///    ~40ms after the previous flat 1.8s budget expired).
-/// 2. Still cover the slow-propagation tail (~10s total budget) without
-///    waiting the full budget on every successful join.
-///
-/// Total worst-case wait ≈ 150ms + 400ms + 1s + 2.5s + 6s = ~10s.
-const GROUP_LOOKUP_BACKOFF: &[Duration] = &[
-    Duration::from_millis(150),
-    Duration::from_millis(400),
-    Duration::from_secs(1),
-    Duration::from_millis(2500),
-    Duration::from_secs(6),
-];
+/// Overall budget for the context→group mapping to land locally after a
+/// `sync_known_namespaces` kick. Dominated by peer-discovery in the cold
+/// case (`Mesh low` / no peers); the normal case wakes within a few ms as
+/// soon as `registration_notify::notify` fires from the apply path.
+const GROUP_LOOKUP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Fallback poll interval in case the notifier channel lags (burst of
+/// registrations overflowing the broadcast capacity). Lag is handled by
+/// re-reading the datastore; this bounds how long a lagged receiver
+/// waits before that recheck.
+const FALLBACK_POLL: Duration = Duration::from_millis(200);
 
 impl Handler<JoinContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <JoinContextRequest as Message>::Result>;
@@ -45,24 +37,82 @@ impl Handler<JoinContextRequest> for ContextManager {
             async move {
                 let mut group_id = group_store::get_group_for_context(&datastore, &context_id)?;
                 if group_id.is_none() {
+                    // Subscribe BEFORE kicking sync so we cannot miss a signal
+                    // that fires between the sync returning and us starting to
+                    // wait. All messages sent after this point are delivered.
+                    let mut rx = registration_notify::subscribe();
+
                     warn!(
                         %context_id,
                         "context->group mapping missing locally; syncing known namespaces"
                     );
                     sync_known_namespaces(&datastore, &node_client).await;
 
-                    for (attempt, delay) in GROUP_LOOKUP_BACKOFF.iter().enumerate() {
-                        tokio::time::sleep(*delay).await;
-                        group_id = group_store::get_group_for_context(&datastore, &context_id)?;
-                        if group_id.is_some() {
-                            info!(
-                                %context_id,
-                                attempt = attempt + 1,
-                                "resolved context->group mapping after namespace sync"
-                            );
-                            break;
+                    // Mapping may have landed synchronously during sync (creator's
+                    // own apply, or a sync that completed and applied inline).
+                    group_id = group_store::get_group_for_context(&datastore, &context_id)?;
+
+                    if group_id.is_none() {
+                        let deadline = tokio::time::Instant::now() + GROUP_LOOKUP_TIMEOUT;
+                        let started = tokio::time::Instant::now();
+                        loop {
+                            // Race the notifier against a short poll interval: if
+                            // the channel lagged (bursty traffic), we still catch
+                            // the mapping via the periodic datastore recheck.
+                            let recv = tokio::time::timeout(FALLBACK_POLL, rx.recv()).await;
+                            match recv {
+                                Ok(Ok(cid)) if cid == context_id => {
+                                    group_id = group_store::get_group_for_context(
+                                        &datastore, &context_id,
+                                    )?;
+                                    if group_id.is_some() {
+                                        info!(
+                                            %context_id,
+                                            elapsed_ms = started.elapsed().as_millis() as u64,
+                                            "resolved context->group mapping via registration signal"
+                                        );
+                                        break;
+                                    }
+                                }
+                                Ok(Ok(_)) => {
+                                    // Signal for a different context — keep waiting.
+                                }
+                                Ok(Err(RecvError::Lagged(skipped))) => {
+                                    warn!(
+                                        %context_id,
+                                        skipped,
+                                        "registration_notify lagged; falling back to datastore poll"
+                                    );
+                                    group_id = group_store::get_group_for_context(
+                                        &datastore, &context_id,
+                                    )?;
+                                    if group_id.is_some() {
+                                        break;
+                                    }
+                                }
+                                Ok(Err(RecvError::Closed)) => {
+                                    // Channel sender dropped; final datastore check then bail.
+                                    group_id = group_store::get_group_for_context(
+                                        &datastore, &context_id,
+                                    )?;
+                                    break;
+                                }
+                                Err(_elapsed) => {
+                                    // Poll tick — recheck the datastore and kick another
+                                    // namespace sync to cover the "peer arrived late" case.
+                                    group_id = group_store::get_group_for_context(
+                                        &datastore, &context_id,
+                                    )?;
+                                    if group_id.is_some() {
+                                        break;
+                                    }
+                                    sync_known_namespaces(&datastore, &node_client).await;
+                                }
+                            }
+                            if tokio::time::Instant::now() >= deadline {
+                                break;
+                            }
                         }
-                        sync_known_namespaces(&datastore, &node_client).await;
                     }
                 }
 

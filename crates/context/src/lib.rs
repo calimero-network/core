@@ -27,6 +27,7 @@ pub mod group_store;
 pub mod handlers;
 mod lifecycle;
 mod metrics;
+pub mod registration_notify;
 
 /// A metadata container for a single, in-memory context.
 ///
