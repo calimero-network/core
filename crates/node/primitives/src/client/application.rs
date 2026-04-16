@@ -418,6 +418,83 @@ impl NodeClient {
         )
     }
 
+    /// Install a bundle from a local dev path, skipping signature verification.
+    async fn install_dev_bundle(
+        &self,
+        bundle_data: Arc<Vec<u8>>,
+        blob_id: &BlobId,
+        stored_size: u64,
+        source: &ApplicationSource,
+    ) -> eyre::Result<ApplicationId> {
+        let bundle_data_clone = Arc::clone(&bundle_data);
+        let (_manifest_json, manifest) =
+            tokio::task::spawn_blocking(move || Self::extract_bundle_manifest(&bundle_data_clone))
+                .await??;
+
+        let signer_id = "dev:unsigned";
+        let package = &manifest.package;
+        let version = &manifest.app_version;
+
+        let blobstore_root = self.blob_manager.root_path();
+        let node_root = blobstore_root
+            .parent()
+            .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?
+            .to_path_buf();
+        let extract_dir = node_root
+            .join("applications")
+            .join(package)
+            .join(version)
+            .join("extracted");
+
+        let bundle_data_clone = Arc::clone(&bundle_data);
+        let manifest_clone = manifest.clone();
+        let extract_dir_clone = extract_dir.clone();
+        let node_root_clone = node_root.clone();
+        let package_clone = package.to_string();
+        let version_clone = version.to_string();
+        tokio::task::spawn_blocking(move || {
+            Self::extract_bundle_artifacts(
+                &bundle_data_clone,
+                &manifest_clone,
+                &extract_dir_clone,
+                &node_root_clone,
+                &package_clone,
+                &version_clone,
+            )
+        })
+        .await??;
+
+        let mut services = Vec::new();
+        for artifact in manifest.wasm_artifacts() {
+            if let Some(name) = artifact.name {
+                let wasm_path = extract_dir.join(&artifact.wasm.path);
+                let wasm_bytes = tokio::fs::read(&wasm_path).await?;
+                let cursor = Cursor::new(wasm_bytes.as_slice());
+                let (svc_blob_id, _svc_size) = self
+                    .add_blob(cursor, Some(wasm_bytes.len() as u64), None)
+                    .await?;
+                services.push(types::ServiceMeta {
+                    name: name.to_owned().into_boxed_str(),
+                    bytecode: key::BlobMeta::new(svc_blob_id),
+                    compiled: key::BlobMeta::new(BlobId::from([0; 32])),
+                });
+            }
+        }
+
+        let bundle_metadata = manifest.to_metadata_json()?;
+
+        self.install_bundle_application(
+            blob_id,
+            stored_size,
+            source,
+            bundle_metadata,
+            package,
+            version,
+            signer_id,
+            services,
+        )
+    }
+
     /// Check if a path points to a bundle archive (.mpk - Mero Package Kit)
     fn is_bundle_archive(path: &Utf8Path) -> bool {
         path.extension().map(|ext| ext == "mpk").unwrap_or(false)
@@ -593,7 +670,9 @@ impl NodeClient {
             bail!("non-absolute path")
         };
 
-        self.install_verified_bundle(
+        // Dev installs from local path skip signature verification — the
+        // bundle may be unsigned during development/testing.
+        self.install_dev_bundle(
             bundle_data,
             &bundle_blob_id,
             stored_size,
