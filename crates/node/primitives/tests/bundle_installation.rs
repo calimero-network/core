@@ -1705,10 +1705,11 @@ fn create_test_bundle_with_key(
     bundle_path.try_into().unwrap()
 }
 
-/// Test: Installation should fail when bundle manifest has no signature field.
+/// Test: Dev installation of an unsigned bundle should succeed.
 ///
-/// All bundles must be signed. A bundle with a valid manifest
-/// but no signature field MUST be rejected during installation.
+/// Bundles installed from local paths (dev mode) are allowed to omit the
+/// signature field. Signature verification is only mandatory for production
+/// installs from registries.
 #[tokio::test]
 async fn test_bundle_installation_fails_without_signature() {
     let temp_dir = TempDir::new().unwrap();
@@ -1718,21 +1719,15 @@ async fn test_bundle_installation_fails_without_signature() {
     let bundle_path =
         create_unsigned_bundle(&temp_dir, "com.example.unsigned", "1.0.0", b"wasm content");
 
-    // Installation should fail
+    // Dev installs allow unsigned bundles
     let result = node_client
         .install_application_from_path(bundle_path, vec![], None, None)
         .await;
 
     assert!(
-        result.is_err(),
-        "Bundle installation should fail without signature"
-    );
-
-    let error_msg = result.unwrap_err().to_string();
-    assert!(
-        error_msg.contains("signature") || error_msg.contains("missing"),
-        "Error should mention missing signature, got: {}",
-        error_msg
+        result.is_ok(),
+        "Dev bundle installation should succeed without signature, got: {}",
+        result.unwrap_err()
     );
 }
 

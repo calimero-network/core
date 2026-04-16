@@ -418,7 +418,12 @@ impl NodeClient {
         )
     }
 
-    /// Install a bundle from a local dev path, skipping signature verification.
+    /// Install a bundle from a local dev path.
+    ///
+    /// If the manifest contains a signature, it is verified (and invalid
+    /// signatures are rejected). If no signature field is present, the
+    /// bundle is treated as an unsigned dev build and installed with a
+    /// placeholder signer id.
     async fn install_dev_bundle(
         &self,
         bundle_data: Arc<Vec<u8>>,
@@ -427,11 +432,23 @@ impl NodeClient {
         source: &ApplicationSource,
     ) -> eyre::Result<ApplicationId> {
         let bundle_data_clone = Arc::clone(&bundle_data);
-        let (_manifest_json, manifest) =
+        let (manifest_json, manifest) =
             tokio::task::spawn_blocking(move || Self::extract_bundle_manifest(&bundle_data_clone))
                 .await??;
 
-        let signer_id = "dev:unsigned";
+        let signer_id = if manifest_json.get("signature").is_some() {
+            let verification = verify_manifest_signature(&manifest_json)?;
+            debug!(
+                signer_id = %verification.signer_id,
+                bundle_hash = %hex::encode(verification.bundle_hash),
+                "dev bundle manifest signature verified"
+            );
+            verification.signer_id
+        } else {
+            debug!("dev bundle has no signature field, installing as unsigned");
+            "dev:unsigned".to_owned()
+        };
+
         let package = &manifest.package;
         let version = &manifest.app_version;
 
@@ -490,7 +507,7 @@ impl NodeClient {
             bundle_metadata,
             package,
             version,
-            signer_id,
+            &signer_id,
             services,
         )
     }
