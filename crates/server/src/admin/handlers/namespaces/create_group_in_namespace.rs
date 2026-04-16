@@ -94,6 +94,32 @@ pub async fn handler(
         Ok(()) => {
             let group_id = calimero_context_config::types::ContextGroupId::from(group_id);
 
+            // Nest the child group under the namespace so that
+            // resolve_namespace(child) walks up to the root.  Without this
+            // parent link, node_namespace_identity returns None and
+            // governance_preflight cannot locate the signing key.
+            let nest_op = calimero_context_client::local_governance::NamespaceOp::Root(
+                calimero_context_client::local_governance::RootOp::GroupNested {
+                    parent_group_id: namespace_id.to_bytes(),
+                    child_group_id: group_id.to_bytes(),
+                },
+            );
+            if let Err(err) = calimero_context::group_store::sign_apply_and_publish_namespace_op(
+                &state.store,
+                &state.node_client,
+                resolved_ns_id.to_bytes(),
+                &signer_sk,
+                nest_op,
+            )
+            .await
+            {
+                warn!(
+                    group_id=%hex::encode(group_id.to_bytes()),
+                    ?err,
+                    "Group created but failed to publish GroupNested op"
+                );
+            }
+
             if let Some(alias) = body.group_alias.as_deref() {
                 if let Err(err) =
                     calimero_context::group_store::set_group_alias(&state.store, &group_id, alias)

@@ -1375,6 +1375,89 @@ fn delete_all_group_signing_keys_removes_all() {
 }
 
 // -----------------------------------------------------------------------
+// Ancestor signing-key walk tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn find_ancestor_signing_key_walks_parent_chain() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xA0; 32]);
+    let child = ContextGroupId::from([0xA1; 32]);
+    let grandchild = ContextGroupId::from([0xA2; 32]);
+    let admin = PublicKey::from([0x10; 32]);
+    let sk = [0xCC; 32];
+
+    // Build hierarchy: root -> child -> grandchild
+    nest_group(&store, &root, &child).unwrap();
+    nest_group(&store, &child, &grandchild).unwrap();
+
+    // Store signing key ONLY on root
+    store_group_signing_key(&store, &root, &admin, &sk).unwrap();
+
+    // Walk from grandchild should find root's key
+    let found = find_ancestor_signing_key(&store, &grandchild, &admin);
+    assert_eq!(found, Some(sk));
+
+    // Walk from child should also find root's key
+    let found = find_ancestor_signing_key(&store, &child, &admin);
+    assert_eq!(found, Some(sk));
+
+    // Walk from root itself finds nothing (no parent above root)
+    let found = find_ancestor_signing_key(&store, &root, &admin);
+    assert_eq!(found, None);
+}
+
+#[test]
+fn find_ancestor_signing_key_returns_nearest() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xA0; 32]);
+    let child = ContextGroupId::from([0xA1; 32]);
+    let grandchild = ContextGroupId::from([0xA2; 32]);
+    let admin = PublicKey::from([0x10; 32]);
+    let root_sk = [0xAA; 32];
+    let child_sk = [0xBB; 32];
+
+    nest_group(&store, &root, &child).unwrap();
+    nest_group(&store, &child, &grandchild).unwrap();
+
+    // Keys at both root and child
+    store_group_signing_key(&store, &root, &admin, &root_sk).unwrap();
+    store_group_signing_key(&store, &child, &admin, &child_sk).unwrap();
+
+    // Walk from grandchild should find child's key (nearest ancestor)
+    let found = find_ancestor_signing_key(&store, &grandchild, &admin);
+    assert_eq!(found, Some(child_sk));
+}
+
+#[test]
+fn find_ancestor_signing_key_none_when_no_hierarchy() {
+    let store = test_store();
+    let orphan = ContextGroupId::from([0xA0; 32]);
+    let admin = PublicKey::from([0x10; 32]);
+
+    // No parent link, no key anywhere
+    let found = find_ancestor_signing_key(&store, &orphan, &admin);
+    assert_eq!(found, None);
+}
+
+#[test]
+fn find_ancestor_signing_key_wrong_identity_not_found() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xA0; 32]);
+    let child = ContextGroupId::from([0xA1; 32]);
+    let admin = PublicKey::from([0x10; 32]);
+    let other = PublicKey::from([0x20; 32]);
+    let sk = [0xCC; 32];
+
+    nest_group(&store, &root, &child).unwrap();
+    store_group_signing_key(&store, &root, &admin, &sk).unwrap();
+
+    // Different identity → not found
+    let found = find_ancestor_signing_key(&store, &child, &other);
+    assert_eq!(found, None);
+}
+
+// -----------------------------------------------------------------------
 // Context-group index tests
 // -----------------------------------------------------------------------
 

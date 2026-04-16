@@ -60,6 +60,31 @@ pub fn require_group_signing_key(
     Ok(())
 }
 
+/// Walk the parent chain looking for a stored signing key for `requester`.
+///
+/// This allows a namespace (root-group) admin to sign governance ops on any
+/// descendant group without needing a per-group key copy.  The walk is bounded
+/// by the same depth limit used for namespace resolution (16 levels).
+pub fn find_ancestor_signing_key(
+    store: &Store,
+    group_id: &ContextGroupId,
+    requester: &PublicKey,
+) -> Option<[u8; 32]> {
+    let mut current = *group_id;
+    for _ in 0..super::namespace::MAX_NAMESPACE_DEPTH {
+        match super::namespace::get_parent_group(store, &current) {
+            Ok(Some(parent)) => {
+                if let Ok(Some(sk)) = get_group_signing_key(store, &parent, requester) {
+                    return Some(sk);
+                }
+                current = parent;
+            }
+            _ => break,
+        }
+    }
+    None
+}
+
 /// Delete all signing keys for a group (used during group deletion).
 pub fn delete_all_group_signing_keys(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     let gid = group_id.to_bytes();

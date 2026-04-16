@@ -191,8 +191,7 @@ impl ContextManager {
             },
         };
 
-        let node_sk = node_identity.map(|(_, sk)| sk);
-        let signing_key = node_sk;
+        let signing_key = node_identity.map(|(_, sk)| sk);
 
         if group_store::load_group_meta(&self.datastore, group_id)?.is_none() {
             eyre::bail!("group '{group_id:?}' not found");
@@ -200,23 +199,38 @@ impl ContextManager {
         if require_admin {
             group_store::require_group_admin(&self.datastore, group_id, &requester)?;
         }
-        if signing_key.is_none() {
-            group_store::require_group_signing_key(&self.datastore, group_id, &requester)?;
-        }
 
-        if let Some(ref sk) = signing_key {
-            let _ = group_store::store_group_signing_key(&self.datastore, group_id, &requester, sk);
-        }
-
-        let effective_signing_key = signing_key.or_else(|| {
-            group_store::get_group_signing_key(&self.datastore, group_id, &requester)
-                .ok()
-                .flatten()
+        // Resolve the signing key.  Try, in order:
+        //   1. Namespace identity (already resolved above via node_namespace_identity)
+        //   2. Stored signing key for this exact group
+        //   3. Walk up the parent chain — a parent/namespace admin can operate
+        //      on any descendant group without a per-group key copy.
+        let stored_key = group_store::get_group_signing_key(&self.datastore, group_id, &requester)
+            .ok()
+            .flatten();
+        let from_ancestor = signing_key.is_none() && stored_key.is_none();
+        let effective_signing_key = signing_key.or(stored_key).or_else(|| {
+            group_store::find_ancestor_signing_key(&self.datastore, group_id, &requester)
         });
 
         let sk_bytes = effective_signing_key.ok_or_else(|| {
-            eyre::eyre!("local group governance requires a signing key for the requester")
+            eyre::eyre!(
+                "signing key not found for {:?} in group {:?} or any ancestor",
+                requester,
+                group_id,
+            )
         })?;
+
+        // Cache on this group only when the key came from an ancestor walk,
+        // so future lookups skip the traversal.
+        if from_ancestor {
+            let _ = group_store::store_group_signing_key(
+                &self.datastore,
+                group_id,
+                &requester,
+                &sk_bytes,
+            );
+        }
 
         Ok(GovernancePreflight {
             requester,
