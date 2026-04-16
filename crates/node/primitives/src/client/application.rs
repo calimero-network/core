@@ -101,12 +101,12 @@ impl NodeClient {
         };
 
         if is_bundle {
-            // This is a bundle, extract WASM from extracted directory or bundle
-            // Extract manifest and verify signature (blocking I/O wrapped in spawn_blocking)
-            // Signature verification ensures blob integrity even when re-extracting
+            // This is a bundle, extract WASM from extracted directory or bundle.
+            // The bundle was already admitted (possibly unsigned in dev mode),
+            // so use the unsigned-tolerant extractor here.
             let blob_bytes_clone = Arc::clone(&blob_bytes);
             let (_, manifest) = tokio::task::spawn_blocking(move || {
-                Self::verify_and_extract_manifest(&blob_bytes_clone)
+                Self::extract_manifest_allow_unsigned(&blob_bytes_clone)
             })
             .await??;
             let package = &manifest.package;
@@ -420,10 +420,12 @@ impl NodeClient {
 
     /// Install a bundle from a local dev path.
     ///
-    /// If the manifest contains a signature, it is verified (and invalid
-    /// signatures are rejected). If no signature field is present, the
-    /// bundle is treated as an unsigned dev build and installed with a
-    /// placeholder signer id.
+    /// Uses `extract_manifest_allow_unsigned`: if the manifest contains a
+    /// signature it is verified (invalid signatures are rejected); if no
+    /// signature field is present the bundle is treated as unsigned dev build.
+    ///
+    /// Production installs from registries go through `install_verified_bundle`
+    /// which always requires a valid signature.
     async fn install_dev_bundle(
         &self,
         bundle_data: Arc<Vec<u8>>,
@@ -432,23 +434,12 @@ impl NodeClient {
         source: &ApplicationSource,
     ) -> eyre::Result<ApplicationId> {
         let bundle_data_clone = Arc::clone(&bundle_data);
-        let (manifest_json, manifest) =
-            tokio::task::spawn_blocking(move || Self::extract_bundle_manifest(&bundle_data_clone))
-                .await??;
+        let (verification, manifest) = tokio::task::spawn_blocking(move || {
+            Self::extract_manifest_allow_unsigned(&bundle_data_clone)
+        })
+        .await??;
 
-        let signer_id = if manifest_json.get("signature").is_some() {
-            let verification = verify_manifest_signature(&manifest_json)?;
-            debug!(
-                signer_id = %verification.signer_id,
-                bundle_hash = %hex::encode(verification.bundle_hash),
-                "dev bundle manifest signature verified"
-            );
-            verification.signer_id
-        } else {
-            debug!("dev bundle has no signature field, installing as unsigned");
-            "dev:unsigned".to_owned()
-        };
-
+        let signer_id = verification.signer_id;
         let package = &manifest.package;
         let version = &manifest.app_version;
 
@@ -765,6 +756,36 @@ impl NodeClient {
             bundle_hash = %hex::encode(verification.bundle_hash),
             "bundle manifest signature verified"
         );
+        Ok((verification, manifest))
+    }
+
+    /// Extracts bundle manifest, verifying signature only if present.
+    ///
+    /// Used for dev installs and WASM loading of already-installed bundles,
+    /// where the bundle may have been admitted unsigned. If a signature IS
+    /// present it is still verified — invalid signatures are always rejected.
+    ///
+    /// Production installs MUST use `verify_and_extract_manifest` instead,
+    /// which requires a valid signature.
+    fn extract_manifest_allow_unsigned(
+        bundle_data: &[u8],
+    ) -> eyre::Result<(ManifestVerification, BundleManifest)> {
+        let (manifest_json, manifest) = Self::extract_bundle_manifest(bundle_data)?;
+        let verification = if manifest_json.get("signature").is_some() {
+            let v = verify_manifest_signature(&manifest_json)?;
+            debug!(
+                signer_id = %v.signer_id,
+                bundle_hash = %hex::encode(v.bundle_hash),
+                "bundle manifest signature verified"
+            );
+            v
+        } else {
+            debug!("bundle has no signature field, treating as unsigned dev bundle");
+            ManifestVerification {
+                signer_id: "dev:unsigned".to_owned(),
+                bundle_hash: [0u8; 32],
+            }
+        };
         Ok((verification, manifest))
     }
 
