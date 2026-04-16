@@ -2714,7 +2714,7 @@ impl SyncManager {
                     ops = deltas.len(),
                     "received namespace governance ops from peer"
                 );
-                for (_delta_id, op_bytes) in deltas {
+                for (delta_id, op_bytes) in deltas {
                     match borsh::from_slice::<
                         calimero_context_client::local_governance::SignedNamespaceOp,
                     >(&op_bytes)
@@ -2725,8 +2725,27 @@ impl SyncManager {
                                 .apply_signed_namespace_op(op.clone())
                                 .await
                             {
+                                // Capture enough context to diagnose codec/schema
+                                // mismatches (observed as "Unexpected length of
+                                // input" from the inner GroupOp decode when a
+                                // variant's binary layout has drifted). The
+                                // op-type tag + byte-length give us a fingerprint
+                                // without logging potentially sensitive payload.
+                                let op_kind = match &op.op {
+                                    calimero_context_client::local_governance::NamespaceOp::Root(r) => {
+                                        format!("Root::{r:?}").split('{').next().unwrap_or("Root").trim().to_owned()
+                                    }
+                                    calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
+                                        "Group".to_owned()
+                                    }
+                                };
                                 warn!(
                                     namespace_id = %hex::encode(namespace_id),
+                                    delta_id = %hex::encode(delta_id),
+                                    op_kind = %op_kind,
+                                    signer = %op.signer,
+                                    nonce = op.nonce,
+                                    op_bytes_len = op_bytes.len(),
                                     ?err,
                                     "failed to apply namespace governance op from backfill"
                                 );
@@ -2742,6 +2761,9 @@ impl SyncManager {
                         Err(err) => {
                             warn!(
                                 namespace_id = %hex::encode(namespace_id),
+                                delta_id = %hex::encode(delta_id),
+                                op_bytes_len = op_bytes.len(),
+                                op_bytes_prefix = %hex::encode(&op_bytes[..op_bytes.len().min(64)]),
                                 %err,
                                 "failed to decode namespace governance op from backfill"
                             );
