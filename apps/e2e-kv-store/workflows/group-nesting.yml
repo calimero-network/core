@@ -104,6 +104,10 @@ steps:
     statements:
       - "is_set({{child_ctx_id}})"
 
+  - name: Wait for membership and context propagation
+    type: wait
+    seconds: 5
+
   - name: Node-2 joins child context
     type: join_context
     node: e2e-node-2
@@ -165,6 +169,10 @@ steps:
       - "not(is_set({{subs_after_unnest}}))"
 
   # --- SCENARIO 4: Re-nest via explicit nest_group, verify it reappears ---
+
+  - name: Wait for unnest propagation
+    type: wait
+    seconds: 3
 
   - name: Re-nest child under parent via nest_group
     type: nest_group

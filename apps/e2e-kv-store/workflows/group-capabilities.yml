@@ -105,11 +105,11 @@ steps:
 
   # --- SCENARIO 4: Set default visibility, verify via get_group_info ---
 
-  - name: Set default visibility to public
+  - name: Set default visibility to open
     type: set_default_visibility
     node: e2e-node-1
     group_id: '{{namespace_id}}'
-    visibility: public
+    visibility: open
 
   - name: Get group info to verify visibility
     type: get_group_info
