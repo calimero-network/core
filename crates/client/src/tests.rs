@@ -186,9 +186,7 @@ async fn list_group_members() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(format!("/admin-api/groups/{GID}/members")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"members": []})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"members": []})))
         .expect(1)
         .mount(&server)
         .await;
