@@ -11,10 +11,12 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
+      - ".github/actions/setup-merobox/**"
   pull_request:
     paths:
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
+      - ".github/actions/setup-merobox/**"
   workflow_dispatch:
     inputs:
       duration_override:

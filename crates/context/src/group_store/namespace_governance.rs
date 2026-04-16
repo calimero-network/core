@@ -107,29 +107,59 @@ impl<'a> NamespaceGovernance<'a> {
                         ref envelope,
                     } => {
                         let ns_id = ContextGroupId::from(op.namespace_id);
-                        if let Some(identity) = get_namespace_identity_record(self.store, &ns_id)? {
-                            let recipient_sk = PrivateKey::from(identity.private_key);
-                            if envelope.recipient == recipient_sk.public_key() {
-                                match unwrap_group_key(&recipient_sk, envelope) {
-                                    Ok(group_key) => {
-                                        let gid = ContextGroupId::from(*group_id);
-                                        let key_id = store_group_key(self.store, &gid, &group_key)?;
-                                        tracing::info!(
-                                            group_id = %hex::encode(group_id),
-                                            key_id = %hex::encode(key_id),
-                                            "received group key via KeyDelivery"
-                                        );
-                                        self.retry_encrypted_ops_for_group(*group_id)?;
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(?e, "failed to unwrap KeyDelivery envelope");
-                                        result.key_unwrap_failures.push(KeyUnwrapFailure {
-                                            group_id: *group_id,
-                                            reason: format!("KeyDelivery unwrap failed: {e}"),
-                                        });
+                        // Any error inside the KeyDelivery side-effect path below
+                        // is captured and logged, but NOT propagated. KeyDelivery
+                        // is an idempotent best-effort op — its side-effect (storing
+                        // a group key locally) is not part of governance consensus.
+                        // Failing to apply the side-effect must not block the DAG,
+                        // because every subsequent governance op for this namespace
+                        // would then be orphaned as an unreconcilable pending delta.
+                        // This was the root cause of the "Unexpected length of input"
+                        // stuck-sync observed when a KeyDelivery op's retry-apply
+                        // path hit a pre-existing stored op that failed to decode.
+                        let mut apply_kd = || -> EyreResult<()> {
+                            if let Some(identity) =
+                                get_namespace_identity_record(self.store, &ns_id)?
+                            {
+                                let recipient_sk = PrivateKey::from(identity.private_key);
+                                if envelope.recipient == recipient_sk.public_key() {
+                                    match unwrap_group_key(&recipient_sk, envelope) {
+                                        Ok(group_key) => {
+                                            let gid = ContextGroupId::from(*group_id);
+                                            let key_id =
+                                                store_group_key(self.store, &gid, &group_key)?;
+                                            tracing::info!(
+                                                group_id = %hex::encode(group_id),
+                                                key_id = %hex::encode(key_id),
+                                                "received group key via KeyDelivery"
+                                            );
+                                            self.retry_encrypted_ops_for_group(*group_id)?;
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                ?e,
+                                                "failed to unwrap KeyDelivery envelope"
+                                            );
+                                            result.key_unwrap_failures.push(KeyUnwrapFailure {
+                                                group_id: *group_id,
+                                                reason: format!("KeyDelivery unwrap failed: {e}"),
+                                            });
+                                        }
                                     }
                                 }
                             }
+                            Ok(())
+                        };
+                        if let Err(e) = apply_kd() {
+                            tracing::warn!(
+                                group_id = %hex::encode(group_id),
+                                error = %e,
+                                "KeyDelivery side-effect failed; DAG apply continues"
+                            );
+                            result.key_unwrap_failures.push(KeyUnwrapFailure {
+                                group_id: *group_id,
+                                reason: format!("KeyDelivery side-effect failed: {e}"),
+                            });
                         }
                     }
                     RootOp::MemberJoined {
