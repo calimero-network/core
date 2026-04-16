@@ -3,18 +3,19 @@ name: E2E - Rust Apps (Released Image)
 # Tests e2e-kv-store and xcall-example apps using the released Docker image from GHCR.
 # Validates that released images work correctly on master merges.
 # For fast PR testing with locally-built images, see e2e-rust-apps.yml
+#
+# Triggered after the Release workflow completes (not on push) to avoid a race
+# where this workflow pulls a stale `edge` image before Release publishes the
+# new one.
 
 permissions:
   contents: read
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
     branches: [master]
-    paths:
-      - "crates/**"
-      - "apps/e2e-kv-store/**"
-      - "apps/xcall-example/**"
-      - ".github/workflows/e2e-rust-apps-release.yml"
 
   workflow_dispatch:
 
@@ -31,6 +32,9 @@ env:
 jobs:
   build-apps:
     name: Build Apps
+    # Only run if Release succeeded (workflow_run fires on both success and failure)
+    # Always run for manual workflow_dispatch triggers
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
