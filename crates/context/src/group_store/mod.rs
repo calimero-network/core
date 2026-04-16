@@ -105,7 +105,7 @@ pub use self::namespace_retry::NamespaceRetryService;
 pub use self::permission_checker::PermissionChecker;
 pub use self::signing_keys::{
     delete_all_group_signing_keys, delete_group_signing_key, get_group_signing_key,
-    require_group_signing_key, store_group_signing_key,
+    require_group_signing_key, resolve_group_signing_key, store_group_signing_key,
 };
 pub use self::tee::{is_quote_hash_used, read_tee_admission_policy, TeeAdmissionPolicy};
 pub use self::upgrades::{
