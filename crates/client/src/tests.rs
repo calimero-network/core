@@ -387,14 +387,14 @@ async fn list_subgroups() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(format!("/admin-api/groups/{GID}/subgroups")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"subgroups": []})))
         .expect(1)
         .mount(&server)
         .await;
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client.list_subgroups(GID).await.unwrap();
-    assert!(resp.data.is_empty());
+    assert!(resp.subgroups.is_empty());
 }
 
 // ---- Namespaces ----
