@@ -1,7 +1,7 @@
 name: E2E - Rust Apps
 
 # Tests e2e-kv-store and xcall-example apps using locally-built Docker image.
-# Fast PR testing (~10 min) - builds amd64 binary + container locally.
+# Build once, then run all 9 test workflows in parallel via matrix.
 # Self-contained: doesn't depend on release.yml
 
 permissions:
@@ -37,8 +37,9 @@ env:
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
 jobs:
-  build-and-test:
-    name: Build & Test Apps (amd64)
+  # ── Build phase: compile merod + apps, upload as artifacts ──
+  build:
+    name: Build
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
@@ -53,14 +54,15 @@ jobs:
           shared-key: e2e-rust-apps
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      # Build merod binary and local Docker image (amd64 only)
       - name: Build local merod image
         uses: ./.github/actions/build-local-merod
         env:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build apps
+      - name: Save Docker image
+        run: docker save merod:local | zstd -T0 -3 -o /tmp/merod-local.tar.zst
+
       - name: Build e2e-kv-store app
         run: |
           cd apps/e2e-kv-store
@@ -76,549 +78,149 @@ jobs:
           cd apps/xcall-example
           ./build.sh
 
-      - name: Setup merobox
-        uses: ./.github/actions/setup-merobox
-
-      # Run e2e-kv-store workflow
-      - name: Run e2e-kv-store Workflow
-        id: run_e2e_kv_store
-        run: |
-          mkdir -p docker-logs
-          cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-              
-              if merobox bootstrap run \
-                  "workflows/e2e.yml" \
-                  --image merod:local \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  # Capture logs immediately before containers are destroyed
-                  echo "Collecting Docker logs for e2e-kv-store attempt $attempt"
-                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/e2e-kv-store-attempt${attempt}-${container}.log" 2>&1 || true
-                      fi
-                  done
-                  attempt=$((attempt + 1))
-              fi
-          done
-
-          merobox stop --all || true
-          merobox nuke --force || true
-
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload e2e-kv-store logs
-        if: always()
+      - name: Upload Docker image
         uses: actions/upload-artifact@v4
         with:
-          name: logs-e2e-kv-store-${{ github.sha }}
-          path: docker-logs/e2e-kv-store*
-          retention-days: 7
-          if-no-files-found: ignore
+          name: merod-image
+          path: /tmp/merod-local.tar.zst
+          retention-days: 1
+          compression-level: 0
 
-      # Run groups workflow
-      - name: Run e2e-kv-store Groups Workflow
-        id: run_groups
-        run: |
-          cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/groups.yml" \
-                  --image merod:local \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  echo "Collecting Docker logs for groups attempt $attempt"
-                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/groups-attempt${attempt}-${container}.log" 2>&1 || true
-                      fi
-                  done
-                  attempt=$((attempt + 1))
-              fi
-          done
-
-          merobox stop --all || true
-          merobox nuke --force || true
-
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload groups logs
-        if: always()
+      - name: Upload app artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: logs-groups-${{ github.sha }}
-          path: docker-logs/groups*
-          retention-days: 7
-          if-no-files-found: ignore
-
-      # Run group-3node workflow
-      - name: Run group-3node Workflow
-        id: run_group_3node
-        run: |
-          cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/group-3node.yml" \
-                  --image merod:local \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  echo "Collecting Docker logs for group-3node attempt $attempt"
-                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/group-3node-attempt${attempt}-${container}.log" 2>&1 || true
-                      fi
-                  done
-                  attempt=$((attempt + 1))
-              fi
-          done
-
-          merobox stop --all || true
-          merobox nuke --force || true
-
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload group-3node logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-group-3node-${{ github.sha }}
-          path: docker-logs/group-3node*
-          retention-days: 7
-          if-no-files-found: ignore
-
-      # Run group-context-isolation workflow
-      - name: Run group-context-isolation Workflow
-        id: run_group_context_isolation
-        run: |
-          cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/group-context-isolation.yml" \
-                  --image merod:local \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  echo "Collecting Docker logs for group-context-isolation attempt $attempt"
-                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/group-context-isolation-attempt${attempt}-${container}.log" 2>&1 || true
-                      fi
-                  done
-                  attempt=$((attempt + 1))
-              fi
-          done
-
-          merobox stop --all || true
-          merobox nuke --force || true
-
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload group-context-isolation logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-group-context-isolation-${{ github.sha }}
-          path: docker-logs/group-context-isolation*
-          retention-days: 7
-          if-no-files-found: ignore
-
-      # Run group-late-joiner workflow
-      - name: Run group-late-joiner Workflow
-        id: run_group_late_joiner
-        run: |
-          cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/group-late-joiner.yml" \
-                  --image merod:local \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  echo "Collecting Docker logs for group-late-joiner attempt $attempt"
-                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/group-late-joiner-attempt${attempt}-${container}.log" 2>&1 || true
-                      fi
-                  done
-                  attempt=$((attempt + 1))
-              fi
-          done
-
-          merobox stop --all || true
-          merobox nuke --force || true
-
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload group-late-joiner logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-group-late-joiner-${{ github.sha }}
-          path: docker-logs/group-late-joiner*
-          retention-days: 7
-          if-no-files-found: ignore
-
-      # Run group-subgroup workflow
-      - name: Run group-subgroup Workflow
-        id: run_group_subgroup
-        run: |
-          cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/group-subgroup.yml" \
-                  --image merod:local \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  echo "Collecting Docker logs for group-subgroup attempt $attempt"
-                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/group-subgroup-attempt${attempt}-${container}.log" 2>&1 || true
-                      fi
-                  done
-                  attempt=$((attempt + 1))
-              fi
-          done
-
-          merobox stop --all || true
-          merobox nuke --force || true
-
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload group-subgroup logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-group-subgroup-${{ github.sha }}
-          path: docker-logs/group-subgroup*
-          retention-days: 7
-          if-no-files-found: ignore
-
-      # Run group-multi-service workflow
-      - name: Run group-multi-service Workflow
-        id: run_group_multi_service
-        run: |
-          cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/group-multi-service.yml" \
-                  --image merod:local \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  echo "Collecting Docker logs for group-multi-service attempt $attempt"
-                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/group-multi-service-attempt${attempt}-${container}.log" 2>&1 || true
-                      fi
-                  done
-                  attempt=$((attempt + 1))
-              fi
-          done
-
-          merobox stop --all || true
-          merobox nuke --force || true
-
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload group-multi-service logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-group-multi-service-${{ github.sha }}
-          path: docker-logs/group-multi-service*
-          retention-days: 7
-          if-no-files-found: ignore
-
-      # Run handler-test workflow
-      - name: Run handler-test Workflow
-        id: run_handler_test
-        run: |
-          cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/handler-test.yml" \
-                  --image merod:local \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  echo "Collecting Docker logs for handler-test attempt $attempt"
-                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/handler-test-attempt${attempt}-${container}.log" 2>&1 || true
-                      fi
-                  done
-                  attempt=$((attempt + 1))
-              fi
-          done
-
-          merobox stop --all || true
-          merobox nuke --force || true
-
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload handler-test logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-handler-test-${{ github.sha }}
-          path: docker-logs/handler-test*
-          retention-days: 7
-          if-no-files-found: ignore
-
-      # Run xcall-example workflow
-      - name: Run xcall-example Workflow
-        id: run_xcall
-        run: |
-          cd apps/xcall-example
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-              
-              if merobox bootstrap run \
-                  "workflows/xcall.yml" \
-                  --image merod:local \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  echo "Collecting Docker logs for xcall attempt $attempt"
-                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/xcall-attempt${attempt}-${container}.log" 2>&1 || true
-                      fi
-                  done
-                  attempt=$((attempt + 1))
-              fi
-          done
-
-          merobox stop --all || true
-          merobox nuke --force || true
-
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload xcall logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-xcall-${{ github.sha }}
-          path: docker-logs/xcall*
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: Upload Workflow Data Artifacts
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-rust-apps-data-${{ github.sha }}
+          name: e2e-apps
           path: |
             apps/e2e-kv-store/res/*.wasm
             apps/e2e-kv-store/res/abi.json
             apps/e2e-kv-store/res/*.mpk
             apps/e2e-kv-store/res/state-schema.json
-            apps/e2e-kv-store/data/
             apps/xcall-example/res/*.wasm
             apps/xcall-example/res/abi.json
-          retention-days: 7
-          if-no-files-found: warn
+          retention-days: 1
 
-      - name: Upload Docker Logs
+  # ── Test phase: run each workflow in parallel ──
+  test:
+    name: Test (${{ matrix.workflow }})
+    needs: build
+    runs-on: ubuntu-24.04-8cpu
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - workflow: e2e-kv-store
+            file: workflows/e2e.yml
+            app: e2e-kv-store
+          - workflow: groups
+            file: workflows/groups.yml
+            app: e2e-kv-store
+          - workflow: group-3node
+            file: workflows/group-3node.yml
+            app: e2e-kv-store
+          - workflow: group-context-isolation
+            file: workflows/group-context-isolation.yml
+            app: e2e-kv-store
+          - workflow: group-late-joiner
+            file: workflows/group-late-joiner.yml
+            app: e2e-kv-store
+          - workflow: group-subgroup
+            file: workflows/group-subgroup.yml
+            app: e2e-kv-store
+          - workflow: group-multi-service
+            file: workflows/group-multi-service.yml
+            app: e2e-kv-store
+          - workflow: handler-test
+            file: workflows/handler-test.yml
+            app: e2e-kv-store
+          - workflow: xcall-example
+            file: workflows/xcall.yml
+            app: xcall-example
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: merod-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: zstd -d /tmp/merod-local.tar.zst --stdout | docker load
+
+      - name: Download app artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-apps
+          path: apps
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Run ${{ matrix.workflow }}
+        run: |
+          mkdir -p docker-logs
+          cd apps/${{ matrix.app }}
+          max_attempts=2
+          attempt=1
+          success=false
+
+          while [ $attempt -le $max_attempts ]; do
+              if [ $attempt -gt 1 ]; then
+                  merobox stop --all || true
+                  merobox nuke --force || true
+                  sleep 2
+              fi
+
+              if merobox bootstrap run \
+                  "${{ matrix.file }}" \
+                  --image merod:local \
+                  --e2e-mode; then
+                  success=true
+                  break
+              else
+                  echo "Collecting Docker logs for ${{ matrix.workflow }} attempt $attempt"
+                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
+                      if [ -n "$container" ]; then
+                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${{ matrix.workflow }}-attempt${attempt}-${container}.log" 2>&1 || true
+                      fi
+                  done
+                  attempt=$((attempt + 1))
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          if [ "$success" = false ]; then
+              echo "::error::${{ matrix.workflow }} workflow failed after $max_attempts attempts"
+              exit 1
+          fi
+
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-rust-apps-docker-logs-${{ github.sha }}
-          path: docker-logs/
+          name: logs-${{ matrix.workflow }}-${{ github.sha }}
+          path: docker-logs/${{ matrix.workflow }}*
           retention-days: 7
-          if-no-files-found: warn
+          if-no-files-found: ignore
 
-      - name: Check workflow results
-        if: |
-          steps.run_e2e_kv_store.outputs.failed == 'true' ||
-          steps.run_groups.outputs.failed == 'true' ||
-          steps.run_group_3node.outputs.failed == 'true' ||
-          steps.run_group_context_isolation.outputs.failed == 'true' ||
-          steps.run_group_late_joiner.outputs.failed == 'true' ||
-          steps.run_group_subgroup.outputs.failed == 'true' ||
-          steps.run_group_multi_service.outputs.failed == 'true' ||
-          steps.run_handler_test.outputs.failed == 'true' ||
-          steps.run_xcall.outputs.failed == 'true'
-        run: |
-          echo "Workflow failures detected:"
-          if [ "${{ steps.run_e2e_kv_store.outputs.failed }}" == "true" ]; then
-            echo "  - e2e-kv-store workflow failed"
-          fi
-          if [ "${{ steps.run_groups.outputs.failed }}" == "true" ]; then
-            echo "  - groups workflow failed"
-          fi
-          if [ "${{ steps.run_group_3node.outputs.failed }}" == "true" ]; then
-            echo "  - group-3node workflow failed"
-          fi
-          if [ "${{ steps.run_group_context_isolation.outputs.failed }}" == "true" ]; then
-            echo "  - group-context-isolation workflow failed"
-          fi
-          if [ "${{ steps.run_group_late_joiner.outputs.failed }}" == "true" ]; then
-            echo "  - group-late-joiner workflow failed"
-          fi
-          if [ "${{ steps.run_group_subgroup.outputs.failed }}" == "true" ]; then
-            echo "  - group-subgroup workflow failed"
-          fi
-          if [ "${{ steps.run_group_multi_service.outputs.failed }}" == "true" ]; then
-            echo "  - group-multi-service workflow failed"
-          fi
-          if [ "${{ steps.run_handler_test.outputs.failed }}" == "true" ]; then
-            echo "  - handler-test workflow failed"
-          fi
-          if [ "${{ steps.run_xcall.outputs.failed }}" == "true" ]; then
-            echo "  - xcall-example workflow failed"
-          fi
-          exit 1
-
+  # ── Report phase: notify on PR failure ──
   comment:
     name: Report Failed Workflow
-    needs: build-and-test
+    needs: test
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Check if main job failed or was cancelled
         id: check_status
         run: |
-          if [ "${{ needs.build-and-test.result }}" != "success" ]; then
+          if [ "${{ needs.test.result }}" != "success" ]; then
             echo "job_failed=true" >> $GITHUB_OUTPUT
-            if [ "${{ needs.build-and-test.result }}" == "cancelled" ]; then
+            if [ "${{ needs.test.result }}" == "cancelled" ]; then
               echo "was_cancelled=true" >> $GITHUB_OUTPUT
             else
               echo "was_cancelled=false" >> $GITHUB_OUTPUT
