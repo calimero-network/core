@@ -4,7 +4,7 @@ use calimero_store::key::{GroupSigningKey, GroupSigningKeyValue, GROUP_SIGNING_K
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::{collect_keys_with_prefix, GroupStoreError};
+use super::{collect_keys_with_prefix, namespace::MAX_NAMESPACE_DEPTH, GroupStoreError};
 
 pub fn store_group_signing_key(
     store: &Store,
@@ -58,6 +58,27 @@ pub fn require_group_signing_key(
         });
     }
     Ok(())
+}
+
+/// Walk the ancestor chain from `group_id` upward looking for a signing key
+/// for `public_key`. Returns the first match found (closest ancestor), or
+/// `None` if no ancestor holds a key for this identity.
+pub fn resolve_group_signing_key(
+    store: &Store,
+    group_id: &ContextGroupId,
+    public_key: &PublicKey,
+) -> EyreResult<Option<[u8; 32]>> {
+    let mut current = *group_id;
+    for _ in 0..MAX_NAMESPACE_DEPTH {
+        if let Some(sk) = get_group_signing_key(store, &current, public_key)? {
+            return Ok(Some(sk));
+        }
+        match super::get_parent_group(store, &current)? {
+            Some(parent) => current = parent,
+            None => return Ok(None),
+        }
+    }
+    Ok(None)
 }
 
 /// Delete all signing keys for a group (used during group deletion).
