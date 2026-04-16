@@ -123,7 +123,21 @@ impl<'a> GroupKeyring<'a> {
         let plaintext = shared_key
             .decrypt(encrypted.ciphertext.clone(), encrypted.nonce)
             .ok_or_else(|| eyre::eyre!("failed to decrypt group op (bad sender_key or corrupt)"))?;
-        borsh::from_slice(&plaintext).map_err(|e| eyre::eyre!("borsh decode inner GroupOp: {e}"))
+        borsh::from_slice(&plaintext).map_err(|e| {
+            // "Unexpected length of input" on this path means the decrypted
+            // plaintext length does not match the current `GroupOp` borsh
+            // schema — almost always a cross-version schema drift where an
+            // older node wrote an op shape the current node can't decode.
+            // Log the plaintext length + prefix so the failing op type can
+            // be identified and either forward-migrated or skipped.
+            tracing::warn!(
+                plaintext_len = plaintext.len(),
+                plaintext_prefix = %hex::encode(&plaintext[..plaintext.len().min(32)]),
+                error = %e,
+                "borsh decode inner GroupOp failed (codec/schema mismatch)"
+            );
+            eyre::eyre!("borsh decode inner GroupOp: {e}")
+        })
     }
 
     pub fn wrap_for_member(

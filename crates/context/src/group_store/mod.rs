@@ -899,6 +899,10 @@ fn apply_group_op_mutations(
             if let Some(name) = service_name {
                 set_context_service_name(store, context_id, name)?;
             }
+            // Signal any waiters (e.g. `join_context` racing against gossipsub
+            // propagation) that the context→group mapping has just been
+            // persisted. See `crate::registration_notify` for rationale.
+            crate::registration_notify::notify(*context_id);
         }
         GroupOp::ContextDetached { context_id } => {
             context_registration.detach(&permissions, signer, context_id)?;
