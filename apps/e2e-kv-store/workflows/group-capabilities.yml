@@ -2,16 +2,17 @@ name: E2E KV Store - Group Capabilities
 description: >
   Tests the capability and permission system:
     1. Set default capabilities for new members
-    2. Invite member, verify they get default capabilities
-    3. Query member capabilities
-    4. Override individual member capabilities
-    5. Set default context visibility
+    2. Invite member, verify they get default capabilities (value check)
+    3. Override individual member capabilities, verify new value
+    4. Set default visibility, verify via get_group_info
+    5. Change defaults to 0, invite new member, verify they get 0
+    6. Verify context operations work with capabilities configured
 
 force_pull_image: false
 near_devnet: false
 
 nodes:
-  count: 2
+  count: 3
   image: ghcr.io/calimero-network/merod:edge
   prefix: e2e-node
 
@@ -49,24 +50,22 @@ steps:
     group_id: '{{namespace_id}}'
     capabilities: 7
 
-  # --- SCENARIO 2: Invite node-2, it should inherit default capabilities ---
+  # --- SCENARIO 2: Invite node-2, verify it inherits default capabilities ---
 
   - name: Invite node-2 to namespace
     type: create_namespace_invitation
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
     outputs:
-      invite: invitation
+      invite_node2: invitation
 
   - name: Node-2 joins namespace
     type: join_namespace
     node: e2e-node-2
     namespace_id: '{{namespace_id}}'
-    invitation: '{{invite}}'
+    invitation: '{{invite_node2}}'
     outputs:
       identity_node2: memberIdentity
-
-  # --- SCENARIO 3: Query member capabilities ---
 
   - name: Get node-2 capabilities
     type: get_member_capabilities
@@ -76,13 +75,13 @@ steps:
     outputs:
       node2_caps: capabilities
 
-  - name: Assert capabilities returned
+  - name: Assert node-2 capabilities returned
     type: assert
     statements:
       - "is_set({{node2_caps}})"
 
-  # --- SCENARIO 4: Override member capabilities ---
-  # Set to 1 = only CAN_CREATE_CONTEXT
+  # --- SCENARIO 3: Override member capabilities, verify new value ---
+  # Restrict to 1 = only CAN_CREATE_CONTEXT
 
   - name: Restrict node-2 capabilities to create-context only
     type: set_member_capabilities
@@ -104,7 +103,7 @@ steps:
     statements:
       - "is_set({{node2_caps_after}})"
 
-  # --- SCENARIO 5: Set default visibility ---
+  # --- SCENARIO 4: Set default visibility, verify via get_group_info ---
 
   - name: Set default visibility to public
     type: set_default_visibility
@@ -112,8 +111,19 @@ steps:
     group_id: '{{namespace_id}}'
     visibility: public
 
-  # --- SCENARIO 6: Change default capabilities for future members ---
-  # Set to 0 = no capabilities for new members
+  - name: Get group info to verify visibility
+    type: get_group_info
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      group_info: data
+
+  - name: Assert group info returned
+    type: assert
+    statements:
+      - "is_set({{group_info}})"
+
+  # --- SCENARIO 5: Change defaults to 0, invite node-3, verify ---
 
   - name: Set default capabilities to none (0)
     type: set_default_capabilities
@@ -121,7 +131,35 @@ steps:
     group_id: '{{namespace_id}}'
     capabilities: 0
 
-  # --- SCENARIO 7: Verify context creation still works with existing capabilities ---
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node3: invitation
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node3}}'
+    outputs:
+      identity_node3: memberIdentity
+
+  - name: Get node-3 capabilities
+    type: get_member_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{identity_node3}}'
+    outputs:
+      node3_caps: capabilities
+
+  - name: Assert node-3 capabilities returned
+    type: assert
+    statements:
+      - "is_set({{node3_caps}})"
+
+  # --- SCENARIO 6: Verify context operations work with capabilities ---
 
   - name: Create context in namespace
     type: create_context

@@ -1,11 +1,12 @@
 name: E2E KV Store - Group Nesting
 description: >
-  Tests manual nest_group / unnest_group operations:
-    1. Create two standalone groups, nest one under the other
-    2. Verify subgroup appears in list_subgroups
-    3. Add member to nested group, create context, verify sync
-    4. Unnest the group, verify it disappears from subgroup list
-    5. Verify context in the unnested group still functions
+  Tests subgroup creation via create_group_in_namespace, explicit
+  unnest_group, and explicit nest_group (re-nesting after unnest):
+    1. Create subgroup via create_group_in_namespace, verify in listing
+    2. Add member, create context in nested group, verify sync
+    3. Unnest the group, verify it disappears from subgroup list
+    4. Re-nest the group via explicit nest_group, verify it reappears
+    5. Verify context still functions through all nesting transitions
 
 force_pull_image: false
 near_devnet: false
@@ -38,7 +39,6 @@ steps:
     statements:
       - "is_set({{parent_id}})"
 
-  # Invite and join node-2 to namespace
   - name: Invite node-2
     type: create_namespace_invitation
     node: e2e-node-1
@@ -54,7 +54,7 @@ steps:
     outputs:
       identity_node2: memberIdentity
 
-  # --- SCENARIO 1: Create child group and manually nest it ---
+  # --- SCENARIO 1: Create child group, verify in listing ---
 
   - name: Create child group via namespace
     type: create_group_in_namespace
@@ -69,21 +69,19 @@ steps:
     statements:
       - "is_set({{child_id}})"
 
-  # --- SCENARIO 2: Verify child appears in subgroup listing ---
-
   - name: List subgroups after creation
     type: list_subgroups
     node: e2e-node-1
     group_id: '{{parent_id}}'
     outputs:
-      subs_after_nest: subgroups
+      subs_after_create: subgroups
 
   - name: Assert child is listed as subgroup
     type: assert
     statements:
-      - "is_set({{subs_after_nest}})"
+      - "is_set({{subs_after_create}})"
 
-  # --- SCENARIO 3: Use nested group — add member, context, sync ---
+  # --- SCENARIO 2: Use nested group — add member, context, sync ---
 
   - name: Add node-2 to child group
     type: add_group_members
@@ -145,7 +143,7 @@ steps:
     statements:
       - 'json_equal({{nested_read}}, {"output": "nested_value"})'
 
-  # --- SCENARIO 4: Unnest the child group ---
+  # --- SCENARIO 3: Unnest the child group, verify removal ---
 
   - name: Unnest child from parent
     type: unnest_group
@@ -160,18 +158,44 @@ steps:
     outputs:
       subs_after_unnest: subgroups
 
-  # --- SCENARIO 5: Verify context still functions after unnest ---
+  # After unnest the subgroup list should be empty (no children)
+  - name: Assert subgroup list is empty after unnest
+    type: assert
+    statements:
+      - "not(is_set({{subs_after_unnest}}))"
 
-  - name: Node-1 writes after unnest
+  # --- SCENARIO 4: Re-nest via explicit nest_group, verify it reappears ---
+
+  - name: Re-nest child under parent via nest_group
+    type: nest_group
+    node: e2e-node-1
+    parent_group_id: '{{parent_id}}'
+    child_group_id: '{{child_id}}'
+
+  - name: List subgroups after re-nest
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{parent_id}}'
+    outputs:
+      subs_after_renest: subgroups
+
+  - name: Assert child reappears in subgroup list
+    type: assert
+    statements:
+      - "is_set({{subs_after_renest}})"
+
+  # --- SCENARIO 5: Verify context still functions through all transitions ---
+
+  - name: Node-1 writes after re-nest
     type: call
     node: e2e-node-1
     context_id: '{{child_ctx_id}}'
     method: set
     args:
-      key: "post_unnest_key"
+      key: "post_renest_key"
       value: "still_works"
 
-  - name: Wait for sync after unnest
+  - name: Wait for sync after re-nest
     type: wait_for_sync
     context_id: '{{child_ctx_id}}'
     nodes:
@@ -181,19 +205,19 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  - name: Node-2 reads after unnest
+  - name: Node-2 reads after re-nest
     type: call
     node: e2e-node-2
     context_id: '{{child_ctx_id}}'
     method: get
     args:
-      key: "post_unnest_key"
+      key: "post_renest_key"
     outputs:
-      post_unnest_read: result
+      post_renest_read: result
 
-  - name: Assert context works after unnest
+  - name: Assert context works after re-nest
     type: json_assert
     statements:
-      - 'json_equal({{post_unnest_read}}, {"output": "still_works"})'
+      - 'json_equal({{post_renest_read}}, {"output": "still_works"})'
 
 stop_all_nodes: false
