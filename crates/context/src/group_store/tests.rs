@@ -2145,7 +2145,7 @@ fn resolve_signing_key_walks_grandparent_chain() {
     nest_group(&store, &child, &grandchild).unwrap();
     store_group_signing_key(&store, &root, &pk, &sk).unwrap();
 
-    // Grandchild should walk root -> child -> grandchild and find root's key
+    // Grandchild walks upward: grandchild -> child -> root, finds root's key
     let found = resolve_group_signing_key(&store, &grandchild, &pk).unwrap();
     assert_eq!(found, Some(sk));
 }
@@ -2258,4 +2258,46 @@ fn resolve_signing_key_survives_renesting() {
         resolve_group_signing_key(&store, &child, &pk).unwrap(),
         Some(sk)
     );
+}
+
+#[test]
+fn resolve_signing_key_none_when_exceeding_max_depth() {
+    use super::namespace::MAX_NAMESPACE_DEPTH;
+
+    let store = test_store();
+    let pk = PublicKey::from([0x10; 32]);
+    let sk = [0xEE; 32];
+
+    // Build a chain of MAX_NAMESPACE_DEPTH + 1 groups (root + 16 children)
+    let mut groups: Vec<ContextGroupId> = (0..=MAX_NAMESPACE_DEPTH)
+        .map(|i| {
+            let mut bytes = [0u8; 32];
+            bytes[0] = 0xE0;
+            bytes[1] = i as u8;
+            ContextGroupId::from(bytes)
+        })
+        .collect();
+
+    // Nest each group under the previous one: groups[0] -> groups[1] -> ... -> groups[16]
+    for i in 0..MAX_NAMESPACE_DEPTH {
+        nest_group(&store, &groups[i], &groups[i + 1]).unwrap();
+    }
+
+    // Store key only on the root
+    store_group_signing_key(&store, &groups[0], &pk, &sk).unwrap();
+
+    // The deepest group (index MAX_NAMESPACE_DEPTH) is 16 levels below root.
+    // resolve_group_signing_key checks self + walks up to MAX_NAMESPACE_DEPTH
+    // ancestors, but the root is exactly at the boundary. It should still be
+    // reachable since the loop runs MAX_NAMESPACE_DEPTH iterations checking
+    // self first, then walking up.
+    let at_boundary = resolve_group_signing_key(&store, &groups[MAX_NAMESPACE_DEPTH], &pk).unwrap();
+    // At depth 16 from root: self (depth 16) + walk 15 ancestors = checks
+    // depths 16,15,14,...,1 but NOT depth 0 (root). So the key is missed.
+    assert_eq!(at_boundary, None, "key at root should be unreachable at max depth");
+
+    // One level shallower should still find it
+    let within_limit =
+        resolve_group_signing_key(&store, &groups[MAX_NAMESPACE_DEPTH - 1], &pk).unwrap();
+    assert_eq!(within_limit, Some(sk), "key should be reachable within depth limit");
 }
