@@ -4,9 +4,7 @@ use calimero_store::key::{GroupSigningKey, GroupSigningKeyValue, GROUP_SIGNING_K
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::{collect_keys_with_prefix, GroupStoreError};
-
-const MAX_ANCESTOR_DEPTH: usize = 16;
+use super::{collect_keys_with_prefix, namespace::MAX_NAMESPACE_DEPTH, GroupStoreError};
 
 pub fn store_group_signing_key(
     store: &Store,
@@ -71,7 +69,7 @@ pub fn resolve_group_signing_key(
     public_key: &PublicKey,
 ) -> EyreResult<Option<[u8; 32]>> {
     let mut current = *group_id;
-    for _ in 0..MAX_ANCESTOR_DEPTH {
+    for _ in 0..MAX_NAMESPACE_DEPTH {
         if let Some(sk) = get_group_signing_key(store, &current, public_key)? {
             return Ok(Some(sk));
         }

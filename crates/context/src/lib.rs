@@ -196,14 +196,11 @@ impl ContextManager {
             group_store::require_group_admin(&self.datastore, group_id, &requester)?;
         }
 
-        let signing_key = group_store::resolve_group_signing_key(
-            &self.datastore,
-            group_id,
-            &requester,
-        )?
-        .ok_or_else(|| {
-            eyre::eyre!("local group governance requires a signing key for the requester")
-        })?;
+        let signing_key =
+            group_store::resolve_group_signing_key(&self.datastore, group_id, &requester)?
+                .ok_or_else(|| {
+                    eyre::eyre!("local group governance requires a signing key for the requester")
+                })?;
 
         Ok(GovernancePreflight {
             requester,

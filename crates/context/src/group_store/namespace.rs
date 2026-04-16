@@ -16,7 +16,7 @@ use super::{
     get_group_for_context, get_group_member_role, get_op_head, remove_group_member,
 };
 
-const MAX_NAMESPACE_DEPTH: usize = 16;
+pub(crate) const MAX_NAMESPACE_DEPTH: usize = 16;
 
 #[derive(Debug, Clone, Copy)]
 pub struct NamespaceIdentityRecord {
