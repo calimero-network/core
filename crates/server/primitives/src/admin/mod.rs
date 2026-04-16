@@ -1685,9 +1685,9 @@ impl Validate for RemoveGroupMembersApiRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListGroupMembersApiResponse {
-    pub data: Vec<GroupMemberApiEntry>,
+    pub members: Vec<GroupMemberApiEntry>,
     /// The calling node's own group-level identity (SignerId), so clients
-    /// can identify which entry in `data` represents the current user.
+    /// can identify which entry in `members` represents the current user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_identity: Option<PublicKey>,
 }

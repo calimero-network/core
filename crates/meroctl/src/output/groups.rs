@@ -225,7 +225,7 @@ impl Report for UpdateGroupSettingsApiResponse {
 
 impl Report for ListGroupMembersApiResponse {
     fn report(&self) {
-        if self.data.is_empty() {
+        if self.members.is_empty() {
             println!("No members found in group");
         } else {
             let mut table = Table::new();
@@ -233,7 +233,7 @@ impl Report for ListGroupMembersApiResponse {
                 Cell::new("Identity").fg(Color::Blue),
                 Cell::new("Role").fg(Color::Blue),
             ]);
-            for member in &self.data {
+            for member in &self.members {
                 let _ = table.add_row(vec![
                     member.identity.to_string(),
                     format!("{:?}", member.role),

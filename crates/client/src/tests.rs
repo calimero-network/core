@@ -186,7 +186,9 @@ async fn list_group_members() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(format!("/admin-api/groups/{GID}/members")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"members": []})),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -194,7 +196,7 @@ async fn list_group_members() {
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client.list_group_members(GID).await.unwrap();
 
-    assert!(resp.data.is_empty());
+    assert!(resp.members.is_empty());
 }
 
 #[tokio::test]
