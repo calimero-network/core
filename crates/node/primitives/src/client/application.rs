@@ -101,12 +101,12 @@ impl NodeClient {
         };
 
         if is_bundle {
-            // This is a bundle, extract WASM from extracted directory or bundle
-            // Extract manifest and verify signature (blocking I/O wrapped in spawn_blocking)
-            // Signature verification ensures blob integrity even when re-extracting
+            // This is a bundle, extract WASM from extracted directory or bundle.
+            // The bundle was already admitted (possibly unsigned in dev mode),
+            // so use the unsigned-tolerant extractor here.
             let blob_bytes_clone = Arc::clone(&blob_bytes);
             let (_, manifest) = tokio::task::spawn_blocking(move || {
-                Self::verify_and_extract_manifest(&blob_bytes_clone)
+                Self::extract_manifest_allow_unsigned(&blob_bytes_clone)
             })
             .await??;
             let package = &manifest.package;
@@ -341,19 +341,16 @@ impl NodeClient {
         Ok(application_id)
     }
 
-    async fn install_verified_bundle(
+    /// Install a bundle given an already-resolved manifest and verification.
+    async fn install_bundle_with_manifest(
         &self,
         bundle_data: Arc<Vec<u8>>,
         blob_id: &BlobId,
         stored_size: u64,
         source: &ApplicationSource,
+        verification: ManifestVerification,
+        manifest: BundleManifest,
     ) -> eyre::Result<ApplicationId> {
-        let bundle_data_clone = Arc::clone(&bundle_data);
-        let (verification, manifest) = tokio::task::spawn_blocking(move || {
-            Self::verify_and_extract_manifest(&bundle_data_clone)
-        })
-        .await??;
-
         let signer_id = verification.signer_id;
         let package = &manifest.package;
         let version = &manifest.app_version;
@@ -416,6 +413,60 @@ impl NodeClient {
             &signer_id,
             services,
         )
+    }
+
+    /// Install a bundle from a registry. Signature is mandatory.
+    async fn install_verified_bundle(
+        &self,
+        bundle_data: Arc<Vec<u8>>,
+        blob_id: &BlobId,
+        stored_size: u64,
+        source: &ApplicationSource,
+    ) -> eyre::Result<ApplicationId> {
+        let bundle_data_clone = Arc::clone(&bundle_data);
+        let (verification, manifest) = tokio::task::spawn_blocking(move || {
+            Self::verify_and_extract_manifest(&bundle_data_clone)
+        })
+        .await??;
+
+        self.install_bundle_with_manifest(
+            bundle_data,
+            blob_id,
+            stored_size,
+            source,
+            verification,
+            manifest,
+        )
+        .await
+    }
+
+    /// Install a bundle from a local dev path.
+    ///
+    /// Signature is optional: verified if present, unsigned allowed otherwise.
+    /// Production installs from registries go through `install_verified_bundle`
+    /// which always requires a valid signature.
+    async fn install_dev_bundle(
+        &self,
+        bundle_data: Arc<Vec<u8>>,
+        blob_id: &BlobId,
+        stored_size: u64,
+        source: &ApplicationSource,
+    ) -> eyre::Result<ApplicationId> {
+        let bundle_data_clone = Arc::clone(&bundle_data);
+        let (verification, manifest) = tokio::task::spawn_blocking(move || {
+            Self::extract_manifest_allow_unsigned(&bundle_data_clone)
+        })
+        .await??;
+
+        self.install_bundle_with_manifest(
+            bundle_data,
+            blob_id,
+            stored_size,
+            source,
+            verification,
+            manifest,
+        )
+        .await
     }
 
     /// Check if a path points to a bundle archive (.mpk - Mero Package Kit)
@@ -593,7 +644,9 @@ impl NodeClient {
             bail!("non-absolute path")
         };
 
-        self.install_verified_bundle(
+        // Dev installs from local path skip signature verification — the
+        // bundle may be unsigned during development/testing.
+        self.install_dev_bundle(
             bundle_data,
             &bundle_blob_id,
             stored_size,
@@ -669,6 +722,36 @@ impl NodeClient {
             bundle_hash = %hex::encode(verification.bundle_hash),
             "bundle manifest signature verified"
         );
+        Ok((verification, manifest))
+    }
+
+    /// Extracts bundle manifest, verifying signature only if present.
+    ///
+    /// Used for dev installs and WASM loading of already-installed bundles,
+    /// where the bundle may have been admitted unsigned. If a signature IS
+    /// present it is still verified — invalid signatures are always rejected.
+    ///
+    /// Production installs MUST use `verify_and_extract_manifest` instead,
+    /// which requires a valid signature.
+    fn extract_manifest_allow_unsigned(
+        bundle_data: &[u8],
+    ) -> eyre::Result<(ManifestVerification, BundleManifest)> {
+        let (manifest_json, manifest) = Self::extract_bundle_manifest(bundle_data)?;
+        let verification = if manifest_json.get("signature").is_some() {
+            let v = verify_manifest_signature(&manifest_json)?;
+            debug!(
+                signer_id = %v.signer_id,
+                bundle_hash = %hex::encode(v.bundle_hash),
+                "bundle manifest signature verified"
+            );
+            v
+        } else {
+            debug!("bundle has no signature field, treating as unsigned dev bundle");
+            ManifestVerification {
+                signer_id: "dev:unsigned".to_owned(),
+                bundle_hash: [0u8; 32],
+            }
+        };
         Ok((verification, manifest))
     }
 

@@ -1,0 +1,284 @@
+name: E2E KV Store - Group 3-Node Convergence
+description: >
+  Tests that three nodes can all join the same namespace and converge on shared
+  state. Each node writes a distinct key and all three verify they see every
+  write — covering the multi-party sync path that the 2-node test misses.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{ctx_id}})"
+
+  # --- Node-2 joins ---
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+
+  - name: Node-2 joins context via group membership
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+
+  # --- Node-3 joins ---
+
+  - name: Create namespace invitation for node-3
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node3: invitation
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node3}}'
+
+  - name: Node-3 joins context via group membership
+    type: join_context
+    node: e2e-node-3
+    context_id: '{{ctx_id}}'
+
+  # --- SCENARIO 1: node-1 writes, all three converge ---
+
+  - name: Node-1 writes key-A
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "key_a"
+      value: "from_node1"
+
+  - name: Wait for sync after node-1 write
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads key-A
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "key_a"
+    outputs:
+      key_a_node2: result
+
+  - name: Assert key-A on node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{key_a_node2}}, {"output": "from_node1"})'
+
+  - name: Node-3 reads key-A
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "key_a"
+    outputs:
+      key_a_node3: result
+
+  - name: Assert key-A on node-3
+    type: json_assert
+    statements:
+      - 'json_equal({{key_a_node3}}, {"output": "from_node1"})'
+
+  # --- SCENARIO 2: node-2 writes, node-1 and node-3 converge ---
+
+  - name: Node-2 writes key-B
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "key_b"
+      value: "from_node2"
+
+  - name: Wait for sync after node-2 write
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-1 reads key-B
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "key_b"
+    outputs:
+      key_b_node1: result
+
+  - name: Assert key-B on node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{key_b_node1}}, {"output": "from_node2"})'
+
+  - name: Node-3 reads key-B
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "key_b"
+    outputs:
+      key_b_node3: result
+
+  - name: Assert key-B on node-3
+    type: json_assert
+    statements:
+      - 'json_equal({{key_b_node3}}, {"output": "from_node2"})'
+
+  # --- SCENARIO 3: node-3 writes, node-1 and node-2 converge ---
+
+  - name: Node-3 writes key-C
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "key_c"
+      value: "from_node3"
+
+  - name: Wait for sync after node-3 write
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-1 reads key-C
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "key_c"
+    outputs:
+      key_c_node1: result
+
+  - name: Assert key-C on node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{key_c_node1}}, {"output": "from_node3"})'
+
+  - name: Node-2 reads key-C
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "key_c"
+    outputs:
+      key_c_node2: result
+
+  - name: Assert key-C on node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{key_c_node2}}, {"output": "from_node3"})'
+
+  # --- SCENARIO 4: verify full state visibility on all nodes ---
+
+  - name: Node-1 reads all entries
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: entries
+    outputs:
+      entries_node1: result
+
+  - name: Node-2 reads all entries
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: entries
+    outputs:
+      entries_node2: result
+
+  - name: Node-3 reads all entries
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx_id}}'
+    method: entries
+    outputs:
+      entries_node3: result
+
+  - name: Assert all nodes see same entry count
+    type: json_assert
+    statements:
+      - 'json_equal({{entries_node1}}, {{entries_node2}})'
+      - 'json_equal({{entries_node2}}, {{entries_node3}})'
+
+stop_all_nodes: false

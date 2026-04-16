@@ -26,20 +26,20 @@ pub async fn handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let mut data = Vec::with_capacity(children.len());
+    let mut subgroups = Vec::with_capacity(children.len());
     for child in children {
         let alias = match calimero_context::group_store::get_group_alias(&state.store, &child) {
             Ok(alias) => alias,
             Err(err) => return parse_api_error(err).into_response(),
         };
-        data.push(SubgroupEntryApiResponse {
+        subgroups.push(SubgroupEntryApiResponse {
             group_id: hex::encode(child.to_bytes()),
             alias,
         });
     }
 
     ApiResponse {
-        payload: ListSubgroupsApiResponse { data },
+        payload: ListSubgroupsApiResponse { subgroups },
     }
     .into_response()
 }

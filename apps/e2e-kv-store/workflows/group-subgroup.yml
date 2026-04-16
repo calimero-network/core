@@ -1,0 +1,182 @@
+name: E2E KV Store - Subgroup Lifecycle
+description: >
+  Tests the create_group_in_namespace API path alongside normal namespace
+  operations. A subgroup is created inside the namespace, then the subgroup
+  is verified via list_subgroups. Context operations on the namespace root
+  run in parallel to prove the two tiers co-exist correctly.
+
+  NOTE: Full per-subgroup permission isolation (namespace member cannot join
+  a context scoped to a subgroup they are not in) requires add_group_members
+  merobox support — tracked separately.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  # --- Create context in namespace root ---
+
+  - name: Create context in namespace root on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+      ctx_key_node1: memberPublicKey
+
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{ctx_id}})"
+
+  # --- Node-2 joins namespace and context ---
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+    outputs:
+      member_identity_node2: memberIdentity
+
+  - name: Node-2 joins context via namespace membership
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    outputs:
+      ctx_key_node2: memberPublicKey
+
+  # --- SCENARIO 1: Verify namespace-root context sync works ---
+
+  - name: Node-1 writes to namespace-root context
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "ns_root_key"
+      value: "from_node1"
+
+  - name: Wait for sync
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads namespace-root context value
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "ns_root_key"
+    outputs:
+      ns_root_read: result
+
+  - name: Assert namespace-root context synced
+    type: json_assert
+    statements:
+      - 'json_equal({{ns_root_read}}, {"output": "from_node1"})'
+
+  # --- SCENARIO 2: Create subgroup inside the namespace ---
+
+  - name: Create subgroup inside namespace on node-1
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: match-subgroup
+
+  # Verify the subgroup appears in the namespace's subgroup list.
+  # list_subgroups takes the PARENT group id (the namespace root here).
+  - name: List subgroups of namespace on node-1
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      subgroups_node1: subgroups
+
+  - name: Assert subgroup is present in listing
+    type: assert
+    statements:
+      - "is_set({{subgroups_node1}})"
+
+  # --- SCENARIO 3: Namespace-root context is unaffected by subgroup creation ---
+
+  - name: Node-2 writes to namespace-root context after subgroup created
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "post_subgroup_key"
+      value: "still_works"
+
+  - name: Wait for sync after subgroup creation
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-1 reads post-subgroup key
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "post_subgroup_key"
+    outputs:
+      post_subgroup_read: result
+
+  - name: Assert namespace-root context unaffected
+    type: json_assert
+    statements:
+      - 'json_equal({{post_subgroup_read}}, {"output": "still_works"})'
+
+stop_all_nodes: false
