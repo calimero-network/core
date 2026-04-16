@@ -341,19 +341,16 @@ impl NodeClient {
         Ok(application_id)
     }
 
-    async fn install_verified_bundle(
+    /// Install a bundle given an already-resolved manifest and verification.
+    async fn install_bundle_with_manifest(
         &self,
         bundle_data: Arc<Vec<u8>>,
         blob_id: &BlobId,
         stored_size: u64,
         source: &ApplicationSource,
+        verification: ManifestVerification,
+        manifest: BundleManifest,
     ) -> eyre::Result<ApplicationId> {
-        let bundle_data_clone = Arc::clone(&bundle_data);
-        let (verification, manifest) = tokio::task::spawn_blocking(move || {
-            Self::verify_and_extract_manifest(&bundle_data_clone)
-        })
-        .await??;
-
         let signer_id = verification.signer_id;
         let package = &manifest.package;
         let version = &manifest.app_version;
@@ -418,12 +415,34 @@ impl NodeClient {
         )
     }
 
+    /// Install a bundle from a registry. Signature is mandatory.
+    async fn install_verified_bundle(
+        &self,
+        bundle_data: Arc<Vec<u8>>,
+        blob_id: &BlobId,
+        stored_size: u64,
+        source: &ApplicationSource,
+    ) -> eyre::Result<ApplicationId> {
+        let bundle_data_clone = Arc::clone(&bundle_data);
+        let (verification, manifest) = tokio::task::spawn_blocking(move || {
+            Self::verify_and_extract_manifest(&bundle_data_clone)
+        })
+        .await??;
+
+        self.install_bundle_with_manifest(
+            bundle_data,
+            blob_id,
+            stored_size,
+            source,
+            verification,
+            manifest,
+        )
+        .await
+    }
+
     /// Install a bundle from a local dev path.
     ///
-    /// Uses `extract_manifest_allow_unsigned`: if the manifest contains a
-    /// signature it is verified (invalid signatures are rejected); if no
-    /// signature field is present the bundle is treated as unsigned dev build.
-    ///
+    /// Signature is optional: verified if present, unsigned allowed otherwise.
     /// Production installs from registries go through `install_verified_bundle`
     /// which always requires a valid signature.
     async fn install_dev_bundle(
@@ -439,68 +458,15 @@ impl NodeClient {
         })
         .await??;
 
-        let signer_id = verification.signer_id;
-        let package = &manifest.package;
-        let version = &manifest.app_version;
-
-        let blobstore_root = self.blob_manager.root_path();
-        let node_root = blobstore_root
-            .parent()
-            .ok_or_else(|| eyre::eyre!("blobstore root has no parent"))?
-            .to_path_buf();
-        let extract_dir = node_root
-            .join("applications")
-            .join(package)
-            .join(version)
-            .join("extracted");
-
-        let bundle_data_clone = Arc::clone(&bundle_data);
-        let manifest_clone = manifest.clone();
-        let extract_dir_clone = extract_dir.clone();
-        let node_root_clone = node_root.clone();
-        let package_clone = package.to_string();
-        let version_clone = version.to_string();
-        tokio::task::spawn_blocking(move || {
-            Self::extract_bundle_artifacts(
-                &bundle_data_clone,
-                &manifest_clone,
-                &extract_dir_clone,
-                &node_root_clone,
-                &package_clone,
-                &version_clone,
-            )
-        })
-        .await??;
-
-        let mut services = Vec::new();
-        for artifact in manifest.wasm_artifacts() {
-            if let Some(name) = artifact.name {
-                let wasm_path = extract_dir.join(&artifact.wasm.path);
-                let wasm_bytes = tokio::fs::read(&wasm_path).await?;
-                let cursor = Cursor::new(wasm_bytes.as_slice());
-                let (svc_blob_id, _svc_size) = self
-                    .add_blob(cursor, Some(wasm_bytes.len() as u64), None)
-                    .await?;
-                services.push(types::ServiceMeta {
-                    name: name.to_owned().into_boxed_str(),
-                    bytecode: key::BlobMeta::new(svc_blob_id),
-                    compiled: key::BlobMeta::new(BlobId::from([0; 32])),
-                });
-            }
-        }
-
-        let bundle_metadata = manifest.to_metadata_json()?;
-
-        self.install_bundle_application(
+        self.install_bundle_with_manifest(
+            bundle_data,
             blob_id,
             stored_size,
             source,
-            bundle_metadata,
-            package,
-            version,
-            &signer_id,
-            services,
+            verification,
+            manifest,
         )
+        .await
     }
 
     /// Check if a path points to a bundle archive (.mpk - Mero Package Kit)

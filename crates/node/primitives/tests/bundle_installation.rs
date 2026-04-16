@@ -1711,7 +1711,7 @@ fn create_test_bundle_with_key(
 /// signature field. Signature verification is only mandatory for production
 /// installs from registries.
 #[tokio::test]
-async fn test_bundle_installation_fails_without_signature() {
+async fn test_dev_bundle_installation_succeeds_without_signature() {
     let temp_dir = TempDir::new().unwrap();
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
