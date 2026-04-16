@@ -170,7 +170,21 @@ steps:
     statements:
       - 'json_equal({{subgroup_read}}, {"output": "from_subgroup"})'
 
-  # --- SCENARIO 5: Remove node-2 from subgroup ---
+  # --- SCENARIO 5: Node-3 (namespace member, NOT in subgroup) cannot call subgroup context ---
+  # Node-3 joined the namespace but was never added to the subgroup.
+  # A call to the subgroup context should fail.
+
+  - name: Node-3 calls subgroup context (should fail - not a subgroup member)
+    type: call
+    node: e2e-node-3
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args:
+      key: "node3_key"
+      value: "should_not_work"
+    expected_failure: true
+
+  # --- SCENARIO 6: Remove node-2 from subgroup and verify access revoked ---
 
   - name: Remove node-2 from subgroup
     type: remove_group_members
@@ -192,7 +206,18 @@ steps:
     statements:
       - "is_set({{subgroup_members_after}})"
 
-  # --- SCENARIO 6: Get group info ---
+  # Verify node-2 can no longer write to the subgroup context
+  - name: Node-2 writes to subgroup context after removal (should fail)
+    type: call
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args:
+      key: "revoked_key"
+      value: "should_not_work"
+    expected_failure: true
+
+  # --- SCENARIO 7: Get group info ---
 
   - name: Get subgroup info
     type: get_group_info
