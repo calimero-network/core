@@ -164,7 +164,7 @@ impl Report for ListNamespaceGroupsApiResponse {
 
 impl Report for ListSubgroupsApiResponse {
     fn report(&self) {
-        if self.data.is_empty() {
+        if self.subgroups.is_empty() {
             println!("No subgroups found");
             return;
         }
@@ -174,7 +174,7 @@ impl Report for ListSubgroupsApiResponse {
             Cell::new("Group ID").fg(Color::Blue),
             Cell::new("Alias").fg(Color::Blue),
         ]);
-        for group in &self.data {
+        for group in &self.subgroups {
             let _ = table.add_row(vec![
                 group.group_id.clone(),
                 group.alias.clone().unwrap_or_else(|| "-".to_owned()),

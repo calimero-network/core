@@ -32,6 +32,7 @@ cat > res/multi-bundle-temp/manifest.json <<EOF
   "version": "1.0",
   "package": "com.calimero.e2e-kv-store-multi",
   "appVersion": "0.1.0",
+  "minRuntimeVersion": "0.0.0",
   "services": [
     {
       "name": "store-a",

@@ -1906,7 +1906,7 @@ pub struct SubgroupEntryApiResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListSubgroupsApiResponse {
-    pub data: Vec<SubgroupEntryApiResponse>,
+    pub subgroups: Vec<SubgroupEntryApiResponse>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
