@@ -73,10 +73,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 );
 
                 if group_store::load_group_meta(&datastore, &group_id)?.is_none() {
+                    let admin_identity = calimero_primitives::identity::PublicKey::from(
+                        invitation.invitation.inviter_identity.to_bytes(),
+                    );
                     let meta = calimero_store::key::GroupMetaValue {
-                        admin_identity: calimero_primitives::identity::PublicKey::from(
-                            invitation.invitation.inviter_identity.to_bytes(),
-                        ),
+                        admin_identity,
                         target_application_id:
                             calimero_primitives::application::ApplicationId::from([0u8; 32]),
                         app_key: [0u8; 32],
@@ -86,6 +87,18 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         auto_join: true,
                     };
                     group_store::save_group_meta(&datastore, &group_id, &meta)?;
+
+                    // Add the namespace admin to the member list so joining
+                    // nodes see the creator in /admin-api/groups/:id/members.
+                    if !group_store::check_group_membership(&datastore, &group_id, &admin_identity)?
+                    {
+                        group_store::add_group_member(
+                            &datastore,
+                            &group_id,
+                            &admin_identity,
+                            calimero_primitives::context::GroupMemberRole::Admin,
+                        )?;
+                    }
                 }
 
                 if !group_store::check_group_membership(&datastore, &group_id, &joiner_identity)? {

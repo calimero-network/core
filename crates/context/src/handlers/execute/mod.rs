@@ -484,34 +484,16 @@ impl Handler<ExecuteRequest> for ContextManager {
                         "Execution outcome details"
                     );
 
-                    // Collect events that have handlers for deferred execution.
-                    // NOTE: We cannot execute handlers synchronously here because it would cause
-                    // an actor deadlock - the ContextManager actor is busy processing this request
-                    // and can't process another ExecuteRequest until this one completes.
+                    // Event handlers are NOT executed on the sender node.
+                    // They are dispatched on receiver nodes only (see state_delta handler).
+                    // This is correct because:
+                    // 1. The sender already performed its action in the originating method call.
+                    // 2. Handlers often need the *receiver's* identity (e.g. acknowledge_shot
+                    //    must run as the target player, not the shooter).
+                    // 3. Executing on both would cause duplicate CRDT mutations.
                     //
-                    // Instead, we spawn handler executions as separate async tasks that will run
-                    // after this response is sent. This means handlers execute asynchronously
-                    // and their results are broadcast separately.
-                    let events_with_handlers: Vec<_> = outcome
-                        .events
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(idx, event)| {
-                            event.handler.as_ref().map(|handler_name| {
-                                info!(
-                                    %context_id,
-                                    event_kind = %event.kind,
-                                    handler_name = %handler_name,
-                                    "Event with handler will be executed after response"
-                                );
-                                (idx, handler_name.clone(), event.data.clone())
-                            })
-                        })
-                        .collect();
-
-                    // Track indices of events whose handlers will be executed locally
-                    let executed_handler_indices: std::collections::HashSet<usize> =
-                        events_with_handlers.iter().map(|(idx, _, _)| *idx).collect();
+                    // The handler field is preserved in the broadcast so receivers can
+                    // pick it up via execute_event_handlers_parsed().
 
                     // Process cross-context calls
                     // NOTE: XCalls are executed locally on the current node after the main execution completes.
@@ -617,22 +599,15 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 );
                                 None
                             } else {
-                                // Clear handler field for events whose handlers were already executed locally.
-                                // This prevents receivers from re-executing handlers that the sender
-                                // already executed, avoiding duplicate state changes.
+                                // Preserve handler fields so receiver nodes can execute them.
+                                // Handlers are only executed on receiver nodes, not on the sender.
                                 let events_vec: Vec<ExecutionEvent> = outcome
                                     .events
                                     .iter()
-                                    .enumerate()
-                                    .map(|(idx, e)| ExecutionEvent {
+                                    .map(|e| ExecutionEvent {
                                         kind: e.kind.clone(),
                                         data: e.data.clone(),
-                                        // If handler was executed locally, clear it from broadcast
-                                        handler: if executed_handler_indices.contains(&idx) {
-                                            None
-                                        } else {
-                                            e.handler.clone()
-                                        },
+                                        handler: e.handler.clone(),
                                     })
                                     .collect();
                                 let serialized = serde_json::to_vec(&events_vec)?;
@@ -640,9 +615,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     %context_id,
                                     %executor,
                                     events_count = events_vec.len(),
-                                    handlers_executed_locally = executed_handler_indices.len(),
+                                    handlers_with_handlers = events_vec.iter().filter(|e| e.handler.is_some()).count(),
                                     serialized_len = serialized.len(),
-                                    "Serializing events for broadcast (handlers cleared for executed events)"
+                                    "Serializing events for broadcast"
                                 );
                                 Some(serialized)
                             };
@@ -670,53 +645,8 @@ impl Handler<ExecuteRequest> for ContextManager {
                         }
                     }
 
-                    // Spawn handler executions as separate tasks.
-                    // This runs after the current response is sent, avoiding actor deadlock.
-                    // Each handler execution creates its own delta that gets broadcast separately.
-                    if !events_with_handlers.is_empty() {
-                        let handler_context_client = context_client.clone();
-                        let handler_context_id = context_id;
-                        let handler_executor = executor;
-
-                        // Spawn handlers in the global runtime so they execute independently
-                        global_runtime().spawn(async move {
-                            for (_idx, handler_name, event_data) in events_with_handlers {
-                                info!(
-                                    %handler_context_id,
-                                    handler_name = %handler_name,
-                                    "Executing handler on sender (deferred)"
-                                );
-
-                                match handler_context_client
-                                    .execute(
-                                        &handler_context_id,
-                                        &handler_executor,
-                                        handler_name.clone(),
-                                        event_data,
-                                        vec![],
-                                        None,
-                                    )
-                                    .await
-                                {
-                                    Ok(_) => {
-                                        info!(
-                                            %handler_context_id,
-                                            handler_name = %handler_name,
-                                            "Handler executed successfully on sender"
-                                        );
-                                    }
-                                    Err(err) => {
-                                        warn!(
-                                            %handler_context_id,
-                                            handler_name = %handler_name,
-                                            error = %err,
-                                            "Handler execution failed on sender"
-                                        );
-                                    }
-                                }
-                            }
-                        });
-                    }
+                    // Handler execution is deferred to receiver nodes only.
+                    // See state_delta/mod.rs execute_event_handlers_parsed().
 
                     Ok((guard, context.root_hash, outcome))
                 }

@@ -3,6 +3,7 @@ use calimero_context_client::local_governance::{
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -10,9 +11,9 @@ use eyre::{bail, Result as EyreResult};
 use crate::metrics::record_namespace_retry_event;
 
 use super::{
-    apply_group_op_mutations, count_group_contexts, decrypt_group_op, get_local_gov_nonce,
-    get_namespace_identity_record, is_group_admin, load_current_group_key_record,
-    load_group_key_by_id, load_group_meta,
+    add_group_member, apply_group_op_mutations, count_group_contexts, decrypt_group_op,
+    get_local_gov_nonce, get_namespace_identity_record, is_group_admin,
+    load_current_group_key_record, load_group_key_by_id, load_group_meta,
     namespace_dag::{NamespaceDagService, NamespaceHead},
     namespace_membership::NamespaceMembershipService,
     namespace_retry::NamespaceRetryService,
@@ -447,9 +448,16 @@ impl<'a> NamespaceGovernance<'a> {
             return Ok(());
         }
 
+        // Inherit application ID from the namespace root group so that
+        // subgroups can create contexts with the correct application.
+        let ns_gid = ContextGroupId::from(op.namespace_id);
+        let parent_app_id = load_group_meta(self.store, &ns_gid)?
+            .map(|m| m.target_application_id)
+            .unwrap_or_else(|| calimero_primitives::application::ApplicationId::from([0u8; 32]));
+
         let meta = calimero_store::key::GroupMetaValue {
             admin_identity: op.signer,
-            target_application_id: calimero_primitives::application::ApplicationId::from([0u8; 32]),
+            target_application_id: parent_app_id,
             app_key: [0u8; 32],
             upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
             migration: None,
@@ -457,6 +465,7 @@ impl<'a> NamespaceGovernance<'a> {
             auto_join: false,
         };
         save_group_meta(self.store, &gid, &meta)?;
+        add_group_member(self.store, &gid, &op.signer, GroupMemberRole::Admin)?;
         Ok(())
     }
 
