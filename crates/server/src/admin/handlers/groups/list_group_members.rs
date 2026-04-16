@@ -52,7 +52,7 @@ pub async fn handler(
                 .collect();
             ApiResponse {
                 payload: ListGroupMembersApiResponse {
-                    data: entries,
+                    members: entries,
                     self_identity: Some(resp.self_identity),
                 },
             }

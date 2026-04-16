@@ -1,0 +1,234 @@
+name: E2E KV Store - Group Membership
+description: >
+  Tests group membership operations: adding members to a subgroup,
+  verifying member lists, removing members, and verifying removed
+  members lose access. This is the core scenario for the namespace
+  signing key hierarchy fix.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup: install app, create namespace, invite all nodes ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node3: invitation
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node3}}'
+    outputs:
+      identity_node3: memberIdentity
+
+  # --- SCENARIO 1: List namespace members ---
+
+  - name: List namespace members on node-1
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      ns_members: members
+
+  - name: Assert namespace has members
+    type: assert
+    statements:
+      - "is_set({{ns_members}})"
+
+  # --- SCENARIO 2: Create subgroup and add member via add_group_members ---
+  # This is the exact scenario that triggered the signing key bug:
+  # create_group_in_namespace + add_group_members on the child group.
+
+  - name: Create subgroup
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: test-subgroup
+    outputs:
+      subgroup_id: groupId
+
+  - name: Assert subgroup created
+    type: assert
+    statements:
+      - "is_set({{subgroup_id}})"
+
+  - name: Add node-2 to subgroup
+    type: add_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    members:
+      - identity: '{{identity_node2}}'
+        role: Member
+
+  # --- SCENARIO 3: Verify subgroup membership ---
+
+  - name: List subgroup members
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      subgroup_members: members
+
+  - name: Assert subgroup has members
+    type: assert
+    statements:
+      - "is_set({{subgroup_members}})"
+
+  # --- SCENARIO 4: Create context in subgroup and verify it works ---
+
+  - name: Create context in subgroup
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_id}}'
+    outputs:
+      sub_ctx_id: contextId
+
+  - name: Assert subgroup context created
+    type: assert
+    statements:
+      - "is_set({{sub_ctx_id}})"
+
+  - name: Node-2 joins subgroup context
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+    outputs:
+      sub_ctx_key_node2: memberPublicKey
+
+  - name: Node-1 writes to subgroup context
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args:
+      key: "subgroup_key"
+      value: "from_subgroup"
+
+  - name: Wait for subgroup sync
+    type: wait_for_sync
+    context_id: '{{sub_ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads subgroup context value
+    type: call
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+    method: get
+    args:
+      key: "subgroup_key"
+    outputs:
+      subgroup_read: result
+
+  - name: Assert subgroup context synced
+    type: json_assert
+    statements:
+      - 'json_equal({{subgroup_read}}, {"output": "from_subgroup"})'
+
+  # --- SCENARIO 5: Node-3 (namespace member, NOT in subgroup) cannot call subgroup context ---
+  # Node-3 joined the namespace but was never added to the subgroup.
+  # A call to the subgroup context should fail.
+
+  - name: Node-3 calls subgroup context (should fail - not a subgroup member)
+    type: call
+    node: e2e-node-3
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args:
+      key: "node3_key"
+      value: "should_not_work"
+    expected_failure: true
+
+  # --- SCENARIO 6: Remove node-2 from subgroup and verify access revoked ---
+
+  - name: Remove node-2 from subgroup
+    type: remove_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    members:
+      - '{{identity_node2}}'
+
+  - name: List subgroup members after removal
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      subgroup_members_after: members
+
+  # Node-2 was removed but node-1 (admin) should still be there
+  - name: Assert subgroup still has admin member
+    type: assert
+    statements:
+      - "is_set({{subgroup_members_after}})"
+
+  # Verify node-2 can no longer write to the subgroup context
+  - name: Node-2 writes to subgroup context after removal (should fail)
+    type: call
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args:
+      key: "revoked_key"
+      value: "should_not_work"
+    expected_failure: true
+
+  # --- SCENARIO 7: Get group info ---
+
+  - name: Get subgroup info
+    type: get_group_info
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      group_info: data
+
+  - name: Assert group info returned
+    type: assert
+    statements:
+      - "is_set({{group_info}})"
+
+stop_all_nodes: false

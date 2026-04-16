@@ -311,7 +311,7 @@ impl CheckAccessCommand {
 
         let caps = caps_response.data.capabilities;
         let role = members_response
-            .data
+            .members
             .iter()
             .find(|m| m.identity == self.identity)
             .map(|m| format!("{:?}", m.role).to_lowercase())
