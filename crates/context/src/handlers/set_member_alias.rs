@@ -1,9 +1,8 @@
-use actix::{ActorResponse, Handler, Message, WrapFuture};
+use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::SetMemberAliasRequest;
 use calimero_context_client::local_governance::GroupOp;
-use tracing::info;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<SetMemberAliasRequest> for ContextManager {
     type Result = ActorResponse<Self, <SetMemberAliasRequest as Message>::Result>;
@@ -18,44 +17,30 @@ impl Handler<SetMemberAliasRequest> for ContextManager {
         }: SetMemberAliasRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let preflight = match self.governance_preflight(&group_id, requester, false) {
-            Ok(p) => p,
-            Err(err) => return ActorResponse::reply(Err(err)),
+        // Resolve the requester identity to check alias ownership.
+        let resolved_requester = match requester {
+            Some(pk) => pk,
+            None => match self.node_namespace_identity(&group_id) {
+                Some((pk, _)) => pk,
+                None => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "requester not provided and node has no configured group identity"
+                    )));
+                }
+            },
         };
 
-        if preflight.requester != member {
+        if resolved_requester != member {
             return ActorResponse::reply(Err(eyre::eyre!("members may only set their own alias")));
         }
 
-        let datastore = preflight.datastore.clone();
-        let node_client = preflight.node_client.clone();
-        let sk = preflight.signer_sk();
-        let alias_for_log = alias.clone();
-
-        ActorResponse::r#async(
-            async move {
-                group_store::sign_apply_and_publish(
-                    &datastore,
-                    &node_client,
-                    &group_id,
-                    &sk,
-                    GroupOp::MemberAliasSet {
-                        member,
-                        alias: alias.clone(),
-                    },
-                )
-                .await?;
-
-                info!(
-                    ?group_id,
-                    %member,
-                    %alias_for_log,
-                    "group member alias set"
-                );
-
-                Ok(())
-            }
-            .into_actor(self),
+        // sign_and_publish_group_op calls governance_preflight once with the
+        // already-resolved requester, so no double preflight.
+        self.sign_and_publish_group_op(
+            &group_id,
+            Some(resolved_requester),
+            false,
+            GroupOp::MemberAliasSet { member, alias },
         )
     }
 }

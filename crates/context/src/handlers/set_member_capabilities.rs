@@ -1,10 +1,8 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::SetMemberCapabilitiesRequest;
 use calimero_context_client::local_governance::GroupOp;
-use tracing::info;
 
-use crate::group_store;
-use crate::ContextManager;
+use crate::{group_store, ContextManager};
 
 impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
     type Result = ActorResponse<Self, <SetMemberCapabilitiesRequest as Message>::Result>;
@@ -19,6 +17,7 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
         }: SetMemberCapabilitiesRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        // Admin check first — prevents non-admins from probing membership.
         let preflight = match self.governance_preflight(&group_id, requester, true) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
@@ -51,9 +50,7 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
                     },
                 )
                 .await?;
-
-                info!(?group_id, %member, capabilities, "member capabilities updated");
-
+                tracing::info!(?group_id, %member, capabilities, "member capabilities updated");
                 Ok(())
             }
             .into_actor(self),

@@ -2,10 +2,8 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::UpdateMemberRoleRequest;
 use calimero_context_client::local_governance::GroupOp;
 use calimero_primitives::context::GroupMemberRole;
-use eyre::bail;
 
-use crate::group_store;
-use crate::ContextManager;
+use crate::{group_store, ContextManager};
 
 impl Handler<UpdateMemberRoleRequest> for ContextManager {
     type Result = ActorResponse<Self, <UpdateMemberRoleRequest as Message>::Result>;
@@ -20,44 +18,41 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
         }: UpdateMemberRoleRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        // Admin check first — prevents non-admins from probing role status.
         let preflight = match self.governance_preflight(&group_id, requester, true) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
-        if let Err(err) = (|| -> eyre::Result<()> {
-            let Some(current_role) =
-                group_store::get_group_member_role(&self.datastore, &group_id, &identity)?
-            else {
-                bail!("identity is not a member of group '{group_id:?}'");
-            };
-
-            if current_role == GroupMemberRole::Admin && new_role == GroupMemberRole::Member {
-                let admin_count = group_store::count_group_admins(&self.datastore, &group_id)?;
-                if admin_count <= 1 {
-                    bail!("cannot demote the last admin of group '{group_id:?}'");
+        // Single DB read for current role.
+        let current_role =
+            match group_store::get_group_member_role(&self.datastore, &group_id, &identity) {
+                Ok(Some(role)) => role,
+                Ok(None) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "identity is not a member of group '{group_id:?}'"
+                    )));
                 }
-            }
-
-            Ok(())
-        })() {
-            return ActorResponse::reply(Err(err));
-        }
-
-        let Some(current_role) =
-            group_store::get_group_member_role(&self.datastore, &group_id, &identity)
-                .ok()
-                .flatten()
-        else {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "identity is not a member of group '{group_id:?}'"
-            )));
-        };
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
 
         if current_role == new_role {
             return ActorResponse::reply(Ok(()));
         }
 
+        if current_role == GroupMemberRole::Admin && new_role == GroupMemberRole::Member {
+            match group_store::count_group_admins(&self.datastore, &group_id) {
+                Ok(count) if count <= 1 => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "cannot demote the last admin of group '{group_id:?}'"
+                    )));
+                }
+                Err(err) => return ActorResponse::reply(Err(err)),
+                _ => {}
+            }
+        }
+
+        // Inline the sign+publish to avoid a second governance_preflight call.
         let datastore = preflight.datastore.clone();
         let node_client = preflight.node_client.clone();
         let sk = preflight.signer_sk();
@@ -75,6 +70,7 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
                     },
                 )
                 .await?;
+                tracing::info!(?group_id, ?identity, "member role updated");
                 Ok(())
             }
             .into_actor(self),

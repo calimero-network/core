@@ -1,8 +1,7 @@
-use actix::{ActorResponse, Handler, Message, WrapFuture};
+use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::UpdateGroupSettingsRequest;
 use calimero_context_client::local_governance::GroupOp;
 
-use crate::group_store;
 use crate::ContextManager;
 
 impl Handler<UpdateGroupSettingsRequest> for ContextManager {
@@ -17,31 +16,13 @@ impl Handler<UpdateGroupSettingsRequest> for ContextManager {
         }: UpdateGroupSettingsRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let preflight = match self.governance_preflight(&group_id, requester, true) {
-            Ok(p) => p,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
-
-        let datastore = preflight.datastore.clone();
-        let node_client = preflight.node_client.clone();
-        let sk = preflight.signer_sk();
-
-        ActorResponse::r#async(
-            async move {
-                group_store::sign_apply_and_publish(
-                    &datastore,
-                    &node_client,
-                    &group_id,
-                    &sk,
-                    GroupOp::UpgradePolicySet {
-                        policy: upgrade_policy,
-                    },
-                )
-                .await?;
-
-                Ok(())
-            }
-            .into_actor(self),
+        self.sign_and_publish_group_op(
+            &group_id,
+            requester,
+            true,
+            GroupOp::UpgradePolicySet {
+                policy: upgrade_policy,
+            },
         )
     }
 }

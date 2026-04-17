@@ -5,6 +5,7 @@ use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
+use actix::prelude::{ActorResponse, WrapFuture};
 use actix::Actor;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::local_governance::SignedNamespaceOp;
@@ -209,6 +210,43 @@ impl ContextManager {
             datastore: self.datastore.clone(),
             node_client: self.node_client.clone(),
         })
+    }
+}
+
+impl ContextManager {
+    /// Common pattern for governance mutation handlers that:
+    /// 1. Run governance_preflight (identity + admin check + signing key)
+    /// 2. Sign, apply, and publish a GroupOp
+    ///
+    /// Handles the boilerplate of cloning datastore/node_client, building the
+    /// signer key, and wrapping in an ActorResponse::r#async.
+    pub(crate) fn sign_and_publish_group_op(
+        &mut self,
+        group_id: &calimero_context_config::types::ContextGroupId,
+        requester: Option<calimero_primitives::identity::PublicKey>,
+        require_admin: bool,
+        op: calimero_context_client::local_governance::GroupOp,
+    ) -> ActorResponse<Self, eyre::Result<()>> {
+        let preflight = match self.governance_preflight(group_id, requester, require_admin) {
+            Ok(p) => p,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+
+        let datastore = preflight.datastore.clone();
+        let node_client = preflight.node_client.clone();
+        let sk = preflight.signer_sk();
+        let group_id = *group_id;
+        let op_debug = format!("{op:?}");
+
+        ActorResponse::r#async(
+            async move {
+                group_store::sign_apply_and_publish(&datastore, &node_client, &group_id, &sk, op)
+                    .await?;
+                tracing::info!(?group_id, op = %op_debug, "governance op applied");
+                Ok(())
+            }
+            .into_actor(self),
+        )
     }
 }
 
