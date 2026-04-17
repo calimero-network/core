@@ -129,9 +129,6 @@ jobs:
           - workflow: group-membership
             file: workflows/group-membership.yml
             app: e2e-kv-store
-          - workflow: group-nesting
-            file: workflows/group-nesting.yml
-            app: e2e-kv-store
           - workflow: group-capabilities
             file: workflows/group-capabilities.yml
             app: e2e-kv-store

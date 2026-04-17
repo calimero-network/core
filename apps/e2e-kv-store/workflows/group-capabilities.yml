@@ -81,9 +81,9 @@ steps:
       node2_caps: capabilities
 
   - name: Assert node-2 inherited default capabilities
-    type: assert
+    type: json_assert
     statements:
-      - "equal({{node2_caps}}, 7)"
+      - "json_equal({{node2_caps}}, 7)"
 
   # --- SCENARIO 3: Override member capabilities, verify new value ---
   # Restrict to 1 = only CAN_CREATE_CONTEXT
@@ -104,9 +104,9 @@ steps:
       node2_caps_after: capabilities
 
   - name: Assert restricted capabilities is 1
-    type: assert
+    type: json_assert
     statements:
-      - "equal({{node2_caps_after}}, 1)"
+      - "json_equal({{node2_caps_after}}, 1)"
 
   # --- SCENARIO 4: Set default visibility ---
 
@@ -156,9 +156,9 @@ steps:
       node3_caps: capabilities
 
   - name: Assert node-3 capabilities is 0
-    type: assert
+    type: json_assert
     statements:
-      - "equal({{node3_caps}}, 0)"
+      - "json_equal({{node3_caps}}, 0)"
 
   # --- SCENARIO 6: Verify context operations work with capabilities ---
 
