@@ -5,6 +5,7 @@ use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
+use actix::prelude::{ActorResponse, WrapFuture};
 use actix::Actor;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::local_governance::SignedNamespaceOp;
@@ -225,9 +226,7 @@ impl ContextManager {
         requester: Option<calimero_primitives::identity::PublicKey>,
         require_admin: bool,
         op: calimero_context_client::local_governance::GroupOp,
-    ) -> actix::prelude::ActorResponse<Self, eyre::Result<()>> {
-        use actix::prelude::{ActorResponse, WrapFuture};
-
+    ) -> ActorResponse<Self, eyre::Result<()>> {
         let preflight = match self.governance_preflight(group_id, requester, require_admin) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
