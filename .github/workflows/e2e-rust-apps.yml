@@ -151,6 +151,9 @@ jobs:
           - workflow: group-capabilities
             file: workflows/group-capabilities.yml
             app: e2e-kv-store
+          - workflow: group-nesting
+            file: workflows/group-nesting.yml
+            app: e2e-kv-store
           - workflow: group-multi-service
             file: workflows/group-multi-service.yml
             app: e2e-kv-store
