@@ -2269,7 +2269,7 @@ fn resolve_signing_key_none_when_exceeding_max_depth() {
     let sk = [0xEE; 32];
 
     // Build a chain of MAX_NAMESPACE_DEPTH + 1 groups (root + 16 children)
-    let mut groups: Vec<ContextGroupId> = (0..=MAX_NAMESPACE_DEPTH)
+    let groups: Vec<ContextGroupId> = (0..=MAX_NAMESPACE_DEPTH)
         .map(|i| {
             let mut bytes = [0u8; 32];
             bytes[0] = 0xE0;
