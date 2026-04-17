@@ -1,7 +1,8 @@
 name: E2E - Rust Apps
 
 # Tests e2e-kv-store and xcall-example apps using locally-built Docker image.
-# Build once, then run all 9 test workflows in parallel via matrix.
+# Parallel build: merod image + WASM apps build concurrently, then all test
+# workflows run in parallel via matrix.
 # Self-contained: doesn't depend on release.yml
 
 permissions:
@@ -37,9 +38,9 @@ env:
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
 jobs:
-  # ── Build phase: compile merod + apps, upload as artifacts ──
-  build:
-    name: Build
+  # ── Build merod Docker image (heaviest step) ──
+  build-image:
+    name: Build Image
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
@@ -60,8 +61,33 @@ jobs:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Save Docker image
+      - name: Save and upload Docker image
         run: docker save merod:local | zstd -T0 -3 -o /tmp/merod-local.tar.zst
+
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: merod-image
+          path: /tmp/merod-local.tar.zst
+          retention-days: 1
+          compression-level: 0
+
+  # ── Build WASM apps (runs in parallel with image build) ──
+  build-apps:
+    name: Build Apps
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: e2e-wasm-apps
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build e2e-kv-store app
         run: |
@@ -77,14 +103,6 @@ jobs:
         run: |
           cd apps/xcall-example
           ./build.sh
-
-      - name: Upload Docker image
-        uses: actions/upload-artifact@v4
-        with:
-          name: merod-image
-          path: /tmp/merod-local.tar.zst
-          retention-days: 1
-          compression-level: 0
 
       - name: Upload app artifacts
         uses: actions/upload-artifact@v4
@@ -102,7 +120,7 @@ jobs:
   # ── Test phase: run each workflow in parallel ──
   test:
     name: Test (${{ matrix.workflow }})
-    needs: build
+    needs: [build-image, build-apps]
     runs-on: ubuntu-24.04-8cpu
     strategy:
       fail-fast: false
