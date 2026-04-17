@@ -1,11 +1,13 @@
 name: E2E KV Store - Group Capabilities
 description: >
-  Tests the capability and permission system:
-    1. Set default capabilities for new members (bitmask 7 = all)
-    2. Invite member, verify they inherited capabilities (json_equal 7)
+  Tests the capability API (set/get/override):
+    1. Set default capabilities (bitmask 7 = all) before inviting members
+    2. Invite member, verify inherited capabilities via get (json_equal 7)
     3. Override individual member capabilities to 1, verify (json_equal 1)
-    4. Set default visibility to open
-    5. Verify context operations work with capabilities configured
+    4. Set default visibility to open, verify context sync still works
+
+  NOTE: This tests the capability API (store/retrieve values), not
+  capability enforcement (server rejecting unauthorized operations).
 
 force_pull_image: false
 near_devnet: false
@@ -107,15 +109,13 @@ steps:
     statements:
       - "json_equal({{node2_caps_after}}, 1)"
 
-  # --- SCENARIO 4: Set default visibility ---
+  # --- SCENARIO 4: Set visibility + verify context sync works ---
 
   - name: Set default visibility to open
     type: set_default_visibility
     node: e2e-node-1
     group_id: '{{namespace_id}}'
     visibility: open
-
-  # --- SCENARIO 5: Verify context operations work with capabilities ---
 
   - name: Create context in namespace
     type: create_context
@@ -164,7 +164,7 @@ steps:
     outputs:
       caps_read: result
 
-  - name: Assert context works with capabilities
+  - name: Assert context works after capability and visibility changes
     type: json_assert
     statements:
       - 'json_equal({{caps_read}}, {"output": "caps_work"})'
