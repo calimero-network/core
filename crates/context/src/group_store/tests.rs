@@ -2306,3 +2306,379 @@ fn resolve_signing_key_none_when_exceeding_max_depth() {
         "key should be reachable within depth limit"
     );
 }
+
+// -----------------------------------------------------------------------
+// governance_preflight logic — testing the store-level checks that
+// governance_preflight orchestrates (admin auth + signing key resolution)
+// -----------------------------------------------------------------------
+
+#[test]
+fn preflight_rejects_non_admin_when_required() {
+    let store = test_store();
+    let gid = ContextGroupId::from([0xF0; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let member = PublicKey::from([0x02; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+
+    // Admin passes
+    assert!(require_group_admin(&store, &gid, &admin).is_ok());
+    // Non-admin fails
+    assert!(require_group_admin(&store, &gid, &member).is_err());
+    // Unknown identity fails
+    let unknown = PublicKey::from([0x03; 32]);
+    assert!(require_group_admin(&store, &gid, &unknown).is_err());
+}
+
+#[test]
+fn preflight_signing_key_resolved_through_hierarchy() {
+    // Simulates what governance_preflight does: resolve signing key for a
+    // child group where the key only exists on the root (namespace).
+    let store = test_store();
+    let root = ContextGroupId::from([0xF0; 32]);
+    let child = ContextGroupId::from([0xF1; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let sk = [0xAA; 32];
+
+    // Set up root with meta + admin + signing key
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    add_group_member(&store, &root, &admin, GroupMemberRole::Admin).unwrap();
+    store_group_signing_key(&store, &root, &admin, &sk).unwrap();
+
+    // Set up child nested under root, with meta + admin but NO signing key
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    add_group_member(&store, &child, &admin, GroupMemberRole::Admin).unwrap();
+    nest_group(&store, &root, &child).unwrap();
+
+    // Verify: group exists, admin check passes, signing key resolves via parent
+    assert!(load_group_meta(&store, &child).unwrap().is_some());
+    assert!(require_group_admin(&store, &child, &admin).is_ok());
+    let resolved = resolve_group_signing_key(&store, &child, &admin).unwrap();
+    assert_eq!(resolved, Some(sk), "signing key should resolve from root");
+}
+
+#[test]
+fn preflight_fails_when_no_signing_key_in_hierarchy() {
+    let store = test_store();
+    let gid = ContextGroupId::from([0xF0; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    // No signing key stored anywhere
+
+    let resolved = resolve_group_signing_key(&store, &gid, &admin).unwrap();
+    assert_eq!(resolved, None, "no signing key should be found");
+}
+
+#[test]
+fn preflight_fails_for_nonexistent_group() {
+    let store = test_store();
+    let gid = ContextGroupId::from([0xF0; 32]);
+
+    // Group doesn't exist — load_group_meta returns None
+    assert!(load_group_meta(&store, &gid).unwrap().is_none());
+}
+
+// -----------------------------------------------------------------------
+// recursive_remove_member — cascade removal through group hierarchy
+// -----------------------------------------------------------------------
+
+#[test]
+fn recursive_remove_cascades_to_all_descendants() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xE0; 32]);
+    let child = ContextGroupId::from([0xE1; 32]);
+    let grandchild = ContextGroupId::from([0xE2; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let member = PublicKey::from([0x02; 32]);
+
+    // Build hierarchy
+    nest_group(&store, &root, &child).unwrap();
+    nest_group(&store, &child, &grandchild).unwrap();
+
+    // Add admin + member to all groups
+    for gid in [&root, &child, &grandchild] {
+        save_group_meta(&store, gid, &test_meta()).unwrap();
+        add_group_member(&store, gid, &admin, GroupMemberRole::Admin).unwrap();
+        add_group_member(&store, gid, &member, GroupMemberRole::Member).unwrap();
+    }
+
+    // Verify member exists everywhere
+    assert!(check_group_membership(&store, &root, &member).unwrap());
+    assert!(check_group_membership(&store, &child, &member).unwrap());
+    assert!(check_group_membership(&store, &grandchild, &member).unwrap());
+
+    // Remove from root — should cascade to child and grandchild
+    let removed_from = recursive_remove_member(&store, &root, &member).unwrap();
+    assert_eq!(removed_from.len(), 3, "should be removed from all 3 groups");
+
+    assert!(!check_group_membership(&store, &root, &member).unwrap());
+    assert!(!check_group_membership(&store, &child, &member).unwrap());
+    assert!(!check_group_membership(&store, &grandchild, &member).unwrap());
+
+    // Admin should be unaffected
+    assert!(check_group_membership(&store, &root, &admin).unwrap());
+    assert!(check_group_membership(&store, &child, &admin).unwrap());
+    assert!(check_group_membership(&store, &grandchild, &admin).unwrap());
+}
+
+#[test]
+fn recursive_remove_from_child_does_not_affect_parent() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xE0; 32]);
+    let child = ContextGroupId::from([0xE1; 32]);
+    let grandchild = ContextGroupId::from([0xE2; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let member = PublicKey::from([0x02; 32]);
+
+    nest_group(&store, &root, &child).unwrap();
+    nest_group(&store, &child, &grandchild).unwrap();
+
+    for gid in [&root, &child, &grandchild] {
+        save_group_meta(&store, gid, &test_meta()).unwrap();
+        add_group_member(&store, gid, &admin, GroupMemberRole::Admin).unwrap();
+        add_group_member(&store, gid, &member, GroupMemberRole::Member).unwrap();
+    }
+
+    // Remove from child only — should cascade to grandchild but NOT root
+    let removed_from = recursive_remove_member(&store, &child, &member).unwrap();
+    assert_eq!(removed_from.len(), 2, "removed from child + grandchild");
+
+    // Root membership should be unaffected
+    assert!(
+        check_group_membership(&store, &root, &member).unwrap(),
+        "root membership must survive child removal"
+    );
+    assert!(!check_group_membership(&store, &child, &member).unwrap());
+    assert!(!check_group_membership(&store, &grandchild, &member).unwrap());
+}
+
+#[test]
+fn recursive_remove_member_not_in_some_descendants() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xE0; 32]);
+    let child = ContextGroupId::from([0xE1; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let member = PublicKey::from([0x02; 32]);
+
+    nest_group(&store, &root, &child).unwrap();
+
+    for gid in [&root, &child] {
+        save_group_meta(&store, gid, &test_meta()).unwrap();
+        add_group_member(&store, gid, &admin, GroupMemberRole::Admin).unwrap();
+    }
+    // Member only in root, not in child
+    add_group_member(&store, &root, &member, GroupMemberRole::Member).unwrap();
+
+    let removed_from = recursive_remove_member(&store, &root, &member).unwrap();
+    assert_eq!(
+        removed_from.len(),
+        1,
+        "only removed from root where member existed"
+    );
+    assert!(!check_group_membership(&store, &root, &member).unwrap());
+}
+
+#[test]
+fn recursive_remove_nonexistent_member_returns_empty() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xE0; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let stranger = PublicKey::from([0x99; 32]);
+
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    add_group_member(&store, &root, &admin, GroupMemberRole::Admin).unwrap();
+
+    let removed_from = recursive_remove_member(&store, &root, &stranger).unwrap();
+    assert!(removed_from.is_empty(), "nothing to remove");
+}
+
+// -----------------------------------------------------------------------
+// NamespaceGovernance::apply_signed_op — governance state machine tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn governance_group_nested_and_unnested_via_signed_ops() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let child_id = [0xA1u8; 32];
+    let child_gid = ContextGroupId::from(child_id);
+
+    // Bootstrap namespace: meta + admin + namespace identity
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Create child group meta (normally done by GroupCreated op, do manually)
+    save_group_meta(&store, &child_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &child_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+
+    // Sign and apply GroupNested op
+    let nest_op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupNested {
+            parent_group_id: ns_id,
+            child_group_id: child_id,
+        }),
+    )
+    .expect("sign nest op");
+
+    gov.apply_signed_op(&nest_op).expect("apply nest op");
+
+    // Verify child is nested
+    let children = list_child_groups(&store, &ns_gid).unwrap();
+    assert_eq!(children, vec![child_gid], "child should be nested");
+
+    // Sign and apply GroupUnnested op
+    let unnest_op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Root(RootOp::GroupUnnested {
+            parent_group_id: ns_id,
+            child_group_id: child_id,
+        }),
+    )
+    .expect("sign unnest op");
+
+    gov.apply_signed_op(&unnest_op).expect("apply unnest op");
+
+    // Verify child is unnested
+    let children_after = list_child_groups(&store, &ns_gid).unwrap();
+    assert!(children_after.is_empty(), "child should be unnested");
+}
+
+#[test]
+fn governance_rejects_non_admin_signer() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+    let intruder_sk = PrivateKey::random(&mut rng);
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+
+    // Bootstrap namespace with admin
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+
+    // Non-admin tries to create a group
+    let op = SignedNamespaceOp::sign(
+        &intruder_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: [0xBB; 32],
+        }),
+    )
+    .expect("sign op");
+
+    let result = gov.apply_signed_op(&op);
+    assert!(result.is_err(), "non-admin signer should be rejected");
+}
+
+#[test]
+fn governance_group_created_is_idempotent() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let new_group_id = [0xCC; 32];
+
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+
+    let op1 = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: new_group_id,
+        }),
+    )
+    .expect("sign op1");
+
+    gov.apply_signed_op(&op1)
+        .expect("first apply should succeed");
+
+    // Apply same op again (different nonce but same group_id)
+    let op2 = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: new_group_id,
+        }),
+    )
+    .expect("sign op2");
+
+    // Should not error — idempotent
+    gov.apply_signed_op(&op2)
+        .expect("duplicate GroupCreated should be idempotent");
+}
+
+// Helper: create a GroupMetaValue with a specific admin
+fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
+    GroupMetaValue {
+        app_key: [0xBB; 32],
+        target_application_id: ApplicationId::from([0xCC; 32]),
+        upgrade_policy: UpgradePolicy::Automatic,
+        created_at: 1_700_000_000,
+        admin_identity: admin,
+        migration: None,
+        auto_join: true,
+    }
+}
