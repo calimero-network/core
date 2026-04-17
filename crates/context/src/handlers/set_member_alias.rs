@@ -1,9 +1,8 @@
-use actix::{ActorResponse, Handler, Message, WrapFuture};
+use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::SetMemberAliasRequest;
 use calimero_context_client::local_governance::GroupOp;
-use tracing::info;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<SetMemberAliasRequest> for ContextManager {
     type Result = ActorResponse<Self, <SetMemberAliasRequest as Message>::Result>;
@@ -18,6 +17,7 @@ impl Handler<SetMemberAliasRequest> for ContextManager {
         }: SetMemberAliasRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        // Members may only set their own alias — check before preflight
         let preflight = match self.governance_preflight(&group_id, requester, false) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
@@ -27,35 +27,11 @@ impl Handler<SetMemberAliasRequest> for ContextManager {
             return ActorResponse::reply(Err(eyre::eyre!("members may only set their own alias")));
         }
 
-        let datastore = preflight.datastore.clone();
-        let node_client = preflight.node_client.clone();
-        let sk = preflight.signer_sk();
-        let alias_for_log = alias.clone();
-
-        ActorResponse::r#async(
-            async move {
-                group_store::sign_apply_and_publish(
-                    &datastore,
-                    &node_client,
-                    &group_id,
-                    &sk,
-                    GroupOp::MemberAliasSet {
-                        member,
-                        alias: alias.clone(),
-                    },
-                )
-                .await?;
-
-                info!(
-                    ?group_id,
-                    %member,
-                    %alias_for_log,
-                    "group member alias set"
-                );
-
-                Ok(())
-            }
-            .into_actor(self),
+        self.sign_and_publish_group_op(
+            &group_id,
+            Some(preflight.requester),
+            false,
+            GroupOp::MemberAliasSet { member, alias },
         )
     }
 }

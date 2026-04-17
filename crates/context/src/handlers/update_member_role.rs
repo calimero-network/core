@@ -1,11 +1,10 @@
-use actix::{ActorResponse, Handler, Message, WrapFuture};
+use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::UpdateMemberRoleRequest;
 use calimero_context_client::local_governance::GroupOp;
 use calimero_primitives::context::GroupMemberRole;
 use eyre::bail;
 
-use crate::group_store;
-use crate::ContextManager;
+use crate::{group_store, ContextManager};
 
 impl Handler<UpdateMemberRoleRequest> for ContextManager {
     type Result = ActorResponse<Self, <UpdateMemberRoleRequest as Message>::Result>;
@@ -20,17 +19,17 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
         }: UpdateMemberRoleRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let preflight = match self.governance_preflight(&group_id, requester, true) {
-            Ok(p) => p,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
-
+        // Validate: member exists, not demoting last admin, not a no-op
         if let Err(err) = (|| -> eyre::Result<()> {
             let Some(current_role) =
                 group_store::get_group_member_role(&self.datastore, &group_id, &identity)?
             else {
                 bail!("identity is not a member of group '{group_id:?}'");
             };
+
+            if current_role == new_role {
+                return Ok(()); // no-op handled below
+            }
 
             if current_role == GroupMemberRole::Admin && new_role == GroupMemberRole::Member {
                 let admin_count = group_store::count_group_admins(&self.datastore, &group_id)?;
@@ -44,40 +43,23 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
             return ActorResponse::reply(Err(err));
         }
 
-        let Some(current_role) =
+        // Check for no-op (same role)
+        let current_role =
             group_store::get_group_member_role(&self.datastore, &group_id, &identity)
                 .ok()
-                .flatten()
-        else {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "identity is not a member of group '{group_id:?}'"
-            )));
-        };
-
-        if current_role == new_role {
+                .flatten();
+        if current_role == Some(new_role.clone()) {
             return ActorResponse::reply(Ok(()));
         }
 
-        let datastore = preflight.datastore.clone();
-        let node_client = preflight.node_client.clone();
-        let sk = preflight.signer_sk();
-
-        ActorResponse::r#async(
-            async move {
-                group_store::sign_apply_and_publish(
-                    &datastore,
-                    &node_client,
-                    &group_id,
-                    &sk,
-                    GroupOp::MemberRoleSet {
-                        member: identity,
-                        role: new_role,
-                    },
-                )
-                .await?;
-                Ok(())
-            }
-            .into_actor(self),
+        self.sign_and_publish_group_op(
+            &group_id,
+            requester,
+            true,
+            GroupOp::MemberRoleSet {
+                member: identity,
+                role: new_role,
+            },
         )
     }
 }

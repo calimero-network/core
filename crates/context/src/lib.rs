@@ -213,6 +213,43 @@ impl ContextManager {
 }
 
 impl ContextManager {
+    /// Common pattern for governance mutation handlers that:
+    /// 1. Run governance_preflight (identity + admin check + signing key)
+    /// 2. Sign, apply, and publish a GroupOp
+    ///
+    /// Handles the boilerplate of cloning datastore/node_client, building the
+    /// signer key, and wrapping in an ActorResponse::r#async.
+    pub(crate) fn sign_and_publish_group_op(
+        &mut self,
+        group_id: &calimero_context_config::types::ContextGroupId,
+        requester: Option<calimero_primitives::identity::PublicKey>,
+        require_admin: bool,
+        op: calimero_context_client::local_governance::GroupOp,
+    ) -> actix::prelude::ActorResponse<Self, eyre::Result<()>> {
+        use actix::prelude::{ActorResponse, WrapFuture};
+
+        let preflight = match self.governance_preflight(group_id, requester, require_admin) {
+            Ok(p) => p,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+
+        let datastore = preflight.datastore.clone();
+        let node_client = preflight.node_client.clone();
+        let sk = preflight.signer_sk();
+        let group_id = *group_id;
+
+        ActorResponse::r#async(
+            async move {
+                group_store::sign_apply_and_publish(&datastore, &node_client, &group_id, &sk, op)
+                    .await?;
+                Ok(())
+            }
+            .into_actor(self),
+        )
+    }
+}
+
+impl ContextManager {
     fn get_or_create_namespace_dag(
         &mut self,
         namespace_id: &[u8; 32],
