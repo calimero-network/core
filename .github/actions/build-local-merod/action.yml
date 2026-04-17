@@ -52,8 +52,8 @@ runs:
         CALIMERO_WEBUI_FETCH_TOKEN: ${{ env.CALIMERO_WEBUI_FETCH_TOKEN }}
         CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ env.CALIMERO_AUTH_FRONTEND_FETCH_TOKEN }}
       run: |
-        echo "Building merod and meroctl binaries for x86_64-linux..."
-        cargo build -p merod -p meroctl --release --target x86_64-unknown-linux-gnu
+        echo "Building merod binary for x86_64-linux..."
+        cargo build -p merod --release --target x86_64-unknown-linux-gnu
 
     - name: Build local Docker image
       if: steps.restore-image.outputs.cache-hit != 'true' || steps.load-cached.outputs.cached != 'true'
@@ -63,7 +63,8 @@ runs:
         
         mkdir -p bin/amd64
         cp target/x86_64-unknown-linux-gnu/release/merod bin/amd64/
-        cp target/x86_64-unknown-linux-gnu/release/meroctl bin/amd64/
+        # meroctl is not needed for e2e tests but the Dockerfile expects it
+        touch bin/amd64/meroctl
         
         # Build local image using prebuilt Dockerfile
         docker build \
