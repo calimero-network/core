@@ -69,7 +69,7 @@ pub fn resolve_group_signing_key(
     public_key: &PublicKey,
 ) -> EyreResult<Option<[u8; 32]>> {
     let mut current = *group_id;
-    for _ in 0..MAX_NAMESPACE_DEPTH {
+    for _ in 0..=MAX_NAMESPACE_DEPTH {
         if let Some(sk) = get_group_signing_key(store, &current, public_key)? {
             return Ok(Some(sk));
         }

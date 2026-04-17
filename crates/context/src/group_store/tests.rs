@@ -2287,19 +2287,17 @@ fn resolve_signing_key_none_when_exceeding_max_depth() {
     store_group_signing_key(&store, &groups[0], &pk, &sk).unwrap();
 
     // The deepest group (index MAX_NAMESPACE_DEPTH) is 16 levels below root.
-    // resolve_group_signing_key checks self + walks up to MAX_NAMESPACE_DEPTH
-    // ancestors, but the root is exactly at the boundary. It should still be
-    // reachable since the loop runs MAX_NAMESPACE_DEPTH iterations checking
-    // self first, then walking up.
+    // resolve_group_signing_key uses 0..=MAX_NAMESPACE_DEPTH to match
+    // resolve_namespace's reachability: checks self + up to MAX_NAMESPACE_DEPTH
+    // parent traversals.
     let at_boundary = resolve_group_signing_key(&store, &groups[MAX_NAMESPACE_DEPTH], &pk).unwrap();
-    // At depth 16 from root: self (depth 16) + walk 15 ancestors = checks
-    // depths 16,15,14,...,1 but NOT depth 0 (root). So the key is missed.
     assert_eq!(
-        at_boundary, None,
-        "key at root should be unreachable at max depth"
+        at_boundary,
+        Some(sk),
+        "key at root should be reachable at exactly MAX_NAMESPACE_DEPTH"
     );
 
-    // One level shallower should still find it
+    // One level shallower should also find it
     let within_limit =
         resolve_group_signing_key(&store, &groups[MAX_NAMESPACE_DEPTH - 1], &pk).unwrap();
     assert_eq!(
