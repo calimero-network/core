@@ -54,8 +54,6 @@ steps:
     node: e2e-node-2
     namespace_id: '{{parent_id}}'
     invitation: '{{invite}}'
-    outputs:
-      identity_node2: memberIdentity
 
   # Create a root context to verify it survives nest/unnest
   - name: Create root context
@@ -89,6 +87,21 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
+
+  - name: Node-2 reads baseline
+    type: call
+    node: e2e-node-2
+    context_id: '{{root_ctx_id}}'
+    method: get
+    args:
+      key: "baseline"
+    outputs:
+      baseline_read: result
+
+  - name: Assert baseline synced
+    type: json_assert
+    statements:
+      - 'json_equal({{baseline_read}}, {"output": "before_nesting"})'
 
   # --- SCENARIO 1: Create child group, verify in listing ---
 
@@ -138,10 +151,6 @@ steps:
       - 'json_equal({{subs_after_unnest}}, [])'
 
   # --- SCENARIO 3: Re-nest via explicit nest_group, verify it reappears ---
-
-  - name: Wait for unnest propagation
-    type: wait
-    seconds: 3
 
   - name: Re-nest child under parent via nest_group
     type: nest_group
