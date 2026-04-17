@@ -1,0 +1,172 @@
+name: E2E KV Store - Group Capabilities
+description: >
+  Tests the capability API (set/get/override):
+    1. Set default capabilities (bitmask 7 = all) before inviting members
+    2. Invite member, verify inherited capabilities via get (json_equal 7)
+    3. Override individual member capabilities to 1, verify (json_equal 1)
+    4. Set default visibility to open, verify context sync still works
+
+  NOTE: This tests the capability API (store/retrieve values), not
+  capability enforcement (server rejecting unauthorized operations).
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  # --- SCENARIO 1: Set default capabilities before inviting members ---
+  # Capability bitmask: bit 0 = CAN_CREATE_CONTEXT (1),
+  #   bit 1 = CAN_INVITE_MEMBERS (2), bit 2 = CAN_JOIN_OPEN_CONTEXTS (4)
+  # Value 7 = all capabilities enabled
+
+  - name: Set default capabilities to all (7)
+    type: set_default_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    capabilities: 7
+
+  # --- SCENARIO 2: Invite node-2, verify it inherits default capabilities ---
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Get node-2 capabilities
+    type: get_member_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{identity_node2}}'
+    outputs:
+      node2_caps: capabilities
+
+  - name: Assert node-2 inherited default capabilities
+    type: json_assert
+    statements:
+      - "json_equal({{node2_caps}}, 7)"
+
+  # --- SCENARIO 3: Override member capabilities, verify new value ---
+  # Restrict to 1 = only CAN_CREATE_CONTEXT
+
+  - name: Restrict node-2 capabilities to create-context only
+    type: set_member_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{identity_node2}}'
+    capabilities: 1
+
+  - name: Get node-2 capabilities after restriction
+    type: get_member_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{identity_node2}}'
+    outputs:
+      node2_caps_after: capabilities
+
+  - name: Assert restricted capabilities is 1
+    type: json_assert
+    statements:
+      - "json_equal({{node2_caps_after}}, 1)"
+
+  # --- SCENARIO 4: Set visibility + verify context sync works ---
+
+  - name: Set default visibility to open
+    type: set_default_visibility
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    visibility: open
+
+  - name: Create context in namespace
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{ctx_id}})"
+
+  - name: Node-2 joins context
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+
+  - name: Node-1 writes to context
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "caps_test"
+      value: "caps_work"
+
+  - name: Wait for sync
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads from context
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "caps_test"
+    outputs:
+      caps_read: result
+
+  - name: Assert context works after capability and visibility changes
+    type: json_assert
+    statements:
+      - 'json_equal({{caps_read}}, {"output": "caps_work"})'
+
+stop_all_nodes: false
