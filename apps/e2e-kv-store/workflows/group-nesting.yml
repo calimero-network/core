@@ -25,6 +25,11 @@ steps:
     outputs:
       app_id: applicationId
 
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
   - name: Create namespace (parent group)
     type: create_namespace
     node: e2e-node-1
@@ -128,9 +133,9 @@ steps:
       subs_after_unnest: subgroups
 
   - name: Assert subgroup list is empty after unnest
-    type: assert
+    type: json_assert
     statements:
-      - "not(is_set({{subs_after_unnest}}))"
+      - 'json_equal({{subs_after_unnest}}, [])'
 
   # --- SCENARIO 3: Re-nest via explicit nest_group, verify it reappears ---
 

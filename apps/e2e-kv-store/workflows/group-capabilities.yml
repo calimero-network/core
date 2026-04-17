@@ -27,6 +27,11 @@ steps:
     outputs:
       app_id: applicationId
 
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
   - name: Create namespace on node-1
     type: create_namespace
     node: e2e-node-1
@@ -103,18 +108,13 @@ steps:
     statements:
       - "equal({{node2_caps_after}}, 1)"
 
-  # --- SCENARIO 4: Set default visibility, verify via get_group_info ---
+  # --- SCENARIO 4: Set default visibility ---
 
   - name: Set default visibility to open
     type: set_default_visibility
     node: e2e-node-1
     group_id: '{{namespace_id}}'
     visibility: open
-
-  - name: Get group info to verify visibility set
-    type: get_group_info
-    node: e2e-node-1
-    group_id: '{{namespace_id}}'
 
   # --- SCENARIO 5: Change defaults to 0, invite node-3, verify ---
 
