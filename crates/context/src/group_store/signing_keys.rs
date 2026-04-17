@@ -69,6 +69,8 @@ pub fn resolve_group_signing_key(
     public_key: &PublicKey,
 ) -> EyreResult<Option<[u8; 32]>> {
     let mut current = *group_id;
+    // Check self, then walk up to MAX_NAMESPACE_DEPTH parent edges — matching
+    // resolve_namespace's traversal depth exactly.
     for _ in 0..MAX_NAMESPACE_DEPTH {
         if let Some(sk) = get_group_signing_key(store, &current, public_key)? {
             return Ok(Some(sk));
@@ -78,7 +80,8 @@ pub fn resolve_group_signing_key(
             None => return Ok(None),
         }
     }
-    Ok(None)
+    // Final check on the last group reached (the root at MAX_NAMESPACE_DEPTH).
+    get_group_signing_key(store, &current, public_key)
 }
 
 /// Delete all signing keys for a group (used during group deletion).

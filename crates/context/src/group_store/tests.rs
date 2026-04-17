@@ -2098,3 +2098,211 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
     assert!(is_quote_hash_used(&store, &gid, &quote_a).unwrap());
     assert!(!is_quote_hash_used(&store, &gid, &quote_b).unwrap());
 }
+
+// -----------------------------------------------------------------------
+// resolve_group_signing_key — ancestor hierarchy walk tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn resolve_signing_key_finds_key_on_self() {
+    let store = test_store();
+    let gid = ContextGroupId::from([0xD0; 32]);
+    let pk = PublicKey::from([0xD1; 32]);
+    let sk = [0xDD; 32];
+
+    store_group_signing_key(&store, &gid, &pk, &sk).unwrap();
+
+    let found = resolve_group_signing_key(&store, &gid, &pk).unwrap();
+    assert_eq!(found, Some(sk));
+}
+
+#[test]
+fn resolve_signing_key_walks_to_parent() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD0; 32]);
+    let child = ContextGroupId::from([0xD1; 32]);
+    let pk = PublicKey::from([0x10; 32]);
+    let sk = [0xAA; 32];
+
+    nest_group(&store, &root, &child).unwrap();
+    store_group_signing_key(&store, &root, &pk, &sk).unwrap();
+
+    // Child should find root's key via parent walk
+    let found = resolve_group_signing_key(&store, &child, &pk).unwrap();
+    assert_eq!(found, Some(sk));
+}
+
+#[test]
+fn resolve_signing_key_walks_grandparent_chain() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD0; 32]);
+    let child = ContextGroupId::from([0xD1; 32]);
+    let grandchild = ContextGroupId::from([0xD2; 32]);
+    let pk = PublicKey::from([0x10; 32]);
+    let sk = [0xBB; 32];
+
+    nest_group(&store, &root, &child).unwrap();
+    nest_group(&store, &child, &grandchild).unwrap();
+    store_group_signing_key(&store, &root, &pk, &sk).unwrap();
+
+    // Grandchild walks upward: grandchild -> child -> root, finds root's key
+    let found = resolve_group_signing_key(&store, &grandchild, &pk).unwrap();
+    assert_eq!(found, Some(sk));
+}
+
+#[test]
+fn resolve_signing_key_returns_nearest_ancestor() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD0; 32]);
+    let child = ContextGroupId::from([0xD1; 32]);
+    let grandchild = ContextGroupId::from([0xD2; 32]);
+    let pk = PublicKey::from([0x10; 32]);
+    let root_sk = [0xAA; 32];
+    let child_sk = [0xBB; 32];
+
+    nest_group(&store, &root, &child).unwrap();
+    nest_group(&store, &child, &grandchild).unwrap();
+
+    store_group_signing_key(&store, &root, &pk, &root_sk).unwrap();
+    store_group_signing_key(&store, &child, &pk, &child_sk).unwrap();
+
+    // Grandchild should find child's key (nearest), not root's
+    let found = resolve_group_signing_key(&store, &grandchild, &pk).unwrap();
+    assert_eq!(found, Some(child_sk));
+
+    // Child should find its own key
+    let found = resolve_group_signing_key(&store, &child, &pk).unwrap();
+    assert_eq!(found, Some(child_sk));
+}
+
+#[test]
+fn resolve_signing_key_none_for_orphan() {
+    let store = test_store();
+    let orphan = ContextGroupId::from([0xD0; 32]);
+    let pk = PublicKey::from([0x10; 32]);
+
+    // No parent, no key stored anywhere
+    let found = resolve_group_signing_key(&store, &orphan, &pk).unwrap();
+    assert_eq!(found, None);
+}
+
+#[test]
+fn resolve_signing_key_wrong_identity_not_found() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD0; 32]);
+    let child = ContextGroupId::from([0xD1; 32]);
+    let admin = PublicKey::from([0x10; 32]);
+    let other = PublicKey::from([0x20; 32]);
+    let sk = [0xCC; 32];
+
+    nest_group(&store, &root, &child).unwrap();
+    store_group_signing_key(&store, &root, &admin, &sk).unwrap();
+
+    // Different identity should not find the key
+    let found = resolve_group_signing_key(&store, &child, &other).unwrap();
+    assert_eq!(found, None);
+
+    // Correct identity should find it
+    let found = resolve_group_signing_key(&store, &child, &admin).unwrap();
+    assert_eq!(found, Some(sk));
+}
+
+#[test]
+fn resolve_signing_key_broken_by_unnest() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD0; 32]);
+    let child = ContextGroupId::from([0xD1; 32]);
+    let pk = PublicKey::from([0x10; 32]);
+    let sk = [0xAA; 32];
+
+    nest_group(&store, &root, &child).unwrap();
+    store_group_signing_key(&store, &root, &pk, &sk).unwrap();
+
+    // Before unnest: child can find root's key
+    assert_eq!(
+        resolve_group_signing_key(&store, &child, &pk).unwrap(),
+        Some(sk)
+    );
+
+    // Unnest breaks the parent link
+    unnest_group(&store, &root, &child).unwrap();
+
+    // After unnest: child can no longer walk to root
+    assert_eq!(
+        resolve_group_signing_key(&store, &child, &pk).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn resolve_signing_key_survives_renesting() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD0; 32]);
+    let child = ContextGroupId::from([0xD1; 32]);
+    let pk = PublicKey::from([0x10; 32]);
+    let sk = [0xAA; 32];
+
+    nest_group(&store, &root, &child).unwrap();
+    store_group_signing_key(&store, &root, &pk, &sk).unwrap();
+
+    // Unnest
+    unnest_group(&store, &root, &child).unwrap();
+    assert_eq!(
+        resolve_group_signing_key(&store, &child, &pk).unwrap(),
+        None
+    );
+
+    // Re-nest: key should be reachable again
+    nest_group(&store, &root, &child).unwrap();
+    assert_eq!(
+        resolve_group_signing_key(&store, &child, &pk).unwrap(),
+        Some(sk)
+    );
+}
+
+#[test]
+fn resolve_signing_key_none_when_exceeding_max_depth() {
+    use super::namespace::MAX_NAMESPACE_DEPTH;
+
+    let store = test_store();
+    let pk = PublicKey::from([0x10; 32]);
+    let sk = [0xEE; 32];
+
+    // Build a chain of MAX_NAMESPACE_DEPTH + 1 groups (root + 16 children)
+    let groups: Vec<ContextGroupId> = (0..=MAX_NAMESPACE_DEPTH)
+        .map(|i| {
+            let mut bytes = [0u8; 32];
+            bytes[0] = 0xE0;
+            bytes[1] = i as u8;
+            ContextGroupId::from(bytes)
+        })
+        .collect();
+
+    // Nest each group under the previous one: groups[0] -> groups[1] -> ... -> groups[16]
+    for i in 0..MAX_NAMESPACE_DEPTH {
+        nest_group(&store, &groups[i], &groups[i + 1]).unwrap();
+    }
+
+    // Store key only on the root
+    store_group_signing_key(&store, &groups[0], &pk, &sk).unwrap();
+
+    // The deepest group (index MAX_NAMESPACE_DEPTH) is 16 levels below root.
+    // The loop traverses MAX_NAMESPACE_DEPTH parent edges (matching
+    // resolve_namespace), then does a final check on the reached group.
+    // This means self + 16 edges + final check = covers the full chain.
+    let at_boundary = resolve_group_signing_key(&store, &groups[MAX_NAMESPACE_DEPTH], &pk).unwrap();
+    assert_eq!(
+        at_boundary,
+        Some(sk),
+        "key at root should be reachable at exactly MAX_NAMESPACE_DEPTH"
+    );
+
+    // One level shallower should also find it
+    let within_limit =
+        resolve_group_signing_key(&store, &groups[MAX_NAMESPACE_DEPTH - 1], &pk).unwrap();
+    assert_eq!(
+        within_limit,
+        Some(sk),
+        "key should be reachable within depth limit"
+    );
+}
