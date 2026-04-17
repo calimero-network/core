@@ -170,6 +170,10 @@ steps:
     statements:
       - "is_set({{sub_ctx_id}})"
 
+  - name: Wait for membership and context governance propagation
+    type: wait
+    seconds: 5
+
   - name: Node-2 joins subgroup context
     type: join_context
     node: e2e-node-2
