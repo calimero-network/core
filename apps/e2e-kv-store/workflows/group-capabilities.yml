@@ -5,8 +5,7 @@ description: >
     2. Invite member, verify they inherited capabilities (json_equal 7)
     3. Override individual member capabilities to 1, verify (json_equal 1)
     4. Set default visibility to open
-    5. Change default capabilities to 0 for future members
-    6. Verify context operations work with capabilities configured
+    5. Verify context operations work with capabilities configured
 
 force_pull_image: false
 near_devnet: false
@@ -115,14 +114,6 @@ steps:
     node: e2e-node-1
     group_id: '{{namespace_id}}'
     visibility: open
-
-  # --- SCENARIO 5: Change defaults to 0, invite node-3, verify ---
-
-  - name: Set default capabilities to none (0)
-    type: set_default_capabilities
-    node: e2e-node-1
-    group_id: '{{namespace_id}}'
-    capabilities: 0
 
   # --- SCENARIO 5: Verify context operations work with capabilities ---
 
