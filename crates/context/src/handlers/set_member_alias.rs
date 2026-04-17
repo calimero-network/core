@@ -17,19 +17,28 @@ impl Handler<SetMemberAliasRequest> for ContextManager {
         }: SetMemberAliasRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Members may only set their own alias — check before preflight
-        let preflight = match self.governance_preflight(&group_id, requester, false) {
-            Ok(p) => p,
-            Err(err) => return ActorResponse::reply(Err(err)),
+        // Resolve the requester identity to check alias ownership.
+        let resolved_requester = match requester {
+            Some(pk) => pk,
+            None => match self.node_namespace_identity(&group_id) {
+                Some((pk, _)) => pk,
+                None => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "requester not provided and node has no configured group identity"
+                    )));
+                }
+            },
         };
 
-        if preflight.requester != member {
+        if resolved_requester != member {
             return ActorResponse::reply(Err(eyre::eyre!("members may only set their own alias")));
         }
 
+        // sign_and_publish_group_op calls governance_preflight once with the
+        // already-resolved requester, so no double preflight.
         self.sign_and_publish_group_op(
             &group_id,
-            Some(preflight.requester),
+            Some(resolved_requester),
             false,
             GroupOp::MemberAliasSet { member, alias },
         )

@@ -237,11 +237,13 @@ impl ContextManager {
         let node_client = preflight.node_client.clone();
         let sk = preflight.signer_sk();
         let group_id = *group_id;
+        let op_debug = format!("{op:?}");
 
         ActorResponse::r#async(
             async move {
                 group_store::sign_apply_and_publish(&datastore, &node_client, &group_id, &sk, op)
                     .await?;
+                tracing::info!(?group_id, op = %op_debug, "governance op applied");
                 Ok(())
             }
             .into_actor(self),
