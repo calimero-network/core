@@ -2294,10 +2294,17 @@ fn resolve_signing_key_none_when_exceeding_max_depth() {
     let at_boundary = resolve_group_signing_key(&store, &groups[MAX_NAMESPACE_DEPTH], &pk).unwrap();
     // At depth 16 from root: self (depth 16) + walk 15 ancestors = checks
     // depths 16,15,14,...,1 but NOT depth 0 (root). So the key is missed.
-    assert_eq!(at_boundary, None, "key at root should be unreachable at max depth");
+    assert_eq!(
+        at_boundary, None,
+        "key at root should be unreachable at max depth"
+    );
 
     // One level shallower should still find it
     let within_limit =
         resolve_group_signing_key(&store, &groups[MAX_NAMESPACE_DEPTH - 1], &pk).unwrap();
-    assert_eq!(within_limit, Some(sk), "key should be reachable within depth limit");
+    assert_eq!(
+        within_limit,
+        Some(sk),
+        "key should be reachable within depth limit"
+    );
 }
