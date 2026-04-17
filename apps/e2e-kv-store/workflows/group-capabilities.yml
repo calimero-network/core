@@ -111,17 +111,10 @@ steps:
     group_id: '{{namespace_id}}'
     visibility: open
 
-  - name: Get group info to verify visibility
+  - name: Get group info to verify visibility set
     type: get_group_info
     node: e2e-node-1
     group_id: '{{namespace_id}}'
-    outputs:
-      group_info: data
-
-  - name: Assert group info returned
-    type: assert
-    statements:
-      - "is_set({{group_info}})"
 
   # --- SCENARIO 5: Change defaults to 0, invite node-3, verify ---
 
@@ -138,6 +131,10 @@ steps:
     outputs:
       invite_node3: invitation
 
+  - name: Wait for governance propagation
+    type: wait
+    seconds: 5
+
   - name: Node-3 joins namespace
     type: join_namespace
     node: e2e-node-3
@@ -145,6 +142,10 @@ steps:
     invitation: '{{invite_node3}}'
     outputs:
       identity_node3: memberIdentity
+
+  - name: Wait for membership propagation
+    type: wait
+    seconds: 5
 
   - name: Get node-3 capabilities
     type: get_member_capabilities

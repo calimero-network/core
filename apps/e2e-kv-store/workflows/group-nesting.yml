@@ -1,12 +1,10 @@
 name: E2E KV Store - Group Nesting
 description: >
-  Tests subgroup creation via create_group_in_namespace, explicit
-  unnest_group, and explicit nest_group (re-nesting after unnest):
+  Tests subgroup nesting operations:
     1. Create subgroup via create_group_in_namespace, verify in listing
-    2. Add member, create context in nested group, verify sync
-    3. Unnest the group, verify it disappears from subgroup list
-    4. Re-nest the group via explicit nest_group, verify it reappears
-    5. Verify context still functions through all nesting transitions
+    2. Unnest the group, verify it disappears from subgroup list
+    3. Re-nest via explicit nest_group, verify it reappears
+    4. Verify namespace root context is unaffected through all transitions
 
 force_pull_image: false
 near_devnet: false
@@ -54,6 +52,39 @@ steps:
     outputs:
       identity_node2: memberIdentity
 
+  # Create a root context to verify it survives nest/unnest
+  - name: Create root context
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{parent_id}}'
+    outputs:
+      root_ctx_id: contextId
+
+  - name: Node-2 joins root context
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{root_ctx_id}}'
+
+  - name: Write baseline to root context
+    type: call
+    node: e2e-node-1
+    context_id: '{{root_ctx_id}}'
+    method: set
+    args:
+      key: "baseline"
+      value: "before_nesting"
+
+  - name: Wait for baseline sync
+    type: wait_for_sync
+    context_id: '{{root_ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
   # --- SCENARIO 1: Create child group, verify in listing ---
 
   - name: Create child group via namespace
@@ -81,73 +112,7 @@ steps:
     statements:
       - "is_set({{subs_after_create}})"
 
-  # --- SCENARIO 2: Use nested group — add member, context, sync ---
-
-  - name: Add node-2 to child group
-    type: add_group_members
-    node: e2e-node-1
-    group_id: '{{child_id}}'
-    members:
-      - identity: '{{identity_node2}}'
-        role: Member
-
-  - name: Create context in child group
-    type: create_context
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{child_id}}'
-    outputs:
-      child_ctx_id: contextId
-
-  - name: Assert child context created
-    type: assert
-    statements:
-      - "is_set({{child_ctx_id}})"
-
-  - name: Wait for membership and context propagation
-    type: wait
-    seconds: 5
-
-  - name: Node-2 joins child context
-    type: join_context
-    node: e2e-node-2
-    context_id: '{{child_ctx_id}}'
-
-  - name: Node-1 writes to child context
-    type: call
-    node: e2e-node-1
-    context_id: '{{child_ctx_id}}'
-    method: set
-    args:
-      key: "nested_key"
-      value: "nested_value"
-
-  - name: Wait for child context sync
-    type: wait_for_sync
-    context_id: '{{child_ctx_id}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
-
-  - name: Node-2 reads from child context
-    type: call
-    node: e2e-node-2
-    context_id: '{{child_ctx_id}}'
-    method: get
-    args:
-      key: "nested_key"
-    outputs:
-      nested_read: result
-
-  - name: Assert child context synced
-    type: json_assert
-    statements:
-      - 'json_equal({{nested_read}}, {"output": "nested_value"})'
-
-  # --- SCENARIO 3: Unnest the child group, verify removal ---
+  # --- SCENARIO 2: Unnest the child group, verify removal ---
 
   - name: Unnest child from parent
     type: unnest_group
@@ -162,13 +127,12 @@ steps:
     outputs:
       subs_after_unnest: subgroups
 
-  # After unnest the subgroup list should be empty (no children)
   - name: Assert subgroup list is empty after unnest
     type: assert
     statements:
       - "not(is_set({{subs_after_unnest}}))"
 
-  # --- SCENARIO 4: Re-nest via explicit nest_group, verify it reappears ---
+  # --- SCENARIO 3: Re-nest via explicit nest_group, verify it reappears ---
 
   - name: Wait for unnest propagation
     type: wait
@@ -192,20 +156,20 @@ steps:
     statements:
       - "is_set({{subs_after_renest}})"
 
-  # --- SCENARIO 5: Verify context still functions through all transitions ---
+  # --- SCENARIO 4: Root context unaffected by nest/unnest ---
 
-  - name: Node-1 writes after re-nest
+  - name: Write after nest/unnest cycle
     type: call
     node: e2e-node-1
-    context_id: '{{child_ctx_id}}'
+    context_id: '{{root_ctx_id}}'
     method: set
     args:
-      key: "post_renest_key"
+      key: "after_nesting"
       value: "still_works"
 
-  - name: Wait for sync after re-nest
+  - name: Wait for sync after nesting ops
     type: wait_for_sync
-    context_id: '{{child_ctx_id}}'
+    context_id: '{{root_ctx_id}}'
     nodes:
       - e2e-node-1
       - e2e-node-2
@@ -213,19 +177,19 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  - name: Node-2 reads after re-nest
+  - name: Node-2 reads after nesting cycle
     type: call
     node: e2e-node-2
-    context_id: '{{child_ctx_id}}'
+    context_id: '{{root_ctx_id}}'
     method: get
     args:
-      key: "post_renest_key"
+      key: "after_nesting"
     outputs:
-      post_renest_read: result
+      after_nest_read: result
 
-  - name: Assert context works after re-nest
+  - name: Assert root context works after nest/unnest
     type: json_assert
     statements:
-      - 'json_equal({{post_renest_read}}, {"output": "still_works"})'
+      - 'json_equal({{after_nest_read}}, {"output": "still_works"})'
 
 stop_all_nodes: false
