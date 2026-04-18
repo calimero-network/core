@@ -132,7 +132,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                         rtmr2,
                         rtmr3,
                         tcb_status,
-                        role: GroupMemberRole::Member,
+                        role: GroupMemberRole::ReadOnlyTee,
                     },
                 )
                 .await?;

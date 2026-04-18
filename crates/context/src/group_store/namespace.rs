@@ -57,7 +57,8 @@ pub fn compute_namespace_governance_epoch(
     }
 }
 
-/// Returns `true` if the member has a `ReadOnly` role in the group that owns this context.
+/// Returns `true` if the member has a read-only role (`ReadOnly` or `ReadOnlyTee`)
+/// in the group that owns this context.
 /// Returns `false` if the context has no group, the member is not found, or the member
 /// has `Admin` or `Member` role.
 pub fn is_read_only_for_context(
@@ -69,7 +70,10 @@ pub fn is_read_only_for_context(
         return Ok(false);
     };
     match get_group_member_role(store, &group_id, identity)? {
-        Some(calimero_primitives::context::GroupMemberRole::ReadOnly) => Ok(true),
+        Some(
+            calimero_primitives::context::GroupMemberRole::ReadOnly
+            | calimero_primitives::context::GroupMemberRole::ReadOnlyTee,
+        ) => Ok(true),
         _ => Ok(false),
     }
 }

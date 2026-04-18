@@ -24,6 +24,13 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
+        // ReadOnlyTee is only assigned via TEE attestation, not manually.
+        if new_role == GroupMemberRole::ReadOnlyTee {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "ReadOnlyTee role can only be assigned via TEE attestation admission"
+            )));
+        }
+
         // Single DB read for current role.
         let current_role =
             match group_store::get_group_member_role(&self.datastore, &group_id, &identity) {

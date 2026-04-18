@@ -265,6 +265,8 @@ pub enum GroupMemberRole {
     Admin,
     Member,
     ReadOnly,
+    /// Read-only TEE fleet node admitted via hardware attestation.
+    ReadOnlyTee,
 }
 
 /// A serialized and encoded payload for inviting a user to join a Context Group.

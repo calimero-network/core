@@ -1653,6 +1653,14 @@ impl Validate for AddGroupMembersApiRequest {
         if self.members.is_empty() {
             errors.push(ValidationError::EmptyField { field: "members" });
         }
+        for member in &self.members {
+            if member.role == GroupMemberRole::ReadOnlyTee {
+                errors.push(ValidationError::InvalidFormat {
+                    field: "members[].role",
+                    reason: "ReadOnlyTee role can only be assigned via TEE attestation".to_owned(),
+                });
+            }
+        }
         errors
     }
 }
@@ -2049,7 +2057,14 @@ pub struct UpdateMemberRoleApiRequest {
 
 impl Validate for UpdateMemberRoleApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
+        let mut errors = Vec::new();
+        if self.role == GroupMemberRole::ReadOnlyTee {
+            errors.push(ValidationError::InvalidFormat {
+                field: "role",
+                reason: "ReadOnlyTee role can only be assigned via TEE attestation".to_owned(),
+            });
+        }
+        errors
     }
 }
 
@@ -2305,6 +2320,34 @@ impl Validate for SetTeeAdmissionPolicyApiRequest {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct SetTeeAdmissionPolicyApiResponse {}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetTeeAdmissionPolicyApiResponse {
+    pub enabled: bool,
+    pub allowed_mrtd: Vec<String>,
+    pub allowed_rtmr0: Vec<String>,
+    pub allowed_rtmr1: Vec<String>,
+    pub allowed_rtmr2: Vec<String>,
+    pub allowed_rtmr3: Vec<String>,
+    pub allowed_tcb_statuses: Vec<String>,
+    pub accept_mock: bool,
+}
+
+impl GetTeeAdmissionPolicyApiResponse {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            allowed_mrtd: vec![],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec![],
+            accept_mock: false,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
