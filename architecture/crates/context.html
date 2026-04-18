@@ -266,6 +266,32 @@
      5. GROUPSTORE DEEP-DIVE
      ════════════════════════════════════════════════════════ -->
 <div class="card gb">
+<h2>Governance Preflight &amp; Signing Key Resolution</h2>
+<p style="margin-bottom:18px;">Every governance mutation handler calls <span class="code">governance_preflight()</span> before signing and publishing. The common pattern is encapsulated in <span class="code">sign_and_publish_group_op()</span> which handles the boilerplate.</p>
+
+<h3>governance_preflight Flow</h3>
+<div class="step"><div class="n">1</div><div class="sd"><strong>Resolve requester identity</strong> &mdash; from explicit parameter, or fall back to <span class="code">node_namespace_identity()</span> which walks the parent chain to the namespace root</div></div>
+<div class="step"><div class="n">2</div><div class="sd"><strong>Verify group exists</strong> &mdash; <span class="code">load_group_meta()</span> must return <span class="code">Some</span></div></div>
+<div class="step"><div class="n">3</div><div class="sd"><strong>Admin check</strong> (optional) &mdash; <span class="code">require_group_admin()</span> if <span class="code">require_admin=true</span></div></div>
+<div class="step"><div class="n">4</div><div class="sd"><strong>Resolve signing key via ancestor walk</strong> &mdash; <span class="code">resolve_group_signing_key()</span> checks self, then walks parent chain up to <span class="code">MAX_NAMESPACE_DEPTH</span> (16) levels. Returns the first signing key found for the requester identity.</div></div>
+
+<h3 style="margin-top:24px;">Signing Key Hierarchy</h3>
+<p style="margin-bottom:12px;">When a child group is created via <span class="code">create_group_in_namespace</span>, the signing key is stored only at the namespace root. Child groups resolve signing authority by walking up the parent chain:</p>
+<div class="typedef">
+<span class="comment">// resolve_group_signing_key (signing_keys.rs)</span><br>
+<span class="kw">for</span> _ <span class="kw">in</span> 0..<span class="ty">MAX_NAMESPACE_DEPTH</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">if let</span> <span class="ty">Some</span>(sk) = get_group_signing_key(store, &amp;current, public_key)? {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">return</span> <span class="ty">Ok</span>(<span class="ty">Some</span>(sk));<br>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br>
+&nbsp;&nbsp;&nbsp;&nbsp;current = get_parent_group(store, &amp;current)?; <span class="comment">// walk up</span><br>
+}<br>
+get_group_signing_key(store, &amp;current, public_key) <span class="comment">// final check at root</span>
+</div>
+<p style="margin-top:12px;">Key revocation at the namespace level automatically propagates &mdash; child groups lose access because the ancestor walk finds nothing. No stale copies to clean up.</p>
+
+<h3 style="margin-top:24px;">sign_and_publish_group_op Helper</h3>
+<p style="margin-bottom:12px;">Encapsulates the governance handler boilerplate: preflight &rarr; clone datastore/node_client &rarr; build signer &rarr; sign, apply, publish via async actor response. Used by 7 handlers (set_group_alias, set_default_capabilities, set_default_visibility, update_group_settings, set_member_alias, set_member_capabilities, update_member_role).</p>
+
 <h2>GroupStore Deep-Dive</h2>
 <p style="margin-bottom:18px;">The authoritative persistence layer for all group and governance state. Handles signature verification, state-hash optimistic locking, nonce-based idempotency, DAG maintenance, and cascading side effects.</p>
 

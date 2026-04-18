@@ -441,6 +441,19 @@
   </div>
 </div>
 
+<h3 style="margin-top:24px;">Signing Key Hierarchy (Ancestor Walk)</h3>
+<p style="font-size:.88rem;margin-bottom:12px;">Signing keys are stored at the <strong>namespace root</strong> when a namespace is created. Child groups (created via <span class="code">create_group_in_namespace</span>) do not get their own copy. Instead, <span class="code">governance_preflight</span> resolves signing authority by walking the parent chain:</p>
+<div class="step" style="padding:10px 14px;">
+  <p style="font-size:.82rem;"><strong>1.</strong> Check current group for a signing key matching the requester identity</p>
+  <p style="font-size:.82rem;"><strong>2.</strong> If not found, walk to parent via <span class="code">get_parent_group()</span></p>
+  <p style="font-size:.82rem;"><strong>3.</strong> Repeat up to <span class="code">MAX_NAMESPACE_DEPTH</span> (16) levels + final check at root</p>
+  <p style="font-size:.82rem;"><strong>4.</strong> Return the first key found, or error if none exists</p>
+</div>
+<p style="font-size:.88rem;margin-top:12px;"><strong>Revocation:</strong> Revoking a signing key at the namespace root automatically prevents all descendant groups from signing &mdash; no stale copies to clean up. <strong>Unnesting:</strong> breaks the parent link, so the child can no longer walk to the ancestor&rsquo;s key.</p>
+
+<h3 style="margin-top:24px;">Recursive Member Removal</h3>
+<p style="font-size:.88rem;">When a member is removed from a group, <span class="code">recursive_remove_member()</span> cascades the removal to all descendant groups and their contexts. Removal from a child group does <strong>not</strong> affect the parent (upward isolation).</p>
+
 <h3>Namespace Governance Epoch</h3>
 <p style="font-size:.88rem;">Context state deltas carry a <span class="code">governance_epoch</span> field. This is now computed from the <strong>namespace DAG heads</strong> (not per-group heads), ensuring a consistent governance state reference across all groups in a namespace. Computed via <span class="code">compute_namespace_governance_epoch(store, context_id)</span>.</p>
 </div>
