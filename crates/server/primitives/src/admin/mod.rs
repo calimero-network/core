@@ -2334,6 +2334,21 @@ pub struct GetTeeAdmissionPolicyApiResponse {
     pub accept_mock: bool,
 }
 
+impl GetTeeAdmissionPolicyApiResponse {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            allowed_mrtd: vec![],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec![],
+            accept_mock: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetDefaultVisibilityApiRequest {

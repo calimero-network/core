@@ -36,16 +36,7 @@ pub async fn handler(
         }
         .into_response(),
         Ok(None) => ApiResponse {
-            payload: GetTeeAdmissionPolicyApiResponse {
-                enabled: false,
-                allowed_mrtd: vec![],
-                allowed_rtmr0: vec![],
-                allowed_rtmr1: vec![],
-                allowed_rtmr2: vec![],
-                allowed_rtmr3: vec![],
-                allowed_tcb_statuses: vec![],
-                accept_mock: false,
-            },
+            payload: GetTeeAdmissionPolicyApiResponse::disabled(),
         }
         .into_response(),
         Err(err) => parse_api_error(err).into_response(),

@@ -854,6 +854,9 @@ fn apply_group_op_mutations(
     match op {
         GroupOp::Noop => {}
         GroupOp::MemberAdded { member, role } => {
+            if *role == GroupMemberRole::ReadOnlyTee {
+                bail!("ReadOnlyTee can only be assigned via MemberJoinedViaTeeAttestation");
+            }
             permissions.require_manage_members(signer, "add member")?;
             permissions.require_admin_to_add_admin(signer, role)?;
             add_group_member(store, group_id, member, role.clone())?;
@@ -866,6 +869,9 @@ fn apply_group_op_mutations(
             remove_group_member(store, group_id, member)?;
         }
         GroupOp::MemberRoleSet { member, role } => {
+            if *role == GroupMemberRole::ReadOnlyTee {
+                bail!("ReadOnlyTee can only be assigned via MemberJoinedViaTeeAttestation");
+            }
             permissions.require_admin(signer)?;
             membership_policy.ensure_not_last_admin_demotion(member, role)?;
             add_group_member(store, group_id, member, role.clone())?;

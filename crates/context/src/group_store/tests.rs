@@ -1003,6 +1003,77 @@ fn apply_local_signed_group_op_nonce_and_admin() {
 }
 
 #[test]
+fn reject_read_only_tee_via_member_added() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::MemberAdded {
+            member: tee_pk,
+            role: GroupMemberRole::ReadOnlyTee,
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        err.to_string().contains("ReadOnlyTee"),
+        "expected ReadOnlyTee rejection, got: {err}"
+    );
+}
+
+#[test]
+fn reject_read_only_tee_via_member_role_set() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    add_group_member(&store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::MemberRoleSet {
+            member: member_pk,
+            role: GroupMemberRole::ReadOnlyTee,
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        err.to_string().contains("ReadOnlyTee"),
+        "expected ReadOnlyTee rejection, got: {err}"
+    );
+}
+
+#[test]
 fn apply_local_member_alias_member_signer_or_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
