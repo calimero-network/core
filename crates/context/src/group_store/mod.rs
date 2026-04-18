@@ -983,6 +983,9 @@ fn apply_group_op_mutations(
             tcb_status,
             role,
         } => {
+            if *role != GroupMemberRole::ReadOnlyTee {
+                bail!("MemberJoinedViaTeeAttestation must use ReadOnlyTee role");
+            }
             membership_policy.require_tee_attestation_verifier_membership(signer)?;
             let policy = membership_policy.read_required_tee_admission_policy()?;
             membership_policy.validate_tee_attestation_allowlists(
