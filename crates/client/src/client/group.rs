@@ -27,12 +27,12 @@ use calimero_server_primitives::admin::RemoveGroupMembersApiResponse;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiResponse;
-use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiRequest;
-use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiResponse;
 use calimero_server_primitives::admin::SetDefaultVisibilityApiRequest;
 use calimero_server_primitives::admin::SetDefaultVisibilityApiResponse;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiResponse;
+use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiRequest;
+use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiResponse;
 use calimero_server_primitives::admin::SyncGroupApiRequest;
 use calimero_server_primitives::admin::SyncGroupApiResponse;
 use calimero_server_primitives::admin::UnnestGroupApiRequest;
@@ -361,9 +361,7 @@ where
         let response = self
             .connection
             .put_json(
-                &format!(
-                    "admin-api/groups/{group_id}/settings/tee-admission-policy"
-                ),
+                &format!("admin-api/groups/{group_id}/settings/tee-admission-policy"),
                 request,
             )
             .await?;
