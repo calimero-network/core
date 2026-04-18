@@ -18,18 +18,18 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
         }: UpdateMemberRoleRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        // Admin check first — prevents non-admins from probing role status.
+        let preflight = match self.governance_preflight(&group_id, requester, true) {
+            Ok(p) => p,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+
         // ReadOnlyTee is only assigned via TEE attestation, not manually.
         if new_role == GroupMemberRole::ReadOnlyTee {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "ReadOnlyTee role can only be assigned via TEE attestation admission"
             )));
         }
-
-        // Admin check first — prevents non-admins from probing role status.
-        let preflight = match self.governance_preflight(&group_id, requester, true) {
-            Ok(p) => p,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
 
         // Single DB read for current role.
         let current_role =
