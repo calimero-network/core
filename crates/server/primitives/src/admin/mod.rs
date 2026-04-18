@@ -2308,6 +2308,19 @@ pub struct SetTeeAdmissionPolicyApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetTeeAdmissionPolicyApiResponse {
+    pub enabled: bool,
+    pub allowed_mrtd: Vec<String>,
+    pub allowed_rtmr0: Vec<String>,
+    pub allowed_rtmr1: Vec<String>,
+    pub allowed_rtmr2: Vec<String>,
+    pub allowed_rtmr3: Vec<String>,
+    pub allowed_tcb_statuses: Vec<String>,
+    pub accept_mock: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetDefaultVisibilityApiRequest {
     pub default_visibility: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

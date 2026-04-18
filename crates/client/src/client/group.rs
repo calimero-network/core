@@ -12,6 +12,7 @@ use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use calimero_server_primitives::admin::DetachContextFromGroupApiResponse;
 use calimero_server_primitives::admin::GetGroupUpgradeStatusApiResponse;
 use calimero_server_primitives::admin::GetMemberCapabilitiesApiResponse;
+use calimero_server_primitives::admin::GetTeeAdmissionPolicyApiResponse;
 use calimero_server_primitives::admin::GroupInfoApiResponse;
 use calimero_server_primitives::admin::JoinContextApiResponse;
 use calimero_server_primitives::admin::ListGroupContextsApiResponse;
@@ -26,6 +27,8 @@ use calimero_server_primitives::admin::RemoveGroupMembersApiResponse;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiResponse;
+use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiRequest;
+use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiResponse;
 use calimero_server_primitives::admin::SetDefaultVisibilityApiRequest;
 use calimero_server_primitives::admin::SetDefaultVisibilityApiResponse;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
@@ -331,6 +334,36 @@ where
             .connection
             .put_json(
                 &format!("admin-api/groups/{group_id}/settings/default-visibility"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_tee_admission_policy(
+        &self,
+        group_id: &str,
+    ) -> Result<GetTeeAdmissionPolicyApiResponse> {
+        let response = self
+            .connection
+            .get(&format!(
+                "admin-api/groups/{group_id}/settings/tee-admission-policy"
+            ))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn set_tee_admission_policy(
+        &self,
+        group_id: &str,
+        request: SetTeeAdmissionPolicyApiRequest,
+    ) -> Result<SetTeeAdmissionPolicyApiResponse> {
+        let response = self
+            .connection
+            .put_json(
+                &format!(
+                    "admin-api/groups/{group_id}/settings/tee-admission-policy"
+                ),
                 request,
             )
             .await?;

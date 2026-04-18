@@ -6,6 +6,7 @@ pub mod detach_context_from_group;
 pub mod get_group_info;
 pub mod get_group_upgrade_status;
 pub mod get_member_capabilities;
+pub mod get_tee_admission_policy;
 pub mod join_group;
 pub mod list_all_groups;
 pub mod list_group_contexts;
