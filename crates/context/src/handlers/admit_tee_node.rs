@@ -56,7 +56,12 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             )));
         }
 
-        if !policy.allowed_mrtd.is_empty() && !policy.allowed_mrtd.iter().any(|a| a == &mrtd) {
+        if policy.allowed_mrtd.is_empty() {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "TEE admission policy has empty allowed_mrtd — at least one MRTD must be specified"
+            )));
+        }
+        if !policy.allowed_mrtd.iter().any(|a| a == &mrtd) {
             return ActorResponse::reply(Err(eyre::eyre!("MRTD not in policy allowlist")));
         }
         if !policy.allowed_tcb_statuses.is_empty()
