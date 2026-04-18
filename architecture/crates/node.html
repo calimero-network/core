@@ -66,7 +66,10 @@
 
 <h3 style="margin-top:24px;">calimero-node-primitives</h3>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client.rs" target="_blank" rel="noopener">primitives/src/client.rs</a></div><div class="fd">NodeClient façade — subscribe, broadcast, heartbeat, group ops, sync trigger</div></div>
-<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client/application.rs" target="_blank" rel="noopener">client/application.rs</a></div><div class="fd">Application install / uninstall / list / bundle operations</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client/application.rs" target="_blank" rel="noopener">client/application.rs</a></div><div class="fd">Application module root &mdash; get/has app, module declarations</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client/application/install.rs" target="_blank" rel="noopener">client/application/install.rs</a></div><div class="fd">All installation paths (path, URL, blob, bundle), uninstall, artifact extraction</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client/application/bundle.rs" target="_blank" rel="noopener">client/application/bundle.rs</a></div><div class="fd">Bundle manifest verification, signature validation, path safety checks</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client/application/query.rs" target="_blank" rel="noopener">client/application/query.rs</a></div><div class="fd">List applications, packages, versions; update compiled app</div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client/blob.rs" target="_blank" rel="noopener">client/blob.rs</a></div><div class="fd">Blob add / get / delete / list / auth operations</div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/client/alias.rs" target="_blank" rel="noopener">client/alias.rs</a></div><div class="fd">Generic alias create / delete / lookup / resolve / list</div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/primitives/src/messages.rs" target="_blank" rel="noopener">primitives/src/messages.rs</a></div><div class="fd">NodeMessage enum — GetBlobBytes, RegisterPendingSpecializedNodeInvite, etc.</div></div>
@@ -204,7 +207,13 @@
 </div>
 
 <h3>Application &amp; Blob Management</h3>
-<p style="margin-bottom:12px;">NodeClient also exposes application lifecycle and blob storage through sub-modules:</p>
+<p style="margin-bottom:12px;">NodeClient exposes application lifecycle through four focused sub-modules (<span class="code">application/</span>):</p>
+<div class="fr" style="margin-bottom:12px;">
+<div class="fp" style="font-size:0.85em;color:#6b6b80;">
+<strong>application.rs</strong> (module root) &rarr; <strong>install.rs</strong> (all install paths + uninstall) &rarr; <strong>bundle.rs</strong> (manifest verification + path safety) &rarr; <strong>query.rs</strong> (list/search)
+</div>
+</div>
+<p style="margin-bottom:12px;">Bundle signature verification: <span class="code">verify_and_extract_manifest</span> (strict, production) vs <span class="code">extract_manifest_allow_unsigned</span> (dev installs &mdash; verifies if present, allows unsigned).</p>
 <div class="g3">
   <div class="cb">
     <h4 style="color:#3b82f6;">Applications</h4>
