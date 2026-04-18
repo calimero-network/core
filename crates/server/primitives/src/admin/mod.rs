@@ -2292,7 +2292,14 @@ pub struct SetTeeAdmissionPolicyApiRequest {
 
 impl Validate for SetTeeAdmissionPolicyApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
+        let mut errors = Vec::new();
+        if self.allowed_mrtd.is_empty() && !self.accept_mock {
+            errors.push(ValidationError::InvalidFormat {
+                field: "allowed_mrtd",
+                reason: "at least one MRTD must be specified when accept_mock is false".to_owned(),
+            });
+        }
+        errors
     }
 }
 
