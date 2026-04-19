@@ -5,6 +5,7 @@ pub mod blobs;
 pub mod common;
 pub mod contexts;
 pub mod groups;
+pub mod tee;
 
 // Re-export common types
 pub use blobs::{BlobDownloadResponse, BlobUploadResponse};

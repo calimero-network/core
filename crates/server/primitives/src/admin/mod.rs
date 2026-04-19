@@ -1153,6 +1153,16 @@ impl Validate for FleetJoinRequest {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FleetJoinResponse {
+    pub status: String,
+    pub group_id: String,
+    pub namespace_id: String,
+    pub public_key: String,
+    pub admitted: bool,
+    pub contexts_joined: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeeInfoResponseData {
