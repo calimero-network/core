@@ -26,6 +26,7 @@ mod group;
 mod namespace;
 mod node;
 mod peers;
+mod tee;
 mod upgrade_policy;
 pub mod validation;
 
@@ -38,6 +39,7 @@ use group::GroupCommand;
 use namespace::NamespaceCommand;
 use node::NodeCommand;
 use peers::PeersCommand;
+use tee::TeeCommand;
 
 use crate::auth::{authenticate_with_session_cache, check_authentication};
 
@@ -93,6 +95,7 @@ pub enum SubCommands {
     Namespace(NamespaceCommand),
     Call(CallCommand),
     Peers(PeersCommand),
+    Tee(TeeCommand),
     #[command(subcommand)]
     Node(NodeCommand),
 }
@@ -167,6 +170,7 @@ impl RootCommand {
             SubCommands::Namespace(ns) => ns.run(&mut environment).await,
             SubCommands::Call(call) => call.run(&mut environment).await,
             SubCommands::Peers(peers) => peers.run(&mut environment).await,
+            SubCommands::Tee(tee) => tee.run(&mut environment).await,
             SubCommands::Node(node) => {
                 node.run(&environment, self.args.node.as_deref(), &self.args.home)
                     .await
