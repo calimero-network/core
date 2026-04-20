@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auto-Follow Group Membership — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Auto-Follow</span></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     1. TITLE + STATS
+     ═══════════════════════════════════════════════════════════════════ -->
+<h1>Auto-Follow <em>Group Membership</em></h1>
+<p class="page-subtitle">Event-driven context auto-join for group members, with per-member opt-in</p>
+
+<div class="g4" style="margin-bottom:36px;">
+  <div class="stat"><div class="v">Opt-in</div><div class="l">per-member flag</div></div>
+  <div class="stat"><div class="v">DAG</div><div class="l">event-driven</div></div>
+  <div class="stat"><div class="v">20/min</div><div class="l">default rate limit</div></div>
+  <div class="stat"><div class="v">Replay</div><div class="l">offline catch-up</div></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     2. PROBLEM &amp; MOTIVATION
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Problem</h2>
+<p>
+Group membership in Calimero is explicit at every level. When a new context is registered in
+a group, existing members do not automatically replicate it — each must call
+<code>join_context</code> explicitly. When a subgroup is nested under a parent, the parent's
+members are not automatically admitted to the child either (subgroup membership is independent).
+This works for human-driven clients but breaks two concrete scenarios:
+</p>
+<ul>
+  <li><b>TEE fleet HA.</b> A fleet node admitted via <code>fleet-join</code> joins only the contexts
+  that existed at admission time. Later contexts are invisible until something else triggers a
+  join, which — before auto-follow — was polling by the sidecar.</li>
+  <li><b>Regular members observing a growing group.</b> A member who joined when the group had
+  3 contexts sees nothing when a 4th appears, unless the client polls or the user reacts manually.</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     3. DESIGN
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Design</h2>
+<p>
+Each <code>GroupMember</code> gains a pair of opt-in flags:
+</p>
+<pre class="code">AutoFollowFlags {
+    contexts:  bool,   // auto-join new ContextRegistered
+    subgroups: bool,   // auto-admit into newly-nested subgroups
+}</pre>
+
+<p>
+Both default to <code>false</code> for regular members. <code>ReadOnlyTee</code> members get both
+set to <code>true</code> automatically — that's the TEE-fleet use case. Flags are toggled by a
+new governance op <code>GroupOp::MemberSetAutoFollow</code> with admin-or-self authorization:
+</p>
+<ul>
+  <li>A group admin can toggle flags for any member.</li>
+  <li>A member can toggle their own flags.</li>
+</ul>
+
+<h3>Propagation</h3>
+<p>
+The handler subscribes to an in-process op-apply event channel (module
+<code>context::op_events</code>). When a relevant op is applied to local state, an
+<code>OpEvent</code> is broadcast and the handler emits the corresponding join op. Every emitted
+op is itself a DAG op, so offline catch-up comes for free via DAG replay — no separate
+reconcile loop.
+</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     4. FLOW
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Flow</h2>
+<pre class="code">1. Admin or member publishes MemberSetAutoFollow { target, contexts, subgroups }.
+   └─ Authorized by admin-or-self check in apply_group_op_mutations.
+   └─ Store updates GroupMemberValue.auto_follow.
+   └─ op_events::notify(OpEvent::AutoFollowSet { ... }).
+
+2. Auto-follow handler (spawned once from ContextManager::started) observes
+   AutoFollowSet { member = self, contexts: true } and backfills: enumerate
+   up to BACKFILL_LIMIT contexts in the group, emit JoinContext for each.
+   Backfill is rate-limited to DEFAULT_BURST / DEFAULT_PER.
+
+3. Later, anyone registers a new context in the group.
+   └─ GroupOp::ContextRegistered applied.
+   └─ op_events::notify(OpEvent::ContextRegistered { group, context }).
+   └─ Handler checks: is self a member with auto_follow.contexts = true?
+   └─ If yes, emit JoinContext — same rate limit.
+
+4. Later, an admin nests a subgroup under this group.
+   └─ RootOp::GroupNested applied on namespace DAG.
+   └─ op_events::notify(OpEvent::SubgroupNested { parent, child }).
+   └─ Handler reacts (subgroup variant — separate follow-up PR).</pre>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     5. TEE FLEET INTEGRATION
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>TEE Fleet Integration</h2>
+<p>
+A TEE fleet node calls <code>POST /admin-api/tee/fleet-join</code>. The handler in
+<code>server::admin::handlers::tee::fleet_join</code>:
+</p>
+<ol>
+  <li>Generates a TDX attestation quote bound to the node's namespace identity pubkey.</li>
+  <li>Broadcasts <code>TeeAttestationAnnounce</code> on the namespace topic.</li>
+  <li>Polls for admission (up to 30 s) by calling <code>list_group_contexts</code>. Once the
+  verifier's <code>MemberJoinedViaTeeAttestation</code> op has propagated, the list succeeds.</li>
+  <li>Joins all existing contexts in the group.</li>
+  <li><b>Publishes <code>MemberSetAutoFollow { target: self, contexts: true, subgroups: true }</code>,
+  signed by the node's own namespace-identity key.</b> The admin-or-self rule is satisfied via the
+  <em>self</em> path — the admitting verifier can't do this on the member's behalf because it
+  usually lacks both admin authority and the member's signing key.</li>
+</ol>
+<p>
+From this point, every new context in the group is auto-joined by the core handler. The
+<code>mero-tee</code> sidecar's per-group polling loop becomes redundant.
+</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     6. RATE LIMIT &amp; BACKPRESSURE
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Rate Limit &amp; Backpressure</h2>
+<p>
+The handler runs behind a token-bucket limiter. Defaults:
+</p>
+<ul>
+  <li><code>DEFAULT_BURST = 20</code> — tokens available at once.</li>
+  <li><code>DEFAULT_PER = 60 s</code> — bucket refills fully in this window (one token every
+  3 s).</li>
+  <li><code>BACKFILL_LIMIT = 1000</code> — per-flip cap for enumerating existing contexts. Future
+  contexts beyond the cap are picked up event-driven with no additional limit.</li>
+</ul>
+<p>
+Semaphore-closed and subscriber-lagged conditions are both surfaced via <code>warn!</code>. The
+authoritative recovery mechanism is always DAG replay: if an event is missed (best-effort
+broadcast), the next run of the handler walks the DAG and reconciles state.
+</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     7. OPERATOR NOTES
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Operator Notes</h2>
+<ul>
+  <li><b>Observability.</b> Every auto-join emits a structured <code>info!</code> log line
+  with <code>group_id</code> and <code>context_id</code>. Failures emit <code>warn!</code> with
+  the underlying error. No new metrics — the log stream is enough for postmortems.</li>
+  <li><b>Shutdown.</b> Call <code>auto_follow::shutdown()</code> to abort the handler task and
+  its refill loop. Subsequent <code>spawn</code> calls will start a fresh handler.</li>
+  <li><b>Migration.</b> <code>GroupMemberValue</code> was extended with <code>auto_follow</code>
+  via a custom Borsh deserializer. Records written under the pre-auto-follow schema are
+  transparently read with default flags, and transparently upgraded on the next write. A partial
+  trailing byte (data corruption) surfaces as a deserialization error instead of being silently
+  defaulted.</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     8. KEY FILES
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Key Files</h2>
+<ul>
+  <li><code>crates/context/src/op_events.rs</code> — op-apply event channel + <code>OpEvent</code>
+  enum.</li>
+  <li><code>crates/context/src/auto_follow.rs</code> — handler task, rate limiter,
+  <code>spawn</code>/<code>shutdown</code>.</li>
+  <li><code>crates/context/src/group_store/mod.rs</code> — <code>apply_group_op_mutations</code>
+  handles <code>MemberSetAutoFollow</code>.</li>
+  <li><code>crates/context/src/group_store/membership.rs</code> —
+  <code>set_member_auto_follow</code> helper.</li>
+  <li><code>crates/context/primitives/src/local_governance/mod.rs</code> — the
+  <code>MemberSetAutoFollow</code> op variant.</li>
+  <li><code>crates/store/src/key/group/mod.rs</code> — <code>AutoFollowFlags</code> and the
+  backward-compatible <code>BorshDeserialize</code> for <code>GroupMemberValue</code>.</li>
+  <li><code>crates/context/src/handlers/admit_tee_node.rs</code> — TEE admission publishes the
+  op only; flags are set by the admitted node itself.</li>
+  <li><code>crates/server/src/admin/handlers/tee/fleet_join.rs</code> — after admission, the
+  member publishes <code>MemberSetAutoFollow</code> signed by self.</li>
+</ul>
+</div>
+
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

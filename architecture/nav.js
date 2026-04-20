@@ -29,6 +29,7 @@
     { section: 'Architecture Deep-Dive' },
     { label: 'System Overview', href: 'system-overview.html', dot: '#3b82f6' },
     { label: 'Local Governance', href: 'local-governance.html', dot: '#10b981' },
+    { label: 'Auto-Follow', href: 'auto-follow.html', dot: '#10b981' },
     { label: 'Sequence Diagrams', href: 'sequence-diagrams.html', dot: '#ec4899' },
     { label: 'Wire Protocol', href: 'wire-protocol.html', dot: '#8b5cf6' },
     { label: 'Storage Schema', href: 'storage-schema.html', dot: '#06b6d4' },

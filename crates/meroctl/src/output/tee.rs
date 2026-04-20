@@ -12,6 +12,10 @@ impl Report for FleetJoinResponse {
         ]);
         let _ = table.add_row(vec!["Status", &self.status]);
         let _ = table.add_row(vec!["Admitted", &self.admitted.to_string()]);
+        let _ = table.add_row(vec![
+            "Auto-follow enabled",
+            &self.auto_follow_enabled.to_string(),
+        ]);
         let _ = table.add_row(vec!["Group ID", &self.group_id]);
         let _ = table.add_row(vec!["Namespace ID", &self.namespace_id]);
         let _ = table.add_row(vec!["Public Key", &self.public_key]);

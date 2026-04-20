@@ -1164,15 +1164,95 @@ pub struct GroupMetaValue {
     pub auto_join: bool,
 }
 
+/// Per-member opt-in flags that drive the auto-follow handler.
+///
+/// - `contexts`: when the group gets a new [`GroupOp::ContextRegistered`],
+///   the auto-follow handler emits a `JoinContext` on behalf of this member.
+/// - `subgroups`: when a subgroup is nested under a group where this member
+///   is present, the handler emits a self-admission op in the child carrying
+///   the member's inherited role.
+///
+/// See `architecture/auto-follow.html` for the full design.
+/// Defaults to both `false` for regular members; `ReadOnlyTee` members get
+/// both set to `true` at admission time.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct AutoFollowFlags {
+    pub contexts: bool,
+    pub subgroups: bool,
+}
+
 /// Stored against [`GroupMember`]. Tracks the member's role and, for the local
 /// node, the Ed25519 key pair used for sync key-share across all contexts in
 /// this group.
+///
+/// `auto_follow` was added after the initial schema; [`BorshDeserialize`] is
+/// implemented manually so that records written under the legacy three-field
+/// layout still decode — the missing bytes default to
+/// [`AutoFollowFlags::default()`]. Serialization always writes the full
+/// four-field layout, so any mutation transparently upgrades the on-disk
+/// record. See the auto-follow architecture doc.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize))]
 pub struct GroupMemberValue {
     pub role: GroupMemberRole,
     pub private_key: Option<[u8; 32]>,
     pub sender_key: Option<[u8; 32]>,
+    pub auto_follow: AutoFollowFlags,
+}
+
+#[cfg(feature = "borsh")]
+impl BorshDeserialize for GroupMemberValue {
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
+        let role = BorshDeserialize::deserialize_reader(reader)?;
+        let private_key = BorshDeserialize::deserialize_reader(reader)?;
+        let sender_key = BorshDeserialize::deserialize_reader(reader)?;
+
+        // `AutoFollowFlags` is two `bool`s = exactly 2 bytes in Borsh.
+        // Distinguish three cases on the trailing bytes:
+        //   - 0 bytes remaining (legacy record) → default flags
+        //   - 2 bytes remaining (new record)    → deserialize flags
+        //   - 1 byte remaining                  → corruption, EOF error
+        //
+        // Using `read_exact` alone conflates cases 1 and 3 because it
+        // returns `UnexpectedEof` in both. We read one byte at a time
+        // so a clean EOF (case 1) is distinguishable from a partial
+        // tail (case 3). See PR #2169 review for detail.
+        let auto_follow = {
+            let mut first = [0u8; 1];
+            let read1 = read_byte(reader, &mut first)?;
+            if !read1 {
+                AutoFollowFlags::default()
+            } else {
+                let mut second = [0u8; 1];
+                reader.read_exact(&mut second)?;
+                AutoFollowFlags::try_from_slice(&[first[0], second[0]])?
+            }
+        };
+
+        Ok(Self {
+            role,
+            private_key,
+            sender_key,
+            auto_follow,
+        })
+    }
+}
+
+/// Read exactly one byte into `buf`. Returns `Ok(true)` if a byte was
+/// read, `Ok(false)` on clean EOF, and forwards any other I/O error.
+/// Used to distinguish a legacy (no trailing bytes) record from a
+/// corrupted record that has fewer bytes than the new layout requires.
+#[cfg(feature = "borsh")]
+fn read_byte<R: borsh::io::Read>(reader: &mut R, buf: &mut [u8; 1]) -> borsh::io::Result<bool> {
+    loop {
+        match reader.read(buf) {
+            Ok(0) => return Ok(false),
+            Ok(_) => return Ok(true),
+            Err(e) if e.kind() == borsh::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Tracks the progress of a group-wide upgrade operation.
@@ -1678,6 +1758,86 @@ mod tests {
         assert_eq!(key.as_key().as_bytes().len(), 65);
     }
 
+    /// A record written under the pre-auto-follow three-field layout
+    /// (role + private_key + sender_key, no auto_follow bytes) must
+    /// deserialize and fill in default flags. Exercised by seeding raw
+    /// bytes that match the legacy wire format exactly.
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn group_member_value_deserializes_legacy_record() {
+        use borsh::BorshSerialize;
+
+        // Legacy layout: role (1) + private_key Option (1 + 32) + sender_key Option (1).
+        #[derive(BorshSerialize)]
+        struct LegacyGroupMemberValue {
+            role: GroupMemberRole,
+            private_key: Option<[u8; 32]>,
+            sender_key: Option<[u8; 32]>,
+        }
+
+        let legacy = LegacyGroupMemberValue {
+            role: GroupMemberRole::Admin,
+            private_key: Some([0x11; 32]),
+            sender_key: None,
+        };
+        let bytes = borsh::to_vec(&legacy).unwrap();
+
+        let decoded: GroupMemberValue = borsh::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.role, GroupMemberRole::Admin);
+        assert_eq!(decoded.private_key, Some([0x11; 32]));
+        assert_eq!(decoded.sender_key, None);
+        assert_eq!(decoded.auto_follow, AutoFollowFlags::default());
+    }
+
+    /// A record with a new-format (four-field) layout must round-trip.
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn group_member_value_roundtrip_with_flags() {
+        let value = GroupMemberValue {
+            role: GroupMemberRole::Member,
+            private_key: None,
+            sender_key: Some([0x22; 32]),
+            auto_follow: AutoFollowFlags {
+                contexts: true,
+                subgroups: false,
+            },
+        };
+        let bytes = borsh::to_vec(&value).unwrap();
+        let decoded: GroupMemberValue = borsh::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.role, value.role);
+        assert_eq!(decoded.private_key, value.private_key);
+        assert_eq!(decoded.sender_key, value.sender_key);
+        assert_eq!(decoded.auto_follow, value.auto_follow);
+    }
+
+    /// Corruption guard: a record with one trailing byte (partial
+    /// `auto_follow` field) must fail to deserialize rather than
+    /// silently defaulting. This catches the class of bug where data
+    /// truncation or partial writes would otherwise be invisible.
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn group_member_value_rejects_partial_auto_follow() {
+        use borsh::BorshSerialize;
+
+        #[derive(BorshSerialize)]
+        struct PartialGroupMemberValue {
+            role: GroupMemberRole,
+            private_key: Option<[u8; 32]>,
+            sender_key: Option<[u8; 32]>,
+            truncated: bool,
+        }
+
+        let partial = PartialGroupMemberValue {
+            role: GroupMemberRole::Member,
+            private_key: None,
+            sender_key: None,
+            truncated: true,
+        };
+        let bytes = borsh::to_vec(&partial).unwrap();
+        let err = borsh::from_slice::<GroupMemberValue>(&bytes).unwrap_err();
+        assert_eq!(err.kind(), borsh::io::ErrorKind::UnexpectedEof);
+    }
+
     #[test]
     fn group_context_index_roundtrip() {
         let gid = [0x11; 32];
@@ -1804,7 +1964,8 @@ mod tests {
         use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 
         use super::super::{
-            GroupMemberValue, GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue,
+            AutoFollowFlags, GroupMemberValue, GroupMetaValue, GroupUpgradeStatus,
+            GroupUpgradeValue,
         };
 
         #[test]
@@ -1909,12 +2070,14 @@ mod tests {
                     role: role.clone(),
                     private_key: Some([0xAA; 32]),
                     sender_key: Some([0xBB; 32]),
+                    auto_follow: AutoFollowFlags::default(),
                 };
                 let bytes = to_vec(&value).expect("serialize");
                 let decoded: GroupMemberValue = from_slice(&bytes).expect("deserialize");
                 assert_eq!(decoded.role, role);
                 assert_eq!(decoded.private_key, Some([0xAA; 32]));
                 assert_eq!(decoded.sender_key, Some([0xBB; 32]));
+                assert_eq!(decoded.auto_follow, AutoFollowFlags::default());
             }
         }
 
@@ -1924,12 +2087,14 @@ mod tests {
                 role: GroupMemberRole::Member,
                 private_key: None,
                 sender_key: None,
+                auto_follow: AutoFollowFlags::default(),
             };
             let bytes = to_vec(&value).expect("serialize");
             let decoded: GroupMemberValue = from_slice(&bytes).expect("deserialize");
             assert_eq!(decoded.role, GroupMemberRole::Member);
             assert_eq!(decoded.private_key, None);
             assert_eq!(decoded.sender_key, None);
+            assert_eq!(decoded.auto_follow, AutoFollowFlags::default());
         }
 
         #[test]

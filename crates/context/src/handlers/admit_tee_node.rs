@@ -138,6 +138,14 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 .await?;
 
                 info!(%member, ?group_id, "TEE node admitted via attestation");
+                // Auto-follow flags for the admitted TEE member are
+                // published by the member itself in `fleet_join.rs` after
+                // it observes admission — signed with its own namespace
+                // identity, which satisfies `MemberSetAutoFollow`'s
+                // admin-or-self authorization rule. The verifier (this
+                // handler) has neither admin authority nor the member's
+                // signing key, so it can't do it here.
+
                 Ok(())
             }
             .into_actor(self),

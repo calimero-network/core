@@ -2753,3 +2753,321 @@ fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
         auto_join: true,
     }
 }
+
+// ---------------------------------------------------------------------------
+// MemberSetAutoFollow (the auto-follow architecture doc)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod auto_follow_tests {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::*;
+    use crate::group_store::{
+        add_group_member, apply_local_signed_group_op, get_group_member_value,
+    };
+
+    fn seed(
+        rng: &mut OsRng,
+    ) -> (
+        calimero_store::Store,
+        calimero_context_config::types::ContextGroupId,
+        [u8; 32],
+        PrivateKey,
+        PrivateKey,
+    ) {
+        let store = test_store();
+        let gid = test_group_id();
+        let gid_bytes = gid.to_bytes();
+        let admin_sk = PrivateKey::random(rng);
+        let member_sk = PrivateKey::random(rng);
+        add_group_member(&store, &gid, &admin_sk.public_key(), GroupMemberRole::Admin).unwrap();
+        add_group_member(
+            &store,
+            &gid,
+            &member_sk.public_key(),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
+        (store, gid, gid_bytes, admin_sk, member_sk)
+    }
+
+    #[test]
+    fn admin_can_set_member_auto_follow() {
+        let mut rng = OsRng;
+        let (store, gid, gid_bytes, admin_sk, member_sk) = seed(&mut rng);
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberSetAutoFollow {
+                target: member_sk.public_key(),
+                auto_follow_contexts: true,
+                auto_follow_subgroups: true,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op).unwrap();
+
+        let val = get_group_member_value(&store, &gid, &member_sk.public_key())
+            .unwrap()
+            .unwrap();
+        assert!(val.auto_follow.contexts);
+        assert!(val.auto_follow.subgroups);
+    }
+
+    #[test]
+    fn member_can_set_own_auto_follow() {
+        let mut rng = OsRng;
+        let (store, gid, gid_bytes, _admin_sk, member_sk) = seed(&mut rng);
+
+        let op = SignedGroupOp::sign(
+            &member_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberSetAutoFollow {
+                target: member_sk.public_key(),
+                auto_follow_contexts: true,
+                auto_follow_subgroups: false,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op).unwrap();
+
+        let val = get_group_member_value(&store, &gid, &member_sk.public_key())
+            .unwrap()
+            .unwrap();
+        assert!(val.auto_follow.contexts);
+        assert!(!val.auto_follow.subgroups);
+    }
+
+    #[test]
+    fn non_admin_cannot_set_others_auto_follow() {
+        let mut rng = OsRng;
+        let (store, gid, gid_bytes, _admin_sk, member_sk) = seed(&mut rng);
+
+        // `other_sk` is a real member of the group — we add them first so
+        // the authorization check is the reason the op is rejected, not a
+        // missing-target lookup. If the handler's check order is ever
+        // refactored to look up the target before checking auth, this
+        // test would still correctly assert "non-admin, non-self rejected".
+        let other_sk = PrivateKey::random(&mut rng);
+        add_group_member(
+            &store,
+            &gid,
+            &other_sk.public_key(),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
+
+        let op = SignedGroupOp::sign(
+            &member_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberSetAutoFollow {
+                target: other_sk.public_key(),
+                auto_follow_contexts: true,
+                auto_follow_subgroups: false,
+            },
+        )
+        .unwrap();
+        let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+        assert!(err.to_string().contains("auto-follow"));
+
+        // Sanity: the target's flags were not mutated.
+        let val = get_group_member_value(&store, &gid, &other_sk.public_key())
+            .unwrap()
+            .unwrap();
+        assert!(!val.auto_follow.contexts);
+        assert!(!val.auto_follow.subgroups);
+    }
+
+    #[test]
+    fn rejects_non_member_target() {
+        let mut rng = OsRng;
+        let (store, _gid, gid_bytes, admin_sk, _member_sk) = seed(&mut rng);
+        let stranger = PrivateKey::random(&mut rng).public_key();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberSetAutoFollow {
+                target: stranger,
+                auto_follow_contexts: true,
+                auto_follow_subgroups: true,
+            },
+        )
+        .unwrap();
+        let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+        assert!(err.to_string().contains("not a member"));
+    }
+
+    #[test]
+    fn default_flags_are_false_and_preserved_on_role_change() {
+        let mut rng = OsRng;
+        let (store, gid, gid_bytes, admin_sk, member_sk) = seed(&mut rng);
+
+        // Initial state: flags default to false
+        let before = get_group_member_value(&store, &gid, &member_sk.public_key())
+            .unwrap()
+            .unwrap();
+        assert!(!before.auto_follow.contexts);
+        assert!(!before.auto_follow.subgroups);
+
+        // Member turns on contexts
+        let op1 = SignedGroupOp::sign(
+            &member_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberSetAutoFollow {
+                target: member_sk.public_key(),
+                auto_follow_contexts: true,
+                auto_follow_subgroups: false,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op1).unwrap();
+
+        // Admin changes role — flags must survive
+        let op2 = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberRoleSet {
+                member: member_sk.public_key(),
+                role: GroupMemberRole::ReadOnly,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op2).unwrap();
+
+        let after = get_group_member_value(&store, &gid, &member_sk.public_key())
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.role, GroupMemberRole::ReadOnly);
+        assert!(after.auto_follow.contexts);
+    }
+
+    /// End-to-end path without the actor:
+    ///   add_group_member → MemberSetAutoFollow → ContextRegistered.
+    ///
+    /// Asserts every stage lands in the store correctly and that the
+    /// op-apply event channel fires the events the Phase 3 handler
+    /// depends on. Exercises the full Phase 1–4 wiring short of the
+    /// actor-driven `join_context` call, which needs a full merod
+    /// instance (covered by the deferred merobox e2e workflow).
+    #[tokio::test(flavor = "current_thread")]
+    async fn end_to_end_event_fires_after_op_apply() {
+        use calimero_primitives::application::ApplicationId;
+        use calimero_primitives::blobs::BlobId;
+        use calimero_primitives::context::ContextId;
+
+        use crate::op_events::{self, OpEvent};
+
+        let mut rng = OsRng;
+        let (store, gid, gid_bytes, admin_sk, member_sk) = seed(&mut rng);
+
+        // Subscribe BEFORE applying ops so we don't miss events.
+        let mut rx = op_events::subscribe();
+
+        // 1. MemberSetAutoFollow on self
+        let set_flags = SignedGroupOp::sign(
+            &member_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberSetAutoFollow {
+                target: member_sk.public_key(),
+                auto_follow_contexts: true,
+                auto_follow_subgroups: true,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &set_flags).unwrap();
+
+        // Verify state landed
+        let value = get_group_member_value(&store, &gid, &member_sk.public_key())
+            .unwrap()
+            .unwrap();
+        assert!(value.auto_follow.contexts);
+        assert!(value.auto_follow.subgroups);
+
+        // 2. ContextRegistered op (admin registers a new context).
+        let context_id = ContextId::from([0x77; 32]);
+        let register = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::ContextRegistered {
+                context_id,
+                application_id: ApplicationId::from([0xAA; 32]),
+                blob_id: BlobId::from([0xBB; 32]),
+                source: "test://app".to_owned(),
+                service_name: None,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &register).unwrap();
+
+        // 3. The handler sees two events: AutoFollowSet + ContextRegistered.
+        //    Drain events and assert both fired with the right payloads.
+        //    The channel is process-wide so other tests may interleave —
+        //    filter by our tag.
+        // Match on (group_id, member_pk) for AutoFollowSet and on
+        // (group_id, context_id) for ContextRegistered — other tests
+        // running in parallel share the same global event channel and
+        // `test_group_id()`, so group_id alone is not a unique filter.
+        let expected_member = member_sk.public_key();
+        let mut saw_auto_follow = false;
+        let mut saw_context_registered = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && !(saw_auto_follow && saw_context_registered) {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(OpEvent::AutoFollowSet {
+                    group_id,
+                    member,
+                    contexts,
+                    subgroups,
+                })) if group_id == gid_bytes && member == expected_member => {
+                    assert!(contexts);
+                    assert!(subgroups);
+                    saw_auto_follow = true;
+                }
+                Ok(Ok(OpEvent::ContextRegistered {
+                    group_id,
+                    context_id: got,
+                })) if group_id == gid_bytes && got == context_id => {
+                    saw_context_registered = true;
+                }
+                Ok(Ok(_)) => {} // other events from parallel tests
+                Ok(Err(_)) => break,
+                Err(_) => continue,
+            }
+        }
+
+        assert!(saw_auto_follow, "AutoFollowSet event should have fired");
+        assert!(
+            saw_context_registered,
+            "ContextRegistered event should have fired"
+        );
+    }
+}

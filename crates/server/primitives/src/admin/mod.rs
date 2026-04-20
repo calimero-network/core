@@ -1160,6 +1160,11 @@ pub struct FleetJoinResponse {
     pub namespace_id: String,
     pub public_key: String,
     pub admitted: bool,
+    /// `true` if the node successfully published `MemberSetAutoFollow` for
+    /// itself after admission. `false` means admission succeeded but the
+    /// node will NOT auto-join future contexts until the op is retried.
+    #[serde(default)]
+    pub auto_follow_enabled: bool,
     pub contexts_joined: Vec<String>,
 }
 

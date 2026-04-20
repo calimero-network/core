@@ -74,7 +74,7 @@ pub use self::membership::{
     add_group_member, add_group_member_with_keys, check_group_membership, count_group_admins,
     count_group_members, get_group_member_role, get_group_member_value, is_direct_group_admin,
     is_group_admin, is_group_admin_or_has_capability, list_group_members, remove_group_member,
-    require_group_admin, require_group_admin_or_capability,
+    require_group_admin, require_group_admin_or_capability, set_member_auto_follow,
 };
 pub use self::membership_policy::MembershipPolicy;
 pub use self::membership_view::GroupMembershipView;
@@ -860,6 +860,11 @@ fn apply_group_op_mutations(
             permissions.require_manage_members(signer, "add member")?;
             permissions.require_admin_to_add_admin(signer, role)?;
             add_group_member(store, group_id, member, role.clone())?;
+            crate::op_events::notify(crate::op_events::OpEvent::MemberAdded {
+                group_id: group_id.to_bytes(),
+                member: *member,
+                role: role.clone(),
+            });
         }
         GroupOp::MemberRemoved { member } => {
             permissions.require_manage_members(signer, "remove member")?;
@@ -867,6 +872,10 @@ fn apply_group_op_mutations(
             membership_policy.ensure_not_last_admin_removal(member)?;
             cascade_remove_member_from_group_tree(store, group_id, member)?;
             remove_group_member(store, group_id, member)?;
+            crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
+                group_id: group_id.to_bytes(),
+                member: *member,
+            });
         }
         GroupOp::MemberRoleSet { member, role } => {
             if *role == GroupMemberRole::ReadOnlyTee {
@@ -909,6 +918,10 @@ fn apply_group_op_mutations(
             // propagation) that the context→group mapping has just been
             // persisted. See `crate::registration_notify` for rationale.
             crate::registration_notify::notify(*context_id);
+            crate::op_events::notify(crate::op_events::OpEvent::ContextRegistered {
+                group_id: group_id.to_bytes(),
+                context_id: *context_id,
+            });
         }
         GroupOp::ContextDetached { context_id } => {
             context_registration.detach(&permissions, signer, context_id)?;
@@ -992,6 +1005,37 @@ fn apply_group_op_mutations(
                 &policy, mrtd, rtmr0, rtmr1, rtmr2, rtmr3, tcb_status,
             )?;
             membership_policy.admit_member_if_absent(member, role)?;
+            crate::op_events::notify(crate::op_events::OpEvent::TeeMemberAdmitted {
+                group_id: group_id.to_bytes(),
+                member: *member,
+            });
+        }
+        GroupOp::MemberSetAutoFollow {
+            target,
+            auto_follow_contexts,
+            auto_follow_subgroups,
+        } => {
+            // Admin-or-self: admin can toggle flags for any member, a
+            // member can toggle their own. Non-admin, non-self attempts
+            // are rejected.
+            if !permissions.is_admin(signer)? && signer != target {
+                bail!("only group admin or the target member can set auto-follow");
+            }
+            // Target must already be a group member.
+            if get_group_member_role(store, group_id, target)?.is_none() {
+                bail!("target is not a member of this group");
+            }
+            let flags = calimero_store::key::AutoFollowFlags {
+                contexts: *auto_follow_contexts,
+                subgroups: *auto_follow_subgroups,
+            };
+            set_member_auto_follow(store, group_id, target, flags)?;
+            crate::op_events::notify(crate::op_events::OpEvent::AutoFollowSet {
+                group_id: group_id.to_bytes(),
+                member: *target,
+                contexts: *auto_follow_contexts,
+                subgroups: *auto_follow_subgroups,
+            });
         }
         #[allow(unreachable_patterns)]
         _ => return Ok(false),

@@ -137,6 +137,17 @@ pub enum GroupOp {
         tcb_status: String,
         role: GroupMemberRole,
     },
+    /// Set a member's auto-follow flags. When `auto_follow_contexts` is
+    /// true, the auto-follow handler auto-joins new contexts registered
+    /// in this group on behalf of `target`. When `auto_follow_subgroups`
+    /// is true, the handler self-admits into subgroups nested under this
+    /// group. Authorized by group admin (for any target) or by the target
+    /// member themselves (self-setting). See the auto-follow architecture doc.
+    MemberSetAutoFollow {
+        target: PublicKey,
+        auto_follow_contexts: bool,
+        auto_follow_subgroups: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------

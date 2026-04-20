@@ -21,6 +21,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::metrics::Metrics;
 
+pub mod auto_follow;
 pub mod config;
 pub mod error;
 pub mod governance_dag;
@@ -28,6 +29,7 @@ pub mod group_store;
 pub mod handlers;
 mod lifecycle;
 mod metrics;
+pub mod op_events;
 pub mod registration_notify;
 
 /// A metadata container for a single, in-memory context.
@@ -273,6 +275,10 @@ impl Actor for ContextManager {
     fn started(&mut self, ctx: &mut Self::Context) {
         self.recover_in_progress_upgrades(ctx);
         self.start_namespace_heartbeat(ctx);
+        // Auto-follow handler (see the auto-follow architecture doc) — reacts to governance
+        // op-apply events and emits JoinContext on behalf of members
+        // with `auto_follow.contexts = true`.
+        auto_follow::spawn(self.datastore.clone(), self.context_client.clone());
     }
 }
 
