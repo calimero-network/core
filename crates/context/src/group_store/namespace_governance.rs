@@ -9,6 +9,7 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
 use crate::metrics::record_namespace_retry_event;
+use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::{
     add_group_member, apply_group_op_mutations, count_group_contexts, decrypt_group_op,
@@ -545,6 +546,11 @@ impl<'a> NamespaceGovernance<'a> {
             bail!("child group not found for nesting");
         }
         nest_group(self.store, &parent, &child)?;
+        notify_op_event(OpEvent::SubgroupNested {
+            namespace_id: self.namespace_id,
+            parent_group_id,
+            child_group_id,
+        });
         Ok(())
     }
 
@@ -558,6 +564,11 @@ impl<'a> NamespaceGovernance<'a> {
         let parent = ContextGroupId::from(parent_group_id);
         let child = ContextGroupId::from(child_group_id);
         unnest_group(self.store, &parent, &child)?;
+        notify_op_event(OpEvent::SubgroupUnnested {
+            namespace_id: self.namespace_id,
+            parent_group_id,
+            child_group_id,
+        });
         Ok(())
     }
 
