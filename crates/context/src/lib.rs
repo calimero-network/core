@@ -21,6 +21,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::metrics::Metrics;
 
+pub mod auto_follow;
 pub mod config;
 pub mod error;
 pub mod governance_dag;
@@ -274,6 +275,10 @@ impl Actor for ContextManager {
     fn started(&mut self, ctx: &mut Self::Context) {
         self.recover_in_progress_upgrades(ctx);
         self.start_namespace_heartbeat(ctx);
+        // Auto-follow handler (see ADR 0001) — reacts to governance
+        // op-apply events and emits JoinContext on behalf of members
+        // with `auto_follow.contexts = true`.
+        auto_follow::spawn(self.datastore.clone(), self.context_client.clone());
     }
 }
 
