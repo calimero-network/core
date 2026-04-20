@@ -91,26 +91,36 @@ impl RateLimiter {
         Self { sem, refill_task }
     }
 
-    /// Acquire a token. Awaits until one is available.
+    /// Acquire a token. Returns `Ok(())` when one is available, or
+    /// `Err(RateLimiterClosed)` when the semaphore has been closed —
+    /// which only happens after the limiter has been dropped. Callers
+    /// should treat the error as a shutdown signal and bail the
+    /// current event rather than proceeding unlimited.
     ///
-    /// On semaphore close (only happens if the `Arc<Semaphore>` is
-    /// dropped, which requires the refill task to also be dropped),
-    /// returns immediately without consuming a token — in that case
-    /// the limiter is shutting down and the caller proceeds unlimited,
-    /// which is the least-bad behavior (keeping the handler alive
-    /// rather than blocking forever).
-    pub async fn acquire(&self) {
+    /// Note on `permit.forget()`: we consume the permit before the
+    /// caller's operation runs. Fast-failing operations (e.g.
+    /// `join_context` for a context we already replicate) therefore
+    /// still burn one token. This is intentional — the limiter is a
+    /// coarse amplification guard, not a retry-aware budgeter. If the
+    /// trade-off ever bites in practice, the fix is to switch to an
+    /// RAII guard returned from `acquire()` and held until the
+    /// operation completes.
+    pub async fn acquire(&self) -> Result<(), RateLimiterClosed> {
         match self.sem.acquire().await {
-            Ok(permit) => permit.forget(),
-            Err(_) => {
-                warn!(
-                    "auto-follow rate limiter semaphore closed — proceeding \
-                     without rate limit (likely shutdown)"
-                );
+            Ok(permit) => {
+                permit.forget();
+                Ok(())
             }
+            Err(_) => Err(RateLimiterClosed),
         }
     }
 }
+
+/// Returned from [`RateLimiter::acquire`] when the limiter has been
+/// shut down. Handler code should treat this as a signal to exit
+/// rather than proceed without rate limiting.
+#[derive(Clone, Copy, Debug)]
+pub struct RateLimiterClosed;
 
 impl Drop for RateLimiter {
     fn drop(&mut self) {
@@ -215,7 +225,10 @@ async fn handle_context_registered(
     if !should_auto_follow_contexts(store, &gid, &self_pk) {
         return;
     }
-    limiter.acquire().await;
+    if limiter.acquire().await.is_err() {
+        debug!("auto-follow: rate limiter closed, skipping context event (shutdown)");
+        return;
+    }
     debug!(
         group_id = %hex::encode(group_id),
         %context_id,
@@ -288,7 +301,10 @@ async fn handle_auto_follow_enabled(
         "auto-follow: backfilling existing contexts after flag enabled"
     );
     for context_id in contexts {
-        limiter.acquire().await;
+        if limiter.acquire().await.is_err() {
+            debug!("auto-follow: rate limiter closed mid-backfill, stopping (shutdown)");
+            return;
+        }
         match context_client
             .join_context(JoinContextRequest { context_id })
             .await

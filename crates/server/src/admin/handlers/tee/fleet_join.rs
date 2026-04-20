@@ -144,6 +144,7 @@ pub async fn handler(
     // Poll for group admission, then auto-join all contexts in the namespace
     let mut contexts_joined = Vec::new();
     let mut admitted = false;
+    let mut auto_follow_enabled = false;
 
     const MAX_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
     const ADMISSION_POLL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -215,10 +216,13 @@ pub async fn handler(
                 )
                 .await
                 {
-                    Ok(()) => info!(
-                        group_id = %req.group_id,
-                        "fleet-join: auto-follow enabled for self"
-                    ),
+                    Ok(()) => {
+                        info!(
+                            group_id = %req.group_id,
+                            "fleet-join: auto-follow enabled for self"
+                        );
+                        auto_follow_enabled = true;
+                    }
                     Err(err) => warn!(
                         group_id = %req.group_id,
                         ?err,
@@ -251,6 +255,7 @@ pub async fn handler(
             "namespace_id": hex::encode(ns_id.to_bytes()),
             "public_key": our_public_key.to_string(),
             "admitted": admitted,
+            "auto_follow_enabled": auto_follow_enabled,
             "contexts_joined": contexts_joined,
         }),
     }
