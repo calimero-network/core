@@ -510,7 +510,22 @@ impl SyncManager {
                     &calimero_context_config::types::ContextGroupId::from(group_id),
                 )
                 .map(|id| id.to_bytes())
-                .unwrap_or(group_id);
+                .unwrap_or_else(|err| {
+                    // Errors here are rare and always indicate something worth
+                    // investigating: store I/O failure or a circular parent chain
+                    // exceeding MAX_NAMESPACE_DEPTH. Surface them before falling
+                    // back so this debugging-focused code path doesn't hide real
+                    // data-integrity bugs. Falling back to the immediate owning
+                    // group preserves pre-fix behaviour rather than aborting the
+                    // whole sync attempt.
+                    warn!(
+                        %context_id,
+                        %err,
+                        "failed to resolve namespace root for fallback topic; \
+                         using immediate group id as best-effort"
+                    );
+                    group_id
+                });
 
                 let ns_topic = TopicHash::from_raw(format!("ns/{}", hex::encode(ns_id_bytes)));
                 let ns_peers = self.network_client.mesh_peers(ns_topic).await;
