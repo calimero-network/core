@@ -19,7 +19,7 @@ description: >
   enough that the CONTEXT mesh forms naturally before the timeout
   expires, bypassing the fallback entirely and masking any bug in it.
 
-  This test's tight `timeout: 8, check_interval: 0.5` means the
+  This test's tight `timeout: 8, check_interval: 1` means the
   fallback MUST work for the assertion to pass. 8 seconds is
   deliberately below the 10-second upper bound for natural gossipsub
   mesh formation (5-10 heartbeats) but well above node bootstrap time
@@ -27,6 +27,10 @@ description: >
   broken the test deterministically fails. If you ever break the
   namespace-mesh fallback for subgroup-owned contexts, this test will
   catch it.
+
+  Note: `check_interval` must be an integer per merobox's schema
+  validator. An interval of 1s still produces 8 sync attempts within
+  the 8-second window — plenty to stress-test the fallback.
 
 force_pull_image: false
 near_devnet: false
@@ -146,7 +150,7 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 8
-    check_interval: 0.5
+    check_interval: 1
     trigger_sync: true
 
   - name: Node-2 reads the value (proves the write propagated)
