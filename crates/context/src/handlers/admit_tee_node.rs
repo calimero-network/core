@@ -138,6 +138,37 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 .await?;
 
                 info!(%member, ?group_id, "TEE node admitted via attestation");
+
+                // Enable auto-follow for TEE fleet members so they pick up
+                // new contexts (and subgroups, once that handler ships)
+                // without extra intervention from MDMA or the sidecar.
+                // See ADR 0001. If this publish fails we log but keep the
+                // admission successful — operators can re-enable flags
+                // manually via the governance op.
+                if let Err(err) = group_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &group_id,
+                    &sk,
+                    GroupOp::MemberSetAutoFollow {
+                        target: member,
+                        auto_follow_contexts: true,
+                        auto_follow_subgroups: true,
+                    },
+                )
+                .await
+                {
+                    tracing::warn!(
+                        %member,
+                        ?group_id,
+                        error = %err,
+                        "Failed to enable auto-follow for TEE member; admission succeeded but \
+                         flags left at default. Retry via MemberSetAutoFollow."
+                    );
+                } else {
+                    info!(%member, ?group_id, "TEE node auto-follow enabled");
+                }
+
                 Ok(())
             }
             .into_actor(self),
