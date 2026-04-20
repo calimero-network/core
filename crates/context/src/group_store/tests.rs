@@ -2953,4 +2953,113 @@ mod auto_follow_tests {
     fn test_store_seed(existing: &calimero_store::Store) -> calimero_store::Store {
         existing.clone()
     }
+
+    /// End-to-end path without the actor:
+    ///   add_group_member → MemberSetAutoFollow → ContextRegistered.
+    ///
+    /// Asserts every stage lands in the store correctly and that the
+    /// op-apply event channel fires the events the Phase 3 handler
+    /// depends on. Exercises the full Phase 1–4 wiring short of the
+    /// actor-driven `join_context` call, which needs a full merod
+    /// instance (covered by the deferred merobox e2e workflow).
+    #[tokio::test(flavor = "current_thread")]
+    async fn end_to_end_event_fires_after_op_apply() {
+        use calimero_primitives::application::ApplicationId;
+        use calimero_primitives::blobs::BlobId;
+        use calimero_primitives::context::ContextId;
+
+        use crate::op_events::{self, OpEvent};
+
+        let mut rng = OsRng;
+        let (store, gid, gid_bytes, admin_sk, member_sk) = seed(&mut rng);
+
+        // Subscribe BEFORE applying ops so we don't miss events.
+        let mut rx = op_events::subscribe();
+
+        // 1. MemberSetAutoFollow on self
+        let set_flags = SignedGroupOp::sign(
+            &member_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberSetAutoFollow {
+                target: member_sk.public_key(),
+                auto_follow_contexts: true,
+                auto_follow_subgroups: true,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &set_flags).unwrap();
+
+        // Verify state landed
+        let value = get_group_member_value(&store, &gid, &member_sk.public_key())
+            .unwrap()
+            .unwrap();
+        assert!(value.auto_follow.contexts);
+        assert!(value.auto_follow.subgroups);
+
+        // 2. ContextRegistered op (admin registers a new context).
+        let context_id = ContextId::from([0x77; 32]);
+        let register = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::ContextRegistered {
+                context_id,
+                application_id: ApplicationId::from([0xAA; 32]),
+                blob_id: BlobId::from([0xBB; 32]),
+                source: "test://app".to_owned(),
+                service_name: None,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &register).unwrap();
+
+        // 3. The handler sees two events: AutoFollowSet + ContextRegistered.
+        //    Drain events and assert both fired with the right payloads.
+        //    The channel is process-wide so other tests may interleave —
+        //    filter by our tag.
+        // Match on (group_id, member_pk) for AutoFollowSet and on
+        // (group_id, context_id) for ContextRegistered — other tests
+        // running in parallel share the same global event channel and
+        // `test_group_id()`, so group_id alone is not a unique filter.
+        let expected_member = member_sk.public_key();
+        let mut saw_auto_follow = false;
+        let mut saw_context_registered = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline
+            && !(saw_auto_follow && saw_context_registered)
+        {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(OpEvent::AutoFollowSet {
+                    group_id,
+                    member,
+                    contexts,
+                    subgroups,
+                })) if group_id == gid_bytes && member == expected_member => {
+                    assert!(contexts);
+                    assert!(subgroups);
+                    saw_auto_follow = true;
+                }
+                Ok(Ok(OpEvent::ContextRegistered {
+                    group_id,
+                    context_id: got,
+                })) if group_id == gid_bytes && got == context_id => {
+                    saw_context_registered = true;
+                }
+                Ok(Ok(_)) => {} // other events from parallel tests
+                Ok(Err(_)) => break,
+                Err(_) => continue,
+            }
+        }
+
+        assert!(saw_auto_follow, "AutoFollowSet event should have fired");
+        assert!(
+            saw_context_registered,
+            "ContextRegistered event should have fired"
+        );
+    }
 }
