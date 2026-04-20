@@ -142,7 +142,7 @@ pub enum GroupOp {
     /// in this group on behalf of `target`. When `auto_follow_subgroups`
     /// is true, the handler self-admits into subgroups nested under this
     /// group. Authorized by group admin (for any target) or by the target
-    /// member themselves (self-setting). See ADR 0001.
+    /// member themselves (self-setting). See the auto-follow architecture doc.
     MemberSetAutoFollow {
         target: PublicKey,
         auto_follow_contexts: bool,

@@ -4,7 +4,7 @@
 //! applied to local state. Every emitted event corresponds to a
 //! successfully-applied op; this is the hook used by higher-level
 //! features (notably auto-follow for group membership, see
-//! `docs/adr/0001-auto-follow-group-membership.md`) to react to state
+//! `architecture/auto-follow.html`) to react to state
 //! changes without reaching into the apply path.
 //!
 //! The channel is best-effort: slow subscribers that fall behind receive
@@ -34,7 +34,7 @@ const CHANNEL_CAPACITY: usize = 1024;
 /// to are represented. New variants are added as needed; adding one is
 /// a non-breaking change since downstream matches on known variants
 /// and ignores the rest.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OpEvent {
     /// `RootOp::GroupNested` — a subgroup was nested under a parent.
     SubgroupNested {
@@ -116,10 +116,7 @@ mod tests {
     /// Drain events until we find one matching the predicate or hit the
     /// deadline. Needed because the broadcast channel is process-wide and
     /// other tests running in parallel may interleave unrelated events.
-    async fn recv_matching<F>(
-        rx: &mut broadcast::Receiver<OpEvent>,
-        mut pred: F,
-    ) -> Option<OpEvent>
+    async fn recv_matching<F>(rx: &mut broadcast::Receiver<OpEvent>, mut pred: F) -> Option<OpEvent>
     where
         F: FnMut(&OpEvent) -> bool,
     {
@@ -156,7 +153,9 @@ mod tests {
         .await
         .expect("matching event delivered");
         match event {
-            OpEvent::ContextRegistered { context_id: got, .. } => assert_eq!(got, context_id),
+            OpEvent::ContextRegistered {
+                context_id: got, ..
+            } => assert_eq!(got, context_id),
             _ => unreachable!(),
         }
     }
@@ -181,9 +180,10 @@ mod tests {
             role: GroupMemberRole::Member,
         });
         for rx in [&mut rx1, &mut rx2] {
-            let event = recv_matching(rx, |e| {
-                matches!(e, OpEvent::MemberAdded { group_id, .. } if *group_id == tag)
-            })
+            let event = recv_matching(
+                rx,
+                |e| matches!(e, OpEvent::MemberAdded { group_id, .. } if *group_id == tag),
+            )
             .await
             .expect("each subscriber should see the event");
             assert!(

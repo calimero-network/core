@@ -1172,7 +1172,7 @@ pub struct GroupMetaValue {
 ///   is present, the handler emits a self-admission op in the child carrying
 ///   the member's inherited role.
 ///
-/// See `docs/adr/0001-auto-follow-group-membership.md` for the full design.
+/// See `architecture/auto-follow.html` for the full design.
 /// Defaults to both `false` for regular members; `ReadOnlyTee` members get
 /// both set to `true` at admission time.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1191,7 +1191,7 @@ pub struct AutoFollowFlags {
 /// layout still decode — the missing bytes default to
 /// [`AutoFollowFlags::default()`]. Serialization always writes the full
 /// four-field layout, so any mutation transparently upgrades the on-disk
-/// record. See ADR 0001.
+/// record. See the auto-follow architecture doc.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize))]
 pub struct GroupMemberValue {

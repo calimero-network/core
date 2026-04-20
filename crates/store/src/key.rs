@@ -31,8 +31,7 @@ pub use context::{
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{
     AutoFollowFlags, ContextGroupRef, ContextServiceName, ContextServiceNameValue, GroupAlias,
-    GroupChildIndex,
-    GroupContextAlias, GroupContextIndex, GroupContextLastMigration,
+    GroupChildIndex, GroupContextAlias, GroupContextIndex, GroupContextLastMigration,
     GroupContextLastMigrationValue, GroupContextMemberCap, GroupDefaultCaps, GroupDefaultCapsValue,
     GroupDefaultVis, GroupDefaultVisValue, GroupKeyEntry, GroupKeyValue, GroupLocalGovNonce,
     GroupMember, GroupMemberAlias, GroupMemberCapability, GroupMemberCapabilityValue,

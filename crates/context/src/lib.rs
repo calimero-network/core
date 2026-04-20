@@ -275,7 +275,7 @@ impl Actor for ContextManager {
     fn started(&mut self, ctx: &mut Self::Context) {
         self.recover_in_progress_upgrades(ctx);
         self.start_namespace_heartbeat(ctx);
-        // Auto-follow handler (see ADR 0001) — reacts to governance
+        // Auto-follow handler (see the auto-follow architecture doc) — reacts to governance
         // op-apply events and emits JoinContext on behalf of members
         // with `auto_follow.contexts = true`.
         auto_follow::spawn(self.datastore.clone(), self.context_client.clone());

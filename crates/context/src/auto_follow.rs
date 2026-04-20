@@ -5,7 +5,7 @@
 //! join ops on behalf of this node — subject to the member having the
 //! relevant [`AutoFollowFlags`] set for the group in question.
 //!
-//! See `docs/adr/0001-auto-follow-group-membership.md` for the full
+//! See `architecture/auto-follow.html` for the full
 //! architecture. This module implements the context side of Phase 3:
 //!
 //! - `OpEvent::ContextRegistered { group, context }` — if this node is
@@ -21,8 +21,7 @@
 //! flow from `fleet_join.rs`; for regular roles it requires a new
 //! admission op since existing `MemberAdded` must be admin-signed.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use calimero_context_client::client::ContextClient;
@@ -31,6 +30,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use tokio::sync::Semaphore;
+use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
 
 use crate::group_store;
@@ -45,25 +45,38 @@ use crate::op_events::{self, OpEvent};
 pub const DEFAULT_BURST: usize = 20;
 pub const DEFAULT_PER: Duration = Duration::from_secs(60);
 
+/// Maximum number of contexts to backfill in one pass when
+/// `auto_follow.contexts` flips to true on a group that already has
+/// contexts. This is a single-pass cap — after flipping, future
+/// contexts are picked up event-driven with no additional limit.
+/// If a group has more than this many contexts at flip-time, the
+/// remainder must be joined via a subsequent trigger (e.g. re-enabling
+/// the flag).
+pub const BACKFILL_LIMIT: usize = 1000;
+
 /// Simple token-bucket rate limiter. Acquire blocks until a token is
 /// available; tokens refill at `per / burst` intervals up to `burst`.
 ///
-/// The refill task is spawned at construction and lives for the process
-/// lifetime. Dropping the limiter does not cancel the task — fine for
-/// our use (created once at startup, lives forever).
+/// Cancellation: dropping the limiter aborts its refill task, so no
+/// orphaned tasks leak. Safe to construct many times in tests.
 pub struct RateLimiter {
     sem: Arc<Semaphore>,
+    refill_task: AbortHandle,
 }
 
 impl RateLimiter {
     pub fn new(burst: usize, per: Duration) -> Self {
         assert!(burst > 0, "rate-limiter burst must be positive");
+        assert!(
+            burst <= u32::MAX as usize,
+            "rate-limiter burst must fit in u32 for refill-interval math"
+        );
         let sem = Arc::new(Semaphore::new(burst));
         let refill_sem = Arc::clone(&sem);
         let refill_interval = per
-            .checked_div(u32::try_from(burst).unwrap_or(u32::MAX))
+            .checked_div(u32::try_from(burst).expect("burst fits in u32"))
             .unwrap_or(per);
-        tokio::spawn(async move {
+        let refill_task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(refill_interval);
             // Skip the first immediate tick — bucket starts full.
             ticker.tick().await;
@@ -73,42 +86,71 @@ impl RateLimiter {
                     refill_sem.add_permits(1);
                 }
             }
-        });
-        Self { sem }
+        })
+        .abort_handle();
+        Self { sem, refill_task }
     }
 
     /// Acquire a token. Awaits until one is available.
+    ///
+    /// On semaphore close (only happens if the `Arc<Semaphore>` is
+    /// dropped, which requires the refill task to also be dropped),
+    /// returns immediately without consuming a token — in that case
+    /// the limiter is shutting down and the caller proceeds unlimited,
+    /// which is the least-bad behavior (keeping the handler alive
+    /// rather than blocking forever).
     pub async fn acquire(&self) {
         match self.sem.acquire().await {
             Ok(permit) => permit.forget(),
-            Err(_) => warn!("auto-follow rate limiter semaphore closed"),
+            Err(_) => {
+                warn!(
+                    "auto-follow rate limiter semaphore closed — proceeding \
+                     without rate limit (likely shutdown)"
+                );
+            }
         }
     }
 }
 
-/// Idempotent-spawn guard. The auto-follow handler subscribes to a
-/// process-wide broadcast channel; spawning a second handler (e.g. if
-/// the `ContextManager` actor is restarted by a supervisor) would
-/// double-process every event and effectively multiply the rate
-/// limiter's budget. This flag ensures only the first call to
-/// [`spawn`] actually starts the task.
-static SPAWNED: AtomicBool = AtomicBool::new(false);
+impl Drop for RateLimiter {
+    fn drop(&mut self) {
+        self.refill_task.abort();
+    }
+}
+
+/// Process-wide handle to the currently-running auto-follow handler.
+/// Tracked so that tests and shutdown code can cleanly abort the task
+/// (including its [`RateLimiter`] refill loop via `Drop`), and so that
+/// a second [`spawn`] call returns instead of double-subscribing.
+static HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
 
 /// Spawn the auto-follow handler. Returns immediately; the handler
 /// runs as a detached tokio task for the process lifetime.
 ///
-/// Idempotent: subsequent calls (e.g. after an Actix actor restart)
-/// are no-ops. Re-subscribing would duplicate every auto-join and
-/// bypass the rate limit.
+/// Idempotent: subsequent calls (e.g. after an Actix actor restart) are
+/// no-ops unless [`shutdown`] is called first. Re-subscribing without
+/// aborting would duplicate every auto-join and multiply the rate limit.
 pub fn spawn(store: Store, context_client: ContextClient) {
-    if SPAWNED.swap(true, Ordering::AcqRel) {
+    let mut slot = HANDLE.lock().expect("auto-follow HANDLE poisoned");
+    if slot.as_ref().is_some_and(|h| !h.is_finished()) {
         debug!("auto-follow handler already running; skipping re-spawn");
         return;
     }
     let limiter = Arc::new(RateLimiter::new(DEFAULT_BURST, DEFAULT_PER));
-    tokio::spawn(async move {
+    let abort = tokio::spawn(async move {
         run(store, context_client, limiter).await;
-    });
+    })
+    .abort_handle();
+    *slot = Some(abort);
+}
+
+/// Abort the running auto-follow handler, if any. Intended for tests
+/// and graceful-shutdown hooks. Safe to call even if no handler is
+/// running. After calling this, [`spawn`] may be called again.
+pub fn shutdown() {
+    if let Some(handle) = HANDLE.lock().expect("auto-follow HANDLE poisoned").take() {
+        handle.abort();
+    }
 }
 
 async fn run(store: Store, context_client: ContextClient, limiter: Arc<RateLimiter>) {
@@ -137,14 +179,8 @@ async fn run(store: Store, context_client: ContextClient, limiter: Arc<RateLimit
                 group_id,
                 context_id,
             } => {
-                handle_context_registered(
-                    &store,
-                    &context_client,
-                    &limiter,
-                    group_id,
-                    context_id,
-                )
-                .await;
+                handle_context_registered(&store, &context_client, &limiter, group_id, context_id)
+                    .await;
             }
             OpEvent::AutoFollowSet {
                 group_id,
@@ -219,10 +255,11 @@ async fn handle_auto_follow_enabled(
     if self_pk != member {
         return;
     }
-    // Cap backfill at a reasonable page size. If a group has more than
-    // 1000 contexts at the moment the flag is flipped, operators can
-    // bump this or introduce pagination; the common case is << 100.
-    let contexts = match group_store::enumerate_group_contexts(store, &gid, 0, 1000) {
+    // Cap backfill at `BACKFILL_LIMIT` contexts per flip. The common
+    // case is << 100. Over-cap records are joined via subsequent
+    // triggers (re-flipping the flag or future ContextRegistered
+    // events, which are event-driven and not subject to this cap).
+    let contexts = match group_store::enumerate_group_contexts(store, &gid, 0, BACKFILL_LIMIT) {
         Ok(ids) => ids,
         Err(err) => {
             warn!(
@@ -235,6 +272,15 @@ async fn handle_auto_follow_enabled(
     };
     if contexts.is_empty() {
         return;
+    }
+    if contexts.len() == BACKFILL_LIMIT {
+        warn!(
+            group_id = %hex::encode(group_id),
+            limit = BACKFILL_LIMIT,
+            "auto-follow: backfill truncated — group has at least BACKFILL_LIMIT contexts; \
+             remaining contexts will be picked up event-driven as new ContextRegistered \
+             ops apply, or by re-flipping the flag"
+        );
     }
     info!(
         group_id = %hex::encode(group_id),

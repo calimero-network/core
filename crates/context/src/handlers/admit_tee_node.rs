@@ -138,36 +138,13 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 .await?;
 
                 info!(%member, ?group_id, "TEE node admitted via attestation");
-
-                // Enable auto-follow for TEE fleet members so they pick up
-                // new contexts (and subgroups, once that handler ships)
-                // without extra intervention from MDMA or the sidecar.
-                // See ADR 0001. If this publish fails we log but keep the
-                // admission successful — operators can re-enable flags
-                // manually via the governance op.
-                if let Err(err) = group_store::sign_apply_and_publish(
-                    &datastore,
-                    &node_client,
-                    &group_id,
-                    &sk,
-                    GroupOp::MemberSetAutoFollow {
-                        target: member,
-                        auto_follow_contexts: true,
-                        auto_follow_subgroups: true,
-                    },
-                )
-                .await
-                {
-                    tracing::warn!(
-                        %member,
-                        ?group_id,
-                        error = %err,
-                        "Failed to enable auto-follow for TEE member; admission succeeded but \
-                         flags left at default. Retry via MemberSetAutoFollow."
-                    );
-                } else {
-                    info!(%member, ?group_id, "TEE node auto-follow enabled");
-                }
+                // Auto-follow flags for the admitted TEE member are
+                // published by the member itself in `fleet_join.rs` after
+                // it observes admission — signed with its own namespace
+                // identity, which satisfies `MemberSetAutoFollow`'s
+                // admin-or-self authorization rule. The verifier (this
+                // handler) has neither admin authority nor the member's
+                // signing key, so it can't do it here.
 
                 Ok(())
             }

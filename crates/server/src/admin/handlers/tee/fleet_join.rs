@@ -44,7 +44,7 @@ pub async fn handler(
     );
 
     // Use namespace identity (per-root-group keypair) instead of a throwaway identity
-    let (ns_id, our_public_key, _sk, _sender) =
+    let (ns_id, our_public_key, our_sk, _sender) =
         match group_store::get_or_create_namespace_identity(&state.store, &group_id) {
             Ok(result) => result,
             Err(err) => {
@@ -192,6 +192,42 @@ pub async fn handler(
                         }
                     }
                 }
+
+                // Self-enable auto-follow now that we're a confirmed member.
+                // Signed with our own namespace identity — satisfies the
+                // admin-or-self authorization rule for MemberSetAutoFollow
+                // (see the auto-follow architecture doc). The verifier that admitted us cannot do
+                // this on our behalf because they're usually not admin and
+                // don't hold our signing key. From here on, any new context
+                // in the group auto-joins via the core auto-follow handler;
+                // no sidecar polling needed.
+                let our_sk_typed = calimero_primitives::identity::PrivateKey::from(our_sk);
+                match calimero_context::group_store::sign_apply_and_publish(
+                    &state.store,
+                    &state.node_client,
+                    &group_id,
+                    &our_sk_typed,
+                    calimero_context_client::local_governance::GroupOp::MemberSetAutoFollow {
+                        target: our_public_key,
+                        auto_follow_contexts: true,
+                        auto_follow_subgroups: true,
+                    },
+                )
+                .await
+                {
+                    Ok(()) => info!(
+                        group_id = %req.group_id,
+                        "fleet-join: auto-follow enabled for self"
+                    ),
+                    Err(err) => warn!(
+                        group_id = %req.group_id,
+                        ?err,
+                        "fleet-join: failed to enable auto-follow — admission succeeded but \
+                         subsequent contexts will NOT auto-join until the op is retried. \
+                         Operators can re-trigger fleet-join or publish MemberSetAutoFollow."
+                    ),
+                }
+
                 break;
             }
             Err(err) => {

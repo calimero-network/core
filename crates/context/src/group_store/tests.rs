@@ -2755,7 +2755,7 @@ fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
 }
 
 // ---------------------------------------------------------------------------
-// MemberSetAutoFollow (ADR 0001)
+// MemberSetAutoFollow (the auto-follow architecture doc)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -2784,7 +2784,13 @@ mod auto_follow_tests {
         let admin_sk = PrivateKey::random(rng);
         let member_sk = PrivateKey::random(rng);
         add_group_member(&store, &gid, &admin_sk.public_key(), GroupMemberRole::Admin).unwrap();
-        add_group_member(&store, &gid, &member_sk.public_key(), GroupMemberRole::Member).unwrap();
+        add_group_member(
+            &store,
+            &gid,
+            &member_sk.public_key(),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
         (store, gid, gid_bytes, admin_sk, member_sk)
     }
 
@@ -2853,7 +2859,13 @@ mod auto_follow_tests {
         // refactored to look up the target before checking auth, this
         // test would still correctly assert "non-admin, non-self rejected".
         let other_sk = PrivateKey::random(&mut rng);
-        add_group_member(&store, &gid, &other_sk.public_key(), GroupMemberRole::Member).unwrap();
+        add_group_member(
+            &store,
+            &gid,
+            &other_sk.public_key(),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
 
         let op = SignedGroupOp::sign(
             &member_sk,
@@ -3028,9 +3040,7 @@ mod auto_follow_tests {
         let mut saw_auto_follow = false;
         let mut saw_context_registered = false;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while std::time::Instant::now() < deadline
-            && !(saw_auto_follow && saw_context_registered)
-        {
+        while std::time::Instant::now() < deadline && !(saw_auto_follow && saw_context_registered) {
             match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
                 Ok(Ok(OpEvent::AutoFollowSet {
                     group_id,
