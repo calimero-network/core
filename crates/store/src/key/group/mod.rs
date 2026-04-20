@@ -1164,15 +1164,65 @@ pub struct GroupMetaValue {
     pub auto_join: bool,
 }
 
+/// Per-member opt-in flags that drive the auto-follow handler.
+///
+/// - `contexts`: when the group gets a new [`GroupOp::ContextRegistered`],
+///   the auto-follow handler emits a `JoinContext` on behalf of this member.
+/// - `subgroups`: when a subgroup is nested under a group where this member
+///   is present, the handler emits a self-admission op in the child carrying
+///   the member's inherited role.
+///
+/// See `docs/adr/0001-auto-follow-group-membership.md` for the full design.
+/// Defaults to both `false` for regular members; `ReadOnlyTee` members get
+/// both set to `true` at admission time.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct AutoFollowFlags {
+    pub contexts: bool,
+    pub subgroups: bool,
+}
+
 /// Stored against [`GroupMember`]. Tracks the member's role and, for the local
 /// node, the Ed25519 key pair used for sync key-share across all contexts in
 /// this group.
+///
+/// `auto_follow` was added after the initial schema; [`BorshDeserialize`] is
+/// implemented manually so that records written under the legacy three-field
+/// layout still decode — the missing bytes default to
+/// [`AutoFollowFlags::default()`]. Serialization always writes the full
+/// four-field layout, so any mutation transparently upgrades the on-disk
+/// record. See ADR 0001.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize))]
 pub struct GroupMemberValue {
     pub role: GroupMemberRole,
     pub private_key: Option<[u8; 32]>,
     pub sender_key: Option<[u8; 32]>,
+    pub auto_follow: AutoFollowFlags,
+}
+
+#[cfg(feature = "borsh")]
+impl BorshDeserialize for GroupMemberValue {
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
+        let role = BorshDeserialize::deserialize_reader(reader)?;
+        let private_key = BorshDeserialize::deserialize_reader(reader)?;
+        let sender_key = BorshDeserialize::deserialize_reader(reader)?;
+        // Legacy (pre-auto-follow) records stop here. Detect EOF and fill
+        // with defaults so old records keep deserializing.
+        let auto_follow = match BorshDeserialize::deserialize_reader(reader) {
+            Ok(flags) => flags,
+            Err(e) if e.kind() == borsh::io::ErrorKind::UnexpectedEof => {
+                AutoFollowFlags::default()
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(Self {
+            role,
+            private_key,
+            sender_key,
+            auto_follow,
+        })
+    }
 }
 
 /// Tracks the progress of a group-wide upgrade operation.

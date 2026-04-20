@@ -1,7 +1,9 @@
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::{GroupMember, GroupMemberValue, GROUP_MEMBER_PREFIX};
+use calimero_store::key::{
+    AutoFollowFlags, GroupMember, GroupMemberValue, GROUP_MEMBER_PREFIX,
+};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
@@ -30,12 +32,20 @@ pub fn add_group_member_with_keys(
     let is_admin = role == GroupMemberRole::Admin;
     let mut handle = store.handle();
     let key = GroupMember::new(group_id.to_bytes(), *identity);
+    // Preserve auto_follow across updates — add_group_member is used for
+    // upserts (e.g. MemberRoleSet), and users will have set their
+    // auto-follow flags independently of role changes.
+    let existing_auto_follow = handle
+        .get::<GroupMember>(&key)?
+        .map(|v| v.auto_follow)
+        .unwrap_or_default();
     handle.put(
         &key,
         &GroupMemberValue {
             role,
             private_key,
             sender_key,
+            auto_follow: existing_auto_follow,
         },
     )?;
     drop(handle);
@@ -59,6 +69,32 @@ pub fn remove_group_member(
     let mut handle = store.handle();
     let key = GroupMember::new(group_id.to_bytes(), *identity);
     handle.delete(&key)?;
+    Ok(())
+}
+
+/// Update the auto-follow flags for an existing member. Caller must
+/// have already verified the member exists (this function bails if
+/// not) and that the signer is authorized to mutate them.
+pub fn set_member_auto_follow(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+    auto_follow: AutoFollowFlags,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let key = GroupMember::new(group_id.to_bytes(), *identity);
+    let existing = handle
+        .get(&key)?
+        .ok_or_else(|| eyre::eyre!("member not found in group"))?;
+    handle.put(
+        &key,
+        &GroupMemberValue {
+            role: existing.role,
+            private_key: existing.private_key,
+            sender_key: existing.sender_key,
+            auto_follow,
+        },
+    )?;
     Ok(())
 }
 

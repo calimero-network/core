@@ -2753,3 +2753,204 @@ fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
         auto_join: true,
     }
 }
+
+// ---------------------------------------------------------------------------
+// MemberSetAutoFollow (ADR 0001)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod auto_follow_tests {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::*;
+    use crate::group_store::{
+        add_group_member, apply_local_signed_group_op, get_group_member_value,
+    };
+
+    fn seed(
+        rng: &mut OsRng,
+    ) -> (
+        calimero_store::Store,
+        calimero_context_config::types::ContextGroupId,
+        [u8; 32],
+        PrivateKey,
+        PrivateKey,
+    ) {
+        let store = test_store();
+        let gid = test_group_id();
+        let gid_bytes = gid.to_bytes();
+        let admin_sk = PrivateKey::random(rng);
+        let member_sk = PrivateKey::random(rng);
+        add_group_member(&store, &gid, &admin_sk.public_key(), GroupMemberRole::Admin).unwrap();
+        add_group_member(&store, &gid, &member_sk.public_key(), GroupMemberRole::Member).unwrap();
+        (store, gid, gid_bytes, admin_sk, member_sk)
+    }
+
+    #[test]
+    fn admin_can_set_member_auto_follow() {
+        let mut rng = OsRng;
+        let (store, gid, gid_bytes, admin_sk, member_sk) = seed(&mut rng);
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberSetAutoFollow {
+                target: member_sk.public_key(),
+                auto_follow_contexts: true,
+                auto_follow_subgroups: true,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op).unwrap();
+
+        let val = get_group_member_value(&store, &gid, &member_sk.public_key())
+            .unwrap()
+            .unwrap();
+        assert!(val.auto_follow.contexts);
+        assert!(val.auto_follow.subgroups);
+    }
+
+    #[test]
+    fn member_can_set_own_auto_follow() {
+        let mut rng = OsRng;
+        let (store, gid, gid_bytes, _admin_sk, member_sk) = seed(&mut rng);
+
+        let op = SignedGroupOp::sign(
+            &member_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberSetAutoFollow {
+                target: member_sk.public_key(),
+                auto_follow_contexts: true,
+                auto_follow_subgroups: false,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op).unwrap();
+
+        let val = get_group_member_value(&store, &gid, &member_sk.public_key())
+            .unwrap()
+            .unwrap();
+        assert!(val.auto_follow.contexts);
+        assert!(!val.auto_follow.subgroups);
+    }
+
+    #[test]
+    fn non_admin_cannot_set_others_auto_follow() {
+        let mut rng = OsRng;
+        let (store, _gid, gid_bytes, _admin_sk, member_sk) = seed(&mut rng);
+
+        let other_sk = PrivateKey::random(&mut rng);
+        add_group_member(
+            &test_store_seed(&store),
+            &test_group_id(),
+            &other_sk.public_key(),
+            GroupMemberRole::Member,
+        )
+        .ok();
+
+        let op = SignedGroupOp::sign(
+            &member_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberSetAutoFollow {
+                target: other_sk.public_key(),
+                auto_follow_contexts: true,
+                auto_follow_subgroups: false,
+            },
+        )
+        .unwrap();
+        let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+        assert!(err.to_string().contains("auto-follow"));
+    }
+
+    #[test]
+    fn rejects_non_member_target() {
+        let mut rng = OsRng;
+        let (store, _gid, gid_bytes, admin_sk, _member_sk) = seed(&mut rng);
+        let stranger = PrivateKey::random(&mut rng).public_key();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberSetAutoFollow {
+                target: stranger,
+                auto_follow_contexts: true,
+                auto_follow_subgroups: true,
+            },
+        )
+        .unwrap();
+        let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+        assert!(err.to_string().contains("not a member"));
+    }
+
+    #[test]
+    fn default_flags_are_false_and_preserved_on_role_change() {
+        let mut rng = OsRng;
+        let (store, gid, gid_bytes, admin_sk, member_sk) = seed(&mut rng);
+
+        // Initial state: flags default to false
+        let before = get_group_member_value(&store, &gid, &member_sk.public_key())
+            .unwrap()
+            .unwrap();
+        assert!(!before.auto_follow.contexts);
+        assert!(!before.auto_follow.subgroups);
+
+        // Member turns on contexts
+        let op1 = SignedGroupOp::sign(
+            &member_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberSetAutoFollow {
+                target: member_sk.public_key(),
+                auto_follow_contexts: true,
+                auto_follow_subgroups: false,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op1).unwrap();
+
+        // Admin changes role — flags must survive
+        let op2 = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberRoleSet {
+                member: member_sk.public_key(),
+                role: GroupMemberRole::ReadOnly,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op2).unwrap();
+
+        let after = get_group_member_value(&store, &gid, &member_sk.public_key())
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.role, GroupMemberRole::ReadOnly);
+        assert!(after.auto_follow.contexts);
+    }
+
+    // Helper for the `non_admin_cannot_set_others_auto_follow` test: the
+    // `other_sk` member must be added to the same store as `seed` created,
+    // not a fresh one. This mirrors the structure of the seed fn but with
+    // the existing store.
+    fn test_store_seed(existing: &calimero_store::Store) -> calimero_store::Store {
+        existing.clone()
+    }
+}

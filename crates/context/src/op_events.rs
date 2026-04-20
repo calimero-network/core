@@ -69,6 +69,15 @@ pub enum OpEvent {
         group_id: [u8; 32],
         member: PublicKey,
     },
+    /// `GroupOp::MemberSetAutoFollow` — auto-follow flags were updated
+    /// for a member. Fires for every application of the op, including
+    /// when flags don't change, so handlers should dedupe if they care.
+    AutoFollowSet {
+        group_id: [u8; 32],
+        member: PublicKey,
+        contexts: bool,
+        subgroups: bool,
+    },
 }
 
 static NOTIFIER: OnceLock<broadcast::Sender<OpEvent>> = OnceLock::new();
@@ -98,21 +107,51 @@ mod tests {
 
     use super::*;
 
+    /// Drain events until we find one matching the predicate or hit the
+    /// deadline. Needed because the broadcast channel is process-wide and
+    /// other tests running in parallel may interleave unrelated events.
+    async fn recv_matching<F>(
+        rx: &mut broadcast::Receiver<OpEvent>,
+        mut pred: F,
+    ) -> Option<OpEvent>
+    where
+        F: FnMut(&OpEvent) -> bool,
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(event)) => {
+                    if pred(&event) {
+                        return Some(event);
+                    }
+                }
+                Ok(Err(_)) => return None,
+                Err(_) => continue,
+            }
+        }
+        None
+    }
+
     #[tokio::test]
     async fn notify_delivers_to_subscriber() {
         let mut rx = subscribe();
-        let context_id = ContextId::from([1u8; 32]);
+        let context_id = ContextId::from([0xAA; 32]);
+        let tag = [0xBB; 32];
         notify(OpEvent::ContextRegistered {
-            group_id: [2u8; 32],
+            group_id: tag,
             context_id,
         });
-        let event = rx.recv().await.expect("event delivered");
+        let event = recv_matching(&mut rx, |e| {
+            matches!(
+                e,
+                OpEvent::ContextRegistered { group_id, .. } if *group_id == tag,
+            )
+        })
+        .await
+        .expect("matching event delivered");
         match event {
-            OpEvent::ContextRegistered { group_id, context_id: got } => {
-                assert_eq!(group_id, [2u8; 32]);
-                assert_eq!(got, context_id);
-            }
-            other => panic!("expected ContextRegistered, got {other:?}"),
+            OpEvent::ContextRegistered { context_id: got, .. } => assert_eq!(got, context_id),
+            _ => unreachable!(),
         }
     }
 
@@ -120,8 +159,8 @@ mod tests {
     async fn notify_with_no_subscribers_is_silent() {
         // Must not panic or error with zero subscribers. Best-effort.
         notify(OpEvent::MemberRemoved {
-            group_id: [3u8; 32],
-            member: PublicKey::from([4u8; 32]),
+            group_id: [0xCC; 32],
+            member: PublicKey::from([0xDD; 32]),
         });
     }
 
@@ -129,14 +168,18 @@ mod tests {
     async fn multiple_subscribers_each_receive() {
         let mut rx1 = subscribe();
         let mut rx2 = subscribe();
+        let tag = [0xEE; 32];
         notify(OpEvent::MemberAdded {
-            group_id: [5u8; 32],
-            member: PublicKey::from([6u8; 32]),
+            group_id: tag,
+            member: PublicKey::from([0xFF; 32]),
             role: GroupMemberRole::Member,
         });
         for rx in [&mut rx1, &mut rx2] {
-            let event = rx.recv().await.expect("event delivered");
-            matches!(event, OpEvent::MemberAdded { .. });
+            let event = recv_matching(rx, |e| {
+                matches!(e, OpEvent::MemberAdded { group_id, .. } if *group_id == tag)
+            })
+            .await;
+            assert!(event.is_some(), "each subscriber should see the event");
         }
     }
 }
