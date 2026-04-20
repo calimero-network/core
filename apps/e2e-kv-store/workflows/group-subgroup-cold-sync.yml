@@ -1,0 +1,209 @@
+name: E2E KV Store - Subgroup Cold-Start Sync
+description: >
+  Regression test for the cold-start sync fallback on subgroup-owned
+  contexts. This test deliberately uses a TIGHT `wait_for_sync` window
+  that finishes BEFORE the context's own gossipsub mesh has had time to
+  form naturally (~5-10s per node/sync/config.rs comments). In that
+  window, sync must rely on the namespace-mesh-peers fallback in
+  `node/src/sync/manager/mod.rs` to find peers.
+
+  Prior to the fix at `manager/mod.rs:~495`, that fallback computed the
+  namespace topic from the context's IMMEDIATE owning group — which for
+  subgroup-owned contexts is the subgroup id, not the namespace root.
+  Only namespace roots subscribe to `ns/<id>` topics, so the fallback
+  always returned 0 peers and this test would hang for the full timeout
+  and fail.
+
+  The existing `group-subgroup.yml` doesn't catch this regression
+  because it uses `timeout: 60, check_interval: 2` — which is generous
+  enough that the CONTEXT mesh forms naturally before the timeout
+  expires, bypassing the fallback entirely and masking any bug in it.
+
+  This test's tight `timeout: 8, check_interval: 0.5` means the
+  fallback MUST work for the assertion to pass. 8 seconds is
+  deliberately below the 10-second upper bound for natural gossipsub
+  mesh formation (5-10 heartbeats) but well above node bootstrap time
+  (~1-2s in the existing group-* workflows), so if the fallback is
+  broken the test deterministically fails. If you ever break the
+  namespace-mesh fallback for subgroup-owned contexts, this test will
+  catch it.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # ── Setup: install, namespace, invite node-2 ───────────────────────
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: e2e-node-2
+    path: res/e2e_kv_store.wasm
+    dev: true
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+    outputs:
+      member_identity_node2: memberIdentity
+
+  # ── Create a SUBGROUP and add node-2 ───────────────────────────────
+  #
+  # The specific shape that exercises the bug: context lives in a
+  # subgroup, not at the namespace root. A context at the namespace
+  # root would use the fallback path too but find peers (because the
+  # root's `ns/<id>` topic IS subscribed) — this test deliberately
+  # forces the subgroup case.
+
+  - name: Create subgroup inside namespace
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: cold-sync-subgroup
+    outputs:
+      subgroup_id: groupId
+
+  - name: Add node-2 to subgroup
+    type: add_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    members:
+      - identity: '{{member_identity_node2}}'
+        role: Member
+
+  # Short wait for subgroup membership governance to propagate to node-2.
+  # This is NOT the thing under test — we just need node-2's group_store
+  # to accept itself as a member before the join_context membership check.
+  - name: Wait for subgroup governance
+    type: wait
+    seconds: 5
+    message: Subgroup governance needs to reach node-2 before join_context
+
+  # ── Create context in subgroup + node-2 joins immediately ──────────
+
+  - name: Create context in subgroup (node-1)
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_id}}'
+    outputs:
+      sub_ctx_id: contextId
+
+  - name: Node-2 joins subgroup context
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+
+  # ── The test: write on node-1, sync with a tight window ────────────
+  #
+  # Node-2 has just joined. The context gossipsub mesh hasn't had
+  # 5-10s of heartbeats yet. Sync MUST work via the namespace-mesh
+  # fallback. A `timeout: 15` is short enough that the primary path
+  # (waiting for the context mesh to form naturally) cannot save us
+  # within the window under normal docker-network latency.
+
+  - name: Node-1 writes to subgroup context immediately
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args:
+      key: "cold_sync_key"
+      value: "must_reach_node2_fast"
+
+  - name: Sync must converge within the cold-start window
+    type: wait_for_sync
+    context_id: '{{sub_ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 8
+    check_interval: 0.5
+    trigger_sync: true
+
+  - name: Node-2 reads the value (proves the write propagated)
+    type: call
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+    method: get
+    args:
+      key: "cold_sync_key"
+    outputs:
+      cold_sync_read: result
+
+  - name: Assert cold-start sync via namespace-mesh fallback worked
+    type: json_assert
+    statements:
+      - 'json_equal({{cold_sync_read}}, {"output": "must_reach_node2_fast"})'
+
+  # ── Second round: prove the mesh is now stable too ─────────────────
+  #
+  # By now the context's own gossipsub mesh has had time to form.
+  # A second write+sync should take the PRIMARY path (context mesh
+  # peers), not the fallback. This rules out "maybe the primary path
+  # is broken and the fallback is our only hope" — we want both paths
+  # to work; the fallback is just the cold-start bridge.
+
+  - name: Node-2 writes to subgroup context (warm path)
+    type: call
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args:
+      key: "warm_sync_key"
+      value: "primary_path_works_too"
+
+  - name: Warm-path sync (mesh should be up)
+    type: wait_for_sync
+    context_id: '{{sub_ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 30
+    check_interval: 1
+    trigger_sync: true
+
+  - name: Node-1 reads the warm-path value
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: get
+    args:
+      key: "warm_sync_key"
+    outputs:
+      warm_sync_read: result
+
+  - name: Assert warm-path sync works too
+    type: json_assert
+    statements:
+      - 'json_equal({{warm_sync_read}}, {"output": "primary_path_works_too"})'
+
+stop_all_nodes: false
