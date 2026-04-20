@@ -21,6 +21,7 @@
 //! flow from `fleet_join.rs`; for regular roles it requires a new
 //! admission op since existing `MemberAdded` must be admin-signed.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -85,9 +86,25 @@ impl RateLimiter {
     }
 }
 
+/// Idempotent-spawn guard. The auto-follow handler subscribes to a
+/// process-wide broadcast channel; spawning a second handler (e.g. if
+/// the `ContextManager` actor is restarted by a supervisor) would
+/// double-process every event and effectively multiply the rate
+/// limiter's budget. This flag ensures only the first call to
+/// [`spawn`] actually starts the task.
+static SPAWNED: AtomicBool = AtomicBool::new(false);
+
 /// Spawn the auto-follow handler. Returns immediately; the handler
 /// runs as a detached tokio task for the process lifetime.
+///
+/// Idempotent: subsequent calls (e.g. after an Actix actor restart)
+/// are no-ops. Re-subscribing would duplicate every auto-join and
+/// bypass the rate limit.
 pub fn spawn(store: Store, context_client: ContextClient) {
+    if SPAWNED.swap(true, Ordering::AcqRel) {
+        debug!("auto-follow handler already running; skipping re-spawn");
+        return;
+    }
     let limiter = Arc::new(RateLimiter::new(DEFAULT_BURST, DEFAULT_PER));
     tokio::spawn(async move {
         run(store, context_client, limiter).await;

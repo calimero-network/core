@@ -2845,16 +2845,15 @@ mod auto_follow_tests {
     #[test]
     fn non_admin_cannot_set_others_auto_follow() {
         let mut rng = OsRng;
-        let (store, _gid, gid_bytes, _admin_sk, member_sk) = seed(&mut rng);
+        let (store, gid, gid_bytes, _admin_sk, member_sk) = seed(&mut rng);
 
+        // `other_sk` is a real member of the group — we add them first so
+        // the authorization check is the reason the op is rejected, not a
+        // missing-target lookup. If the handler's check order is ever
+        // refactored to look up the target before checking auth, this
+        // test would still correctly assert "non-admin, non-self rejected".
         let other_sk = PrivateKey::random(&mut rng);
-        add_group_member(
-            &test_store_seed(&store),
-            &test_group_id(),
-            &other_sk.public_key(),
-            GroupMemberRole::Member,
-        )
-        .ok();
+        add_group_member(&store, &gid, &other_sk.public_key(), GroupMemberRole::Member).unwrap();
 
         let op = SignedGroupOp::sign(
             &member_sk,
@@ -2871,6 +2870,13 @@ mod auto_follow_tests {
         .unwrap();
         let err = apply_local_signed_group_op(&store, &op).unwrap_err();
         assert!(err.to_string().contains("auto-follow"));
+
+        // Sanity: the target's flags were not mutated.
+        let val = get_group_member_value(&store, &gid, &other_sk.public_key())
+            .unwrap()
+            .unwrap();
+        assert!(!val.auto_follow.contexts);
+        assert!(!val.auto_follow.subgroups);
     }
 
     #[test]
@@ -2944,14 +2950,6 @@ mod auto_follow_tests {
             .unwrap();
         assert_eq!(after.role, GroupMemberRole::ReadOnly);
         assert!(after.auto_follow.contexts);
-    }
-
-    // Helper for the `non_admin_cannot_set_others_auto_follow` test: the
-    // `other_sk` member must be added to the same store as `seed` created,
-    // not a fresh one. This mirrors the structure of the seed fn but with
-    // the existing store.
-    fn test_store_seed(existing: &calimero_store::Store) -> calimero_store::Store {
-        existing.clone()
     }
 
     /// End-to-end path without the actor:
