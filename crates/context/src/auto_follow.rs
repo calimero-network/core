@@ -92,10 +92,10 @@ impl RateLimiter {
     }
 
     /// Acquire a token. Returns `Ok(())` when one is available, or
-    /// `Err(RateLimiterClosed)` when the semaphore has been closed —
-    /// which only happens after the limiter has been dropped. Callers
-    /// should treat the error as a shutdown signal and bail the
-    /// current event rather than proceeding unlimited.
+    /// `Err(RateLimiterClosed)` if [`close`](Self::close) has been
+    /// called on this limiter. Callers should treat the error as a
+    /// shutdown signal and bail the current event rather than
+    /// proceeding unlimited.
     ///
     /// Note on `permit.forget()`: we consume the permit before the
     /// caller's operation runs. Fast-failing operations (e.g.
@@ -114,6 +114,19 @@ impl RateLimiter {
             Err(_) => Err(RateLimiterClosed),
         }
     }
+
+    /// Close the semaphore. Any pending [`acquire`](Self::acquire)
+    /// calls resolve with `Err(RateLimiterClosed)` immediately, and
+    /// subsequent ones do the same. Idempotent.
+    ///
+    /// Dropping the `Arc<Semaphore>` alone is NOT enough — tokio's
+    /// semaphore requires an explicit `close()` call to signal pending
+    /// waiters. Called from [`shutdown`] before the task is aborted
+    /// so the handler can observe the shutdown signal through its
+    /// normal control flow (rather than being cancelled mid-await).
+    pub fn close(&self) {
+        self.sem.close();
+    }
 }
 
 /// Returned from [`RateLimiter::acquire`] when the limiter has been
@@ -129,10 +142,18 @@ impl Drop for RateLimiter {
 }
 
 /// Process-wide handle to the currently-running auto-follow handler.
-/// Tracked so that tests and shutdown code can cleanly abort the task
-/// (including its [`RateLimiter`] refill loop via `Drop`), and so that
-/// a second [`spawn`] call returns instead of double-subscribing.
-static HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
+/// Tracks both the task's abort handle AND a clone of the handler's
+/// [`RateLimiter`] so [`shutdown`] can close the semaphore (causing
+/// the handler's in-flight `acquire().await` to return
+/// `Err(RateLimiterClosed)` through the normal control flow) *before*
+/// aborting the task. A subsequent [`spawn`] returns instead of
+/// double-subscribing.
+struct HandleState {
+    abort: AbortHandle,
+    limiter: Arc<RateLimiter>,
+}
+
+static HANDLE: Mutex<Option<HandleState>> = Mutex::new(None);
 
 /// Spawn the auto-follow handler. Returns immediately; the handler
 /// runs as a detached tokio task for the process lifetime.
@@ -142,24 +163,33 @@ static HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
 /// aborting would duplicate every auto-join and multiply the rate limit.
 pub fn spawn(store: Store, context_client: ContextClient) {
     let mut slot = HANDLE.lock().expect("auto-follow HANDLE poisoned");
-    if slot.as_ref().is_some_and(|h| !h.is_finished()) {
+    if slot.as_ref().is_some_and(|h| !h.abort.is_finished()) {
         debug!("auto-follow handler already running; skipping re-spawn");
         return;
     }
     let limiter = Arc::new(RateLimiter::new(DEFAULT_BURST, DEFAULT_PER));
+    let task_limiter = Arc::clone(&limiter);
     let abort = tokio::spawn(async move {
-        run(store, context_client, limiter).await;
+        run(store, context_client, task_limiter).await;
     })
     .abort_handle();
-    *slot = Some(abort);
+    *slot = Some(HandleState { abort, limiter });
 }
 
-/// Abort the running auto-follow handler, if any. Intended for tests
-/// and graceful-shutdown hooks. Safe to call even if no handler is
-/// running. After calling this, [`spawn`] may be called again.
+/// Close the rate limiter and abort the running handler task. Intended
+/// for tests and graceful-shutdown hooks. Safe to call even if no
+/// handler is running. After calling this, [`spawn`] may be called
+/// again.
+///
+/// Ordering: the semaphore is closed *before* the task is aborted, so
+/// any in-flight `RateLimiter::acquire().await` returns
+/// `Err(RateLimiterClosed)` through the handler's normal control flow
+/// rather than being cancelled mid-await. The abort is a belt-and-
+/// suspenders so the handler's `rx.recv()` also terminates.
 pub fn shutdown() {
-    if let Some(handle) = HANDLE.lock().expect("auto-follow HANDLE poisoned").take() {
-        handle.abort();
+    if let Some(state) = HANDLE.lock().expect("auto-follow HANDLE poisoned").take() {
+        state.limiter.close();
+        state.abort.abort();
     }
 }
 
@@ -376,7 +406,7 @@ mod tests {
 
         // First 3 should be near-instant (full bucket).
         for _ in 0..3 {
-            limiter.acquire().await;
+            limiter.acquire().await.expect("not closed");
         }
         assert!(
             start.elapsed() < Duration::from_millis(50),
@@ -386,7 +416,7 @@ mod tests {
 
         // 4th must wait for a refill tick (~60 ms).
         let before_wait = Instant::now();
-        limiter.acquire().await;
+        limiter.acquire().await.expect("not closed");
         let waited = before_wait.elapsed();
         assert!(
             waited >= Duration::from_millis(30),
@@ -401,12 +431,38 @@ mod tests {
         let limiter = RateLimiter::new(2, Duration::from_millis(50));
         let start = Instant::now();
         for _ in 0..6 {
-            limiter.acquire().await;
+            limiter.acquire().await.expect("not closed");
         }
         assert!(
             start.elapsed() >= Duration::from_millis(80),
             "serial acquires finished too fast: {:?}",
             start.elapsed()
         );
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_close_makes_acquire_error() {
+        // Small burst so we're forced to actually await on the 2nd call.
+        let limiter = Arc::new(RateLimiter::new(1, Duration::from_secs(3600)));
+        // Consume the only token.
+        limiter.acquire().await.expect("first token");
+        // Spawn a task that blocks on the next acquire.
+        let l2 = Arc::clone(&limiter);
+        let waiter = tokio::spawn(async move { l2.acquire().await });
+        // Let the waiter park on the semaphore.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Close — pending acquire should flip to Err immediately.
+        limiter.close();
+        let result = tokio::time::timeout(Duration::from_millis(200), waiter)
+            .await
+            .expect("waiter completed")
+            .expect("no panic");
+        assert!(
+            matches!(result, Err(RateLimiterClosed)),
+            "expected Err(RateLimiterClosed), got {result:?}"
+        );
+        // Subsequent acquire is also Err.
+        let result = limiter.acquire().await;
+        assert!(matches!(result, Err(RateLimiterClosed)));
     }
 }
