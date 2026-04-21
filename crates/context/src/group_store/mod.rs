@@ -87,11 +87,11 @@ pub use self::migrations::{
 };
 pub use self::namespace::{
     collect_descendant_groups, compute_namespace_governance_epoch, create_recursive_invitations,
-    get_namespace_identity, get_namespace_identity_record, get_or_create_namespace_identity,
-    get_or_create_namespace_identity_bundle, get_parent_group, is_read_only_for_context,
-    list_child_groups, nest_group, recursive_remove_member, resolve_namespace,
-    resolve_namespace_identity, resolve_namespace_identity_record, store_namespace_identity,
-    unnest_group, NamespaceIdentityRecord, ResolvedNamespaceIdentity,
+    find_namespace_identity_by_public_key, get_namespace_identity, get_namespace_identity_record,
+    get_or_create_namespace_identity, get_or_create_namespace_identity_bundle, get_parent_group,
+    is_read_only_for_context, list_child_groups, nest_group, recursive_remove_member,
+    resolve_namespace, resolve_namespace_identity, resolve_namespace_identity_record,
+    store_namespace_identity, unnest_group, NamespaceIdentityRecord, ResolvedNamespaceIdentity,
 };
 pub use self::namespace_dag::{NamespaceDagService, NamespaceHead};
 pub use self::namespace_governance::{

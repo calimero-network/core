@@ -2554,6 +2554,69 @@ fn orphan_admin_identity_returns_none_for_nonexistent_group() {
     assert!(load_group_meta(&store, &gid).unwrap().is_none());
 }
 
+#[test]
+fn orphan_admin_identity_resolves_via_namespace_identity_scan() {
+    // Groups created via create_group_in_namespace do NOT get a group-level
+    // GroupSigningKey record — the signing key only lives in the namespace
+    // identity record. After unnest, the parent edge is gone, so the key
+    // must be recovered by scanning namespace-identity records for one whose
+    // public_key matches meta.admin_identity.
+    let store = test_store();
+    let ns_id = ContextGroupId::from([0xF0; 32]);
+    let child_id = ContextGroupId::from([0xF1; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let ns_sk = [0xAA; 32];
+    let ns_sender = [0xBB; 32];
+
+    // Simulate a namespace that was created with (admin, ns_sk).
+    store_namespace_identity(&store, &ns_id, &admin, &ns_sk, &ns_sender).unwrap();
+
+    // Simulate a child group created under that namespace. meta.admin_identity
+    // is set to the namespace admin (matching execute_group_created). No
+    // GroupSigningKey is stored at the child level.
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    save_group_meta(&store, &child_id, &meta).unwrap();
+    add_group_member(&store, &child_id, &admin, GroupMemberRole::Admin).unwrap();
+
+    // Simulate the orphan condition: child was previously nested under ns_id,
+    // but unnest_group removed the parent edge. There is no parent link now.
+    assert!(get_parent_group(&store, &child_id).unwrap().is_none());
+    // And there is no direct group-level signing key for the admin.
+    assert!(get_group_signing_key(&store, &child_id, &admin)
+        .unwrap()
+        .is_none());
+
+    // The scanner finds the namespace identity by public key and returns its
+    // (namespace_id, record). The record's private_key is what the orphan
+    // handler will use as the signing key.
+    let hit = find_namespace_identity_by_public_key(&store, &admin)
+        .unwrap()
+        .expect("namespace identity for admin must be discoverable by pk scan");
+    assert_eq!(hit.0, ns_id);
+    assert_eq!(hit.1.public_key, admin);
+    assert_eq!(hit.1.private_key, ns_sk);
+}
+
+#[test]
+fn namespace_identity_scan_returns_none_when_no_match() {
+    // Scanner must not fabricate a match: if no stored namespace identity has
+    // the target public_key, it returns None even if the store is non-empty.
+    let store = test_store();
+    let ns_id = ContextGroupId::from([0xF0; 32]);
+    let other_pk = PublicKey::from([0x99; 32]);
+    let ns_sk = [0xAA; 32];
+    let ns_sender = [0xBB; 32];
+    let target = PublicKey::from([0x01; 32]);
+
+    store_namespace_identity(&store, &ns_id, &other_pk, &ns_sk, &ns_sender).unwrap();
+
+    // Target pk differs from the one stored → no match.
+    assert!(find_namespace_identity_by_public_key(&store, &target)
+        .unwrap()
+        .is_none());
+}
+
 // -----------------------------------------------------------------------
 // recursive_remove_member — cascade removal through group hierarchy
 // -----------------------------------------------------------------------

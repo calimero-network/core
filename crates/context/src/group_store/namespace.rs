@@ -3,7 +3,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     GroupChildIndex, GroupParentRef, NamespaceIdentity, NamespaceIdentityValue,
-    GROUP_CHILD_INDEX_PREFIX,
+    GROUP_CHILD_INDEX_PREFIX, NAMESPACE_IDENTITY_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -279,6 +279,45 @@ pub fn resolve_namespace(store: &Store, group_id: &ContextGroupId) -> EyreResult
     eyre::bail!(
         "namespace resolution exceeded max depth ({MAX_NAMESPACE_DEPTH}), possible circular reference"
     )
+}
+
+/// Scan this node's stored namespace identities and return the first one
+/// whose public key matches `target`. Used as a fallback identity resolver
+/// for orphaned groups (parent chain severed) where the node still holds
+/// the original namespace's signing key but `resolve_namespace` cannot
+/// reach it via the group tree. See issue #2174.
+///
+/// O(N) in the number of namespaces the node has identities for. N is
+/// typically small (<100); deferring to this function only happens on the
+/// orphan fallback path, not in the common case.
+pub fn find_namespace_identity_by_public_key(
+    store: &Store,
+    target: &PublicKey,
+) -> EyreResult<Option<(ContextGroupId, NamespaceIdentityRecord)>> {
+    let keys = collect_keys_with_prefix(
+        store,
+        NamespaceIdentity::new([0u8; 32]),
+        NAMESPACE_IDENTITY_PREFIX,
+        |_| true,
+    )?;
+    let handle = store.handle();
+    for key in keys {
+        let Some(val) = handle.get(&key)? else {
+            continue;
+        };
+        let pk = PublicKey::from(val.public_key);
+        if pk == *target {
+            return Ok(Some((
+                ContextGroupId::from(key.namespace_id()),
+                NamespaceIdentityRecord {
+                    public_key: pk,
+                    private_key: val.private_key,
+                    sender_key: val.sender_key,
+                },
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// Read this node's identity for a namespace from the store.

@@ -135,25 +135,75 @@ impl ContextManager {
 
     /// Fallback identity resolver for groups whose parent chain has been severed
     /// (orphans — `unnest_group` with no subsequent `nest_group`). Returns the
-    /// group's `meta.admin_identity` together with its locally-stored signing
-    /// key iff the node legitimately holds that key at the group level.
+    /// group's `meta.admin_identity` together with a locally-held signing key.
+    ///
+    /// Lookup order:
+    /// 1. `GroupSigningKey(group_id, admin_identity)` — the direct group-level
+    ///    record (present if the node created the group via `create_group`,
+    ///    joined it, or previously ran a governance op that auto-stored the key).
+    /// 2. If that is absent, scan this node's stored namespace-identity records
+    ///    for one whose public key equals `admin_identity`. This covers groups
+    ///    created via `create_group_in_namespace`, where the signing key is
+    ///    stored only at the namespace level. Once found, the namespace's
+    ///    private key is the signing key for the child's admin (they are the
+    ///    same identity — the namespace admin).
     ///
     /// Security: returning `Some(..)` requires both (a) the public record that
     /// this identity is the group's canonical admin, and (b) local possession
-    /// of the corresponding private key. Both conditions mirror what
-    /// `node_namespace_identity` demands for non-orphaned groups.
+    /// of the corresponding private key (via either lookup path). Both
+    /// conditions mirror what `node_namespace_identity` demands for
+    /// non-orphaned groups.
     pub fn node_group_admin_identity(
         &self,
         group_id: &ContextGroupId,
     ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
-        let meta = group_store::load_group_meta(&self.datastore, group_id)
-            .ok()
-            .flatten()?;
-        let sk =
-            group_store::get_group_signing_key(&self.datastore, group_id, &meta.admin_identity)
-                .ok()
-                .flatten()?;
-        Some((meta.admin_identity, sk))
+        let meta = match group_store::load_group_meta(&self.datastore, group_id) {
+            Ok(Some(meta)) => meta,
+            Ok(None) => return None,
+            Err(e) => {
+                tracing::warn!(
+                    ?group_id,
+                    error=?e,
+                    "failed to load group meta for admin identity fallback"
+                );
+                return None;
+            }
+        };
+
+        // 1. Direct lookup at the group level.
+        match group_store::get_group_signing_key(&self.datastore, group_id, &meta.admin_identity) {
+            Ok(Some(sk)) => return Some((meta.admin_identity, sk)),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    ?group_id,
+                    error=?e,
+                    "failed to load group signing key for admin identity fallback"
+                );
+                // Fall through to namespace-identity scan rather than giving
+                // up — a transient read error on one record shouldn't mask
+                // a valid namespace-identity match.
+            }
+        }
+
+        // 2. Namespace-identity scan: the signing key for the child's admin
+        //    may only be stored at the original namespace (the case for
+        //    groups created via `create_group_in_namespace`).
+        match group_store::find_namespace_identity_by_public_key(
+            &self.datastore,
+            &meta.admin_identity,
+        ) {
+            Ok(Some((_ns_id, record))) => Some((record.public_key, record.private_key)),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(
+                    ?group_id,
+                    error=?e,
+                    "failed to scan namespace identities for admin identity fallback"
+                );
+                None
+            }
+        }
     }
 
     /// Get or create this node's identity for the namespace containing `group_id`.
