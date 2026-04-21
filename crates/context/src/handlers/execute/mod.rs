@@ -628,6 +628,24 @@ impl Handler<ExecuteRequest> for ContextManager {
                             // Skip the store lookup to avoid unnecessary I/O.
                             let governance_epoch: Vec<[u8; 32]> = vec![];
 
+                            // sync_latency: publish timestamp (wall clock for
+                            // cross-node correlation via delta_id).
+                            let publish_at_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis())
+                                .unwrap_or(0);
+                            info!(
+                                target: "sync_latency",
+                                event = "publish",
+                                delta_id = %hex::encode(the_delta.id),
+                                %context_id,
+                                publish_at_ms,
+                                parents = the_delta.parents.len(),
+                                has_events = events_data.is_some(),
+                                artifact_bytes = outcome.artifact.len(),
+                                "publishing state delta"
+                            );
+
                             node_client
                                 .broadcast(
                                     &context,
