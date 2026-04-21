@@ -872,7 +872,7 @@ impl DeltaStore {
         let cascaded_with_events: Vec<([u8; 32], Vec<u8>)> =
             if result || !cascaded_deltas.is_empty() {
                 self.persist_cascaded_deltas_and_update_heads(&cascaded_bodies, heads)
-                    .await?
+                    .await
             } else {
                 Vec::new()
             };
@@ -1098,20 +1098,16 @@ impl DeltaStore {
         if any_parent_added {
             // Persist cascaded deltas and push updated `dag_heads` via the
             // shared helper — same code path `add_delta_with_events` uses
-            // after an in-line cascade.
-            match self
-                .persist_cascaded_deltas_and_update_heads(&cascaded_bodies, heads_after_cascade)
-                .await
-            {
-                Ok(events) => all_cascaded_events.extend(events),
-                Err(e) => {
-                    tracing::warn!(
-                        ?e,
-                        context_id = %self.applier.context_id,
-                        "Failed to persist cascade results after parent restore"
-                    );
-                }
-            }
+            // after an in-line cascade. Helper logs-and-continues on
+            // `dag_heads` write failure, so events are preserved even if
+            // the heads write fails (next sync will correct the heads).
+            all_cascaded_events.extend(
+                self.persist_cascaded_deltas_and_update_heads(
+                    &cascaded_bodies,
+                    heads_after_cascade,
+                )
+                .await,
+            );
         }
 
         if !actually_missing.is_empty() && actually_missing.len() < potentially_missing.len() {
@@ -1168,7 +1164,7 @@ impl DeltaStore {
         &self,
         cascaded_bodies: &[([u8; 32], CausalDelta<Vec<Action>>)],
         heads: Vec<[u8; 32]>,
-    ) -> Result<Vec<([u8; 32], Vec<u8>)>> {
+    ) -> Vec<([u8; 32], Vec<u8>)> {
         let mut forwarded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
         if !cascaded_bodies.is_empty() {
@@ -1258,22 +1254,40 @@ impl DeltaStore {
             }
         }
 
-        // CRITICAL: update the database's `dag_heads` so sync handshakes
-        // and `broadcast_heartbeat` see the post-cascade state. Failing
-        // to do this was the original bug behind #2178. Keeping it in
-        // the same helper as the cascade persist ensures neither callsite
-        // can drop one without dropping the other.
-        self.applier
+        // Update the database's `dag_heads` so sync handshakes and
+        // `broadcast_heartbeat` see the post-cascade state. Failing to
+        // do this was the original bug behind #2178.
+        //
+        // The failure is logged rather than propagated: cascaded deltas
+        // have already been rewritten in the DB with `events: None`, so
+        // their event payloads now survive only in our return value. If
+        // we bailed out with `Err` here, the caller would drop the Vec
+        // and those events would be permanently lost — handlers would
+        // never run for deltas that *were* successfully persisted.
+        // Stale `dag_heads` in the database is recoverable (the next
+        // sync session overwrites them); silently dropped events are
+        // not. This mirrors the original `get_missing_parents` behaviour
+        // (warn-and-continue) and fixes an equivalent latent bug that
+        // was present in the old inline `add_delta_internal` code (which
+        // `?`-propagated and lost the same events).
+        match self
+            .applier
             .context_client
             .update_dag_heads(&self.applier.context_id, heads.clone())
-            .map_err(|e| eyre::eyre!("Failed to update dag_heads in database: {}", e))?;
-        debug!(
-            context_id = %self.applier.context_id,
-            new_heads = ?heads,
-            "Updated database dag_heads"
-        );
+        {
+            Ok(()) => debug!(
+                context_id = %self.applier.context_id,
+                new_heads = ?heads,
+                "Updated database dag_heads"
+            ),
+            Err(e) => warn!(
+                ?e,
+                context_id = %self.applier.context_id,
+                "Failed to update dag_heads in database; next sync will correct it"
+            ),
+        }
 
-        Ok(forwarded_events)
+        forwarded_events
     }
 
     /// Check if a delta has been applied to the DAG
