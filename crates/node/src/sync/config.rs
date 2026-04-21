@@ -87,6 +87,9 @@ pub struct SyncConfig {
 
     /// Maximum delta gap before falling back to full resync
     pub delta_sync_threshold: usize,
+
+    /// Max concurrent peer probes in `find_peer_with_state`.
+    pub peer_state_probe_concurrency: usize,
 }
 
 impl Default for SyncConfig {
@@ -98,6 +101,7 @@ impl Default for SyncConfig {
             max_concurrent: DEFAULT_MAX_CONCURRENT_SYNCS,
             snapshot_chunk_size: DEFAULT_SNAPSHOT_CHUNK_SIZE,
             delta_sync_threshold: DEFAULT_DELTA_SYNC_THRESHOLD,
+            peer_state_probe_concurrency: DEFAULT_PEER_STATE_PROBE_CONCURRENCY,
         }
     }
 }

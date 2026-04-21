@@ -632,7 +632,9 @@ impl SyncManager {
         };
 
         let timeout_budget = self.sync_config.timeout / 6;
-        let concurrency = super::config::DEFAULT_PEER_STATE_PROBE_CONCURRENCY
+        let concurrency = self
+            .sync_config
+            .peer_state_probe_concurrency
             .min(peers.len())
             .max(1);
 
@@ -643,6 +645,15 @@ impl SyncManager {
             "Probing peers for state in parallel"
         );
 
+        // Each probe opens a P2P stream, sends one `DagHeadsRequest`, and
+        // reads the response. When we find a peer with state and return, the
+        // remaining in-flight probes are dropped without sending a close
+        // frame; libp2p's idle-timeout handles the cleanup, and the peer may
+        // log a write-error if it was mid-response. This is an accepted
+        // trade-off — the probe is read-only on the local node, so there is
+        // no partial state to unwind, and adding an explicit graceful-close
+        // path would require async work in `Drop`, which Rust does not
+        // support cleanly.
         let mut probes = stream::iter(peers.iter().copied())
             .map(|peer_id| async move {
                 let outcome = async {
@@ -675,15 +686,16 @@ impl SyncManager {
                         // Peer has state if root_hash is not zeros (dag_heads may
                         // be empty for migrated/legacy contexts).
                         let has_state = *root_hash != [0; 32];
+                        let heads_count = dag_heads.len();
                         debug!(
                             %context_id,
                             %peer_id,
-                            heads_count = dag_heads.len(),
+                            heads_count,
                             %root_hash,
                             has_state,
                             "Received DAG heads from peer"
                         );
-                        Ok(Some(has_state))
+                        Ok(Some((has_state, heads_count, root_hash)))
                     } else {
                         Ok(None)
                     }
@@ -696,15 +708,17 @@ impl SyncManager {
 
         while let Some((peer_id, outcome)) = probes.next().await {
             match outcome {
-                Ok(Some(true)) => {
+                Ok(Some((true, heads_count, root_hash))) => {
                     info!(
                         %context_id,
                         %peer_id,
+                        heads_count,
+                        %root_hash,
                         "Found peer with state for bootstrapping"
                     );
                     return Ok(peer_id);
                 }
-                Ok(Some(false)) => {
+                Ok(Some((false, _, _))) => {
                     debug!(%context_id, %peer_id, "peer reported no state");
                 }
                 Ok(None) => {
