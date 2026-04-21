@@ -41,9 +41,12 @@ pub struct AddDeltaResult {
 pub struct MissingParentsResult {
     /// IDs of deltas that are truly missing (need to be requested from network)
     pub missing_ids: Vec<[u8; 32]>,
-    /// IDs of ALL deltas cascaded during the check, regardless of whether
-    /// they carry events. Callers can use this to detect whether the current
-    /// delta was applied via cascade without re-acquiring the DAG lock.
+    /// IDs of ALL deltas newly applied during the check, regardless of
+    /// whether they carry events. Includes both cascade-from-pending
+    /// applications and parents loaded from the DB and applied via
+    /// `ParentPlan::Add`. Callers can use this to detect whether the
+    /// current delta was applied as a side effect of the call without
+    /// re-acquiring the DAG lock.
     pub cascaded_ids: Vec<[u8; 32]>,
     /// Subset of `cascaded_ids` that have events to forward to handlers,
     /// as (delta_id, events_data) pairs.
@@ -1014,7 +1017,7 @@ impl DeltaStore {
             // Parents we just transitioned from `applied: false` → applied
             // in the DAG via `add_delta`. Their DB records still say
             // `applied: false`; phase 3 persists the update alongside any
-            // cascaded children. Without this, `load_persisted_deltas_into_dag`
+            // cascaded children. Without this, `load_persisted_deltas`
             // re-runs WASM for these parents on every restart (#2187).
             let mut added_parent_bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = Vec::new();
 
@@ -1040,27 +1043,31 @@ impl DeltaStore {
                         parent_id,
                         dag_delta,
                     } => {
-                        // Clone before `add_delta` consumes — on
-                        // actually-applied (`Ok(true)`) we hand the body
-                        // to phase 3 to rewrite the DB record as
-                        // `applied: true` and forward any pre-stored
-                        // events (same treatment as cascaded children).
+                        // `add_delta` consumes `dag_delta`, so we can't
+                        // reuse the value after the call. Instead of
+                        // pre-cloning (which pays the payload-sized clone
+                        // on every iteration even for Ok(false) / Err
+                        // where we don't need the body), we re-fetch
+                        // from the DAG after `Ok(true)` — `add_delta`
+                        // stores a clone at insert time, so the body is
+                        // already there and the lock is still ours.
                         //
                         // `Ok(false)` means either a duplicate (already
                         // in the DAG; nothing changed) OR the delta went
                         // pending because its own ancestors are missing
                         // from the DAG. Persisting `applied: true` in
                         // the latter case would be catastrophic:
-                        // `load_persisted_deltas_into_dag` on restart
-                        // takes the `restore_applied_delta` path for
-                        // `applied=true` records, which skips WASM —
-                        // the delta's actions would never run on this
-                        // node, causing state divergence.
-                        let body_for_persist = dag_delta.clone();
+                        // `load_persisted_deltas` on restart takes the
+                        // `restore_applied_delta` path for `applied=true`
+                        // records, which skips WASM — the delta's actions
+                        // would never run on this node, causing state
+                        // divergence.
                         match dag.add_delta(dag_delta, &*self.applier).await {
                             Ok(true) => {
                                 any_parent_added = true;
-                                added_parent_bodies.push((parent_id, body_for_persist));
+                                if let Some(body) = dag.get_delta(&parent_id) {
+                                    added_parent_bodies.push((parent_id, body.clone()));
+                                }
                             }
                             Ok(false) => {
                                 tracing::debug!(
@@ -1109,7 +1116,7 @@ impl DeltaStore {
 
             let pending_after: HashSet<[u8; 32]> =
                 dag.get_pending_delta_ids().into_iter().collect();
-            let cascaded_ids: Vec<[u8; 32]> =
+            let mut cascaded_ids: Vec<[u8; 32]> =
                 pending_before.difference(&pending_after).copied().collect();
 
             // Clone bodies now so DB I/O in phase 3 runs without the lock.
@@ -1117,6 +1124,12 @@ impl DeltaStore {
                 .iter()
                 .filter_map(|cid| dag.get_delta(cid).map(|d| (*cid, d.clone())))
                 .collect();
+
+            // Add-path parents are also newly-applied deltas; include
+            // their IDs so `cascaded_events` stays a subset of
+            // `cascaded_ids` (documented invariant of
+            // `MissingParentsResult`).
+            cascaded_ids.extend(added_parent_bodies.iter().map(|(id, _)| *id));
 
             (
                 any_parent_added,
@@ -1151,7 +1164,7 @@ impl DeltaStore {
             // had events pre-persisted on this node, this means its
             // handlers run on the next `execute_cascaded_events` call.
             // For one without events, it simply flips `applied: false →
-            // true` so restart's `load_persisted_deltas_into_dag` stops
+            // true` so restart's `load_persisted_deltas` stops
             // re-running its WASM (#2187).
             let mut bodies_to_persist = added_parent_bodies;
             bodies_to_persist.extend(cascaded_bodies);
@@ -1233,7 +1246,7 @@ impl DeltaStore {
             );
 
             let mut handle = self.applier.context_client.datastore_handle();
-            for (cid, cascaded_delta) in applied_bodies {
+            for (cid, applied_delta) in applied_bodies {
                 let db_key =
                     calimero_store::key::ContextDagDelta::new(self.applier.context_id, *cid);
 
@@ -1246,7 +1259,7 @@ impl DeltaStore {
                             context_id = %self.applier.context_id,
                             delta_id = ?cid,
                             has_events = stored.events.is_some(),
-                            "Retrieved stored delta for cascaded delta"
+                            "Retrieved stored delta for applied delta"
                         );
                         stored.events
                     }
@@ -1254,7 +1267,7 @@ impl DeltaStore {
                         debug!(
                             context_id = %self.applier.context_id,
                             delta_id = ?cid,
-                            "Cascaded delta not found in database (was never persisted)"
+                            "Applied delta not found in database (was never persisted)"
                         );
                         None
                     }
@@ -1263,20 +1276,20 @@ impl DeltaStore {
                             ?e,
                             context_id = %self.applier.context_id,
                             delta_id = ?cid,
-                            "Failed to query database for cascaded delta"
+                            "Failed to query database for applied delta"
                         );
                         None
                     }
                 };
 
-                let serialized_actions = match borsh::to_vec(&cascaded_delta.payload) {
+                let serialized_actions = match borsh::to_vec(&applied_delta.payload) {
                     Ok(s) => s,
                     Err(e) => {
                         warn!(
                             ?e,
                             context_id = %self.applier.context_id,
                             delta_id = ?cid,
-                            "Failed to serialize cascaded delta actions, skipping persistence"
+                            "Failed to serialize applied delta actions, skipping persistence"
                         );
                         continue;
                     }
@@ -1288,11 +1301,11 @@ impl DeltaStore {
 
                 let record = calimero_store::types::ContextDagDelta {
                     delta_id: *cid,
-                    parents: cascaded_delta.parents.clone(),
+                    parents: applied_delta.parents.clone(),
                     actions: serialized_actions,
-                    hlc: cascaded_delta.hlc,
+                    hlc: applied_delta.hlc,
                     applied: true,
-                    expected_root_hash: cascaded_delta.expected_root_hash,
+                    expected_root_hash: applied_delta.expected_root_hash,
                     events: None, // Cleared — caller will run handlers.
                 };
                 if let Err(e) = handle.put(&db_key, &record) {
@@ -1300,13 +1313,13 @@ impl DeltaStore {
                         ?e,
                         context_id = %self.applier.context_id,
                         delta_id = ?cid,
-                        "Failed to persist cascaded delta to database"
+                        "Failed to persist applied delta to database"
                     );
                 } else if stored_events.is_some() {
                     info!(
                         context_id = %self.applier.context_id,
                         delta_id = ?cid,
-                        "Persisted cascaded delta - has events for handler execution"
+                        "Persisted applied delta - has events for handler execution"
                     );
                 }
             }
