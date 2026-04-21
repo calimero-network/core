@@ -58,15 +58,16 @@ pub const DEFAULT_MESH_RETRIES_UNINITIALIZED: u32 = 10;
 pub const DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED: u64 = 1_000;
 
 /// Max concurrent peer probes when looking for a peer with state.
-/// Each probe is one small round-trip, so we can race many in parallel;
-/// the cap only matters when a context has a large mesh.
-pub const DEFAULT_PEER_STATE_PROBE_CONCURRENCY: usize = 16;
+/// Typical meshes are 2-20 peers; a pool of 4 is enough parallelism
+/// that the tail is bounded by the fastest responder, without racing
+/// the whole mesh simultaneously on larger deployments.
+pub const DEFAULT_PEER_STATE_PROBE_CONCURRENCY: usize = 4;
 
 /// Max concurrent full sync attempts in the random-peer fallback.
-/// Kept small because each attempt is a heavy sync; the goal is to
-/// avoid a single slow/dead peer stalling the whole retry chain,
-/// not to hammer every peer at once.
-pub const DEFAULT_PEER_SYNC_CONCURRENCY: usize = 3;
+/// Each attempt is heavy (full sync protocol), so we keep this low:
+/// the goal is to avoid a single slow/dead peer stalling the whole
+/// retry chain, not to run parallel syncs against multiple peers.
+pub const DEFAULT_PEER_SYNC_CONCURRENCY: usize = 2;
 
 /// Synchronization configuration.
 ///
