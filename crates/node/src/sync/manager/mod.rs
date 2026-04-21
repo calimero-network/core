@@ -492,8 +492,42 @@ impl SyncManager {
             // with a 2-second grace period, so namespace peers are available even
             // when the context-specific gossipsub mesh is still being built.
             // Direct-stream context sync works over any connected P2P peer.
+            //
+            // `get_context_group_id` returns the context's IMMEDIATE owning group,
+            // which for a context owned by a subgroup is the subgroup id, not the
+            // namespace root. Only namespace roots ever have `ns/<id>` topics
+            // subscribed (see `NodeClient::subscribe_namespace`), so we must walk
+            // up the parent chain to find the root before computing the fallback
+            // topic. Without this walk, contexts owned by subgroups always get 0
+            // peers from the fallback and sync fails during the 5-10s cold-start
+            // window. `resolve_namespace` on a root group is a no-op (returns the
+            // same id), so behaviour for namespace-root-owned contexts is
+            // unchanged.
             if let Ok(Some(group_id)) = self.context_client.get_context_group_id(&context_id) {
-                let ns_topic = TopicHash::from_raw(format!("ns/{}", hex::encode(group_id)));
+                let store = self.context_client.datastore_handle().into_inner();
+                let ns_id_bytes = calimero_context::group_store::resolve_namespace(
+                    &store,
+                    &calimero_context_config::types::ContextGroupId::from(group_id),
+                )
+                .map(|id| id.to_bytes())
+                .unwrap_or_else(|err| {
+                    // Errors here are rare and always indicate something worth
+                    // investigating: store I/O failure or a circular parent chain
+                    // exceeding MAX_NAMESPACE_DEPTH. Surface them before falling
+                    // back so this debugging-focused code path doesn't hide real
+                    // data-integrity bugs. Falling back to the immediate owning
+                    // group preserves pre-fix behaviour rather than aborting the
+                    // whole sync attempt.
+                    warn!(
+                        %context_id,
+                        %err,
+                        "failed to resolve namespace root for fallback topic; \
+                         using immediate group id as best-effort"
+                    );
+                    group_id
+                });
+
+                let ns_topic = TopicHash::from_raw(format!("ns/{}", hex::encode(ns_id_bytes)));
                 let ns_peers = self.network_client.mesh_peers(ns_topic).await;
                 if !ns_peers.is_empty() {
                     info!(

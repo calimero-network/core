@@ -145,6 +145,9 @@ jobs:
           - workflow: group-subgroup
             file: workflows/group-subgroup.yml
             app: e2e-kv-store
+          - workflow: group-subgroup-cold-sync
+            file: workflows/group-subgroup-cold-sync.yml
+            app: e2e-kv-store
           - workflow: group-membership
             file: workflows/group-membership.yml
             app: e2e-kv-store
