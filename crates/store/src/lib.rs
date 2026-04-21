@@ -50,12 +50,8 @@ impl Store {
     /// Backed by `Database::approximate_size` — for RocksDB this is sampled
     /// from SST metadata (sub-millisecond, no scan); in-memory / default
     /// backends fall back to summing `key+value` lengths.
-    pub fn approximate_size(
-        &self,
-        col: Column,
-        start: &[u8],
-        end: &[u8],
-    ) -> EyreResult<u64> {
-        self.db.approximate_size(col, Slice::from(start), Slice::from(end))
+    pub fn approximate_size(&self, col: Column, start: &[u8], end: &[u8]) -> EyreResult<u64> {
+        self.db
+            .approximate_size(col, Slice::from(start), Slice::from(end))
     }
 }

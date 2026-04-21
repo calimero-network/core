@@ -72,12 +72,7 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     /// sums actual `key.len() + value.len()` for matching entries.
     /// Backends backed by sorted storage should override with something
     /// cheaper (RocksDB: `get_approximate_sizes_cf`).
-    fn approximate_size(
-        &self,
-        col: Column,
-        start: Slice<'_>,
-        end: Slice<'_>,
-    ) -> EyreResult<u64> {
+    fn approximate_size(&self, col: Column, start: Slice<'_>, end: Slice<'_>) -> EyreResult<u64> {
         let mut iter = self.iter(col)?;
         let mut total: u64 = 0;
         let end_bytes: Vec<u8> = end.as_ref().to_vec();

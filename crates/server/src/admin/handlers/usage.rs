@@ -16,7 +16,9 @@ use calimero_context::group_store::{
 use calimero_context_config::types::ContextGroupId;
 use calimero_server_primitives::admin::{NamespaceUsage, NamespaceUsageBytes, UsageResponse};
 use calimero_store::db::Column;
-use calimero_store::key::{NAMESPACE_GOV_HEAD_PREFIX, NAMESPACE_GOV_OP_PREFIX, NAMESPACE_IDENTITY_PREFIX};
+use calimero_store::key::{
+    NAMESPACE_GOV_HEAD_PREFIX, NAMESPACE_GOV_OP_PREFIX, NAMESPACE_IDENTITY_PREFIX,
+};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use tracing::{error, warn};
@@ -55,22 +57,24 @@ pub fn collect_usage(store: &Store) -> EyreResult<Vec<NamespaceUsage>> {
         // Only include namespaces this node actually participates in. We
         // use the stored namespace identity (set on admission) rather than
         // membership alone, matching what `list_namespaces` reports.
-        let Some((node_identity, _, _)) = resolve_namespace_identity(store, &group_id)?
-        else {
+        let Some((node_identity, _, _)) = resolve_namespace_identity(store, &group_id)? else {
             continue;
         };
         if !check_group_membership(store, &group_id, &node_identity)? {
             continue;
         }
 
-        let context_ids = enumerate_group_contexts(store, &group_id, 0, usize::MAX)
-            .unwrap_or_default();
+        let context_ids =
+            enumerate_group_contexts(store, &group_id, 0, usize::MAX).unwrap_or_default();
         let context_count = u32::try_from(context_ids.len()).unwrap_or(u32::MAX);
         let member_count =
             u32::try_from(count_group_members(store, &group_id).unwrap_or(0)).unwrap_or(u32::MAX);
-        let subgroup_count =
-            u32::try_from(list_child_groups(store, &group_id).unwrap_or_default().len())
-                .unwrap_or(u32::MAX);
+        let subgroup_count = u32::try_from(
+            list_child_groups(store, &group_id)
+                .unwrap_or_default()
+                .len(),
+        )
+        .unwrap_or(u32::MAX);
 
         let mut state: u64 = 0;
         let mut private_state: u64 = 0;
@@ -220,11 +224,7 @@ mod tests {
         assert_eq!(end, expected_end);
     }
 
-    fn seed_namespace(
-        store: &Store,
-        namespace_id: ContextGroupId,
-        node_identity_sk: &PrivateKey,
-    ) {
+    fn seed_namespace(store: &Store, namespace_id: ContextGroupId, node_identity_sk: &PrivateKey) {
         let node_identity_pk = node_identity_sk.public_key();
         let meta = GroupMetaValue {
             app_key: [0xAA; 32],
@@ -244,8 +244,13 @@ mod tests {
             &[0x44; 32],
         )
         .expect("store identity");
-        add_group_member(store, &namespace_id, &node_identity_pk, GroupMemberRole::Admin)
-            .expect("add member");
+        add_group_member(
+            store,
+            &namespace_id,
+            &node_identity_pk,
+            GroupMemberRole::Admin,
+        )
+        .expect("add member");
     }
 
     fn write_state(store: &Store, context_id: ContextId, key_tag: u8, value_len: usize) {

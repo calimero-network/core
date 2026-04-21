@@ -181,12 +181,7 @@ impl Database<'_> for RocksDB {
         Ok(Iter::new(DBIterator { ready: true, iter }))
     }
 
-    fn approximate_size(
-        &self,
-        col: Column,
-        start: Slice<'_>,
-        end: Slice<'_>,
-    ) -> EyreResult<u64> {
+    fn approximate_size(&self, col: Column, start: Slice<'_>, end: Slice<'_>) -> EyreResult<u64> {
         let cf_handle = self.try_cf_handle(col)?;
         // `get_approximate_sizes_cf` samples SST metadata — no scan,
         // typically sub-millisecond. Returns an estimate (+/- compaction
