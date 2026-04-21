@@ -1114,56 +1114,111 @@ impl DeltaStore {
                 dag.get_pending_delta_ids().into_iter().collect();
             let cascaded: Vec<[u8; 32]> =
                 pending_before.difference(&pending_after).copied().collect();
+            // Capture the new heads now, before dropping the write lock, so
+            // we can push them to the database together with the cascaded
+            // delta records below.
+            let heads_after_cascade = dag.get_heads();
+            // Downgrade to read lock for delta-body lookups during persist.
             drop(dag);
 
-            // Persist each cascaded delta as applied (clearing any stored
-            // events) and forward its events for handler execution. Mirrors
-            // the cascade-handling block in `add_delta_with_events`.
+            // Persist each cascaded delta and forward its events for handler
+            // execution. The DAG is authoritative for delta body; the DB
+            // record may be absent (events=None deltas are never
+            // pre-persisted, per `add_delta_internal`) so we rebuild the
+            // full record from the DAG and only read the DB to recover any
+            // stored events. Mirrors `add_delta_with_events`'s cascade path.
             if !cascaded.is_empty() {
+                let dag = self.dag.read().await;
                 let mut handle = self.applier.context_client.datastore_handle();
                 for cid in &cascaded {
                     let db_key =
                         calimero_store::key::ContextDagDelta::new(self.applier.context_id, *cid);
-                    match handle.get(&db_key) {
-                        Ok(Some(stored)) => {
-                            if let Some(ref events_data) = stored.events {
-                                all_cascaded_events.push((*cid, events_data.clone()));
-                            }
-                            let updated = calimero_store::types::ContextDagDelta {
-                                delta_id: stored.delta_id,
-                                parents: stored.parents,
-                                actions: stored.actions,
-                                hlc: stored.hlc,
-                                applied: true,
-                                expected_root_hash: stored.expected_root_hash,
-                                events: None,
-                            };
-                            if let Err(e) = handle.put(&db_key, &updated) {
-                                tracing::warn!(
-                                    ?e,
-                                    context_id = %self.applier.context_id,
-                                    cascaded_id = ?cid,
-                                    "Failed to persist cascaded delta after parent restore"
-                                );
-                            }
-                        }
-                        Ok(None) => {
-                            tracing::debug!(
-                                context_id = %self.applier.context_id,
-                                cascaded_id = ?cid,
-                                "Cascaded delta not found in DB during parent-restore cascade"
-                            );
-                        }
+
+                    // Recover any stored events. Absent = delta went pending
+                    // without events = nothing to forward to handlers.
+                    let stored_events = match handle.get(&db_key) {
+                        Ok(Some(stored)) => stored.events,
+                        Ok(None) => None,
                         Err(e) => {
                             tracing::warn!(
                                 ?e,
                                 context_id = %self.applier.context_id,
                                 cascaded_id = ?cid,
-                                "Failed to load cascaded delta for persistence"
+                                "Failed to read DB for cascaded delta events; forwarding none"
                             );
+                            None
                         }
+                    };
+
+                    let Some(cascaded_delta) = dag.get_delta(cid) else {
+                        tracing::warn!(
+                            context_id = %self.applier.context_id,
+                            cascaded_id = ?cid,
+                            "Cascaded delta missing from DAG after try_process_pending"
+                        );
+                        continue;
+                    };
+
+                    let serialized_actions = match borsh::to_vec(&cascaded_delta.payload) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!(
+                                ?e,
+                                context_id = %self.applier.context_id,
+                                cascaded_id = ?cid,
+                                "Failed to serialize cascaded delta actions, skipping persistence"
+                            );
+                            continue;
+                        }
+                    };
+
+                    if let Some(ref events_data) = stored_events {
+                        all_cascaded_events.push((*cid, events_data.clone()));
+                    }
+
+                    let record = calimero_store::types::ContextDagDelta {
+                        delta_id: *cid,
+                        parents: cascaded_delta.parents.clone(),
+                        actions: serialized_actions,
+                        hlc: cascaded_delta.hlc,
+                        applied: true,
+                        expected_root_hash: cascaded_delta.expected_root_hash,
+                        events: None,
+                    };
+                    if let Err(e) = handle.put(&db_key, &record) {
+                        tracing::warn!(
+                            ?e,
+                            context_id = %self.applier.context_id,
+                            cascaded_id = ?cid,
+                            "Failed to persist cascaded delta after parent restore"
+                        );
                     }
                 }
+                drop(dag);
+            }
+
+            // CRITICAL: Update the database's `dag_heads` to match the
+            // in-memory DAG after our restore/cascade. Without this, the
+            // sync manager's handshake and `broadcast_heartbeat` both use
+            // stale heads, potentially asking peers for deltas we already
+            // have or missing ones we don't. Mirrors the same write in
+            // `add_delta_with_events`.
+            if let Err(e) = self
+                .applier
+                .context_client
+                .update_dag_heads(&self.applier.context_id, heads_after_cascade.clone())
+            {
+                tracing::warn!(
+                    ?e,
+                    context_id = %self.applier.context_id,
+                    "Failed to update dag_heads in database after parent-restore cascade"
+                );
+            } else {
+                tracing::debug!(
+                    context_id = %self.applier.context_id,
+                    new_heads = ?heads_after_cascade,
+                    "Updated database dag_heads after parent-restore cascade"
+                );
             }
         }
 
