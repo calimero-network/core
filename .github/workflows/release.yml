@@ -115,6 +115,12 @@ jobs:
         with:
           key: release
 
+      - name: Install libclang (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev
+
       - name: Update Bash
         if: ${{ matrix.runner == 'macos-13' || matrix.runner == 'macos-latest' }}
         run: brew install bash

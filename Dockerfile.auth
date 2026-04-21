@@ -11,6 +11,7 @@ ARG APP_NAME
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     clang \
+    libclang-dev \
     pkg-config \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
