@@ -29,6 +29,19 @@ inputs:
 runs:
   using: "composite"
   steps:
+    # `librocksdb-sys` → `bindgen 0.72` → `clang-sys` runs in runtime mode
+    # (forced on by feature unification with wasmer's bindgen 0.70), so it
+    # dlopen's libclang at build-script time. GitHub's ubuntu runners
+    # don't ship `libclang-dev` by default — install it so the shared
+    # library + symlinks are present. macOS runners use Homebrew's llvm
+    # via `.cargo/config.toml`; no apt there.
+    - name: Install libclang (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libclang-dev
+
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
       with:

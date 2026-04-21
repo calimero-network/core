@@ -8,6 +8,7 @@ FROM rust:${RUST_VERSION}-slim-bookworm AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     clang \
+    libclang-dev \
     make \
     pkg-config \
     libssl-dev \

@@ -31,6 +31,7 @@ use crate::admin::handlers::context::{
 use crate::admin::handlers::identity::generate_context_identity;
 use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
 use crate::admin::handlers::peers::get_peers_count_handler;
+use crate::admin::handlers::usage;
 use crate::config::ServerConfig;
 use crate::AdminState;
 
@@ -150,6 +151,8 @@ pub(crate) fn setup(
                 .route("/", post(sync::handler))
                 .route("/:context_id", post(sync::handler)),
         )
+        // Per-namespace usage (counts + on-disk bytes)
+        .route("/usage", get(usage::handler))
         // Network info
         .route("/peers", get(get_peers_count_handler))
         // Blob management
