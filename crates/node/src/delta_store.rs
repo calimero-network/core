@@ -50,6 +50,26 @@ pub struct MissingParentsResult {
     pub cascaded_events: Vec<([u8; 32], Vec<u8>)>,
 }
 
+/// Internal plan describing what to do with one potentially-missing parent
+/// during `get_missing_parents`. Built in the DB-lookup phase with no DAG
+/// lock held, then consumed in the write-lock phase.
+enum ParentPlan {
+    /// Parent is already marked `applied=true` in the database (typically
+    /// because *this* node authored it). Restore topology only; do not
+    /// re-apply.
+    Restore {
+        parent_id: [u8; 32],
+        dag_delta: CausalDelta<Vec<Action>>,
+        expected_root_hash: [u8; 32],
+    },
+    /// Parent is persisted but not applied. Run through `add_delta` which
+    /// executes WASM and may cascade children via `apply_pending`.
+    Add {
+        parent_id: [u8; 32],
+        dag_delta: CausalDelta<Vec<Action>>,
+    },
+}
+
 /// Applier that applies actions to WASM storage via ContextClient
 ///
 /// Supports two application modes:
@@ -966,23 +986,9 @@ impl DeltaStore {
         let potentially_missing = dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT);
         drop(dag); // Release lock before DB access
 
-        // Plan describing what to do with one potentially-missing parent.
-        // Built without any DAG lock held so the subsequent DAG mutations
-        // can run in one write-lock scope (see phase 2 below).
-        enum ParentPlan {
-            Restore {
-                parent_id: [u8; 32],
-                dag_delta: CausalDelta<Vec<Action>>,
-                expected_root_hash: [u8; 32],
-            },
-            Add {
-                parent_id: [u8; 32],
-                dag_delta: CausalDelta<Vec<Action>>,
-            },
-        }
-
         // Phase 1: classify each potentially-missing parent via a DB lookup.
         // Runs with no DAG lock held. Output feeds the write-lock scope below.
+        // See `ParentPlan` above for what each variant represents.
         let handle = self.applier.context_client.datastore_handle();
         let mut actually_missing = Vec::new();
         let mut plans: Vec<ParentPlan> = Vec::new();
