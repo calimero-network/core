@@ -584,31 +584,19 @@ impl SyncManager {
             }
         }
 
-        // Normal sync: race a small pool of peers so that a single slow or
-        // dead peer no longer serializes the entire retry chain. The first
-        // successful attempt wins; remaining in-flight attempts are cancelled
-        // when the stream is dropped.
-        let concurrency = super::config::DEFAULT_PEER_SYNC_CONCURRENCY
-            .min(peers.len())
-            .max(1);
-
-        debug!(
-            %context_id,
-            peer_count = peers.len(),
-            concurrency,
-            "Using parallel peer selection for sync"
-        );
-
-        let mut shuffled = peers.clone();
-        shuffled.shuffle(&mut rand::thread_rng());
-
-        let mut attempts = stream::iter(shuffled.into_iter())
-            .map(|peer_id| self.initiate_sync(context_id, peer_id))
-            .buffer_unordered(concurrency);
-
-        while let Some(result) = attempts.next().await {
-            if let Ok(success) = result {
-                return Ok(success);
+        // Normal sync: try peers serially. Parallelising `initiate_sync` for
+        // the same context is unsafe — the sync protocol mutates per-context
+        // state (sync-in-progress marker at snapshot.rs:581, sync sessions at
+        // state.rs:235, snapshot-page cleanup in `request_and_apply_snapshot_pages`
+        // which documents "assumes no concurrent writes") and futures cancelled
+        // mid-flight can leak a sync session into the DashMap, causing
+        // `should_buffer_delta` to return true permanently. Tail-latency
+        // benefit is still obtained from the parallel probe above, which
+        // narrows this loop to "try a known-good peer first".
+        debug!(%context_id, "Using random peer selection for sync");
+        for peer_id in peers.choose_multiple(&mut rand::thread_rng(), peers.len()) {
+            if let Ok(result) = self.initiate_sync(context_id, *peer_id).await {
+                return Ok(result);
             }
         }
 
