@@ -90,7 +90,6 @@ steps:
       - sync-test-node-1
       - sync-test-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # ============================================
@@ -124,7 +123,6 @@ steps:
       - sync-test-node-1
       - sync-test-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Verify both nodes see both keys
@@ -181,7 +179,6 @@ steps:
       - sync-test-node-2
       - sync-test-node-3
     timeout: 90
-    check_interval: 3
     trigger_sync: true
 
   # Sandi must see the 2 existing entries (snapshot sync)
@@ -240,7 +237,6 @@ steps:
       - sync-test-node-2
       - sync-test-node-3
     timeout: 90
-    check_interval: 3
     trigger_sync: true
 
   # ============================================
@@ -344,7 +340,6 @@ steps:
       - sync-test-node-2
       - sync-test-node-3
     timeout: 90
-    check_interval: 3
     trigger_sync: true
 
   # Matea reads the invitation from her node — this is the critical test

@@ -58,7 +58,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # ============================================
@@ -93,7 +92,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 10: Verify User 2 can read the value

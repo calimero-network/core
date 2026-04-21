@@ -79,7 +79,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 8: Verify text on both nodes
@@ -127,7 +126,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 10: Verify both nodes see "Hello World"
@@ -176,7 +174,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 12: Verify both nodes see "Hello World!"
@@ -225,7 +222,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 14: Verify both nodes see "Hello !"
@@ -274,7 +270,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 16: Verify both nodes see "Hello CRDT!"
@@ -324,7 +319,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 18: Verify both nodes see "Hello Calimero!"
@@ -414,7 +408,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 23: Verify title changed on both nodes
@@ -474,7 +467,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 26: Verify document is empty on both nodes
@@ -548,7 +540,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 29: Verify both nodes converge to same text (CRDT property)

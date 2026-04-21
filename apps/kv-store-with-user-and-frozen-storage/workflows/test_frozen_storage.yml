@@ -89,7 +89,6 @@ steps:
       - new-calimero-node-1
       - new-calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 11: Node2: get frozen storage
@@ -132,7 +131,6 @@ steps:
       - new-calimero-node-1
       - new-calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 13: Node1: get frozen storage (that was set by Node2)

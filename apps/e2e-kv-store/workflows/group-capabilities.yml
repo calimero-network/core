@@ -151,7 +151,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node-2 reads from context
