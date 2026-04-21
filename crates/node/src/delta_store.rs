@@ -1040,16 +1040,34 @@ impl DeltaStore {
                         parent_id,
                         dag_delta,
                     } => {
-                        // Clone before `add_delta` consumes — on success
-                        // we hand the body to phase 3 to rewrite the DB
-                        // record as `applied: true` and forward any
-                        // pre-stored events (same treatment as cascaded
-                        // children).
+                        // Clone before `add_delta` consumes — on
+                        // actually-applied (`Ok(true)`) we hand the body
+                        // to phase 3 to rewrite the DB record as
+                        // `applied: true` and forward any pre-stored
+                        // events (same treatment as cascaded children).
+                        //
+                        // `Ok(false)` means either a duplicate (already
+                        // in the DAG; nothing changed) OR the delta went
+                        // pending because its own ancestors are missing
+                        // from the DAG. Persisting `applied: true` in
+                        // the latter case would be catastrophic:
+                        // `load_persisted_deltas_into_dag` on restart
+                        // takes the `restore_applied_delta` path for
+                        // `applied=true` records, which skips WASM —
+                        // the delta's actions would never run on this
+                        // node, causing state divergence.
                         let body_for_persist = dag_delta.clone();
                         match dag.add_delta(dag_delta, &*self.applier).await {
-                            Ok(_) => {
+                            Ok(true) => {
                                 any_parent_added = true;
                                 added_parent_bodies.push((parent_id, body_for_persist));
+                            }
+                            Ok(false) => {
+                                tracing::debug!(
+                                    context_id = %self.applier.context_id,
+                                    parent_id = ?parent_id,
+                                    "ParentPlan::Add did not apply (duplicate or went pending); DB record stays applied=false"
+                                );
                             }
                             Err(e) => {
                                 tracing::warn!(
