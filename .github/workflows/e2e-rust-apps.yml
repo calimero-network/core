@@ -198,6 +198,34 @@ jobs:
           attempt=1
           success=false
 
+          # Start a background watcher that streams `docker logs -f` from
+          # each node container to an artifact file as soon as it appears.
+          # A post-run `docker logs` loop does not work reliably on current
+          # merobox because the runtime containers are torn down as part of
+          # `merobox bootstrap run`'s exit path (regardless of
+          # `stop_all_nodes: false`), leaving only the init-container names
+          # behind by the time the shell regains control. The watcher
+          # captures logs *while* containers are live, so post-run cleanup
+          # can't remove what we've already written to disk.
+          LOGDIR="$GITHUB_WORKSPACE/docker-logs"
+          WATCHER_STATE_DIR="$(mktemp -d)"
+          (
+              while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
+                  # Follow containers labeled by merobox, excluding the
+                  # short-lived init containers (`*-init`).
+                  for c in $(docker ps --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null | grep -v -- '-init$' || true); do
+                      mark="$WATCHER_STATE_DIR/$c"
+                      if [ ! -f "$mark" ]; then
+                          touch "$mark"
+                          echo "[log-watcher] following $c"
+                          docker logs -f "$c" > "$LOGDIR/${{ matrix.workflow }}-${c}.log" 2>&1 &
+                      fi
+                  done
+                  sleep 1
+              done
+          ) &
+          WATCHER_PID=$!
+
           while [ $attempt -le $max_attempts ]; do
               if [ $attempt -gt 1 ]; then
                   merobox stop --all || true
@@ -211,16 +239,17 @@ jobs:
                   --e2e-mode; then
                   success=true
                   break
-              else
-                  echo "Collecting Docker logs for ${{ matrix.workflow }} attempt $attempt"
-                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${{ matrix.workflow }}-attempt${attempt}-${container}.log" 2>&1 || true
-                      fi
-                  done
-                  attempt=$((attempt + 1))
               fi
+              attempt=$((attempt + 1))
           done
+
+          # Signal the watcher to stop and give `docker logs -f` followers
+          # a moment to flush their final output.
+          touch "$WATCHER_STATE_DIR/stop"
+          sleep 2
+          kill "$WATCHER_PID" 2>/dev/null || true
+          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
 
           merobox stop --all || true
           merobox nuke --force || true
