@@ -128,6 +128,19 @@ A TEE fleet node calls <code>POST /admin-api/tee/fleet-join</code>. The handler 
 From this point, every new context in the group is auto-joined by the core handler. The
 <code>mero-tee</code> sidecar's per-group polling loop becomes redundant.
 </p>
+<p>
+<b>Policy scope — namespace, not per-group.</b> Because auto-follow propagates fleet-node
+membership down into subgroups without a second admission check, any TEE admission policy set on
+a subgroup would be inert. As of 2026-04-21 this is made explicit: the canonical
+<code>TeeAdmissionPolicy</code> lives on the namespace root only.
+<code>read_tee_admission_policy</code> in <code>group_store::tee</code> resolves its argument to
+the namespace root before reading, and both the write handler
+(<code>handlers::set_tee_admission_policy</code>) and the apply path in
+<code>group_store::apply_group_op_mutations</code> refuse a <code>TeeAdmissionPolicySet</code>
+targeting a subgroup. Subgroup policy bytes in any legacy op logs are ignored. A deferred
+follow-up adds a drift guard that validates the root policy against Calimero's canonical fleet
+measurements.
+</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════

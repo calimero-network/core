@@ -2170,6 +2170,130 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
     assert!(!is_quote_hash_used(&store, &gid, &quote_b).unwrap());
 }
 
+fn append_tee_policy_op(store: &Store, group: &ContextGroupId, seq: u64, mrtd: &str) {
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let signer_sk = PrivateKey::random(&mut rng);
+    let op = SignedGroupOp::sign(
+        &signer_sk,
+        group.to_bytes(),
+        vec![],
+        [0u8; 32],
+        seq,
+        GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec![mrtd.to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned()],
+            accept_mock: false,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(store, group, seq, &borsh::to_vec(&op).unwrap()).unwrap();
+}
+
+#[test]
+fn tee_policy_lookup_from_subgroup_returns_root() {
+    // Policy set on the root — a lookup via a nested subgroup resolves up
+    // the parent chain and returns the root's policy. Core of the
+    // namespace-scoped policy decision (see
+    // project_subgroup_policy_decision.md).
+    let store = test_store();
+    let root = ContextGroupId::from([0xE0; 32]);
+    let child = ContextGroupId::from([0xE1; 32]);
+    let grandchild = ContextGroupId::from([0xE2; 32]);
+
+    nest_group(&store, &root, &child).unwrap();
+    nest_group(&store, &child, &grandchild).unwrap();
+    append_tee_policy_op(&store, &root, 1, "mrtd-root");
+
+    for gid in [root, child, grandchild] {
+        let p = read_tee_admission_policy(&store, &gid)
+            .unwrap()
+            .expect("policy resolved via root");
+        assert_eq!(p.allowed_mrtd, vec!["mrtd-root".to_owned()]);
+    }
+}
+
+#[test]
+fn tee_policy_lookup_from_subgroup_ignores_subgroup_own_bytes() {
+    // A subgroup carrying a stale policy op in its own log (e.g. legacy
+    // data written before we started rejecting subgroup-scoped policies)
+    // must NOT be returned. The reader walks to the root; the root has
+    // no policy, so the result is None.
+    let store = test_store();
+    let root = ContextGroupId::from([0xF0; 32]);
+    let child = ContextGroupId::from([0xF1; 32]);
+
+    nest_group(&store, &root, &child).unwrap();
+    append_tee_policy_op(&store, &child, 1, "mrtd-subgroup-ignored");
+
+    assert!(
+        read_tee_admission_policy(&store, &child).unwrap().is_none(),
+        "subgroup's own policy bytes must be ignored"
+    );
+    assert!(read_tee_admission_policy(&store, &root).unwrap().is_none());
+}
+
+#[test]
+fn tee_policy_lookup_on_root_without_policy_is_none() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xC0; 32]);
+    assert!(read_tee_admission_policy(&store, &root).unwrap().is_none());
+}
+
+#[test]
+fn apply_tee_policy_op_on_subgroup_rejected() {
+    // Even a signed, otherwise-valid TeeAdmissionPolicySet op targeting a
+    // subgroup must be refused at apply time. Reader resolves to root, so
+    // accepting the op would create dead data; rejecting it keeps state
+    // aligned with the decision that policies are namespace-scoped.
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let root = ContextGroupId::from([0xB0; 32]);
+    let child = ContextGroupId::from([0xB1; 32]);
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    add_group_member(&store, &root, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &child, &admin_pk, GroupMemberRole::Admin).unwrap();
+    nest_group(&store, &root, &child).unwrap();
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        child.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned()],
+            accept_mock: false,
+        },
+    )
+    .unwrap();
+
+    let err = apply_local_signed_group_op(&store, &op).expect_err("apply on subgroup must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("namespace-scoped") || msg.contains("root"),
+        "error should mention namespace scoping, got: {msg}"
+    );
+}
+
 // -----------------------------------------------------------------------
 // resolve_group_signing_key — ancestor hierarchy walk tests
 // -----------------------------------------------------------------------

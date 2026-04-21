@@ -48,6 +48,18 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                 bail!("group '{group_id:?}' not found");
             }
 
+            // TEE admission policies are namespace-scoped. Reject attempts to
+            // set one on a subgroup — callers must target the namespace root.
+            // The policy a subgroup "inherits" is whatever is set on the root;
+            // see project_subgroup_policy_decision.md.
+            if let Some(parent) = group_store::get_parent_group(&self.datastore, &group_id)? {
+                let root = group_store::resolve_namespace(&self.datastore, &group_id)?;
+                bail!(
+                    "TEE admission policy is namespace-scoped; set it on the namespace root \
+                     '{root:?}' instead of subgroup '{group_id:?}' (parent: '{parent:?}')"
+                );
+            }
+
             group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
 
             if signing_key.is_none() {
