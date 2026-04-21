@@ -584,12 +584,31 @@ impl SyncManager {
             }
         }
 
-        // Normal sync: try all peers until we find one that works
-        // (for initialized nodes or fallback when we can't find a peer with state)
-        debug!(%context_id, "Using random peer selection for sync");
-        for peer_id in peers.choose_multiple(&mut rand::thread_rng(), peers.len()) {
-            if let Ok(result) = self.initiate_sync(context_id, *peer_id).await {
-                return Ok(result);
+        // Normal sync: race a small pool of peers so that a single slow or
+        // dead peer no longer serializes the entire retry chain. The first
+        // successful attempt wins; remaining in-flight attempts are cancelled
+        // when the stream is dropped.
+        let concurrency = super::config::DEFAULT_PEER_SYNC_CONCURRENCY
+            .min(peers.len())
+            .max(1);
+
+        debug!(
+            %context_id,
+            peer_count = peers.len(),
+            concurrency,
+            "Using parallel peer selection for sync"
+        );
+
+        let mut shuffled = peers.clone();
+        shuffled.shuffle(&mut rand::thread_rng());
+
+        let mut attempts = stream::iter(shuffled.into_iter())
+            .map(|peer_id| self.initiate_sync(context_id, peer_id))
+            .buffer_unordered(concurrency);
+
+        while let Some(result) = attempts.next().await {
+            if let Ok(success) = result {
+                return Ok(success);
             }
         }
 
@@ -601,6 +620,10 @@ impl SyncManager {
     /// This is critical for bootstrapping newly joined nodes. Without this,
     /// uninitialized nodes may query other uninitialized nodes, resulting in
     /// all nodes remaining uninitialized.
+    ///
+    /// Peers are probed concurrently so a single slow/unreachable peer no
+    /// longer stalls the entire discovery. The first peer to report state
+    /// wins and remaining probes are cancelled when this function returns.
     async fn find_peer_with_state(
         &self,
         context_id: ContextId,
@@ -620,82 +643,87 @@ impl SyncManager {
             bail!("no owned identities found for context: {}", context_id);
         };
 
-        // Query peers to find one with state
-        for peer_id in peers {
-            debug!(%context_id, %peer_id, "Querying peer for state");
+        let timeout_budget = self.sync_config.timeout / 6;
+        let concurrency = super::config::DEFAULT_PEER_STATE_PROBE_CONCURRENCY
+            .min(peers.len())
+            .max(1);
 
-            // Try to open stream and request DAG heads
-            let stream_result = self.network_client.open_stream(*peer_id).await;
-            let mut stream = match stream_result {
-                Ok(s) => s,
-                Err(e) => {
-                    debug!(%context_id, %peer_id, error = %e, "Failed to open stream to peer");
-                    continue;
+        debug!(
+            %context_id,
+            peer_count = peers.len(),
+            concurrency,
+            "Probing peers for state in parallel"
+        );
+
+        let mut probes = stream::iter(peers.iter().copied())
+            .map(|peer_id| async move {
+                let outcome = async {
+                    let mut stream = self.network_client.open_stream(peer_id).await?;
+
+                    let request_msg = StreamMessage::Init {
+                        context_id,
+                        party_id: our_identity,
+                        payload: InitPayload::DagHeadsRequest { context_id },
+                        next_nonce: rand::thread_rng().gen(),
+                    };
+
+                    self.send(&mut stream, &request_msg, None).await?;
+
+                    let Some(response) =
+                        super::stream::recv(&mut stream, None, timeout_budget).await?
+                    else {
+                        return Ok::<_, eyre::Error>(None);
+                    };
+
+                    if let StreamMessage::Message {
+                        payload:
+                            MessagePayload::DagHeadsResponse {
+                                dag_heads,
+                                root_hash,
+                            },
+                        ..
+                    } = response
+                    {
+                        // Peer has state if root_hash is not zeros (dag_heads may
+                        // be empty for migrated/legacy contexts).
+                        let has_state = *root_hash != [0; 32];
+                        debug!(
+                            %context_id,
+                            %peer_id,
+                            heads_count = dag_heads.len(),
+                            %root_hash,
+                            has_state,
+                            "Received DAG heads from peer"
+                        );
+                        Ok(Some(has_state))
+                    } else {
+                        Ok(None)
+                    }
                 }
-            };
+                .await;
 
-            // Send DAG heads request
-            let request_msg = StreamMessage::Init {
-                context_id,
-                party_id: our_identity,
-                payload: InitPayload::DagHeadsRequest { context_id },
-                next_nonce: {
-                    use rand::Rng;
-                    rand::thread_rng().gen()
-                },
-            };
+                (peer_id, outcome)
+            })
+            .buffer_unordered(concurrency);
 
-            if let Err(e) = self.send(&mut stream, &request_msg, None).await {
-                debug!(%context_id, %peer_id, error = %e, "Failed to send DAG heads request");
-                continue;
-            }
-
-            // Receive response with short timeout
-            let timeout_budget = self.sync_config.timeout / 6;
-            let response = match super::stream::recv(&mut stream, None, timeout_budget).await {
-                Ok(Some(resp)) => resp,
-                Ok(None) => {
-                    debug!(%context_id, %peer_id, "No response from peer");
-                    continue;
-                }
-                Err(e) => {
-                    debug!(%context_id, %peer_id, error = %e, "Failed to receive response");
-                    continue;
-                }
-            };
-
-            // Check if peer has state
-            if let StreamMessage::Message {
-                payload:
-                    MessagePayload::DagHeadsResponse {
-                        dag_heads,
-                        root_hash,
-                    },
-                ..
-            } = response
-            {
-                // Peer has state if root_hash is not zeros
-                // (even if dag_heads is empty due to migration/legacy contexts)
-                let has_state = *root_hash != [0; 32];
-
-                debug!(
-                    %context_id,
-                    %peer_id,
-                    heads_count = dag_heads.len(),
-                    %root_hash,
-                    has_state,
-                    "Received DAG heads from peer"
-                );
-
-                if has_state {
+        while let Some((peer_id, outcome)) = probes.next().await {
+            match outcome {
+                Ok(Some(true)) => {
                     info!(
                         %context_id,
                         %peer_id,
-                        heads_count = dag_heads.len(),
-                        %root_hash,
                         "Found peer with state for bootstrapping"
                     );
-                    return Ok(*peer_id);
+                    return Ok(peer_id);
+                }
+                Ok(Some(false)) => {
+                    debug!(%context_id, %peer_id, "peer reported no state");
+                }
+                Ok(None) => {
+                    debug!(%context_id, %peer_id, "peer did not return DAG heads");
+                }
+                Err(e) => {
+                    debug!(%context_id, %peer_id, error = %e, "peer probe failed");
                 }
             }
         }
