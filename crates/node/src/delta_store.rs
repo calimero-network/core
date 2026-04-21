@@ -971,7 +971,7 @@ impl DeltaStore {
         // Snapshot pending deltas before we touch the DAG so we can diff
         // against the post-cascade set and collect events for the children
         // that were unblocked.
-        let pending_before: std::collections::HashSet<[u8; 32]> = {
+        let pending_before: HashSet<[u8; 32]> = {
             let dag = self.dag.read().await;
             dag.get_pending_delta_ids().into_iter().collect()
         };
@@ -1091,46 +1091,57 @@ impl DeltaStore {
         // can persist them as applied (matching `add_delta_with_events`'s
         // cascade path) and forward their events for handler execution.
         if any_parent_added {
-            let mut dag = self.dag.write().await;
-            match dag.try_process_pending(&*self.applier).await {
-                Ok(0) => {}
-                Ok(n) => {
-                    tracing::info!(
-                        context_id = %self.applier.context_id,
-                        cascaded_count = n,
-                        "Cascaded pending deltas after restoring parent from database"
-                    );
+            // Hold the write lock only for the pending-cascade step + the
+            // immediate snapshot of heads and cascaded delta bodies. Dropping
+            // the lock *before* DB I/O below avoids blocking concurrent DAG
+            // writers, and capturing bodies + heads in the same critical
+            // section keeps them consistent (no TOCTOU between what we
+            // persist and what we publish as `dag_heads`).
+            let (cascaded_bodies, heads_after_cascade) = {
+                let mut dag = self.dag.write().await;
+                match dag.try_process_pending(&*self.applier).await {
+                    Ok(0) => {}
+                    Ok(n) => {
+                        tracing::info!(
+                            context_id = %self.applier.context_id,
+                            cascaded_count = n,
+                            "Cascaded pending deltas after restoring parent from database"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            ?e,
+                            context_id = %self.applier.context_id,
+                            "try_process_pending failed after parent restore"
+                        );
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        ?e,
-                        context_id = %self.applier.context_id,
-                        "try_process_pending failed after parent restore"
-                    );
-                }
-            }
 
-            let pending_after: std::collections::HashSet<[u8; 32]> =
-                dag.get_pending_delta_ids().into_iter().collect();
-            let cascaded: Vec<[u8; 32]> =
-                pending_before.difference(&pending_after).copied().collect();
-            // Capture the new heads now, before dropping the write lock, so
-            // we can push them to the database together with the cascaded
-            // delta records below.
-            let heads_after_cascade = dag.get_heads();
-            // Downgrade to read lock for delta-body lookups during persist.
-            drop(dag);
+                let pending_after: HashSet<[u8; 32]> =
+                    dag.get_pending_delta_ids().into_iter().collect();
+                let cascaded_ids: Vec<[u8; 32]> =
+                    pending_before.difference(&pending_after).copied().collect();
+
+                // Clone the delta bodies up front so the DB I/O below can run
+                // without any DAG lock held.
+                let cascaded_bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = cascaded_ids
+                    .iter()
+                    .filter_map(|cid| dag.get_delta(cid).map(|d| (*cid, d.clone())))
+                    .collect();
+
+                (cascaded_bodies, dag.get_heads())
+            };
 
             // Persist each cascaded delta and forward its events for handler
             // execution. The DAG is authoritative for delta body; the DB
             // record may be absent (events=None deltas are never
             // pre-persisted, per `add_delta_internal`) so we rebuild the
-            // full record from the DAG and only read the DB to recover any
-            // stored events. Mirrors `add_delta_with_events`'s cascade path.
-            if !cascaded.is_empty() {
-                let dag = self.dag.read().await;
+            // full record from the cloned body and only read the DB to
+            // recover any stored events. Mirrors `add_delta_with_events`'s
+            // cascade path.
+            if !cascaded_bodies.is_empty() {
                 let mut handle = self.applier.context_client.datastore_handle();
-                for cid in &cascaded {
+                for (cid, cascaded_delta) in &cascaded_bodies {
                     let db_key =
                         calimero_store::key::ContextDagDelta::new(self.applier.context_id, *cid);
 
@@ -1148,15 +1159,6 @@ impl DeltaStore {
                             );
                             None
                         }
-                    };
-
-                    let Some(cascaded_delta) = dag.get_delta(cid) else {
-                        tracing::warn!(
-                            context_id = %self.applier.context_id,
-                            cascaded_id = ?cid,
-                            "Cascaded delta missing from DAG after try_process_pending"
-                        );
-                        continue;
                     };
 
                     let serialized_actions = match borsh::to_vec(&cascaded_delta.payload) {
@@ -1194,7 +1196,6 @@ impl DeltaStore {
                         );
                     }
                 }
-                drop(dag);
             }
 
             // CRITICAL: Update the database's `dag_heads` to match the
