@@ -89,16 +89,15 @@ pub async fn handle_state_delta(
         key_id,
     } = message;
 
-    // sync_latency: receive timestamp. Pair with `publish` event on another
-    // node by matching delta_id to compute wire-time.
+    // sync_latency: receive timestamp. Pair with SYNC_LATENCY publish on
+    // the author node by matching delta_id to compute wire-time.
     let receive_at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let handle_start = std::time::Instant::now();
     info!(
-        target: "sync_latency",
-        event = "receive",
+        sync_event = "receive",
         delta_id = %hex::encode(delta_id),
         %context_id,
         %source,
@@ -106,7 +105,7 @@ pub async fn handle_state_delta(
         parent_count = parent_ids.len(),
         has_events = events.is_some(),
         artifact_bytes = artifact.len(),
-        "received state delta"
+        "SYNC_LATENCY receive"
     );
 
     let Some(context) = node_clients.context.get_context(&context_id)? else {
@@ -328,14 +327,13 @@ pub async fn handle_state_delta(
         .await?;
     let apply_ms = apply_start.elapsed().as_millis();
     info!(
-        target: "sync_latency",
-        event = "apply",
+        sync_event = "apply",
         delta_id = %hex::encode(delta_id),
         %context_id,
         applied = add_result.applied,
         apply_ms,
         handle_elapsed_ms = handle_start.elapsed().as_millis(),
-        "add_delta_with_events returned"
+        "SYNC_LATENCY apply"
     );
     let mut applied = add_result.applied;
     let mut handlers_already_executed = false;
@@ -344,12 +342,11 @@ pub async fn handle_state_delta(
         let missing_result = delta_store_ref.get_missing_parents().await;
         if !missing_result.missing_ids.is_empty() {
             info!(
-                target: "sync_latency",
-                event = "missing_parents",
+                sync_event = "missing_parents",
                 delta_id = %hex::encode(delta_id),
                 %context_id,
                 missing_count = missing_result.missing_ids.len(),
-                "delta pending, will trigger serial parent backfill"
+                "SYNC_LATENCY missing_parents"
             );
         }
 
@@ -444,14 +441,13 @@ pub async fn handle_state_delta(
                 )
                 .await?;
                 info!(
-                    target: "sync_latency",
-                    event = "handlers",
+                    sync_event = "handlers",
                     delta_id = %hex::encode(delta_id),
                     %context_id,
                     event_count,
                     handler_count,
                     handlers_ms = handlers_start.elapsed().as_millis() as u64,
-                    "event handlers finished"
+                    "SYNC_LATENCY handlers"
                 );
             } else {
                 info!(

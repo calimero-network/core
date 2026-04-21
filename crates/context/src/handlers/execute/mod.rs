@@ -629,21 +629,23 @@ impl Handler<ExecuteRequest> for ContextManager {
                             let governance_epoch: Vec<[u8; 32]> = vec![];
 
                             // sync_latency: publish timestamp (wall clock for
-                            // cross-node correlation via delta_id).
+                            // cross-node correlation via delta_id). Default
+                            // filter `calimero_=info` picks these up because
+                            // this module is in `calimero_context::`. Grep
+                            // logs for `SYNC_LATENCY` to isolate the trace.
                             let publish_at_ms = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.as_millis())
                                 .unwrap_or(0);
                             info!(
-                                target: "sync_latency",
-                                event = "publish",
+                                sync_event = "publish",
                                 delta_id = %hex::encode(the_delta.id),
                                 %context_id,
                                 publish_at_ms,
                                 parents = the_delta.parents.len(),
                                 has_events = events_data.is_some(),
                                 artifact_bytes = outcome.artifact.len(),
-                                "publishing state delta"
+                                "SYNC_LATENCY publish"
                             );
 
                             node_client

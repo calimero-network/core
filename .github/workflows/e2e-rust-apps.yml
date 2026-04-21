@@ -210,16 +210,24 @@ jobs:
                   --image merod:local \
                   --e2e-mode; then
                   success=true
-                  break
               else
-                  echo "Collecting Docker logs for ${{ matrix.workflow }} attempt $attempt"
-                  for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
-                      if [ -n "$container" ]; then
-                          docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${{ matrix.workflow }}-attempt${attempt}-${container}.log" 2>&1 || true
-                      fi
-                  done
-                  attempt=$((attempt + 1))
+                  attempt_failed=1
               fi
+
+              # debug branch: always capture runtime docker logs so we can see
+              # SYNC_LATENCY events emitted by the merod containers, not just
+              # the init output. Happens on both success and failure.
+              echo "Collecting Docker logs for ${{ matrix.workflow }} attempt $attempt"
+              for container in $(docker ps -a --format "{{.Names}}" 2>/dev/null || true); do
+                  if [ -n "$container" ]; then
+                      docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/${{ matrix.workflow }}-attempt${attempt}-${container}.log" 2>&1 || true
+                  fi
+              done
+
+              if [ "$success" = true ]; then
+                  break
+              fi
+              attempt=$((attempt + 1))
           done
 
           merobox stop --all || true
