@@ -370,6 +370,26 @@ pub async fn handle_state_delta(
             {
                 warn!(?e, %context_id, ?source, "Failed to request missing deltas");
             }
+
+            // `request_missing_deltas` fetches parents from peers and calls
+            // `DeltaStore::add_delta` internally. Those `add_delta` calls
+            // can cascade the current delta via `apply_pending`, but
+            // `add_delta`'s `AddDeltaResult.cascaded_events` is discarded
+            // inside the fetch loop — there's no way for us to see which
+            // deltas it cascaded without checking the DAG. `cascaded_ids`
+            // from the earlier `get_missing_parents` doesn't cover this
+            // path (cascades happened *after* that call returned), so
+            // consult the DAG directly here to avoid the misleading
+            // "child did not apply" downstream warn + permanent handler
+            // skip on peer-fetched parents.
+            if !applied && delta_store_ref.dag_has_delta_applied(&delta_id).await {
+                info!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    "Delta was applied via cascade after peer-fetch of missing parents"
+                );
+                applied = true;
+            }
         } else if !applied {
             // Parent is already in the database but `get_missing_parents`'s
             // explicit cascade didn't unblock this delta either. Rare, but
