@@ -963,7 +963,18 @@ impl DeltaStore {
         // Filter out parents that exist in the database
         let handle = self.applier.context_client.datastore_handle();
         let mut actually_missing = Vec::new();
-        let all_cascaded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+        let mut all_cascaded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+        // Tracks whether we mutated the DAG during the loop. If so, we need
+        // to explicitly cascade pending children afterwards — see the block
+        // after the loop.
+        let mut any_parent_added = false;
+        // Snapshot pending deltas before we touch the DAG so we can diff
+        // against the post-cascade set and collect events for the children
+        // that were unblocked.
+        let pending_before: std::collections::HashSet<[u8; 32]> = {
+            let dag = self.dag.read().await;
+            dag.get_pending_delta_ids().into_iter().collect()
+        };
 
         for parent_id in &potentially_missing {
             let db_key =
@@ -1019,7 +1030,9 @@ impl DeltaStore {
 
                         // Re-acquire lock as write lock to mutate DAG
                         let mut dag = self.dag.write().await;
-                        if !dag.restore_applied_delta(dag_delta) {
+                        if dag.restore_applied_delta(dag_delta) {
+                            any_parent_added = true;
+                        } else {
                             tracing::debug!(
                                 context_id = %self.applier.context_id,
                                 parent_id = ?parent_id,
@@ -1029,13 +1042,18 @@ impl DeltaStore {
                     } else {
                         // Re-acquire lock as write lock to mutate DAG
                         let mut dag = self.dag.write().await;
-                        if let Err(e) = dag.add_delta(dag_delta, &*self.applier).await {
-                            tracing::warn!(
-                                ?e,
-                                context_id = %self.applier.context_id,
-                                parent_id = ?parent_id,
-                                "Failed to load persisted parent delta into DAG"
-                            );
+                        match dag.add_delta(dag_delta, &*self.applier).await {
+                            Ok(_) => {
+                                any_parent_added = true;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    ?e,
+                                    context_id = %self.applier.context_id,
+                                    parent_id = ?parent_id,
+                                    "Failed to load persisted parent delta into DAG"
+                                );
+                            }
                         }
                     }
                 }
@@ -1051,6 +1069,104 @@ impl DeltaStore {
                         "Error checking database for parent delta, treating as missing"
                     );
                     actually_missing.push(*parent_id);
+                }
+            }
+        }
+
+        // Cascade any pending deltas whose parents we just restored from DB.
+        //
+        // `DAG::restore_applied_delta` — used when a parent is already marked
+        // applied in the database (typically because *this* node authored
+        // it) — updates topology but does NOT call `apply_pending`.
+        // `DAG::add_delta` does. So a child delta that arrived via gossipsub
+        // while its parent was only in DB (not in the in-memory DAG) gets
+        // parked in `pending`, the parent is restored here without running
+        // `apply_pending`, and the child stays stuck until the periodic sync
+        // loop fires and re-processes it — up to DEFAULT_SYNC_FREQUENCY_SECS
+        // (10s) of wall-clock lag on a delta that is otherwise ready to
+        // apply immediately.
+        //
+        // Explicit `try_process_pending` closes that gap. The diff against
+        // `pending_before` identifies the children that were unblocked so we
+        // can persist them as applied (matching `add_delta_with_events`'s
+        // cascade path) and forward their events for handler execution.
+        if any_parent_added {
+            let mut dag = self.dag.write().await;
+            match dag.try_process_pending(&*self.applier).await {
+                Ok(0) => {}
+                Ok(n) => {
+                    tracing::info!(
+                        context_id = %self.applier.context_id,
+                        cascaded_count = n,
+                        "Cascaded pending deltas after restoring parent from database"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        ?e,
+                        context_id = %self.applier.context_id,
+                        "try_process_pending failed after parent restore"
+                    );
+                }
+            }
+
+            let pending_after: std::collections::HashSet<[u8; 32]> =
+                dag.get_pending_delta_ids().into_iter().collect();
+            let cascaded: Vec<[u8; 32]> = pending_before
+                .difference(&pending_after)
+                .copied()
+                .collect();
+            drop(dag);
+
+            // Persist each cascaded delta as applied (clearing any stored
+            // events) and forward its events for handler execution. Mirrors
+            // the cascade-handling block in `add_delta_with_events`.
+            if !cascaded.is_empty() {
+                let mut handle = self.applier.context_client.datastore_handle();
+                for cid in &cascaded {
+                    let db_key = calimero_store::key::ContextDagDelta::new(
+                        self.applier.context_id,
+                        *cid,
+                    );
+                    match handle.get(&db_key) {
+                        Ok(Some(stored)) => {
+                            if let Some(ref events_data) = stored.events {
+                                all_cascaded_events.push((*cid, events_data.clone()));
+                            }
+                            let updated = calimero_store::types::ContextDagDelta {
+                                delta_id: stored.delta_id,
+                                parents: stored.parents,
+                                actions: stored.actions,
+                                hlc: stored.hlc,
+                                applied: true,
+                                expected_root_hash: stored.expected_root_hash,
+                                events: None,
+                            };
+                            if let Err(e) = handle.put(&db_key, &updated) {
+                                tracing::warn!(
+                                    ?e,
+                                    context_id = %self.applier.context_id,
+                                    cascaded_id = ?cid,
+                                    "Failed to persist cascaded delta after parent restore"
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::debug!(
+                                context_id = %self.applier.context_id,
+                                cascaded_id = ?cid,
+                                "Cascaded delta not found in DB during parent-restore cascade"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                ?e,
+                                context_id = %self.applier.context_id,
+                                cascaded_id = ?cid,
+                                "Failed to load cascaded delta for persistence"
+                            );
+                        }
+                    }
                 }
             }
         }

@@ -345,12 +345,16 @@ pub async fn handle_state_delta(
             {
                 warn!(?e, %context_id, ?source, "Failed to request missing deltas");
             }
-        } else {
+        } else if !applied {
+            // Parent is already in the database but `get_missing_parents`'s
+            // explicit cascade didn't unblock this delta either. Rare, but
+            // can happen if the DAG apply path itself returns an error for
+            // the child. Left pending to retry on the next sync cycle.
             warn!(
                 %context_id,
                 delta_id = ?delta_id,
                 has_events = events.is_some(),
-                "Delta pending - parents exist but not yet applied (will cascade when ready)"
+                "Delta pending - parents exist but child did not apply during cascade"
             );
         }
 
