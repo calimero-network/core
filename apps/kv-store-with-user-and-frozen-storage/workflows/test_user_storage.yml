@@ -109,7 +109,6 @@ steps:
       - new-calimero-node-1
       - new-calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 11: Node2: get simple user storage for a specific user
@@ -159,7 +158,6 @@ steps:
       - new-calimero-node-1
       - new-calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 14: Node1: get simple user storage for Node 2 user

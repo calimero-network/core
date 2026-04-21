@@ -74,7 +74,6 @@ steps:
       - kvh-node-1
       - kvh-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
 
@@ -117,7 +116,6 @@ steps:
       - kvh-node-1
       - kvh-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
 
@@ -164,7 +162,6 @@ steps:
       - kvh-node-1
       - kvh-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
 
@@ -207,7 +204,6 @@ steps:
       - kvh-node-1
       - kvh-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
 
@@ -226,7 +222,6 @@ steps:
       - kvh-node-1
       - kvh-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
 
@@ -267,7 +262,6 @@ steps:
       - kvh-node-1
       - kvh-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node 1 Get Node 2 Value

@@ -100,7 +100,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 90
-    check_interval: 3
     trigger_sync: true
 
   # --- Verify node-2 sees all pre-existing state ---
@@ -168,7 +167,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node-2 reads post-join key
@@ -202,7 +200,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node-1 reads node-2 post-join key

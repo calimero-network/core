@@ -117,7 +117,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 10: Node 2 joins namespace B (auto-joins all contexts in namespace)
@@ -136,7 +135,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # ============================================
@@ -207,7 +205,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 14: Verify Context B counter incremented on Node 1
@@ -280,7 +277,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 19: Verify Context A counter incremented on Node 1
@@ -333,7 +329,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Send third ping from Context A to Context B
@@ -353,7 +348,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 22: Verify Context B counter is now 3 on both nodes

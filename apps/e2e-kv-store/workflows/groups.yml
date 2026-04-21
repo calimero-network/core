@@ -79,7 +79,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node-2 reads from context 1
@@ -113,7 +112,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node-1 reads node-2 value
@@ -157,7 +155,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node-2 writes to context 3
@@ -176,7 +173,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node-1 reads from context 3

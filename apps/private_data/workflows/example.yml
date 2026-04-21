@@ -60,7 +60,6 @@ steps:
       - calimero-node-1
       - calimero-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Execute View Call - My Secrets (node 1)

@@ -91,7 +91,6 @@ steps:
       - rust-blob-1
       - rust-blob-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: List files on inviter
@@ -152,7 +151,6 @@ steps:
       - rust-blob-1
       - rust-blob-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: List files after delete

@@ -65,7 +65,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Verify value on node-2
@@ -99,7 +98,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Verify node-2 value on node-1
@@ -142,7 +140,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Verify greeting on node-3
@@ -188,7 +185,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Verify node-3 value on node-1
@@ -274,7 +270,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Verify key removed on node-2
@@ -368,7 +363,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Set with handler again (triggers update_handler on receivers)
@@ -388,7 +382,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Remove with handler (triggers remove_handler on receivers)
@@ -407,7 +400,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Set some test values for clear
@@ -436,7 +428,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Clear with handler (triggers clear_handler on receivers)
@@ -453,7 +444,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # USER STORAGE - SIMPLE
@@ -489,7 +479,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Node 2 can read node-1's user storage
@@ -555,7 +544,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Node 1 can read node-2's user storage
@@ -609,7 +597,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get nested user value on node-1
@@ -647,7 +634,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get frozen value on node-2
@@ -699,7 +685,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get my secrets on node-1
@@ -847,7 +832,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Increment G-Counter on node-2
@@ -866,7 +850,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get G-Counter on node-1
@@ -943,7 +926,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get PN-Counter on node-2 after sync (should be 2)
@@ -993,7 +975,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get PN-Counter on node-1 (should be 1 after all ops)
@@ -1045,7 +1026,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Set register on node-2 (later timestamp wins)
@@ -1065,7 +1045,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get register on node-1
@@ -1121,7 +1100,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Node-2 sets second field (after receiving node-1's changes)
@@ -1144,7 +1122,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get title on node-2
@@ -1226,7 +1203,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Push metric on node-2
@@ -1245,7 +1221,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get metrics length
@@ -1319,7 +1294,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Add tag on node-2
@@ -1339,7 +1313,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get tag count
@@ -1444,7 +1417,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get text on node-2
@@ -1532,7 +1504,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get title on node-2
@@ -1625,7 +1596,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: List files on node-1
@@ -1728,7 +1698,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: List files after delete on node-2
@@ -1778,7 +1747,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Clear KV store
@@ -1795,7 +1763,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Verify KV store is empty on node-2
@@ -1838,7 +1805,6 @@ steps:
       - e2e-node-2
       - e2e-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Verify RGA document is empty on node-2

@@ -323,6 +323,31 @@ pub async fn handle_state_delta(
         applied |= cascade_outcome.applied_current;
         handlers_already_executed |= cascade_outcome.handlers_executed_for_current;
 
+        // Events-less deltas that the cascade applied to the DAG are not
+        // present in `cascade_outcome.cascaded_events` (that collector only
+        // surfaces deltas with persisted events to run handlers for), so
+        // `applied_current` stays false even though the DAG state reflects
+        // a successful apply. Check `missing_result.cascaded_ids` (the
+        // full set of cascaded deltas produced by `get_missing_parents`,
+        // including events-less ones) instead of re-acquiring the DAG
+        // read lock via `dag_has_delta_applied`.
+        if !applied && missing_result.cascaded_ids.contains(&delta_id) {
+            info!(
+                %context_id,
+                delta_id = ?delta_id,
+                "Delta was applied via cascade - will execute handlers"
+            );
+            applied = true;
+
+            if !handlers_already_executed && events.is_some() {
+                info!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    "Delta cascaded via alternate path - handlers will be executed in main flow"
+                );
+            }
+        }
+
         if !missing_result.missing_ids.is_empty() {
             warn!(
                 %context_id,
@@ -345,31 +370,37 @@ pub async fn handle_state_delta(
             {
                 warn!(?e, %context_id, ?source, "Failed to request missing deltas");
             }
-        } else {
+
+            // `request_missing_deltas` fetches parents from peers and calls
+            // `DeltaStore::add_delta` internally. Those `add_delta` calls
+            // can cascade the current delta via `apply_pending`, but
+            // `add_delta`'s `AddDeltaResult.cascaded_events` is discarded
+            // inside the fetch loop — there's no way for us to see which
+            // deltas it cascaded without checking the DAG. `cascaded_ids`
+            // from the earlier `get_missing_parents` doesn't cover this
+            // path (cascades happened *after* that call returned), so
+            // consult the DAG directly here to avoid the misleading
+            // "child did not apply" downstream warn + permanent handler
+            // skip on peer-fetched parents.
+            if !applied && delta_store_ref.dag_has_delta_applied(&delta_id).await {
+                info!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    "Delta was applied via cascade after peer-fetch of missing parents"
+                );
+                applied = true;
+            }
+        } else if !applied {
+            // Parent is already in the database but `get_missing_parents`'s
+            // explicit cascade didn't unblock this delta either. Rare, but
+            // can happen if the DAG apply path itself returns an error for
+            // the child. Left pending to retry on the next sync cycle.
             warn!(
                 %context_id,
                 delta_id = ?delta_id,
                 has_events = events.is_some(),
-                "Delta pending - parents exist but not yet applied (will cascade when ready)"
+                "Delta pending - parents exist but child did not apply during cascade"
             );
-        }
-
-        let was_cascaded = delta_store_ref.dag_has_delta_applied(&delta_id).await;
-        if was_cascaded {
-            info!(
-                %context_id,
-                delta_id = ?delta_id,
-                "Delta was applied via cascade - will execute handlers"
-            );
-            applied = true;
-
-            if !handlers_already_executed && events.is_some() {
-                info!(
-                    %context_id,
-                    delta_id = ?delta_id,
-                    "Delta cascaded via alternate path - handlers will be executed in main flow"
-                );
-            }
         }
     }
 

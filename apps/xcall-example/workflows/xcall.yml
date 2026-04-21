@@ -95,7 +95,6 @@ steps:
       - rust-xcall-1
       - rust-xcall-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Wait for memberships to propagate - Context B
@@ -105,7 +104,6 @@ steps:
       - rust-xcall-1
       - rust-xcall-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Check initial counter on context A
@@ -158,7 +156,6 @@ steps:
       - rust-xcall-1
       - rust-xcall-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Verify Context B counter incremented
@@ -189,7 +186,6 @@ steps:
       - rust-xcall-1
       - rust-xcall-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Verify Context A counter incremented

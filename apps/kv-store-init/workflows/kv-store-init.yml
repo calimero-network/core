@@ -295,7 +295,6 @@ steps:
       - kv-store-init-node-1
       - kv-store-init-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node 2 Get Synced Value
@@ -329,7 +328,6 @@ steps:
       - kv-store-init-node-1
       - kv-store-init-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node 1 Get Node 2 Value

@@ -48,7 +48,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 30
-    check_interval: 2
     trigger_sync: true
 
   # Verify on node-2
@@ -84,7 +83,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 30
-    check_interval: 2
     trigger_sync: true
 
   # Verify on node-1
