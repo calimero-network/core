@@ -108,7 +108,22 @@ impl Behaviour {
                     },
                     gossipsub: gossipsub::Behaviour::new(
                         gossipsub::MessageAuthenticity::Signed(key.clone()),
-                        gossipsub::Config::default(),
+                        // Tuned for Calimero's typical 2-20 peer meshes.
+                        // libp2p's defaults assume larger swarms: mesh_n_low=4
+                        // and mesh_outbound_min=2 are never satisfied in a 2-3
+                        // node cluster, which keeps gossipsub out of stable
+                        // mesh-push mode and falls back on slower fanout /
+                        // lazy IHAVE-IWANT delivery. Lowering the water marks
+                        // lets small clusters form a stable mesh while still
+                        // scaling fine for larger deployments (mesh_n=4 is
+                        // below the mesh_n_high of 8, so growth is bounded).
+                        gossipsub::ConfigBuilder::default()
+                            .mesh_n_low(2)
+                            .mesh_n(4)
+                            .mesh_n_high(8)
+                            .mesh_outbound_min(1)
+                            .build()
+                            .map_err(|e| eyre::eyre!("invalid gossipsub config: {e}"))?,
                     )?,
                     ping: ping::Behaviour::default(),
                     rendezvous: rendezvous::client::Behaviour::new(key.clone()),
