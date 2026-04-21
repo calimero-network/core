@@ -207,18 +207,27 @@ jobs:
           # behind by the time the shell regains control. The watcher
           # captures logs *while* containers are live, so post-run cleanup
           # can't remove what we've already written to disk.
+          #
+          # Workaround tracked in calimero-network/merobox#207; once merobox
+          # persists logs natively we'll remove this block (calimero/core#2179).
           LOGDIR="$GITHUB_WORKSPACE/docker-logs"
           WATCHER_STATE_DIR="$(mktemp -d)"
+          # The watcher reads the current attempt from this file each poll so
+          # that (a) retry containers, which are nuked and recreated with the
+          # same names as attempt 1's, get picked up as new followers, and
+          # (b) attempt 1's logs aren't clobbered by attempt 2's output.
+          echo "1" > "$WATCHER_STATE_DIR/attempt"
           (
               while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
+                  cur_attempt=$(cat "$WATCHER_STATE_DIR/attempt" 2>/dev/null || echo 1)
                   # Follow containers labeled by merobox, excluding the
                   # short-lived init containers (`*-init`).
                   for c in $(docker ps --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null | grep -v -- '-init$' || true); do
-                      mark="$WATCHER_STATE_DIR/$c"
+                      mark="$WATCHER_STATE_DIR/attempt${cur_attempt}-${c}"
                       if [ ! -f "$mark" ]; then
                           touch "$mark"
-                          echo "[log-watcher] following $c"
-                          docker logs -f "$c" > "$LOGDIR/${{ matrix.workflow }}-${c}.log" 2>&1 &
+                          echo "[log-watcher] following $c (attempt $cur_attempt)"
+                          docker logs -f "$c" > "$LOGDIR/${{ matrix.workflow }}-attempt${cur_attempt}-${c}.log" 2>&1 &
                       fi
                   done
                   sleep 1
@@ -232,6 +241,10 @@ jobs:
                   merobox nuke --force || true
                   sleep 2
               fi
+              # Tell the watcher which attempt we're on; it namespaces its
+              # mark files + log filenames by this so each retry captures
+              # cleanly without clobbering prior-attempt logs.
+              echo "$attempt" > "$WATCHER_STATE_DIR/attempt"
 
               if merobox bootstrap run \
                   "${{ matrix.file }}" \
