@@ -357,7 +357,7 @@ pub async fn handle_state_delta(
                 "Delta pending due to missing parents - requesting them from peer"
             );
 
-            if let Err(e) = request_missing_deltas(
+            match request_missing_deltas(
                 network_client,
                 sync_timeout,
                 context_id,
@@ -368,20 +368,39 @@ pub async fn handle_state_delta(
             )
             .await
             {
-                warn!(?e, %context_id, ?source, "Failed to request missing deltas");
+                Ok(peer_fetch_cascaded_events) => {
+                    // Peer-fetched parents can cascade pending children via
+                    // `apply_pending` inside `add_delta_with_events`. Those
+                    // cascaded children's events were discarded before this
+                    // fix — now they ride back on `peer_fetch_cascaded_events`
+                    // and go through `execute_cascaded_events` exactly like
+                    // the cascade path inside `get_missing_parents`.
+                    if !peer_fetch_cascaded_events.is_empty() {
+                        let cascade_outcome = execute_cascaded_events(
+                            &peer_fetch_cascaded_events,
+                            &node_clients,
+                            &context_id,
+                            &our_identity,
+                            sync_timeout,
+                            "peer-fetch cascade",
+                            Some(&delta_id),
+                        )
+                        .await?;
+                        applied |= cascade_outcome.applied_current;
+                        handlers_already_executed |= cascade_outcome.handlers_executed_for_current;
+                    }
+                }
+                Err(e) => {
+                    warn!(?e, %context_id, ?source, "Failed to request missing deltas");
+                }
             }
 
-            // `request_missing_deltas` fetches parents from peers and calls
-            // `DeltaStore::add_delta` internally. Those `add_delta` calls
-            // can cascade the current delta via `apply_pending`, but
-            // `add_delta`'s `AddDeltaResult.cascaded_events` is discarded
-            // inside the fetch loop — there's no way for us to see which
-            // deltas it cascaded without checking the DAG. `cascaded_ids`
-            // from the earlier `get_missing_parents` doesn't cover this
-            // path (cascades happened *after* that call returned), so
-            // consult the DAG directly here to avoid the misleading
-            // "child did not apply" downstream warn + permanent handler
-            // skip on peer-fetched parents.
+            // Some peer-fetched cascades may still apply the current delta
+            // without having its events in the DB (events-less deltas are
+            // never pre-persisted, so they won't show up in
+            // `peer_fetch_cascaded_events`). The DAG state reflects the
+            // apply regardless; check it before falling through to the
+            // "still pending" path so we don't warn misleadingly.
             if !applied && delta_store_ref.dag_has_delta_applied(&delta_id).await {
                 info!(
                     %context_id,
@@ -896,6 +915,14 @@ fn emit_state_mutation_event_parsed(
 ///
 /// Opens a stream to the peer and requests each missing delta sequentially.
 /// Adds successfully retrieved deltas back to the DAG for processing.
+/// Fetch missing ancestor deltas from a peer and add them to the DAG in
+/// topological order.
+///
+/// Returns the aggregated `cascaded_events` from every `add_delta_with_events`
+/// call. Each peer-fetched parent that resolves a pending child carries that
+/// child's stored events along in its `AddDeltaResult`; callers *must* run
+/// `execute_cascaded_events` on the returned list, otherwise handler execution
+/// for cascaded children silently never happens.
 async fn request_missing_deltas(
     network_client: calimero_network_primitives::client::NetworkClient,
     sync_timeout: std::time::Duration,
@@ -904,7 +931,7 @@ async fn request_missing_deltas(
     source: PeerId,
     our_identity: PublicKey,
     delta_store: DeltaStore,
-) -> Result<()> {
+) -> Result<Vec<([u8; 32], Vec<u8>)>> {
     use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
     // Open stream to peer
@@ -914,6 +941,10 @@ async fn request_missing_deltas(
     let mut to_fetch = missing_ids;
     let mut fetched_deltas: Vec<(calimero_dag::CausalDelta<Vec<Action>>, [u8; 32])> = Vec::new();
     let mut fetch_count = 0;
+    // Accumulated (delta_id, events_data) pairs from any cascades that
+    // happen while adding peer-fetched parents below. Passed back to the
+    // caller so handlers can run.
+    let mut cascaded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
     // Phase 1: Fetch ALL missing deltas recursively
     // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
@@ -1019,8 +1050,28 @@ async fn request_missing_deltas(
         fetched_deltas.reverse();
 
         for (dag_delta, delta_id) in fetched_deltas {
-            if let Err(e) = delta_store.add_delta(dag_delta).await {
-                warn!(?e, %context_id, delta_id = ?delta_id, "Failed to add fetched delta to DAG");
+            // Use the events-aware entry point so we can forward any events
+            // attached to *cascaded children* to the caller. The peer-fetched
+            // parent itself has no events (the wire protocol doesn't carry
+            // them on `DeltaResponse`) — hence `None` for the second arg —
+            // but `add_delta_internal`'s internal `apply_pending` can cascade
+            // children that were pre-persisted with events, and those need
+            // to reach `execute_cascaded_events` at the caller.
+            match delta_store.add_delta_with_events(dag_delta, None).await {
+                Ok(result) => {
+                    if !result.cascaded_events.is_empty() {
+                        info!(
+                            %context_id,
+                            parent_delta_id = ?delta_id,
+                            cascaded_count = result.cascaded_events.len(),
+                            "Peer-fetched parent cascaded pending children with events"
+                        );
+                        cascaded_events.extend(result.cascaded_events);
+                    }
+                }
+                Err(e) => {
+                    warn!(?e, %context_id, delta_id = ?delta_id, "Failed to add fetched delta to DAG");
+                }
             }
         }
 
@@ -1034,7 +1085,7 @@ async fn request_missing_deltas(
         }
     }
 
-    Ok(())
+    Ok(cascaded_events)
 }
 
 /// Ensures the application blob is available for a context before handler execution.
