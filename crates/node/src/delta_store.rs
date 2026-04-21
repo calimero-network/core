@@ -994,15 +994,29 @@ impl DeltaStore {
             restored_head_hashes,
             cascaded_ids,
             cascaded_bodies,
+            added_parent_bodies,
             heads_after_cascade,
         ) = if plans.is_empty() {
-            (false, Vec::new(), Vec::new(), Vec::new(), Vec::new())
+            (
+                false,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
         } else {
             let mut dag = self.dag.write().await;
             let pending_before: HashSet<[u8; 32]> =
                 dag.get_pending_delta_ids().into_iter().collect();
             let mut any_parent_added = false;
             let mut restored_head_hashes: Vec<([u8; 32], [u8; 32])> = Vec::new();
+            // Parents we just transitioned from `applied: false` → applied
+            // in the DAG via `add_delta`. Their DB records still say
+            // `applied: false`; phase 3 persists the update alongside any
+            // cascaded children. Without this, `load_persisted_deltas_into_dag`
+            // re-runs WASM for these parents on every restart (#2187).
+            let mut added_parent_bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = Vec::new();
 
             for plan in plans {
                 match plan {
@@ -1025,19 +1039,28 @@ impl DeltaStore {
                     ParentPlan::Add {
                         parent_id,
                         dag_delta,
-                    } => match dag.add_delta(dag_delta, &*self.applier).await {
-                        Ok(_) => {
-                            any_parent_added = true;
+                    } => {
+                        // Clone before `add_delta` consumes — on success
+                        // we hand the body to phase 3 to rewrite the DB
+                        // record as `applied: true` and forward any
+                        // pre-stored events (same treatment as cascaded
+                        // children).
+                        let body_for_persist = dag_delta.clone();
+                        match dag.add_delta(dag_delta, &*self.applier).await {
+                            Ok(_) => {
+                                any_parent_added = true;
+                                added_parent_bodies.push((parent_id, body_for_persist));
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    ?e,
+                                    context_id = %self.applier.context_id,
+                                    parent_id = ?parent_id,
+                                    "Failed to load persisted parent delta into DAG"
+                                );
+                            }
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                ?e,
-                                context_id = %self.applier.context_id,
-                                parent_id = ?parent_id,
-                                "Failed to load persisted parent delta into DAG"
-                            );
-                        }
-                    },
+                    }
                 }
             }
 
@@ -1082,6 +1105,7 @@ impl DeltaStore {
                 restored_head_hashes,
                 cascaded_ids,
                 cascaded_bodies,
+                added_parent_bodies,
                 dag.get_heads(),
             )
         };
@@ -1096,14 +1120,27 @@ impl DeltaStore {
         }
 
         if any_parent_added {
-            // Persist cascaded deltas and push updated `dag_heads` via the
-            // shared helper — same code path `add_delta_with_events` uses
-            // after an in-line cascade. Helper logs-and-continues on
-            // `dag_heads` write failure, so events are preserved even if
-            // the heads write fails (next sync will correct the heads).
+            // Persist cascaded deltas, newly-applied parents (Add path),
+            // and push updated `dag_heads` via the shared helper. Helper
+            // logs-and-continues on `dag_heads` write failure, so events
+            // are preserved even if the heads write fails (next sync will
+            // correct the heads).
+            //
+            // Parents and cascaded children get the same per-entry
+            // treatment: read any pre-stored `events` and forward them in
+            // the return value, then rewrite the DB record as
+            // `applied: true, events: None`. For a `ParentPlan::Add` that
+            // had events pre-persisted on this node, this means its
+            // handlers run on the next `execute_cascaded_events` call.
+            // For one without events, it simply flips `applied: false →
+            // true` so restart's `load_persisted_deltas_into_dag` stops
+            // re-running its WASM (#2187).
+            let mut bodies_to_persist = added_parent_bodies;
+            bodies_to_persist.extend(cascaded_bodies);
+
             all_cascaded_events.extend(
                 self.persist_cascaded_deltas_and_update_heads(
-                    &cascaded_bodies,
+                    &bodies_to_persist,
                     heads_after_cascade,
                 )
                 .await,
@@ -1128,9 +1165,10 @@ impl DeltaStore {
         }
     }
 
-    /// Persist cascaded deltas to the database and push the updated DAG
-    /// heads — the two writes that must always land together after any
-    /// code path that cascades pending deltas.
+    /// Persist newly-applied deltas to the database and push the updated
+    /// DAG heads — the two writes that must always land together after
+    /// any code path that flips deltas from "not applied on this node"
+    /// to applied.
     ///
     /// Used by both `add_delta_internal` and `get_missing_parents`. Before
     /// this helper existed, each site inlined its own copy of the persist
@@ -1141,19 +1179,21 @@ impl DeltaStore {
     ///
     /// # Semantics
     ///
-    /// For each cascaded delta passed in:
-    /// - The in-memory DAG body (in `cascaded_bodies`) is the authoritative
+    /// For each delta body passed in (cascaded-from-pending child *or*
+    /// parent just applied via `get_missing_parents`'s Add path):
+    /// - The in-memory DAG body (in `applied_bodies`) is the authoritative
     ///   source; the DB may or may not already contain a record.
     /// - Any existing DB record's `events` column is read and forwarded in
     ///   the return value (so the caller can run handlers) before the
-    ///   record is rewritten with `events: None`. Events-less deltas are
-    ///   never pre-persisted, so a missing DB record is normal for that
-    ///   path — the helper rebuilds the full record from the in-memory body.
+    ///   record is rewritten with `applied: true, events: None`.
+    ///   Events-less deltas are never pre-persisted, so a missing DB
+    ///   record is normal for the cascade path — the helper rebuilds the
+    ///   full record from the in-memory body. Add-path parents always
+    ///   have a DB record present (phase 1 loaded it).
     ///
     /// After the loop, `update_dag_heads` is called unconditionally with
-    /// the supplied `heads`. Pass an empty `cascaded_bodies` slice when
-    /// you only need the heads write (e.g. a plain `add_delta` with no
-    /// cascades).
+    /// the supplied `heads`. Pass an empty slice when you only need the
+    /// heads write (e.g. a plain `add_delta` with no cascades).
     ///
     /// # Locking
     ///
@@ -1162,20 +1202,20 @@ impl DeltaStore {
     /// chose. This keeps DB I/O out of the DAG critical section.
     async fn persist_cascaded_deltas_and_update_heads(
         &self,
-        cascaded_bodies: &[([u8; 32], CausalDelta<Vec<Action>>)],
+        applied_bodies: &[([u8; 32], CausalDelta<Vec<Action>>)],
         heads: Vec<[u8; 32]>,
     ) -> Vec<([u8; 32], Vec<u8>)> {
         let mut forwarded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
-        if !cascaded_bodies.is_empty() {
+        if !applied_bodies.is_empty() {
             info!(
                 context_id = %self.applier.context_id,
-                cascaded_count = cascaded_bodies.len(),
-                "Persisting cascaded deltas that were applied from pending queue"
+                applied_count = applied_bodies.len(),
+                "Persisting newly-applied deltas (cascades and/or Add-path parents)"
             );
 
             let mut handle = self.applier.context_client.datastore_handle();
-            for (cid, cascaded_delta) in cascaded_bodies {
+            for (cid, cascaded_delta) in applied_bodies {
                 let db_key =
                     calimero_store::key::ContextDagDelta::new(self.applier.context_id, *cid);
 
@@ -1258,18 +1298,18 @@ impl DeltaStore {
         // `broadcast_heartbeat` see the post-cascade state. Failing to
         // do this was the original bug behind #2178.
         //
-        // The failure is logged rather than propagated: cascaded deltas
-        // have already been rewritten in the DB with `events: None`, so
-        // their event payloads now survive only in our return value. If
-        // we bailed out with `Err` here, the caller would drop the Vec
-        // and those events would be permanently lost — handlers would
-        // never run for deltas that *were* successfully persisted.
-        // Stale `dag_heads` in the database is recoverable (the next
-        // sync session overwrites them); silently dropped events are
-        // not. This mirrors the original `get_missing_parents` behaviour
-        // (warn-and-continue) and fixes an equivalent latent bug that
-        // was present in the old inline `add_delta_internal` code (which
-        // `?`-propagated and lost the same events).
+        // The failure is logged rather than propagated: the applied
+        // deltas above have already been rewritten in the DB with
+        // `events: None`, so their event payloads now survive only in
+        // our return value. If we bailed out with `Err` here, the caller
+        // would drop the Vec and those events would be permanently lost
+        // — handlers would never run for deltas that *were* successfully
+        // persisted. Stale `dag_heads` in the database is recoverable
+        // (the next sync session overwrites them); silently dropped
+        // events are not. This mirrors the original `get_missing_parents`
+        // behaviour (warn-and-continue) and fixes an equivalent latent
+        // bug that was present in the old inline `add_delta_internal`
+        // code (which `?`-propagated and lost the same events).
         match self
             .applier
             .context_client
