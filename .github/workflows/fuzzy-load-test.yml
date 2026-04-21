@@ -16,7 +16,6 @@ on:
     paths:
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
-      - ".github/actions/setup-merobox/**"
   workflow_dispatch:
     inputs:
       duration_override:
