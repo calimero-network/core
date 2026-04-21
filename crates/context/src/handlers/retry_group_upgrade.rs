@@ -18,14 +18,20 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
         }: RetryGroupUpgradeRequest,
         ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Resolve requester: use provided value or fall back to node group identity
+        // Resolve requester: prefer provided, else the namespace identity, else
+        // the group's admin identity for orphaned groups (see issue #2174).
         let requester = match requester {
             Some(pk) => pk,
-            None => match self.node_namespace_identity(&group_id) {
+            None => match self
+                .node_namespace_identity(&group_id)
+                .or_else(|| self.node_group_admin_identity(&group_id))
+            {
                 Some((pk, _)) => pk,
                 None => {
                     return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no namespace identity"
+                        "cannot resolve node identity for group {group_id:?}: no requester \
+                         provided, no namespace identity reachable (group may be orphaned — \
+                         try nest_group first), and node holds no admin signing key for this group"
                     )))
                 }
             },

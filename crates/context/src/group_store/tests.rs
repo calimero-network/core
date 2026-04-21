@@ -2454,6 +2454,107 @@ fn preflight_fails_for_nonexistent_group() {
 }
 
 // -----------------------------------------------------------------------
+// Orphan fallback — identity resolution for groups whose parent chain has
+// been severed (unnest_group with no subsequent nest_group). Without this
+// fallback, delete_group and sibling handlers bail with "requester not
+// provided and node has no configured group identity" even though the
+// group's admin IS locally known and holds a signing key. See issue #2174.
+// -----------------------------------------------------------------------
+
+#[test]
+fn orphan_admin_identity_resolves_when_signing_key_held_locally() {
+    // Orphaned group: meta exists with admin_identity set, no parent edge,
+    // and this node holds the admin's signing key at the group level.
+    // Governance handlers must be able to resolve (admin_pk, sk) directly
+    // from group meta when the namespace walk terminates at the group.
+    let store = test_store();
+    let gid = ContextGroupId::from([0xF0; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let sk = [0xAA; 32];
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    store_group_signing_key(&store, &gid, &admin, &sk).unwrap();
+
+    // No parent edge — this is the orphan condition.
+    assert!(get_parent_group(&store, &gid).unwrap().is_none());
+
+    // Simulate node_group_admin_identity: read meta.admin_identity, look up
+    // its group-level signing key.
+    let loaded = load_group_meta(&store, &gid).unwrap().unwrap();
+    let resolved_sk = get_group_signing_key(&store, &gid, &loaded.admin_identity)
+        .unwrap()
+        .expect("admin signing key must be retrievable for orphan fallback");
+    assert_eq!(loaded.admin_identity, admin);
+    assert_eq!(resolved_sk, sk);
+
+    // Downstream: require_group_admin must accept the admin.
+    assert!(require_group_admin(&store, &gid, &admin).is_ok());
+}
+
+#[test]
+fn orphan_admin_identity_returns_none_when_no_local_signing_key() {
+    // Orphan with admin_identity set but no local signing key for the admin:
+    // the fallback must NOT succeed (security: we never "pick" an identity
+    // for which we can't prove local possession of the signing key).
+    let store = test_store();
+    let gid = ContextGroupId::from([0xF0; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    // Intentionally no store_group_signing_key call.
+
+    let loaded = load_group_meta(&store, &gid).unwrap().unwrap();
+    let resolved_sk = get_group_signing_key(&store, &gid, &loaded.admin_identity).unwrap();
+    assert!(
+        resolved_sk.is_none(),
+        "orphan fallback must fail when no local signing key for admin_identity"
+    );
+}
+
+#[test]
+fn orphan_admin_identity_ignores_keys_for_non_admin_identities() {
+    // Node holds a group-level signing key for some identity that is NOT
+    // meta.admin_identity. The fallback must match ONLY on admin_identity
+    // and must not elevate the non-admin identity.
+    let store = test_store();
+    let gid = ContextGroupId::from([0xF0; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let other = PublicKey::from([0x02; 32]);
+    let other_sk = [0xBB; 32];
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &other, GroupMemberRole::Member).unwrap();
+    // Node holds a signing key for `other`, not for `admin`.
+    store_group_signing_key(&store, &gid, &other, &other_sk).unwrap();
+
+    let loaded = load_group_meta(&store, &gid).unwrap().unwrap();
+    // Fallback queries admin_identity — must return None (no key for admin).
+    assert!(get_group_signing_key(&store, &gid, &loaded.admin_identity)
+        .unwrap()
+        .is_none());
+    // require_group_admin must still reject `other` regardless.
+    assert!(require_group_admin(&store, &gid, &other).is_err());
+}
+
+#[test]
+fn orphan_admin_identity_returns_none_for_nonexistent_group() {
+    // Nonexistent group → load_group_meta returns None, fallback returns None.
+    let store = test_store();
+    let gid = ContextGroupId::from([0xF0; 32]);
+
+    assert!(load_group_meta(&store, &gid).unwrap().is_none());
+}
+
+// -----------------------------------------------------------------------
 // recursive_remove_member — cascade removal through group hierarchy
 // -----------------------------------------------------------------------
 

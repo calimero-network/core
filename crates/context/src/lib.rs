@@ -133,6 +133,29 @@ impl ContextManager {
         }
     }
 
+    /// Fallback identity resolver for groups whose parent chain has been severed
+    /// (orphans — `unnest_group` with no subsequent `nest_group`). Returns the
+    /// group's `meta.admin_identity` together with its locally-stored signing
+    /// key iff the node legitimately holds that key at the group level.
+    ///
+    /// Security: returning `Some(..)` requires both (a) the public record that
+    /// this identity is the group's canonical admin, and (b) local possession
+    /// of the corresponding private key. Both conditions mirror what
+    /// `node_namespace_identity` demands for non-orphaned groups.
+    pub fn node_group_admin_identity(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
+        let meta = group_store::load_group_meta(&self.datastore, group_id)
+            .ok()
+            .flatten()?;
+        let sk =
+            group_store::get_group_signing_key(&self.datastore, group_id, &meta.admin_identity)
+                .ok()
+                .flatten()?;
+        Some((meta.admin_identity, sk))
+    }
+
     /// Get or create this node's identity for the namespace containing `group_id`.
     /// Generates a new keypair if none exists. Returns (namespace_id, public_key, private_key, sender_key).
     pub fn get_or_create_namespace_identity(
@@ -187,9 +210,14 @@ impl ContextManager {
             Some(pk) => pk,
             None => self
                 .node_namespace_identity(group_id)
+                .or_else(|| self.node_group_admin_identity(group_id))
                 .map(|(pk, _)| pk)
                 .ok_or_else(|| {
-                    eyre::eyre!("requester not provided and node has no configured group identity")
+                    eyre::eyre!(
+                        "cannot resolve node identity for group {group_id:?}: no requester \
+                         provided, no namespace identity reachable (group may be orphaned — \
+                         try nest_group first), and node holds no admin signing key for this group"
+                    )
                 })?,
         };
 

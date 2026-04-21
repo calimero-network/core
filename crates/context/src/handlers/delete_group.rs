@@ -19,7 +19,12 @@ impl Handler<DeleteGroupRequest> for ContextManager {
         }: DeleteGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_namespace_identity(&group_id);
+        // Resolve implicit node identity: prefer the namespace identity, then
+        // fall back to the group's admin identity if the parent chain has been
+        // severed (see issue #2174 — orphaned groups).
+        let node_identity = self
+            .node_namespace_identity(&group_id)
+            .or_else(|| self.node_group_admin_identity(&group_id));
 
         // Resolve requester: use provided value or fall back to node group identity
         let requester = match requester {
@@ -28,7 +33,9 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                 Some((pk, _)) => pk,
                 None => {
                     return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured group identity"
+                        "cannot resolve node identity for group {group_id:?}: no requester \
+                         provided, no namespace identity reachable (group may be orphaned — \
+                         try nest_group first), and node holds no admin signing key for this group"
                     )))
                 }
             },

@@ -157,6 +157,9 @@ jobs:
           - workflow: group-nesting
             file: workflows/group-nesting.yml
             app: e2e-kv-store
+          - workflow: group-orphan-delete
+            file: workflows/group-orphan-delete.yml
+            app: e2e-kv-store
           - workflow: group-multi-service
             file: workflows/group-multi-service.yml
             app: e2e-kv-store

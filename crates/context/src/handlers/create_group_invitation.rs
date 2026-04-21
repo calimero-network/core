@@ -22,7 +22,12 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         }: CreateGroupInvitationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_namespace_identity(&group_id);
+        // Resolve implicit node identity: prefer the namespace identity, then
+        // fall back to the group's admin identity for orphaned groups
+        // (see issue #2174).
+        let node_identity = self
+            .node_namespace_identity(&group_id)
+            .or_else(|| self.node_group_admin_identity(&group_id));
 
         let requester = match requester {
             Some(pk) => pk,
@@ -30,7 +35,9 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 Some((pk, _)) => pk,
                 None => {
                     return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured group identity"
+                        "cannot resolve node identity for group {group_id:?}: no requester \
+                         provided, no namespace identity reachable (group may be orphaned — \
+                         try nest_group first), and node holds no admin signing key for this group"
                     )))
                 }
             },

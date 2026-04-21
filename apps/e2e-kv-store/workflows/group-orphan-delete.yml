@@ -1,0 +1,91 @@
+name: E2E KV Store - Orphaned Group Deletion
+description: >
+  Regression test for issue #2174 — delete_group must work on orphaned
+  (unparented) groups. Before the fix, the handler's implicit-requester
+  resolution walked the parent chain up to a namespace root; a group whose
+  parent edge had been removed (unnest_group with no subsequent nest_group)
+  was effectively undeletable because no namespace identity could be resolved.
+
+  The scenario reproduces the exact sequence from the issue:
+    1. create_namespace
+    2. create_group_in_namespace  (group is nested under namespace)
+    3. unnest_group               (group is now orphaned — no parent edge)
+    4. delete_group               (must succeed via admin_identity fallback)
+  Without the fix, step 4 fails with:
+    "requester not provided and node has no configured group identity"
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 1
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  - name: Create child group in namespace
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: orphan-target
+    outputs:
+      child_id: groupId
+
+  - name: Assert child group created
+    type: assert
+    statements:
+      - "is_set({{child_id}})"
+
+  - name: Unnest child from namespace (orphan the group)
+    type: unnest_group
+    node: e2e-node-1
+    parent_group_id: '{{namespace_id}}'
+    child_group_id: '{{child_id}}'
+
+  - name: Assert child is no longer listed as a subgroup
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      subs_after_unnest: subgroups
+
+  - name: Confirm namespace has no subgroups
+    type: json_assert
+    statements:
+      - 'json_equal({{subs_after_unnest}}, [])'
+
+  # The critical step: before fix #2174 this fails with
+  # "requester not provided and node has no configured group identity".
+  # After the fix, the admin_identity fallback resolves the node's
+  # local signing key for the group's admin and delete succeeds.
+  - name: Delete orphaned group (regression test for #2174)
+    type: delete_group
+    node: e2e-node-1
+    group_id: '{{child_id}}'
+
+stop_all_nodes: false

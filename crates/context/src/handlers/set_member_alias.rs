@@ -17,14 +17,23 @@ impl Handler<SetMemberAliasRequest> for ContextManager {
         }: SetMemberAliasRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Resolve the requester identity to check alias ownership.
+        // Resolve the requester identity to check alias ownership. Prefer the
+        // namespace identity, then fall back to the group's admin identity
+        // for orphaned groups (see issue #2174). The subsequent ownership
+        // check (`resolved_requester != member`) still enforces that a member
+        // can only set their own alias.
         let resolved_requester = match requester {
             Some(pk) => pk,
-            None => match self.node_namespace_identity(&group_id) {
+            None => match self
+                .node_namespace_identity(&group_id)
+                .or_else(|| self.node_group_admin_identity(&group_id))
+            {
                 Some((pk, _)) => pk,
                 None => {
                     return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured group identity"
+                        "cannot resolve node identity for group {group_id:?}: no requester \
+                         provided, no namespace identity reachable (group may be orphaned — \
+                         try nest_group first), and node holds no admin signing key for this group"
                     )));
                 }
             },
