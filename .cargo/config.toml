@@ -1,0 +1,28 @@
+# Workspace-local cargo config.
+#
+# `librocksdb-sys` pulls in `bindgen` → `clang-sys`. `clang-sys` in
+# `runtime` mode uses `libloading::dlopen` to load `libclang` at
+# build-script runtime. Its search order: `LIBCLANG_PATH`, then
+# `llvm-config`, then a handful of platform-default paths. macOS
+# doesn't ship libclang in any default path and Homebrew's `llvm`
+# formula lives under `/opt/homebrew/opt/llvm/lib` (Apple Silicon) or
+# `/usr/local/opt/llvm/lib` (Intel). We surface both via
+# `LIBCLANG_PATH` so `cargo check` / `cargo build` work on any mac
+# after `brew install llvm` — no shell-profile tweaks needed.
+#
+# Linux hosts don't need this — `libclang.so.1` is on the default
+# loader path via distro packages (`libclang-dev`, etc).
+#
+# `DYLD_*` env vars can't help here: macOS SIP strips them when cargo
+# execs the build-script binary. `LIBCLANG_PATH` is a regular env var
+# that clang-sys reads directly, so it survives.
+#
+# The companion fix lives in the root `Cargo.toml`:
+#   rocksdb = { features = ["bindgen-runtime"], ... }
+# Without that, `bindgen 0.72`'s `runtime` feature is OFF for
+# librocksdb-sys but clang-sys is compiled with `runtime` ON (via
+# wasmer's bindgen 0.70 — features unify across the shared
+# `clang-sys v1`). The result is a runtime panic:
+# "a libclang shared library is not loaded on this thread".
+[env]
+LIBCLANG_PATH = { value = "/opt/homebrew/opt/llvm/lib:/usr/local/opt/llvm/lib", force = false, relative = false }

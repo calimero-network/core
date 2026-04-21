@@ -1168,6 +1168,43 @@ pub struct FleetJoinResponse {
     pub contexts_joined: Vec<String>,
 }
 
+/// Per-column on-disk byte estimates for a namespace.
+///
+/// Values are RocksDB approximations (`get_approximate_sizes_cf`) — sampled
+/// from SST metadata, not exact. Sufficient for quota enforcement, not for
+/// audit-level accounting. `total` is the sum of the individual column
+/// fields; callers can use it directly rather than re-summing.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceUsageBytes {
+    pub state: u64,
+    pub private_state: u64,
+    pub delta: u64,
+    pub governance: u64,
+    pub total: u64,
+}
+
+/// Per-namespace resource usage on this node.
+/// Returned by `GET /admin-api/usage` in the `namespaces` list.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceUsage {
+    pub namespace_id: String,
+    pub context_count: u32,
+    pub member_count: u32,
+    pub subgroup_count: u32,
+    pub bytes: NamespaceUsageBytes,
+}
+
+/// Response for `GET /admin-api/usage`. Reports per-namespace counts + byte
+/// breakdown for every namespace this node participates in. Used by MDMA
+/// to enforce plan limits (e.g. 1 GB free tier) and for operator dashboards.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageResponse {
+    pub namespaces: Vec<NamespaceUsage>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeeInfoResponseData {

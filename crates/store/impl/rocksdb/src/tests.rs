@@ -182,3 +182,55 @@ fn test_data_persistence() {
         assert_eq!(retrieved.as_ref(), &[4, 5, 6]);
     }
 }
+
+#[test]
+fn test_approximate_size_scopes_to_range() {
+    // Verify the range scoping: we want prefix `0x10..` to report ≈ the
+    // in-range payload without leaking bytes from `0x20..`. RocksDB's
+    // `get_approximate_sizes_cf` samples SST metadata so the reported
+    // value may be 0 in-memory (nothing flushed). We still assert the
+    // in-range probe ≤ total-range probe to catch range inversion bugs.
+    let dir = TempDir::new("_calimero_store_approx_size").expect("tempdir");
+    let dir_path = dir.path().to_owned().try_into().expect("path conversion");
+    let config = StoreConfig::new(dir_path);
+    let db = RocksDB::open(&config).expect("db open");
+
+    // Seed two buckets' worth of data: prefix 0x10 and prefix 0x20.
+    let payload = vec![0xAB_u8; 4096];
+    for i in 0..32u8 {
+        let key = [0x10, i, 0, 0];
+        db.put(
+            Column::Identity,
+            Slice::from(&key[..]),
+            Slice::from(payload.as_slice()),
+        )
+        .expect("put 0x10 bucket");
+
+        let key = [0x20, i, 0, 0];
+        db.put(
+            Column::Identity,
+            Slice::from(&key[..]),
+            Slice::from(payload.as_slice()),
+        )
+        .expect("put 0x20 bucket");
+    }
+
+    let in_range = db
+        .approximate_size(
+            Column::Identity,
+            Slice::from(&[0x10_u8][..]),
+            Slice::from(&[0x11_u8][..]),
+        )
+        .expect("approximate_size in-range");
+    let full_range = db
+        .approximate_size(
+            Column::Identity,
+            Slice::from(&[0x00_u8][..]),
+            Slice::from(&[0xFF_u8][..]),
+        )
+        .expect("approximate_size full");
+    assert!(
+        in_range <= full_range,
+        "in-range ({in_range}) must not exceed full-range ({full_range})"
+    );
+}

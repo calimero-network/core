@@ -181,6 +181,21 @@ impl Database<'_> for RocksDB {
         Ok(Iter::new(DBIterator { ready: true, iter }))
     }
 
+    fn approximate_size(
+        &self,
+        col: Column,
+        start: Slice<'_>,
+        end: Slice<'_>,
+    ) -> EyreResult<u64> {
+        let cf_handle = self.try_cf_handle(col)?;
+        // `get_approximate_sizes_cf` samples SST metadata — no scan,
+        // typically sub-millisecond. Returns an estimate (+/- compaction
+        // lag for recent deletes); exact bytes would require a real scan.
+        let range = rocksdb::Range::new(start.as_ref(), end.as_ref());
+        let sizes = self.db.get_approximate_sizes_cf(cf_handle, &[range]);
+        Ok(sizes.into_iter().next().unwrap_or(0))
+    }
+
     fn apply(&self, tx: &Transaction<'_>) -> EyreResult<()> {
         let mut batch = WriteBatch::default();
 
