@@ -3,7 +3,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use super::read_op_log_after;
+use super::{read_op_log_after, resolve_namespace};
 
 /// Reconstructed TEE admission policy from the governance DAG.
 #[derive(Debug)]
@@ -17,12 +17,20 @@ pub struct TeeAdmissionPolicy {
     pub accept_mock: bool,
 }
 
-/// Read the most recent `TeeAdmissionPolicySet` from the group's governance op log.
+/// Read the TEE admission policy that applies to `group_id`.
+///
+/// Policies are namespace-scoped: the canonical policy lives on the namespace
+/// root's governance op log. Subgroups resolve to their root before reading,
+/// so any policy bytes that may exist on a subgroup's own log are intentionally
+/// ignored. See `project_subgroup_policy_decision.md` for the design rationale;
+/// auto-follow already propagates membership across subgroups without a second
+/// admission check, so per-subgroup policies were inert.
 pub fn read_tee_admission_policy(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<Option<TeeAdmissionPolicy>> {
-    let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
+    let root = resolve_namespace(store, group_id)?;
+    let entries = read_op_log_after(store, &root, 0, usize::MAX)?;
     let mut latest: Option<TeeAdmissionPolicy> = None;
 
     for (_seq, bytes) in &entries {

@@ -984,6 +984,16 @@ fn apply_group_op_mutations(
         }
         GroupOp::TeeAdmissionPolicySet { .. } => {
             permissions.require_admin(signer)?;
+            // TEE policies are namespace-scoped — refuse to apply an op
+            // targeting a subgroup even if it arrives via replication.
+            // Reader resolves to root anyway, so a stored subgroup op would
+            // be dead data; rejecting at apply time keeps state clean.
+            if self::namespace::get_parent_group(store, group_id)?.is_some() {
+                bail!(
+                    "TeeAdmissionPolicySet rejected on subgroup {group_id:?}: policy is \
+                     namespace-scoped, set it on the namespace root"
+                );
+            }
         }
         GroupOp::MemberJoinedViaTeeAttestation {
             member,
