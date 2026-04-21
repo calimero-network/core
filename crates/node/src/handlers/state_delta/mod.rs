@@ -327,9 +327,11 @@ pub async fn handle_state_delta(
         // present in `cascade_outcome.cascaded_events` (that collector only
         // surfaces deltas with persisted events to run handlers for), so
         // `applied_current` stays false even though the DAG state reflects
-        // a successful apply. Consult the DAG directly to cover that case
-        // before we decide whether to warn.
-        if !applied && delta_store_ref.dag_has_delta_applied(&delta_id).await {
+        // a successful apply. Check `missing_result.cascaded_ids` (the
+        // full set of cascaded deltas produced by `get_missing_parents`,
+        // including events-less ones) instead of re-acquiring the DAG
+        // read lock via `dag_has_delta_applied`.
+        if !applied && missing_result.cascaded_ids.contains(&delta_id) {
             info!(
                 %context_id,
                 delta_id = ?delta_id,
