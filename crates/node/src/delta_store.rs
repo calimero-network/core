@@ -706,8 +706,7 @@ impl DeltaStore {
 
         // Track which deltas are currently pending BEFORE we add the new delta
         // This lets us detect which pending deltas got applied during the cascade
-        let pending_before: std::collections::HashSet<[u8; 32]> =
-            dag.get_pending_delta_ids().into_iter().collect();
+        let pending_before: HashSet<[u8; 32]> = dag.get_pending_delta_ids().into_iter().collect();
 
         // If parents are missing, `result` will be FALSE, and `dag` internally stores it as
         // pending.
@@ -718,7 +717,7 @@ impl DeltaStore {
 
         // Get list of deltas that were pending but are now applied (cascade effect)
         let cascaded_deltas: Vec<[u8; 32]> = if !pending_before.is_empty() {
-            let pending_after: std::collections::HashSet<[u8; 32]> =
+            let pending_after: HashSet<[u8; 32]> =
                 dag.get_pending_delta_ids().into_iter().collect();
             pending_before.difference(&pending_after).copied().collect()
         } else {

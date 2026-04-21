@@ -323,6 +323,29 @@ pub async fn handle_state_delta(
         applied |= cascade_outcome.applied_current;
         handlers_already_executed |= cascade_outcome.handlers_executed_for_current;
 
+        // Events-less deltas that the cascade applied to the DAG are not
+        // present in `cascade_outcome.cascaded_events` (that collector only
+        // surfaces deltas with persisted events to run handlers for), so
+        // `applied_current` stays false even though the DAG state reflects
+        // a successful apply. Consult the DAG directly to cover that case
+        // before we decide whether to warn.
+        if !applied && delta_store_ref.dag_has_delta_applied(&delta_id).await {
+            info!(
+                %context_id,
+                delta_id = ?delta_id,
+                "Delta was applied via cascade - will execute handlers"
+            );
+            applied = true;
+
+            if !handlers_already_executed && events.is_some() {
+                info!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    "Delta cascaded via alternate path - handlers will be executed in main flow"
+                );
+            }
+        }
+
         if !missing_result.missing_ids.is_empty() {
             warn!(
                 %context_id,
@@ -356,24 +379,6 @@ pub async fn handle_state_delta(
                 has_events = events.is_some(),
                 "Delta pending - parents exist but child did not apply during cascade"
             );
-        }
-
-        let was_cascaded = delta_store_ref.dag_has_delta_applied(&delta_id).await;
-        if was_cascaded {
-            info!(
-                %context_id,
-                delta_id = ?delta_id,
-                "Delta was applied via cascade - will execute handlers"
-            );
-            applied = true;
-
-            if !handlers_already_executed && events.is_some() {
-                info!(
-                    %context_id,
-                    delta_id = ?delta_id,
-                    "Delta cascaded via alternate path - handlers will be executed in main flow"
-                );
-            }
         }
     }
 
