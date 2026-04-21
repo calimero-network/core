@@ -85,7 +85,6 @@ steps:
       - calimero-node-2
       - calimero-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 8: Execute a contract call to set a key-value pair
@@ -110,7 +109,6 @@ steps:
       - calimero-node-2
       - calimero-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 10: Execute a view call to retrieve the stored value from node 2
@@ -156,7 +154,6 @@ steps:
       - calimero-node-2
       - calimero-node-3
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # Step 14: Verify the node 3 value can be read from other nodes
@@ -196,7 +193,6 @@ steps:
           - calimero-node-2
           - calimero-node-3
         timeout: 60
-        check_interval: 2
         trigger_sync: true
 
       - name: Get Key-Value Pair from Node 2

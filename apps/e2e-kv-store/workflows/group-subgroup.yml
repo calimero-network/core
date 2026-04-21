@@ -102,7 +102,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node-2 reads root context value
@@ -191,7 +190,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node-2 reads subgroup context value
@@ -259,7 +257,6 @@ steps:
       - e2e-node-1
       - e2e-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node-1 reads post-subgroup key

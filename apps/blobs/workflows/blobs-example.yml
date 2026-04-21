@@ -109,7 +109,6 @@ steps:
       - node-blob-1
       - node-blob-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # ============================================================================
@@ -136,7 +135,6 @@ steps:
       - node-blob-1
       - node-blob-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: List Files from Invitee Node
@@ -303,7 +301,6 @@ steps:
       - node-blob-1
       - node-blob-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: List Files After Deletion (Inviter)
@@ -326,7 +323,6 @@ steps:
       - node-blob-1
       - node-blob-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: List Files After Deletion (Invitee)

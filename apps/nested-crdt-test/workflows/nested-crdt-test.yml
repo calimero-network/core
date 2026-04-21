@@ -61,7 +61,6 @@ steps:
       - nested-node-1
       - nested-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get counter from Node 2 after concurrent
@@ -108,7 +107,6 @@ steps:
       - nested-node-1
       - nested-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get status from Node 1
@@ -143,7 +141,6 @@ steps:
       - nested-node-1
       - nested-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node 2 sets doc-1 author
@@ -163,7 +160,6 @@ steps:
       - nested-node-1
       - nested-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Verify both fields present on Node 1
@@ -217,7 +213,6 @@ steps:
       - nested-node-1
       - nested-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get metrics length from Node 2
@@ -278,7 +273,6 @@ steps:
       - nested-node-1
       - nested-node-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Get tag count from Node 2

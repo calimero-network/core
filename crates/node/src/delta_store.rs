@@ -1112,10 +1112,8 @@ impl DeltaStore {
 
             let pending_after: std::collections::HashSet<[u8; 32]> =
                 dag.get_pending_delta_ids().into_iter().collect();
-            let cascaded: Vec<[u8; 32]> = pending_before
-                .difference(&pending_after)
-                .copied()
-                .collect();
+            let cascaded: Vec<[u8; 32]> =
+                pending_before.difference(&pending_after).copied().collect();
             drop(dag);
 
             // Persist each cascaded delta as applied (clearing any stored
@@ -1124,10 +1122,8 @@ impl DeltaStore {
             if !cascaded.is_empty() {
                 let mut handle = self.applier.context_client.datastore_handle();
                 for cid in &cascaded {
-                    let db_key = calimero_store::key::ContextDagDelta::new(
-                        self.applier.context_id,
-                        *cid,
-                    );
+                    let db_key =
+                        calimero_store::key::ContextDagDelta::new(self.applier.context_id, *cid);
                     match handle.get(&db_key) {
                         Ok(Some(stored)) => {
                             if let Some(ref events_data) = stored.events {

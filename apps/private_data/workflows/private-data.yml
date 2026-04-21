@@ -55,7 +55,6 @@ steps:
       - rust-private-data-1
       - rust-private-data-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node 1 Get Own Secrets
@@ -91,7 +90,6 @@ steps:
       - rust-private-data-1
       - rust-private-data-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node 2 Get Games
@@ -136,7 +134,6 @@ steps:
       - rust-private-data-1
       - rust-private-data-2
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Node 1 Get Own Secrets Again

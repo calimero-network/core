@@ -116,7 +116,6 @@ steps:
     context_id: "{{ctx}}"
     nodes: [sync6-1, sync6-2, sync6-3]
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   # ============================================
@@ -149,7 +148,6 @@ steps:
     context_id: "{{ctx}}"
     nodes: [sync6-1, sync6-2, sync6-3]
     timeout: 60
-    check_interval: 2
     trigger_sync: true
 
   - name: Verify N1 count=3
@@ -219,7 +217,6 @@ steps:
     context_id: "{{ctx}}"
     nodes: [sync6-1, sync6-2, sync6-3, sync6-4, sync6-5, sync6-6]
     timeout: 120
-    check_interval: 3
     trigger_sync: true
 
   # Late joiners must see the 3 existing entries
@@ -300,7 +297,6 @@ steps:
     context_id: "{{ctx}}"
     nodes: [sync6-1, sync6-2, sync6-3, sync6-4, sync6-5, sync6-6]
     timeout: 120
-    check_interval: 3
     trigger_sync: true
 
   # ============================================
@@ -384,7 +380,6 @@ steps:
     context_id: "{{ctx}}"
     nodes: [sync6-4, sync6-6]
     timeout: 60
-    check_interval: 3
     trigger_sync: true
 
   - name: N4 reads invitation
