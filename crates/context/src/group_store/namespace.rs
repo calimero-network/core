@@ -88,11 +88,18 @@ pub fn get_parent_group(
     Ok(handle.get(&key)?.map(ContextGroupId::from))
 }
 
-/// Record that `child` is nested inside `parent`. Both directions are stored
-/// so we can query parent→children and child→parent.
+/// **Test/legacy helper.** Direct store write of a parent edge.
 ///
-/// Rejects the operation if it would create a cycle (child is already an
-/// ancestor of parent) or if child already has a parent.
+/// Production code MUST emit `RootOp::GroupCreated { parent_id }` or
+/// `RootOp::GroupReparented` instead — both go through the governance op
+/// layer where the strict-tree invariant is enforced. Calling this fn
+/// from a handler would bypass that enforcement.
+///
+/// Kept `pub` only because integration tests in `crates/context/tests/`
+/// use it to set up store state for non-orphan-related scenarios.
+///
+/// Hidden from rustdoc to discourage discovery.
+#[doc(hidden)]
 pub fn nest_group(
     store: &Store,
     parent_group_id: &ContextGroupId,
@@ -131,7 +138,18 @@ pub fn nest_group(
     Ok(())
 }
 
-/// Remove a nesting relationship.
+/// **Test/legacy helper.** Direct store delete of a parent edge.
+///
+/// Production code MUST emit `RootOp::GroupReparented` (atomic edge swap)
+/// or `RootOp::GroupDeleted` (which clears the edge as part of cascade).
+/// Calling this fn from a handler would create an orphan and violate the
+/// strict-tree invariant.
+///
+/// Kept `pub` only because integration tests in `crates/context/tests/`
+/// reference it.
+///
+/// Hidden from rustdoc to discourage discovery.
+#[doc(hidden)]
 pub fn unnest_group(
     store: &Store,
     parent_group_id: &ContextGroupId,
