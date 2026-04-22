@@ -211,27 +211,39 @@ preserve_to_host_mount() {
     # merobox manager.py), and graceful shutdown removes the runtime
     # container before the GHA collector runs — so anything left only in
     # /profiling/{data,reports} is lost.
+    #
+    # Must not fail under `set -e` even if the copy partially fails —
+    # this runs right before `exit $EXIT_CODE` in the mainline path, and
+    # a non-zero return here would replace merod's real exit code with
+    # the copy error.
     local host_mount="${CALIMERO_HOME:-/app/data}"
     if [ ! -d "$host_mount" ]; then
         echo "[Profiling] Host mount $host_mount not present, skipping preserve step"
-        return
+        return 0
     fi
     local dest="$host_mount/profiling-dump"
-    mkdir -p "$dest" 2>/dev/null || {
-        echo "[Profiling] WARNING: could not create $dest"
-        return
-    }
+    if ! mkdir -p "$dest" 2>/tmp/preserve.err; then
+        echo "[Profiling] WARNING: could not create $dest: $(head -1 /tmp/preserve.err 2>/dev/null)"
+        return 0
+    fi
     if [ -d "$PROFILING_OUTPUT_DIR" ]; then
-        cp -r "$PROFILING_OUTPUT_DIR/." "$dest/" 2>/dev/null || true
+        if ! cp -r "$PROFILING_OUTPUT_DIR/." "$dest/" 2>/tmp/preserve.err; then
+            echo "[Profiling] WARNING: cp from $PROFILING_OUTPUT_DIR may be incomplete: $(head -3 /tmp/preserve.err 2>/dev/null | tr '\n' ' ')"
+        fi
     fi
     local reports_dir="${PROFILING_REPORTS_DIR:-/profiling/reports}"
     if [ -d "$reports_dir" ]; then
-        mkdir -p "$dest/reports" 2>/dev/null
-        cp -r "$reports_dir/." "$dest/reports/" 2>/dev/null || true
+        if ! mkdir -p "$dest/reports" 2>/tmp/preserve.err; then
+            echo "[Profiling] WARNING: could not create $dest/reports: $(head -1 /tmp/preserve.err 2>/dev/null)"
+        elif ! cp -r "$reports_dir/." "$dest/reports/" 2>/tmp/preserve.err; then
+            echo "[Profiling] WARNING: cp from $reports_dir may be incomplete: $(head -3 /tmp/preserve.err 2>/dev/null | tr '\n' ' ')"
+        fi
     fi
+    rm -f /tmp/preserve.err
     local size
     size=$(du -sh "$dest" 2>/dev/null | awk '{print $1}')
     echo "[Profiling] ✓ Preserved profiling data to $dest (${size:-unknown size})"
+    return 0
 }
 
 cleanup() {
