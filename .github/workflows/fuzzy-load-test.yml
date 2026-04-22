@@ -4,10 +4,28 @@ permissions:
   contents: read
 
 on:
+  # Fire after Release completes on master — whenever Release republishes
+  # `merod:edge-profiling` (which covers Cargo.toml/Lock, crates/**,
+  # release.yml itself, deps/**, actions/**, and scripts/profiling/**),
+  # we want fuzzy-load-test to run against the fresh image.
+  # Without this, changes to the profiling image (e.g. #2218, which only
+  # touched release.yml) rebuild the image but never exercise it in a
+  # fuzzy run.
+  # Gated on Release success via a job-level `if` below.
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+    branches: [master]
+  # Direct push trigger for paths that don't need a Release rebuild:
+  # - apps/** : app WASMs are compiled freshly in the Build Apps job,
+  #   not baked into the image, so no image rebuild is required.
+  # - workflows/fuzzy-tests/** and this workflow file: config-only.
+  # `crates/**` is intentionally omitted — Release already fires on it
+  # and rebuilds the image, and workflow_run below triggers fuzzy
+  # against the fresh image.
   push:
     branches: [master]
     paths:
-      - "crates/**"
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
@@ -56,6 +74,12 @@ jobs:
   build:
     name: Build Apps
     runs-on: ubuntu-24.04-8cpu
+    # When triggered via `workflow_run` (after Release completes), only
+    # proceed if Release succeeded — a failed Release means the
+    # edge-profiling image wasn't republished, and running fuzzy against
+    # a stale image is worse than not running at all. Other triggers
+    # (push to fuzzy-tests/** or workflow_dispatch) always run.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
