@@ -248,6 +248,14 @@ jobs:
             "profiling-data/kv-store" \
             "profiling-reports/kv-store"
 
+      - name: Collect profiling data from host-side bind mounts
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          chmod +x scripts/profiling/harvest-host-profiling.sh
+          ./scripts/profiling/harvest-host-profiling.sh \
+            "workflows/fuzzy-tests/kv-store/data" \
+            "profiling-data/kv-store"
+
       - name: Set test result
         id: set-result
         if: always()
@@ -449,6 +457,14 @@ jobs:
             "fuzzy-test-logs/kv-store-with-handlers" \
             "profiling-data/kv-store-with-handlers" \
             "profiling-reports/kv-store-with-handlers"
+
+      - name: Collect profiling data from host-side bind mounts
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          chmod +x scripts/profiling/harvest-host-profiling.sh
+          ./scripts/profiling/harvest-host-profiling.sh \
+            "workflows/fuzzy-tests/kv-store-with-handlers/data" \
+            "profiling-data/kv-store-with-handlers"
 
       - name: Set test result
         id: set-result-handlers

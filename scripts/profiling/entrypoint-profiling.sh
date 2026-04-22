@@ -146,8 +146,11 @@ stop_profiling() {
         if kill -0 "$perf_pid" 2>/dev/null; then
             kill -INT "$perf_pid" 2>/dev/null || true
             
+            # 15s, not 5s: a 45-minute perf.data can be hundreds of MB and
+            # the final flush on SIGINT may take longer than expected. Capping
+            # too low truncates the output file.
             local wait_count=0
-            while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 5 ]; do
+            while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 15 ]; do
                 sleep 1
                 wait_count=$((wait_count + 1))
             done
@@ -205,27 +208,91 @@ stop_profiling() {
     fi
 }
 
+preserve_to_host_mount() {
+    # Copy profiling data under $CALIMERO_HOME so it survives container
+    # removal. /profiling/{data,reports} lives on the container rootfs and
+    # is lost when the container is removed — which happens during merobox
+    # graceful shutdown, before the GHA collector reaches the container.
+    #
+    # $CALIMERO_HOME resolves to a persistent path in both deployments:
+    #   - Merobox (CI): passes CALIMERO_HOME=/app/data and bind-mounts the
+    #     host dir workflows/fuzzy-tests/<test>/data/<node>/ to /app/data
+    #     (see merobox manager.py).
+    #   - Standalone docker run: prebuilt.profiling.Dockerfile sets
+    #     ENV CALIMERO_HOME=/data and VOLUME /data, so the path lives on a
+    #     Docker-managed volume even without explicit -v.
+    # We intentionally don't supply a fallback — if CALIMERO_HOME is unset,
+    # we'd only be guessing, and silent writes to the wrong path would
+    # defeat the point of this function.
+    #
+    # Must not fail under `set -e` even if the copy partially fails —
+    # this runs right before `exit $EXIT_CODE` in the mainline path, and
+    # a non-zero return here would replace merod's real exit code with
+    # the copy error.
+    local host_mount="${CALIMERO_HOME:-}"
+    if [ -z "$host_mount" ]; then
+        echo "[Profiling] CALIMERO_HOME is unset — cannot locate persistent dir, skipping preserve step"
+        return 0
+    fi
+    if [ ! -d "$host_mount" ]; then
+        echo "[Profiling] CALIMERO_HOME=$host_mount is not a directory, skipping preserve step"
+        return 0
+    fi
+    # mktemp instead of a fixed /tmp path — avoids a symlink race where a
+    # pre-existing /tmp/preserve.err symlink would redirect our 2> into an
+    # arbitrary file (CWE-377). Low risk inside a single-root container, but
+    # free to fix and keeps the function consistent with harvest-host-profiling.sh.
+    local err_file
+    err_file=$(mktemp -t preserve.err.XXXXXX 2>/dev/null) || err_file=/dev/null
+    local dest="$host_mount/profiling-dump"
+    if ! mkdir -p "$dest" 2>"$err_file"; then
+        echo "[Profiling] WARNING: could not create $dest: $(head -1 "$err_file" 2>/dev/null)"
+        [ "$err_file" != /dev/null ] && rm -f "$err_file"
+        return 0
+    fi
+    if [ -d "$PROFILING_OUTPUT_DIR" ]; then
+        if ! cp -r "$PROFILING_OUTPUT_DIR/." "$dest/" 2>"$err_file"; then
+            echo "[Profiling] WARNING: cp from $PROFILING_OUTPUT_DIR may be incomplete: $(head -3 "$err_file" 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+    local reports_dir="${PROFILING_REPORTS_DIR:-/profiling/reports}"
+    if [ -d "$reports_dir" ]; then
+        if ! mkdir -p "$dest/reports" 2>"$err_file"; then
+            echo "[Profiling] WARNING: could not create $dest/reports: $(head -1 "$err_file" 2>/dev/null)"
+        elif ! cp -r "$reports_dir/." "$dest/reports/" 2>"$err_file"; then
+            echo "[Profiling] WARNING: cp from $reports_dir may be incomplete: $(head -3 "$err_file" 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+    [ "$err_file" != /dev/null ] && rm -f "$err_file"
+    local size
+    size=$(du -sh "$dest" 2>/dev/null | awk '{print $1}')
+    echo "[Profiling] ✓ Preserved profiling data to $dest (${size:-unknown size})"
+    return 0
+}
+
 cleanup() {
     local signal_exit_code=$?
     echo "[Profiling] Received signal, cleaning up..."
-    
+
     stop_profiling
-    
+
     if [ -n "$MAIN_PID" ] && kill -0 "$MAIN_PID" 2>/dev/null; then
         echo "[Profiling] Stopping main process (PID: $MAIN_PID)..."
         kill -TERM "$MAIN_PID" 2>/dev/null || true
-        
+
         local wait_count=0
         while kill -0 "$MAIN_PID" 2>/dev/null && [ $wait_count -lt 10 ]; do
             sleep 1
             wait_count=$((wait_count + 1))
         done
-        
+
         if kill -0 "$MAIN_PID" 2>/dev/null; then
             kill -KILL "$MAIN_PID" 2>/dev/null || true
         fi
     fi
-    
+
+    preserve_to_host_mount
+
     if [ "$EXIT_CODE" -ne 0 ]; then
         exit $EXIT_CODE
     elif [ "$signal_exit_code" -ne 0 ]; then
@@ -312,8 +379,9 @@ if [ "$ENABLE_PROFILING" = "true" ] && [ "$ENABLE_PERF" = "true" ] && [ "$SHOULD
     
     wait $MAIN_PID
     EXIT_CODE=$?
-    
+
     stop_profiling
+    preserve_to_host_mount
     exit $EXIT_CODE
 else
     exec "$@"
