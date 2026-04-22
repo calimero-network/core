@@ -281,6 +281,44 @@ pub fn resolve_namespace(store: &Store, group_id: &ContextGroupId) -> EyreResult
     )
 }
 
+/// Result of subtree enumeration. `descendant_groups` does NOT include the
+/// root itself. Order is children-first (deepest descendants come first),
+/// matching the order required by `execute_group_deleted` for safe child-index
+/// cleanup.
+#[derive(Debug, Clone)]
+pub struct CascadePayload {
+    pub descendant_groups: Vec<ContextGroupId>,
+    pub contexts: Vec<ContextId>,
+}
+
+/// Walk the subtree rooted at `root` and return:
+/// - every descendant `group_id` in children-first order (deepest first)
+/// - every `context_id` registered on `root` or any descendant
+///
+/// Used by the `delete_group` handler to build the `GroupDeleted` op
+/// payload, and by `execute_group_deleted` to verify deterministic
+/// application across peers.
+pub fn collect_subtree_for_cascade(
+    store: &Store,
+    root: &ContextGroupId,
+) -> EyreResult<CascadePayload> {
+    let mut contexts: Vec<ContextId> = Vec::new();
+    contexts.extend(super::enumerate_group_contexts(store, root, 0, usize::MAX)?);
+
+    // BFS to enumerate descendants. Reverse afterwards for children-first order.
+    let mut bfs_order: Vec<ContextGroupId> = Vec::new();
+    let mut frontier = vec![*root];
+    while let Some(g) = frontier.pop() {
+        for child in list_child_groups(store, &g)? {
+            bfs_order.push(child);
+            frontier.push(child);
+            contexts.extend(super::enumerate_group_contexts(store, &child, 0, usize::MAX)?);
+        }
+    }
+    let descendant_groups = bfs_order.into_iter().rev().collect();
+    Ok(CascadePayload { descendant_groups, contexts })
+}
+
 /// Atomically swap the parent of `child` to `new_parent`.
 ///
 /// Replaces the old `nest_group` + `unnest_group` two-step pattern with a

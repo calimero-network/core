@@ -3010,6 +3010,56 @@ fn reparent_group_rejects_nonexistent_new_parent() {
 }
 
 #[test]
+fn collect_subtree_for_cascade_empty_subtree() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xF0; 32]);
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+
+    let payload = collect_subtree_for_cascade(&store, &root).unwrap();
+    assert!(payload.descendant_groups.is_empty());
+    assert!(payload.contexts.is_empty());
+}
+
+#[test]
+fn collect_subtree_for_cascade_two_level_tree() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xF0; 32]);
+    let mid = ContextGroupId::from([0xF1; 32]);
+    let leaf = ContextGroupId::from([0xF2; 32]);
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    save_group_meta(&store, &mid, &test_meta()).unwrap();
+    save_group_meta(&store, &leaf, &test_meta()).unwrap();
+    nest_group(&store, &root, &mid).unwrap();
+    nest_group(&store, &mid, &leaf).unwrap();
+
+    let payload = collect_subtree_for_cascade(&store, &root).unwrap();
+    assert_eq!(payload.descendant_groups.len(), 2);
+    let leaf_pos = payload.descendant_groups.iter().position(|g| g == &leaf).unwrap();
+    let mid_pos = payload.descendant_groups.iter().position(|g| g == &mid).unwrap();
+    assert!(leaf_pos < mid_pos, "expected children-first; leaf={leaf_pos} mid={mid_pos}");
+}
+
+#[test]
+fn collect_subtree_for_cascade_includes_contexts_from_all_groups() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xF0; 32]);
+    let child = ContextGroupId::from([0xF1; 32]);
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    nest_group(&store, &root, &child).unwrap();
+
+    let ctx_root = ContextId::from([0x10; 32]);
+    let ctx_child = ContextId::from([0x11; 32]);
+    register_context_in_group(&store, &root, &ctx_root).unwrap();
+    register_context_in_group(&store, &child, &ctx_child).unwrap();
+
+    let payload = collect_subtree_for_cascade(&store, &root).unwrap();
+    assert!(payload.contexts.contains(&ctx_root));
+    assert!(payload.contexts.contains(&ctx_child));
+    assert_eq!(payload.contexts.len(), 2);
+}
+
+#[test]
 fn delete_all_group_members_removes_every_member() {
     let store = test_store();
     let gid = ContextGroupId::from([0xC0; 32]);
