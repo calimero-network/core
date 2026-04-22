@@ -1214,13 +1214,15 @@ impl DeltaStore {
     /// parent just applied via `get_missing_parents`'s Add path):
     /// - The in-memory DAG body (in `applied_bodies`) is the authoritative
     ///   source; the DB may or may not already contain a record.
-    /// - Any existing DB record's `events` column is read and forwarded in
-    ///   the return value (so the caller can run handlers) before the
-    ///   record is rewritten with `applied: true, events: None`.
-    ///   Events-less deltas are never pre-persisted, so a missing DB
-    ///   record is normal for the cascade path — the helper rebuilds the
-    ///   full record from the in-memory body. Add-path parents always
-    ///   have a DB record present (phase 1 loaded it).
+    /// - Any existing DB record's `events` column is read, forwarded in
+    ///   the return value (so the caller can run handlers), AND kept in
+    ///   the rewritten DB record as `events: Some(..)`. Events are only
+    ///   cleared (via `mark_events_executed`) after the caller confirms
+    ///   handler execution succeeded — this is the crash-safety contract
+    ///   from #2185. Events-less deltas are never pre-persisted, so a
+    ///   missing DB record is normal for the cascade path — the helper
+    ///   rebuilds the full record from the in-memory body. Add-path
+    ///   parents always have a DB record present (phase 1 loaded it).
     ///
     /// After the loop, `update_dag_heads` is called unconditionally with
     /// the supplied `heads`. Pass an empty slice when you only need the
@@ -1299,6 +1301,13 @@ impl DeltaStore {
                     forwarded_events.push((*cid, events_data.clone()));
                 }
 
+                // Preserve `events` in the DB until handler execution is
+                // confirmed by the caller (#2185). If we crash between
+                // this write and `execute_cascaded_events` succeeding,
+                // the next `load_persisted_deltas` / cascade scan will
+                // find `applied: true, events: Some(..)` and replay the
+                // handlers. `mark_events_executed` clears the column
+                // once handlers have run.
                 let record = calimero_store::types::ContextDagDelta {
                     delta_id: *cid,
                     parents: applied_delta.parents.clone(),
@@ -1306,7 +1315,7 @@ impl DeltaStore {
                     hlc: applied_delta.hlc,
                     applied: true,
                     expected_root_hash: applied_delta.expected_root_hash,
-                    events: None, // Cleared — caller will run handlers.
+                    events: stored_events.clone(),
                 };
                 if let Err(e) = handle.put(&db_key, &record) {
                     warn!(
@@ -1329,18 +1338,13 @@ impl DeltaStore {
         // `broadcast_heartbeat` see the post-cascade state. Failing to
         // do this was the original bug behind #2178.
         //
-        // The failure is logged rather than propagated: the applied
-        // deltas above have already been rewritten in the DB with
-        // `events: None`, so their event payloads now survive only in
-        // our return value. If we bailed out with `Err` here, the caller
-        // would drop the Vec and those events would be permanently lost
-        // — handlers would never run for deltas that *were* successfully
-        // persisted. Stale `dag_heads` in the database is recoverable
-        // (the next sync session overwrites them); silently dropped
-        // events are not. This mirrors the original `get_missing_parents`
-        // behaviour (warn-and-continue) and fixes an equivalent latent
-        // bug that was present in the old inline `add_delta_internal`
-        // code (which `?`-propagated and lost the same events).
+        // The failure is logged rather than propagated to match
+        // `get_missing_parents`'s warn-and-continue behaviour. Stale
+        // `dag_heads` is recoverable (the next sync session overwrites
+        // them). Since #2185, events are preserved in the DB record
+        // until the caller confirms handler execution, so a failure
+        // here no longer risks losing the event payloads — they still
+        // live in both the in-memory Vec we return *and* in the DB.
         match self
             .applier
             .context_client
@@ -1359,6 +1363,87 @@ impl DeltaStore {
         }
 
         forwarded_events
+    }
+
+    /// Mark a delta's events as executed by clearing its `events` column
+    /// in the DB. Called by `execute_cascaded_events` after the handler
+    /// for this delta runs successfully (#2185).
+    ///
+    /// Failures are logged, not propagated: if the clear fails, the
+    /// worst case is a duplicate handler run on the next restart (the
+    /// record still shows `applied: true, events: Some(..)` and the
+    /// replay path will pick it up). That's strictly less bad than
+    /// losing events, which is the bug #2185 fixes.
+    pub fn mark_events_executed(&self, delta_id: &[u8; 32]) {
+        let mut handle = self.applier.context_client.datastore_handle();
+        let db_key = calimero_store::key::ContextDagDelta::new(self.applier.context_id, *delta_id);
+
+        let stored = match handle.get(&db_key) {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                // Events-less deltas aren't pre-persisted, so the helper
+                // would have rebuilt the record before this point. Absent
+                // here means another code path raced us; nothing to do.
+                return;
+            }
+            Err(e) => {
+                warn!(
+                    ?e,
+                    context_id = %self.applier.context_id,
+                    delta_id = ?delta_id,
+                    "Failed to read DB for events clear; next restart will replay"
+                );
+                return;
+            }
+        };
+
+        if stored.events.is_none() {
+            return;
+        }
+
+        let record = calimero_store::types::ContextDagDelta {
+            events: None,
+            ..stored
+        };
+        if let Err(e) = handle.put(&db_key, &record) {
+            warn!(
+                ?e,
+                context_id = %self.applier.context_id,
+                delta_id = ?delta_id,
+                "Failed to clear events after handler execution; next restart will replay"
+            );
+        }
+    }
+
+    /// Scan the DB for deltas that have `applied: true, events: Some(..)`
+    /// — records whose handlers were interrupted between the DB write in
+    /// `persist_cascaded_deltas_and_update_heads` and the
+    /// `execute_cascaded_events` call that would have cleared the column.
+    /// Returns `(delta_id, events_blob)` pairs for the caller to replay
+    /// through `execute_cascaded_events` (#2185 restart recovery).
+    pub fn collect_pending_handler_events(&self) -> Result<Vec<([u8; 32], Vec<u8>)>> {
+        let handle = self.applier.context_client.datastore_handle();
+        let mut iter = handle.iter::<calimero_store::key::ContextDagDelta>()?;
+        let mut pending: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+
+        for entry in iter.entries() {
+            let (key_result, value_result) = entry;
+            let key = key_result?;
+            if key.context_id() != self.applier.context_id {
+                continue;
+            }
+
+            let stored = value_result?;
+            if !stored.applied {
+                continue;
+            }
+            let Some(events_data) = stored.events else {
+                continue;
+            };
+            pending.push((stored.delta_id, events_data));
+        }
+
+        Ok(pending)
     }
 
     /// Check if a delta has been applied to the DAG

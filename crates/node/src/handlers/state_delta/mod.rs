@@ -318,6 +318,7 @@ pub async fn handle_state_delta(
             sync_timeout,
             "missing parent check",
             Some(&delta_id),
+            &delta_store_ref,
         )
         .await?;
         applied |= cascade_outcome.applied_current;
@@ -384,6 +385,7 @@ pub async fn handle_state_delta(
                             sync_timeout,
                             "peer-fetch cascade",
                             Some(&delta_id),
+                            &delta_store_ref,
                         )
                         .await?;
                         applied |= cascade_outcome.applied_current;
@@ -473,6 +475,7 @@ pub async fn handle_state_delta(
         sync_timeout,
         "dag cascade",
         None,
+        &delta_store_ref,
     )
     .await?;
 
@@ -585,14 +588,40 @@ async fn init_delta_store(
                 );
             }
 
+            // Replay any events whose handlers were interrupted by a
+            // crash between `persist_cascaded_deltas_and_update_heads`
+            // and the `execute_cascaded_events` that would have cleared
+            // them (#2185). Merge with the normal cascade events so a
+            // single pass through the handler covers both.
+            let mut events_to_run = missing_result.cascaded_events;
+            match delta_store_ref.collect_pending_handler_events() {
+                Ok(pending) if !pending.is_empty() => {
+                    info!(
+                        %context_id,
+                        pending_count = pending.len(),
+                        "Replaying handlers interrupted by crash before events were cleared"
+                    );
+                    // Dedup: the cascade path may surface the same id.
+                    events_to_run.retain(|(id, _)| !pending.iter().any(|(pid, _)| pid == id));
+                    events_to_run.extend(pending);
+                }
+                Ok(_) => {}
+                Err(e) => warn!(
+                    ?e,
+                    %context_id,
+                    "Failed to scan for pending handler events; replay skipped"
+                ),
+            }
+
             execute_cascaded_events(
-                &missing_result.cascaded_events,
+                &events_to_run,
                 node_clients,
                 &context_id,
                 &our_identity,
                 sync_timeout,
                 "initial load",
                 None,
+                &delta_store_ref,
             )
             .await
         }
@@ -624,6 +653,7 @@ async fn execute_cascaded_events(
     sync_timeout: std::time::Duration,
     phase: &str,
     current_delta: Option<&[u8; 32]>,
+    delta_store: &DeltaStore,
 ) -> Result<CascadeOutcome> {
     if cascaded_events.is_empty() {
         return Ok(CascadeOutcome::default());
@@ -687,6 +717,12 @@ async fn execute_cascaded_events(
                     &cascaded_payload,
                 )
                 .await?;
+
+                // Handlers ran successfully — clear events from the DB
+                // record (#2185). If a later iteration's handler fails
+                // with `?`, the remaining deltas keep `events: Some(..)`
+                // and the next restart replays only those.
+                delta_store.mark_events_executed(cascaded_id);
 
                 if current_delta == Some(cascaded_id) {
                     outcome.handlers_executed_for_current = true;
@@ -1384,6 +1420,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         sync_timeout,
         "buffered delta replay",
         None,
+        &delta_store,
     )
     .await?;
 
