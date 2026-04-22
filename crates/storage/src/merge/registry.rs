@@ -18,17 +18,82 @@
 //!
 //! // Now sync automatically calls MyAppState::merge()
 //! ```
+//!
+//! # Storage
+//!
+//! Production uses a process-global `RwLock<HashMap<...>>`; apps register
+//! their state types once at startup and every async worker dispatches
+//! against the same table.
+//!
+//! Under `#[cfg(test)]` the backing store is a `thread_local!` so that
+//! parallel-running tests can't stomp on each other's registrations.
+//! See the comment on the `#[cfg(test)]` declaration below.
 
 use std::any::TypeId;
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::HashMap;
+#[cfg(not(test))]
 use std::sync::{LazyLock, RwLock};
 
 /// Function signature for merging serialized state
 pub type MergeFn = fn(&[u8], &[u8], u64, u64) -> Result<Vec<u8>, Box<dyn std::error::Error>>;
 
-/// Global registry of merge functions by type
+/// Production registry — process-global, shared across async workers.
+#[cfg(not(test))]
 static MERGE_REGISTRY: LazyLock<RwLock<HashMap<TypeId, MergeFn>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+// Test registry — per-thread. cargo test runs tests in parallel on
+// different threads; with a global registry, a test calling
+// `clear_merge_registry()` (e.g. to assert "no merge functions
+// registered" behaviour) could wipe entries that another thread's
+// test had just populated via `register_test_merge_functions()`, and
+// the subsequent `apply_action` on that other thread would then fail
+// dispatch mid-flight. `#[serial]` only serialises the clearers
+// against each other — unrelated non-serial tests still ran in
+// parallel with them. Thread-local storage makes each test's
+// registry state private to its own thread, so the race can't occur.
+#[cfg(test)]
+thread_local! {
+    static MERGE_REGISTRY: RefCell<HashMap<TypeId, MergeFn>> = RefCell::new(HashMap::new());
+}
+
+/// Run `f` with mutable access to the registry.
+#[cfg(not(test))]
+fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<TypeId, MergeFn>) -> R) -> R {
+    let mut registry = MERGE_REGISTRY.write().unwrap_or_else(|_| {
+        tracing::error!(
+            target: "calimero_storage::merge",
+            "MERGE_REGISTRY lock poisoned during write, aborting. This indicates a panic in merge code."
+        );
+        std::process::abort()
+    });
+    f(&mut registry)
+}
+
+#[cfg(test)]
+fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<TypeId, MergeFn>) -> R) -> R {
+    MERGE_REGISTRY.with(|r| f(&mut r.borrow_mut()))
+}
+
+/// Run `f` with read-only access to the registry.
+#[cfg(not(test))]
+fn with_registry<R>(f: impl FnOnce(&HashMap<TypeId, MergeFn>) -> R) -> R {
+    let registry = MERGE_REGISTRY.read().unwrap_or_else(|_| {
+        tracing::error!(
+            target: "calimero_storage::merge",
+            "MERGE_REGISTRY lock poisoned, aborting. This indicates a panic in merge code."
+        );
+        std::process::abort()
+    });
+    f(&registry)
+}
+
+#[cfg(test)]
+fn with_registry<R>(f: impl FnOnce(&HashMap<TypeId, MergeFn>) -> R) -> R {
+    MERGE_REGISTRY.with(|r| f(&r.borrow()))
+}
 
 /// Register a CRDT merge function for a type
 ///
@@ -80,29 +145,15 @@ where
         borsh::to_vec(&existing_state).map_err(|e| format!("Serialization failed: {}", e).into())
     };
 
-    let mut registry = MERGE_REGISTRY.write().unwrap_or_else(|_| {
-        // Lock poisoning indicates a panic occurred while holding the lock.
-        // This is a serious error - abort to prevent undefined behavior.
-        tracing::error!(
-            target: "calimero_storage::merge",
-            "MERGE_REGISTRY lock poisoned during write, aborting. This indicates a panic in merge code."
-        );
-        std::process::abort()
+    with_registry_mut(|registry| {
+        let _ = registry.insert(type_id, merge_fn);
     });
-    let _ = registry.insert(type_id, merge_fn);
 }
 
 /// Clear the merge registry (for testing only)
 #[cfg(test)]
 pub fn clear_merge_registry() {
-    let mut registry = MERGE_REGISTRY.write().unwrap_or_else(|_| {
-        tracing::error!(
-            target: "calimero_storage::merge",
-            "MERGE_REGISTRY lock poisoned during clear, aborting. This indicates a panic in merge code."
-        );
-        std::process::abort()
-    });
-    registry.clear();
+    with_registry_mut(|registry| registry.clear());
 }
 
 /// Result of attempting to merge using registered merge functions
@@ -133,28 +184,19 @@ pub fn try_merge_registered(
     // TODO: Store type hints with root entity for O(1) dispatch (see issue #1993)
 
     // Try each registered merge function until one succeeds (O(n) where n = registered types)
-    let registry = MERGE_REGISTRY.read().unwrap_or_else(|_poisoned| {
-        // Lock poisoning indicates a panic occurred while holding the lock.
-        // This is a serious error - abort to prevent undefined behavior.
-        // This is consistent with the write side behavior in register_crdt_merge().
-        tracing::error!(
-            target: "calimero_storage::merge",
-            "MERGE_REGISTRY lock poisoned, aborting. This indicates a panic in merge code."
-        );
-        std::process::abort();
-    });
-
-    if registry.is_empty() {
-        return MergeRegistryResult::NoFunctionsRegistered;
-    }
-
-    for (_type_id, merge_fn) in registry.iter() {
-        if let Ok(merged) = merge_fn(existing, incoming, existing_ts, incoming_ts) {
-            return MergeRegistryResult::Success(merged);
+    with_registry(|registry| {
+        if registry.is_empty() {
+            return MergeRegistryResult::NoFunctionsRegistered;
         }
-    }
 
-    MergeRegistryResult::AllFunctionsFailed
+        for (_type_id, merge_fn) in registry.iter() {
+            if let Ok(merged) = merge_fn(existing, incoming, existing_ts, incoming_ts) {
+                return MergeRegistryResult::Success(merged);
+            }
+        }
+
+        MergeRegistryResult::AllFunctionsFailed
+    })
 }
 
 #[cfg(test)]
