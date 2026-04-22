@@ -3,7 +3,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use wasmer::{DeserializeError, Instance, SerializeError, Store};
 
 // Profiling feature: Only compile these imports when profiling feature is enabled
@@ -242,17 +242,33 @@ impl Module {
         info!(%context_id, method, "Running WASM method");
         debug!(%context_id, method, input_len = input.len(), "WASM execution input");
 
+        // #2199 sub-timers. The outer timer in
+        // `crates/node/src/delta_store.rs` (`wasm_ms`) measures this
+        // whole call. Wasmer `Store` and `Instance` are created fresh
+        // per invocation — no caching — so setup cost is per-call.
+        // These sub-timers break the total into: store-create,
+        // import-setup, instance-new+register-merge, function-call.
+        // If `function_call_ms` dominates, the app's WASM work is the
+        // bottleneck; if setup does, caching Store/Instance becomes
+        // the fix direction.
+        let run_start = std::time::Instant::now();
+
         let context = VMContext::new(input.into(), *context_id, *executor);
 
         let mut logic = VMLogic::new(storage, private_storage, context, &self.limits, node_client);
 
+        let store_start = std::time::Instant::now();
         let mut store = Store::new(self.engine.clone());
+        let store_create_ms = store_start.elapsed().as_secs_f64() * 1000.0;
 
+        let imports_start = std::time::Instant::now();
         let imports = logic.imports(&mut store);
+        let imports_setup_ms = imports_start.elapsed().as_secs_f64() * 1000.0;
 
         // Wrap WASM execution in catch_unwind to prevent panics from crashing the node.
         // This catches any unhandled panics during instance creation, memory access,
         // or function execution and converts them to proper error responses.
+        let execute_start = std::time::Instant::now();
         let execution_result = catch_unwind(AssertUnwindSafe(|| {
             Self::execute_wasm(
                 &mut store,
@@ -264,6 +280,7 @@ impl Module {
                 self.limits.max_method_name_length,
             )
         }));
+        let execute_wasm_ms = execute_start.elapsed().as_secs_f64() * 1000.0;
 
         // Determine the error to pass to finish() based on execution result
         let err = match execution_result {
@@ -306,6 +323,34 @@ impl Module {
             }
         }
 
+        // #2199 — emit the sub-timer breakdown. `debug!` for routine
+        // calls so dashboards/aggregators can scrape; `warn!` when
+        // total is ≥100ms so long tails surface in production logs.
+        // The 918ms apply-outlier from PR #2196's e2e data sat here,
+        // so the warn gate picks up anything in its neighbourhood.
+        let run_total_ms = run_start.elapsed().as_secs_f64() * 1000.0;
+        if run_total_ms >= 100.0 {
+            warn!(
+                %context_id,
+                method,
+                run_total_ms = format!("{:.2}", run_total_ms),
+                store_create_ms = format!("{:.2}", store_create_ms),
+                imports_setup_ms = format!("{:.2}", imports_setup_ms),
+                execute_wasm_ms = format!("{:.2}", execute_wasm_ms),
+                "WASM run hit long tail (#2199)"
+            );
+        } else {
+            debug!(
+                %context_id,
+                method,
+                run_total_ms = format!("{:.2}", run_total_ms),
+                store_create_ms = format!("{:.2}", store_create_ms),
+                imports_setup_ms = format!("{:.2}", imports_setup_ms),
+                execute_wasm_ms = format!("{:.2}", execute_wasm_ms),
+                "WASM run timing"
+            );
+        }
+
         Ok(outcome)
     }
 
@@ -327,6 +372,11 @@ impl Module {
             error!(%context_id, method, error=?err, "Invalid method name");
             return Ok(Some(err));
         }
+        // #2199 sub-timer: Instance::new is one of the two main setup
+        // costs. Wasmer builds a fresh instance every call (no
+        // caching); if this dominates the 918ms outlier, caching the
+        // Instance-per-context becomes the fix direction.
+        let instance_new_start = std::time::Instant::now();
         let instance = match Instance::new(store, module, imports) {
             Ok(instance) => instance,
             Err(err) => {
@@ -334,6 +384,7 @@ impl Module {
                 return Ok(Some(err.into()));
             }
         };
+        let instance_new_ms = instance_new_start.elapsed().as_secs_f64() * 1000.0;
 
         // Get memory from the WASM instance and attach it to VMLogic.
         // Note: memory.clone() is cheap - it just increments an Arc reference count,
@@ -392,7 +443,28 @@ impl Module {
             )));
         }
 
-        if let Err(err) = function.call(store, &[]) {
+        // #2199 sub-timer: function.call is the actual app-level WASM
+        // work plus all host callbacks made during it. If this
+        // dominates, the investigation moves into the WASM module
+        // itself (or into reducing host callback count / cost).
+        let function_call_start = std::time::Instant::now();
+        let function_call_result = function.call(store, &[]);
+        let function_call_ms = function_call_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Emit sub-timer breakdown at debug! for `execute_wasm`'s slice
+        // of the total. The outer `run` timer already emits a
+        // run_total + warn at 100ms threshold; this one fires always
+        // at debug! so filter-enabled logs show the instance-vs-call
+        // split.
+        debug!(
+            %context_id,
+            method,
+            instance_new_ms = format!("{:.2}", instance_new_ms),
+            function_call_ms = format!("{:.2}", function_call_ms),
+            "execute_wasm sub-timings"
+        );
+
+        if let Err(err) = function_call_result {
             let traces = err
                 .trace()
                 .iter()
