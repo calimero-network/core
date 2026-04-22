@@ -103,6 +103,10 @@ where
     ///
     /// Fails with `ActionNotAllowed` if `k` is already present. Ownership
     /// transfer is not supported — use `remove` + `insert` from the new owner.
+    ///
+    /// # Errors
+    /// Returns `ActionNotAllowed` if `k` already exists, or any underlying
+    /// storage error.
     pub fn insert(&mut self, k: K, v: V) -> Result<(), StoreError> {
         if self.inner.contains(&k)? {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
@@ -126,6 +130,10 @@ where
     ///
     /// Fails with `NotFound` if `k` is absent, or `ActionNotAllowed` if the
     /// current executor is not the owner of record.
+    ///
+    /// # Errors
+    /// Returns `NotFound` if `k` is absent, `ActionNotAllowed` if the current
+    /// executor is not the stored owner, or any underlying storage error.
     pub fn update(&mut self, k: &K, v: V) -> Result<(), StoreError> {
         let entry_id = self.entry_id(k);
         let stored_owner = self
@@ -152,6 +160,11 @@ where
     }
 
     /// Removes `k`. Only the entry's owner may call this.
+    ///
+    /// # Errors
+    /// Returns `ActionNotAllowed` if the current executor is not the stored
+    /// owner, or any underlying storage error. Returns `Ok(None)` if `k` is
+    /// absent.
     pub fn remove(&mut self, k: &K) -> Result<Option<V>, StoreError> {
         let Some(stored_owner) = self.owner_of(k)? else {
             return Ok(None);
@@ -168,16 +181,25 @@ where
     }
 
     /// Returns the value at `k`, if any.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
     pub fn get(&self, k: &K) -> Result<Option<V>, StoreError> {
         self.inner.get(k)
     }
 
     /// Returns whether `k` is present.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
     pub fn contains(&self, k: &K) -> Result<bool, StoreError> {
         self.inner.contains(k)
     }
 
     /// Returns the public key of the owner of `k`, if any.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
     pub fn owner_of(&self, k: &K) -> Result<Option<PublicKey>, StoreError> {
         let id = self.entry_id(k);
         let metadata = <Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
@@ -188,11 +210,17 @@ where
     }
 
     /// Iterates over all `(k, v)` entries.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
     pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
         self.inner.entries()
     }
 
     /// Returns the number of entries.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
     pub fn len(&self) -> Result<usize, StoreError> {
         self.inner.len()
     }

@@ -98,6 +98,9 @@ where
     /// Pushes a new value at the end, stamping the current executor as owner.
     ///
     /// Returns the index of the new entry.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
     pub fn push(&mut self, value: V) -> Result<usize, StoreError> {
         let owner: PublicKey = env::executor_id().into();
         let storage_type = StorageType::User {
@@ -114,6 +117,11 @@ where
     ///
     /// Fails with `NotFound` if `index` is out of bounds, or `ActionNotAllowed`
     /// if the current executor is not the owner of record.
+    ///
+    /// # Errors
+    /// Returns `ActionNotAllowed` if `index` is out of bounds or the current
+    /// executor is not the stored owner; `NotFound` if the underlying entry
+    /// disappears mid-call; or any underlying storage error.
     pub fn update(&mut self, index: usize, value: V) -> Result<(), StoreError> {
         let (entry_id, stored_owner) = self.require_owner(index)?;
 
@@ -135,6 +143,9 @@ where
     ///
     /// Only the entry's owner may call this. The entry's position is
     /// preserved — readers can filter tombstones out via an app-level check.
+    ///
+    /// # Errors
+    /// Same as [`update`](Self::update).
     pub fn tombstone(&mut self, index: usize) -> Result<(), StoreError>
     where
         V: Default,
@@ -143,11 +154,17 @@ where
     }
 
     /// Returns the value at `index`, if any.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
     pub fn get(&self, index: usize) -> Result<Option<V>, StoreError> {
         self.inner.get(index)
     }
 
     /// Returns the public key of the owner at `index`, if the slot exists.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
     pub fn owner_of(&self, index: usize) -> Result<Option<PublicKey>, StoreError> {
         let Some(id) = self.inner.entry_id_at(index)? else {
             return Ok(None);
@@ -160,11 +177,17 @@ where
     }
 
     /// Iterates over all values in insertion order.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
     pub fn iter(&self) -> Result<impl Iterator<Item = V> + '_, StoreError> {
         self.inner.iter()
     }
 
     /// Returns the number of entries (including tombstoned slots).
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
     pub fn len(&self) -> Result<usize, StoreError> {
         self.inner.len()
     }
