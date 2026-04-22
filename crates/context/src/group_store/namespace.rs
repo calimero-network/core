@@ -316,6 +316,25 @@ pub struct CascadePayload {
 /// Used by the `delete_group` handler to build the `GroupDeleted` op
 /// payload, and by `execute_group_deleted` to verify deterministic
 /// application across peers.
+///
+/// **Determinism contract**: every peer running this fn against the same
+/// store state MUST produce identical `Vec` orderings for both fields.
+/// `execute_group_deleted` compares `descendant_groups` Vecs with positional
+/// equality, so any divergence is a hard rejection. Two invariants make
+/// this hold:
+///
+/// 1. We use **DFS pre-order** via `Vec::pop()` (LIFO stack), then reverse
+///    — pure function of the tree shape, no timing or scheduling
+///    dependence. Do NOT "fix" this to BFS without coordinating with
+///    every peer; it would silently change the output Vec order and
+///    break cascade delete across mixed-version nodes.
+/// 2. `list_child_groups` returns children in stable RocksDB key-byte
+///    order (`GroupChildIndex` keys are `[prefix + parent + child]`,
+///    iterated lexicographically), which is the same on every peer for
+///    the same store state.
+///
+/// Contexts use `BTreeSet` comparison in the verifier (order-insensitive),
+/// so the order in which we collect them here doesn't affect determinism.
 pub fn collect_subtree_for_cascade(
     store: &Store,
     root: &ContextGroupId,
@@ -323,13 +342,17 @@ pub fn collect_subtree_for_cascade(
     let mut contexts: Vec<ContextId> = Vec::new();
     contexts.extend(super::enumerate_group_contexts(store, root, 0, usize::MAX)?);
 
-    // BFS to enumerate descendants. Reverse afterwards for children-first order.
-    let mut bfs_order: Vec<ContextGroupId> = Vec::new();
-    let mut frontier = vec![*root];
-    while let Some(g) = frontier.pop() {
+    // DFS pre-order traversal. Push children onto a LIFO stack; each iteration
+    // pops one and recurses into its subtree before backtracking. After the
+    // walk, reverse to get children-first order (deepest descendant first),
+    // which is what execute_group_deleted needs to safely tear down child
+    // indices before deleting parents.
+    let mut dfs_preorder: Vec<ContextGroupId> = Vec::new();
+    let mut stack = vec![*root];
+    while let Some(g) = stack.pop() {
         for child in list_child_groups(store, &g)? {
-            bfs_order.push(child);
-            frontier.push(child);
+            dfs_preorder.push(child);
+            stack.push(child);
             contexts.extend(super::enumerate_group_contexts(
                 store,
                 &child,
@@ -338,7 +361,7 @@ pub fn collect_subtree_for_cascade(
             )?);
         }
     }
-    let descendant_groups = bfs_order.into_iter().rev().collect();
+    let descendant_groups = dfs_preorder.into_iter().rev().collect();
     Ok(CascadePayload {
         descendant_groups,
         contexts,

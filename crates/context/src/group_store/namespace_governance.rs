@@ -12,9 +12,9 @@ use crate::metrics::record_namespace_retry_event;
 use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::{
-    add_group_member, apply_group_op_mutations, count_group_contexts, decrypt_group_op,
-    get_local_gov_nonce, get_namespace_identity_record, is_group_admin,
-    load_current_group_key_record, load_group_key_by_id, load_group_meta,
+    add_group_member, apply_group_op_mutations, decrypt_group_op, get_local_gov_nonce,
+    get_namespace_identity_record, is_group_admin, load_current_group_key_record,
+    load_group_key_by_id, load_group_meta,
     namespace_dag::{NamespaceDagService, NamespaceHead},
     namespace_membership::NamespaceMembershipService,
     namespace_retry::NamespaceRetryService,
