@@ -789,7 +789,13 @@ impl DeltaStore {
 
         drop(dag); // Release lock before calling context_client
 
-        // Update persistence if delta applied (was pre-persisted with events=Some, now needs events=None)
+        // Update persistence if delta applied. Preserve events until
+        // the caller confirms handler execution via
+        // `mark_events_executed(&delta_id)` — same crash-safety contract
+        // as the cascade path (#2185, #2194 review). If we crash between
+        // this write and the caller's `execute_event_handlers_parsed`
+        // success, the next init's `load_persisted_deltas` surfaces the
+        // record via `pending_handler_events` and replays the handler.
         if result && events.is_some() {
             let mut handle = self.applier.context_client.datastore_handle();
             let serialized_actions = borsh::to_vec(&actions_for_db)
@@ -805,7 +811,7 @@ impl DeltaStore {
                         hlc,
                         applied: true,
                         expected_root_hash,
-                        events: None, // Clear events after immediate application
+                        events: events.clone(),
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to update applied delta: {}", e))?;

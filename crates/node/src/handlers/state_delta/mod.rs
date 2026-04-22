@@ -440,13 +440,29 @@ pub async fn handle_state_delta(
             if !is_author {
                 // Application availability was already verified at the start of this function,
                 // so we can safely execute handlers without re-checking.
-                execute_event_handlers_parsed(
+                let all_succeeded = execute_event_handlers_parsed(
                     &node_clients.context,
                     &context_id,
                     &our_identity,
                     payload,
                 )
                 .await?;
+
+                // Clear the DB's `events` blob once every handler ran
+                // successfully (#2185, #2194 review). Partial failure
+                // leaves the blob for restart replay. `add_delta_internal`
+                // preserves `events: Some(..)` when a delta is directly
+                // applied, so this clear is the normal termination
+                // point for the direct-apply path.
+                if all_succeeded {
+                    delta_store_ref.mark_events_executed(&delta_id);
+                } else {
+                    warn!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        "One or more handlers failed on direct-apply path; keeping events in DB for restart replay"
+                    );
+                }
             } else {
                 info!(
                     %context_id,
@@ -698,7 +714,7 @@ async fn execute_cascaded_events(
             %context_id,
             cascaded_count = cascaded_events.len(),
             phase = phase,
-            "Application not available - skipping cascaded handler execution"
+            "Application not available - skipping cascaded handler execution. Events are preserved in DB (applied: true, events: Some(..)) and will replay on next init once the application becomes available."
         );
         return Ok(outcome);
     }
@@ -713,7 +729,7 @@ async fn execute_cascaded_events(
                     phase = phase,
                     "Executing handlers for cascaded delta"
                 );
-                execute_event_handlers_parsed(
+                let all_succeeded = execute_event_handlers_parsed(
                     &node_clients.context,
                     context_id,
                     our_identity,
@@ -721,14 +737,25 @@ async fn execute_cascaded_events(
                 )
                 .await?;
 
-                // Handlers ran successfully — clear events from the DB
-                // record (#2185). If a later iteration's handler fails
-                // with `?`, the remaining deltas keep `events: Some(..)`
-                // and the next restart replays only those.
-                delta_store.mark_events_executed(cascaded_id);
+                // Clear the DB's `events` blob only when every handler
+                // in the payload succeeded (#2185, #2194 review). On a
+                // partial failure, leave `events: Some(..)` so the next
+                // restart replays via `load_persisted_deltas`. Each
+                // retry is at-least-once — handler idempotency concern
+                // is tracked separately.
+                if all_succeeded {
+                    delta_store.mark_events_executed(cascaded_id);
+                } else {
+                    warn!(
+                        %context_id,
+                        delta_id = ?cascaded_id,
+                        phase = phase,
+                        "One or more handlers failed; keeping events in DB for restart replay"
+                    );
+                }
 
                 if current_delta == Some(cascaded_id) {
-                    outcome.handlers_executed_for_current = true;
+                    outcome.handlers_executed_for_current = all_succeeded;
                 }
             }
             Err(e) => {
@@ -879,12 +906,19 @@ mod tests {
 /// 1. Document why parallelization is unsafe
 /// 2. Consider refactoring to use CRDTs
 /// 3. Or disable parallelization if absolutely necessary
+/// Returns `Ok(true)` if every handler in the payload ran successfully,
+/// `Ok(false)` if at least one handler errored (individual errors are
+/// logged but swallowed so later handlers in the list still run). Callers
+/// use the bool to decide whether it's safe to clear the persisted events
+/// blob via `mark_events_executed` — clearing after a partial failure
+/// would prevent restart-replay of the failed handlers (#2194 review).
 async fn execute_event_handlers_parsed(
     context_client: &ContextClient,
     context_id: &ContextId,
     our_identity: &PublicKey,
     events_payload: &[ExecutionEvent],
-) -> Result<()> {
+) -> Result<bool> {
+    let mut all_succeeded = true;
     for event in events_payload {
         if let Some(handler_name) = &event.handler {
             debug!(
@@ -917,12 +951,13 @@ async fn execute_event_handlers_parsed(
                         error = %err,
                         "Handler execution failed"
                     );
+                    all_succeeded = false;
                 }
             }
         }
     }
 
-    Ok(())
+    Ok(all_succeeded)
 }
 
 /// Emit state mutation event to WebSocket clients (frontends)
@@ -1319,8 +1354,53 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         })
         .clone();
 
-    // Load any persisted deltas first
-    let _ = delta_store.load_persisted_deltas().await;
+    // Load any persisted deltas first. If this is the first time this
+    // context's DeltaStore has been created in the process (post-crash
+    // restart, buffered-replay hits before a live delta), the load
+    // also surfaces any handler events whose execution was interrupted
+    // before they were cleared (#2185, #2194 review). Replay them
+    // *before* processing the buffered delta so causal order is
+    // preserved.
+    let pending_from_load = match delta_store.load_persisted_deltas().await {
+        Ok(result) => result.pending_handler_events,
+        Err(e) => {
+            warn!(
+                ?e,
+                %context_id,
+                "Failed to load persisted deltas during buffered-delta replay"
+            );
+            Vec::new()
+        }
+    };
+    if !pending_from_load.is_empty() {
+        let node_clients = crate::NodeClients {
+            context: context_client.clone(),
+            node: node_client.clone(),
+        };
+        info!(
+            %context_id,
+            pending_count = pending_from_load.len(),
+            "Replaying crash-interrupted handlers before buffered delta"
+        );
+        if let Err(e) = execute_cascaded_events(
+            &pending_from_load,
+            &node_clients,
+            &context_id,
+            &our_identity,
+            sync_timeout,
+            "buffered-replay crash recovery",
+            None,
+            &delta_store,
+        )
+        .await
+        {
+            warn!(
+                ?e,
+                %context_id,
+                "Crash-recovery replay failed during buffered-delta replay; events stay in DB for next init"
+            );
+        }
+    }
 
     // If this delta is covered by checkpoint (ancestor of checkpoint) but is NOT the checkpoint
     // itself, skip adding it to the DAG. Its state is already present via snapshot, and adding
@@ -1389,13 +1469,26 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                         "Executing handlers for replayed buffered delta"
                     );
 
-                    execute_event_handlers_parsed(
+                    let all_succeeded = execute_event_handlers_parsed(
                         &context_client,
                         &context_id,
                         &our_identity,
                         &events,
                     )
                     .await?;
+
+                    // Same clear-on-success contract as the other two
+                    // caller sites: keep `events: Some(..)` if any
+                    // handler failed so the next restart replays.
+                    if all_succeeded {
+                        delta_store.mark_events_executed(&delta_id);
+                    } else {
+                        warn!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            "One or more handlers failed on buffered-replay path; keeping events in DB for restart replay"
+                        );
+                    }
                 }
 
                 // Emit to WebSocket clients
