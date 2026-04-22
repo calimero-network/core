@@ -329,7 +329,14 @@ impl<'a> VMLogic<'a> {
         // TODO: review the `clone()` and figure out if the function should be a one-time call only.
         let memory = self.memory.clone().expect("VM Memory not initialized");
 
-        debug!(target: "runtime::logic", "VMLogic::host_functions: building host function bindings");
+        // NOTE: no debug log here. `host_functions` is called once per
+        // WASM→host callback — many thousands of times per WASM run —
+        // and a per-callback `debug!` spammed ~10k events in a single
+        // 139ms `__calimero_sync_next` invocation observed in PR
+        // #2206's e2e artifacts (issue #2199). The format-and-dispatch
+        // cost when debug logging is enabled became a meaningful
+        // fraction of that 139ms. The line had no context fields, so
+        // no observability value was lost by removing it.
 
         VMHostFunctionsBuilder {
             logic: self,
