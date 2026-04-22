@@ -2205,7 +2205,26 @@ impl SyncManager {
         }
 
         let Some(context) = self.context_client.get_context(&context_id)? else {
-            bail!("context not found: {}", context_id);
+            // An inbound stream for a context this node does not know about
+            // must not tear down unrelated in-flight sync activity. This
+            // happens during cold-start `join_context` when a subgroup /
+            // app-internal context leaks onto the sync channel before the
+            // joining node has materialised it. Close the stream cleanly
+            // and let the concurrent legitimate sync continue. (#2198)
+            warn!(
+                %context_id,
+                ?their_identity,
+                "inbound stream for unknown context, closing cleanly"
+            );
+
+            if let Err(err) = self
+                .send(stream, &StreamMessage::OpaqueError, None)
+                .await
+            {
+                error!(%err, %context_id, "failed to send OpaqueError for unknown context");
+            }
+
+            return Ok(None);
         };
 
         let mut _updated = None;
