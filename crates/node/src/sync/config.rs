@@ -65,20 +65,6 @@ pub const DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED: u64 = 1_000;
 /// it does not risk racing on per-context sync state.
 pub const DEFAULT_PEER_STATE_PROBE_CONCURRENCY: usize = 4;
 
-/// Maximum number of *additional* mesh peers to try for missing-parent
-/// fetches after the initial sync peer returns without fully resolving
-/// the DAG. The initial peer attempt is not counted toward this budget.
-///
-/// Relevant to cold-start `join_context` when gossip deltas arrive
-/// before sync completes (issue #2198).
-pub const DEFAULT_PARENT_PULL_ADDITIONAL_PEERS: usize = 3;
-
-/// Total wall-clock budget (milliseconds) for the cross-peer
-/// missing-parent fetch loop, including the initial peer attempt.
-/// When exhausted, the sync session returns an error rather than
-/// reporting silent success on a partially-applied DAG.
-pub const DEFAULT_PARENT_PULL_BUDGET_MS: u64 = 10_000;
-
 /// Synchronization configuration.
 ///
 /// Controls timing, concurrency, and protocol behavior for node synchronization.
@@ -104,15 +90,6 @@ pub struct SyncConfig {
 
     /// Max concurrent peer probes in `find_peer_with_state`.
     pub peer_state_probe_concurrency: usize,
-
-    /// Max additional mesh peers to try for missing-parent fetches
-    /// after the initial sync peer returns without fully resolving
-    /// the DAG. See [`DEFAULT_PARENT_PULL_ADDITIONAL_PEERS`].
-    pub parent_pull_additional_peers: usize,
-
-    /// Wall-clock budget for the cross-peer missing-parent fetch loop.
-    /// See [`DEFAULT_PARENT_PULL_BUDGET_MS`].
-    pub parent_pull_budget: time::Duration,
 }
 
 impl Default for SyncConfig {
@@ -125,8 +102,6 @@ impl Default for SyncConfig {
             snapshot_chunk_size: DEFAULT_SNAPSHOT_CHUNK_SIZE,
             delta_sync_threshold: DEFAULT_DELTA_SYNC_THRESHOLD,
             peer_state_probe_concurrency: DEFAULT_PEER_STATE_PROBE_CONCURRENCY,
-            parent_pull_additional_peers: DEFAULT_PARENT_PULL_ADDITIONAL_PEERS,
-            parent_pull_budget: time::Duration::from_millis(DEFAULT_PARENT_PULL_BUDGET_MS),
         }
     }
 }
