@@ -83,6 +83,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Under workflow_run, github.sha is the default-branch HEAD —
+          # not the commit Release actually built from. Pin to the
+          # upstream commit so the fuzzy run's source tree matches the
+          # image. Falls back to github.sha for push / workflow_dispatch.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
@@ -139,6 +145,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Under workflow_run, github.sha is the default-branch HEAD —
+          # not the commit Release actually built from. Pin to the
+          # upstream commit so the fuzzy run's source tree matches the
+          # image. Falls back to github.sha for push / workflow_dispatch.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -349,6 +361,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Under workflow_run, github.sha is the default-branch HEAD —
+          # not the commit Release actually built from. Pin to the
+          # upstream commit so the fuzzy run's source tree matches the
+          # image. Falls back to github.sha for push / workflow_dispatch.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
