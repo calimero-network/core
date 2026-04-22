@@ -2944,6 +2944,87 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     );
 }
 
+#[test]
+fn execute_group_deleted_subset_check_allows_partial_retry() {
+    // Regression test for meroreviewer bugbot finding #3124131096 on PR #2200:
+    // If a previous apply of GroupDeleted crashes mid-cascade, the local
+    // subtree is a partial-delete state — smaller than the payload. An
+    // exact-equality determinism check would permanently reject the retry,
+    // stalling the namespace DAG. The subset check lets the retry resume.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Build: namespace → A → B (two-level subtree).
+    let a_id = [0xAAu8; 32];
+    let b_id = [0xBBu8; 32];
+    let a_gid = ContextGroupId::from(a_id);
+    let b_gid = ContextGroupId::from(b_id);
+    save_group_meta(&store, &a_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    save_group_meta(&store, &b_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    nest_group(&store, &ns_gid, &a_gid).unwrap();
+    nest_group(&store, &a_gid, &b_gid).unwrap();
+
+    // Pre-compute the ORIGINAL payload (the "full" cascade).
+    let original_payload = collect_subtree_for_cascade(&store, &a_gid).unwrap();
+    let cascade_group_ids: Vec<[u8; 32]> = original_payload
+        .descendant_groups
+        .iter()
+        .map(|g| g.to_bytes())
+        .collect();
+    assert_eq!(cascade_group_ids.len(), 1, "B is the only descendant of A");
+
+    // Simulate a partial-delete crash by deleting B's meta + parent edge
+    // (i.e., B is "already gone" from a hypothetical first apply attempt).
+    delete_group_meta(&store, &b_gid).unwrap();
+    {
+        use calimero_store::key::{GroupChildIndex, GroupParentRef};
+        let mut h = store.handle();
+        h.delete(&GroupParentRef::new(b_id)).unwrap();
+        h.delete(&GroupChildIndex::new(a_id, b_id)).unwrap();
+    }
+
+    // Now the retry: cascade op has payload [B], but local subtree of A is
+    // empty (B already gone). Subset check: local {} ⊆ payload {B} ✓ → apply
+    // proceeds. Exact-match check would have rejected here — that's the bug.
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupDeleted {
+            root_group_id: a_id,
+            cascade_group_ids,
+            cascade_context_ids: vec![],
+        }),
+    )
+    .expect("sign op");
+    gov.apply_signed_op(&op)
+        .expect("retry after partial-delete should succeed — not stall the DAG");
+
+    // A must now be gone (retry completed the deletion).
+    assert!(
+        load_group_meta(&store, &a_gid).unwrap().is_none(),
+        "cascade retry must complete the root deletion"
+    );
+}
+
 // Helper: create a GroupMetaValue with a specific admin
 fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
     GroupMetaValue {

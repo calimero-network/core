@@ -526,6 +526,16 @@ impl<'a> NamespaceGovernance<'a> {
             );
         }
 
+        // Ordered writes — NOT a single RocksDB atomic batch. Each call
+        // below opens its own store handle (save_group_meta above, this put
+        // pair, add_group_member below). A crash between any two steps leaves
+        // partial state. Recovery path: re-applying the same GroupCreated op
+        // is idempotent (meta-exists check skips the meta write; edge writes
+        // are idempotent puts; add_group_member is an upsert) — so retries
+        // complete whatever was missing. True single-batch atomicity would
+        // require threading one store handle through this flow, which
+        // matches a codebase-wide architectural decision deferred to a
+        // follow-up (see the cascade delete atomicity discussion).
         {
             use calimero_store::key::{GroupChildIndex, GroupParentRef};
             let mut handle = self.store.handle();
@@ -585,25 +595,40 @@ impl<'a> NamespaceGovernance<'a> {
             );
         }
 
-        // Determinism check: re-enumerate locally and compare to payload.
+        // Determinism check: every surviving element of the local subtree MUST
+        // be in the op's payload. We use subset rather than exact equality
+        // because a previous apply attempt may have crashed mid-cascade,
+        // leaving the local subtree as a partial-delete state. In that case:
+        // - every still-present descendant is in payload (subset holds) ✓
+        // - exact match would fail because the local count is smaller, making
+        //   the op permanently un-applyable and stalling the namespace DAG
+        //
+        // Subset still catches true divergence: if the local subtree contains
+        // a group NOT in payload, the check fails (correct rejection).
+        // Contexts are always set-compared (order-insensitive) with the same
+        // subset rule.
         let local_payload = super::collect_subtree_for_cascade(self.store, &root_gid)?;
-        let local_groups: Vec<[u8; 32]> = local_payload
+        let local_groups: std::collections::BTreeSet<[u8; 32]> = local_payload
             .descendant_groups
             .iter()
             .map(|g| g.to_bytes())
             .collect();
         let local_contexts: std::collections::BTreeSet<[u8; 32]> =
             local_payload.contexts.iter().map(|c| **c).collect();
+        let payload_groups: std::collections::BTreeSet<[u8; 32]> =
+            cascade_group_ids.iter().copied().collect();
         let payload_contexts: std::collections::BTreeSet<[u8; 32]> =
             cascade_context_ids.iter().copied().collect();
-        if local_groups != cascade_group_ids {
+        if !local_groups.is_subset(&payload_groups) {
+            let extra: Vec<_> = local_groups.difference(&payload_groups).collect();
             eyre::bail!(
-                "GroupDeleted cascade payload mismatch (groups): local={local_groups:?} payload={cascade_group_ids:?}"
+                "GroupDeleted cascade divergence: local subtree has groups not in payload: {extra:?}"
             );
         }
-        if local_contexts != payload_contexts {
+        if !local_contexts.is_subset(&payload_contexts) {
+            let extra: Vec<_> = local_contexts.difference(&payload_contexts).collect();
             eyre::bail!(
-                "GroupDeleted cascade payload mismatch (contexts): local={local_contexts:?} payload={payload_contexts:?}"
+                "GroupDeleted cascade divergence: local subtree has contexts not in payload: {extra:?}"
             );
         }
 

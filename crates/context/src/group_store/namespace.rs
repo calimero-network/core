@@ -318,23 +318,33 @@ pub struct CascadePayload {
 /// application across peers.
 ///
 /// **Determinism contract**: every peer running this fn against the same
-/// store state MUST produce identical `Vec` orderings for both fields.
-/// `execute_group_deleted` compares `descendant_groups` Vecs with positional
-/// equality, so any divergence is a hard rejection. Two invariants make
-/// this hold:
+/// store state MUST produce identical output. `execute_group_deleted`
+/// compares `descendant_groups` as a `BTreeSet` (subset check, see the
+/// retry-friendly divergence logic there) and `contexts` likewise, so the
+/// exact sequence doesn't matter for correctness — but we do want every
+/// peer to deterministically produce the same output for debuggability and
+/// for the signer/verifier to agree on the payload.
 ///
-/// 1. We use **DFS pre-order** via `Vec::pop()` (LIFO stack), then reverse
-///    — pure function of the tree shape, no timing or scheduling
-///    dependence. Do NOT "fix" this to BFS without coordinating with
-///    every peer; it would silently change the output Vec order and
-///    break cascade delete across mixed-version nodes.
+/// Two invariants make the output deterministic across peers:
+///
+/// 1. Traversal is **purely a function of the tree shape** — no timing or
+///    scheduling dependence. Specifically: we maintain a `Vec` stack,
+///    pop from the end (LIFO), enumerate each node's children via
+///    `list_child_groups`, push them onto the stack in returned order.
+///    This is depth-first with siblings visited in reverse RocksDB
+///    key-byte order (last-pushed is popped first), then the collected
+///    pre-order is reversed for children-first output. Name-it-what-you-
+///    will; the contract is: same store state → same output, always.
 /// 2. `list_child_groups` returns children in stable RocksDB key-byte
 ///    order (`GroupChildIndex` keys are `[prefix + parent + child]`,
 ///    iterated lexicographically), which is the same on every peer for
 ///    the same store state.
 ///
-/// Contexts use `BTreeSet` comparison in the verifier (order-insensitive),
-/// so the order in which we collect them here doesn't affect determinism.
+/// Do NOT rename this to "BFS" or "proper DFS" without understanding that
+/// the verifier now compares via set semantics — the divergence risk from
+/// earlier Vec-equality checks is gone, but callers that rely on the
+/// exact collection order (e.g. deletion ordering in
+/// `execute_group_deleted`) still depend on "children-first" holding.
 pub fn collect_subtree_for_cascade(
     store: &Store,
     root: &ContextGroupId,
