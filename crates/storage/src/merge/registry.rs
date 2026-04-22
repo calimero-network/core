@@ -54,10 +54,27 @@ static MERGE_REGISTRY: LazyLock<RwLock<HashMap<TypeId, MergeFn>>> =
 // against each other — unrelated non-serial tests still ran in
 // parallel with them. Thread-local storage makes each test's
 // registry state private to its own thread, so the race can't occur.
+//
+// Trade-off: unit tests can no longer observe cross-thread visibility
+// of registrations (a property the production RwLock does provide).
+// We consider this acceptable — the cross-thread-share story is
+// delegated to `std::sync::RwLock`, which we trust, and in practice
+// apps register their types once at startup before any async workers
+// are spawned. If cross-thread dispatch ever becomes part of the
+// behaviour-under-test (not just implementation detail), that belongs
+// in an integration test compiled without `#[cfg(test)]` rather than
+// here.
 #[cfg(test)]
 thread_local! {
     static MERGE_REGISTRY: RefCell<HashMap<TypeId, MergeFn>> = RefCell::new(HashMap::new());
 }
+
+// Both backends assume merge functions don't call back into the registry
+// while one is being dispatched. A reentrant call would deadlock under
+// RwLock (write-during-read) or panic under RefCell (already borrowed) —
+// either way a bug. The merge closure built in `register_crdt_merge` only
+// calls borsh and the type's own `Mergeable::merge`; adding registry
+// access to it would break this invariant.
 
 /// Run `f` with mutable access to the registry.
 #[cfg(not(test))]
@@ -72,9 +89,21 @@ fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<TypeId, MergeFn>) -> R) -> R
     f(&mut registry)
 }
 
+/// Test-only variant: uses thread-local RefCell instead of global RwLock.
+/// try_borrow_mut to surface re-entrant access as a clear panic message
+/// rather than the less-useful default `BorrowMutError` debug print.
 #[cfg(test)]
 fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<TypeId, MergeFn>) -> R) -> R {
-    MERGE_REGISTRY.with(|r| f(&mut r.borrow_mut()))
+    MERGE_REGISTRY.with(|r| {
+        let mut borrowed = r.try_borrow_mut().unwrap_or_else(|e| {
+            panic!(
+                "MERGE_REGISTRY RefCell already borrowed ({e}). Merge \
+                 functions must not call try_merge_registered / \
+                 register_crdt_merge / clear_merge_registry (see module docs)."
+            )
+        });
+        f(&mut borrowed)
+    })
 }
 
 /// Run `f` with read-only access to the registry.
@@ -90,9 +119,19 @@ fn with_registry<R>(f: impl FnOnce(&HashMap<TypeId, MergeFn>) -> R) -> R {
     f(&registry)
 }
 
+/// Test-only variant: uses thread-local RefCell instead of global RwLock.
 #[cfg(test)]
 fn with_registry<R>(f: impl FnOnce(&HashMap<TypeId, MergeFn>) -> R) -> R {
-    MERGE_REGISTRY.with(|r| f(&r.borrow()))
+    MERGE_REGISTRY.with(|r| {
+        let borrowed = r.try_borrow().unwrap_or_else(|e| {
+            panic!(
+                "MERGE_REGISTRY RefCell already mutably borrowed ({e}). \
+                 Merge functions must not call try_merge_registered / \
+                 register_crdt_merge / clear_merge_registry (see module docs)."
+            )
+        });
+        f(&borrowed)
+    })
 }
 
 /// Register a CRDT merge function for a type
