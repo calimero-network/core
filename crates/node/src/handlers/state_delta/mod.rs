@@ -607,13 +607,14 @@ async fn init_delta_store(
                 );
             }
 
+            // The two sources are disjoint by construction:
+            // `pending_handler_events` are records that were `applied:
+            // true` on disk before this init ran, so they're restored
+            // into the DAG as already-applied by `load_persisted_deltas`
+            // and can't show up in `get_missing_parents`'s
+            // pending→applied diff. Concat directly.
             let mut events_to_run = missing_result.cascaded_events;
-            if !pending_handler_events.is_empty() {
-                // Dedup: the cascade path may surface the same id.
-                events_to_run
-                    .retain(|(id, _)| !pending_handler_events.iter().any(|(pid, _)| pid == id));
-                events_to_run.extend(pending_handler_events);
-            }
+            events_to_run.extend(pending_handler_events);
 
             execute_cascaded_events(
                 &events_to_run,
