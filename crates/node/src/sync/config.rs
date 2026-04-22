@@ -65,6 +65,20 @@ pub const DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED: u64 = 1_000;
 /// it does not risk racing on per-context sync state.
 pub const DEFAULT_PEER_STATE_PROBE_CONCURRENCY: usize = 4;
 
+/// Maximum number of *additional* mesh peers to try for missing-parent
+/// fetches after the initial sync peer returns without fully resolving
+/// the DAG. The initial peer attempt is not counted toward this budget.
+///
+/// Relevant to cold-start `join_context` when gossip deltas arrive
+/// before sync completes (issue #2198).
+pub const DEFAULT_PARENT_PULL_ADDITIONAL_PEERS: usize = 3;
+
+/// Total wall-clock budget (milliseconds) for the cross-peer
+/// missing-parent fetch loop, including the initial peer attempt.
+/// When exhausted, the sync session returns an error rather than
+/// reporting silent success on a partially-applied DAG.
+pub const DEFAULT_PARENT_PULL_BUDGET_MS: u64 = 10_000;
+
 /// Synchronization configuration.
 ///
 /// Controls timing, concurrency, and protocol behavior for node synchronization.
