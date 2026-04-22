@@ -2696,7 +2696,7 @@ fn recursive_remove_nonexistent_member_returns_empty() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn governance_group_nested_and_unnested_via_signed_ops() {
+fn governance_group_reparented_via_signed_op() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -2711,59 +2711,70 @@ fn governance_group_nested_and_unnested_via_signed_ops() {
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    let child_id = [0xA1u8; 32];
-    let child_gid = ContextGroupId::from(child_id);
+    let mid_id = [0xA1u8; 32];
+    let mid_gid = ContextGroupId::from(mid_id);
+    let new_parent_id = [0xA2u8; 32];
+    let new_parent_gid = ContextGroupId::from(new_parent_id);
+    let leaf_id = [0xA3u8; 32];
+    let leaf_gid = ContextGroupId::from(leaf_id);
 
     // Bootstrap namespace: meta + admin + namespace identity
     save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
     add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
     store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
 
-    // Create child group meta (normally done by GroupCreated op, do manually)
-    save_group_meta(&store, &child_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &child_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-
     let gov = NamespaceGovernance::new(&store, ns_id);
 
-    // Sign and apply GroupNested op
-    let nest_op = SignedNamespaceOp::sign(
+    // Create three subgroups via GroupCreated ops (atomic create+nest):
+    // namespace → mid, namespace → new_parent, mid → leaf.
+    for (i, (gid, parent)) in [(mid_id, ns_id), (new_parent_id, ns_id), (leaf_id, mid_id)]
+        .iter()
+        .enumerate()
+    {
+        let op = SignedNamespaceOp::sign(
+            &admin_sk,
+            ns_id,
+            vec![],
+            [0u8; 32],
+            (i + 1) as u64,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                group_id: *gid,
+                parent_id: *parent,
+            }),
+        )
+        .expect("sign create op");
+        gov.apply_signed_op(&op).expect("apply create op");
+    }
+
+    assert_eq!(get_parent_group(&store, &leaf_gid).unwrap(), Some(mid_gid));
+
+    // Reparent leaf from mid to new_parent.
+    let reparent_op = SignedNamespaceOp::sign(
         &admin_sk,
         ns_id,
         vec![],
         [0u8; 32],
-        1,
-        NamespaceOp::Root(RootOp::GroupNested {
-            parent_group_id: ns_id,
-            child_group_id: child_id,
+        4,
+        NamespaceOp::Root(RootOp::GroupReparented {
+            child_group_id: leaf_id,
+            new_parent_id,
         }),
     )
-    .expect("sign nest op");
+    .expect("sign reparent op");
+    gov.apply_signed_op(&reparent_op)
+        .expect("apply reparent op");
 
-    gov.apply_signed_op(&nest_op).expect("apply nest op");
-
-    // Verify child is nested
-    let children = list_child_groups(&store, &ns_gid).unwrap();
-    assert_eq!(children, vec![child_gid], "child should be nested");
-
-    // Sign and apply GroupUnnested op
-    let unnest_op = SignedNamespaceOp::sign(
-        &admin_sk,
-        ns_id,
-        vec![],
-        [0u8; 32],
-        2,
-        NamespaceOp::Root(RootOp::GroupUnnested {
-            parent_group_id: ns_id,
-            child_group_id: child_id,
-        }),
-    )
-    .expect("sign unnest op");
-
-    gov.apply_signed_op(&unnest_op).expect("apply unnest op");
-
-    // Verify child is unnested
-    let children_after = list_child_groups(&store, &ns_gid).unwrap();
-    assert!(children_after.is_empty(), "child should be unnested");
+    assert_eq!(
+        get_parent_group(&store, &leaf_gid).unwrap(),
+        Some(new_parent_gid)
+    );
+    let mid_children = list_child_groups(&store, &mid_gid).unwrap();
+    assert!(!mid_children.contains(&leaf_gid), "leaf detached from mid");
+    let new_children = list_child_groups(&store, &new_parent_gid).unwrap();
+    assert!(
+        new_children.contains(&leaf_gid),
+        "leaf attached to new_parent"
+    );
 }
 
 #[test]
@@ -2800,6 +2811,7 @@ fn governance_rejects_non_admin_signer() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: [0xBB; 32],
+            parent_id: ns_id,
         }),
     )
     .expect("sign op");
@@ -2840,6 +2852,7 @@ fn governance_group_created_is_idempotent() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: new_group_id,
+            parent_id: ns_id,
         }),
     )
     .expect("sign op1");
@@ -2856,6 +2869,7 @@ fn governance_group_created_is_idempotent() {
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: new_group_id,
+            parent_id: ns_id,
         }),
     )
     .expect("sign op2");
@@ -2973,8 +2987,10 @@ fn reparent_group_rejects_cycle() {
     nest_group(&store, &a, &b).unwrap();
 
     let err = reparent_group(&store, &a, &b).unwrap_err();
-    assert!(format!("{err}").contains("cycle") || format!("{err}").contains("namespace root"),
-        "expected cycle or root error, got: {err}");
+    assert!(
+        format!("{err}").contains("cycle") || format!("{err}").contains("namespace root"),
+        "expected cycle or root error, got: {err}"
+    );
 }
 
 #[test]
@@ -3034,9 +3050,20 @@ fn collect_subtree_for_cascade_two_level_tree() {
 
     let payload = collect_subtree_for_cascade(&store, &root).unwrap();
     assert_eq!(payload.descendant_groups.len(), 2);
-    let leaf_pos = payload.descendant_groups.iter().position(|g| g == &leaf).unwrap();
-    let mid_pos = payload.descendant_groups.iter().position(|g| g == &mid).unwrap();
-    assert!(leaf_pos < mid_pos, "expected children-first; leaf={leaf_pos} mid={mid_pos}");
+    let leaf_pos = payload
+        .descendant_groups
+        .iter()
+        .position(|g| g == &leaf)
+        .unwrap();
+    let mid_pos = payload
+        .descendant_groups
+        .iter()
+        .position(|g| g == &mid)
+        .unwrap();
+    assert!(
+        leaf_pos < mid_pos,
+        "expected children-first; leaf={leaf_pos} mid={mid_pos}"
+    );
 }
 
 #[test]

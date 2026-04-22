@@ -494,9 +494,7 @@ impl<'a> NamespaceGovernance<'a> {
 
         // Verify parent exists in this namespace (root or previously-created subgroup).
         let parent_meta = load_group_meta(self.store, &parent_gid)?.ok_or_else(|| {
-            eyre::eyre!(
-                "GroupCreated rejected: parent_id '{parent_gid:?}' not found in namespace"
-            )
+            eyre::eyre!("GroupCreated rejected: parent_id '{parent_gid:?}' not found in namespace")
         })?;
 
         // Inherit application ID from the immediate parent (matches mero-drive

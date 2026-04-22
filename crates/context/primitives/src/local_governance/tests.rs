@@ -164,6 +164,7 @@ fn namespace_op_sign_verify_root() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
+            parent_id: sample_namespace_id(),
         }),
     )
     .expect("sign");
@@ -235,6 +236,7 @@ fn namespace_op_content_hash_distinct() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
+            parent_id: sample_namespace_id(),
         }),
     )
     .expect("sign");
@@ -247,6 +249,7 @@ fn namespace_op_content_hash_distinct() {
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
+            parent_id: sample_namespace_id(),
         }),
     )
     .expect("sign");
@@ -272,6 +275,7 @@ fn namespace_signable_bytes_deterministic() {
         nonce: 42,
         op: NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
+            parent_id: sample_namespace_id(),
         }),
     };
     let a = namespace_signable_bytes(&s).expect("bytes");

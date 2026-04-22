@@ -5,11 +5,10 @@ use calimero_server_primitives::admin::{
     GetMemberCapabilitiesApiResponse, GroupInfoApiResponse, JoinContextApiResponse,
     JoinGroupApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
-    NamespaceApiResponse, NamespaceIdentityApiResponse,
-    RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse,
-    ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse, SetDefaultVisibilityApiResponse,
-    SetMemberCapabilitiesApiResponse, SyncGroupApiResponse, UpdateGroupSettingsApiResponse,
-    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    NamespaceApiResponse, NamespaceIdentityApiResponse, RegisterGroupSigningKeyApiResponse,
+    RemoveGroupMembersApiResponse, ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse,
+    SetDefaultVisibilityApiResponse, SetMemberCapabilitiesApiResponse, SyncGroupApiResponse,
+    UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};

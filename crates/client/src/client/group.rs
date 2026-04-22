@@ -18,12 +18,12 @@ use calimero_server_primitives::admin::JoinContextApiResponse;
 use calimero_server_primitives::admin::ListGroupContextsApiResponse;
 use calimero_server_primitives::admin::ListGroupMembersApiResponse;
 use calimero_server_primitives::admin::ListSubgroupsApiResponse;
-use calimero_server_primitives::admin::ReparentGroupApiRequest;
-use calimero_server_primitives::admin::ReparentGroupApiResponse;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiRequest;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiResponse;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiResponse;
+use calimero_server_primitives::admin::ReparentGroupApiRequest;
+use calimero_server_primitives::admin::ReparentGroupApiResponse;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiResponse;
@@ -169,10 +169,7 @@ where
     ) -> Result<ReparentGroupApiResponse> {
         let response = self
             .connection
-            .post(
-                &format!("admin-api/groups/{group_id}/reparent"),
-                request,
-            )
+            .post(&format!("admin-api/groups/{group_id}/reparent"), request)
             .await?;
         Ok(response)
     }

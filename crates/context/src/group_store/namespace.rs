@@ -312,11 +312,19 @@ pub fn collect_subtree_for_cascade(
         for child in list_child_groups(store, &g)? {
             bfs_order.push(child);
             frontier.push(child);
-            contexts.extend(super::enumerate_group_contexts(store, &child, 0, usize::MAX)?);
+            contexts.extend(super::enumerate_group_contexts(
+                store,
+                &child,
+                0,
+                usize::MAX,
+            )?);
         }
     }
     let descendant_groups = bfs_order.into_iter().rev().collect();
-    Ok(CascadePayload { descendant_groups, contexts })
+    Ok(CascadePayload {
+        descendant_groups,
+        contexts,
+    })
 }
 
 /// Atomically swap the parent of `child` to `new_parent`.
@@ -335,8 +343,9 @@ pub fn reparent_group(
     child: &ContextGroupId,
     new_parent: &ContextGroupId,
 ) -> EyreResult<()> {
-    let old_parent = get_parent_group(store, child)?
-        .ok_or_else(|| eyre::eyre!("cannot reparent the namespace root: '{child:?}' has no parent"))?;
+    let old_parent = get_parent_group(store, child)?.ok_or_else(|| {
+        eyre::eyre!("cannot reparent the namespace root: '{child:?}' has no parent")
+    })?;
 
     if old_parent == *new_parent {
         return Ok(());
@@ -347,15 +356,22 @@ pub fn reparent_group(
     }
 
     if is_descendant_of(store, new_parent, child)? {
-        eyre::bail!(
-            "cycle: new_parent '{new_parent:?}' is a descendant of child '{child:?}'"
-        );
+        eyre::bail!("cycle: new_parent '{new_parent:?}' is a descendant of child '{child:?}'");
     }
 
     let mut handle = store.handle();
-    handle.delete(&GroupChildIndex::new(old_parent.to_bytes(), child.to_bytes()))?;
-    handle.put(&GroupParentRef::new(child.to_bytes()), &new_parent.to_bytes())?;
-    handle.put(&GroupChildIndex::new(new_parent.to_bytes(), child.to_bytes()), &())?;
+    handle.delete(&GroupChildIndex::new(
+        old_parent.to_bytes(),
+        child.to_bytes(),
+    ))?;
+    handle.put(
+        &GroupParentRef::new(child.to_bytes()),
+        &new_parent.to_bytes(),
+    )?;
+    handle.put(
+        &GroupChildIndex::new(new_parent.to_bytes(), child.to_bytes()),
+        &(),
+    )?;
     Ok(())
 }
 
