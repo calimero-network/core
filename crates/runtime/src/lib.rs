@@ -248,6 +248,12 @@ impl Module {
 
         let mut store = Store::new(self.engine.clone());
 
+        // #2215 — snapshot per-fn callback counts at entry so we can
+        // compute the delta contributed by *this* invocation. Counts
+        // are thread-local and accumulate across runs; the delta
+        // isolates our run.
+        let fn_counts_before = logic::imports::hotpath_fn_counts_snapshot();
+
         let imports = logic.imports(&mut store);
 
         // Wrap WASM execution in catch_unwind to prevent panics from crashing the node.
@@ -304,6 +310,40 @@ impl Module {
             for (i, log) in outcome.logs.iter().enumerate() {
                 info!(%context_id, method, log_index = i, log_content = %log, "WASM_LOG");
             }
+        }
+
+        // #2215 — emit per-host-function callback breakdown for this
+        // run. Compute the delta between start-of-run and end-of-run
+        // snapshots, sort by count descending, join top-N into a
+        // compact string. We emit only when total callbacks are
+        // non-trivial (>= 100) to avoid spamming for short runs like
+        // app init.
+        let fn_counts_after = logic::imports::hotpath_fn_counts_snapshot();
+        let mut deltas: Vec<(&'static str, u64)> = Vec::new();
+        let mut total: u64 = 0;
+        for (name, &count_after) in &fn_counts_after {
+            let before = fn_counts_before.get(name).copied().unwrap_or(0);
+            let delta = count_after.saturating_sub(before);
+            if delta > 0 {
+                deltas.push((name, delta));
+                total += delta;
+            }
+        }
+        if total >= 100 {
+            deltas.sort_by(|a, b| b.1.cmp(&a.1));
+            let breakdown = deltas
+                .iter()
+                .take(10)
+                .map(|(name, count)| format!("{}={}", name, count))
+                .collect::<Vec<_>>()
+                .join(" ");
+            info!(
+                %context_id,
+                method,
+                total,
+                breakdown = %breakdown,
+                "WASM host-fn callback breakdown (#2215)"
+            );
         }
 
         Ok(outcome)

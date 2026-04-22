@@ -43,7 +43,7 @@ use crate::Constraint;
 
 mod errors;
 mod host_functions;
-mod imports;
+pub(crate) mod imports;
 mod registers;
 
 pub use errors::VMLogicError;

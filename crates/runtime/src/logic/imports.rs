@@ -1,5 +1,6 @@
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
 use std::sync::Once;
 
 use wasmer::{Imports, Store};
@@ -11,6 +12,30 @@ thread_local! {
     static HOOKER: Once = const { Once::new() };
     static PAYLOAD: RefCell<Option<(String, Location)>> = const { RefCell::new(None) };
     static HOST_CTX: AtomicBool = const { AtomicBool::new(false) };
+
+    /// Per-host-function call counts, accumulated across every WASM→host
+    /// dispatch on the current thread. Used by `Module::run` to emit a
+    /// per-run breakdown of which imports the guest invoked — helps narrow
+    /// where the ~864ms of WASM-side work in a 908ms merge-apply outlier
+    /// is actually spent (issue #2215). Keys are the `stringify!`-generated
+    /// host-function names from the `imports!` macro (so interning is
+    /// free — they're `&'static str`).
+    ///
+    /// Cheap: per callback, one HashMap::entry lookup + `+= 1`. At ~50ns
+    /// per callback × 10k callbacks per outlier = ~0.5ms of overhead.
+    /// Negligible against the 908ms we're measuring.
+    pub(crate) static HOTPATH_FN_COUNTS: RefCell<HashMap<&'static str, u64>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Snapshot of the per-function call counts at the current moment.
+/// Used by `Module::run` to compute the delta contributed by one WASM
+/// invocation (subtracts a start-of-run snapshot from an end-of-run
+/// snapshot so counts from earlier runs on the same thread don't bleed
+/// in).
+#[must_use]
+pub fn hotpath_fn_counts_snapshot() -> HashMap<&'static str, u64> {
+    HOTPATH_FN_COUNTS.with(|m| m.borrow().clone())
 }
 
 impl VMLogic<'_> {
@@ -179,6 +204,15 @@ macro_rules! _imports {
                     };
 
                     HOST_CTX.with(|ctx| ctx.store(true, Ordering::Relaxed));
+                    // #2215 — per-host-function callback counts, used
+                    // by Module::run to emit a per-invocation
+                    // breakdown. `stringify!($func)` is the host-fn
+                    // name as a `&'static str`, so the HashMap key is
+                    // interned at compile time (no allocation per
+                    // callback).
+                    HOTPATH_FN_COUNTS.with(|m| {
+                        *m.borrow_mut().entry(stringify!($func)).or_insert(0) += 1;
+                    });
                     let res = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
                         let (data, store) = env.data_and_store_mut();
                         let data = unsafe { &mut *(*data.get_mut()).cast::<VMLogic<'_>>() };
