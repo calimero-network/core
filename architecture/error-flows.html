@@ -499,7 +499,7 @@
   </div>
   <div class="flow-step">
     <h4 style="color:var(--blue);">Fetch Missing</h4>
-    <p><span class="code">NodeManager</span> sends a <span class="code">DeltaRequest</span> stream to peers who likely have the missing parent. Peers respond with the missing delta payload.</p>
+    <p><span class="code">NodeManager</span> sends a <span class="code">DeltaRequest</span> stream to peers who likely have the missing parent. Peers respond with the missing delta payload. If the initial peer does not resolve every missing parent, <span class="code">SyncManager</span> iterates additional mesh peers for the context up to <span class="code">parent_pull_additional_peers</span>, bounded by <span class="code">parent_pull_budget</span>; unresolved pending parents after the budget surface as a sync-session error so callers (e.g. <span class="code">join_context</span>) fail loud rather than reporting success on a partial DAG.</p>
   </div>
   <div class="flow-step">
     <h4 style="color:var(--green);">Resolution</h4>
@@ -513,6 +513,8 @@
     <li><span class="kn">pending_deltas_count</span> — gauge for deltas awaiting parents</li>
     <li><span class="kn">delta_request_sent</span> — counter for DeltaRequest messages emitted</li>
     <li><span class="kn">stale_pending_cleanup_interval</span> — periodic cleanup timer</li>
+    <li><span class="kn">parent_pull_additional_peers</span> — max additional mesh peers tried after the initial sync peer (default 3)</li>
+    <li><span class="kn">parent_pull_budget</span> — wall-clock budget for the cross-peer parent-pull loop (default 10s)</li>
   </ul>
 </div>
 </div>
