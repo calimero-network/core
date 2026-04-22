@@ -4,11 +4,12 @@
 # Runtime containers (fuzzy-*-node-N) are removed during merobox's
 # graceful shutdown before any Docker-based collector can reach them,
 # so /profiling/data inside the container vanishes with it.
-# entrypoint-profiling.sh mirrors that data into /app/data/profiling-dump
-# on shutdown — and merobox bind-mounts /app/data to the host (see
-# merobox manager.py: `{host_path: {bind: /app/data}}`). This script
-# harvests those dumps from the host filesystem, regardless of whether
-# the runtime container still exists.
+# entrypoint-profiling.sh mirrors that data to $CALIMERO_HOME/profiling-dump
+# on shutdown — and merobox passes CALIMERO_HOME=/app/data plus a bind
+# mount from the host (manager.py: `{host_path: {bind: /app/data}}`),
+# so the dump lands under workflows/fuzzy-tests/<test>/data/<node>/
+# on the GHA runner. This script harvests those dumps from that host
+# tree regardless of whether the runtime container still exists.
 #
 # Usage: harvest-host-profiling.sh <src-root> <dest-root>
 #   <src-root>  e.g. workflows/fuzzy-tests/kv-store/data

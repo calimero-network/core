@@ -209,19 +209,33 @@ stop_profiling() {
 }
 
 preserve_to_host_mount() {
-    # Copy profiling data onto the CALIMERO_HOME bind mount so it survives
-    # container removal. Merobox mounts a host dir at /app/data (see
-    # merobox manager.py), and graceful shutdown removes the runtime
-    # container before the GHA collector runs — so anything left only in
-    # /profiling/{data,reports} is lost.
+    # Copy profiling data under $CALIMERO_HOME so it survives container
+    # removal. /profiling/{data,reports} lives on the container rootfs and
+    # is lost when the container is removed — which happens during merobox
+    # graceful shutdown, before the GHA collector reaches the container.
+    #
+    # $CALIMERO_HOME resolves to a persistent path in both deployments:
+    #   - Merobox (CI): passes CALIMERO_HOME=/app/data and bind-mounts the
+    #     host dir workflows/fuzzy-tests/<test>/data/<node>/ to /app/data
+    #     (see merobox manager.py).
+    #   - Standalone docker run: prebuilt.profiling.Dockerfile sets
+    #     ENV CALIMERO_HOME=/data and VOLUME /data, so the path lives on a
+    #     Docker-managed volume even without explicit -v.
+    # We intentionally don't supply a fallback — if CALIMERO_HOME is unset,
+    # we'd only be guessing, and silent writes to the wrong path would
+    # defeat the point of this function.
     #
     # Must not fail under `set -e` even if the copy partially fails —
     # this runs right before `exit $EXIT_CODE` in the mainline path, and
     # a non-zero return here would replace merod's real exit code with
     # the copy error.
-    local host_mount="${CALIMERO_HOME:-/app/data}"
+    local host_mount="${CALIMERO_HOME:-}"
+    if [ -z "$host_mount" ]; then
+        echo "[Profiling] CALIMERO_HOME is unset — cannot locate persistent dir, skipping preserve step"
+        return 0
+    fi
     if [ ! -d "$host_mount" ]; then
-        echo "[Profiling] Host mount $host_mount not present, skipping preserve step"
+        echo "[Profiling] CALIMERO_HOME=$host_mount is not a directory, skipping preserve step"
         return 0
     fi
     # mktemp instead of a fixed /tmp path — avoids a symlink race where a
