@@ -72,6 +72,16 @@ pub async fn handler(
 
     info!(child=%group_id_str, new_parent=%req.new_parent_id, "Reparenting subgroup");
 
+    // Pre-check: was this group already under new_parent? If so, the op
+    // application will be a no-op. We compute this BEFORE publishing so the
+    // response accurately reflects whether anything changed. (Reading the
+    // local store is sufficient — if the local view says "already there",
+    // the no-op will replicate as a no-op everywhere.)
+    let was_already_there = matches!(
+        calimero_context::group_store::get_parent_group(&state.store, &child_group_id),
+        Ok(Some(p)) if p == new_parent_id,
+    );
+
     match calimero_context::group_store::sign_apply_and_publish_namespace_op(
         &state.store,
         &state.node_client,
@@ -82,7 +92,9 @@ pub async fn handler(
     .await
     {
         Ok(()) => ApiResponse {
-            payload: ReparentGroupApiResponse { reparented: true },
+            payload: ReparentGroupApiResponse {
+                reparented: !was_already_there,
+            },
         }
         .into_response(),
         Err(err) => {

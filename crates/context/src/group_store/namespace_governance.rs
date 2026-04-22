@@ -536,15 +536,20 @@ impl<'a> NamespaceGovernance<'a> {
         self.require_namespace_admin(&op.signer)?;
         let child = ContextGroupId::from(child_group_id);
         let new_parent = ContextGroupId::from(new_parent_id);
-        let old_parent = super::get_parent_group(self.store, &child)?;
-        super::reparent_group(self.store, &child, &new_parent)?;
-        if let Some(old) = old_parent {
-            notify_op_event(OpEvent::SubgroupReparented {
-                namespace_id: self.namespace_id,
-                old_parent_group_id: old.to_bytes(),
-                new_parent_group_id: new_parent_id,
-                child_group_id,
-            });
+        match super::reparent_group(self.store, &child, &new_parent)? {
+            super::ReparentOutcome::Reparented { old_parent } => {
+                notify_op_event(OpEvent::SubgroupReparented {
+                    namespace_id: self.namespace_id,
+                    old_parent_group_id: old_parent.to_bytes(),
+                    new_parent_group_id: new_parent_id,
+                    child_group_id,
+                });
+            }
+            // Idempotent no-op (new_parent == old_parent). Don't fire an
+            // event — downstream subscribers would see a "reparent" with
+            // identical old/new parents, falsely implying a structural
+            // change occurred.
+            super::ReparentOutcome::Unchanged => {}
         }
         Ok(())
     }
@@ -588,22 +593,29 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         // Children-first deletion: descendants then root. For each group:
-        // delete signing keys, members, contexts, meta, parent edge.
+        // 1. Delete contexts registered on this group (cascade-specific).
+        // 2. Call delete_group_local_rows for the comprehensive per-group
+        //    cleanup (members, signing keys, capabilities, member aliases,
+        //    default capabilities/visibility, group alias, context migrations,
+        //    upgrade record, op-log + head, meta, governance nonces, and
+        //    member-context joins) — single source of truth shared with the
+        //    non-cascade GroupOp::GroupDelete path.
+        // 3. Remove the parent edge + child-index entry on the parent.
         let all_groups_iter = cascade_group_ids
             .iter()
             .copied()
             .chain(std::iter::once(root_group_id));
         for gid_bytes in all_groups_iter {
             let gid = ContextGroupId::from(gid_bytes);
-            // Delete contexts registered on this group.
             for ctx in super::enumerate_group_contexts(self.store, &gid, 0, usize::MAX)? {
                 super::unregister_context_from_group(self.store, &gid, &ctx)?;
             }
-            super::delete_all_group_signing_keys(self.store, &gid)?;
-            super::delete_all_group_members(self.store, &gid)?;
-            super::delete_group_meta(self.store, &gid)?;
-            // Remove parent edge + child-index if any.
-            if let Some(parent) = super::get_parent_group(self.store, &gid)? {
+            // Capture parent before delete_group_local_rows runs (it deletes
+            // GroupMeta but leaves parent edges; we still need them to clean
+            // up the child-index entry on the parent below).
+            let parent_for_cleanup = super::get_parent_group(self.store, &gid)?;
+            super::delete_group_local_rows(self.store, &gid)?;
+            if let Some(parent) = parent_for_cleanup {
                 let mut handle = self.store.handle();
                 handle.delete(&calimero_store::key::GroupParentRef::new(gid_bytes))?;
                 handle.delete(&calimero_store::key::GroupChildIndex::new(

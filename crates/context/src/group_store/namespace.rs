@@ -368,6 +368,20 @@ pub fn collect_subtree_for_cascade(
     })
 }
 
+/// Outcome of a `reparent_group` call. Distinguishes the no-op idempotent
+/// case from an actual edge swap so callers can report accurately and
+/// suppress misleading "reparented" events when nothing changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReparentOutcome {
+    /// Edges were swapped; the structural shape of the tree changed.
+    Reparented {
+        /// The parent before the swap (now no longer a parent of child).
+        old_parent: ContextGroupId,
+    },
+    /// `new_parent == old_parent` — no writes performed, no shape change.
+    Unchanged,
+}
+
 /// Atomically swap the parent of `child` to `new_parent`.
 ///
 /// Replaces the old `nest_group` + `unnest_group` two-step pattern with a
@@ -375,7 +389,7 @@ pub fn collect_subtree_for_cascade(
 /// - `child` must currently have a parent (cannot reparent the namespace root).
 /// - `new_parent` must exist in the store (have a `GroupMeta` entry).
 /// - `new_parent` must not be a descendant of `child` (no cycles).
-/// - Idempotent on `new_parent == old_parent`.
+/// - Idempotent on `new_parent == old_parent` (returns `Unchanged`).
 ///
 /// All edge mutations happen in one store handle so a partial state is
 /// never observable.
@@ -383,13 +397,13 @@ pub fn reparent_group(
     store: &Store,
     child: &ContextGroupId,
     new_parent: &ContextGroupId,
-) -> EyreResult<()> {
+) -> EyreResult<ReparentOutcome> {
     let old_parent = get_parent_group(store, child)?.ok_or_else(|| {
         eyre::eyre!("cannot reparent the namespace root: '{child:?}' has no parent")
     })?;
 
     if old_parent == *new_parent {
-        return Ok(());
+        return Ok(ReparentOutcome::Unchanged);
     }
 
     if super::load_group_meta(store, new_parent)?.is_none() {
@@ -413,7 +427,7 @@ pub fn reparent_group(
         &GroupChildIndex::new(new_parent.to_bytes(), child.to_bytes()),
         &(),
     )?;
-    Ok(())
+    Ok(ReparentOutcome::Reparented { old_parent })
 }
 
 /// Returns `true` iff `candidate` is a (transitive) descendant of

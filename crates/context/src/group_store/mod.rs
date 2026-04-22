@@ -93,7 +93,7 @@ pub use self::namespace::{
     is_descendant_of, is_read_only_for_context, list_child_groups, nest_group,
     recursive_remove_member, reparent_group, resolve_namespace, resolve_namespace_identity,
     resolve_namespace_identity_record, store_namespace_identity, unnest_group, CascadePayload,
-    NamespaceIdentityRecord, ResolvedNamespaceIdentity,
+    NamespaceIdentityRecord, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::namespace_dag::{NamespaceDagService, NamespaceHead};
 pub use self::namespace_governance::{

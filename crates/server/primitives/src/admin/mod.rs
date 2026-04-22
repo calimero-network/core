@@ -1931,7 +1931,20 @@ pub struct ReparentGroupApiRequest {
 
 impl Validate for ReparentGroupApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
+        let mut errors = Vec::new();
+        if self.new_parent_id.len() != 64 {
+            errors.push(ValidationError::InvalidLength {
+                field: "new_parent_id",
+                expected: 64,
+                actual: self.new_parent_id.len(),
+            });
+        } else if hex::decode(&self.new_parent_id).is_err() {
+            errors.push(ValidationError::InvalidHexEncoding {
+                field: "new_parent_id",
+                reason: "not valid hex".to_owned(),
+            });
+        }
+        errors
     }
 }
 
