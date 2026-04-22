@@ -1828,19 +1828,120 @@ impl SyncManager {
                     );
                 }
 
-                if !missing_result.missing_ids.is_empty() {
+                // Steady-state: the initial DAG-heads response already
+                // matched local state, so there are no missing parents to
+                // chase. Skip the entire retry-and-final-check machinery.
+                if missing_result.missing_ids.is_empty() {
+                    return Ok(SyncProtocol::DeltaSync {
+                        missing_delta_ids: vec![],
+                    });
+                }
+
+                // From here on, we have at least one missing parent.
+
+                info!(
+                    %context_id,
+                    missing_count = missing_result.missing_ids.len(),
+                    "DAG heads have missing parents, requesting them recursively"
+                );
+
+                // First attempt: the peer that served DAG heads.
+                if let Err(e) = self
+                    .request_missing_deltas(
+                        context_id,
+                        missing_result.missing_ids,
+                        peer_id,
+                        delta_store_ref.clone(),
+                        our_identity,
+                    )
+                    .await
+                {
+                    warn!(
+                        ?e,
+                        %context_id,
+                        "Failed to request missing parent deltas from initial peer"
+                    );
+                }
+
+                // Cross-peer fallback for cold-start race (#2198): if the
+                // initial peer did not resolve every missing parent, iterate
+                // other mesh peers for this context until the DAG is whole
+                // or the retry budget is exhausted.
+                let pull_started = Instant::now();
+                let pull_budget = self.sync_config.parent_pull_budget;
+                let max_additional = self.sync_config.parent_pull_additional_peers;
+
+                let topic = TopicHash::from_raw(context_id);
+                let mut tried: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
+                let _ = tried.insert(peer_id); // don't retry the initial peer
+
+                // Fetch the mesh peer list once; only re-fetch if we run out
+                // of untried peers, to pick up any peers that joined the mesh
+                // mid-retry (stale-mesh recovery).
+                let mut available_peers = self.network_client.mesh_peers(topic.clone()).await;
+                let mut refetched = false;
+
+                let mut attempts = 0usize;
+                loop {
+                    let after = delta_store_ref.get_missing_parents().await;
+                    if after.missing_ids.is_empty() {
+                        break; // fully resolved
+                    }
+                    if attempts >= max_additional {
+                        break;
+                    }
+                    if pull_started.elapsed() >= pull_budget {
+                        warn!(
+                            %context_id,
+                            elapsed_ms = pull_started.elapsed().as_millis() as u64,
+                            "parent-pull budget exhausted"
+                        );
+                        break;
+                    }
+
+                    let next_peer = available_peers.iter().find(|p| !tried.contains(p)).copied();
+                    let next_peer = match next_peer {
+                        Some(p) => p,
+                        None if !refetched => {
+                            // All current peers tried; re-fetch in case the
+                            // mesh has grown (new subscribers since loop start).
+                            available_peers = self.network_client.mesh_peers(topic.clone()).await;
+                            refetched = true;
+                            match available_peers.iter().find(|p| !tried.contains(p)).copied() {
+                                Some(p) => p,
+                                None => {
+                                    debug!(
+                                        %context_id,
+                                        "no additional mesh peers available for parent pull"
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                        None => {
+                            debug!(
+                                %context_id,
+                                "no additional mesh peers available for parent pull"
+                            );
+                            break;
+                        }
+                    };
+                    let _ = tried.insert(next_peer);
+                    attempts += 1;
+
                     info!(
                         %context_id,
-                        missing_count = missing_result.missing_ids.len(),
-                        "DAG heads have missing parents, requesting them recursively"
+                        ?next_peer,
+                        attempt = attempts,
+                        still_missing = after.missing_ids.len(),
+                        "retrying missing-parent fetch against additional mesh peer"
                     );
 
-                    // Request missing parents (this uses recursive topological fetching)
                     if let Err(e) = self
                         .request_missing_deltas(
                             context_id,
-                            missing_result.missing_ids,
-                            peer_id,
+                            after.missing_ids,
+                            next_peer,
                             delta_store_ref.clone(),
                             our_identity,
                         )
@@ -1849,12 +1950,33 @@ impl SyncManager {
                         warn!(
                             ?e,
                             %context_id,
-                            "Failed to request missing parent deltas during DAG catchup"
+                            ?next_peer,
+                            "cross-peer parent-pull attempt failed"
                         );
                     }
                 }
 
-                // Return a non-None protocol to signal success (prevents trying next peer)
+                // Final check: if pending parents still remain, the sync
+                // did NOT fully restore the DAG. Return an error so the
+                // caller (e.g. join_context) surfaces a real failure
+                // instead of silent success on a partially-applied DAG.
+                let final_missing = delta_store_ref.get_missing_parents().await;
+                if !final_missing.missing_ids.is_empty() {
+                    warn!(
+                        %context_id,
+                        remaining = final_missing.missing_ids.len(),
+                        peer_attempts = attempts + 1,
+                        "DAG sync ended with unresolved missing parents"
+                    );
+                    bail!(
+                        "pending parents unresolved for context {}: {} remaining after {} peer attempt(s)",
+                        context_id,
+                        final_missing.missing_ids.len(),
+                        attempts + 1,
+                    );
+                }
+
+                // Success: DAG is fully resolved.
                 Ok(SyncProtocol::DeltaSync {
                     missing_delta_ids: vec![],
                 })
@@ -2205,7 +2327,23 @@ impl SyncManager {
         }
 
         let Some(context) = self.context_client.get_context(&context_id)? else {
-            bail!("context not found: {}", context_id);
+            // An inbound stream for a context this node does not know about
+            // must not tear down unrelated in-flight sync activity. This
+            // happens during cold-start `join_context` when a subgroup /
+            // app-internal context leaks onto the sync channel before the
+            // joining node has materialised it. Close the stream cleanly
+            // and let the concurrent legitimate sync continue. (#2198)
+            warn!(
+                %context_id,
+                ?their_identity,
+                "inbound stream for unknown context, closing cleanly"
+            );
+
+            if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
+                error!(%err, %context_id, "failed to send OpaqueError for unknown context");
+            }
+
+            return Ok(None);
         };
 
         let mut _updated = None;
