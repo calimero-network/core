@@ -104,6 +104,15 @@ pub struct SyncConfig {
 
     /// Max concurrent peer probes in `find_peer_with_state`.
     pub peer_state_probe_concurrency: usize,
+
+    /// Max additional mesh peers to try for missing-parent fetches
+    /// after the initial sync peer returns without fully resolving
+    /// the DAG. See [`DEFAULT_PARENT_PULL_ADDITIONAL_PEERS`].
+    pub parent_pull_additional_peers: usize,
+
+    /// Wall-clock budget for the cross-peer missing-parent fetch loop.
+    /// See [`DEFAULT_PARENT_PULL_BUDGET_MS`].
+    pub parent_pull_budget: time::Duration,
 }
 
 impl Default for SyncConfig {
@@ -116,6 +125,8 @@ impl Default for SyncConfig {
             snapshot_chunk_size: DEFAULT_SNAPSHOT_CHUNK_SIZE,
             delta_sync_threshold: DEFAULT_DELTA_SYNC_THRESHOLD,
             peer_state_probe_concurrency: DEFAULT_PEER_STATE_PROBE_CONCURRENCY,
+            parent_pull_additional_peers: DEFAULT_PARENT_PULL_ADDITIONAL_PEERS,
+            parent_pull_budget: time::Duration::from_millis(DEFAULT_PARENT_PULL_BUDGET_MS),
         }
     }
 }

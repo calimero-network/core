@@ -1860,9 +1860,8 @@ impl SyncManager {
                 // other mesh peers for this context until the DAG is whole
                 // or the retry budget is exhausted.
                 let pull_started = Instant::now();
-                let pull_budget =
-                    time::Duration::from_millis(super::config::DEFAULT_PARENT_PULL_BUDGET_MS);
-                let max_additional = super::config::DEFAULT_PARENT_PULL_ADDITIONAL_PEERS;
+                let pull_budget = self.sync_config.parent_pull_budget;
+                let max_additional = self.sync_config.parent_pull_additional_peers;
 
                 let topic = TopicHash::from_raw(context_id);
                 let mut tried: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
