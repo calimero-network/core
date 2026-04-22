@@ -300,8 +300,24 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Recalculates ancestor hashes recursively up to root.
+    ///
+    /// # Efficiency note (#2208)
+    ///
+    /// The full hash of `current_id` is threaded forward through
+    /// iterations rather than re-read from storage on each iteration.
+    /// The naïve version called `calculate_full_merkle_hash_for(current_id)`
+    /// inside the loop, which internally does `get_index(current_id)` —
+    /// reloading the record we just updated in the previous iteration.
+    /// Threading the hash forward saves one storage read per ancestor
+    /// level. On a 5-deep ancestor chain × 3 actions per delta that's
+    /// 15 reads eliminated per merge-apply, which compounds with the
+    /// runtime-level read cache in `crates/runtime`.
     pub(crate) fn recalculate_ancestor_hashes_for(id: Id) -> Result<(), StorageError> {
         let mut current_id = id;
+        // Bootstrap: compute the hash for the starting entity once.
+        // Every subsequent iteration reuses the parent's just-computed
+        // `full_hash` instead of re-reading its index.
+        let mut current_full_hash = Self::calculate_full_merkle_hash_for(id)?;
 
         while let Some(parent_id) = Self::get_parent_id(current_id)? {
             let mut parent_index =
@@ -311,19 +327,19 @@ impl<S: StorageAdaptor> Index<S> {
             // Update the child's hash in the parent's children list
             if let Some(children) = &mut parent_index.children {
                 if let Some(child) = children.iter_mut().find(|c| c.id() == current_id) {
-                    let new_child_hash = Self::calculate_full_merkle_hash_for(current_id)?;
-                    if child.merkle_hash() != new_child_hash {
+                    if child.merkle_hash() != current_full_hash {
                         // Log when a child's hash changes and affects the root
                         if parent_id.is_root() {
                             info!(
                                 target: "storage::merkle",
                                 child_id = %current_id,
                                 old_child_hash = %hex::encode(child.merkle_hash()),
-                                new_child_hash = %hex::encode(&new_child_hash),
+                                new_child_hash = %hex::encode(&current_full_hash),
                                 "ROOT MERKLE: Child hash updated"
                             );
                         }
-                        *child = ChildInfo::new(current_id, new_child_hash, child.metadata.clone());
+                        *child =
+                            ChildInfo::new(current_id, current_full_hash, child.metadata.clone());
                     }
                 }
             }
@@ -348,6 +364,11 @@ impl<S: StorageAdaptor> Index<S> {
             }
 
             Self::save_index(&parent_index)?;
+
+            // Thread the hash forward: next iteration treats this
+            // parent as the current child, and we already know its
+            // fresh full_hash from the recomputation we just did.
+            current_full_hash = parent_index.full_hash;
             current_id = parent_id;
         }
 
