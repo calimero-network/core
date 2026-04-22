@@ -125,6 +125,31 @@ where
         Ok(())
     }
 
+    /// Push a value with an explicit `StorageType` on the new entry's element.
+    ///
+    /// Used by `AuthoredVector` to stamp each push with the executor as owner.
+    pub(crate) fn push_with_storage_type(
+        &mut self,
+        value: V,
+        storage_type: crate::entities::StorageType,
+    ) -> Result<(), StoreError> {
+        let _ignored = self
+            .inner
+            .insert_with_storage_type(None, value, storage_type)?;
+        Ok(())
+    }
+
+    /// Returns the storage id of the entry at `index`, or `None` if out of bounds.
+    ///
+    /// Used by `AuthoredVector` to look up per-entry metadata for authorization.
+    pub(crate) fn entry_id_at(
+        &self,
+        index: usize,
+    ) -> Result<Option<crate::address::Id>, StoreError> {
+        validate_index_bounds(index)?;
+        self.inner.nth(index)
+    }
+
     /// Remove and return the last value from the vector.
     ///
     /// # Errors
