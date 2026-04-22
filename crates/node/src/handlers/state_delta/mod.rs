@@ -571,13 +571,32 @@ async fn init_delta_store(
 
     if is_new_store {
         let init_result = async {
-            if let Err(e) = delta_store_ref.load_persisted_deltas().await {
-                warn!(
-                    ?e,
-                    %context_id,
-                    "Failed to load persisted deltas, starting with empty DAG"
-                );
-            }
+            // `load_persisted_deltas` surfaces any records with
+            // `applied: true, events: Some(..)` — crash-leftovers
+            // whose handlers never completed. Merged with the normal
+            // cascade events below so a single handler pass covers both
+            // (#2185). Share the DB scan with the DAG restore to avoid
+            // a second full-table iteration (#2194 review).
+            let pending_handler_events = match delta_store_ref.load_persisted_deltas().await {
+                Ok(result) => {
+                    if !result.pending_handler_events.is_empty() {
+                        info!(
+                            %context_id,
+                            pending_count = result.pending_handler_events.len(),
+                            "Replaying handlers interrupted by crash before events were cleared"
+                        );
+                    }
+                    result.pending_handler_events
+                }
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        %context_id,
+                        "Failed to load persisted deltas, starting with empty DAG"
+                    );
+                    Vec::new()
+                }
+            };
 
             let missing_result = delta_store_ref.get_missing_parents().await;
             if !missing_result.missing_ids.is_empty() {
@@ -588,29 +607,12 @@ async fn init_delta_store(
                 );
             }
 
-            // Replay any events whose handlers were interrupted by a
-            // crash between `persist_cascaded_deltas_and_update_heads`
-            // and the `execute_cascaded_events` that would have cleared
-            // them (#2185). Merge with the normal cascade events so a
-            // single pass through the handler covers both.
             let mut events_to_run = missing_result.cascaded_events;
-            match delta_store_ref.collect_pending_handler_events() {
-                Ok(pending) if !pending.is_empty() => {
-                    info!(
-                        %context_id,
-                        pending_count = pending.len(),
-                        "Replaying handlers interrupted by crash before events were cleared"
-                    );
-                    // Dedup: the cascade path may surface the same id.
-                    events_to_run.retain(|(id, _)| !pending.iter().any(|(pid, _)| pid == id));
-                    events_to_run.extend(pending);
-                }
-                Ok(_) => {}
-                Err(e) => warn!(
-                    ?e,
-                    %context_id,
-                    "Failed to scan for pending handler events; replay skipped"
-                ),
+            if !pending_handler_events.is_empty() {
+                // Dedup: the cascade path may surface the same id.
+                events_to_run
+                    .retain(|(id, _)| !pending_handler_events.iter().any(|(pid, _)| pid == id));
+                events_to_run.extend(pending_handler_events);
             }
 
             execute_cascaded_events(
@@ -734,8 +736,15 @@ async fn execute_cascaded_events(
                     delta_id = ?cascaded_id,
                     error = %e,
                     phase = phase,
-                    "Failed to deserialize cascaded events"
+                    "Failed to deserialize cascaded events — clearing blob to prevent permanent replay loop"
                 );
+                // `serde_json::from_slice` failures on this blob are
+                // structural, not transient: a blob that fails to
+                // deserialize now will fail every restart. Without the
+                // clear, `collect_pending_handler_events` would surface
+                // this record on every init and we'd burn through the
+                // same warn-and-skip cycle forever (#2194 review).
+                delta_store.mark_events_executed(cascaded_id);
             }
         }
     }

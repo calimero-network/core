@@ -36,6 +36,19 @@ pub struct AddDeltaResult {
     pub cascaded_events: Vec<([u8; 32], Vec<u8>)>,
 }
 
+/// Result of `load_persisted_deltas`.
+#[derive(Debug, Default)]
+pub struct LoadPersistedResult {
+    /// Number of deltas restored into the DAG.
+    pub loaded_count: usize,
+    /// Deltas that still have `events: Some(..)` on disk with
+    /// `applied: true` — handlers for these were interrupted before
+    /// `execute_cascaded_events` could clear them (#2185). Caller is
+    /// expected to feed these through `execute_cascaded_events` which
+    /// will clear them on success.
+    pub pending_handler_events: Vec<([u8; 32], Vec<u8>)>,
+}
+
 /// Result of checking for missing parents with cascaded event information
 #[derive(Debug)]
 pub struct MissingParentsResult {
@@ -496,7 +509,7 @@ impl DeltaStore {
     ///
     /// Deltas are loaded in topological order (parents before children) to properly
     /// reconstruct the DAG topology.
-    pub async fn load_persisted_deltas(&self) -> Result<usize> {
+    pub async fn load_persisted_deltas(&self) -> Result<LoadPersistedResult> {
         use std::collections::HashMap;
 
         let handle = self.applier.context_client.datastore_handle();
@@ -504,6 +517,12 @@ impl DeltaStore {
         // Step 1: Collect ALL deltas for this context from DB
         let mut iter = handle.iter::<calimero_store::key::ContextDagDelta>()?;
         let mut all_deltas: HashMap<[u8; 32], CausalDelta<Vec<Action>>> = HashMap::new();
+        // Collected in the same pass: records with `applied: true,
+        // events: Some(..)` are crash-leftovers whose handlers never
+        // completed. Surfaced via the return struct so the caller can
+        // replay through `execute_cascaded_events` without re-scanning
+        // the DB (#2185 / #2194 review).
+        let mut pending_handler_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
         for entry in iter.entries() {
             let (key_result, value_result) = entry;
@@ -513,6 +532,14 @@ impl DeltaStore {
             // Filter by context_id
             if key.context_id() != self.applier.context_id {
                 continue;
+            }
+
+            // Harvest pending handler events before taking ownership of
+            // `events` fields we may clone elsewhere.
+            if stored_delta.applied {
+                if let Some(ref events_data) = stored_delta.events {
+                    pending_handler_events.push((stored_delta.delta_id, events_data.clone()));
+                }
             }
 
             // Deserialize actions
@@ -567,7 +594,10 @@ impl DeltaStore {
         }
 
         if all_deltas.is_empty() {
-            return Ok(0);
+            return Ok(LoadPersistedResult {
+                loaded_count: 0,
+                pending_handler_events,
+            });
         }
 
         debug!(
@@ -660,7 +690,10 @@ impl DeltaStore {
             }
         }
 
-        Ok(loaded_count)
+        Ok(LoadPersistedResult {
+            loaded_count,
+            pending_handler_events,
+        })
     }
 
     /// Add a delta with optional event data to the store
@@ -1413,37 +1446,6 @@ impl DeltaStore {
                 "Failed to clear events after handler execution; next restart will replay"
             );
         }
-    }
-
-    /// Scan the DB for deltas that have `applied: true, events: Some(..)`
-    /// — records whose handlers were interrupted between the DB write in
-    /// `persist_cascaded_deltas_and_update_heads` and the
-    /// `execute_cascaded_events` call that would have cleared the column.
-    /// Returns `(delta_id, events_blob)` pairs for the caller to replay
-    /// through `execute_cascaded_events` (#2185 restart recovery).
-    pub fn collect_pending_handler_events(&self) -> Result<Vec<([u8; 32], Vec<u8>)>> {
-        let handle = self.applier.context_client.datastore_handle();
-        let mut iter = handle.iter::<calimero_store::key::ContextDagDelta>()?;
-        let mut pending: Vec<([u8; 32], Vec<u8>)> = Vec::new();
-
-        for entry in iter.entries() {
-            let (key_result, value_result) = entry;
-            let key = key_result?;
-            if key.context_id() != self.applier.context_id {
-                continue;
-            }
-
-            let stored = value_result?;
-            if !stored.applied {
-                continue;
-            }
-            let Some(events_data) = stored.events else {
-                continue;
-            };
-            pending.push((stored.delta_id, events_data));
-        }
-
-        Ok(pending)
     }
 
     /// Check if a delta has been applied to the DAG
