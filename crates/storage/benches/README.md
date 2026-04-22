@@ -1,6 +1,7 @@
 # Benchmarks
 
-Criterion benchmarks for `calimero-storage`. Each bench targets a
+Criterion benchmarks for `calimero-storage` (and a companion set in
+`crates/store/benches/` at the layer below). Each bench targets a
 concrete performance question tied to an issue or investigation —
 not generic coverage.
 
@@ -12,16 +13,24 @@ All benches in this crate:
 cargo bench -p calimero-storage
 ```
 
+Storage-layer benches (different crate, same conventions):
+
+```
+cargo bench -p calimero-store
+```
+
 A single bench:
 
 ```
 cargo bench -p calimero-storage --bench merkle_rehash
+cargo bench -p calimero-store --bench handle_ops
 ```
 
 A specific measurement inside a bench (criterion filter syntax):
 
 ```
 cargo bench -p calimero-storage --bench merge_root_state -- "merge_root_state/1000"
+cargo bench -p calimero-store --bench handle_ops -- "rocks/10000/get_hit"
 ```
 
 Criterion's `bench` profile compiles with release optimisations. Do not
@@ -63,6 +72,23 @@ deserialize → dispatch → borsh serialize) at varying payload sizes.
 Also #2199, a different suspect — the nested WASM merge callback.
 Answer so far: ~18µs at N=1000 items, linear scaling. Framework cost
 isn't the 918ms outlier explanation either.
+
+### `handle_ops` (in `crates/store/benches/`)
+
+Measures `Database::get` / `Database::put` / `read_then_put` across
+both in-memory and RocksDB backends, sweeping DB size from 100 to
+10,000 entries. Targets #2199 suspect (a): the extra
+`storage_read(Key::Entry(id))` in `try_merge_data`. Answer so far:
+RocksDB reads are ~700ns at all tested sizes (flat scaling). Storage
+read latency isn't the 918ms outlier either.
+
+**Combined #2199 status**: all three originally-identified suspects
+are eliminated at realistic context sizes. The 918ms apply-latency
+outlier must come from somewhere else (WASM runtime overhead,
+context-level contention, compaction stall, or payload-specific
+pathology in the app's registered merge function). Next investigation
+step is production sub-timers on the merge path, not more synthetic
+micro-benches.
 
 ## Adding a new bench
 
