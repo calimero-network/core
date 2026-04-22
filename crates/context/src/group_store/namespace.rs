@@ -281,6 +281,46 @@ pub fn resolve_namespace(store: &Store, group_id: &ContextGroupId) -> EyreResult
     )
 }
 
+/// Atomically swap the parent of `child` to `new_parent`.
+///
+/// Replaces the old `nest_group` + `unnest_group` two-step pattern with a
+/// single op so orphan state is no longer expressible. Enforces:
+/// - `child` must currently have a parent (cannot reparent the namespace root).
+/// - `new_parent` must exist in the store (have a `GroupMeta` entry).
+/// - `new_parent` must not be a descendant of `child` (no cycles).
+/// - Idempotent on `new_parent == old_parent`.
+///
+/// All edge mutations happen in one store handle so a partial state is
+/// never observable.
+pub fn reparent_group(
+    store: &Store,
+    child: &ContextGroupId,
+    new_parent: &ContextGroupId,
+) -> EyreResult<()> {
+    let old_parent = get_parent_group(store, child)?
+        .ok_or_else(|| eyre::eyre!("cannot reparent the namespace root: '{child:?}' has no parent"))?;
+
+    if old_parent == *new_parent {
+        return Ok(());
+    }
+
+    if super::load_group_meta(store, new_parent)?.is_none() {
+        eyre::bail!("new parent group '{new_parent:?}' not found in this namespace");
+    }
+
+    if is_descendant_of(store, new_parent, child)? {
+        eyre::bail!(
+            "cycle: new_parent '{new_parent:?}' is a descendant of child '{child:?}'"
+        );
+    }
+
+    let mut handle = store.handle();
+    handle.delete(&GroupChildIndex::new(old_parent.to_bytes(), child.to_bytes()))?;
+    handle.put(&GroupParentRef::new(child.to_bytes()), &new_parent.to_bytes())?;
+    handle.put(&GroupChildIndex::new(new_parent.to_bytes(), child.to_bytes()), &())?;
+    Ok(())
+}
+
 /// Returns `true` iff `candidate` is a (transitive) descendant of
 /// `potential_ancestor`. Returns `false` for `candidate == potential_ancestor`.
 /// Bounded by `MAX_NAMESPACE_DEPTH`; returns `Err` if the walk exceeds the cap

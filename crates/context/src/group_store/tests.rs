@@ -2930,6 +2930,86 @@ fn is_descendant_of_self_is_false() {
 }
 
 #[test]
+fn reparent_group_swaps_parent_edge() {
+    let store = test_store();
+    let old_parent = ContextGroupId::from([0xE0; 32]);
+    let new_parent = ContextGroupId::from([0xE1; 32]);
+    let child = ContextGroupId::from([0xE2; 32]);
+    save_group_meta(&store, &old_parent, &test_meta()).unwrap();
+    save_group_meta(&store, &new_parent, &test_meta()).unwrap();
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    nest_group(&store, &old_parent, &child).unwrap();
+
+    reparent_group(&store, &child, &new_parent).unwrap();
+
+    assert_eq!(get_parent_group(&store, &child).unwrap(), Some(new_parent));
+    let old_children = list_child_groups(&store, &old_parent).unwrap();
+    assert!(!old_children.contains(&child));
+    let new_children = list_child_groups(&store, &new_parent).unwrap();
+    assert!(new_children.contains(&child));
+}
+
+#[test]
+fn reparent_group_idempotent_on_same_parent() {
+    let store = test_store();
+    let parent = ContextGroupId::from([0xE0; 32]);
+    let child = ContextGroupId::from([0xE2; 32]);
+    save_group_meta(&store, &parent, &test_meta()).unwrap();
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    nest_group(&store, &parent, &child).unwrap();
+
+    reparent_group(&store, &child, &parent).unwrap();
+    assert_eq!(get_parent_group(&store, &child).unwrap(), Some(parent));
+    assert_eq!(list_child_groups(&store, &parent).unwrap().len(), 1);
+}
+
+#[test]
+fn reparent_group_rejects_cycle() {
+    let store = test_store();
+    let a = ContextGroupId::from([0xE0; 32]);
+    let b = ContextGroupId::from([0xE1; 32]);
+    save_group_meta(&store, &a, &test_meta()).unwrap();
+    save_group_meta(&store, &b, &test_meta()).unwrap();
+    nest_group(&store, &a, &b).unwrap();
+
+    let err = reparent_group(&store, &a, &b).unwrap_err();
+    assert!(format!("{err}").contains("cycle") || format!("{err}").contains("namespace root"),
+        "expected cycle or root error, got: {err}");
+}
+
+#[test]
+fn reparent_group_rejects_root() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xE0; 32]);
+    let other = ContextGroupId::from([0xE1; 32]);
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    save_group_meta(&store, &other, &test_meta()).unwrap();
+
+    let err = reparent_group(&store, &root, &other).unwrap_err();
+    assert!(
+        format!("{err}").contains("namespace root") || format!("{err}").contains("no parent"),
+        "expected root rejection, got: {err}"
+    );
+}
+
+#[test]
+fn reparent_group_rejects_nonexistent_new_parent() {
+    let store = test_store();
+    let parent = ContextGroupId::from([0xE0; 32]);
+    let child = ContextGroupId::from([0xE2; 32]);
+    let phantom = ContextGroupId::from([0xFF; 32]);
+    save_group_meta(&store, &parent, &test_meta()).unwrap();
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    nest_group(&store, &parent, &child).unwrap();
+
+    let err = reparent_group(&store, &child, &phantom).unwrap_err();
+    assert!(
+        format!("{err}").contains("not found") || format!("{err}").contains("does not exist"),
+        "expected new-parent-not-found, got: {err}"
+    );
+}
+
+#[test]
 fn delete_all_group_members_removes_every_member() {
     let store = test_store();
     let gid = ContextGroupId::from([0xC0; 32]);
