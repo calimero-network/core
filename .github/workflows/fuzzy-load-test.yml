@@ -248,6 +248,40 @@ jobs:
             "profiling-data/kv-store" \
             "profiling-reports/kv-store"
 
+      - name: Collect profiling data from host-side bind mounts
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          # Runtime containers (fuzzy-kv-node-N) are removed during merobox's
+          # graceful shutdown before the Docker-based collector runs above —
+          # so their /profiling/data vanishes with them. entrypoint-profiling.sh
+          # mirrors that data into /app/data/profiling-dump (a host bind mount)
+          # on shutdown; harvest it here regardless of container state.
+          SRC_ROOT="workflows/fuzzy-tests/kv-store/data"
+          DEST_ROOT="profiling-data/kv-store"
+          if [ ! -d "$SRC_ROOT" ]; then
+            echo "No data dir at $SRC_ROOT — nothing to harvest"
+            exit 0
+          fi
+          found=0
+          for node_dir in "$SRC_ROOT"/*/; do
+            [ -d "$node_dir" ] || continue
+            node_name=$(basename "$node_dir")
+            dump="$node_dir/profiling-dump"
+            if [ -d "$dump" ]; then
+              dest="$DEST_ROOT/$node_name"
+              mkdir -p "$dest"
+              cp -r "$dump/." "$dest/" 2>/dev/null || true
+              size=$(du -sh "$dest" 2>/dev/null | awk '{print $1}')
+              perf_count=$(find "$dest" -maxdepth 2 -name 'perf-*.data' 2>/dev/null | wc -l | tr -d ' ')
+              heap_count=$(find "$dest" -maxdepth 2 -name 'jemalloc.*.heap' 2>/dev/null | wc -l | tr -d ' ')
+              echo "  $node_name: ${size:-?} (perf.data=$perf_count, heap=$heap_count)"
+              found=$((found + 1))
+            else
+              echo "  $node_name: no profiling-dump (runtime container may not have used profiling entrypoint)"
+            fi
+          done
+          echo "Harvested profiling dumps from $found nodes"
+
       - name: Set test result
         id: set-result
         if: always()
@@ -449,6 +483,37 @@ jobs:
             "fuzzy-test-logs/kv-store-with-handlers" \
             "profiling-data/kv-store-with-handlers" \
             "profiling-reports/kv-store-with-handlers"
+
+      - name: Collect profiling data from host-side bind mounts
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          # See kv-store job for rationale — runtime containers are removed
+          # during merobox graceful shutdown; harvest from host bind mount.
+          SRC_ROOT="workflows/fuzzy-tests/kv-store-with-handlers/data"
+          DEST_ROOT="profiling-data/kv-store-with-handlers"
+          if [ ! -d "$SRC_ROOT" ]; then
+            echo "No data dir at $SRC_ROOT — nothing to harvest"
+            exit 0
+          fi
+          found=0
+          for node_dir in "$SRC_ROOT"/*/; do
+            [ -d "$node_dir" ] || continue
+            node_name=$(basename "$node_dir")
+            dump="$node_dir/profiling-dump"
+            if [ -d "$dump" ]; then
+              dest="$DEST_ROOT/$node_name"
+              mkdir -p "$dest"
+              cp -r "$dump/." "$dest/" 2>/dev/null || true
+              size=$(du -sh "$dest" 2>/dev/null | awk '{print $1}')
+              perf_count=$(find "$dest" -maxdepth 2 -name 'perf-*.data' 2>/dev/null | wc -l | tr -d ' ')
+              heap_count=$(find "$dest" -maxdepth 2 -name 'jemalloc.*.heap' 2>/dev/null | wc -l | tr -d ' ')
+              echo "  $node_name: ${size:-?} (perf.data=$perf_count, heap=$heap_count)"
+              found=$((found + 1))
+            else
+              echo "  $node_name: no profiling-dump (runtime container may not have used profiling entrypoint)"
+            fi
+          done
+          echo "Harvested profiling dumps from $found nodes"
 
       - name: Set test result
         id: set-result-handlers

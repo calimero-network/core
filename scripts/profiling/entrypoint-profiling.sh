@@ -205,27 +205,58 @@ stop_profiling() {
     fi
 }
 
+preserve_to_host_mount() {
+    # Copy profiling data onto the CALIMERO_HOME bind mount so it survives
+    # container removal. Merobox mounts a host dir at /app/data (see
+    # merobox manager.py), and graceful shutdown removes the runtime
+    # container before the GHA collector runs — so anything left only in
+    # /profiling/{data,reports} is lost.
+    local host_mount="${CALIMERO_HOME:-/app/data}"
+    if [ ! -d "$host_mount" ]; then
+        echo "[Profiling] Host mount $host_mount not present, skipping preserve step"
+        return
+    fi
+    local dest="$host_mount/profiling-dump"
+    mkdir -p "$dest" 2>/dev/null || {
+        echo "[Profiling] WARNING: could not create $dest"
+        return
+    }
+    if [ -d "$PROFILING_OUTPUT_DIR" ]; then
+        cp -r "$PROFILING_OUTPUT_DIR/." "$dest/" 2>/dev/null || true
+    fi
+    local reports_dir="${PROFILING_REPORTS_DIR:-/profiling/reports}"
+    if [ -d "$reports_dir" ]; then
+        mkdir -p "$dest/reports" 2>/dev/null
+        cp -r "$reports_dir/." "$dest/reports/" 2>/dev/null || true
+    fi
+    local size
+    size=$(du -sh "$dest" 2>/dev/null | awk '{print $1}')
+    echo "[Profiling] ✓ Preserved profiling data to $dest (${size:-unknown size})"
+}
+
 cleanup() {
     local signal_exit_code=$?
     echo "[Profiling] Received signal, cleaning up..."
-    
+
     stop_profiling
-    
+
     if [ -n "$MAIN_PID" ] && kill -0 "$MAIN_PID" 2>/dev/null; then
         echo "[Profiling] Stopping main process (PID: $MAIN_PID)..."
         kill -TERM "$MAIN_PID" 2>/dev/null || true
-        
+
         local wait_count=0
         while kill -0 "$MAIN_PID" 2>/dev/null && [ $wait_count -lt 10 ]; do
             sleep 1
             wait_count=$((wait_count + 1))
         done
-        
+
         if kill -0 "$MAIN_PID" 2>/dev/null; then
             kill -KILL "$MAIN_PID" 2>/dev/null || true
         fi
     fi
-    
+
+    preserve_to_host_mount
+
     if [ "$EXIT_CODE" -ne 0 ]; then
         exit $EXIT_CODE
     elif [ "$signal_exit_code" -ne 0 ]; then
@@ -312,8 +343,9 @@ if [ "$ENABLE_PROFILING" = "true" ] && [ "$ENABLE_PERF" = "true" ] && [ "$SHOULD
     
     wait $MAIN_PID
     EXIT_CODE=$?
-    
+
     stop_profiling
+    preserve_to_host_mount
     exit $EXIT_CODE
 else
     exec "$@"
