@@ -92,6 +92,8 @@ pub use interface::Interface;
 /// Shared test functionality.
 #[cfg(test)]
 pub mod tests {
+    /// AuthoredMap/AuthoredVector merge-time auth tests.
+    pub mod authored_primitives;
     /// CRDT collections (UnorderedMap, Vector, Counter) tests.
     pub mod collections;
     /// Common test utilities and data structures.
