@@ -469,6 +469,13 @@ pub async fn handle_state_delta(
                     %author_id,
                     "Skipping event handler execution (we are the author node)"
                 );
+                // Author already ran handlers locally at authoring time,
+                // so there is nothing to replay. Clear the preserved
+                // `events: Some(..)` blob so `load_persisted_deltas` on
+                // restart doesn't surface it as "pending handler events"
+                // and mistakenly re-run handlers the author deliberately
+                // skipped (#2194 review, High).
+                delta_store_ref.mark_events_executed(&delta_id);
             }
         }
     } else if !applied && events_payload.is_some() {
@@ -1498,6 +1505,12 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                             "One or more handlers failed on buffered-replay path; keeping events in DB for restart replay"
                         );
                     }
+                } else {
+                    // Author path: handlers already ran locally at
+                    // authoring time; clear the preserved blob so
+                    // restart replay doesn't mistakenly run them
+                    // again (#2194 review, High).
+                    delta_store.mark_events_executed(&delta_id);
                 }
 
                 // Emit to WebSocket clients
