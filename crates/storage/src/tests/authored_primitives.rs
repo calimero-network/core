@@ -22,6 +22,17 @@ use crate::tests::common::{create_test_keypair, sign_action};
 
 type MainInterface = Interface<MainStorage>;
 
+/// Offset added to `env::time_now()` when minting nonces for forged actions.
+///
+/// The merge path at `interface.rs:~160` rejects `new_nonce <= last_nonce`
+/// with `NonceReplay`. With nanosecond clock resolution, two back-to-back
+/// calls to `env::time_now()` *can* return the same value on fast systems —
+/// which would cause our forged-update tests to fail with `NonceReplay`
+/// instead of the `InvalidSignature` we're actually asserting. Shift the
+/// nonce well past any plausible stored `updated_at` so the signature check
+/// is always the reason for rejection.
+const FORGED_NONCE_OFFSET_NS: u64 = 1_000_000_000;
+
 /// Build an `Action::Update` stamped with `claimed_owner`, signed by
 /// `signing_key`. If `claimed_owner` doesn't match `signing_key`'s pubkey,
 /// the signature won't verify against the claim — the merge path rejects it.
@@ -143,7 +154,7 @@ fn authored_map_update_with_forged_owner_claim_is_rejected() {
         to_vec(&("apple".to_owned(), 99u64)).unwrap(),
         alice_pk,
         &bob_sk,
-        env::time_now(),
+        env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),
     );
 
     match MainInterface::apply_action(forged) {
@@ -175,7 +186,12 @@ fn authored_map_delete_by_non_owner_is_rejected() {
     // Bob legitimately signs a delete claiming to be Bob. His signature is
     // valid against his own pubkey, but the stored owner is Alice — merge
     // path rejects before even trying the signature check.
-    let forged = build_signed_delete_for(entry_id, bob_pk, &bob_sk, env::time_now());
+    let forged = build_signed_delete_for(
+        entry_id,
+        bob_pk,
+        &bob_sk,
+        env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),
+    );
 
     match MainInterface::apply_action(forged) {
         Err(StorageError::InvalidSignature) => {}
@@ -206,7 +222,7 @@ fn authored_vector_update_with_forged_owner_claim_is_rejected() {
         to_vec(&99u64).unwrap(),
         alice_pk,
         &bob_sk,
-        env::time_now(),
+        env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),
     );
 
     match MainInterface::apply_action(forged) {
@@ -233,7 +249,12 @@ fn authored_vector_delete_by_non_owner_is_rejected() {
         .expect("entry id lookup")
         .expect("entry exists");
 
-    let forged = build_signed_delete_for(entry_id, bob_pk, &bob_sk, env::time_now());
+    let forged = build_signed_delete_for(
+        entry_id,
+        bob_pk,
+        &bob_sk,
+        env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),
+    );
 
     match MainInterface::apply_action(forged) {
         Err(StorageError::InvalidSignature) => {}

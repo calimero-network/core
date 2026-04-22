@@ -107,21 +107,18 @@ where
             owner,
             signature_data: None,
         };
-        self.inner.push_with_storage_type(value, storage_type)?;
-        // Index of the pushed entry is len-1.
-        let len = self.inner.len()?;
-        Ok(len.saturating_sub(1))
+        self.inner.push_with_storage_type(value, storage_type)
     }
 
     /// Replaces the value at `index`. Only the entry's owner may call this.
     ///
-    /// Fails with `NotFound` if `index` is out of bounds, or `ActionNotAllowed`
+    /// Fails with `InvalidData` if `index` is out of bounds, or `ActionNotAllowed`
     /// if the current executor is not the owner of record.
     ///
     /// # Errors
-    /// Returns `ActionNotAllowed` if `index` is out of bounds or the current
-    /// executor is not the stored owner; `NotFound` if the underlying entry
-    /// disappears mid-call; or any underlying storage error.
+    /// Returns `InvalidData` if `index` is out of bounds, `ActionNotAllowed`
+    /// if the current executor is not the stored owner, `NotFound` if the
+    /// underlying entry disappears mid-call, or any underlying storage error.
     pub fn update(&mut self, index: usize, value: V) -> Result<(), StoreError> {
         let (entry_id, stored_owner) = self.require_owner(index)?;
 
@@ -201,11 +198,11 @@ where
     }
 
     fn require_owner(&self, index: usize) -> Result<(crate::address::Id, PublicKey), StoreError> {
+        // Out-of-bounds is surfaced as `InvalidData` rather than `ActionNotAllowed`:
+        // the latter is reserved for authorization failures on valid addresses, and
+        // `NotFound` takes an `Id` that we do not have for an unmapped index.
         let id = self.inner.entry_id_at(index)?.ok_or_else(|| {
-            // Fabricate a zero-id here is ugly; reuse a placeholder via NotFound with
-            // a derived id if we had one. Index out of bounds → no id. Surface as
-            // ActionNotAllowed with a clear message instead.
-            StoreError::StorageError(StorageError::ActionNotAllowed(format!(
+            StoreError::StorageError(StorageError::InvalidData(format!(
                 "AuthoredVector: index {index} out of bounds",
             )))
         })?;
@@ -231,6 +228,11 @@ where
     S: StorageAdaptor,
 {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
+        // `Vector<V>` does not implement `Data` — its entries are values, not
+        // nested CRDTs — so there are no child collections to expose.
+        // (`AuthoredMap` delegates to `UnorderedMap::collections()` which itself
+        // returns an empty map via its inner `Collection`; the effect is the
+        // same, we just can't delegate here because `Vector` lacks the hook.)
         BTreeMap::new()
     }
 
@@ -248,8 +250,19 @@ where
     V: BorshSerialize + BorshDeserialize + Mergeable + Clone,
     S: StorageAdaptor,
 {
-    fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
-        self.inner.merge(&other.inner)
+    /// `AuthoredVector` deliberately does **not** perform structural merge.
+    ///
+    /// Per-entry merge is handled by `Interface::apply_action` on the signed
+    /// delta path. At the container level, `CrdtType::UserStorage` dispatches
+    /// to the byte-level path in `merge.rs`, so this `Mergeable::merge` impl
+    /// is not reached at runtime in the normal flow.
+    ///
+    /// Delegating to `Vector::merge` here would be **unsafe**: for any slot
+    /// present only in `other`, it would call `Vector::push` which stamps
+    /// `StorageType::Public`, silently stripping ownership of remote-only
+    /// positions. We therefore make this a no-op rather than delegate.
+    fn merge(&mut self, _other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+        Ok(())
     }
 }
 

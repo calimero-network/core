@@ -128,15 +128,21 @@ where
     /// Push a value with an explicit `StorageType` on the new entry's element.
     ///
     /// Used by `AuthoredVector` to stamp each push with the executor as owner.
+    /// Returns the index of the newly inserted entry.
     pub(crate) fn push_with_storage_type(
         &mut self,
         value: V,
         storage_type: crate::entities::StorageType,
-    ) -> Result<(), StoreError> {
+    ) -> Result<usize, StoreError> {
         let _ignored = self
             .inner
             .insert_with_storage_type(None, value, storage_type)?;
-        Ok(())
+        let len = self.inner.len()?;
+        debug_assert!(
+            len >= 1,
+            "Vector::push_with_storage_type: len must be >= 1 after a successful push",
+        );
+        Ok(len - 1)
     }
 
     /// Returns the storage id of the entry at `index`, or `None` if out of bounds.

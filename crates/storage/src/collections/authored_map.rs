@@ -255,8 +255,21 @@ where
     V: BorshSerialize + BorshDeserialize + Mergeable,
     S: StorageAdaptor,
 {
-    fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
-        self.inner.merge(&other.inner)
+    /// `AuthoredMap` deliberately does **not** perform structural merge.
+    ///
+    /// Per-entry merge is handled by `Interface::apply_action` on the signed
+    /// delta path: each remote upsert/delete carries a `StorageType::User`
+    /// metadata block and is verified against the entry's stored owner.
+    /// At the container level, `CrdtType::UserStorage` dispatches to the
+    /// byte-level path in `merge.rs` (`incoming.to_vec()`), so this
+    /// `Mergeable::merge` impl is not reached at runtime in the normal flow.
+    ///
+    /// Delegating to `UnorderedMap::merge` here would be **unsafe**: for any
+    /// key present only in `other`, it would call `UnorderedMap::insert`
+    /// which stamps `StorageType::Public`, silently stripping ownership.
+    /// We therefore make this a no-op rather than delegate.
+    fn merge(&mut self, _other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+        Ok(())
     }
 }
 
