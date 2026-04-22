@@ -773,8 +773,14 @@ impl DeltaStore {
         // callers on the same DeltaStore. Emit the hold time so we
         // can decide from real data whether throttling (issue #2186
         // options 1/2) is needed. Threshold-gated warn for the tail.
-        let lock_start = std::time::Instant::now();
+        //
+        // `lock_start` is captured AFTER `.write().await` so we measure
+        // hold time only, not acquire-wait. Under contention the two
+        // are distinct signals; conflating them would inflate hold
+        // numbers purely because other callers are slow, defeating the
+        // measurement (#2196 review).
         let mut dag = self.dag.write().await;
+        let lock_start = std::time::Instant::now();
 
         // Track which deltas are currently pending BEFORE we add the new delta
         // This lets us detect which pending deltas got applied during the cascade
@@ -796,12 +802,9 @@ impl DeltaStore {
             Vec::new()
         };
 
+        let hold = lock_start.elapsed();
         drop(dag); // Release lock before calling context_client
-        self.record_dag_write_lock_hold(
-            "add_delta_internal",
-            lock_start.elapsed(),
-            cascaded_deltas.len(),
-        );
+        self.record_dag_write_lock_hold("add_delta_internal", hold, None, cascaded_deltas.len());
 
         // Update persistence if delta applied. Preserve events until
         // the caller confirms handler execution via
@@ -1054,8 +1057,13 @@ impl DeltaStore {
         // many pending children. Emit hold time + plans/cascade
         // counts so we can decide from real data whether throttling
         // (issue #2186 options 1/2) is warranted.
+        //
+        // `hold` is captured inside the `else` branch only (where the
+        // lock is actually acquired) and after `.write().await` resolves
+        // — so we measure hold time only, not acquire-wait nor the
+        // lock-never-taken case (#2196 review).
         let plans_count = plans.len();
-        let lock_start = std::time::Instant::now();
+        let mut hold: Option<Duration> = None;
         let (
             any_parent_added,
             restored_head_hashes,
@@ -1074,6 +1082,7 @@ impl DeltaStore {
             )
         } else {
             let mut dag = self.dag.write().await;
+            let lock_start = std::time::Instant::now();
             let pending_before: HashSet<[u8; 32]> =
                 dag.get_pending_delta_ids().into_iter().collect();
             let mut any_parent_added = false;
@@ -1195,21 +1204,25 @@ impl DeltaStore {
             // `MissingParentsResult`).
             cascaded_ids.extend(added_parent_bodies.iter().map(|(id, _)| *id));
 
+            let heads = dag.get_heads();
+            hold = Some(lock_start.elapsed());
             (
                 any_parent_added,
                 restored_head_hashes,
                 cascaded_ids,
                 cascaded_bodies,
                 added_parent_bodies,
-                dag.get_heads(),
+                heads,
             )
         };
-        self.record_dag_write_lock_hold_with_plans(
-            "get_missing_parents",
-            lock_start.elapsed(),
-            plans_count,
-            cascaded_ids.len(),
-        );
+        if let Some(hold) = hold {
+            self.record_dag_write_lock_hold(
+                "get_missing_parents",
+                hold,
+                Some(plans_count),
+                cascaded_ids.len(),
+            );
+        }
 
         // Phase 3: post-DAG work — head-root-hash tracking + cascaded delta
         // persistence + dag_heads write. Runs with no DAG lock held.
@@ -1509,23 +1522,33 @@ impl DeltaStore {
     /// "long-tail WASM-under-write-lock" concern without committing to
     /// the larger throttling refactor.
     ///
-    /// Always emits at `debug!` so aggregators/dashboards can scrape;
-    /// bumps to `warn!` above 500ms so long tails are visible in
-    /// production logs without dashboard plumbing. The threshold is
-    /// intentionally generous — WASM execution is often 50-200ms on
-    /// its own, so anything under 500ms is within-budget.
+    /// Emits at `debug!` so aggregators/dashboards can scrape; bumps
+    /// to `warn!` above 500ms so long tails are visible in production
+    /// logs without dashboard plumbing. The threshold is intentionally
+    /// generous — WASM execution is often 50-200ms on its own, so
+    /// anything under 500ms is within-budget.
+    ///
+    /// `plans_count` is `Some(n)` for `get_missing_parents` (each plan
+    /// runs WASM for the `Add` variant) and `None` for
+    /// `add_delta_internal` where the notion doesn't apply. The pair
+    /// `(plans, cascaded)` is what a future throttling fix would need
+    /// to bound, so surfacing both matters for the Add-path call site.
     fn record_dag_write_lock_hold(
         &self,
         site: &'static str,
         hold: Duration,
+        plans_count: Option<usize>,
         cascaded_count: usize,
     ) {
         let hold_ms = hold.as_secs_f64() * 1000.0;
+        let hold_ms_s = format!("{:.2}", hold_ms);
+        let plans = plans_count.unwrap_or(0);
         if hold.as_millis() >= 500 {
             warn!(
                 context_id = %self.applier.context_id,
                 site = site,
-                hold_ms = format!("{:.2}", hold_ms),
+                hold_ms = %hold_ms_s,
+                plans_count = plans,
                 cascaded_count,
                 "DAG write lock held for long tail (#2186)"
             );
@@ -1533,40 +1556,8 @@ impl DeltaStore {
             debug!(
                 context_id = %self.applier.context_id,
                 site = site,
-                hold_ms = format!("{:.2}", hold_ms),
-                cascaded_count,
-                "DAG write lock hold time"
-            );
-        }
-    }
-
-    /// Same as `record_dag_write_lock_hold` but also surfaces the plan
-    /// count for `get_missing_parents` (each plan runs WASM for the
-    /// `Add` variant). The pair `(plans, cascaded)` is what a future
-    /// throttling fix would need to bound.
-    fn record_dag_write_lock_hold_with_plans(
-        &self,
-        site: &'static str,
-        hold: Duration,
-        plans_count: usize,
-        cascaded_count: usize,
-    ) {
-        let hold_ms = hold.as_secs_f64() * 1000.0;
-        if hold.as_millis() >= 500 {
-            warn!(
-                context_id = %self.applier.context_id,
-                site = site,
-                hold_ms = format!("{:.2}", hold_ms),
-                plans_count,
-                cascaded_count,
-                "DAG write lock held for long tail (#2186)"
-            );
-        } else {
-            debug!(
-                context_id = %self.applier.context_id,
-                site = site,
-                hold_ms = format!("{:.2}", hold_ms),
-                plans_count,
+                hold_ms = %hold_ms_s,
+                plans_count = plans,
                 cascaded_count,
                 "DAG write lock hold time"
             );
