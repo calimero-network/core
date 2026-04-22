@@ -112,8 +112,16 @@ steps:
 
   - name: Wait for subgroup governance to reach node-2
     type: wait
-    seconds: 5
-    message: node-2 needs to know it is a subgroup member before join_context's membership check
+    seconds: 20
+    message: >
+      node-2 needs to know it is a subgroup member before join_context's
+      membership check. 20s is conservative vs. group-subgroup-cold-sync's
+      5s because this workflow immediately follows governance with a
+      20-delta burst on node-1; gossip delivery of those deltas can
+      compete with governance op delivery on node-2 and push membership
+      recognition past a tighter 5s window (observed as "identity is not
+      a member of the group" from join_context in CI attempt 1 of this
+      workflow before this bump was applied).
 
   # ── Create subgroup-owned context; node-2 does NOT join yet ───────
 
