@@ -9,12 +9,11 @@ pub mod delete;
 pub mod get;
 pub mod join_context;
 pub mod members;
-pub mod nest;
+pub mod reparent;
 pub mod settings;
 pub mod signing_key;
 pub mod subgroups;
 pub mod sync;
-pub mod unnest;
 pub mod update;
 pub mod upgrade;
 
@@ -34,9 +33,8 @@ pub const EXAMPLES: &str = r"
   # List direct child groups
   $ meroctl --node node1 group subgroups <group_id>
 
-  # Nest and unnest existing groups
-  $ meroctl --node node1 group nest <parent_group_id> <child_group_id>
-  $ meroctl --node node1 group unnest <parent_group_id> <child_group_id>
+  # Atomically move a group to a new parent (replaces nest+unnest)
+  $ meroctl --node node1 group reparent <group_id> <new_parent_id>
 
   # Register a signing key for a group admin
   $ meroctl --node node1 group signing-key register <group_id> <hex_signing_key>
@@ -67,8 +65,7 @@ pub enum GroupSubCommands {
     Update(update::UpdateCommand),
     Members(members::MembersCommand),
     Contexts(contexts::ContextsCommand),
-    Nest(nest::NestCommand),
-    Unnest(unnest::UnnestCommand),
+    Reparent(reparent::ReparentCommand),
     Subgroups(subgroups::SubgroupsCommand),
     #[command(alias = "signing-key")]
     SigningKey(signing_key::SigningKeyCommand),
@@ -87,8 +84,7 @@ impl GroupCommand {
             GroupSubCommands::Update(cmd) => cmd.run(environment).await,
             GroupSubCommands::Members(cmd) => cmd.run(environment).await,
             GroupSubCommands::Contexts(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Nest(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Unnest(cmd) => cmd.run(environment).await,
+            GroupSubCommands::Reparent(cmd) => cmd.run(environment).await,
             GroupSubCommands::Subgroups(cmd) => cmd.run(environment).await,
             GroupSubCommands::SigningKey(cmd) => cmd.run(environment).await,
             GroupSubCommands::Upgrade(cmd) => cmd.run(environment).await,

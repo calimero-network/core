@@ -1919,15 +1919,17 @@ pub struct CreateRecursiveInvitationApiResponse {
     pub data: CreateRecursiveInvitationApiResponseData,
 }
 
+/// Atomically move a group to a new parent. Replaces the old
+/// nest/unnest pair — orphan state is no longer reachable.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NestGroupApiRequest {
-    pub child_group_id: String,
+pub struct ReparentGroupApiRequest {
+    pub new_parent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
 }
 
-impl Validate for NestGroupApiRequest {
+impl Validate for ReparentGroupApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         Vec::new()
     }
@@ -1935,25 +1937,9 @@ impl Validate for NestGroupApiRequest {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NestGroupApiResponse {}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UnnestGroupApiRequest {
-    pub child_group_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
+pub struct ReparentGroupApiResponse {
+    pub reparented: bool,
 }
-
-impl Validate for UnnestGroupApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UnnestGroupApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

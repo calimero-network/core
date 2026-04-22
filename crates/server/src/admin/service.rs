@@ -175,8 +175,10 @@ pub(crate) fn setup(
             "/groups/:group_id/contexts",
             get(groups::list_group_contexts::handler),
         )
-        .route("/groups/:group_id/nest", post(groups::nest_group::handler))
-        .route("/groups/:group_id/unnest", post(groups::unnest_group::handler))
+        .route(
+            "/groups/:group_id/reparent",
+            post(groups::reparent_group::handler),
+        )
         .route(
             "/groups/:group_id/subgroups",
             get(groups::list_subgroups::handler),
