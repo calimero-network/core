@@ -123,8 +123,20 @@ steps:
 
   - name: Wait for subgroup governance to reach node-2
     type: wait
-    seconds: 15
-    message: initial window for governance gossip + cascade application on node-2
+    seconds: 45
+    message: >
+      Initial window for subgroup governance to propagate to node-2 via
+      gossipsub. Three things must arrive + apply on node-2 before
+      list_group_members will succeed:
+        1. RootOp::GroupCreated{subgroup, parent=ns_id}  (cleartext, namespace topic)
+        2. RootOp::KeyDelivery for node-2                  (cleartext, namespace topic)
+        3. GroupOp::MemberAdded{node-2}                    (encrypted, group topic;
+                                                            decryption needs step 2)
+      15s was the original budget — observed flake on slow CI runners
+      (1-2 min after add) with "node is not a member of group". Bumped to
+      45s as a defensive margin. Real fix would be polling
+      list_group_members in a retry loop (needs merobox repeat-until-
+      success step type, tracked separately).
 
   - name: Node-2 lists subgroup members (local view)
     type: list_group_members
