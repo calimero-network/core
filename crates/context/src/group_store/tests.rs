@@ -2884,6 +2884,52 @@ fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn is_descendant_of_direct_child() {
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD0; 32]);
+    let child = ContextGroupId::from([0xD1; 32]);
+    save_group_meta(&store, &parent, &test_meta()).unwrap();
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    nest_group(&store, &parent, &child).unwrap();
+
+    assert!(is_descendant_of(&store, &child, &parent).unwrap());
+    assert!(!is_descendant_of(&store, &parent, &child).unwrap());
+}
+
+#[test]
+fn is_descendant_of_grandchild() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD0; 32]);
+    let mid = ContextGroupId::from([0xD1; 32]);
+    let leaf = ContextGroupId::from([0xD2; 32]);
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    save_group_meta(&store, &mid, &test_meta()).unwrap();
+    save_group_meta(&store, &leaf, &test_meta()).unwrap();
+    nest_group(&store, &root, &mid).unwrap();
+    nest_group(&store, &mid, &leaf).unwrap();
+
+    assert!(is_descendant_of(&store, &leaf, &root).unwrap());
+    assert!(is_descendant_of(&store, &leaf, &mid).unwrap());
+    assert!(!is_descendant_of(&store, &root, &leaf).unwrap());
+}
+
+#[test]
+fn is_descendant_of_unrelated() {
+    let store = test_store();
+    let a = ContextGroupId::from([0xD0; 32]);
+    let b = ContextGroupId::from([0xD1; 32]);
+    assert!(!is_descendant_of(&store, &a, &b).unwrap());
+    assert!(!is_descendant_of(&store, &b, &a).unwrap());
+}
+
+#[test]
+fn is_descendant_of_self_is_false() {
+    let store = test_store();
+    let a = ContextGroupId::from([0xD0; 32]);
+    assert!(!is_descendant_of(&store, &a, &a).unwrap());
+}
+
+#[test]
 fn delete_all_group_members_removes_every_member() {
     let store = test_store();
     let gid = ContextGroupId::from([0xC0; 32]);

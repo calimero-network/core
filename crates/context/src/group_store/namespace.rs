@@ -281,6 +281,37 @@ pub fn resolve_namespace(store: &Store, group_id: &ContextGroupId) -> EyreResult
     )
 }
 
+/// Returns `true` iff `candidate` is a (transitive) descendant of
+/// `potential_ancestor`. Returns `false` for `candidate == potential_ancestor`.
+/// Bounded by `MAX_NAMESPACE_DEPTH`; returns `Err` if the walk exceeds the cap
+/// (indicates store corruption / cycle).
+///
+/// Used by `reparent_group` to reject moves that would create a cycle.
+pub fn is_descendant_of(
+    store: &Store,
+    candidate: &ContextGroupId,
+    potential_ancestor: &ContextGroupId,
+) -> EyreResult<bool> {
+    if candidate == potential_ancestor {
+        return Ok(false);
+    }
+    let mut current = *candidate;
+    for _ in 0..MAX_NAMESPACE_DEPTH {
+        match get_parent_group(store, &current)? {
+            Some(parent) => {
+                if parent == *potential_ancestor {
+                    return Ok(true);
+                }
+                current = parent;
+            }
+            None => return Ok(false),
+        }
+    }
+    eyre::bail!(
+        "is_descendant_of exceeded MAX_NAMESPACE_DEPTH ({MAX_NAMESPACE_DEPTH}); possible cycle in store"
+    )
+}
+
 /// Read this node's identity for a namespace from the store.
 pub fn get_namespace_identity(
     store: &Store,
