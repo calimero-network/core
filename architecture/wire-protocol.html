@@ -714,21 +714,19 @@
     <h3>NamespaceOp — RootOp Variants</h3>
     <p style="margin-bottom:10px;font-size:.82rem;color:var(--text-dim);">Cleartext operations visible to all namespace members. Used for structural changes and key distribution.</p>
     <div class="typedef"><span class="field">GroupCreated</span> {
-    <span class="field">group_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// announces a new group in namespace</span>
+    <span class="field">group_id</span>:  <span class="ty">[u8; 32]</span>,  <span class="comment">// new group id</span>
+    <span class="field">parent_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// REQUIRED — atomic create+nest (strict-tree invariant)</span>
 }
 
 <span class="field">GroupDeleted</span> {
-    <span class="field">group_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// removes a group from namespace</span>
+    <span class="field">root_group_id</span>:       <span class="ty">[u8; 32]</span>,       <span class="comment">// delete target</span>
+    <span class="field">cascade_group_ids</span>:   <span class="ty">Vec&lt;[u8; 32]&gt;</span>,  <span class="comment">// descendants (children-first)</span>
+    <span class="field">cascade_context_ids</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>,  <span class="comment">// all contexts in subtree; peers verify by re-enumeration</span>
 }
 
-<span class="field">GroupNested</span> {
-    <span class="field">parent_group_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// link parent</span>
-    <span class="field">child_group_id</span>:  <span class="ty">[u8; 32]</span>,  <span class="comment">// link child</span>
-}
-
-<span class="field">GroupUnnested</span> {
-    <span class="field">parent_group_id</span>: <span class="ty">[u8; 32]</span>,
-    <span class="field">child_group_id</span>:  <span class="ty">[u8; 32]</span>,
+<span class="field">GroupReparented</span> {
+    <span class="field">child_group_id</span>: <span class="ty">[u8; 32]</span>,  <span class="comment">// subtree to move</span>
+    <span class="field">new_parent_id</span>:  <span class="ty">[u8; 32]</span>,  <span class="comment">// atomic edge swap — replaces old GroupNested + GroupUnnested pair</span>
 }
 
 <span class="field">MemberJoined</span> {

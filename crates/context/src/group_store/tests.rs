@@ -3151,44 +3151,6 @@ fn collect_subtree_for_cascade_includes_contexts_from_all_groups() {
     assert_eq!(payload.contexts.len(), 2);
 }
 
-#[test]
-fn delete_all_group_members_removes_every_member() {
-    let store = test_store();
-    let gid = ContextGroupId::from([0xC0; 32]);
-    let admin = PublicKey::from([0x01; 32]);
-    let m1 = PublicKey::from([0x02; 32]);
-    let m2 = PublicKey::from([0x03; 32]);
-
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &m1, GroupMemberRole::Member).unwrap();
-    add_group_member(&store, &gid, &m2, GroupMemberRole::Member).unwrap();
-    assert!(check_group_membership(&store, &gid, &admin).unwrap());
-    assert!(check_group_membership(&store, &gid, &m1).unwrap());
-    assert!(check_group_membership(&store, &gid, &m2).unwrap());
-
-    delete_all_group_members(&store, &gid).unwrap();
-
-    assert!(!check_group_membership(&store, &gid, &admin).unwrap());
-    assert!(!check_group_membership(&store, &gid, &m1).unwrap());
-    assert!(!check_group_membership(&store, &gid, &m2).unwrap());
-}
-
-#[test]
-fn delete_all_group_members_does_not_touch_other_groups() {
-    let store = test_store();
-    let gid_a = ContextGroupId::from([0xC0; 32]);
-    let gid_b = ContextGroupId::from([0xC1; 32]);
-    let pk = PublicKey::from([0x01; 32]);
-
-    add_group_member(&store, &gid_a, &pk, GroupMemberRole::Member).unwrap();
-    add_group_member(&store, &gid_b, &pk, GroupMemberRole::Member).unwrap();
-
-    delete_all_group_members(&store, &gid_a).unwrap();
-
-    assert!(!check_group_membership(&store, &gid_a, &pk).unwrap());
-    assert!(check_group_membership(&store, &gid_b, &pk).unwrap());
-}
-
 // ---------------------------------------------------------------------------
 // MemberSetAutoFollow (the auto-follow architecture doc)
 // ---------------------------------------------------------------------------

@@ -19,23 +19,6 @@ pub fn add_group_member(
     add_group_member_with_keys(store, group_id, identity, role, None, None)
 }
 
-/// Bulk-delete every `GroupMember` record for `group_id`.
-/// Used by cascade-delete; mirrors `delete_all_group_signing_keys`.
-pub fn delete_all_group_members(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    let gid = group_id.to_bytes();
-    let keys = collect_keys_with_prefix(
-        store,
-        GroupMember::new(gid, PublicKey::from([0u8; 32]).into()),
-        GROUP_MEMBER_PREFIX,
-        |k| k.group_id() == gid,
-    )?;
-    let mut handle = store.handle();
-    for key in keys {
-        handle.delete(&key)?;
-    }
-    Ok(())
-}
-
 pub fn add_group_member_with_keys(
     store: &Store,
     group_id: &ContextGroupId,
