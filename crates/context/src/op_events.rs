@@ -36,16 +36,21 @@ const CHANNEL_CAPACITY: usize = 1024;
 /// and ignores the rest.
 #[derive(Clone, Debug, PartialEq)]
 pub enum OpEvent {
-    /// `RootOp::GroupNested` — a subgroup was nested under a parent.
-    SubgroupNested {
+    /// `RootOp::GroupCreated` — a new subgroup was atomically created and
+    /// nested under `parent_group_id`. Replaces the old SubgroupNested event,
+    /// fired during create flows.
+    SubgroupCreated {
         namespace_id: [u8; 32],
         parent_group_id: [u8; 32],
         child_group_id: [u8; 32],
     },
-    /// `RootOp::GroupUnnested` — a subgroup was detached from a parent.
-    SubgroupUnnested {
+    /// `RootOp::GroupReparented` — a subgroup was moved from one parent to
+    /// another atomically. Replaces the old SubgroupNested/SubgroupUnnested
+    /// pair (orphan state is no longer expressible).
+    SubgroupReparented {
         namespace_id: [u8; 32],
-        parent_group_id: [u8; 32],
+        old_parent_group_id: [u8; 32],
+        new_parent_group_id: [u8; 32],
         child_group_id: [u8; 32],
     },
     /// `GroupOp::ContextRegistered` — a new context was registered in a group.

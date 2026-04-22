@@ -153,8 +153,16 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 }
 
                 let signer_sk = PrivateKey::from(sk_bytes);
+                // Strict-tree refactor: GroupCreated now atomically nests under
+                // parent_id (defaulting to namespace_id if no explicit parent
+                // was supplied). Previous two-op pattern (GroupCreated +
+                // GroupNested) is collapsed into one op so orphan state is
+                // never observable. See spec
+                // docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
+                let resolved_parent = parent_group_id.unwrap_or(namespace_id);
                 let create_op = NamespaceOp::Root(RootOp::GroupCreated {
                     group_id: group_id.to_bytes(),
+                    parent_id: resolved_parent.to_bytes(),
                 });
                 if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
                     &datastore,
@@ -166,23 +174,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 .await
                 {
                     tracing::warn!(?e, "failed to publish GroupCreated on namespace DAG");
-                }
-                if let Some(ref parent_id) = parent_group_id {
-                    let nest_op = NamespaceOp::Root(RootOp::GroupNested {
-                        parent_group_id: parent_id.to_bytes(),
-                        child_group_id: group_id.to_bytes(),
-                    });
-                    if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
-                        &datastore,
-                        &node_client,
-                        namespace_id.to_bytes(),
-                        &signer_sk,
-                        nest_op,
-                    )
-                    .await
-                    {
-                        tracing::warn!(?e, "failed to publish GroupNested on namespace DAG");
-                    }
                 }
 
                 info!(?group_id, ?parent_group_id, %admin_identity, "group created");
