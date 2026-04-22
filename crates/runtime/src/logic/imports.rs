@@ -1,4 +1,4 @@
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
@@ -11,6 +11,32 @@ thread_local! {
     static HOOKER: Once = const { Once::new() };
     static PAYLOAD: RefCell<Option<(String, Location)>> = const { RefCell::new(None) };
     static HOST_CTX: AtomicBool = const { AtomicBool::new(false) };
+
+    /// Per-thread callback accounting for #2199/#2208 investigation.
+    /// Incremented on every WASM→host dispatch inside the `imports!`
+    /// macro. `Module::run` snapshots these at the beginning of a run
+    /// and reads them at the end to emit a per-run breakdown of:
+    ///   - total host callbacks made
+    ///   - cumulative time building `VMHostFunctions` (the ouroboros
+    ///     self-ref rebuild — hypothesised hot spot)
+    ///   - cumulative time inside the host function body itself
+    /// Cells are cheaper than Atomics for thread-local counters since
+    /// each WASM run is single-threaded through wasmer's dispatcher.
+    pub(crate) static HOTPATH_CALLBACK_COUNT: Cell<u64> = const { Cell::new(0) };
+    pub(crate) static HOTPATH_BUILD_NS: Cell<u64> = const { Cell::new(0) };
+    pub(crate) static HOTPATH_BODY_NS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Snapshot of the hot-path thread-local counters. Used by
+/// `Module::run` to measure the delta contributed by one WASM
+/// invocation. See `HOTPATH_*` thread-locals above.
+#[must_use]
+pub fn hotpath_snapshot() -> (u64, u64, u64) {
+    (
+        HOTPATH_CALLBACK_COUNT.with(Cell::get),
+        HOTPATH_BUILD_NS.with(Cell::get),
+        HOTPATH_BODY_NS.with(Cell::get),
+    )
 }
 
 impl VMLogic<'_> {
@@ -183,7 +209,26 @@ macro_rules! _imports {
                         let (data, store) = env.data_and_store_mut();
                         let data = unsafe { &mut *(*data.get_mut()).cast::<VMLogic<'_>>() };
 
-                        data.host_functions(store).$func($($arg),*)
+                        // #2208 investigation: split per-callback cost
+                        // into (a) ouroboros VMHostFunctions rebuild
+                        // and (b) host function body. Results
+                        // aggregated in thread-local counters and
+                        // surfaced from Module::run. The two
+                        // `Instant::now()` calls add ~40ns of overhead
+                        // per callback — negligible against the 13µs
+                        // per-callback cost we're measuring.
+                        let build_start = std::time::Instant::now();
+                        let mut hf = data.host_functions(store);
+                        let build_ns = build_start.elapsed().as_nanos() as u64;
+                        let body_start = std::time::Instant::now();
+                        let out = hf.$func($($arg),*);
+                        let body_ns = body_start.elapsed().as_nanos() as u64;
+
+                        HOTPATH_CALLBACK_COUNT.with(|c| c.set(c.get() + 1));
+                        HOTPATH_BUILD_NS.with(|c| c.set(c.get() + build_ns));
+                        HOTPATH_BODY_NS.with(|c| c.set(c.get() + body_ns));
+
+                        out
                     })).unwrap_or_else(|_| {
                         let (message, location) = PAYLOAD.with(|payload| {
                             payload.borrow_mut().take().unwrap_or_else(|| ("<no message>".to_owned(), Location::Unknown))

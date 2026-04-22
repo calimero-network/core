@@ -248,6 +248,12 @@ impl Module {
 
         let mut store = Store::new(self.engine.clone());
 
+        // #2208 investigation: snapshot per-thread hot-path counters
+        // at entry so we can compute the delta contributed by *this*
+        // invocation. Same pattern as CPU perf counters. See
+        // `logic/imports.rs` HOTPATH_* thread-locals.
+        let (prev_cb, prev_build, prev_body) = logic::imports::hotpath_snapshot();
+
         let imports = logic.imports(&mut store);
 
         // Wrap WASM execution in catch_unwind to prevent panics from crashing the node.
@@ -304,6 +310,30 @@ impl Module {
             for (i, log) in outcome.logs.iter().enumerate() {
                 info!(%context_id, method, log_index = i, log_content = %log, "WASM_LOG");
             }
+        }
+
+        // #2208 — emit per-run hot-path breakdown. Deltas from the
+        // snapshot taken at entry isolate this invocation's
+        // contribution from any earlier runs on the same thread.
+        let (now_cb, now_build, now_body) = logic::imports::hotpath_snapshot();
+        let callbacks = now_cb.saturating_sub(prev_cb);
+        let build_ns = now_build.saturating_sub(prev_build);
+        let body_ns = now_body.saturating_sub(prev_body);
+        if callbacks > 0 {
+            let build_ms = build_ns as f64 / 1_000_000.0;
+            let body_ms = body_ns as f64 / 1_000_000.0;
+            let avg_build_us = (build_ns as f64 / callbacks as f64) / 1_000.0;
+            let avg_body_us = (body_ns as f64 / callbacks as f64) / 1_000.0;
+            info!(
+                %context_id,
+                method,
+                callbacks,
+                build_ms = format!("{:.2}", build_ms),
+                body_ms = format!("{:.2}", body_ms),
+                avg_build_us = format!("{:.3}", avg_build_us),
+                avg_body_us = format!("{:.3}", avg_body_us),
+                "WASM hot-path breakdown (#2208)"
+            );
         }
 
         Ok(outcome)
