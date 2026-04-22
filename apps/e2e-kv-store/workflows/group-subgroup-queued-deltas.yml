@@ -110,18 +110,45 @@ steps:
       - identity: '{{member_identity_node2}}'
         role: Member
 
+  # Wait + probe: we must verify node-2 has APPLIED the subgroup-membership
+  # governance op before we start burst-generating deltas on the subgroup
+  # context. If we skip this and rely on a fixed sleep alone, gossip
+  # delivery of the delta burst on the subgroup-context topic can
+  # interleave with governance op application on node-2's gossipsub /
+  # actor pipeline and push membership recognition past the join_context
+  # check, surfacing as ApiError 500 "identity is not a member of the
+  # group". That is a separate bug from #2198; we defend against it here
+  # by asserting node-2's local view of subgroup membership BEFORE the
+  # delta burst begins, so the two bugs can't conflate in this workflow.
+
   - name: Wait for subgroup governance to reach node-2
     type: wait
-    seconds: 20
-    message: >
-      node-2 needs to know it is a subgroup member before join_context's
-      membership check. 20s is conservative vs. group-subgroup-cold-sync's
-      5s because this workflow immediately follows governance with a
-      20-delta burst on node-1; gossip delivery of those deltas can
-      compete with governance op delivery on node-2 and push membership
-      recognition past a tighter 5s window (observed as "identity is not
-      a member of the group" from join_context in CI attempt 1 of this
-      workflow before this bump was applied).
+    seconds: 15
+    message: initial window for governance gossip + cascade application on node-2
+
+  - name: Node-2 lists subgroup members (local view)
+    type: list_group_members
+    node: e2e-node-2
+    group_id: '{{subgroup_id}}'
+    outputs:
+      node2_view_of_subgroup_members: members
+
+  - name: Assert node-2's local group_store knows about the subgroup
+    type: assert
+    statements:
+      - "is_set({{node2_view_of_subgroup_members}})"
+
+  - name: Node-1 lists subgroup members (authoritative view)
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      node1_view_of_subgroup_members: members
+
+  - name: Assert node-1 also knows about the subgroup
+    type: assert
+    statements:
+      - "is_set({{node1_view_of_subgroup_members}})"
 
   # ── Create subgroup-owned context; node-2 does NOT join yet ───────
 
