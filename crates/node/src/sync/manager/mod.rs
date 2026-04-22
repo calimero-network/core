@@ -1867,6 +1867,12 @@ impl SyncManager {
                 let mut tried: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
                 let _ = tried.insert(peer_id); // don't retry the initial peer
 
+                // Fetch the mesh peer list once; only re-fetch if we run out
+                // of untried peers, to pick up any peers that joined the mesh
+                // mid-retry (stale-mesh recovery).
+                let mut available_peers = self.network_client.mesh_peers(topic.clone()).await;
+                let mut refetched = false;
+
                 let mut attempts = 0usize;
                 loop {
                     let after = delta_store_ref.get_missing_parents().await;
@@ -1885,14 +1891,32 @@ impl SyncManager {
                         break;
                     }
 
-                    let mesh_peers = self.network_client.mesh_peers(topic.clone()).await;
-                    let next_peer = mesh_peers.into_iter().find(|p| !tried.contains(p));
-                    let Some(next_peer) = next_peer else {
-                        debug!(
-                            %context_id,
-                            "no additional mesh peers available for parent pull"
-                        );
-                        break;
+                    let next_peer = available_peers.iter().find(|p| !tried.contains(p)).copied();
+                    let next_peer = match next_peer {
+                        Some(p) => p,
+                        None if !refetched => {
+                            // All current peers tried; re-fetch in case the
+                            // mesh has grown (new subscribers since loop start).
+                            available_peers = self.network_client.mesh_peers(topic.clone()).await;
+                            refetched = true;
+                            match available_peers.iter().find(|p| !tried.contains(p)).copied() {
+                                Some(p) => p,
+                                None => {
+                                    debug!(
+                                        %context_id,
+                                        "no additional mesh peers available for parent pull"
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                        None => {
+                            debug!(
+                                %context_id,
+                                "no additional mesh peers available for parent pull"
+                            );
+                            break;
+                        }
                     };
                     let _ = tried.insert(next_peer);
                     attempts += 1;
