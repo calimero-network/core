@@ -62,6 +62,32 @@ steps:
     outputs:
       group_c: groupId
 
+  # --- Put contexts in A, B, and C so the cascade has something to wipe ---
+
+  - name: Create context in A
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{group_a}}'
+    outputs:
+      ctx_a: contextId
+
+  - name: Create context in B (sibling subtree; must survive cascade)
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{group_b}}'
+    outputs:
+      ctx_b: contextId
+
+  - name: Create context in C (will be reparented under A, then cascade-deleted)
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{group_c}}'
+    outputs:
+      ctx_c: contextId
+
   # --- Reparent C from namespace under B ---
 
   - name: Reparent C under B
@@ -125,6 +151,14 @@ steps:
   # B's metadata should still be retrievable.
   - name: Get B info (must succeed — B was not in cascade)
     type: get_group_info
+    node: e2e-node-1
+    group_id: '{{group_b}}'
+
+  # B's context must still be listed (sibling subtree was untouched).
+  # This is the complementary check: cascade wiped A+C+their contexts but
+  # left everything under B alone.
+  - name: List contexts still registered in B
+    type: list_group_contexts
     node: e2e-node-1
     group_id: '{{group_b}}'
 
