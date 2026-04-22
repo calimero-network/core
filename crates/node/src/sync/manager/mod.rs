@@ -1828,31 +1828,39 @@ impl SyncManager {
                     );
                 }
 
-                // First attempt: the peer that served DAG heads.
-                if !missing_result.missing_ids.is_empty() {
-                    info!(
-                        %context_id,
-                        missing_count = missing_result.missing_ids.len(),
-                        "DAG heads have missing parents, requesting them recursively"
-                    );
+                // Steady-state: the initial DAG-heads response already
+                // matched local state, so there are no missing parents to
+                // chase. Skip the entire retry-and-final-check machinery.
+                if missing_result.missing_ids.is_empty() {
+                    return Ok(SyncProtocol::DeltaSync {
+                        missing_delta_ids: vec![],
+                    });
+                }
 
-                    // Request missing parents (this uses recursive topological fetching)
-                    if let Err(e) = self
-                        .request_missing_deltas(
-                            context_id,
-                            missing_result.missing_ids,
-                            peer_id,
-                            delta_store_ref.clone(),
-                            our_identity,
-                        )
-                        .await
-                    {
-                        warn!(
-                            ?e,
-                            %context_id,
-                            "Failed to request missing parent deltas from initial peer"
-                        );
-                    }
+                // From here on, we have at least one missing parent.
+
+                info!(
+                    %context_id,
+                    missing_count = missing_result.missing_ids.len(),
+                    "DAG heads have missing parents, requesting them recursively"
+                );
+
+                // First attempt: the peer that served DAG heads.
+                if let Err(e) = self
+                    .request_missing_deltas(
+                        context_id,
+                        missing_result.missing_ids,
+                        peer_id,
+                        delta_store_ref.clone(),
+                        our_identity,
+                    )
+                    .await
+                {
+                    warn!(
+                        ?e,
+                        %context_id,
+                        "Failed to request missing parent deltas from initial peer"
+                    );
                 }
 
                 // Cross-peer fallback for cold-start race (#2198): if the
