@@ -11,6 +11,9 @@ on:
       - ".github/workflows/release.yml"
       - ".github/workflows/deps/**"
       - ".github/actions/**"
+      # prebuilt.profiling.Dockerfile COPYs these scripts into the
+      # edge-profiling image, so changes here need to rebuild.
+      - "scripts/profiling/**"
   pull_request:
     paths:
       - Cargo.toml
@@ -19,6 +22,7 @@ on:
       - ".github/workflows/release.yml"
       - ".github/workflows/deps/**"
       - ".github/actions/**"
+      - "scripts/profiling/**"
 
 permissions:
   contents: read
