@@ -37,7 +37,11 @@ for node_dir in "$SRC_ROOT"/*/; do
         continue
     fi
     dest="$DEST_ROOT/$node_name"
-    mkdir -p "$dest"
+    if ! mkdir -p "$dest" 2>"$ERR_LOG"; then
+        err=$(head -3 "$ERR_LOG" 2>/dev/null | tr '\n' ' ')
+        echo "  $node_name: ERROR — could not create $dest: ${err:-(no stderr captured)}"
+        continue
+    fi
     if ! cp -r "$dump/." "$dest/" 2>"$ERR_LOG"; then
         err=$(head -3 "$ERR_LOG" 2>/dev/null | tr '\n' ' ')
         echo "  $node_name: WARNING — cp may be incomplete: ${err:-(no stderr captured)}"

@@ -146,8 +146,11 @@ stop_profiling() {
         if kill -0 "$perf_pid" 2>/dev/null; then
             kill -INT "$perf_pid" 2>/dev/null || true
             
+            # 15s, not 5s: a 45-minute perf.data can be hundreds of MB and
+            # the final flush on SIGINT may take longer than expected. Capping
+            # too low truncates the output file.
             local wait_count=0
-            while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 5 ]; do
+            while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 15 ]; do
                 sleep 1
                 wait_count=$((wait_count + 1))
             done
@@ -221,25 +224,32 @@ preserve_to_host_mount() {
         echo "[Profiling] Host mount $host_mount not present, skipping preserve step"
         return 0
     fi
+    # mktemp instead of a fixed /tmp path — avoids a symlink race where a
+    # pre-existing /tmp/preserve.err symlink would redirect our 2> into an
+    # arbitrary file (CWE-377). Low risk inside a single-root container, but
+    # free to fix and keeps the function consistent with harvest-host-profiling.sh.
+    local err_file
+    err_file=$(mktemp -t preserve.err.XXXXXX 2>/dev/null) || err_file=/dev/null
     local dest="$host_mount/profiling-dump"
-    if ! mkdir -p "$dest" 2>/tmp/preserve.err; then
-        echo "[Profiling] WARNING: could not create $dest: $(head -1 /tmp/preserve.err 2>/dev/null)"
+    if ! mkdir -p "$dest" 2>"$err_file"; then
+        echo "[Profiling] WARNING: could not create $dest: $(head -1 "$err_file" 2>/dev/null)"
+        [ "$err_file" != /dev/null ] && rm -f "$err_file"
         return 0
     fi
     if [ -d "$PROFILING_OUTPUT_DIR" ]; then
-        if ! cp -r "$PROFILING_OUTPUT_DIR/." "$dest/" 2>/tmp/preserve.err; then
-            echo "[Profiling] WARNING: cp from $PROFILING_OUTPUT_DIR may be incomplete: $(head -3 /tmp/preserve.err 2>/dev/null | tr '\n' ' ')"
+        if ! cp -r "$PROFILING_OUTPUT_DIR/." "$dest/" 2>"$err_file"; then
+            echo "[Profiling] WARNING: cp from $PROFILING_OUTPUT_DIR may be incomplete: $(head -3 "$err_file" 2>/dev/null | tr '\n' ' ')"
         fi
     fi
     local reports_dir="${PROFILING_REPORTS_DIR:-/profiling/reports}"
     if [ -d "$reports_dir" ]; then
-        if ! mkdir -p "$dest/reports" 2>/tmp/preserve.err; then
-            echo "[Profiling] WARNING: could not create $dest/reports: $(head -1 /tmp/preserve.err 2>/dev/null)"
-        elif ! cp -r "$reports_dir/." "$dest/reports/" 2>/tmp/preserve.err; then
-            echo "[Profiling] WARNING: cp from $reports_dir may be incomplete: $(head -3 /tmp/preserve.err 2>/dev/null | tr '\n' ' ')"
+        if ! mkdir -p "$dest/reports" 2>"$err_file"; then
+            echo "[Profiling] WARNING: could not create $dest/reports: $(head -1 "$err_file" 2>/dev/null)"
+        elif ! cp -r "$reports_dir/." "$dest/reports/" 2>"$err_file"; then
+            echo "[Profiling] WARNING: cp from $reports_dir may be incomplete: $(head -3 "$err_file" 2>/dev/null | tr '\n' ' ')"
         fi
     fi
-    rm -f /tmp/preserve.err
+    [ "$err_file" != /dev/null ] && rm -f "$err_file"
     local size
     size=$(du -sh "$dest" 2>/dev/null | awk '{print $1}')
     echo "[Profiling] ✓ Preserved profiling data to $dest (${size:-unknown size})"
