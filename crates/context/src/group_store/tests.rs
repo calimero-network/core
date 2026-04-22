@@ -2945,6 +2945,53 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
 }
 
 #[test]
+fn execute_group_created_rejects_self_parent() {
+    // Regression test for the E2E regression where create_group.rs defaulted
+    // parent_id to group_id for namespace-root creation, producing a
+    // self-parent edge that made resolve_namespace cycle. The op handler
+    // now rejects self-parent explicitly; the create_group handler skips
+    // emitting GroupCreated entirely for root creation.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Attempt to emit GroupCreated with group_id == parent_id (the bug).
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: ns_id,
+            parent_id: ns_id,
+        }),
+    )
+    .expect("sign op");
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let err = gov.apply_signed_op(&op).unwrap_err();
+    assert!(
+        format!("{err}").contains("self-parent"),
+        "expected self-parent rejection, got: {err}"
+    );
+}
+
+#[test]
 fn execute_group_deleted_subset_check_allows_partial_retry() {
     // Regression test for meroreviewer bugbot finding #3124131096 on PR #2200:
     // If a previous apply of GroupDeleted crashes mid-cascade, the local

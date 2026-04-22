@@ -485,6 +485,18 @@ impl<'a> NamespaceGovernance<'a> {
         let gid = ContextGroupId::from(group_id);
         let parent_gid = ContextGroupId::from(parent_id);
 
+        // Namespace roots are created via a different path (local meta +
+        // identity writes, no GroupCreated op); GroupCreated itself is only
+        // for subgroups. Reject self-parent to make that invariant explicit
+        // — a self-parent edge would cause resolve_namespace to cycle.
+        if group_id == parent_id {
+            eyre::bail!(
+                "GroupCreated rejected: self-parent edge (group_id == parent_id). \
+                 Namespace roots must not emit GroupCreated — their existence is \
+                 recorded by the namespace-identity setup path."
+            );
+        }
+
         // Verify parent exists in this namespace (root or previously-created subgroup).
         let parent_meta = load_group_meta(self.store, &parent_gid)?.ok_or_else(|| {
             eyre::eyre!("GroupCreated rejected: parent_id '{parent_gid:?}' not found in namespace")
