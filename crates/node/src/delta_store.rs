@@ -819,7 +819,7 @@ impl DeltaStore {
             debug!(
                 context_id = %self.applier.context_id,
                 delta_id = ?delta_id,
-                "Updated pre-persisted delta as applied (cleared events)"
+                "Updated pre-persisted delta as applied (events preserved until handler success)"
             );
         } else if result {
             // Delta applied and had no events - just persist normally
@@ -1437,6 +1437,24 @@ impl DeltaStore {
         };
 
         if stored.events.is_none() {
+            return;
+        }
+
+        // Safety guard against a stale read (#2194 review): if `applied`
+        // is false in the snapshot we just read, something else is
+        // mid-write on this record — our `..stored` spread would clobber
+        // any concurrent `applied: true` write. Bail out; the stored
+        // `events: Some(..)` stays in the DB and the next restart
+        // replays via `load_persisted_deltas`. The race is narrow (same
+        // delta id being cascaded + handler-executed twice in parallel),
+        // but silently downgrading `applied: true → false` would be a
+        // correctness bug, not just a lost clear.
+        if !stored.applied {
+            debug!(
+                context_id = %self.applier.context_id,
+                delta_id = ?delta_id,
+                "mark_events_executed observed applied=false; skipping clear to avoid clobbering concurrent write"
+            );
             return;
         }
 

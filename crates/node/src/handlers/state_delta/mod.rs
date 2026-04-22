@@ -755,7 +755,16 @@ async fn execute_cascaded_events(
                 }
 
                 if current_delta == Some(cascaded_id) {
-                    outcome.handlers_executed_for_current = all_succeeded;
+                    // Handlers for the current delta were *attempted* —
+                    // set this to `true` regardless of `all_succeeded`
+                    // so `handle_state_delta`'s outer flow doesn't
+                    // re-run them in the same request (which would
+                    // duplicate the succeeded handlers). On partial
+                    // failure, `mark_events_executed` above is skipped,
+                    // so `events: Some(..)` stays in the DB and a
+                    // restart replays — that is the retry path, not
+                    // in-request re-execution.
+                    outcome.handlers_executed_for_current = true;
                 }
             }
             Err(e) => {
