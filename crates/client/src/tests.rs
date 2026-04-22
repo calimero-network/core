@@ -32,15 +32,14 @@ use calimero_server_primitives::admin::DeleteNamespaceApiRequest;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use calimero_server_primitives::admin::GroupMemberApiInput;
 use calimero_server_primitives::admin::JoinGroupApiRequest;
-use calimero_server_primitives::admin::NestGroupApiRequest;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
+use calimero_server_primitives::admin::ReparentGroupApiRequest;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultVisibilityApiRequest;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SyncGroupApiRequest;
-use calimero_server_primitives::admin::UnnestGroupApiRequest;
 use calimero_server_primitives::admin::UpdateGroupSettingsApiRequest;
 use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
 use calimero_server_primitives::admin::UpgradeGroupApiRequest;
@@ -337,44 +336,23 @@ async fn join_context() {
 // ---- Invitations & Joining ----
 
 #[tokio::test]
-async fn nest_group() {
+async fn reparent_group() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path(format!("/admin-api/groups/{GID}/nest")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    client
-        .nest_group(
-            GID,
-            NestGroupApiRequest {
-                child_group_id: "child-group-id".to_owned(),
-                requester: None,
-            },
+        .and(path(format!("/admin-api/groups/{GID}/reparent")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"reparented": true})),
         )
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn unnest_group() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(format!("/admin-api/groups/{GID}/unnest")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     client
-        .unnest_group(
+        .reparent_group(
             GID,
-            UnnestGroupApiRequest {
-                child_group_id: "child-group-id".to_owned(),
+            ReparentGroupApiRequest {
+                new_parent_id: "new-parent-id".to_owned(),
                 requester: None,
             },
         )

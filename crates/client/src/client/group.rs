@@ -18,12 +18,12 @@ use calimero_server_primitives::admin::JoinContextApiResponse;
 use calimero_server_primitives::admin::ListGroupContextsApiResponse;
 use calimero_server_primitives::admin::ListGroupMembersApiResponse;
 use calimero_server_primitives::admin::ListSubgroupsApiResponse;
-use calimero_server_primitives::admin::NestGroupApiRequest;
-use calimero_server_primitives::admin::NestGroupApiResponse;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiRequest;
 use calimero_server_primitives::admin::RegisterGroupSigningKeyApiResponse;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiResponse;
+use calimero_server_primitives::admin::ReparentGroupApiRequest;
+use calimero_server_primitives::admin::ReparentGroupApiResponse;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiResponse;
@@ -35,8 +35,6 @@ use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiRequest;
 use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiResponse;
 use calimero_server_primitives::admin::SyncGroupApiRequest;
 use calimero_server_primitives::admin::SyncGroupApiResponse;
-use calimero_server_primitives::admin::UnnestGroupApiRequest;
-use calimero_server_primitives::admin::UnnestGroupApiResponse;
 use calimero_server_primitives::admin::UpdateGroupSettingsApiRequest;
 use calimero_server_primitives::admin::UpdateGroupSettingsApiResponse;
 use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
@@ -162,29 +160,16 @@ where
         Ok(response)
     }
 
-    pub async fn nest_group(
+    /// Atomic edge swap: move `group_id` to a new parent. Replaces the
+    /// previous nest/unnest pair — orphan state is no longer reachable.
+    pub async fn reparent_group(
         &self,
-        parent_group_id: &str,
-        request: NestGroupApiRequest,
-    ) -> Result<NestGroupApiResponse> {
+        group_id: &str,
+        request: ReparentGroupApiRequest,
+    ) -> Result<ReparentGroupApiResponse> {
         let response = self
             .connection
-            .post(&format!("admin-api/groups/{parent_group_id}/nest"), request)
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn unnest_group(
-        &self,
-        parent_group_id: &str,
-        request: UnnestGroupApiRequest,
-    ) -> Result<UnnestGroupApiResponse> {
-        let response = self
-            .connection
-            .post(
-                &format!("admin-api/groups/{parent_group_id}/unnest"),
-                request,
-            )
+            .post(&format!("admin-api/groups/{group_id}/reparent"), request)
             .await?;
         Ok(response)
     }

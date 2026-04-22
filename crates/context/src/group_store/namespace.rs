@@ -88,11 +88,18 @@ pub fn get_parent_group(
     Ok(handle.get(&key)?.map(ContextGroupId::from))
 }
 
-/// Record that `child` is nested inside `parent`. Both directions are stored
-/// so we can query parent→children and child→parent.
+/// **Test/legacy helper.** Direct store write of a parent edge.
 ///
-/// Rejects the operation if it would create a cycle (child is already an
-/// ancestor of parent) or if child already has a parent.
+/// Production code MUST emit `RootOp::GroupCreated { parent_id }` or
+/// `RootOp::GroupReparented` instead — both go through the governance op
+/// layer where the strict-tree invariant is enforced. Calling this fn
+/// from a handler would bypass that enforcement.
+///
+/// Kept `pub` only because integration tests in `crates/context/tests/`
+/// use it to set up store state for non-orphan-related scenarios.
+///
+/// Hidden from rustdoc to discourage discovery.
+#[doc(hidden)]
 pub fn nest_group(
     store: &Store,
     parent_group_id: &ContextGroupId,
@@ -131,7 +138,18 @@ pub fn nest_group(
     Ok(())
 }
 
-/// Remove a nesting relationship.
+/// **Test/legacy helper.** Direct store delete of a parent edge.
+///
+/// Production code MUST emit `RootOp::GroupReparented` (atomic edge swap)
+/// or `RootOp::GroupDeleted` (which clears the edge as part of cascade).
+/// Calling this fn from a handler would create an orphan and violate the
+/// strict-tree invariant.
+///
+/// Kept `pub` only because integration tests in `crates/context/tests/`
+/// reference it.
+///
+/// Hidden from rustdoc to discourage discovery.
+#[doc(hidden)]
 pub fn unnest_group(
     store: &Store,
     parent_group_id: &ContextGroupId,
@@ -278,6 +296,178 @@ pub fn resolve_namespace(store: &Store, group_id: &ContextGroupId) -> EyreResult
     }
     eyre::bail!(
         "namespace resolution exceeded max depth ({MAX_NAMESPACE_DEPTH}), possible circular reference"
+    )
+}
+
+/// Result of subtree enumeration. `descendant_groups` does NOT include the
+/// root itself. Order is children-first (deepest descendants come first),
+/// matching the order required by `execute_group_deleted` for safe child-index
+/// cleanup.
+#[derive(Debug, Clone)]
+pub struct CascadePayload {
+    pub descendant_groups: Vec<ContextGroupId>,
+    pub contexts: Vec<ContextId>,
+}
+
+/// Walk the subtree rooted at `root` and return:
+/// - every descendant `group_id` in children-first order (deepest first)
+/// - every `context_id` registered on `root` or any descendant
+///
+/// Used by the `delete_group` handler to build the `GroupDeleted` op
+/// payload, and by `execute_group_deleted` to verify deterministic
+/// application across peers.
+///
+/// **Determinism contract**: every peer running this fn against the same
+/// store state MUST produce identical output. `execute_group_deleted`
+/// compares `descendant_groups` as a `BTreeSet` (subset check, see the
+/// retry-friendly divergence logic there) and `contexts` likewise, so the
+/// exact sequence doesn't matter for correctness — but we do want every
+/// peer to deterministically produce the same output for debuggability and
+/// for the signer/verifier to agree on the payload.
+///
+/// Two invariants make the output deterministic across peers:
+///
+/// 1. Traversal is **purely a function of the tree shape** — no timing or
+///    scheduling dependence. Specifically: we maintain a `Vec` stack,
+///    pop from the end (LIFO), enumerate each node's children via
+///    `list_child_groups`, push them onto the stack in returned order.
+///    This is depth-first with siblings visited in reverse RocksDB
+///    key-byte order (last-pushed is popped first), then the collected
+///    pre-order is reversed for children-first output. Name-it-what-you-
+///    will; the contract is: same store state → same output, always.
+/// 2. `list_child_groups` returns children in stable RocksDB key-byte
+///    order (`GroupChildIndex` keys are `[prefix + parent + child]`,
+///    iterated lexicographically), which is the same on every peer for
+///    the same store state.
+///
+/// Do NOT rename this to "BFS" or "proper DFS" without understanding that
+/// the verifier now compares via set semantics — the divergence risk from
+/// earlier Vec-equality checks is gone, but callers that rely on the
+/// exact collection order (e.g. deletion ordering in
+/// `execute_group_deleted`) still depend on "children-first" holding.
+pub fn collect_subtree_for_cascade(
+    store: &Store,
+    root: &ContextGroupId,
+) -> EyreResult<CascadePayload> {
+    let mut contexts: Vec<ContextId> = Vec::new();
+    contexts.extend(super::enumerate_group_contexts(store, root, 0, usize::MAX)?);
+
+    // DFS pre-order traversal. Push children onto a LIFO stack; each iteration
+    // pops one and recurses into its subtree before backtracking. After the
+    // walk, reverse to get children-first order (deepest descendant first),
+    // which is what execute_group_deleted needs to safely tear down child
+    // indices before deleting parents.
+    let mut dfs_preorder: Vec<ContextGroupId> = Vec::new();
+    let mut stack = vec![*root];
+    while let Some(g) = stack.pop() {
+        for child in list_child_groups(store, &g)? {
+            dfs_preorder.push(child);
+            stack.push(child);
+            contexts.extend(super::enumerate_group_contexts(
+                store,
+                &child,
+                0,
+                usize::MAX,
+            )?);
+        }
+    }
+    let descendant_groups = dfs_preorder.into_iter().rev().collect();
+    Ok(CascadePayload {
+        descendant_groups,
+        contexts,
+    })
+}
+
+/// Outcome of a `reparent_group` call. Distinguishes the no-op idempotent
+/// case from an actual edge swap so callers can report accurately and
+/// suppress misleading "reparented" events when nothing changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReparentOutcome {
+    /// Edges were swapped; the structural shape of the tree changed.
+    Reparented {
+        /// The parent before the swap (now no longer a parent of child).
+        old_parent: ContextGroupId,
+    },
+    /// `new_parent == old_parent` — no writes performed, no shape change.
+    Unchanged,
+}
+
+/// Atomically swap the parent of `child` to `new_parent`.
+///
+/// Replaces the old `nest_group` + `unnest_group` two-step pattern with a
+/// single op so orphan state is no longer expressible. Enforces:
+/// - `child` must currently have a parent (cannot reparent the namespace root).
+/// - `new_parent` must exist in the store (have a `GroupMeta` entry).
+/// - `new_parent` must not be a descendant of `child` (no cycles).
+/// - Idempotent on `new_parent == old_parent` (returns `Unchanged`).
+///
+/// All edge mutations happen in one store handle so a partial state is
+/// never observable.
+pub fn reparent_group(
+    store: &Store,
+    child: &ContextGroupId,
+    new_parent: &ContextGroupId,
+) -> EyreResult<ReparentOutcome> {
+    let old_parent = get_parent_group(store, child)?.ok_or_else(|| {
+        eyre::eyre!("cannot reparent the namespace root: '{child:?}' has no parent")
+    })?;
+
+    if old_parent == *new_parent {
+        return Ok(ReparentOutcome::Unchanged);
+    }
+
+    if super::load_group_meta(store, new_parent)?.is_none() {
+        eyre::bail!("new parent group '{new_parent:?}' not found in this namespace");
+    }
+
+    if is_descendant_of(store, new_parent, child)? {
+        eyre::bail!("cycle: new_parent '{new_parent:?}' is a descendant of child '{child:?}'");
+    }
+
+    let mut handle = store.handle();
+    handle.delete(&GroupChildIndex::new(
+        old_parent.to_bytes(),
+        child.to_bytes(),
+    ))?;
+    handle.put(
+        &GroupParentRef::new(child.to_bytes()),
+        &new_parent.to_bytes(),
+    )?;
+    handle.put(
+        &GroupChildIndex::new(new_parent.to_bytes(), child.to_bytes()),
+        &(),
+    )?;
+    Ok(ReparentOutcome::Reparented { old_parent })
+}
+
+/// Returns `true` iff `candidate` is a (transitive) descendant of
+/// `potential_ancestor`. Returns `false` for `candidate == potential_ancestor`.
+/// Bounded by `MAX_NAMESPACE_DEPTH`; returns `Err` if the walk exceeds the cap
+/// (indicates store corruption / cycle).
+///
+/// Used by `reparent_group` to reject moves that would create a cycle.
+pub fn is_descendant_of(
+    store: &Store,
+    candidate: &ContextGroupId,
+    potential_ancestor: &ContextGroupId,
+) -> EyreResult<bool> {
+    if candidate == potential_ancestor {
+        return Ok(false);
+    }
+    let mut current = *candidate;
+    for _ in 0..MAX_NAMESPACE_DEPTH {
+        match get_parent_group(store, &current)? {
+            Some(parent) => {
+                if parent == *potential_ancestor {
+                    return Ok(true);
+                }
+                current = parent;
+            }
+            None => return Ok(false),
+        }
+    }
+    eyre::bail!(
+        "is_descendant_of exceeded MAX_NAMESPACE_DEPTH ({MAX_NAMESPACE_DEPTH}); possible cycle in store"
     )
 }
 

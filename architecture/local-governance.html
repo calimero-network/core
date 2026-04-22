@@ -415,9 +415,9 @@
   <div>
     <h3>RootOps (Cleartext)</h3>
     <p style="margin-bottom:8px;font-size:.82rem;">Visible to all namespace members. Used for structural changes and key distribution:</p>
-    <div class="fr"><div class="fp">GroupCreated</div><div class="fd">Announces a new group in the namespace</div></div>
-    <div class="fr"><div class="fp">GroupDeleted</div><div class="fd">Removes a group from the namespace</div></div>
-    <div class="fr"><div class="fp">GroupNested / GroupUnnested</div><div class="fd">Manage parent-child relationships</div></div>
+    <div class="fr"><div class="fp">GroupCreated</div><div class="fd">Atomically creates a new group AND nests it under <code>parent_id</code> (strict-tree invariant — no orphan creation path)</div></div>
+    <div class="fr"><div class="fp">GroupDeleted</div><div class="fd">Cascade-deletes a group plus its entire subtree and all contained contexts in one op. Payload carries <code>cascade_group_ids</code> + <code>cascade_context_ids</code> which every peer re-enumerates and verifies for deterministic application.</div></div>
+    <div class="fr"><div class="fp">GroupReparented</div><div class="fd">Atomic edge swap: moves a child from its current parent to a new parent within the same namespace. Replaces the previous <code>GroupNested</code> + <code>GroupUnnested</code> pair; orphan state is structurally impossible.</div></div>
     <div class="fr"><div class="fp">MemberJoined</div><div class="fd">Cleartext join notification (joiner doesn&rsquo;t have group key yet)</div></div>
     <div class="fr"><div class="fp">KeyDelivery</div><div class="fd">ECDH-wrapped group key delivery to a specific member</div></div>
     <div class="fr"><div class="fp">AdminChanged</div><div class="fd">Changes namespace admin</div></div>

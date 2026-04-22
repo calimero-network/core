@@ -83,8 +83,15 @@ pub async fn handler(
 
     let signer_sk = calimero_primitives::identity::PrivateKey::from(sk_bytes);
 
+    // Strict-tree refactor: GroupCreated atomically nests the new group under
+    // the namespace root in one op. Previous two-op pattern (GroupCreated then
+    // GroupNested) is collapsed — orphan state is no longer reachable. See
+    // docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
     let op = calimero_context_client::local_governance::NamespaceOp::Root(
-        calimero_context_client::local_governance::RootOp::GroupCreated { group_id },
+        calimero_context_client::local_governance::RootOp::GroupCreated {
+            group_id,
+            parent_id: namespace_id.to_bytes(),
+        },
     );
 
     match calimero_context::group_store::sign_apply_and_publish_namespace_op(
@@ -97,32 +104,6 @@ pub async fn handler(
     .await
     {
         Ok(()) => {
-            // Nest the new group under the namespace root so that
-            // resolve_namespace() can walk up to find the namespace identity.
-            let nest_op = calimero_context_client::local_governance::NamespaceOp::Root(
-                calimero_context_client::local_governance::RootOp::GroupNested {
-                    parent_group_id: namespace_id.to_bytes(),
-                    child_group_id: group_id,
-                },
-            );
-
-            if let Err(err) = calimero_context::group_store::sign_apply_and_publish_namespace_op(
-                &state.store,
-                &state.node_client,
-                resolved_ns_id.to_bytes(),
-                &signer_sk,
-                nest_op,
-            )
-            .await
-            {
-                error!(
-                    ?err,
-                    "Group created but failed to nest under namespace — \
-                     the group will not be usable without a parent link"
-                );
-                return parse_api_error(err).into_response();
-            }
-
             let group_id = calimero_context_config::types::ContextGroupId::from(group_id);
 
             // Generate a group key for the subgroup so that encrypted

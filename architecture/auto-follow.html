@@ -98,10 +98,16 @@ reconcile loop.
    └─ Handler checks: is self a member with auto_follow.contexts = true?
    └─ If yes, emit JoinContext — same rate limit.
 
-4. Later, an admin nests a subgroup under this group.
-   └─ RootOp::GroupNested applied on namespace DAG.
-   └─ op_events::notify(OpEvent::SubgroupNested { parent, child }).
-   └─ Handler reacts (subgroup variant — separate follow-up PR).</pre>
+4. Later, an admin creates a subgroup under this group.
+   └─ RootOp::GroupCreated { group_id, parent_id } applied on namespace DAG
+       (atomic create+nest — strict-tree invariant).
+   └─ op_events::notify(OpEvent::SubgroupCreated { parent, child }).
+   └─ Handler reacts (subgroup variant — separate follow-up PR).
+
+4b. Admin moves an existing subgroup to a new parent.
+    └─ RootOp::GroupReparented { child, new_parent } applied.
+    └─ op_events::notify(OpEvent::SubgroupReparented
+        { old_parent, new_parent, child }).</pre>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
