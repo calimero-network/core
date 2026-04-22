@@ -2879,6 +2879,71 @@ fn governance_group_created_is_idempotent() {
         .expect("duplicate GroupCreated should be idempotent");
 }
 
+#[test]
+fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
+    // Regression test for Cursor Bugbot finding on PR #2200:
+    // The create_group handler pre-populates GroupMeta BEFORE publishing
+    // the GroupCreated op. A naive idempotency check that returns early on
+    // "meta exists" would skip GroupParentRef/GroupChildIndex writes on the
+    // originating node — leaving it with no parent edge while remote peers
+    // correctly populate the edges. This test simulates the originator flow
+    // and asserts the parent edge IS written even when meta pre-exists.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let new_group_id = [0xCCu8; 32];
+    let new_gid = ContextGroupId::from(new_group_id);
+
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Simulate the create_group HANDLER pre-populating meta before publishing:
+    // this is the originator's flow.
+    save_group_meta(&store, &new_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+
+    // Now apply the GroupCreated op — idempotency must NOT skip the edges.
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: new_group_id,
+            parent_id: ns_id,
+        }),
+    )
+    .expect("sign op");
+    gov.apply_signed_op(&op)
+        .expect("apply GroupCreated on originator");
+
+    // Parent edge must exist (the bug was that it wouldn't).
+    assert_eq!(
+        get_parent_group(&store, &new_gid).unwrap(),
+        Some(ns_gid),
+        "originator must have parent edge after GroupCreated even though meta was pre-populated"
+    );
+    // Child index on namespace must include the new group.
+    let children = list_child_groups(&store, &ns_gid).unwrap();
+    assert!(
+        children.contains(&new_gid),
+        "namespace's child index must include new group"
+    );
+}
+
 // Helper: create a GroupMetaValue with a specific admin
 fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
     GroupMetaValue {

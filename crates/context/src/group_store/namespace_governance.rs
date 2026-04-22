@@ -484,33 +484,48 @@ impl<'a> NamespaceGovernance<'a> {
         self.require_namespace_admin(&op.signer)?;
         let gid = ContextGroupId::from(group_id);
         let parent_gid = ContextGroupId::from(parent_id);
-        if load_group_meta(self.store, &gid)?.is_some() {
-            tracing::debug!(
-                group_id = %hex::encode(group_id),
-                "group already exists, ignoring GroupCreated"
-            );
-            return Ok(());
-        }
 
         // Verify parent exists in this namespace (root or previously-created subgroup).
         let parent_meta = load_group_meta(self.store, &parent_gid)?.ok_or_else(|| {
             eyre::eyre!("GroupCreated rejected: parent_id '{parent_gid:?}' not found in namespace")
         })?;
 
-        // Inherit application ID from the immediate parent (matches mero-drive
-        // folder mental model: a subfolder runs the same app as its parent).
-        let meta = calimero_store::key::GroupMetaValue {
-            admin_identity: op.signer,
-            target_application_id: parent_meta.target_application_id,
-            app_key: [0u8; 32],
-            upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
-            migration: None,
-            created_at: 0,
-            auto_join: false,
-        };
+        // The originating node's `create_group` handler pre-populates
+        // `GroupMeta` (and related state) BEFORE publishing this op, so a
+        // naive "if meta exists, return early" idempotency check would
+        // short-circuit on the originator's local apply, leaving the group
+        // without `GroupParentRef` / `GroupChildIndex` edges. Remote peers
+        // applying a fresh op would write edges correctly, causing silent
+        // divergence between originator and peers (resolve_namespace,
+        // list_child_groups, and reparent would all fail on the originator).
+        //
+        // Fix: only skip the meta write if it already exists, but ALWAYS
+        // ensure parent edge + child index + admin membership are present.
+        // These are idempotent puts — a second apply is a no-op with
+        // identical effect, so true replay is still safe.
+        let meta_existed = load_group_meta(self.store, &gid)?.is_some();
+        if !meta_existed {
+            // Inherit application ID from the immediate parent (matches
+            // mero-drive folder mental model: a subfolder runs the same app
+            // as its parent).
+            let meta = calimero_store::key::GroupMetaValue {
+                admin_identity: op.signer,
+                target_application_id: parent_meta.target_application_id,
+                app_key: [0u8; 32],
+                upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
+                migration: None,
+                created_at: 0,
+                auto_join: false,
+            };
+            save_group_meta(self.store, &gid, &meta)?;
+        } else {
+            tracing::debug!(
+                group_id = %hex::encode(group_id),
+                "GroupCreated: meta already present (pre-populated by handler or replay); \
+                 skipping meta write but still ensuring parent edge + admin membership"
+            );
+        }
 
-        // Atomic batch: meta + parent edge + child index + admin membership.
-        save_group_meta(self.store, &gid, &meta)?;
         {
             use calimero_store::key::{GroupChildIndex, GroupParentRef};
             let mut handle = self.store.handle();
