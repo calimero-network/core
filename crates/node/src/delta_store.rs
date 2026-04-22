@@ -765,6 +765,15 @@ impl DeltaStore {
             );
         }
 
+        // Instrument the DAG write-lock scope (#2186). The `add_delta`
+        // call below runs WASM `__calimero_sync_next` via the applier,
+        // and its internal `apply_pending` may cascade additional
+        // pending children — each also running WASM. All of that
+        // happens under this single write lock, serializing concurrent
+        // callers on the same DeltaStore. Emit the hold time so we
+        // can decide from real data whether throttling (issue #2186
+        // options 1/2) is needed. Threshold-gated warn for the tail.
+        let lock_start = std::time::Instant::now();
         let mut dag = self.dag.write().await;
 
         // Track which deltas are currently pending BEFORE we add the new delta
@@ -788,6 +797,11 @@ impl DeltaStore {
         };
 
         drop(dag); // Release lock before calling context_client
+        self.record_dag_write_lock_hold(
+            "add_delta_internal",
+            lock_start.elapsed(),
+            cascaded_deltas.len(),
+        );
 
         // Update persistence if delta applied. Preserve events until
         // the caller confirms handler execution via
@@ -1031,6 +1045,17 @@ impl DeltaStore {
         // DB I/O is deliberately hoisted out of this scope (phase 1 above,
         // phase 3 below) to keep the lock window short and deterministic.
         let mut all_cascaded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+        // Instrument the phase-2 write-lock scope (#2186). Under this
+        // single critical section we run `add_delta` (→ WASM) for each
+        // `ParentPlan::Add`, `restore_applied_delta` for Restore plans,
+        // then a final `try_process_pending` that may cascade a long
+        // chain of pending children — each also running WASM. The
+        // total work can be unbounded if a restored parent unblocks
+        // many pending children. Emit hold time + plans/cascade
+        // counts so we can decide from real data whether throttling
+        // (issue #2186 options 1/2) is warranted.
+        let plans_count = plans.len();
+        let lock_start = std::time::Instant::now();
         let (
             any_parent_added,
             restored_head_hashes,
@@ -1179,6 +1204,12 @@ impl DeltaStore {
                 dag.get_heads(),
             )
         };
+        self.record_dag_write_lock_hold_with_plans(
+            "get_missing_parents",
+            lock_start.elapsed(),
+            plans_count,
+            cascaded_ids.len(),
+        );
 
         // Phase 3: post-DAG work — head-root-hash tracking + cascaded delta
         // persistence + dag_heads write. Runs with no DAG lock held.
@@ -1468,6 +1499,76 @@ impl DeltaStore {
                 context_id = %self.applier.context_id,
                 delta_id = ?delta_id,
                 "Failed to clear events after handler execution; next restart will replay"
+            );
+        }
+    }
+
+    /// Emit a structured log for the DAG write-lock hold time at a
+    /// given call site (#2186). Used by `add_delta_internal` and
+    /// `get_missing_parents` to surface observability data for the
+    /// "long-tail WASM-under-write-lock" concern without committing to
+    /// the larger throttling refactor.
+    ///
+    /// Always emits at `debug!` so aggregators/dashboards can scrape;
+    /// bumps to `warn!` above 500ms so long tails are visible in
+    /// production logs without dashboard plumbing. The threshold is
+    /// intentionally generous — WASM execution is often 50-200ms on
+    /// its own, so anything under 500ms is within-budget.
+    fn record_dag_write_lock_hold(
+        &self,
+        site: &'static str,
+        hold: Duration,
+        cascaded_count: usize,
+    ) {
+        let hold_ms = hold.as_secs_f64() * 1000.0;
+        if hold.as_millis() >= 500 {
+            warn!(
+                context_id = %self.applier.context_id,
+                site = site,
+                hold_ms = format!("{:.2}", hold_ms),
+                cascaded_count,
+                "DAG write lock held for long tail (#2186)"
+            );
+        } else {
+            debug!(
+                context_id = %self.applier.context_id,
+                site = site,
+                hold_ms = format!("{:.2}", hold_ms),
+                cascaded_count,
+                "DAG write lock hold time"
+            );
+        }
+    }
+
+    /// Same as `record_dag_write_lock_hold` but also surfaces the plan
+    /// count for `get_missing_parents` (each plan runs WASM for the
+    /// `Add` variant). The pair `(plans, cascaded)` is what a future
+    /// throttling fix would need to bound.
+    fn record_dag_write_lock_hold_with_plans(
+        &self,
+        site: &'static str,
+        hold: Duration,
+        plans_count: usize,
+        cascaded_count: usize,
+    ) {
+        let hold_ms = hold.as_secs_f64() * 1000.0;
+        if hold.as_millis() >= 500 {
+            warn!(
+                context_id = %self.applier.context_id,
+                site = site,
+                hold_ms = format!("{:.2}", hold_ms),
+                plans_count,
+                cascaded_count,
+                "DAG write lock held for long tail (#2186)"
+            );
+        } else {
+            debug!(
+                context_id = %self.applier.context_id,
+                site = site,
+                hold_ms = format!("{:.2}", hold_ms),
+                plans_count,
+                cascaded_count,
+                "DAG write lock hold time"
             );
         }
     }
