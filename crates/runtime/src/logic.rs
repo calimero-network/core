@@ -1,3 +1,22 @@
+//! # Hot-path logging constraint
+//!
+//! `VMLogic::host_functions` is called on every WASM→host callback
+//! via the `imports!` macro at `logic/imports.rs`. A typical
+//! `__calimero_sync_next` merge-apply makes 2k-10k host callbacks
+//! (issue #2208), so anything inside that function runs at those
+//! rates. A per-callback `tracing::debug!` — even at a level that
+//! gets filtered in production — costs a level check per callback,
+//! and when tracing is enabled (e2e / fuzzy-load-test / local
+//! debugging) the format-and-dispatch becomes a measurable fraction
+//! of merge-apply latency (see PR #2207).
+//!
+//! **Do not add tracing macros inside `VMLogic::host_functions` or
+//! any function it calls per callback.** A regression test in this
+//! file (`hot_path_macro_guard`) source-scans the region around
+//! `VMLogic::host_functions` and fails the build if any `tracing`
+//! macro (`debug!`, `trace!`, `info!`, `warn!`, `error!`, `span!`,
+//! `event!`) appears inside. Use explicit counters or eager
+//! instrumentation *outside* the hot path instead.
 #![allow(single_use_lifetimes, unused_lifetimes, reason = "False positive")]
 #![allow(clippy::mem_forget, reason = "Safe for now")]
 
@@ -325,18 +344,11 @@ impl<'a> VMLogic<'a> {
     /// # Arguments
     ///
     /// * `store` - A mutable view of the Wasmer store.
+    // CALIMERO-HOT-PATH-GUARD-BEGIN
+    // See module-level doc: no tracing macros inside this function.
     pub fn host_functions(&'a mut self, store: wasmer::StoreMut<'a>) -> VMHostFunctions<'a> {
         // TODO: review the `clone()` and figure out if the function should be a one-time call only.
         let memory = self.memory.clone().expect("VM Memory not initialized");
-
-        // NOTE: no debug log here. `host_functions` is called once per
-        // WASM→host callback — many thousands of times per WASM run —
-        // and a per-callback `debug!` spammed ~10k events in a single
-        // 139ms `__calimero_sync_next` invocation observed in PR
-        // #2206's e2e artifacts (issue #2199). The format-and-dispatch
-        // cost when debug logging is enabled became a meaningful
-        // fraction of that 139ms. The line had no context fields, so
-        // no observability value was lost by removing it.
 
         VMHostFunctionsBuilder {
             logic: self,
@@ -346,6 +358,7 @@ impl<'a> VMLogic<'a> {
         }
         .build()
     }
+    // CALIMERO-HOT-PATH-GUARD-END
 }
 
 /// Represents the final outcome of a VM execution.
@@ -1176,5 +1189,59 @@ mod tests {
 
         let edge_result = host.read_guest_memory_slice(&edge_buffer).unwrap();
         assert_eq!(edge_result, edge_data);
+    }
+
+    /// Regression guard for PR #2207 / issue #2208.
+    ///
+    /// Source-scans the region around `VMLogic::host_functions` and
+    /// fails if any tracing macro appears inside. `host_functions`
+    /// sits on the per-callback WASM→host hot path (2k-10k calls per
+    /// merge-apply); a per-call tracing event — even one filtered at
+    /// the subscriber level — adds up to ~50ms per
+    /// `__calimero_sync_next` in debug-logging environments (measured
+    /// in PR #2206's e2e artifacts). Failing the build on
+    /// reintroduction is the cheap preventive check; clippy's
+    /// `disallowed_macros` can't be scoped to one function, so we
+    /// source-scan instead.
+    ///
+    /// The marker strings below (`CALIMERO-HOT-PATH-GUARD-BEGIN` /
+    /// `CALIMERO-HOT-PATH-GUARD-END`) are capitalised and
+    /// hyphen-formed specifically so they won't be accidentally
+    /// quoted in documentation prose, which would cause
+    /// `src.find(...)` to match the wrong occurrence. Keep them that
+    /// way.
+    #[test]
+    fn hot_path_macro_guard() {
+        const BEGIN: &str = "CALIMERO-\
+                             HOT-PATH-GUARD-\
+                             BEGIN";
+        const END: &str = "CALIMERO-\
+                           HOT-PATH-GUARD-\
+                           END";
+
+        let src = include_str!("logic.rs");
+        let start = src
+            .find(BEGIN)
+            .expect("hot-path guard BEGIN marker must exist — see module doc");
+        let end = src
+            .find(END)
+            .expect("hot-path guard END marker must exist — see module doc");
+        assert!(end > start, "guard END must appear after guard BEGIN");
+        let body = &src[start..end];
+
+        for forbidden in [
+            "debug!", "trace!", "info!", "warn!", "error!", "span!", "event!",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "\n\n  `{forbidden}` detected inside the hot-path guard region in \
+                 `crates/runtime/src/logic.rs`. `VMLogic::host_functions` runs per \
+                 WASM→host callback (2k-10k per merge-apply — issue #2208). A \
+                 per-call tracing event is ~1-10us at debug level and became a \
+                 ~50ms chunk of a 139ms outlier in PR #2206's e2e artifacts — see \
+                 PR #2207 for the fix. Use explicit counters or eager \
+                 instrumentation outside the hot path instead.\n"
+            );
+        }
     }
 }
