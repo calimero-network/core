@@ -30,6 +30,7 @@ rand.workspace = true
 
 [dev-dependencies]
 claims.workspace = true
+criterion.workspace = true
 hex.workspace = true
 serial_test.workspace = true
 velcro.workspace = true
@@ -39,3 +40,7 @@ calimero-sdk.workspace = true
 [features]
 default = []
 testing = []  # Exposes test utilities for dependent crates
+
+[[bench]]
+name = "merkle_rehash"
+harness = false
