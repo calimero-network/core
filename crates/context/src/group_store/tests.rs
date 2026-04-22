@@ -2696,7 +2696,7 @@ fn recursive_remove_nonexistent_member_returns_empty() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn governance_group_nested_and_unnested_via_signed_ops() {
+fn governance_group_reparented_via_signed_op() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -2711,59 +2711,70 @@ fn governance_group_nested_and_unnested_via_signed_ops() {
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    let child_id = [0xA1u8; 32];
-    let child_gid = ContextGroupId::from(child_id);
+    let mid_id = [0xA1u8; 32];
+    let mid_gid = ContextGroupId::from(mid_id);
+    let new_parent_id = [0xA2u8; 32];
+    let new_parent_gid = ContextGroupId::from(new_parent_id);
+    let leaf_id = [0xA3u8; 32];
+    let leaf_gid = ContextGroupId::from(leaf_id);
 
     // Bootstrap namespace: meta + admin + namespace identity
     save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
     add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
     store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
 
-    // Create child group meta (normally done by GroupCreated op, do manually)
-    save_group_meta(&store, &child_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &child_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-
     let gov = NamespaceGovernance::new(&store, ns_id);
 
-    // Sign and apply GroupNested op
-    let nest_op = SignedNamespaceOp::sign(
+    // Create three subgroups via GroupCreated ops (atomic create+nest):
+    // namespace → mid, namespace → new_parent, mid → leaf.
+    for (i, (gid, parent)) in [(mid_id, ns_id), (new_parent_id, ns_id), (leaf_id, mid_id)]
+        .iter()
+        .enumerate()
+    {
+        let op = SignedNamespaceOp::sign(
+            &admin_sk,
+            ns_id,
+            vec![],
+            [0u8; 32],
+            (i + 1) as u64,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                group_id: *gid,
+                parent_id: *parent,
+            }),
+        )
+        .expect("sign create op");
+        gov.apply_signed_op(&op).expect("apply create op");
+    }
+
+    assert_eq!(get_parent_group(&store, &leaf_gid).unwrap(), Some(mid_gid));
+
+    // Reparent leaf from mid to new_parent.
+    let reparent_op = SignedNamespaceOp::sign(
         &admin_sk,
         ns_id,
         vec![],
         [0u8; 32],
-        1,
-        NamespaceOp::Root(RootOp::GroupNested {
-            parent_group_id: ns_id,
-            child_group_id: child_id,
+        4,
+        NamespaceOp::Root(RootOp::GroupReparented {
+            child_group_id: leaf_id,
+            new_parent_id,
         }),
     )
-    .expect("sign nest op");
+    .expect("sign reparent op");
+    gov.apply_signed_op(&reparent_op)
+        .expect("apply reparent op");
 
-    gov.apply_signed_op(&nest_op).expect("apply nest op");
-
-    // Verify child is nested
-    let children = list_child_groups(&store, &ns_gid).unwrap();
-    assert_eq!(children, vec![child_gid], "child should be nested");
-
-    // Sign and apply GroupUnnested op
-    let unnest_op = SignedNamespaceOp::sign(
-        &admin_sk,
-        ns_id,
-        vec![],
-        [0u8; 32],
-        2,
-        NamespaceOp::Root(RootOp::GroupUnnested {
-            parent_group_id: ns_id,
-            child_group_id: child_id,
-        }),
-    )
-    .expect("sign unnest op");
-
-    gov.apply_signed_op(&unnest_op).expect("apply unnest op");
-
-    // Verify child is unnested
-    let children_after = list_child_groups(&store, &ns_gid).unwrap();
-    assert!(children_after.is_empty(), "child should be unnested");
+    assert_eq!(
+        get_parent_group(&store, &leaf_gid).unwrap(),
+        Some(new_parent_gid)
+    );
+    let mid_children = list_child_groups(&store, &mid_gid).unwrap();
+    assert!(!mid_children.contains(&leaf_gid), "leaf detached from mid");
+    let new_children = list_child_groups(&store, &new_parent_gid).unwrap();
+    assert!(
+        new_children.contains(&leaf_gid),
+        "leaf attached to new_parent"
+    );
 }
 
 #[test]
@@ -2800,6 +2811,7 @@ fn governance_rejects_non_admin_signer() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: [0xBB; 32],
+            parent_id: ns_id,
         }),
     )
     .expect("sign op");
@@ -2840,6 +2852,7 @@ fn governance_group_created_is_idempotent() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: new_group_id,
+            parent_id: ns_id,
         }),
     )
     .expect("sign op1");
@@ -2856,6 +2869,7 @@ fn governance_group_created_is_idempotent() {
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: new_group_id,
+            parent_id: ns_id,
         }),
     )
     .expect("sign op2");
@@ -2863,6 +2877,199 @@ fn governance_group_created_is_idempotent() {
     // Should not error — idempotent
     gov.apply_signed_op(&op2)
         .expect("duplicate GroupCreated should be idempotent");
+}
+
+#[test]
+fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
+    // Regression test for Cursor Bugbot finding on PR #2200:
+    // The create_group handler pre-populates GroupMeta BEFORE publishing
+    // the GroupCreated op. A naive idempotency check that returns early on
+    // "meta exists" would skip GroupParentRef/GroupChildIndex writes on the
+    // originating node — leaving it with no parent edge while remote peers
+    // correctly populate the edges. This test simulates the originator flow
+    // and asserts the parent edge IS written even when meta pre-exists.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let new_group_id = [0xCCu8; 32];
+    let new_gid = ContextGroupId::from(new_group_id);
+
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Simulate the create_group HANDLER pre-populating meta before publishing:
+    // this is the originator's flow.
+    save_group_meta(&store, &new_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+
+    // Now apply the GroupCreated op — idempotency must NOT skip the edges.
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: new_group_id,
+            parent_id: ns_id,
+        }),
+    )
+    .expect("sign op");
+    gov.apply_signed_op(&op)
+        .expect("apply GroupCreated on originator");
+
+    // Parent edge must exist (the bug was that it wouldn't).
+    assert_eq!(
+        get_parent_group(&store, &new_gid).unwrap(),
+        Some(ns_gid),
+        "originator must have parent edge after GroupCreated even though meta was pre-populated"
+    );
+    // Child index on namespace must include the new group.
+    let children = list_child_groups(&store, &ns_gid).unwrap();
+    assert!(
+        children.contains(&new_gid),
+        "namespace's child index must include new group"
+    );
+}
+
+#[test]
+fn execute_group_created_rejects_self_parent() {
+    // Regression test for the E2E regression where create_group.rs defaulted
+    // parent_id to group_id for namespace-root creation, producing a
+    // self-parent edge that made resolve_namespace cycle. The op handler
+    // now rejects self-parent explicitly; the create_group handler skips
+    // emitting GroupCreated entirely for root creation.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Attempt to emit GroupCreated with group_id == parent_id (the bug).
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: ns_id,
+            parent_id: ns_id,
+        }),
+    )
+    .expect("sign op");
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let err = gov.apply_signed_op(&op).unwrap_err();
+    assert!(
+        format!("{err}").contains("self-parent"),
+        "expected self-parent rejection, got: {err}"
+    );
+}
+
+#[test]
+fn execute_group_deleted_subset_check_allows_partial_retry() {
+    // Regression test for meroreviewer bugbot finding #3124131096 on PR #2200:
+    // If a previous apply of GroupDeleted crashes mid-cascade, the local
+    // subtree is a partial-delete state — smaller than the payload. An
+    // exact-equality determinism check would permanently reject the retry,
+    // stalling the namespace DAG. The subset check lets the retry resume.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Build: namespace → A → B (two-level subtree).
+    let a_id = [0xAAu8; 32];
+    let b_id = [0xBBu8; 32];
+    let a_gid = ContextGroupId::from(a_id);
+    let b_gid = ContextGroupId::from(b_id);
+    save_group_meta(&store, &a_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    save_group_meta(&store, &b_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    nest_group(&store, &ns_gid, &a_gid).unwrap();
+    nest_group(&store, &a_gid, &b_gid).unwrap();
+
+    // Pre-compute the ORIGINAL payload (the "full" cascade).
+    let original_payload = collect_subtree_for_cascade(&store, &a_gid).unwrap();
+    let cascade_group_ids: Vec<[u8; 32]> = original_payload
+        .descendant_groups
+        .iter()
+        .map(|g| g.to_bytes())
+        .collect();
+    assert_eq!(cascade_group_ids.len(), 1, "B is the only descendant of A");
+
+    // Simulate a partial-delete crash by deleting B's meta + parent edge
+    // (i.e., B is "already gone" from a hypothetical first apply attempt).
+    delete_group_meta(&store, &b_gid).unwrap();
+    {
+        use calimero_store::key::{GroupChildIndex, GroupParentRef};
+        let mut h = store.handle();
+        h.delete(&GroupParentRef::new(b_id)).unwrap();
+        h.delete(&GroupChildIndex::new(a_id, b_id)).unwrap();
+    }
+
+    // Now the retry: cascade op has payload [B], but local subtree of A is
+    // empty (B already gone). Subset check: local {} ⊆ payload {B} ✓ → apply
+    // proceeds. Exact-match check would have rejected here — that's the bug.
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupDeleted {
+            root_group_id: a_id,
+            cascade_group_ids,
+            cascade_context_ids: vec![],
+        }),
+    )
+    .expect("sign op");
+    gov.apply_signed_op(&op)
+        .expect("retry after partial-delete should succeed — not stall the DAG");
+
+    // A must now be gone (retry completed the deletion).
+    assert!(
+        load_group_meta(&store, &a_gid).unwrap().is_none(),
+        "cascade retry must complete the root deletion"
+    );
 }
 
 // Helper: create a GroupMetaValue with a specific admin
@@ -2876,6 +3083,200 @@ fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
         migration: None,
         auto_join: true,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Strict-tree refactor — orphan state is structurally impossible.
+// See spec: docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
+// ---------------------------------------------------------------------------
+
+#[test]
+fn is_descendant_of_direct_child() {
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD0; 32]);
+    let child = ContextGroupId::from([0xD1; 32]);
+    save_group_meta(&store, &parent, &test_meta()).unwrap();
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    nest_group(&store, &parent, &child).unwrap();
+
+    assert!(is_descendant_of(&store, &child, &parent).unwrap());
+    assert!(!is_descendant_of(&store, &parent, &child).unwrap());
+}
+
+#[test]
+fn is_descendant_of_grandchild() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD0; 32]);
+    let mid = ContextGroupId::from([0xD1; 32]);
+    let leaf = ContextGroupId::from([0xD2; 32]);
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    save_group_meta(&store, &mid, &test_meta()).unwrap();
+    save_group_meta(&store, &leaf, &test_meta()).unwrap();
+    nest_group(&store, &root, &mid).unwrap();
+    nest_group(&store, &mid, &leaf).unwrap();
+
+    assert!(is_descendant_of(&store, &leaf, &root).unwrap());
+    assert!(is_descendant_of(&store, &leaf, &mid).unwrap());
+    assert!(!is_descendant_of(&store, &root, &leaf).unwrap());
+}
+
+#[test]
+fn is_descendant_of_unrelated() {
+    let store = test_store();
+    let a = ContextGroupId::from([0xD0; 32]);
+    let b = ContextGroupId::from([0xD1; 32]);
+    assert!(!is_descendant_of(&store, &a, &b).unwrap());
+    assert!(!is_descendant_of(&store, &b, &a).unwrap());
+}
+
+#[test]
+fn is_descendant_of_self_is_false() {
+    let store = test_store();
+    let a = ContextGroupId::from([0xD0; 32]);
+    assert!(!is_descendant_of(&store, &a, &a).unwrap());
+}
+
+#[test]
+fn reparent_group_swaps_parent_edge() {
+    let store = test_store();
+    let old_parent = ContextGroupId::from([0xE0; 32]);
+    let new_parent = ContextGroupId::from([0xE1; 32]);
+    let child = ContextGroupId::from([0xE2; 32]);
+    save_group_meta(&store, &old_parent, &test_meta()).unwrap();
+    save_group_meta(&store, &new_parent, &test_meta()).unwrap();
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    nest_group(&store, &old_parent, &child).unwrap();
+
+    reparent_group(&store, &child, &new_parent).unwrap();
+
+    assert_eq!(get_parent_group(&store, &child).unwrap(), Some(new_parent));
+    let old_children = list_child_groups(&store, &old_parent).unwrap();
+    assert!(!old_children.contains(&child));
+    let new_children = list_child_groups(&store, &new_parent).unwrap();
+    assert!(new_children.contains(&child));
+}
+
+#[test]
+fn reparent_group_idempotent_on_same_parent() {
+    let store = test_store();
+    let parent = ContextGroupId::from([0xE0; 32]);
+    let child = ContextGroupId::from([0xE2; 32]);
+    save_group_meta(&store, &parent, &test_meta()).unwrap();
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    nest_group(&store, &parent, &child).unwrap();
+
+    reparent_group(&store, &child, &parent).unwrap();
+    assert_eq!(get_parent_group(&store, &child).unwrap(), Some(parent));
+    assert_eq!(list_child_groups(&store, &parent).unwrap().len(), 1);
+}
+
+#[test]
+fn reparent_group_rejects_cycle() {
+    let store = test_store();
+    let a = ContextGroupId::from([0xE0; 32]);
+    let b = ContextGroupId::from([0xE1; 32]);
+    save_group_meta(&store, &a, &test_meta()).unwrap();
+    save_group_meta(&store, &b, &test_meta()).unwrap();
+    nest_group(&store, &a, &b).unwrap();
+
+    let err = reparent_group(&store, &a, &b).unwrap_err();
+    assert!(
+        format!("{err}").contains("cycle") || format!("{err}").contains("namespace root"),
+        "expected cycle or root error, got: {err}"
+    );
+}
+
+#[test]
+fn reparent_group_rejects_root() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xE0; 32]);
+    let other = ContextGroupId::from([0xE1; 32]);
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    save_group_meta(&store, &other, &test_meta()).unwrap();
+
+    let err = reparent_group(&store, &root, &other).unwrap_err();
+    assert!(
+        format!("{err}").contains("namespace root") || format!("{err}").contains("no parent"),
+        "expected root rejection, got: {err}"
+    );
+}
+
+#[test]
+fn reparent_group_rejects_nonexistent_new_parent() {
+    let store = test_store();
+    let parent = ContextGroupId::from([0xE0; 32]);
+    let child = ContextGroupId::from([0xE2; 32]);
+    let phantom = ContextGroupId::from([0xFF; 32]);
+    save_group_meta(&store, &parent, &test_meta()).unwrap();
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    nest_group(&store, &parent, &child).unwrap();
+
+    let err = reparent_group(&store, &child, &phantom).unwrap_err();
+    assert!(
+        format!("{err}").contains("not found") || format!("{err}").contains("does not exist"),
+        "expected new-parent-not-found, got: {err}"
+    );
+}
+
+#[test]
+fn collect_subtree_for_cascade_empty_subtree() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xF0; 32]);
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+
+    let payload = collect_subtree_for_cascade(&store, &root).unwrap();
+    assert!(payload.descendant_groups.is_empty());
+    assert!(payload.contexts.is_empty());
+}
+
+#[test]
+fn collect_subtree_for_cascade_two_level_tree() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xF0; 32]);
+    let mid = ContextGroupId::from([0xF1; 32]);
+    let leaf = ContextGroupId::from([0xF2; 32]);
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    save_group_meta(&store, &mid, &test_meta()).unwrap();
+    save_group_meta(&store, &leaf, &test_meta()).unwrap();
+    nest_group(&store, &root, &mid).unwrap();
+    nest_group(&store, &mid, &leaf).unwrap();
+
+    let payload = collect_subtree_for_cascade(&store, &root).unwrap();
+    assert_eq!(payload.descendant_groups.len(), 2);
+    let leaf_pos = payload
+        .descendant_groups
+        .iter()
+        .position(|g| g == &leaf)
+        .unwrap();
+    let mid_pos = payload
+        .descendant_groups
+        .iter()
+        .position(|g| g == &mid)
+        .unwrap();
+    assert!(
+        leaf_pos < mid_pos,
+        "expected children-first; leaf={leaf_pos} mid={mid_pos}"
+    );
+}
+
+#[test]
+fn collect_subtree_for_cascade_includes_contexts_from_all_groups() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xF0; 32]);
+    let child = ContextGroupId::from([0xF1; 32]);
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    nest_group(&store, &root, &child).unwrap();
+
+    let ctx_root = ContextId::from([0x10; 32]);
+    let ctx_child = ContextId::from([0x11; 32]);
+    register_context_in_group(&store, &root, &ctx_root).unwrap();
+    register_context_in_group(&store, &child, &ctx_child).unwrap();
+
+    let payload = collect_subtree_for_cascade(&store, &root).unwrap();
+    assert!(payload.contexts.contains(&ctx_root));
+    assert!(payload.contexts.contains(&ctx_child));
+    assert_eq!(payload.contexts.len(), 2);
 }
 
 // ---------------------------------------------------------------------------

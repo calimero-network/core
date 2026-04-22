@@ -1919,41 +1919,40 @@ pub struct CreateRecursiveInvitationApiResponse {
     pub data: CreateRecursiveInvitationApiResponseData,
 }
 
+/// Atomically move a group to a new parent. Replaces the old
+/// nest/unnest pair — orphan state is no longer reachable.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NestGroupApiRequest {
-    pub child_group_id: String,
+pub struct ReparentGroupApiRequest {
+    pub new_parent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
 }
 
-impl Validate for NestGroupApiRequest {
+impl Validate for ReparentGroupApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
+        let mut errors = Vec::new();
+        if self.new_parent_id.len() != 64 {
+            errors.push(ValidationError::InvalidLength {
+                field: "new_parent_id",
+                expected: 64,
+                actual: self.new_parent_id.len(),
+            });
+        } else if hex::decode(&self.new_parent_id).is_err() {
+            errors.push(ValidationError::InvalidHexEncoding {
+                field: "new_parent_id",
+                reason: "not valid hex".to_owned(),
+            });
+        }
+        errors
     }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NestGroupApiResponse {}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UnnestGroupApiRequest {
-    pub child_group_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
+pub struct ReparentGroupApiResponse {
+    pub reparented: bool,
 }
-
-impl Validate for UnnestGroupApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UnnestGroupApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

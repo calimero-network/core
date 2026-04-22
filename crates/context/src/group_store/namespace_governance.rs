@@ -12,14 +12,13 @@ use crate::metrics::record_namespace_retry_event;
 use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::{
-    add_group_member, apply_group_op_mutations, count_group_contexts, decrypt_group_op,
-    get_local_gov_nonce, get_namespace_identity_record, is_group_admin,
-    load_current_group_key_record, load_group_key_by_id, load_group_meta,
+    add_group_member, apply_group_op_mutations, decrypt_group_op, get_local_gov_nonce,
+    get_namespace_identity_record, is_group_admin, load_current_group_key_record,
+    load_group_key_by_id, load_group_meta,
     namespace_dag::{NamespaceDagService, NamespaceHead},
     namespace_membership::NamespaceMembershipService,
     namespace_retry::NamespaceRetryService,
-    nest_group, save_group_meta, set_local_gov_nonce, store_group_key, unnest_group,
-    unwrap_group_key,
+    save_group_meta, set_local_gov_nonce, store_group_key, unwrap_group_key,
 };
 
 /// Side effect returned by namespace-op application when an existing
@@ -448,18 +447,26 @@ impl<'a> NamespaceGovernance<'a> {
 
     fn apply_root_op(&self, op: &SignedNamespaceOp, root: &RootOp) -> EyreResult<()> {
         match root {
-            RootOp::GroupCreated { group_id } => self.execute_group_created(op, *group_id),
-            RootOp::GroupDeleted { group_id } => self.execute_group_deleted(op, *group_id),
+            RootOp::GroupCreated {
+                group_id,
+                parent_id,
+            } => self.execute_group_created(op, *group_id, *parent_id),
+            RootOp::GroupDeleted {
+                root_group_id,
+                cascade_group_ids,
+                cascade_context_ids,
+            } => self.execute_group_deleted(
+                op,
+                *root_group_id,
+                cascade_group_ids,
+                cascade_context_ids,
+            ),
+            RootOp::GroupReparented {
+                child_group_id,
+                new_parent_id,
+            } => self.execute_group_reparented(op, *child_group_id, *new_parent_id),
             RootOp::AdminChanged { new_admin } => self.execute_admin_changed(op, *new_admin),
             RootOp::PolicyUpdated { .. } => self.execute_policy_updated(op),
-            RootOp::GroupNested {
-                parent_group_id,
-                child_group_id,
-            } => self.execute_group_nested(op, *parent_group_id, *child_group_id),
-            RootOp::GroupUnnested {
-                parent_group_id,
-                child_group_id,
-            } => self.execute_group_unnested(op, *parent_group_id, *child_group_id),
             RootOp::MemberJoined {
                 member,
                 signed_invitation,
@@ -468,45 +475,214 @@ impl<'a> NamespaceGovernance<'a> {
         }
     }
 
-    fn execute_group_created(&self, op: &SignedNamespaceOp, group_id: [u8; 32]) -> EyreResult<()> {
+    fn execute_group_created(
+        &self,
+        op: &SignedNamespaceOp,
+        group_id: [u8; 32],
+        parent_id: [u8; 32],
+    ) -> EyreResult<()> {
         self.require_namespace_admin(&op.signer)?;
         let gid = ContextGroupId::from(group_id);
-        if load_group_meta(self.store, &gid)?.is_some() {
-            tracing::debug!(
-                group_id = %hex::encode(group_id),
-                "group already exists, ignoring GroupCreated"
+        let parent_gid = ContextGroupId::from(parent_id);
+
+        // Namespace roots are created via a different path (local meta +
+        // identity writes, no GroupCreated op); GroupCreated itself is only
+        // for subgroups. Reject self-parent to make that invariant explicit
+        // — a self-parent edge would cause resolve_namespace to cycle.
+        if group_id == parent_id {
+            eyre::bail!(
+                "GroupCreated rejected: self-parent edge (group_id == parent_id). \
+                 Namespace roots must not emit GroupCreated — their existence is \
+                 recorded by the namespace-identity setup path."
             );
-            return Ok(());
         }
 
-        // Inherit application ID from the namespace root group so that
-        // subgroups can create contexts with the correct application.
-        let ns_gid = ContextGroupId::from(op.namespace_id);
-        let parent_app_id = load_group_meta(self.store, &ns_gid)?
-            .map(|m| m.target_application_id)
-            .unwrap_or_else(|| calimero_primitives::application::ApplicationId::from([0u8; 32]));
+        // Verify parent exists in this namespace (root or previously-created subgroup).
+        let parent_meta = load_group_meta(self.store, &parent_gid)?.ok_or_else(|| {
+            eyre::eyre!("GroupCreated rejected: parent_id '{parent_gid:?}' not found in namespace")
+        })?;
 
-        let meta = calimero_store::key::GroupMetaValue {
-            admin_identity: op.signer,
-            target_application_id: parent_app_id,
-            app_key: [0u8; 32],
-            upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
-            migration: None,
-            created_at: 0,
-            auto_join: false,
-        };
-        save_group_meta(self.store, &gid, &meta)?;
+        // The originating node's `create_group` handler pre-populates
+        // `GroupMeta` (and related state) BEFORE publishing this op, so a
+        // naive "if meta exists, return early" idempotency check would
+        // short-circuit on the originator's local apply, leaving the group
+        // without `GroupParentRef` / `GroupChildIndex` edges. Remote peers
+        // applying a fresh op would write edges correctly, causing silent
+        // divergence between originator and peers (resolve_namespace,
+        // list_child_groups, and reparent would all fail on the originator).
+        //
+        // Fix: only skip the meta write if it already exists, but ALWAYS
+        // ensure parent edge + child index + admin membership are present.
+        // These are idempotent puts — a second apply is a no-op with
+        // identical effect, so true replay is still safe.
+        let meta_existed = load_group_meta(self.store, &gid)?.is_some();
+        if !meta_existed {
+            // Inherit application ID from the immediate parent (matches
+            // mero-drive folder mental model: a subfolder runs the same app
+            // as its parent).
+            let meta = calimero_store::key::GroupMetaValue {
+                admin_identity: op.signer,
+                target_application_id: parent_meta.target_application_id,
+                app_key: [0u8; 32],
+                upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
+                migration: None,
+                created_at: 0,
+                auto_join: false,
+            };
+            save_group_meta(self.store, &gid, &meta)?;
+        } else {
+            tracing::debug!(
+                group_id = %hex::encode(group_id),
+                "GroupCreated: meta already present (pre-populated by handler or replay); \
+                 skipping meta write but still ensuring parent edge + admin membership"
+            );
+        }
+
+        // Ordered writes — NOT a single RocksDB atomic batch. Each call
+        // below opens its own store handle (save_group_meta above, this put
+        // pair, add_group_member below). A crash between any two steps leaves
+        // partial state. Recovery path: re-applying the same GroupCreated op
+        // is idempotent (meta-exists check skips the meta write; edge writes
+        // are idempotent puts; add_group_member is an upsert) — so retries
+        // complete whatever was missing. True single-batch atomicity would
+        // require threading one store handle through this flow, which
+        // matches a codebase-wide architectural decision deferred to a
+        // follow-up (see the cascade delete atomicity discussion).
+        {
+            use calimero_store::key::{GroupChildIndex, GroupParentRef};
+            let mut handle = self.store.handle();
+            handle.put(&GroupParentRef::new(group_id), &parent_id)?;
+            handle.put(&GroupChildIndex::new(parent_id, group_id), &())?;
+        }
         add_group_member(self.store, &gid, &op.signer, GroupMemberRole::Admin)?;
+
+        notify_op_event(OpEvent::SubgroupCreated {
+            namespace_id: self.namespace_id,
+            parent_group_id: parent_id,
+            child_group_id: group_id,
+        });
         Ok(())
     }
 
-    fn execute_group_deleted(&self, op: &SignedNamespaceOp, group_id: [u8; 32]) -> EyreResult<()> {
+    fn execute_group_reparented(
+        &self,
+        op: &SignedNamespaceOp,
+        child_group_id: [u8; 32],
+        new_parent_id: [u8; 32],
+    ) -> EyreResult<()> {
         self.require_namespace_admin(&op.signer)?;
-        let gid = ContextGroupId::from(group_id);
-        if count_group_contexts(self.store, &gid)? > 0 {
-            bail!("cannot delete group: contexts still registered");
+        let child = ContextGroupId::from(child_group_id);
+        let new_parent = ContextGroupId::from(new_parent_id);
+        match super::reparent_group(self.store, &child, &new_parent)? {
+            super::ReparentOutcome::Reparented { old_parent } => {
+                notify_op_event(OpEvent::SubgroupReparented {
+                    namespace_id: self.namespace_id,
+                    old_parent_group_id: old_parent.to_bytes(),
+                    new_parent_group_id: new_parent_id,
+                    child_group_id,
+                });
+            }
+            // Idempotent no-op (new_parent == old_parent). Don't fire an
+            // event — downstream subscribers would see a "reparent" with
+            // identical old/new parents, falsely implying a structural
+            // change occurred.
+            super::ReparentOutcome::Unchanged => {}
         }
-        super::delete_group_meta(self.store, &gid)?;
+        Ok(())
+    }
+
+    fn execute_group_deleted(
+        &self,
+        op: &SignedNamespaceOp,
+        root_group_id: [u8; 32],
+        cascade_group_ids: &[[u8; 32]],
+        cascade_context_ids: &[[u8; 32]],
+    ) -> EyreResult<()> {
+        self.require_namespace_admin(&op.signer)?;
+
+        let root_gid = ContextGroupId::from(root_group_id);
+        if root_group_id == self.namespace_id {
+            eyre::bail!(
+                "cannot delete the namespace root '{root_gid:?}' (use delete_namespace instead)"
+            );
+        }
+
+        // Determinism check: every surviving element of the local subtree MUST
+        // be in the op's payload. We use subset rather than exact equality
+        // because a previous apply attempt may have crashed mid-cascade,
+        // leaving the local subtree as a partial-delete state. In that case:
+        // - every still-present descendant is in payload (subset holds) ✓
+        // - exact match would fail because the local count is smaller, making
+        //   the op permanently un-applyable and stalling the namespace DAG
+        //
+        // Subset still catches true divergence: if the local subtree contains
+        // a group NOT in payload, the check fails (correct rejection).
+        // Contexts are always set-compared (order-insensitive) with the same
+        // subset rule.
+        let local_payload = super::collect_subtree_for_cascade(self.store, &root_gid)?;
+        let local_groups: std::collections::BTreeSet<[u8; 32]> = local_payload
+            .descendant_groups
+            .iter()
+            .map(|g| g.to_bytes())
+            .collect();
+        let local_contexts: std::collections::BTreeSet<[u8; 32]> =
+            local_payload.contexts.iter().map(|c| **c).collect();
+        let payload_groups: std::collections::BTreeSet<[u8; 32]> =
+            cascade_group_ids.iter().copied().collect();
+        let payload_contexts: std::collections::BTreeSet<[u8; 32]> =
+            cascade_context_ids.iter().copied().collect();
+        if !local_groups.is_subset(&payload_groups) {
+            let extra: Vec<_> = local_groups.difference(&payload_groups).collect();
+            eyre::bail!(
+                "GroupDeleted cascade divergence: local subtree has groups not in payload: {extra:?}"
+            );
+        }
+        if !local_contexts.is_subset(&payload_contexts) {
+            let extra: Vec<_> = local_contexts.difference(&payload_contexts).collect();
+            eyre::bail!(
+                "GroupDeleted cascade divergence: local subtree has contexts not in payload: {extra:?}"
+            );
+        }
+
+        // Children-first deletion: descendants then root. For each group:
+        // 1. Delete contexts registered on this group (cascade-specific).
+        // 2. Call delete_group_local_rows for the comprehensive per-group
+        //    cleanup (members, signing keys, capabilities, member aliases,
+        //    default capabilities/visibility, group alias, context migrations,
+        //    upgrade record, op-log + head, meta, governance nonces, and
+        //    member-context joins) — single source of truth shared with the
+        //    non-cascade GroupOp::GroupDelete path.
+        // 3. Remove the parent edge + child-index entry on the parent.
+        let all_groups_iter = cascade_group_ids
+            .iter()
+            .copied()
+            .chain(std::iter::once(root_group_id));
+        for gid_bytes in all_groups_iter {
+            let gid = ContextGroupId::from(gid_bytes);
+            for ctx in super::enumerate_group_contexts(self.store, &gid, 0, usize::MAX)? {
+                super::unregister_context_from_group(self.store, &gid, &ctx)?;
+            }
+            // Capture parent before delete_group_local_rows runs (it deletes
+            // GroupMeta but leaves parent edges; we still need them to clean
+            // up the child-index entry on the parent below).
+            let parent_for_cleanup = super::get_parent_group(self.store, &gid)?;
+            super::delete_group_local_rows(self.store, &gid)?;
+            if let Some(parent) = parent_for_cleanup {
+                let mut handle = self.store.handle();
+                handle.delete(&calimero_store::key::GroupParentRef::new(gid_bytes))?;
+                handle.delete(&calimero_store::key::GroupChildIndex::new(
+                    parent.to_bytes(),
+                    gid_bytes,
+                ))?;
+            }
+        }
+
+        tracing::info!(
+            ?root_gid,
+            deleted_groups = cascade_group_ids.len() + 1,
+            deleted_contexts = cascade_context_ids.len(),
+            "cascade-deleted group subtree"
+        );
         Ok(())
     }
 
@@ -527,48 +703,6 @@ impl<'a> NamespaceGovernance<'a> {
     fn execute_policy_updated(&self, op: &SignedNamespaceOp) -> EyreResult<()> {
         self.require_namespace_admin(&op.signer)?;
         tracing::debug!("PolicyUpdated: stored in DAG log, no additional state mutation");
-        Ok(())
-    }
-
-    fn execute_group_nested(
-        &self,
-        op: &SignedNamespaceOp,
-        parent_group_id: [u8; 32],
-        child_group_id: [u8; 32],
-    ) -> EyreResult<()> {
-        self.require_namespace_admin(&op.signer)?;
-        let parent = ContextGroupId::from(parent_group_id);
-        let child = ContextGroupId::from(child_group_id);
-        if load_group_meta(self.store, &parent)?.is_none() {
-            bail!("parent group not found for nesting");
-        }
-        if load_group_meta(self.store, &child)?.is_none() {
-            bail!("child group not found for nesting");
-        }
-        nest_group(self.store, &parent, &child)?;
-        notify_op_event(OpEvent::SubgroupNested {
-            namespace_id: self.namespace_id,
-            parent_group_id,
-            child_group_id,
-        });
-        Ok(())
-    }
-
-    fn execute_group_unnested(
-        &self,
-        op: &SignedNamespaceOp,
-        parent_group_id: [u8; 32],
-        child_group_id: [u8; 32],
-    ) -> EyreResult<()> {
-        self.require_namespace_admin(&op.signer)?;
-        let parent = ContextGroupId::from(parent_group_id);
-        let child = ContextGroupId::from(child_group_id);
-        unnest_group(self.store, &parent, &child)?;
-        notify_op_event(OpEvent::SubgroupUnnested {
-            namespace_id: self.namespace_id,
-            parent_group_id,
-            child_group_id,
-        });
         Ok(())
     }
 

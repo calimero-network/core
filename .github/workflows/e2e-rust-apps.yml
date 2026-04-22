@@ -157,8 +157,11 @@ jobs:
           - workflow: group-capabilities
             file: workflows/group-capabilities.yml
             app: e2e-kv-store
-          - workflow: group-nesting
-            file: workflows/group-nesting.yml
+          - workflow: group-reparent
+            file: workflows/group-reparent.yml
+            app: e2e-kv-store
+          - workflow: group-reparent-and-cascade-delete
+            file: workflows/group-reparent-and-cascade-delete.yml
             app: e2e-kv-store
           - workflow: group-multi-service
             file: workflows/group-multi-service.yml

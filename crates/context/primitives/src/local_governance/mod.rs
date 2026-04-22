@@ -182,26 +182,42 @@ pub enum NamespaceOp {
 /// Cleartext administrative operations that affect the entire namespace.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub enum RootOp {
-    /// A new group was created within this namespace.
-    GroupCreated { group_id: [u8; 32] },
-    /// A group was deleted from this namespace.
-    GroupDeleted { group_id: [u8; 32] },
+    /// A new group was created AND atomically nested under `parent_id`.
+    /// `parent_id` MUST reference a group that exists in this namespace
+    /// (the namespace root itself or a previously-created subgroup).
+    /// There is no orphan-creation path: every group is born nested.
+    GroupCreated {
+        group_id: [u8; 32],
+        parent_id: [u8; 32],
+    },
+    /// Atomically move `child_group_id` from its current parent to
+    /// `new_parent_id`. Both groups MUST exist in this namespace.
+    /// Must not create a cycle (`new_parent_id` cannot be a descendant
+    /// of `child_group_id`). `child_group_id` MUST NOT be the namespace
+    /// root. Idempotent on `new_parent_id == old_parent_id`.
+    ///
+    /// Replaces the old `GroupNested` + `GroupUnnested` two-op pattern;
+    /// orphan state is no longer expressible.
+    GroupReparented {
+        child_group_id: [u8; 32],
+        new_parent_id: [u8; 32],
+    },
+    /// Delete `root_group_id` AND its entire subtree AND all contained
+    /// contexts in one op. The signer pre-computes `cascade_group_ids`
+    /// (descendants in children-first order) and `cascade_context_ids`
+    /// (every context registered on root or any descendant). Every peer
+    /// re-enumerates locally and rejects the op if the payload disagrees
+    /// with their state — deterministic-application check that catches
+    /// silent divergence.
+    GroupDeleted {
+        root_group_id: [u8; 32],
+        cascade_group_ids: Vec<[u8; 32]>,
+        cascade_context_ids: Vec<[u8; 32]>,
+    },
     /// The namespace administrator was changed.
     AdminChanged { new_admin: PublicKey },
     /// Namespace-wide policy was updated (extensible).
     PolicyUpdated { policy_bytes: Vec<u8> },
-    /// Record that `child_group_id` is nested inside `parent_group_id`.
-    /// Purely organizational metadata — does NOT grant permission inheritance.
-    /// Both groups must already exist in this namespace.
-    GroupNested {
-        parent_group_id: [u8; 32],
-        child_group_id: [u8; 32],
-    },
-    /// Remove a nesting relationship.
-    GroupUnnested {
-        parent_group_id: [u8; 32],
-        child_group_id: [u8; 32],
-    },
     /// A member joined a group via an admin-signed invitation.
     ///
     /// **Cleartext** because the joiner doesn't hold the group key yet.

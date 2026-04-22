@@ -153,35 +153,30 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 }
 
                 let signer_sk = PrivateKey::from(sk_bytes);
-                let create_op = NamespaceOp::Root(RootOp::GroupCreated {
-                    group_id: group_id.to_bytes(),
-                });
-                if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
-                    &datastore,
-                    &node_client,
-                    namespace_id.to_bytes(),
-                    &signer_sk,
-                    create_op,
-                )
-                .await
-                {
-                    tracing::warn!(?e, "failed to publish GroupCreated on namespace DAG");
-                }
-                if let Some(ref parent_id) = parent_group_id {
-                    let nest_op = NamespaceOp::Root(RootOp::GroupNested {
-                        parent_group_id: parent_id.to_bytes(),
-                        child_group_id: group_id.to_bytes(),
+                // Strict-tree refactor: GroupCreated is now an atomic
+                // create+nest op. It ONLY applies to subgroups — the namespace
+                // root itself has no parent by definition. For root creation
+                // (parent_group_id is None), the group's existence is recorded
+                // by the pre-populated GroupMeta and the namespace identity in
+                // the store; we skip the op entirely. Peers learn of a
+                // namespace only when they're invited (MemberJoined), so there's
+                // no replication gap. See spec
+                // docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
+                if let Some(parent_id) = parent_group_id {
+                    let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+                        group_id: group_id.to_bytes(),
+                        parent_id: parent_id.to_bytes(),
                     });
                     if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
                         &datastore,
                         &node_client,
                         namespace_id.to_bytes(),
                         &signer_sk,
-                        nest_op,
+                        create_op,
                     )
                     .await
                     {
-                        tracing::warn!(?e, "failed to publish GroupNested on namespace DAG");
+                        tracing::warn!(?e, "failed to publish GroupCreated on namespace DAG");
                     }
                 }
 

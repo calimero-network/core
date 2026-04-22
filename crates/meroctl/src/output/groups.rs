@@ -5,10 +5,9 @@ use calimero_server_primitives::admin::{
     GetMemberCapabilitiesApiResponse, GroupInfoApiResponse, JoinContextApiResponse,
     JoinGroupApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
-    NamespaceApiResponse, NamespaceIdentityApiResponse, NestGroupApiResponse,
-    RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse,
-    SetDefaultCapabilitiesApiResponse, SetDefaultVisibilityApiResponse,
-    SetMemberCapabilitiesApiResponse, SyncGroupApiResponse, UnnestGroupApiResponse,
+    NamespaceApiResponse, NamespaceIdentityApiResponse, RegisterGroupSigningKeyApiResponse,
+    RemoveGroupMembersApiResponse, ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse,
+    SetDefaultVisibilityApiResponse, SetMemberCapabilitiesApiResponse, SyncGroupApiResponse,
     UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
@@ -184,20 +183,15 @@ impl Report for ListSubgroupsApiResponse {
     }
 }
 
-impl Report for NestGroupApiResponse {
+impl Report for ReparentGroupApiResponse {
     fn report(&self) {
         let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Group Nested").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully nested group"]);
-        println!("{table}");
-    }
-}
-
-impl Report for UnnestGroupApiResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Group Unnested").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully unnested group"]);
+        let _ = table.set_header(vec![Cell::new("Group Reparented").fg(Color::Green)]);
+        let _ = table.add_row(vec![if self.reparented {
+            "Successfully reparented group"
+        } else {
+            "Reparent did not change parent"
+        }]);
         println!("{table}");
     }
 }
