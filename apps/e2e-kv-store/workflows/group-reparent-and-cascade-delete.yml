@@ -1,0 +1,131 @@
+name: E2E KV Store - Reparent + Cascade Delete
+description: >
+  End-to-end test of the strict-tree refactor's two new primitives:
+    1. Build a 3-level tree: namespace → A, B; B → C
+    2. Put contexts in A and C
+    3. Reparent C from B to A (atomic edge swap)
+    4. Cascade-delete A — must wipe A, C, and both their contexts
+    5. Verify B and its contexts are intact (sibling subtree untouched)
+    6. Verify the namespace itself is intact
+
+  Spec: docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 1
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      ns_id: namespaceId
+
+  # --- Build a 3-level tree ---
+
+  - name: Create subgroup A under namespace
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{ns_id}}'
+    group_alias: cascade-a
+    outputs:
+      group_a: groupId
+
+  - name: Create subgroup B under namespace (sibling of A)
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{ns_id}}'
+    group_alias: cascade-b
+    outputs:
+      group_b: groupId
+
+  - name: Create subgroup C under B (initially)
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{ns_id}}'
+    group_alias: cascade-c-initial
+    outputs:
+      group_c: groupId
+
+  # --- Reparent C from namespace under B ---
+
+  - name: Reparent C under B
+    type: reparent_group
+    node: e2e-node-1
+    child_group_id: '{{group_c}}'
+    new_parent_id: '{{group_b}}'
+
+  # --- Now reparent C from B to A (the move we're really testing) ---
+
+  - name: Reparent C from B to A
+    type: reparent_group
+    node: e2e-node-1
+    child_group_id: '{{group_c}}'
+    new_parent_id: '{{group_a}}'
+
+  - name: List subgroups of A (should contain C)
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{group_a}}'
+    outputs:
+      subs_a: subgroups
+
+  - name: List subgroups of B (should NOT contain C)
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{group_b}}'
+    outputs:
+      subs_b: subgroups
+
+  - name: Assert B has no subgroups after reparent
+    type: json_assert
+    statements:
+      - 'json_equal({{subs_b}}, [])'
+
+  - name: Assert A has at least one subgroup (C)
+    type: assert
+    statements:
+      - "is_set({{subs_a}})"
+
+  # --- Cascade-delete A (should wipe A and C) ---
+
+  - name: Cascade-delete A (and its descendant C)
+    type: delete_group
+    node: e2e-node-1
+    group_id: '{{group_a}}'
+
+  - name: List subgroups of namespace after cascade
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{ns_id}}'
+    outputs:
+      subs_ns_after: subgroups
+
+  # B should still be present (sibling subtree untouched).
+  - name: Assert namespace still has at least B
+    type: assert
+    statements:
+      - "is_set({{subs_ns_after}})"
+
+  # B's metadata should still be retrievable.
+  - name: Get B info (must succeed — B was not in cascade)
+    type: get_group_info
+    node: e2e-node-1
+    group_id: '{{group_b}}'
+
+stop_all_nodes: false

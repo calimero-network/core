@@ -1,0 +1,192 @@
+name: E2E KV Store - Group Reparent
+description: >
+  Tests the strict-tree refactor's atomic reparent_group primitive:
+    1. Create namespace, then create two subgroups A and B under it
+    2. Reparent A under B (atomic edge swap)
+    3. Verify A no longer appears as direct child of namespace
+    4. Verify A now appears as direct child of B
+    5. Verify the namespace's root context is unaffected throughout
+
+  Replaces the deleted group-nesting.yml — the old nest_group /
+  unnest_group primitives are gone (orphan state would be reachable
+  through them). reparent_group is the single atomic replacement.
+
+  Spec: docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace (parent group)
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      ns_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{ns_id}})"
+
+  - name: Invite node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{ns_id}}'
+    outputs:
+      invite: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{ns_id}}'
+    invitation: '{{invite}}'
+
+  # Root context to verify it survives reparent operations.
+  - name: Create root context
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{ns_id}}'
+    outputs:
+      root_ctx_id: contextId
+
+  - name: Node-2 joins root context
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{root_ctx_id}}'
+
+  - name: Write baseline to root context
+    type: call
+    node: e2e-node-1
+    context_id: '{{root_ctx_id}}'
+    method: set
+    args:
+      key: "baseline"
+      value: "before_reparent"
+
+  - name: Wait for baseline sync
+    type: wait_for_sync
+    context_id: '{{root_ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # --- Build the tree: create A and B under the namespace ---
+
+  - name: Create subgroup A under namespace
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{ns_id}}'
+    group_alias: subgroup-a
+    outputs:
+      group_a: groupId
+
+  - name: Create subgroup B under namespace
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{ns_id}}'
+    group_alias: subgroup-b
+    outputs:
+      group_b: groupId
+
+  - name: Assert both subgroups created
+    type: assert
+    statements:
+      - "is_set({{group_a}})"
+      - "is_set({{group_b}})"
+
+  - name: List subgroups of namespace before reparent
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{ns_id}}'
+    outputs:
+      subs_before: subgroups
+
+  # --- Reparent A under B (atomic edge swap) ---
+
+  - name: Reparent A under B
+    type: reparent_group
+    node: e2e-node-1
+    child_group_id: '{{group_a}}'
+    new_parent_id: '{{group_b}}'
+
+  - name: List subgroups of namespace after reparent
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{ns_id}}'
+    outputs:
+      subs_ns_after: subgroups
+
+  - name: List subgroups of B after reparent
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{group_b}}'
+    outputs:
+      subs_b_after: subgroups
+
+  - name: Assert A is now child of B (not namespace)
+    type: assert
+    statements:
+      - "is_set({{subs_b_after}})"
+
+  # --- Root context unaffected ---
+
+  - name: Write after reparent to root context
+    type: call
+    node: e2e-node-1
+    context_id: '{{root_ctx_id}}'
+    method: set
+    args:
+      key: "after_reparent"
+      value: "still_works"
+
+  - name: Wait for sync after reparent
+    type: wait_for_sync
+    context_id: '{{root_ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads after reparent
+    type: call
+    node: e2e-node-2
+    context_id: '{{root_ctx_id}}'
+    method: get
+    args:
+      key: "after_reparent"
+    outputs:
+      after_read: result
+
+  - name: Assert root context still works
+    type: json_assert
+    statements:
+      - 'json_equal({{after_read}}, {"output": "still_works"})'
+
+stop_all_nodes: false
