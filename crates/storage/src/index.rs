@@ -316,19 +316,27 @@ impl<S: StorageAdaptor> Index<S> {
             Self::calculate_full_hash_for_children(child_index.own_hash, &child_index.children)?;
         Self::save_index(&child_index)?;
 
-        // Get or create the children list
-        // Collection name param is ignored - entity can only have one collection
+        // Insert into parent's children list, keeping it sorted by `ChildInfo`'s
+        // Ord (primary: created_at, tiebreaker: id). The list is always sorted
+        // by construction — binary search both finds the existing entry (to
+        // replace if present) and the correct insertion point (otherwise) in
+        // O(log K) without rebuilding a BTreeSet + Vec each call (#2238 Fix 3).
+        //
+        // Prior implementation:
+        //     let mut ordered = children_vec.drain(..).collect::<BTreeSet<_>>();
+        //     ordered.replace(new_entry);
+        //     *children_vec = ordered.into_iter().collect();
+        // Allocated a BTreeSet, inserted K entries to re-sort an already-sorted
+        // list, then re-materialized a Vec — two transient allocations and
+        // O(K log K) sort work per call. `dlmalloc::malloc` was 13.06% of
+        // inclusive CPU in the baseline flamegraph; a real chunk of that lives
+        // here on the merge hot path.
         let children_vec = parent_index.children.get_or_insert_with(Vec::new);
-
-        let mut ordered = children_vec.drain(..).collect::<BTreeSet<_>>();
-
-        let _ignored = ordered.replace(ChildInfo::new(
-            child.id(),
-            child_index.full_hash,
-            child.metadata,
-        ));
-
-        *children_vec = ordered.into_iter().collect();
+        let new_entry = ChildInfo::new(child.id(), child_index.full_hash, child.metadata);
+        match children_vec.binary_search(&new_entry) {
+            Ok(pos) => children_vec[pos] = new_entry,
+            Err(pos) => children_vec.insert(pos, new_entry),
+        }
 
         parent_index.full_hash =
             Self::calculate_full_hash_for_children(parent_index.own_hash, &parent_index.children)?;
