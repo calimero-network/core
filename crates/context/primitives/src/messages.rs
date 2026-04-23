@@ -137,13 +137,49 @@ impl Message for ApplySignedGroupOpRequest {
     type Result = eyre::Result<bool>;
 }
 
+/// Outcome of applying a signed namespace governance op.
+///
+/// Needed by callers that must distinguish "pending, please trigger backfill"
+/// from "duplicate, do nothing" — the underlying DAG used to collapse both
+/// into `Ok(false)`, causing every duplicate gossip op to open a redundant
+/// backfill stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamespaceApplyOutcome {
+    /// Op was applied immediately.
+    Applied,
+    /// Op was accepted but is waiting for missing parents; caller should
+    /// proactively trigger a namespace backfill.
+    Pending,
+    /// Op was already present in the governance DAG; no action required.
+    Duplicate,
+}
+
+impl NamespaceApplyOutcome {
+    /// `true` if the op is pending and a backfill should be triggered.
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ApplySignedNamespaceOpRequest {
     pub op: crate::local_governance::SignedNamespaceOp,
 }
 
 impl Message for ApplySignedNamespaceOpRequest {
-    type Result = eyre::Result<()>;
+    type Result = eyre::Result<NamespaceApplyOutcome>;
+}
+
+/// Query the number of pending (not-yet-applied) ops in a namespace's
+/// governance DAG. Used by the cross-peer parent-pull loop (#2198) to
+/// decide whether another backfill round is needed.
+#[derive(Debug, Clone)]
+pub struct NamespacePendingOpCountRequest {
+    pub namespace_id: [u8; 32],
+}
+
+impl Message for NamespacePendingOpCountRequest {
+    type Result = eyre::Result<usize>;
 }
 
 /// Parameters for executing a state migration during application update.
@@ -217,6 +253,10 @@ pub enum ContextMessage {
     ApplySignedNamespaceOp {
         request: ApplySignedNamespaceOpRequest,
         outcome: oneshot::Sender<<ApplySignedNamespaceOpRequest as Message>::Result>,
+    },
+    NamespacePendingOpCount {
+        request: NamespacePendingOpCountRequest,
+        outcome: oneshot::Sender<<NamespacePendingOpCountRequest as Message>::Result>,
     },
     RemoveGroupMembers {
         request: RemoveGroupMembersRequest,

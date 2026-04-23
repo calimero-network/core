@@ -40,7 +40,8 @@ use crate::group::{
 use crate::messages::{
     ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest, ContextMessage, CreateContextRequest,
     CreateContextResponse, DeleteContextRequest, DeleteContextResponse, ExecuteError,
-    ExecuteRequest, ExecuteResponse, MigrationParams, UpdateApplicationRequest,
+    ExecuteRequest, ExecuteResponse, MigrationParams, NamespaceApplyOutcome,
+    UpdateApplicationRequest,
 };
 use crate::ContextAtomic;
 
@@ -1299,15 +1300,39 @@ impl ContextClient {
         receiver.await.expect("Mailbox not to be dropped")
     }
 
+    /// Apply a signed namespace governance op to this node's local state.
+    ///
+    /// Returns a [`NamespaceApplyOutcome`] distinguishing the three success
+    /// states: `Applied`, `Pending` (parents missing — caller should trigger
+    /// backfill), and `Duplicate` (already present — no action required).
     pub async fn apply_signed_namespace_op(
         &self,
         op: crate::local_governance::SignedNamespaceOp,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<NamespaceApplyOutcome> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
             .send(ContextMessage::ApplySignedNamespaceOp {
                 request: ApplySignedNamespaceOpRequest { op },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Returns the number of ops in this namespace's governance DAG whose
+    /// parents have not yet been applied locally (the "pending" queue size).
+    ///
+    /// Used by the cross-peer parent-pull loop (#2198) to decide whether
+    /// another backfill round against another mesh peer is needed.
+    pub async fn namespace_pending_op_count(&self, namespace_id: [u8; 32]) -> eyre::Result<usize> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::NamespacePendingOpCount {
+                request: crate::messages::NamespacePendingOpCountRequest { namespace_id },
                 outcome: sender,
             })
             .await
