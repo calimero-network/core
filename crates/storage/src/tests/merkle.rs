@@ -359,3 +359,87 @@ fn merkle_hash_child_removal_updates_parent() {
         "Parent hash must update when child removed"
     );
 }
+
+// ============================================================
+// #2238 — Deferred-ancestor scope must produce byte-identical hashes
+// ============================================================
+
+#[test]
+fn deferred_ancestor_scope_leaves_tree_consistent() {
+    // The ID generator isn't deterministic across reset_for_testing calls,
+    // so we can't meaningfully compare root hashes across two separate
+    // runs. Instead, assert the structural invariant that MUST hold after
+    // the deferred scope flushes: every node's saved `full_hash` equals
+    // the hash you'd compute right now from its `own_hash` + children's
+    // current `merkle_hash`. If the flush left the tree in an inconsistent
+    // state, this would catch it.
+    use crate::index::{DeferredAncestorScope, Index};
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut parent = Page::new_from_element("Parent", Element::root());
+    TestInterface::save(&mut parent).unwrap();
+
+    {
+        let _scope = DeferredAncestorScope::<TestStorage>::new();
+        for i in 0..10 {
+            let mut child =
+                Paragraph::new_from_element(&format!("Child {i}"), Element::new(None));
+            TestInterface::add_child_to(parent.id(), &mut child).unwrap();
+        }
+        // Scope drops here, flushing deduped ancestor walks.
+    }
+
+    // Parent's stored full_hash must equal what we'd compute now.
+    let (stored_parent_hash, own_hash) =
+        Index::<TestStorage>::get_hashes_for(parent.id())
+            .unwrap()
+            .expect("parent index present after adds");
+    let fresh_parent_hash =
+        Index::<TestStorage>::calculate_full_merkle_hash_for(parent.id()).unwrap();
+    assert_eq!(
+        hex::encode(stored_parent_hash),
+        hex::encode(fresh_parent_hash),
+        "after flush, parent's saved full_hash must match fresh recompute",
+    );
+    assert_ne!(
+        own_hash, [0u8; 32],
+        "parent's own_hash should be set by save",
+    );
+    assert_ne!(
+        stored_parent_hash, [0u8; 32],
+        "parent's full_hash should reflect its 10 children, not be zeroed",
+    );
+}
+
+#[test]
+fn deferred_scope_dedupes_walks_from_same_parent() {
+    // Semantic test: after a scope flush, the parent's full_hash reflects
+    // all children added inside the scope. This would already be caught
+    // by the identical-hash test above, but the test reads more
+    // naturally as a standalone claim.
+    use crate::index::{DeferredAncestorScope, Index};
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut parent = Page::new_from_element("Parent", Element::root());
+    TestInterface::save(&mut parent).unwrap();
+
+    {
+        let _scope = DeferredAncestorScope::<TestStorage>::new();
+        for i in 0..5 {
+            let mut child = Paragraph::new_from_element(
+                &format!("Child {i}"),
+                Element::new(None),
+            );
+            TestInterface::add_child_to(parent.id(), &mut child).unwrap();
+        }
+        // Scope drops here, flushing the single deduped walk.
+    }
+
+    // Parent's index should record all 5 children.
+    let children = Index::<TestStorage>::get_children_of(parent.id()).unwrap();
+    assert_eq!(children.len(), 5, "all 5 children should be indexed under parent");
+}

@@ -4,6 +4,7 @@
 #[path = "tests/index.rs"]
 mod tests;
 
+use core::cell::RefCell;
 use core::marker::PhantomData;
 use std::collections::BTreeSet;
 
@@ -16,6 +17,92 @@ use crate::entities::{ChildInfo, Metadata, UpdatedAt};
 use crate::env::time_now;
 use crate::interface::StorageError;
 use crate::store::{IterableStorage, Key, StorageAdaptor};
+
+// Deferred ancestor recomputation (#2238).
+//
+// `recalculate_ancestor_hashes_for` walks from a given node up to root,
+// re-reading and re-hashing each ancestor. During a merge (e.g. `Root::sync`
+// applying 20 deltas to the same parent), the per-action call pattern runs
+// this walk 20 times with ~identical starts, redoing the same O(K) hash
+// work at every parent along the path. Batching collapses that to one walk
+// per unique starting id per merge.
+//
+// The mechanism: a thread-local dirty-set guarded by a RAII scope. When a
+// scope is active, `recalculate_ancestor_hashes_for` pushes into the set
+// instead of walking. The scope's flush dedupes and walks once per unique
+// starting id.
+//
+// Non-test code paths (native + WASM) reach this module through
+// thread-local storage, so one scope per merge is sufficient. The scope is
+// scoped to the current thread and does not cross async await boundaries;
+// `Root::sync` is synchronous from the WASM side, so that's fine.
+thread_local! {
+    static DEFERRED_ANCESTORS: RefCell<Option<BTreeSet<Id>>> = const { RefCell::new(None) };
+}
+
+/// RAII scope that defers ancestor-hash recomputation until drop.
+///
+/// While this guard is alive, calls to `recalculate_ancestor_hashes_for`
+/// on `Index` record the starting id into a thread-local dirty-set
+/// instead of walking immediately. On drop, the scope calls the original
+/// walk exactly once per unique starting id, collapsing the common
+/// "many deltas touch the same parent" pattern from O(N·path_cost) to
+/// O(unique_starts·path_cost).
+///
+/// Safe to nest — only the outermost scope flushes. Inner scopes share
+/// the same dirty-set so their additions participate in the outer flush.
+#[must_use = "the scope must be held to defer recomputation; drop it to flush"]
+pub struct DeferredAncestorScope<S: StorageAdaptor> {
+    /// True if this scope owns the thread-local dirty-set (outermost).
+    /// Inner scopes share the outer's set and do not flush on drop.
+    is_outermost: bool,
+    _phantom: PhantomData<S>,
+}
+
+impl<S: StorageAdaptor> DeferredAncestorScope<S> {
+    /// Begin deferring ancestor recomputation. Flush happens on drop.
+    pub fn new() -> Self {
+        let is_outermost = DEFERRED_ANCESTORS.with(|slot| {
+            let mut borrowed = slot.borrow_mut();
+            if borrowed.is_none() {
+                *borrowed = Some(BTreeSet::new());
+                true
+            } else {
+                false
+            }
+        });
+        Self {
+            is_outermost,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<S: StorageAdaptor> Drop for DeferredAncestorScope<S> {
+    fn drop(&mut self) {
+        if !self.is_outermost {
+            return;
+        }
+        let dirty = DEFERRED_ANCESTORS.with(|slot| slot.borrow_mut().take());
+        let Some(dirty) = dirty else {
+            return;
+        };
+        for id in dirty {
+            // Errors during flush are logged; we don't propagate because
+            // drop can't return a Result. In practice the original
+            // `recalculate_ancestor_hashes_for` can only fail on storage
+            // errors, which are already treated as fatal elsewhere.
+            if let Err(err) = <Index<S>>::recalculate_ancestor_hashes_for_now(id) {
+                tracing::error!(
+                    target: "storage::merkle",
+                    ?err,
+                    %id,
+                    "deferred ancestor recompute failed at flush"
+                );
+            }
+        }
+    }
+}
 
 /// Index entry for an entity.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -300,7 +387,33 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Recalculates ancestor hashes recursively up to root.
+    ///
+    /// Defers to the thread-local `DeferredAncestorScope` if one is active
+    /// (#2238): during a merge, many calls with the same starting id
+    /// dedupe into a single walk at scope drop. If no scope is active,
+    /// this falls through to the immediate walk.
     pub(crate) fn recalculate_ancestor_hashes_for(id: Id) -> Result<(), StorageError> {
+        let deferred = DEFERRED_ANCESTORS.with(|slot| {
+            let mut borrowed = slot.borrow_mut();
+            if let Some(set) = borrowed.as_mut() {
+                let _ = set.insert(id);
+                true
+            } else {
+                false
+            }
+        });
+        if deferred {
+            return Ok(());
+        }
+        Self::recalculate_ancestor_hashes_for_now(id)
+    }
+
+    /// The immediate, non-deferred ancestor walk.
+    ///
+    /// Called directly from `recalculate_ancestor_hashes_for` when no
+    /// defer scope is active, and from `DeferredAncestorScope::drop`
+    /// when flushing a deferred set.
+    pub(crate) fn recalculate_ancestor_hashes_for_now(id: Id) -> Result<(), StorageError> {
         let mut current_id = id;
 
         while let Some(parent_id) = Self::get_parent_id(current_id)? {
