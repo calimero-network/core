@@ -340,6 +340,18 @@ preserve_to_host_mount() {
             echo "[Profiling] WARNING: cp from $reports_dir may be incomplete: $(head -3 "$err_file" 2>/dev/null | tr '\n' ' ')"
         fi
     fi
+    # Make preserved files readable by the host runner user. Merobox's
+    # container runs as root, so `perf record` writes perf-*.data with
+    # mode 600 — when harvest-host-profiling.sh runs on the GHA runner
+    # (unprivileged user), cp silently skips those files with EACCES.
+    # Non-.data files (jemalloc heaps, perf.map, logs) are already 644
+    # so they harvest fine; this brings .data in line with them.
+    # Use go+rX: adds read for non-owners, conditional-execute only on
+    # directories (not regular files) — never makes a data file
+    # executable. Doesn't remove owner write/execute.
+    chmod -R go+rX "$dest" 2>"$err_file" || {
+        echo "[Profiling] WARNING: chmod on $dest failed: $(head -1 "$err_file" 2>/dev/null)"
+    }
     [ "$err_file" != /dev/null ] && rm -f "$err_file"
     local size
     size=$(du -sh "$dest" 2>/dev/null | awk '{print $1}')
