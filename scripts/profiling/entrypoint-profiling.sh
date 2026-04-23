@@ -20,22 +20,59 @@ mkdir -p "${PROFILING_REPORTS_DIR:-/profiling/reports}"
 install_kernel_tools() {
     local kernel_version=$(uname -r)
     echo "[Profiling] Detected kernel: $kernel_version"
-    
+
     if perf record -o /dev/null -- true 2>/dev/null; then
         echo "[Profiling] perf is compatible with current kernel"
         return 0
     fi
-    
+
     echo "[Profiling] Installing kernel tools..."
     apt-get update -qq 2>/dev/null || true
-    
+
     if apt-get install -y -qq "linux-tools-${kernel_version}" 2>/dev/null; then
         if perf record -o /dev/null -- true 2>/dev/null; then
-            echo "[Profiling] perf is now working"
+            echo "[Profiling] perf is now working (linux-tools-${kernel_version})"
             return 0
         fi
     fi
-    
+
+    # Fallback: linux-tools-generic. Ships a version-agnostic perf binary
+    # that works for userspace sampling on most kernels. Needed on Azure
+    # runners like 6.17.0-1010-azure where linux-tools-<uname-r> isn't in
+    # the Ubuntu package index.
+    #
+    # The Ubuntu /usr/bin/perf wrapper looks up /usr/lib/linux-tools/$(uname -r)/perf
+    # and errors if it's missing, so we symlink the generic binary into place.
+    echo "[Profiling] Exact-version tools unavailable, trying linux-tools-generic..."
+    if apt-get install -y -qq linux-tools-generic 2>/dev/null; then
+        # Glob-based lookup — avoids parsing ls output and avoids regex
+        # pitfalls (dots in kernel_version are regex metacharacters).
+        local generic_perf=""
+        for candidate in /usr/lib/linux-tools/*/perf; do
+            [ -f "$candidate" ] || continue
+            # Skip the version-matched path (it's what the Ubuntu wrapper
+            # already tried and failed on).
+            if [ "$(basename "$(dirname "$candidate")")" = "$kernel_version" ]; then
+                continue
+            fi
+            generic_perf="$candidate"
+            break
+        done
+        if [ -n "$generic_perf" ]; then
+            local target_dir="/usr/lib/linux-tools/${kernel_version}"
+            if ! mkdir -p "$target_dir" 2>/dev/null; then
+                echo "[Profiling] WARNING: could not create $target_dir"
+            elif ! ln -sf "$generic_perf" "$target_dir/perf" 2>/dev/null; then
+                echo "[Profiling] WARNING: could not symlink $target_dir/perf -> $generic_perf"
+            elif perf record -o /dev/null -- true 2>/dev/null; then
+                echo "[Profiling] perf is now working (linux-tools-generic via $generic_perf)"
+                return 0
+            fi
+        else
+            echo "[Profiling] linux-tools-generic installed but no perf binary found under /usr/lib/linux-tools/*/"
+        fi
+    fi
+
     echo "[Profiling] WARNING: Could not install compatible kernel tools"
     echo "[Profiling] CPU profiling (flamegraphs) will not be available"
     return 1
