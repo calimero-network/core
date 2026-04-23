@@ -83,7 +83,17 @@ thread_local! {
 // `#[cfg(not(test))]` helpers below, that integration test is the thing
 // to run.
 
-/// Run `f` with mutable access to the registry.
+// The `with_registry_mut` / `with_registry` helpers come in paired
+// cfg-gated implementations (prod: RwLock, test: thread-local RefCell).
+// The signatures must stay identical so call sites compile under both
+// configurations; if you change one pair, change the other. Divergence
+// would go undetected — unit tests only build the test variants, the
+// integration test only builds the prod variants.
+
+/// Runs `f` with mutable access to the registry. Aborts the process
+/// if the lock is poisoned (a poisoned lock means a prior writer
+/// panicked, which we treat as unrecoverable for a process-global
+/// singleton).
 #[cfg(not(test))]
 fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<TypeId, MergeFn>) -> R) -> R {
     let mut registry = MERGE_REGISTRY.write().unwrap_or_else(|_| {
@@ -96,9 +106,11 @@ fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<TypeId, MergeFn>) -> R) -> R
     f(&mut registry)
 }
 
-/// Test-only variant: uses thread-local RefCell instead of global RwLock.
-/// try_borrow_mut to surface re-entrant access as a clear panic message
-/// rather than the less-useful default `BorrowMutError` debug print.
+/// Test-only variant: uses thread-local RefCell instead of global
+/// RwLock. `try_borrow_mut` surfaces re-entrant access as a clear
+/// panic message rather than the less-useful default `BorrowMutError`
+/// debug print. Keep the signature in sync with the `cfg(not(test))`
+/// variant above.
 #[cfg(test)]
 fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<TypeId, MergeFn>) -> R) -> R {
     MERGE_REGISTRY.with(|r| {
@@ -113,7 +125,8 @@ fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<TypeId, MergeFn>) -> R) -> R
     })
 }
 
-/// Run `f` with read-only access to the registry.
+/// Runs `f` with read-only access to the registry. Aborts the process
+/// if the lock is poisoned (same reasoning as `with_registry_mut`).
 #[cfg(not(test))]
 fn with_registry<R>(f: impl FnOnce(&HashMap<TypeId, MergeFn>) -> R) -> R {
     let registry = MERGE_REGISTRY.read().unwrap_or_else(|_| {
@@ -126,7 +139,9 @@ fn with_registry<R>(f: impl FnOnce(&HashMap<TypeId, MergeFn>) -> R) -> R {
     f(&registry)
 }
 
-/// Test-only variant: uses thread-local RefCell instead of global RwLock.
+/// Test-only variant: uses thread-local RefCell instead of global
+/// RwLock. Keep the signature in sync with the `cfg(not(test))`
+/// variant above.
 #[cfg(test)]
 fn with_registry<R>(f: impl FnOnce(&HashMap<TypeId, MergeFn>) -> R) -> R {
     MERGE_REGISTRY.with(|r| {
@@ -141,7 +156,19 @@ fn with_registry<R>(f: impl FnOnce(&HashMap<TypeId, MergeFn>) -> R) -> R {
     })
 }
 
-/// Register a CRDT merge function for a type
+/// Register a CRDT merge function for a type.
+///
+/// # Testing note
+///
+/// Under `#[cfg(test)]` the registry is **thread-local**, not global.
+/// Registrations made in one test thread are not visible from a
+/// `std::thread::spawn` / `tokio::spawn` worker on another thread. If
+/// a test relies on cross-thread dispatch, move it to an integration
+/// test under `tests/` (which links the library without `cfg(test)`
+/// and therefore hits the real `RwLock`-backed registry).
+///
+/// Production callers (non-test builds) see the global `RwLock`
+/// registry as expected.
 ///
 /// # Example
 ///
