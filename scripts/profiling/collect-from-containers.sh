@@ -65,16 +65,9 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
             echo "  WARNING: Container not running - collecting existing data only"
         fi
         
-        # Flamegraph generation used to happen here via `docker exec` against
-        # a still-running container. But the runtime merod containers are
-        # removed during merobox graceful shutdown, BEFORE this collector
-        # runs, so the "docker exec" path was a silent no-op — it only ever
-        # reached stopped init containers, which don't have a merod process
-        # or perf.data. Flamegraph rendering now happens inside the
-        # profiling-image entrypoint's preserve_to_host_mount (see
-        # scripts/profiling/entrypoint-profiling.sh), with the SVGs landing
-        # under $CALIMERO_HOME/profiling-dump/reports/ and picked up by
-        # harvest-host-profiling.sh on the host.
+        # Flamegraph rendering happens inside the image entrypoint's
+        # preserve_to_host_mount; harvest-host-profiling.sh picks up the
+        # SVGs from the bind mount.
 
 
         # Copy data and reports from container to host
