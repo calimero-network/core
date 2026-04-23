@@ -906,12 +906,24 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
-        // If this is a local shared action by a writer, set the nonce
-        let shared_to_stamp = if let StorageType::Shared { writers, .. } = &metadata.storage_type {
+        // If this is a local shared action by a writer, set the nonce.
+        // See save_raw for the stamping-authority rationale (stored ∪ claimed).
+        let shared_to_stamp = if let StorageType::Shared {
+            writers: claimed, ..
+        } = &metadata.storage_type
+        {
             let executor: calimero_primitives::identity::PublicKey =
                 crate::env::executor_id().into();
-            if writers.contains(&executor) {
-                Some(writers.clone())
+            let stored_has_executor = <Index<S>>::get_metadata(child_id)?
+                .as_ref()
+                .map(|m| match &m.storage_type {
+                    StorageType::Shared { writers, .. } => writers.contains(&executor),
+                    _ => false,
+                })
+                .unwrap_or(false);
+            let claimed_has_executor = claimed.contains(&executor);
+            if stored_has_executor || claimed_has_executor {
+                Some(claimed.clone())
             } else {
                 None
             }
@@ -1352,16 +1364,35 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
-        // If this is a local shared action by a writer, set the nonce
+        // If this is a local shared action by a writer, set the nonce.
+        //
+        // Stamping authority is the union of (stored writers) and (action's claimed writers):
+        //   - Stored: the writer set as currently persisted in the index.
+        //   - Claimed: the writer set in the action's own metadata.
+        // Stamp if the executor is in EITHER. This is what enables rotate-self-out:
+        // a writer rotating themselves out has executor ∈ stored but ∉ claimed; the
+        // verifier on remote also uses stored, so the signature still verifies there.
         let shared_to_stamp = if let StorageType::Shared {
-            writers,
+            writers: claimed_writers,
             signature_data,
         } = &metadata.storage_type
         {
-            let executor: calimero_primitives::identity::PublicKey =
-                crate::env::executor_id().into();
-            if writers.contains(&executor) && signature_data.is_none() {
-                Some(writers.clone())
+            if signature_data.is_none() {
+                let executor: calimero_primitives::identity::PublicKey =
+                    crate::env::executor_id().into();
+                let stored_has_executor = <Index<S>>::get_metadata(id)?
+                    .as_ref()
+                    .map(|m| match &m.storage_type {
+                        StorageType::Shared { writers, .. } => writers.contains(&executor),
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                let claimed_has_executor = claimed_writers.contains(&executor);
+                if stored_has_executor || claimed_has_executor {
+                    Some(claimed_writers.clone())
+                } else {
+                    None
+                }
             } else {
                 None
             }

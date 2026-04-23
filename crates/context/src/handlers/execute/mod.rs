@@ -1267,8 +1267,12 @@ fn sign_authorized_actions(
                 "Received shared action from the outcome"
             );
 
-            // Sign if executor is in the writer set and the placeholder is still present.
-            if writers.contains(&executor_pk) && sig_data.signature == [0; 64] {
+            // Sign whenever the placeholder is present. The stamping decision
+            // (whether the executor was authorized to act) was already made in
+            // save_raw / remove_child_from based on stored ∪ claimed writers,
+            // which correctly handles the rotate-self-out case where the
+            // executor is no longer in the action's claimed writer set.
+            if sig_data.signature == [0; 64] {
                 sig_data.nonce = nonce;
                 let signature = identity_private_key.sign(&payload_for_signing)?;
                 sig_data.signature = signature.to_bytes();
