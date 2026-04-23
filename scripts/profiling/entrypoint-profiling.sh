@@ -332,7 +332,53 @@ preserve_to_host_mount() {
             ls -la "$dest" 2>&1 || true
         } >> "$preserve_log" 2>&1
     fi
+    # Generate flamegraphs INSIDE the container using the baked-in FlameGraph
+    # tools (Dockerfile installs /opt/FlameGraph). Previously this happened
+    # via `docker exec` in collect-from-containers.sh at the end of the job
+    # — but runtime containers are removed during merobox graceful shutdown
+    # BEFORE the collector step, so that path has been a silent no-op for
+    # every runtime container. Doing it here, right after the raw data is
+    # preserved, means the rendered SVGs land on the bind mount alongside
+    # the .data / .heap files and harvest picks them up.
     local reports_dir="${PROFILING_REPORTS_DIR:-/profiling/reports}"
+    local node_name="${NODE_NAME:-merod}"
+    mkdir -p "$reports_dir" 2>/dev/null || true
+
+    # CPU flamegraph from perf.data. generate-flamegraph.sh handles
+    # /tmp/perf-<pid>.map restoration for WASM JIT symbolization.
+    local perf_data="$PROFILING_OUTPUT_DIR/perf-${node_name}.data"
+    if [ -f "$perf_data" ] && [ -s "$perf_data" ] && command -v perf >/dev/null 2>&1; then
+        local cpu_svg="$reports_dir/flamegraph-cpu-${node_name}.svg"
+        echo "[Profiling] Generating CPU flamegraph -> $cpu_svg"
+        if /profiling/scripts/generate-flamegraph.sh \
+            --input "$perf_data" \
+            --output "$cpu_svg" \
+            --title "CPU Flamegraph - ${node_name}" \
+            >>"$preserve_log" 2>&1; then
+            echo "[Profiling] ✓ CPU flamegraph generated"
+        else
+            echo "[Profiling] WARNING: CPU flamegraph generation failed (see preserve.log)"
+        fi
+    fi
+
+    # Memory flamegraph from latest jemalloc heap dump. generate-memory-flamegraph.sh
+    # accepts --latest + --input-dir to auto-pick the most recent dump.
+    if ls "$PROFILING_OUTPUT_DIR"/jemalloc.*.heap >/dev/null 2>&1; then
+        local mem_svg="$reports_dir/flamegraph-memory-${node_name}.svg"
+        echo "[Profiling] Generating memory flamegraph -> $mem_svg"
+        if /profiling/scripts/generate-memory-flamegraph.sh \
+            --latest \
+            --input-dir "$PROFILING_OUTPUT_DIR" \
+            --output "$mem_svg" \
+            --title "Memory Flamegraph - ${node_name}" \
+            --colors mem \
+            >>"$preserve_log" 2>&1; then
+            echo "[Profiling] ✓ Memory flamegraph generated"
+        else
+            echo "[Profiling] WARNING: memory flamegraph generation failed (see preserve.log)"
+        fi
+    fi
+
     if [ -d "$reports_dir" ]; then
         if ! mkdir -p "$dest/reports" 2>"$err_file"; then
             echo "[Profiling] WARNING: could not create $dest/reports: $(head -1 "$err_file" 2>/dev/null)"
