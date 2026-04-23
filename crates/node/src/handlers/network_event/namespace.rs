@@ -67,12 +67,30 @@ pub(super) fn handle_namespace_governance_delta(
             // downstream checks like join_context's membership read see a
             // converged state within sub-second latency. If the first peer
             // cannot resolve everything, fall through to cross-peer retry.
+            //
+            // NOTE: we MUST ask `source` first before handing off to
+            // `resolve_namespace_pending`. That helper seeds its
+            // `ParentPullBudget` with the initial peer marked as already
+            // tried, so passing `source` to it directly without a prior
+            // fetch means `source` never actually gets queried — which in
+            // a 2-node mesh (where no other peers exist) silently does
+            // nothing. Empty `delta_ids` means "give me everything for
+            // this namespace" on the responder side.
             if !applied {
                 debug!(
                     %source,
                     namespace_id = %hex::encode(namespace_id),
                     "gossip governance op is pending; triggering proactive backfill"
                 );
+                fetch_and_apply_namespace_backfill(
+                    &context_client,
+                    &network_client,
+                    source,
+                    namespace_id,
+                    Vec::new(),
+                    sync_timeout,
+                )
+                .await;
                 resolve_namespace_pending(
                     &context_client,
                     &network_client,
