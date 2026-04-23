@@ -47,7 +47,7 @@ pub struct Snapshot {
 ///
 /// Returns error if storage iteration or serialization fails.
 ///
-pub fn generate_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageError> {
+pub fn generate_snapshot<S: IterableStorage + 'static>() -> Result<Snapshot, StorageError> {
     let mut entries = Vec::new();
     let mut indexes = Vec::new();
 
@@ -102,7 +102,7 @@ pub fn generate_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageError>
 ///
 /// Returns error if storage iteration or serialization fails.
 ///
-pub fn generate_full_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageError> {
+pub fn generate_full_snapshot<S: IterableStorage + 'static>() -> Result<Snapshot, StorageError> {
     let mut entries = Vec::new();
     let mut indexes = Vec::new();
 
@@ -150,7 +150,9 @@ pub fn generate_full_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageE
 ///
 /// Returns error if storage writes fail.
 ///
-pub fn apply_snapshot<S: IterableStorage>(snapshot: &Snapshot) -> Result<(), StorageError> {
+pub fn apply_snapshot<S: IterableStorage + 'static>(
+    snapshot: &Snapshot,
+) -> Result<(), StorageError> {
     // Step 1: Clear all existing storage
     clear_all_storage::<S>()?;
 
@@ -175,7 +177,7 @@ pub fn apply_snapshot<S: IterableStorage>(snapshot: &Snapshot) -> Result<(), Sto
 ///
 /// Returns error if storage deletion fails.
 ///
-fn clear_all_storage<S: IterableStorage>() -> Result<(), StorageError> {
+fn clear_all_storage<S: IterableStorage + 'static>() -> Result<(), StorageError> {
     let mut keys_to_delete = Vec::new();
 
     for key in S::storage_iter_keys() {

@@ -18,7 +18,10 @@ use std::collections::BTreeMap;
 ///
 /// Under the hood, this is an `UnorderedMap<PublicKey, T>`.
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
-pub struct UserStorage<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor = MainStorage> {
+pub struct UserStorage<
+    T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor + 'static = MainStorage,
+> {
     /// The underlying map storing user data.
     #[borsh(bound(serialize = "", deserialize = ""))]
     inner: UnorderedMap<PublicKey, T, S>,
@@ -93,7 +96,7 @@ where
 impl<T, S> UserStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     /// Inserts or updates the data for the current executor.
     ///
@@ -125,7 +128,7 @@ where
 impl<T, S> UserStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     /// Returns an iterator over all `(PublicKey, value)` entries.
     ///
@@ -183,7 +186,7 @@ where
 impl<T, S> Data for UserStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         // UserStorage itself does not have child collections.
@@ -206,7 +209,7 @@ where
 impl<T, S> Mergeable for UserStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
         self.inner.merge(&other.inner)
@@ -217,7 +220,7 @@ where
 impl<T, S> CrdtMeta for UserStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn crdt_type() -> CrdtType {
         CrdtType::UserStorage

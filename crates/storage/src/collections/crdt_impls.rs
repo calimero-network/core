@@ -108,7 +108,7 @@ impl<T: Clone> Mergeable for LwwRegister<T> {
 // Counter (G-Counter and PN-Counter have distinct CrdtTypes)
 // ============================================================================
 
-impl<S: StorageAdaptor> CrdtMeta for Counter<false, S> {
+impl<S: StorageAdaptor + 'static> CrdtMeta for Counter<false, S> {
     fn crdt_type() -> CrdtType {
         CrdtType::GCounter
     }
@@ -122,7 +122,7 @@ impl<S: StorageAdaptor> CrdtMeta for Counter<false, S> {
     }
 }
 
-impl<S: StorageAdaptor> CrdtMeta for Counter<true, S> {
+impl<S: StorageAdaptor + 'static> CrdtMeta for Counter<true, S> {
     fn crdt_type() -> CrdtType {
         CrdtType::PnCounter
     }
@@ -136,7 +136,9 @@ impl<S: StorageAdaptor> CrdtMeta for Counter<true, S> {
     }
 }
 
-impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW_DECREMENT, S> {
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor + 'static> Mergeable
+    for Counter<ALLOW_DECREMENT, S>
+{
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Merge positive counts (both G-Counter and PN-Counter)
         // For each executor in other, take the max of their counts
@@ -254,7 +256,7 @@ impl Mergeable for ReplicatedGrowableArray {
 
 impl<K: 'static, V: 'static, S> CrdtMeta for UnorderedMap<K, V, S>
 where
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn crdt_type() -> CrdtType {
         CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>())
@@ -273,7 +275,7 @@ impl<K, V, S> Mergeable for UnorderedMap<K, V, S>
 where
     K: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
     V: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     /// Merge two maps entry-by-entry
     ///
@@ -331,7 +333,7 @@ where
 
 impl<T: 'static, S> CrdtMeta for UnorderedSet<T, S>
 where
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn crdt_type() -> CrdtType {
         CrdtType::unordered_set(std::any::type_name::<T>())
@@ -349,7 +351,7 @@ where
 impl<T, S> Mergeable for UnorderedSet<T, S>
 where
     T: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     /// Merge two sets using union (add-wins) semantics
     ///
@@ -396,7 +398,7 @@ where
 
 impl<T: 'static, S> CrdtMeta for Vector<T, S>
 where
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn crdt_type() -> CrdtType {
         CrdtType::vector(std::any::type_name::<T>())
@@ -414,7 +416,7 @@ where
 impl<T, S> Mergeable for Vector<T, S>
 where
     T: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     /// Merge two vectors using element-wise strategy
     ///

@@ -93,7 +93,7 @@ pub(crate) fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> 
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
-struct Collection<T, S: StorageAdaptor = MainStorage> {
+struct Collection<T, S: StorageAdaptor + 'static = MainStorage> {
     storage: Element,
 
     #[borsh(skip)]
@@ -103,7 +103,7 @@ struct Collection<T, S: StorageAdaptor = MainStorage> {
     _priv: PhantomData<(T, S)>,
 }
 
-impl<T, S: StorageAdaptor> Data for Collection<T, S> {
+impl<T, S: StorageAdaptor + 'static> Data for Collection<T, S> {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         BTreeMap::new()
     }
@@ -140,7 +140,7 @@ type StoreResult<T> = std::result::Result<T, StoreError>;
 
 static ROOT_ID: LazyLock<Id> = LazyLock::new(|| Id::root());
 
-impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
+impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor + 'static> Collection<T, S> {
     /// Creates a new collection.
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn new(id: Option<Id>) -> Self {
@@ -364,7 +364,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 }
 
 #[derive(Debug)]
-struct EntryMut<'a, T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> {
+struct EntryMut<'a, T: BorshSerialize + BorshDeserialize, S: StorageAdaptor + 'static> {
     collection: CollectionMut<'a, T, S>,
     entry: Entry<T>,
     /// Flag to prevent saving on drop when the entry has been removed.
@@ -376,7 +376,7 @@ struct EntryMut<'a, T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> {
 impl<T, S> EntryMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn remove(mut self) -> StoreResult<T> {
         let old = self
@@ -404,7 +404,7 @@ where
 impl<T, S> Deref for EntryMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     type Target = T;
 
@@ -413,7 +413,7 @@ where
     }
 }
 
-impl<T, S: StorageAdaptor> DerefMut for EntryMut<'_, T, S>
+impl<T, S: StorageAdaptor + 'static> DerefMut for EntryMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
 {
@@ -425,7 +425,7 @@ where
 impl<T, S> Drop for EntryMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn drop(&mut self) {
         // Don't save if the entry was removed - the DeleteRef action has
@@ -439,14 +439,14 @@ where
 }
 
 #[derive(Debug)]
-struct CollectionMut<'a, T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> {
+struct CollectionMut<'a, T: BorshSerialize + BorshDeserialize, S: StorageAdaptor + 'static> {
     collection: &'a mut Collection<T, S>,
 }
 
 impl<'a, T, S> CollectionMut<'a, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn new(collection: &'a mut Collection<T, S>) -> Self {
         Self { collection }
@@ -474,7 +474,7 @@ where
 impl<T, S> Deref for CollectionMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     type Target = Collection<T, S>;
 
@@ -486,7 +486,7 @@ where
 impl<T, S> DerefMut for CollectionMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.collection
@@ -496,14 +496,14 @@ where
 impl<T, S> Drop for CollectionMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn drop(&mut self) {
         self.collection.element_mut().update();
     }
 }
 
-impl<T, S: StorageAdaptor> fmt::Debug for Collection<T, S> {
+impl<T, S: StorageAdaptor + 'static> fmt::Debug for Collection<T, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Collection")
             .field("element", &self.storage)
@@ -514,16 +514,19 @@ impl<T, S: StorageAdaptor> fmt::Debug for Collection<T, S> {
 impl<T, S> Default for Collection<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn default() -> Self {
         Self::new(None)
     }
 }
 
-impl<T: Eq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Eq for Collection<T, S> {}
+impl<T: Eq + BorshSerialize + BorshDeserialize, S: StorageAdaptor + 'static> Eq
+    for Collection<T, S>
+{
+}
 
-impl<T: PartialEq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> PartialEq
+impl<T: PartialEq + BorshSerialize + BorshDeserialize, S: StorageAdaptor + 'static> PartialEq
     for Collection<T, S>
 {
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
@@ -535,7 +538,9 @@ impl<T: PartialEq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Partia
     }
 }
 
-impl<T: Ord + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Ord for Collection<T, S> {
+impl<T: Ord + BorshSerialize + BorshDeserialize, S: StorageAdaptor + 'static> Ord
+    for Collection<T, S>
+{
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let l = self.entries().unwrap().flatten();
@@ -545,7 +550,7 @@ impl<T: Ord + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Ord for Coll
     }
 }
 
-impl<T: PartialOrd + BorshSerialize + BorshDeserialize, S: StorageAdaptor> PartialOrd
+impl<T: PartialOrd + BorshSerialize + BorshDeserialize, S: StorageAdaptor + 'static> PartialOrd
     for Collection<T, S>
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -556,7 +561,7 @@ impl<T: PartialOrd + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Parti
     }
 }
 
-impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Extend<(Option<Id>, T)>
+impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor + 'static> Extend<(Option<Id>, T)>
     for Collection<T, S>
 {
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
@@ -576,8 +581,8 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Extend<(Option<Id>
     }
 }
 
-impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> FromIterator<(Option<Id>, T)>
-    for Collection<T, S>
+impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor + 'static>
+    FromIterator<(Option<Id>, T)> for Collection<T, S>
 {
     fn from_iter<I: IntoIterator<Item = (Option<Id>, T)>>(iter: I) -> Self {
         let mut collection = Collection::new(None);

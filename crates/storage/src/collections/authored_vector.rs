@@ -26,7 +26,7 @@ use crate::store::{MainStorage, StorageAdaptor};
 /// set at push time from `env::executor_id()`. Only the owner can `update`
 /// or `tombstone` their entry.
 #[derive(BorshSerialize, BorshDeserialize)]
-pub struct AuthoredVector<V, S: StorageAdaptor = MainStorage>
+pub struct AuthoredVector<V, S: StorageAdaptor + 'static = MainStorage>
 where
     V: BorshSerialize + BorshDeserialize,
 {
@@ -38,7 +38,7 @@ where
 impl<V, S> core::fmt::Debug for AuthoredVector<V, S>
 where
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AuthoredVector")
@@ -93,7 +93,7 @@ where
 impl<V, S> AuthoredVector<V, S>
 where
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     /// Pushes a new value at the end, stamping the current executor as owner.
     ///
@@ -225,7 +225,7 @@ where
 impl<V, S> Data for AuthoredVector<V, S>
 where
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         // `Vector<V>` does not implement `Data` — its entries are values, not
@@ -248,7 +248,7 @@ where
 impl<V, S> Mergeable for AuthoredVector<V, S>
 where
     V: BorshSerialize + BorshDeserialize + Mergeable + Clone,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     /// `AuthoredVector` deliberately does **not** perform structural merge.
     ///
@@ -269,7 +269,7 @@ where
 impl<V, S> CrdtMeta for AuthoredVector<V, S>
 where
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn crdt_type() -> CrdtType {
         CrdtType::UserStorage

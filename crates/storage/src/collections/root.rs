@@ -16,7 +16,7 @@ use borsh::{from_slice, BorshDeserialize, BorshSerialize};
 use tracing::info;
 
 /// A set collection that stores unqiue values once.
-pub struct Root<T, S: StorageAdaptor = MainStorage> {
+pub struct Root<T, S: StorageAdaptor + 'static = MainStorage> {
     inner: Collection<T, S>,
     value: RefCell<Option<T>>,
     dirty: bool,
@@ -25,7 +25,7 @@ pub struct Root<T, S: StorageAdaptor = MainStorage> {
 impl<T, S> fmt::Debug for Root<T, S>
 where
     T: BorshSerialize + BorshDeserialize + fmt::Debug,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Root")
@@ -49,7 +49,7 @@ where
 impl<T, S> Root<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     /// Creates a new root collection with the given value.
     #[expect(clippy::unwrap_used, reason = "fatal error if it happens")]
@@ -136,9 +136,11 @@ where
                 // the action loop. Many deltas in a single merge often touch
                 // the same parent; without batching, each `add_child_to`
                 // walks from that parent to the root redoing the same O(K)
-                // hash work. The scope dedupes starting ids and flushes on
-                // drop (at the end of this `match` arm).
-                let _defer_scope = DeferredAncestorScope::<S>::new();
+                // hash work. The scope dedupes starting ids and flushes via
+                // `finish()?` after the loop so storage errors during flush
+                // propagate back to the caller (an error here means the
+                // merkle tree is left inconsistent).
+                let defer_scope = DeferredAncestorScope::<S>::new();
 
                 for action in actions {
                     match &action {
@@ -225,6 +227,11 @@ where
                     };
                 }
 
+                // Flush deferred ancestor walks. Errors here indicate a
+                // partially-propagated merkle tree and must surface to the
+                // caller rather than being silently logged by Drop.
+                defer_scope.finish()?;
+
                 if let Some((payload, metadata)) = root_snapshot {
                     if <Interface<S>>::save_raw(Id::root(), payload, metadata)?.is_some() {
                         info!(
@@ -265,7 +272,7 @@ where
 impl<T, S> Deref for Root<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     type Target = T;
 
@@ -277,7 +284,7 @@ where
 impl<T, S> DerefMut for Root<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.dirty = true;

@@ -32,7 +32,7 @@ fn validate_index_bounds(index: usize) -> Result<(), StoreError> {
 
 /// A vector collection that stores key-value pairs.
 #[derive(BorshSerialize, BorshDeserialize)]
-pub struct Vector<V, S: StorageAdaptor = MainStorage> {
+pub struct Vector<V, S: StorageAdaptor + 'static = MainStorage> {
     // Borrow/ToOwned
     #[borsh(bound(serialize = "", deserialize = ""))]
     inner: Collection<V, S>,
@@ -73,7 +73,7 @@ where
 impl<V, S> Vector<V, S>
 where
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     /// Create a new vector collection (internal, shared with decompose).
     pub(super) fn new_internal() -> Self {
@@ -383,7 +383,7 @@ where
 impl<V, S> Default for Vector<V, S>
 where
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn default() -> Self {
         Self::new_internal()
@@ -393,7 +393,7 @@ where
 impl<V, S> Serialize for Vector<V, S>
 where
     V: BorshSerialize + BorshDeserialize + Serialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
     where
@@ -414,7 +414,7 @@ where
 impl<V, S> Extend<V> for Vector<V, S>
 where
     V: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn extend<I: IntoIterator<Item = V>>(&mut self, iter: I) {
         let iter = iter.into_iter().map(|v| (None, v));
@@ -426,7 +426,7 @@ where
 impl<V, S> FromIterator<V> for Vector<V, S>
 where
     V: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     fn from_iter<I: IntoIterator<Item = V>>(iter: I) -> Self {
         let mut map = Vector::new_internal();

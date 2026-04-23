@@ -75,7 +75,7 @@ use crate::store::MainStorage;
 /// }
 /// ```
 #[derive(Debug)]
-pub struct Counter<const ALLOW_DECREMENT: bool = false, S: StorageAdaptor = MainStorage> {
+pub struct Counter<const ALLOW_DECREMENT: bool = false, S: StorageAdaptor + 'static = MainStorage> {
     /// Maps executor_id (hex string) -> positive increments
     pub(crate) positive: UnorderedMap<String, u64, S>,
 
@@ -93,7 +93,7 @@ pub struct Counter<const ALLOW_DECREMENT: bool = false, S: StorageAdaptor = Main
 // This ensures:
 // 1. GCounter uses less storage (no negative field serialized)
 // 2. Type safety: Cannot deserialize PNCounter with negative counts as GCounter
-impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> BorshSerialize
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor + 'static> BorshSerialize
     for Counter<ALLOW_DECREMENT, S>
 {
     fn serialize<W: Write>(&self, writer: &mut W) -> BorshResult<()> {
@@ -125,7 +125,7 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> BorshSerialize
 // "Not all bytes read" or "Unexpected length of input", preventing silent data loss.
 //
 // This provides runtime type safety without explicit validation code.
-impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> BorshDeserialize
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor + 'static> BorshDeserialize
     for Counter<ALLOW_DECREMENT, S>
 {
     fn deserialize_reader<R: Read>(reader: &mut R) -> BorshResult<Self> {
@@ -216,7 +216,7 @@ impl<const ALLOW_DECREMENT: bool> Counter<ALLOW_DECREMENT, MainStorage> {
     }
 }
 
-impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S> {
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor + 'static> Counter<ALLOW_DECREMENT, S> {
     /// Creates a new counter (internal) - must use same visibility as UnorderedMap
     pub(super) fn new_internal() -> Self {
         Self {
@@ -337,7 +337,7 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
 }
 
 // G-Counter specific methods (ALLOW_DECREMENT = false)
-impl<S: StorageAdaptor> Counter<false, S> {
+impl<S: StorageAdaptor + 'static> Counter<false, S> {
     /// Get the total count across all executors (G-Counter only)
     ///
     /// Returns `u64` since G-Counter cannot go negative.
@@ -365,7 +365,7 @@ impl<S: StorageAdaptor> Counter<false, S> {
 }
 
 // PN-Counter specific methods (ALLOW_DECREMENT = true)
-impl<S: StorageAdaptor> Counter<true, S> {
+impl<S: StorageAdaptor + 'static> Counter<true, S> {
     /// Decrement the counter for the current executor (PN-Counter only)
     ///
     /// # Errors
@@ -461,7 +461,9 @@ impl<S: StorageAdaptor> Counter<true, S> {
     }
 }
 
-impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Default for Counter<ALLOW_DECREMENT, S> {
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor + 'static> Default
+    for Counter<ALLOW_DECREMENT, S>
+{
     fn default() -> Self {
         Self::new_internal()
     }

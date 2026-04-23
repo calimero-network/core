@@ -74,7 +74,7 @@ pub fn insert_nested<K, V, S>(
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     // For Phase 2.1, we use standard insert for all types
     // Phase 2.2 will add the decomposition logic
@@ -96,7 +96,7 @@ pub fn insert_nested_decomposable<K, V, S>(
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
     V: BorshSerialize + BorshDeserialize + Clone + CrdtMeta + Decomposable<Key = CompositeKey>,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     // Check if V can contain CRDTs
     if V::can_contain_crdts() {
@@ -171,7 +171,7 @@ pub fn get_nested<K, V, S>(map: &UnorderedMap<K, V, S>, key: &K) -> Result<Optio
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    S: StorageAdaptor + 'static,
 {
     // For Phase 2.1, use standard get for all types
     // Phase 2.2 will add reconstruction logic

@@ -62,9 +62,9 @@ pub type MainInterface = Interface<MainStorage>;
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
+pub struct Interface<S: StorageAdaptor + 'static = MainStorage>(PhantomData<S>);
 
-impl<S: StorageAdaptor> Interface<S> {
+impl<S: StorageAdaptor + 'static> Interface<S> {
     /// Adds a child entity to a parent's collection.
     ///
     /// Updates Merkle hashes and generates sync actions automatically.
