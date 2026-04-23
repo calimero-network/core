@@ -1,5 +1,6 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_client::messages::ApplySignedNamespaceOpRequest;
+use calimero_context_client::messages::{ApplySignedNamespaceOpRequest, NamespaceApplyOutcome};
+use calimero_dag::AddDeltaOutcome;
 
 use crate::governance_dag::{signed_namespace_op_to_delta, NamespaceGovernanceApplier};
 use crate::ContextManager;
@@ -26,8 +27,10 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 let mut dag = dag.lock().await;
-                match dag.add_delta(delta, &applier).await {
-                    Ok(applied) => Ok(applied),
+                match dag.add_delta_with_outcome(delta, &applier).await {
+                    Ok(AddDeltaOutcome::Applied) => Ok(NamespaceApplyOutcome::Applied),
+                    Ok(AddDeltaOutcome::Pending) => Ok(NamespaceApplyOutcome::Pending),
+                    Ok(AddDeltaOutcome::Duplicate) => Ok(NamespaceApplyOutcome::Duplicate),
                     Err(e) => Err(eyre::eyre!("namespace DAG apply error: {e}")),
                 }
             }

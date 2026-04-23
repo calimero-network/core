@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use actix::{AsyncContext, WrapFuture};
 use calimero_context_client::local_governance::SignedNamespaceOp;
+use calimero_context_client::messages::NamespaceApplyOutcome;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use tracing::{debug, info, warn};
@@ -52,21 +53,21 @@ pub(super) fn handle_namespace_governance_delta(
 
     let _ignored = ctx.spawn(
         async move {
-            let apply_outcome = context_client.apply_signed_namespace_op(op).await;
-            let applied = match apply_outcome {
-                Ok(applied) => applied,
+            let outcome = match context_client.apply_signed_namespace_op(op).await {
+                Ok(outcome) => outcome,
                 Err(err) => {
                     warn!(?err, %source, "failed to apply namespace governance delta");
                     return;
                 }
             };
 
-            // Proactive backfill (#2198): if the op went pending (missing
-            // parents), don't wait for the next periodic namespace heartbeat.
-            // Immediately fetch the namespace DAG from the gossip source so
-            // downstream checks like join_context's membership read see a
-            // converged state within sub-second latency. If the first peer
-            // cannot resolve everything, fall through to cross-peer retry.
+            // Proactive backfill (#2198) fires ONLY for `Pending` — the
+            // DAG accepted the op but can't apply it until missing parents
+            // arrive. `Applied` is the steady-state happy path; `Duplicate`
+            // means we already have the op (very common on gossip, since
+            // every mesh peer rebroadcasts), and triggering a backfill for
+            // it would open a stream and request the full namespace state
+            // for nothing.
             //
             // NOTE: we MUST ask `source` first before handing off to
             // `resolve_namespace_pending`. That helper seeds its
@@ -76,7 +77,7 @@ pub(super) fn handle_namespace_governance_delta(
             // a 2-node mesh (where no other peers exist) silently does
             // nothing. Empty `delta_ids` means "give me everything for
             // this namespace" on the responder side.
-            if !applied {
+            if matches!(outcome, NamespaceApplyOutcome::Pending) {
                 debug!(
                     %source,
                     namespace_id = %hex::encode(namespace_id),
@@ -253,8 +254,22 @@ async fn resolve_namespace_pending(
     let mut scheduler = ParentPullBudget::new(initial_peer, max_additional_peers, budget);
 
     loop {
-        if !namespace_has_pending(context_client, namespace_id).await {
-            break;
+        match namespace_has_pending(context_client, namespace_id).await {
+            Ok(false) => break,
+            Ok(true) => {}
+            Err(err) => {
+                // Fail loud rather than pretend convergence: a query error is
+                // unknown state, not "zero pending". Spinning on the same
+                // error is pointless, so we exit the retry loop; the next
+                // heartbeat-triggered `resolve_namespace_pending` pass will
+                // retry the check naturally.
+                warn!(
+                    ?err,
+                    namespace_id = %hex::encode(namespace_id),
+                    "namespace_pending_op_count failed; aborting cross-peer retry"
+                );
+                break;
+            }
         }
 
         let next_peer = match scheduler.next(&mesh_peers) {
@@ -364,15 +379,21 @@ async fn fetch_and_apply_namespace_backfill(
     }
 }
 
-/// Returns `true` if this node's governance DAG has ops whose parents are
-/// not yet local (the pending queue is non-empty).
+/// Returns `Ok(true)` if this node's governance DAG has ops whose parents
+/// are not yet local (the pending queue is non-empty).
+///
+/// Surfaces query errors to the caller rather than swallowing them with
+/// `unwrap_or(0)` — an error here is *not* the same signal as "zero pending
+/// ops", and collapsing the two caused the cross-peer retry loop to exit as
+/// if the DAG were fully resolved when the real state was unknown. Mirrors
+/// the data-delta path's `get_missing_parents()`, where a query failure is
+/// equally observable rather than silenced.
 async fn namespace_has_pending(
     context_client: &calimero_context_client::client::ContextClient,
     namespace_id: [u8; 32],
-) -> bool {
-    context_client
+) -> eyre::Result<bool> {
+    Ok(context_client
         .namespace_pending_op_count(namespace_id)
-        .await
-        .unwrap_or(0)
-        > 0
+        .await?
+        > 0)
 }

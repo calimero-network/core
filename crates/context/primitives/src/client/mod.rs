@@ -40,7 +40,8 @@ use crate::group::{
 use crate::messages::{
     ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest, ContextMessage, CreateContextRequest,
     CreateContextResponse, DeleteContextRequest, DeleteContextResponse, ExecuteError,
-    ExecuteRequest, ExecuteResponse, MigrationParams, UpdateApplicationRequest,
+    ExecuteRequest, ExecuteResponse, MigrationParams, NamespaceApplyOutcome,
+    UpdateApplicationRequest,
 };
 use crate::ContextAtomic;
 
@@ -1301,15 +1302,13 @@ impl ContextClient {
 
     /// Apply a signed namespace governance op to this node's local state.
     ///
-    /// Returns `Ok(true)` if the op was applied immediately, `Ok(false)` if it
-    /// was deferred as pending (missing parents) or is a duplicate. Callers
-    /// that observe `Ok(false)` may proactively trigger a backfill against the
-    /// gossip source so the pending chain resolves without waiting for the
-    /// periodic namespace heartbeat.
+    /// Returns a [`NamespaceApplyOutcome`] distinguishing the three success
+    /// states: `Applied`, `Pending` (parents missing — caller should trigger
+    /// backfill), and `Duplicate` (already present — no action required).
     pub async fn apply_signed_namespace_op(
         &self,
         op: crate::local_governance::SignedNamespaceOp,
-    ) -> eyre::Result<bool> {
+    ) -> eyre::Result<NamespaceApplyOutcome> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
