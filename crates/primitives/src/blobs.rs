@@ -16,11 +16,6 @@ use crate::hash::{Hash, HashError};
 pub struct BlobId(Hash);
 
 impl BlobId {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-
     // Returns BlobId represented as a 32-byte array.
     pub fn digest(&self) -> &[u8; DIGEST_SIZE] {
         &self.0
@@ -49,19 +44,19 @@ impl Deref for BlobId {
 
 impl Display for BlobId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.pad(self.as_str())
+        Display::fmt(&self.0, f)
     }
 }
 
 impl From<BlobId> for String {
     fn from(id: BlobId) -> Self {
-        id.as_str().to_owned()
+        id.0.to_base58()
     }
 }
 
 impl From<&BlobId> for String {
     fn from(id: &BlobId) -> Self {
-        id.as_str().to_owned()
+        id.0.to_base58()
     }
 }
 

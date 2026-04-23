@@ -6,7 +6,7 @@ use super::*;
 fn zero_hash_matches_from_bytes() {
     let from_bytes: Hash = [0u8; 32].into();
     assert_eq!(Hash::zero(), from_bytes);
-    assert_eq!(from_bytes.as_str(), "11111111111111111111111111111111");
+    assert_eq!(from_bytes.to_string(), "11111111111111111111111111111111");
 }
 
 #[test]
@@ -18,9 +18,12 @@ fn test_hash_43() {
         "03675ac53ff9cd1535ccc7dfcdfa2c458c5218371f418dc136f2d19ac1fbe8a5"
     );
 
-    assert_eq!(hash.as_str(), "EHdZfnzn717B56XYH8sWLAHfDC3icGEkccNzpAF4PwS");
     assert_eq!(
-        (*&*&*&*&*&*&hash).as_str(),
+        hash.to_string(),
+        "EHdZfnzn717B56XYH8sWLAHfDC3icGEkccNzpAF4PwS"
+    );
+    assert_eq!(
+        hash.to_base58(),
         "EHdZfnzn717B56XYH8sWLAHfDC3icGEkccNzpAF4PwS"
     );
 }
@@ -35,14 +38,22 @@ fn test_hash_44() {
     );
 
     assert_eq!(
-        hash.as_str(),
+        hash.to_string(),
         "C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK"
     );
 
     assert_eq!(
-        (*&*&*&*&*&*&hash).as_str(),
+        hash.to_base58(),
         "C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK"
     );
+}
+
+#[test]
+fn encode_base58_into_stack_buf() {
+    let hash = Hash::new(b"Hello World");
+    let mut buf = [0u8; 45];
+    let s = hash.encode_base58(&mut buf);
+    assert_eq!(s, "C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK");
 }
 
 #[test]
