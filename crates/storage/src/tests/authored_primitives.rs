@@ -52,6 +52,7 @@ fn build_signed_update_for(
             signature_data: Some(SignatureData {
                 signature: [0; 64],
                 nonce,
+                signer: None,
             }),
         },
         crdt_type: None,
@@ -75,7 +76,11 @@ fn build_signed_update_for(
             ..
         } = metadata.storage_type
         {
-            *signature_data = Some(SignatureData { signature, nonce });
+            *signature_data = Some(SignatureData {
+                signature,
+                nonce,
+                signer: None,
+            });
         }
     }
     action
@@ -98,6 +103,7 @@ fn build_signed_delete_for(
             signature_data: Some(SignatureData {
                 signature: [0; 64],
                 nonce: deleted_at,
+                signer: None,
             }),
         },
         crdt_type: None,
@@ -123,6 +129,7 @@ fn build_signed_delete_for(
             *signature_data = Some(SignatureData {
                 signature,
                 nonce: deleted_at,
+                signer: None,
             });
         }
     }

@@ -1377,6 +1377,20 @@ fn try_manual_entity_index_decode(
                                 }
                                 // Skip signature_data (64 bytes signature + 8 bytes nonce)
                                 manual_offset += 72;
+                                // Skip signer Option<PublicKey>: 1 byte tag + optional 32 bytes
+                                if bytes.len() <= manual_offset {
+                                    eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].User.signature_data.signer");
+                                    break;
+                                }
+                                let signer_present = bytes[manual_offset] == 1;
+                                manual_offset += 1;
+                                if signer_present {
+                                    if bytes.len() < manual_offset + 32 {
+                                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].User.signature_data.signer pubkey");
+                                        break;
+                                    }
+                                    manual_offset += 32;
+                                }
                                 None // We don't need the actual signature data for finding children
                             } else {
                                 manual_offset += 1;
@@ -1425,6 +1439,20 @@ fn try_manual_entity_index_decode(
                                     break;
                                 }
                                 manual_offset += 72;
+                                // Skip signer Option<PublicKey>: 1 byte tag + optional 32 bytes
+                                if bytes.len() <= manual_offset {
+                                    eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].Shared.signature_data.signer");
+                                    break;
+                                }
+                                let signer_present = bytes[manual_offset] == 1;
+                                manual_offset += 1;
+                                if signer_present {
+                                    if bytes.len() < manual_offset + 32 {
+                                        eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].Shared.signature_data.signer pubkey");
+                                        break;
+                                    }
+                                    manual_offset += 32;
+                                }
                                 None
                             } else {
                                 manual_offset += 1;
@@ -1625,6 +1653,9 @@ enum StorageType {
 struct SignatureData {
     signature: [u8; 64],
     nonce: u64,
+    /// Optional signer-pubkey hint added by Shared storage for O(1) verifier lookup.
+    /// Mirrors the field in `crates/storage/src/entities.rs::SignatureData`.
+    signer: Option<Id>,
 }
 
 #[derive(borsh::BorshDeserialize, Clone)]

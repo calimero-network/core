@@ -240,6 +240,7 @@ pub fn create_signed_user_add_action(
             signature_data: Some(SignatureData {
                 signature: [0; 64], // Placeholder
                 nonce,
+                signer: None,
             }),
         },
         crdt_type: None,
@@ -266,7 +267,11 @@ pub fn create_signed_user_add_action(
             ..
         } = metadata.storage_type
         {
-            *signature_data = Some(SignatureData { signature, nonce });
+            *signature_data = Some(SignatureData {
+                signature,
+                nonce,
+                signer: None,
+            });
         }
     }
 
@@ -292,6 +297,7 @@ pub fn create_signed_user_update_action(
             signature_data: Some(SignatureData {
                 signature: [0; 64],
                 nonce,
+                signer: None,
             }),
         },
         crdt_type: None,
@@ -316,7 +322,11 @@ pub fn create_signed_user_update_action(
             ..
         } = metadata.storage_type
         {
-            *signature_data = Some(SignatureData { signature, nonce });
+            *signature_data = Some(SignatureData {
+                signature,
+                nonce,
+                signer: None,
+            });
         }
     }
 

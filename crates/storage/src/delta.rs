@@ -357,6 +357,7 @@ fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
                 signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
                     nonce: sig_data.nonce,
                     signature: [0; 64], // Use placeholder for hash
+                    signer: sig_data.signer,
                 }),
             };
             hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
@@ -371,6 +372,7 @@ fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
                 signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
                     nonce: sig_data.nonce,
                     signature: [0; 64], // Use placeholder for hash
+                    signer: sig_data.signer,
                 }),
             };
             hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
