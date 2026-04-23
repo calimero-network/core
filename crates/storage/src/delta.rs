@@ -361,5 +361,19 @@ fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
             };
             hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
         }
+        StorageType::Shared {
+            writers,
+            signature_data,
+        } => {
+            // Hash the Shared variant *without* the signature
+            let partial_type = StorageType::Shared {
+                writers: writers.clone(),
+                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
+                    nonce: sig_data.nonce,
+                    signature: [0; 64], // Use placeholder for hash
+                }),
+            };
+            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
+        }
     }
 }

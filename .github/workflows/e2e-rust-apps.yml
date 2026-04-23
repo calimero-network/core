@@ -15,6 +15,7 @@ on:
       - "crates/**"
       - "apps/e2e-kv-store/**"
       - "apps/xcall-example/**"
+      - "apps/kv-store-with-shared-storage/**"
       - ".github/workflows/e2e-rust-apps.yml"
 
   pull_request:
@@ -23,6 +24,7 @@ on:
       - "crates/**"
       - "apps/e2e-kv-store/**"
       - "apps/xcall-example/**"
+      - "apps/kv-store-with-shared-storage/**"
       - ".github/workflows/e2e-rust-apps.yml"
 
   workflow_dispatch:
@@ -105,6 +107,11 @@ jobs:
           cd apps/xcall-example
           ./build.sh
 
+      - name: Build kv-store-with-shared-storage app
+        run: |
+          cd apps/kv-store-with-shared-storage
+          ./build.sh
+
       - name: Upload app artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -116,6 +123,9 @@ jobs:
             apps/e2e-kv-store/res/state-schema.json
             apps/xcall-example/res/*.wasm
             apps/xcall-example/res/abi.json
+            apps/kv-store-with-shared-storage/res/*.wasm
+            apps/kv-store-with-shared-storage/res/abi.json
+            apps/kv-store-with-shared-storage/res/state-schema.json
           retention-days: 1
 
   # ── Test phase: run each workflow in parallel ──
@@ -169,6 +179,9 @@ jobs:
           - workflow: xcall-example
             file: workflows/xcall.yml
             app: xcall-example
+          - workflow: shared-storage
+            file: workflows/test_shared_storage.yml
+            app: kv-store-with-shared-storage
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

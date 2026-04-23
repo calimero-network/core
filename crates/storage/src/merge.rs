@@ -247,6 +247,10 @@ pub fn merge_by_crdt_type(
         // authoritative. For data that must converge, use LwwRegister or UserStorage.
         CrdtType::FrozenStorage => Ok(existing.to_vec()),
 
+        // SharedStorage - LWW per writer (same shape as UserStorage; per-writer
+        // signature verification gates which deltas reach this point).
+        CrdtType::SharedStorage => Ok(incoming.to_vec()),
+
         // App-defined types
         CrdtType::Custom(type_name) => Err(MergeError::WasmRequired {
             type_name: type_name.clone(),

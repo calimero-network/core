@@ -185,6 +185,52 @@ impl<S: StorageAdaptor> Interface<S> {
                         );
                         verify_frozen_action_upsert(&action, data)?;
                     }
+                    StorageType::Shared {
+                        writers,
+                        signature_data,
+                    } => {
+                        debug!(
+                            %id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            writer_count = writers.len(),
+                            data_len = data.len(),
+                            "Interface::apply_action received upsert shared action"
+                        );
+                        let sig_data = signature_data.as_ref().ok_or(StorageError::InvalidData(
+                            "Remote Shared action must be signed".to_owned(),
+                        ))?;
+
+                        // Determine the authoritative writer set: stored if present,
+                        // else the action's claim (bootstrap).
+                        let stored_metadata = <Index<S>>::get_metadata(*id)?;
+                        let authoritative_writers =
+                            match stored_metadata.as_ref().map(|m| &m.storage_type) {
+                                Some(StorageType::Shared {
+                                    writers: stored_w, ..
+                                }) => stored_w.clone(),
+                                // Bootstrap (or non-Shared existing — rejected by
+                                // verify_action_update; treat defensively as bootstrap).
+                                _ => writers.clone(),
+                            };
+
+                        // Identify the signer by trying each authoritative writer.
+                        let payload = action.payload_for_signing();
+                        let signer = authoritative_writers.iter().copied().find(|w| {
+                            crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
+                        });
+                        let Some(signer) = signer else {
+                            return Err(StorageError::InvalidSignature);
+                        };
+
+                        // Replay protection (per-entity monotonic nonce).
+                        let new_nonce = sig_data.nonce;
+                        let last_nonce =
+                            stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
+                        if new_nonce <= last_nonce {
+                            return Err(StorageError::NonceReplay(Box::new((signer, new_nonce))));
+                        }
+                    }
                     StorageType::Public => { /* No special checks */ }
                 }
             }
@@ -251,6 +297,56 @@ impl<S: StorageAdaptor> Interface<S> {
                             }
                             _ => {
                                 // Action metadata is not User, but existing is.
+                                return Err(StorageError::InvalidSignature);
+                            }
+                        }
+                    }
+                    StorageType::Shared {
+                        writers: ref existing_writers,
+                        ..
+                    } => {
+                        // Verify the action's metadata, which contains the signature
+                        match &metadata.storage_type {
+                            StorageType::Shared {
+                                writers: action_writers,
+                                signature_data,
+                                ..
+                            } => {
+                                // Action's claimed writers must match stored — delete is
+                                // not a rotation channel.
+                                if action_writers != existing_writers {
+                                    return Err(StorageError::InvalidSignature);
+                                }
+
+                                let sig_data =
+                                    signature_data.as_ref().ok_or(StorageError::InvalidData(
+                                        "Remote Shared delete must be signed".to_owned(),
+                                    ))?;
+
+                                // Identify the signer.
+                                let payload = action.payload_for_signing();
+                                let signer = existing_writers.iter().copied().find(|w| {
+                                    crate::env::ed25519_verify(
+                                        &sig_data.signature,
+                                        w.digest(),
+                                        &payload,
+                                    )
+                                });
+                                let Some(signer) = signer else {
+                                    return Err(StorageError::InvalidSignature);
+                                };
+
+                                // Replay protection check
+                                let new_nonce = sig_data.nonce;
+                                let last_nonce = *existing_metadata.updated_at;
+                                if new_nonce <= last_nonce {
+                                    return Err(StorageError::NonceReplay(Box::new((
+                                        signer, new_nonce,
+                                    ))));
+                                }
+                            }
+                            _ => {
+                                // Action metadata is not Shared, but existing is.
                                 return Err(StorageError::InvalidSignature);
                             }
                         }
@@ -795,6 +891,28 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
+        // If this is a local shared action by a writer, set the nonce
+        let shared_to_stamp = if let StorageType::Shared { writers, .. } = &metadata.storage_type {
+            let executor: calimero_primitives::identity::PublicKey =
+                crate::env::executor_id().into();
+            if writers.contains(&executor) {
+                Some(writers.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(writers) = shared_to_stamp {
+            metadata.storage_type = StorageType::Shared {
+                writers,
+                signature_data: Some(SignatureData {
+                    signature: [0; 64], // Placeholder, added by signer
+                    nonce: deleted_at,
+                }),
+            };
+        }
+
         <Index<S>>::remove_child_from(parent_id, child_id)?;
 
         // Use DeleteRef for efficient tombstone-based deletion.
@@ -1219,6 +1337,33 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
+        // If this is a local shared action by a writer, set the nonce
+        let shared_to_stamp = if let StorageType::Shared {
+            writers,
+            signature_data,
+        } = &metadata.storage_type
+        {
+            let executor: calimero_primitives::identity::PublicKey =
+                crate::env::executor_id().into();
+            if writers.contains(&executor) && signature_data.is_none() {
+                Some(writers.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(writers) = shared_to_stamp {
+            let nonce = *metadata.updated_at;
+            metadata.storage_type = StorageType::Shared {
+                writers,
+                signature_data: Some(SignatureData {
+                    signature: [0; 64], // Placeholder, added by signer
+                    nonce,
+                }),
+            };
+        }
+
         let Some((is_new, full_hash)) = Self::save_internal(id, &data, metadata.clone())? else {
             return Ok(None);
         };
@@ -1302,6 +1447,11 @@ impl<S: StorageAdaptor> Interface<S> {
                             ));
                         }
 
+                        Ok(())
+                    }
+                    (StorageType::Shared { .. }, StorageType::Shared { .. }) => {
+                        // Writer-set changes (rotation) are gated by signature
+                        // verification in apply_action against the stored writer set.
                         Ok(())
                     }
                     (existing, new) => {
