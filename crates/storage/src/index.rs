@@ -403,7 +403,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// drift somehow, tests in `tests::merkle` enforce the invariant
     /// `stored_full_hash == calculate_full_hash_for_children(...)` after
     /// common operation sequences.
-    pub(crate) fn calculate_full_merkle_hash_for(id: Id) -> Result<[u8; 32], StorageError> {
+    pub(crate) fn get_full_merkle_hash_for(id: Id) -> Result<[u8; 32], StorageError> {
         Self::get_hashes_for(id)?
             .map(|(full_hash, _)| full_hash)
             .ok_or(StorageError::IndexNotFound(id))
@@ -577,7 +577,7 @@ impl<S: StorageAdaptor> Index<S> {
             // Update the child's hash in the parent's children list
             if let Some(children) = &mut parent_index.children {
                 if let Some(child) = children.iter_mut().find(|c| c.id() == current_id) {
-                    let new_child_hash = Self::calculate_full_merkle_hash_for(current_id)?;
+                    let new_child_hash = Self::get_full_merkle_hash_for(current_id)?;
                     if child.merkle_hash() != new_child_hash {
                         // Log when a child's hash changes and affects the root
                         if parent_id.is_root() {

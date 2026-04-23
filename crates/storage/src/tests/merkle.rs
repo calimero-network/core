@@ -407,7 +407,7 @@ fn deferred_ancestor_scope_propagates_through_ancestors() {
         .unwrap()
         .unwrap()
         .0;
-    let root_fresh = Index::<TestStorage>::calculate_full_merkle_hash_for(root.id()).unwrap();
+    let root_fresh = Index::<TestStorage>::get_full_merkle_hash_for(root.id()).unwrap();
     assert_eq!(
         hex::encode(root_stored),
         hex::encode(root_fresh),
@@ -419,7 +419,7 @@ fn deferred_ancestor_scope_propagates_through_ancestors() {
         .unwrap()
         .unwrap()
         .0;
-    let parent_fresh = Index::<TestStorage>::calculate_full_merkle_hash_for(parent.id()).unwrap();
+    let parent_fresh = Index::<TestStorage>::get_full_merkle_hash_for(parent.id()).unwrap();
     assert_eq!(
         hex::encode(parent_stored),
         hex::encode(parent_fresh),
@@ -530,7 +530,7 @@ fn deferred_scope_handles_mixed_add_and_remove() {
         .unwrap()
         .unwrap()
         .0;
-    let root_fresh = Index::<TestStorage>::calculate_full_merkle_hash_for(root.id()).unwrap();
+    let root_fresh = Index::<TestStorage>::get_full_merkle_hash_for(root.id()).unwrap();
     assert_eq!(
         hex::encode(root_stored),
         hex::encode(root_fresh),
@@ -540,7 +540,7 @@ fn deferred_scope_handles_mixed_add_and_remove() {
         .unwrap()
         .unwrap()
         .0;
-    let parent_fresh = Index::<TestStorage>::calculate_full_merkle_hash_for(parent.id()).unwrap();
+    let parent_fresh = Index::<TestStorage>::get_full_merkle_hash_for(parent.id()).unwrap();
     assert_eq!(
         hex::encode(parent_stored),
         hex::encode(parent_fresh),
@@ -586,7 +586,7 @@ fn deferred_scope_of_different_adaptor_does_not_cross_contaminate() {
         .unwrap()
         .unwrap()
         .0;
-    let root_fresh = Index::<TestStorage>::calculate_full_merkle_hash_for(root.id()).unwrap();
+    let root_fresh = Index::<TestStorage>::get_full_merkle_hash_for(root.id()).unwrap();
     assert_eq!(
         hex::encode(root_stored),
         hex::encode(root_fresh),
@@ -640,7 +640,7 @@ fn sorted_insert_path_preserves_hash_semantics() {
         .unwrap()
         .unwrap()
         .0;
-    let fresh = Index::<TestStorage>::calculate_full_merkle_hash_for(parent.id()).unwrap();
+    let fresh = Index::<TestStorage>::get_full_merkle_hash_for(parent.id()).unwrap();
     assert_eq!(stored, fresh);
 }
 
@@ -704,18 +704,18 @@ fn stored_full_hash_always_matches_fresh_recompute_after_add_root() {
         "full_hash must be computed eagerly by add_root (#2238 Fix 1), not left at default zero"
     );
 
-    // calculate_full_merkle_hash_for should return the same value
+    // get_full_merkle_hash_for should return the same value
     // without touching children — it's just a stored read now.
-    let via_read = Index::<TestStorage>::calculate_full_merkle_hash_for(id).unwrap();
+    let via_read = Index::<TestStorage>::get_full_merkle_hash_for(id).unwrap();
     assert_eq!(
         stored.0, via_read,
-        "calculate_full_merkle_hash_for returns stored full_hash (#2238 Fix 1)"
+        "get_full_merkle_hash_for returns stored full_hash (#2238 Fix 1)"
     );
 }
 
 #[test]
 fn stored_full_hash_stays_authoritative_through_ancestor_walks() {
-    // After #2238 Fix 1, `calculate_full_merkle_hash_for` is an O(1)
+    // After #2238 Fix 1, `get_full_merkle_hash_for` is an O(1)
     // stored-read, so comparing it against `get_hashes_for` would be
     // circular. Instead, independently recompute each node's full_hash
     // from its children (via `calculate_full_hash_for_children` on the

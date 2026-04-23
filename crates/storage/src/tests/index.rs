@@ -683,7 +683,7 @@ mod hashing {
     use super::*;
 
     #[test]
-    fn calculate_full_merkle_hash_for__with_children() {
+    fn get_full_merkle_hash_for__with_children() {
         let root_id = Id::from([0; 32]);
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(
             root_id,
@@ -707,19 +707,19 @@ mod hashing {
         assert!(<Index<MainStorage>>::add_child_to(root_id, child3_info).is_ok());
 
         assert_eq!(
-            hex::encode(<Index<MainStorage>>::calculate_full_merkle_hash_for(child1_id).unwrap()),
+            hex::encode(<Index<MainStorage>>::get_full_merkle_hash_for(child1_id).unwrap()),
             "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
         );
         assert_eq!(
-            hex::encode(<Index<MainStorage>>::calculate_full_merkle_hash_for(child2_id).unwrap()),
+            hex::encode(<Index<MainStorage>>::get_full_merkle_hash_for(child2_id).unwrap()),
             "75877bb41d393b5fb8455ce60ecd8dda001d06316496b14dfa7f895656eeca4a",
         );
         assert_eq!(
-            hex::encode(<Index<MainStorage>>::calculate_full_merkle_hash_for(child3_id).unwrap()),
+            hex::encode(<Index<MainStorage>>::get_full_merkle_hash_for(child3_id).unwrap()),
             "648aa5c579fb30f38af744d97d6ec840c7a91277a499a0d780f3e7314eca090b",
         );
         assert_eq!(
-            hex::encode(<Index<MainStorage>>::calculate_full_merkle_hash_for(root_id).unwrap()),
+            hex::encode(<Index<MainStorage>>::get_full_merkle_hash_for(root_id).unwrap()),
             "866edea6f7ce51612ad0ea3bcde93b2494d77e8c466bc2a69817a6443f2a57f0",
         );
     }
