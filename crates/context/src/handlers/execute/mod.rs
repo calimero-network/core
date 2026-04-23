@@ -1167,7 +1167,13 @@ fn substitute_aliases_in_payload(
                 .map_err(|_| ExecuteError::InternalError)?
                 .ok_or_else(|| ExecuteError::AliasResolutionFailed { alias: *alias })?;
 
-            result.extend_from_slice(public_key.as_str().as_bytes());
+            // Substitution hot path: bs58-encode the 32-byte key into a
+            // stack buffer rather than allocating a fresh String per alias.
+            let mut buf = [0u8; 45];
+            let len = bs58::encode(public_key.as_ref() as &[u8; 32])
+                .onto(&mut buf[..])
+                .expect("base58 encoding cannot fail for fixed 32-byte input");
+            result.extend_from_slice(&buf[..len]);
 
             remaining = &remaining[pos + needle.len()..];
         }

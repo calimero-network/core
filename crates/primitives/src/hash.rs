@@ -24,11 +24,19 @@ const BYTES_LEN: usize = 32;
 // https://github.com/bitcoin/libbase58/blob/master/base58.c#L155
 const MAX_STR_LEN: usize = (BYTES_LEN * 138 / 100) + 1;
 
+/// A 32-byte cryptographic digest that displays as base58.
+///
+/// The base58 representation is computed on demand rather than cached on
+/// construction. This makes `Hash::from([u8; 32])` a cheap memcpy and
+/// shrinks the struct from ~80 bytes to 32, which matters on hot paths
+/// that construct IDs just to compare or hash them (delta-store
+/// iteration, RocksDB key parsing, etc.). Call sites that need the
+/// string form can use [`Display`] (zero-alloc) or [`Self::to_base58`]
+/// (allocates). For writing the string into an existing buffer without
+/// allocating, see [`Self::encode_base58`].
 #[derive(Clone, Copy)]
 pub struct Hash {
     bytes: [u8; BYTES_LEN],
-    bs58_cache: [u8; MAX_STR_LEN],
-    bs58_len: u8,
 }
 
 impl Hash {
@@ -37,28 +45,18 @@ impl Hash {
         &self.bytes
     }
 
-    /// All-zero digest, with base58 cache matching [`From<[u8; BYTES_LEN]>`](Self).
+    /// All-zero digest. Cheap — no base58 work on construction.
     #[must_use]
     pub const fn zero() -> Self {
-        const ZERO_BS58: &[u8] = b"11111111111111111111111111111111";
-        let mut bs58_cache = [0u8; MAX_STR_LEN];
-        let mut i = 0;
-        while i < ZERO_BS58.len() {
-            bs58_cache[i] = ZERO_BS58[i];
-            i += 1;
-        }
         Self {
             bytes: [0u8; BYTES_LEN],
-            bs58_cache,
-            bs58_len: ZERO_BS58.len() as u8,
         }
     }
 
     #[must_use]
     pub fn new(data: &[u8]) -> Self {
         let hash_bytes: [u8; BYTES_LEN] = Sha256::digest(data).into();
-        // Will call `From<[u8; 32]>` which computes the cache
-        hash_bytes.into()
+        Self { bytes: hash_bytes }
     }
 
     pub fn is_zero(&self) -> bool {
@@ -67,58 +65,54 @@ impl Hash {
 
     pub fn hash_json<T: Serialize>(data: &T) -> JsonResult<Self> {
         let mut hasher = Sha256::default();
-
         to_json_writer(&mut hasher, data)?;
-
-        // Get the raw [u8; 32] bytes from the hasher
         let hash_bytes: [u8; BYTES_LEN] = hasher.finalize().into();
-
-        // Let `From<[u8; 32]>` handle construction and caching
-        Ok(hash_bytes.into())
+        Ok(Self { bytes: hash_bytes })
     }
 
     #[cfg(feature = "borsh")]
     pub fn hash_borsh<T: BorshSerialize>(data: &T) -> io::Result<Self> {
         let mut hasher = Sha256::default();
-
         data.serialize(&mut hasher)?;
-
-        // Get the raw [u8; 32] bytes from the hasher
         let hash_bytes: [u8; BYTES_LEN] = hasher.finalize().into();
-
-        // Let `From<[u8; 32]>` handle construction and caching
-        Ok(hash_bytes.into())
+        Ok(Self { bytes: hash_bytes })
     }
 
+    /// Returns the base58 representation as a freshly allocated
+    /// `String`. Use [`Self::encode_base58`] when you already have a
+    /// stack buffer and want to avoid the allocation.
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        // Safe: Read from the pre-computed cache.
-        let s = &self.bs58_cache[..self.bs58_len as usize];
+    pub fn to_base58(&self) -> String {
+        let mut buf = [0u8; MAX_STR_LEN];
+        let s = self.encode_base58(&mut buf);
+        s.to_owned()
+    }
 
-        // We can trust this is valid UTF-8 because we are the ones
-        // who put it there during initialization.
-        // Using from_utf8().unwrap() is also perfectly fine.
-        unsafe { from_utf8_unchecked(s) }
+    /// Writes the base58 representation into `buf` and returns it as a
+    /// `&str` borrowing from `buf`. Zero allocation; intended for hot
+    /// paths that can bring their own buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if base58 encoding fails, which cannot happen given the
+    /// fixed 32-byte input and correctly-sized output buffer.
+    #[must_use]
+    pub fn encode_base58<'a>(&self, buf: &'a mut [u8; MAX_STR_LEN]) -> &'a str {
+        let len = bs58::encode(&self.bytes)
+            .onto(&mut buf[..])
+            .expect("Base58 encoding failed");
+        // SAFETY: bs58 alphabet is pure ASCII.
+        unsafe { from_utf8_unchecked(&buf[..len]) }
     }
 
     fn from_str(s: &str) -> Result<Self, Option<Bs58Error>> {
-        let s_len = s.len();
-        if s_len > MAX_STR_LEN {
+        if s.len() > MAX_STR_LEN {
             return Err(Some(Bs58Error::BufferTooSmall));
         }
 
         let mut bytes = [0; BYTES_LEN];
         match bs58::decode(s).onto(&mut bytes) {
-            Ok(len) if len == bytes.len() => {
-                let mut bs58_cache = [0; MAX_STR_LEN];
-                bs58_cache[..s_len].copy_from_slice(s.as_bytes());
-
-                Ok(Self {
-                    bytes,
-                    bs58_cache,
-                    bs58_len: s_len.try_into().expect("infallible conversion: checked before string length is less than MAX_STR_LEN"),
-                })
-            }
+            Ok(len) if len == bytes.len() => Ok(Self { bytes }),
             Ok(_) => Err(None),
             Err(err) => Err(Some(err)),
         }
@@ -127,20 +121,7 @@ impl Hash {
 
 impl From<[u8; BYTES_LEN]> for Hash {
     fn from(bytes: [u8; BYTES_LEN]) -> Self {
-        let mut bs58_cache = [0; MAX_STR_LEN];
-        let len = bs58::encode(&bytes)
-            .onto(&mut bs58_cache[..])
-            // Panics if MAX_STR_LEN is wrong, which is good.
-            .expect("Base58 encoding failed");
-
-        Self {
-            bytes,
-            bs58_cache,
-            // Safe: max len is 45
-            bs58_len: len
-                .try_into()
-                .expect("infaliible conversion: bs58_len conversion failed, but shouldn't have"),
-        }
+        Self { bytes }
     }
 }
 
@@ -166,11 +147,7 @@ impl Deref for Hash {
 
 impl Default for Hash {
     fn default() -> Self {
-        // Create the default byte array
-        const DEFAULT_BYTES: [u8; BYTES_LEN] = [0; BYTES_LEN];
-
-        // Let `From<[u8; 32]>` handle construction and caching
-        DEFAULT_BYTES.into()
+        Self::zero()
     }
 }
 
@@ -202,13 +179,17 @@ impl Ord for Hash {
 
 impl Display for Hash {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.pad(self.as_str())
+        let mut buf = [0u8; MAX_STR_LEN];
+        f.pad(self.encode_base58(&mut buf))
     }
 }
 
 impl Debug for Hash {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Hash").field(&self.as_str()).finish()
+        let mut buf = [0u8; MAX_STR_LEN];
+        f.debug_tuple("Hash")
+            .field(&self.encode_base58(&mut buf))
+            .finish()
     }
 }
 
@@ -246,15 +227,14 @@ impl BorshDeserialize for Hash {
     fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
         let mut bytes = [0; BYTES_LEN];
         reader.read_exact(&mut bytes)?;
-
-        // Let `From<[u8; 32]>` handle construction and caching
-        Ok(bytes.into())
+        Ok(Self { bytes })
     }
 }
 
 impl Serialize for Hash {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
+        let mut buf = [0u8; MAX_STR_LEN];
+        serializer.serialize_str(self.encode_base58(&mut buf))
     }
 }
 

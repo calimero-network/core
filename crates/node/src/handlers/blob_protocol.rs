@@ -93,8 +93,8 @@ async fn handle_blob_request_stream(
 ) -> eyre::Result<()> {
     info!(
         %peer_id,
-        blob_id = blob_request.blob_id.as_str(),
-        context_id = blob_request.context_id.as_str(),
+        blob_id = %blob_request.blob_id,
+        context_id = %blob_request.context_id,
         "Processing blob request stream using binary chunk protocol"
     );
 
@@ -234,7 +234,7 @@ async fn handle_blob_request_stream(
         Err(_) => {
             warn!(
                 %peer_id,
-                blob_id = blob_request.blob_id.as_str(),
+                blob_id = %blob_request.blob_id,
                 timeout_secs = BLOB_SERVE_TIMEOUT.as_secs(),
                 "Blob serving timed out"
             );
