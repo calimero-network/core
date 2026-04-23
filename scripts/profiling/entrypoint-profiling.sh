@@ -45,16 +45,31 @@ install_kernel_tools() {
     # and errors if it's missing, so we symlink the generic binary into place.
     echo "[Profiling] Exact-version tools unavailable, trying linux-tools-generic..."
     if apt-get install -y -qq linux-tools-generic 2>/dev/null; then
-        local generic_perf
-        generic_perf=$(ls /usr/lib/linux-tools/*/perf 2>/dev/null | grep -v "/${kernel_version}/" | head -1)
+        # Glob-based lookup — avoids parsing ls output and avoids regex
+        # pitfalls (dots in kernel_version are regex metacharacters).
+        local generic_perf=""
+        for candidate in /usr/lib/linux-tools/*/perf; do
+            [ -f "$candidate" ] || continue
+            # Skip the version-matched path (it's what the Ubuntu wrapper
+            # already tried and failed on).
+            if [ "$(basename "$(dirname "$candidate")")" = "$kernel_version" ]; then
+                continue
+            fi
+            generic_perf="$candidate"
+            break
+        done
         if [ -n "$generic_perf" ]; then
             local target_dir="/usr/lib/linux-tools/${kernel_version}"
-            mkdir -p "$target_dir" 2>/dev/null || true
-            ln -sf "$generic_perf" "$target_dir/perf" 2>/dev/null || true
-            if perf record -o /dev/null -- true 2>/dev/null; then
+            if ! mkdir -p "$target_dir" 2>/dev/null; then
+                echo "[Profiling] WARNING: could not create $target_dir"
+            elif ! ln -sf "$generic_perf" "$target_dir/perf" 2>/dev/null; then
+                echo "[Profiling] WARNING: could not symlink $target_dir/perf -> $generic_perf"
+            elif perf record -o /dev/null -- true 2>/dev/null; then
                 echo "[Profiling] perf is now working (linux-tools-generic via $generic_perf)"
                 return 0
             fi
+        else
+            echo "[Profiling] linux-tools-generic installed but no perf binary found under /usr/lib/linux-tools/*/"
         fi
     fi
 
