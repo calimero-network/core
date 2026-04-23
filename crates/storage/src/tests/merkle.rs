@@ -595,3 +595,79 @@ fn deferred_scope_of_different_adaptor_does_not_cross_contaminate() {
 
     foreign_scope.finish().unwrap();
 }
+
+// ============================================================
+// #2238 Fix 3 — sorted-insert path produces identical hashes
+// ============================================================
+
+#[test]
+fn sorted_insert_path_preserves_hash_semantics() {
+    // Add multiple children out of creation order; the binary_search + insert
+    // path must land them in the same sorted position a BTreeSet would have
+    // chosen. The final parent full_hash must equal a fresh recompute
+    // from the (ordered) children list — enforced by the existing merkle
+    // invariants, but we assert here to lock in the sort-order guarantee.
+    use crate::index::Index;
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut parent = Page::new_from_element("Parent", Element::root());
+    TestInterface::save(&mut parent).unwrap();
+
+    // Add children with interleaved names so the string-derived created_at
+    // / id hashes don't arrive in any particular sorted order.
+    let names = ["delta", "alpha", "gamma", "beta", "epsilon"];
+    for name in names {
+        let mut child = Paragraph::new_from_element(name, Element::new(None));
+        TestInterface::add_child_to(parent.id(), &mut child).unwrap();
+    }
+
+    // The children list must be sorted after every insert (preserved by
+    // binary_search + insert). Read it back and verify.
+    let children = Index::<TestStorage>::get_children_of(parent.id()).unwrap();
+    assert_eq!(children.len(), 5);
+    for pair in children.windows(2) {
+        assert!(
+            pair[0] <= pair[1],
+            "children must stay sorted across binary-search inserts"
+        );
+    }
+
+    // Parent's stored full_hash matches fresh recompute (proves nothing
+    // was reshuffled between save and read).
+    let stored = Index::<TestStorage>::get_hashes_for(parent.id())
+        .unwrap()
+        .unwrap()
+        .0;
+    let fresh = Index::<TestStorage>::calculate_full_merkle_hash_for(parent.id()).unwrap();
+    assert_eq!(stored, fresh);
+}
+
+#[test]
+fn sorted_insert_replaces_existing_child_in_place() {
+    // Re-adding a child with the same (created_at, id) but updated hash
+    // should replace the existing entry, not duplicate it.
+    use crate::entities::ChildInfo;
+    use crate::index::Index;
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut parent = Page::new_from_element("Parent", Element::root());
+    TestInterface::save(&mut parent).unwrap();
+
+    let mut child = Paragraph::new_from_element("Child", Element::new(None));
+    TestInterface::add_child_to(parent.id(), &mut child).unwrap();
+
+    // Second add_child_to with the same child but a new own_hash should
+    // replace the entry at the same position.
+    let initial_children = Index::<TestStorage>::get_children_of(parent.id()).unwrap();
+    assert_eq!(initial_children.len(), 1);
+
+    let replacement = ChildInfo::new(child.id(), [99_u8; 32], child.element().metadata.clone());
+    Index::<TestStorage>::add_child_to(parent.id(), replacement).unwrap();
+
+    let after_children = Index::<TestStorage>::get_children_of(parent.id()).unwrap();
+    assert_eq!(after_children.len(), 1, "replace should not duplicate");
+}
