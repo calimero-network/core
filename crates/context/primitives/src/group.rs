@@ -64,6 +64,29 @@ pub struct DeleteGroupResponse {
     pub deleted: bool,
 }
 
+/// Request to tear down a namespace and its entire subtree (all descendant
+/// groups + contexts + namespace-level state) on the local node.
+///
+/// Namespace deletion is purely local — it has no DAG-replicated op
+/// counterpart. Each node independently tears down its own namespace state.
+/// `RootOp::GroupDeleted` explicitly rejects the namespace root (see
+/// `execute_group_deleted`), mirroring how namespace *creation* is also
+/// local-only.
+#[derive(Clone, Debug)]
+pub struct DeleteNamespaceRequest {
+    pub namespace_id: ContextGroupId,
+    pub requester: Option<PublicKey>,
+}
+
+impl Message for DeleteNamespaceRequest {
+    type Result = eyre::Result<DeleteNamespaceResponse>;
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct DeleteNamespaceResponse {
+    pub deleted: bool,
+}
+
 #[derive(Debug)]
 pub struct AddGroupMembersRequest {
     pub group_id: ContextGroupId,

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_client::group::DeleteGroupRequest;
+use calimero_context_client::group::DeleteNamespaceRequest;
 use calimero_server_primitives::admin::{
     DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, DeleteNamespaceApiResponseData,
 };
@@ -21,19 +21,21 @@ pub async fn handler(
     auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<DeleteNamespaceApiRequest>,
 ) -> impl IntoResponse {
-    let group_id = match parse_group_id(&namespace_id_str) {
+    let namespace_id = match parse_group_id(&namespace_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
 
     info!(namespace_id=%namespace_id_str, "Deleting namespace");
 
+    // Prefer the authenticated identity over the caller-supplied requester to
+    // prevent authorization bypass via a spoofed public key in the request body.
     let requester = auth_key.map(|Extension(k)| k.0).or(req.requester);
 
     let result = state
         .ctx_client
-        .delete_group(DeleteGroupRequest {
-            group_id,
+        .delete_namespace(DeleteNamespaceRequest {
+            namespace_id,
             requester,
         })
         .await

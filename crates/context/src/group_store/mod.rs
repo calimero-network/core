@@ -66,9 +66,9 @@ pub use self::group_keys::{
 };
 pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{
-    delete_group_local_rows, get_local_gov_nonce, get_member_context_joins, get_op_head,
-    read_op_log_after, remove_all_member_context_joins, set_local_gov_nonce,
-    track_member_context_join,
+    delete_group_local_rows, delete_namespace_local_state, get_local_gov_nonce,
+    get_member_context_joins, get_op_head, read_op_log_after, remove_all_member_context_joins,
+    set_local_gov_nonce, track_member_context_join,
 };
 pub use self::membership::{
     add_group_member, add_group_member_with_keys, check_group_membership, count_group_admins,

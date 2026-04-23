@@ -22,19 +22,20 @@ use crate::group::{
     AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupAliasesRequest,
     BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
     CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
-    DetachContextFromGroupRequest, GetGroupForContextRequest, GetGroupInfoRequest,
-    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
-    GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse, GroupSummary,
-    GroupUpgradeInfo, JoinContextRequest, JoinContextResponse, JoinGroupRequest, JoinGroupResponse,
-    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
-    ListGroupMembersResponse, ListNamespacesForApplicationRequest, ListNamespacesRequest,
-    NamespaceSummary, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
-    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetGroupAliasRequest,
-    SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest,
-    StoreContextAliasRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
-    StoreGroupAliasRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse,
-    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    DeleteNamespaceRequest, DeleteNamespaceResponse, DetachContextFromGroupRequest,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
+    GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse, GetNamespaceIdentityRequest,
+    GroupContextEntry, GroupInfoResponse, GroupSummary, GroupUpgradeInfo, JoinContextRequest,
+    JoinContextResponse, JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
+    ListNamespacesForApplicationRequest, ListNamespacesRequest, NamespaceSummary,
+    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetDefaultCapabilitiesRequest,
+    SetDefaultVisibilityRequest, SetGroupAliasRequest, SetMemberAliasRequest,
+    SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest, StoreContextAliasRequest,
+    StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
+    StoreGroupContextRequest, StoreGroupMetaRequest, StoreMemberAliasRequest,
+    StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest,
+    UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest, ContextMessage, CreateContextRequest,
@@ -1043,6 +1044,12 @@ impl ContextClient {
         DeleteGroup,
         DeleteGroupRequest,
         eyre::Result<DeleteGroupResponse>
+    );
+    forward_to_actor!(
+        delete_namespace,
+        DeleteNamespace,
+        DeleteNamespaceRequest,
+        eyre::Result<DeleteNamespaceResponse>
     );
     forward_to_actor!(
         add_group_members,

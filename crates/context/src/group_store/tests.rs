@@ -3280,6 +3280,234 @@ fn collect_subtree_for_cascade_includes_contexts_from_all_groups() {
 }
 
 // ---------------------------------------------------------------------------
+// Namespace-level teardown (issue #2226)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn delete_namespace_local_state_clears_identity_head_and_ops() {
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::key::{
+        NamespaceGovHead, NamespaceGovHeadValue, NamespaceGovOp, NamespaceGovOpValue,
+        NamespaceIdentity,
+    };
+
+    let store = test_store();
+    let ns_id = ContextGroupId::from([0xA1; 32]);
+    let ns_bytes = ns_id.to_bytes();
+
+    let ns_pk = PublicKey::from([0x11; 32]);
+    store_namespace_identity(&store, &ns_id, &ns_pk, &[0x22; 32], &[0x33; 32]).unwrap();
+
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &NamespaceGovHead::new(ns_bytes),
+                &NamespaceGovHeadValue {
+                    sequence: 7,
+                    dag_heads: vec![[0x44; 32]],
+                },
+            )
+            .unwrap();
+        for i in 0u8..5 {
+            let mut delta = [0u8; 32];
+            delta[0] = i;
+            handle
+                .put(
+                    &NamespaceGovOp::new(ns_bytes, delta),
+                    &NamespaceGovOpValue {
+                        skeleton_bytes: vec![i],
+                    },
+                )
+                .unwrap();
+        }
+    }
+
+    // A second namespace must be left alone.
+    let other_ns_id = ContextGroupId::from([0xB2; 32]);
+    let other_ns_bytes = other_ns_id.to_bytes();
+    let other_pk = PublicKey::from([0x55; 32]);
+    store_namespace_identity(&store, &other_ns_id, &other_pk, &[0x66; 32], &[0x77; 32]).unwrap();
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &NamespaceGovOp::new(other_ns_bytes, [0x88; 32]),
+                &NamespaceGovOpValue {
+                    skeleton_bytes: vec![0x99],
+                },
+            )
+            .unwrap();
+    }
+
+    delete_namespace_local_state(&store, &ns_id).unwrap();
+
+    let handle = store.handle();
+    assert!(
+        handle
+            .get::<NamespaceIdentity>(&NamespaceIdentity::new(ns_bytes))
+            .unwrap()
+            .is_none(),
+        "namespace identity should be cleared"
+    );
+    assert!(
+        handle
+            .get::<NamespaceGovHead>(&NamespaceGovHead::new(ns_bytes))
+            .unwrap()
+            .is_none(),
+        "namespace gov head should be cleared"
+    );
+    for i in 0u8..5 {
+        let mut delta = [0u8; 32];
+        delta[0] = i;
+        assert!(
+            handle
+                .get::<NamespaceGovOp>(&NamespaceGovOp::new(ns_bytes, delta))
+                .unwrap()
+                .is_none(),
+            "namespace gov op {i} should be cleared"
+        );
+    }
+
+    // Other namespace untouched.
+    assert!(
+        handle
+            .get::<NamespaceIdentity>(&NamespaceIdentity::new(other_ns_bytes))
+            .unwrap()
+            .is_some(),
+        "other namespace identity must survive"
+    );
+    assert!(
+        handle
+            .get::<NamespaceGovOp>(&NamespaceGovOp::new(other_ns_bytes, [0x88; 32]))
+            .unwrap()
+            .is_some(),
+        "other namespace op must survive"
+    );
+}
+
+/// Simulates the full teardown that `Handler<DeleteNamespaceRequest>`
+/// performs locally: per-group `delete_group_local_rows` for every group in
+/// the subtree (children-first) + parent/child edge cleanup, plus
+/// `delete_namespace_local_state` for namespace-scoped rows. Exercises the
+/// contract the HTTP `DELETE /admin-api/namespaces/:id` endpoint depends on
+/// after the fix for issue #2226.
+#[test]
+fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::key::{
+        GroupChildIndex, GroupParentRef, NamespaceGovHead, NamespaceGovHeadValue, NamespaceGovOp,
+        NamespaceGovOpValue, NamespaceIdentity,
+    };
+
+    let store = test_store();
+    let ns_id = ContextGroupId::from([0xF0; 32]);
+    let child = ContextGroupId::from([0xF1; 32]);
+    let grandchild = ContextGroupId::from([0xF2; 32]);
+
+    save_group_meta(&store, &ns_id, &test_meta()).unwrap();
+    save_group_meta(&store, &child, &test_meta()).unwrap();
+    save_group_meta(&store, &grandchild, &test_meta()).unwrap();
+    nest_group(&store, &ns_id, &child).unwrap();
+    nest_group(&store, &child, &grandchild).unwrap();
+
+    let ctx_root = ContextId::from([0x10; 32]);
+    let ctx_child = ContextId::from([0x11; 32]);
+    let ctx_gc = ContextId::from([0x12; 32]);
+    register_context_in_group(&store, &ns_id, &ctx_root).unwrap();
+    register_context_in_group(&store, &child, &ctx_child).unwrap();
+    register_context_in_group(&store, &grandchild, &ctx_gc).unwrap();
+
+    let admin_pk = PublicKey::from([0xAA; 32]);
+    add_group_member(&store, &ns_id, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &child, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &grandchild, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let ns_bytes = ns_id.to_bytes();
+    store_namespace_identity(&store, &ns_id, &admin_pk, &[0x22; 32], &[0x33; 32]).unwrap();
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &NamespaceGovHead::new(ns_bytes),
+                &NamespaceGovHeadValue {
+                    sequence: 3,
+                    dag_heads: vec![[0xCC; 32]],
+                },
+            )
+            .unwrap();
+        handle
+            .put(
+                &NamespaceGovOp::new(ns_bytes, [0x01; 32]),
+                &NamespaceGovOpValue {
+                    skeleton_bytes: vec![1],
+                },
+            )
+            .unwrap();
+    }
+
+    // Execute the same children-first teardown the handler performs.
+    let payload = collect_subtree_for_cascade(&store, &ns_id).unwrap();
+    let all = payload
+        .descendant_groups
+        .iter()
+        .copied()
+        .chain(std::iter::once(ns_id));
+    for gid in all {
+        for ctx in enumerate_group_contexts(&store, &gid, 0, usize::MAX).unwrap() {
+            unregister_context_from_group(&store, &gid, &ctx).unwrap();
+        }
+        let parent = get_parent_group(&store, &gid).unwrap();
+        delete_group_local_rows(&store, &gid).unwrap();
+        if let Some(parent) = parent {
+            let mut handle = store.handle();
+            handle.delete(&GroupParentRef::new(gid.to_bytes())).unwrap();
+            handle
+                .delete(&GroupChildIndex::new(parent.to_bytes(), gid.to_bytes()))
+                .unwrap();
+        }
+    }
+    delete_namespace_local_state(&store, &ns_id).unwrap();
+
+    // Every group's meta must be gone.
+    for gid in [ns_id, child, grandchild] {
+        assert!(
+            load_group_meta(&store, &gid).unwrap().is_none(),
+            "group {gid:?} meta should be gone"
+        );
+    }
+
+    // Every context must be unregistered from its owning group.
+    for (gid, ctx) in [(ns_id, ctx_root), (child, ctx_child), (grandchild, ctx_gc)] {
+        assert!(
+            get_group_for_context(&store, &ctx).unwrap().is_none(),
+            "context {ctx:?} should no longer resolve to group {gid:?}"
+        );
+    }
+
+    // Edges must be gone.
+    assert!(get_parent_group(&store, &child).unwrap().is_none());
+    assert!(get_parent_group(&store, &grandchild).unwrap().is_none());
+    assert!(list_child_groups(&store, &ns_id).unwrap().is_empty());
+    assert!(list_child_groups(&store, &child).unwrap().is_empty());
+
+    // Namespace-level rows must be gone.
+    let handle = store.handle();
+    assert!(handle
+        .get::<NamespaceIdentity>(&NamespaceIdentity::new(ns_bytes))
+        .unwrap()
+        .is_none());
+    assert!(handle
+        .get::<NamespaceGovHead>(&NamespaceGovHead::new(ns_bytes))
+        .unwrap()
+        .is_none());
+    assert!(handle
+        .get::<NamespaceGovOp>(&NamespaceGovOp::new(ns_bytes, [0x01; 32]))
+        .unwrap()
+        .is_none());
+}
+
+// ---------------------------------------------------------------------------
 // MemberSetAutoFollow (the auto-follow architecture doc)
 // ---------------------------------------------------------------------------
 
