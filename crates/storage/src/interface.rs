@@ -214,21 +214,36 @@ impl<S: StorageAdaptor> Interface<S> {
                                 _ => writers.clone(),
                             };
 
-                        // Identify the signer by trying each authoritative writer.
-                        let payload = action.payload_for_signing();
-                        let signer = authoritative_writers.iter().copied().find(|w| {
-                            crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
-                        });
-                        let Some(signer) = signer else {
-                            return Err(StorageError::InvalidSignature);
-                        };
-
-                        // Replay protection (per-entity monotonic nonce).
+                        // Replay protection (per-entity monotonic nonce). Done BEFORE
+                        // signature verification so replays are O(1)-rejected without
+                        // iterating Ed25519 verifies over each writer (matches User arm).
                         let new_nonce = sig_data.nonce;
                         let last_nonce =
                             stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
                         if new_nonce <= last_nonce {
-                            return Err(StorageError::NonceReplay(Box::new((signer, new_nonce))));
+                            // Use the first authoritative writer as a placeholder identity
+                            // for the error since the signer hasn't been identified yet.
+                            let placeholder = authoritative_writers
+                                .iter()
+                                .copied()
+                                .next()
+                                .unwrap_or_else(|| [0u8; 32].into());
+                            return Err(StorageError::NonceReplay(Box::new((
+                                placeholder,
+                                new_nonce,
+                            ))));
+                        }
+
+                        // Identify the signer by trying each authoritative writer.
+                        // O(N) Ed25519 verifies in the writer-set size; expected to be small
+                        // (typically <100). For larger sets, future work could embed a
+                        // signer-pubkey hint in SignatureData for O(1) lookup.
+                        let payload = action.payload_for_signing();
+                        let signer = authoritative_writers.iter().copied().find(|w| {
+                            crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
+                        });
+                        if signer.is_none() {
+                            return Err(StorageError::InvalidSignature);
                         }
                     }
                     StorageType::Public => { /* No special checks */ }

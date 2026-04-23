@@ -132,10 +132,15 @@ where
     }
 
     /// Replace the value. The executor must be in the current writer set.
-    /// Returns the previous value.
+    ///
+    /// Returns the previous value. Note: on the first call, returns
+    /// `Some(T::default())` (not `None`) because the wrapper is initialized
+    /// with `T::default()` per the spec — the wrapper has no "uninitialized"
+    /// state to distinguish.
     ///
     /// # Errors
-    /// Returns `ActionNotAllowed` if the executor is not in `writers`.
+    /// Returns `ActionNotAllowed` if the executor is not in `writers`, or
+    /// `NonceOverflow` if `writers_nonce` would exceed `u64::MAX`.
     pub fn insert(&mut self, value: T) -> Result<Option<T>, StoreError> {
         let executor: PublicKey = env::executor_id().into();
         if !self.writers.contains(&executor) {
@@ -143,8 +148,13 @@ where
                 "Executor is not a writer of this SharedStorage".to_owned(),
             )));
         }
+        let next_nonce = self.writers_nonce.checked_add(1).ok_or_else(|| {
+            StoreError::StorageError(StorageError::ActionNotAllowed(
+                "writers_nonce overflow".to_owned(),
+            ))
+        })?;
         let old = mem::replace(&mut self.value, value);
-        self.writers_nonce = self.writers_nonce.saturating_add(1);
+        self.writers_nonce = next_nonce;
         self.storage.update();
         Ok(Some(old))
     }
@@ -154,8 +164,8 @@ where
     ///
     /// # Errors
     /// Returns `ActionNotAllowed` if `writers_frozen` is set, if `new_writers`
-    /// is empty (which would permanently lock the storage), or if the executor
-    /// is not currently in the writer set.
+    /// is empty (which would permanently lock the storage), if the executor is
+    /// not currently in the writer set, or if `writers_nonce` would overflow.
     pub fn rotate_writers(&mut self, new_writers: BTreeSet<PublicKey>) -> Result<(), StoreError> {
         if self.writers_frozen {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
@@ -173,8 +183,13 @@ where
                 "Executor is not a current writer".to_owned(),
             )));
         }
+        let next_nonce = self.writers_nonce.checked_add(1).ok_or_else(|| {
+            StoreError::StorageError(StorageError::ActionNotAllowed(
+                "writers_nonce overflow".to_owned(),
+            ))
+        })?;
         self.writers = new_writers.clone();
-        self.writers_nonce = self.writers_nonce.saturating_add(1);
+        self.writers_nonce = next_nonce;
         self.storage.set_shared_domain(new_writers);
         Ok(())
     }
@@ -381,6 +396,59 @@ mod tests {
         // Storage is still functional — alice can still write.
         let _ = s.insert(TestVal(2)).expect("alice can still write");
         assert_eq!(s.get().unwrap(), &TestVal(2));
+    }
+
+    #[test]
+    #[serial]
+    fn merge_higher_writers_nonce_wins() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        let mut a = SharedStorage::<TestVal>::new(writers(&[ALICE]), false);
+
+        env::set_executor_id(BOB);
+        let mut b = SharedStorage::<TestVal>::new(writers(&[BOB]), false);
+        // Bump b's nonce by performing a rotation.
+        b.rotate_writers(writers(&[BOB, CAROL])).unwrap();
+        let bob_nonce = b.writers_nonce;
+        assert!(bob_nonce > a.writers_nonce);
+
+        Mergeable::merge(&mut a, &b).unwrap();
+        assert_eq!(a.writers, writers(&[BOB, CAROL]));
+        assert_eq!(a.writers_nonce, bob_nonce);
+    }
+
+    #[test]
+    #[serial]
+    fn merge_frozen_is_monotonic() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        let mut a = SharedStorage::<TestVal>::new(writers(&[ALICE]), false);
+        let b = SharedStorage::<TestVal>::new(writers(&[ALICE]), true);
+
+        Mergeable::merge(&mut a, &b).unwrap();
+        assert!(a.writers_frozen, "frozen=true on b should propagate to a");
+
+        // Reverse direction: frozen stays once set.
+        let mut a2 = SharedStorage::<TestVal>::new(writers(&[ALICE]), true);
+        let b2 = SharedStorage::<TestVal>::new(writers(&[ALICE]), false);
+        Mergeable::merge(&mut a2, &b2).unwrap();
+        assert!(
+            a2.writers_frozen,
+            "frozen=true on a2 must not be cleared by merge"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn merge_tiebreak_lexically_smaller_wins() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        // Force equal nonces and different writer sets to exercise the tiebreaker.
+        let mut a = SharedStorage::<TestVal>::new(writers(&[BOB]), false);
+        let b = SharedStorage::<TestVal>::new(writers(&[ALICE]), false);
+        // Both at nonce=0, different content. ALICE's pubkey < BOB's pubkey.
+        Mergeable::merge(&mut a, &b).unwrap();
+        assert_eq!(a.writers, writers(&[ALICE]));
     }
 
     #[test]
