@@ -199,15 +199,33 @@ where
     }
 }
 
-// Mergeable: delegate to inner T (which the spec requires to implement Mergeable).
-// Verifier-gated at merge time, so this is only reached after signature checks pass.
+// Mergeable: invoked at root-state merge time when concurrent state versions
+// must converge. Merges value via its own Mergeable, and resolves writer-set
+// state by `writers_nonce` (higher wins, content as deterministic tiebreaker).
+// `writers_frozen` is monotonic — once true on either side, stays true.
 impl<T, S> Mergeable for SharedStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable,
     S: StorageAdaptor,
 {
     fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
-        self.value.merge(&other.value)
+        self.value.merge(&other.value)?;
+
+        // Writer-set: higher writers_nonce wins. On tie, lexically smaller set
+        // wins (deterministic across nodes).
+        if other.writers_nonce > self.writers_nonce
+            || (other.writers_nonce == self.writers_nonce && other.writers < self.writers)
+        {
+            self.writers = other.writers.clone();
+            self.writers_nonce = other.writers_nonce;
+        }
+
+        // Frozen is monotonic.
+        if other.writers_frozen {
+            self.writers_frozen = true;
+        }
+
+        Ok(())
     }
 }
 

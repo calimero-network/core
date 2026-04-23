@@ -9,8 +9,8 @@ the value; rotation is signed by a current writer.
 
 ## Methods
 
-- `set_shared(key, value)` — write into the inner map (writer-only)
-- `get_shared(key)` — read (anyone)
+- `set_shared(value)` — replace the single-slot value (writer-only)
+- `get_shared()` — read (anyone)
 - `rotate_writers(new_writers)` — replace the writer set (current writer only)
 
 ## Building

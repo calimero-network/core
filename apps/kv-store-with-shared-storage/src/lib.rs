@@ -61,8 +61,8 @@ impl KvStore {
     /// Rotate the writer set. Caller must be a current writer; rejected if frozen.
     pub fn rotate_writers(&mut self, new_writers: Vec<PublicKey>) -> app::Result<()> {
         app::log!("Rotating writers: {:?}", new_writers);
-        let count = new_writers.len() as u32;
         let set: BTreeSet<PublicKey> = new_writers.into_iter().collect();
+        let count = set.len() as u32;
         self.shared_value.rotate_writers(set)?;
         app::emit!(Event::WritersRotated { count });
         Ok(())
