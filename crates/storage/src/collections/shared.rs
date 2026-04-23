@@ -37,8 +37,12 @@ pub struct SharedStorage<
     writers_nonce: u64,
     /// Storage element for this entity.
     storage: Element,
-    /// Signature attached at the runtime layer; mirrored from the metadata
-    /// after signing.
+    /// Signature attached at the runtime layer. The authoritative copy lives
+    /// in `storage.metadata.storage_type` (`StorageType::Shared.signature_data`)
+    /// and is set by the runtime/verifier path; this field is borsh-skipped
+    /// (in-memory only) so it doesn't bloat the wire format. Read via
+    /// `signature()`, which falls back to the metadata copy.
+    #[borsh(skip)]
     signature_data: Option<SignatureData>,
     #[borsh(skip)]
     _adaptor: core::marker::PhantomData<S>,
@@ -129,6 +133,21 @@ where
     /// (e.g., a future variant could lazy-load the value from storage).
     pub fn get(&self) -> Result<&T, StoreError> {
         Ok(&self.value)
+    }
+
+    /// Returns the signature attached to the most recently applied state of
+    /// this entity, if any. Reads from the wrapper field first; if unset
+    /// (e.g., the wrapper was just deserialized and the field hasn't been
+    /// mirrored in this execution), falls back to the metadata copy populated
+    /// by `find_by_id` from the index.
+    pub fn signature(&self) -> Option<SignatureData> {
+        if self.signature_data.is_some() {
+            return self.signature_data;
+        }
+        match &self.storage.metadata.storage_type {
+            crate::entities::StorageType::Shared { signature_data, .. } => *signature_data,
+            _ => None,
+        }
     }
 
     /// Replace the value. The executor must be in the current writer set.
