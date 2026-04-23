@@ -111,6 +111,12 @@ impl<S: StorageAdaptor + 'static> DeferredAncestorScope<S> {
     /// `Drop` for call sites that want storage errors to surface (e.g.
     /// `Root::sync` — an error here means the merkle tree is inconsistent
     /// and the caller should be told).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if any of the deferred ancestor walks fails
+    /// (typically because an underlying storage read or write failed).
+    /// Flush stops at the first error; remaining dirty entries are dropped.
     pub fn finish(mut self) -> Result<(), StorageError> {
         self.flushed = true;
         if !self.is_outermost {
