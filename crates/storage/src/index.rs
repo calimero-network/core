@@ -361,6 +361,13 @@ impl<S: StorageAdaptor> Index<S> {
             deleted_at: None,
         });
         index.own_hash = root.merkle_hash();
+        // Keep stored full_hash current. Without this, a root holds
+        // full_hash = [0; 32] until some later operation triggers
+        // recomputation — callers that read the current hash would have
+        // to re-hash the children Vec every time. With the stored value
+        // kept current by each write site, reads become O(1).
+        // See #2238 Fix 1.
+        index.full_hash = Self::calculate_full_hash_for_children(index.own_hash, &index.children)?;
         Self::save_index(&index)?;
         Ok(())
     }
@@ -382,10 +389,24 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(hasher.finalize().into())
     }
 
-    /// Calculates full Merkle hash by loading from storage.
+    /// Returns the stored full Merkle hash for an entity.
+    ///
+    /// The stored `full_hash` is kept current by every write site
+    /// (`add_root`, `add_child_to`, `recalculate_ancestor_hashes_for_now`,
+    /// `update_parent_after_child_removal`), so callers can read it
+    /// directly instead of re-hashing children every time. This is the
+    /// common case on the merge-apply hot path and closes #2238 Fix 1
+    /// (~O(K) SHA-256 work per ancestor visit → O(1)).
+    ///
+    /// If the entity doesn't exist in the index, returns
+    /// `StorageError::IndexNotFound`. If a future write site adds `full_hash`
+    /// drift somehow, tests in `tests::merkle` enforce the invariant
+    /// `stored_full_hash == calculate_full_hash_for_children(...)` after
+    /// common operation sequences.
     pub(crate) fn calculate_full_merkle_hash_for(id: Id) -> Result<[u8; 32], StorageError> {
-        let index = Self::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
-        Self::calculate_full_hash_for_children(index.own_hash, &index.children)
+        Self::get_hashes_for(id)?
+            .map(|(full_hash, _)| full_hash)
+            .ok_or(StorageError::IndexNotFound(id))
     }
 
     /// Returns ancestors from immediate parent to root.

@@ -428,9 +428,17 @@ mod index__public_methods {
 
     #[test]
     fn get_hashes_for() {
+        use sha2::{Digest, Sha256};
         let root_id = Id::new([0_u8; 32]);
         let root_own_hash = [1_u8; 32];
-        let root_full_hash = [0_u8; 32];
+        // After #2238 Fix 1, add_root populates the stored full_hash
+        // eagerly (SHA256 over own_hash with no children). Compute the
+        // expected value from the invariant instead of assuming zero.
+        let root_full_hash: [u8; 32] = {
+            let mut hasher = Sha256::new();
+            hasher.update(root_own_hash);
+            hasher.finalize().into()
+        };
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(
             root_id,
@@ -732,7 +740,15 @@ mod hashing {
         .is_ok());
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
-        assert_eq!(root_index.full_hash, [0_u8; 32]);
+        // After #2238 Fix 1, add_root populates full_hash eagerly
+        // (SHA256 over own_hash with no children). Not zero.
+        let expected_empty_full_hash: [u8; 32] = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(root_hash);
+            h.finalize().into()
+        };
+        assert_eq!(root_index.full_hash, expected_empty_full_hash);
 
         let child_id = Id::random();
         let child_hash = [2_u8; 32];
@@ -810,11 +826,16 @@ mod hashing {
             "9f4fb68f3e1dac82202f9aa581ce0bbf1f765df0e9ac3c8c57e20f685abab8ed"
         );
 
-        greatgrandchild_index.own_hash = [9_u8; 32];
-        <Index<MainStorage>>::save_index(&greatgrandchild_index).unwrap();
-        greatgrandchild_index.full_hash =
-            <Index<MainStorage>>::calculate_full_merkle_hash_for(greatgrandchild_id).unwrap();
-        <Index<MainStorage>>::save_index(&greatgrandchild_index).unwrap();
+        // Change greatgrandchild's own_hash and refresh its stored
+        // full_hash to match. After #2238 Fix 1, `calculate_full_merkle_hash_for`
+        // reads the stored value (so it can no longer be used to force a
+        // recompute after directly mutating own_hash). `update_hash_for`
+        // is the proper public API for this scenario; it rewrites the
+        // stored hashes in one call and keeps the invariant.
+        <Index<MainStorage>>::update_hash_for(greatgrandchild_id, [9_u8; 32], None).unwrap();
+        greatgrandchild_index = <Index<MainStorage>>::get_index(greatgrandchild_id)
+            .unwrap()
+            .unwrap();
 
         <Index<MainStorage>>::recalculate_ancestor_hashes_for(greatgrandchild_id).unwrap();
 
@@ -846,11 +867,9 @@ mod hashing {
             "8c0cc17a04942cc4f8e0fe0b302606d3108860c126428ba2ceeb5f9ed41c2b05"
         );
 
-        greatgrandchild_index.own_hash = [99_u8; 32];
-        <Index<MainStorage>>::save_index(&greatgrandchild_index).unwrap();
-        greatgrandchild_index.full_hash =
-            <Index<MainStorage>>::calculate_full_merkle_hash_for(greatgrandchild_id).unwrap();
-        <Index<MainStorage>>::save_index(&greatgrandchild_index).unwrap();
+        // Same pattern as above — use update_hash_for instead of directly
+        // mutating own_hash + calling calculate_full_merkle_hash_for.
+        <Index<MainStorage>>::update_hash_for(greatgrandchild_id, [99_u8; 32], None).unwrap();
 
         <Index<MainStorage>>::recalculate_ancestor_hashes_for(greatgrandchild_id).unwrap();
 
@@ -885,8 +904,8 @@ mod hashing {
 
     #[test]
     fn update_hash_for__full() {
+        use sha2::{Digest, Sha256};
         let root_id = Id::random();
-        let root_hash0 = [0_u8; 32];
         let root_hash1 = [1_u8; 32];
         let root_hash2 = [2_u8; 32];
         let root_full_hash: [u8; 32] =
@@ -894,6 +913,13 @@ mod hashing {
                 .unwrap()
                 .try_into()
                 .unwrap();
+        // After #2238 Fix 1, add_root seeds full_hash with SHA256(own_hash)
+        // rather than zero. Compute it from the invariant.
+        let initial_full_hash: [u8; 32] = {
+            let mut h = Sha256::new();
+            h.update(root_hash1);
+            h.finalize().into()
+        };
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(
             root_id,
@@ -904,7 +930,7 @@ mod hashing {
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(root_index.id, root_id);
-        assert_eq!(root_index.full_hash, root_hash0);
+        assert_eq!(root_index.full_hash, initial_full_hash);
 
         assert!(<Index<MainStorage>>::update_hash_for(root_id, root_hash2, None).is_ok());
         let updated_root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
