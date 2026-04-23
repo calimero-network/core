@@ -698,7 +698,23 @@ impl ContextManager {
         service_name: Option<String>,
     ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
         let service_name_for_bytes = service_name.clone();
+        let service_name_for_cache = service_name.clone();
         let blob_task = async {}.into_actor(self).map(move |_, act, _ctx| {
+            // Fast path: a compiled module is already cached for this
+            // (application_id, service_name) key. Every `get_module`
+            // call previously paid ~5% CPU to run
+            // `Engine::from_precompiled` (wasmer artifact deserialize)
+            // even though the same bytes were being deserialized. Serve
+            // the cached Module (cheap Arc clone) and skip the entire
+            // blob-fetch / deserialize path. Cache entries are
+            // invalidated in `update_application` / migration sites.
+            if let Some(cached) = act
+                .modules
+                .get(&(application_id, service_name_for_cache.clone()))
+            {
+                return Ok(CachedOrBlob::Cached(cached.clone()));
+            }
+
             let app = match act.applications.entry(application_id) {
                 btree_map::Entry::Vacant(vacant) => {
                     let Some(app) = act.node_client.get_application(&application_id)? else {
@@ -729,19 +745,30 @@ impl ContextManager {
                     )
                 })?;
 
-            Ok(blob)
+            Ok(CachedOrBlob::Blob(blob))
         });
 
-        let module_task = blob_task.and_then(move |mut blob, act, _ctx| {
+        let module_task = blob_task.and_then(move |cached_or_blob, act, _ctx| {
             let node_client = act.node_client.clone();
 
             async move {
+                let mut blob = match cached_or_blob {
+                    // Fast path: cache hit. Skip blob fetch + deserialize
+                    // + compile. `blob_info = None` signals the post-task
+                    // closure below that there's nothing new to write
+                    // back into `applications` or the module cache.
+                    CachedOrBlob::Cached(module) => return Ok((module, None)),
+                    CachedOrBlob::Blob(blob) => blob,
+                };
+
                 if let Some(compiled) = node_client.get_blob_bytes(&blob.compiled, None).await? {
                     let module =
                         unsafe { calimero_runtime::Engine::headless().from_precompiled(&compiled) };
 
                     match module {
-                        Ok(module) => return Ok((module, None)),
+                        Ok(module) => {
+                            return Ok((module, Some((blob, service_name_for_bytes, false))))
+                        }
                         Err(err) => {
                             debug!(
                                 ?err,
@@ -788,14 +815,16 @@ impl ContextManager {
                     service_name_for_bytes.as_deref(),
                 )?;
 
-                Ok((module, Some((blob, service_name_for_bytes))))
+                // `recompiled = true`: the old cached entry (if any) is
+                // stale since the underlying blob_id just changed.
+                Ok((module, Some((blob, service_name_for_bytes, true))))
             }
             .into_actor(act)
         });
 
         module_task
             .map_ok(move |(module, blob_info), act, _ctx| {
-                if let Some((blob, svc_name)) = blob_info {
+                if let Some((blob, svc_name, recompiled)) = blob_info {
                     if let Some(app) = act.applications.get_mut(&application_id) {
                         match svc_name.as_deref() {
                             Some(name) => {
@@ -808,6 +837,16 @@ impl ContextManager {
                             }
                         }
                     }
+
+                    // Populate the module cache on cache miss. When a
+                    // recompile happened, the previous cached entry (if
+                    // any, for this same key) was stale; overwriting it
+                    // here keeps the cache aligned with the latest
+                    // compiled blob. `insert` is idempotent either way.
+                    let _ = recompiled;
+                    let _ = act
+                        .modules
+                        .insert((application_id, svc_name), module.clone());
                 }
 
                 module
@@ -818,6 +857,16 @@ impl ContextManager {
                 err
             })
     }
+}
+
+/// Result of the blob-resolution / cache-lookup phase inside
+/// [`ContextManager::get_module`]. Either we already have the compiled
+/// module (fast path — skip deserialize), or we have the blob metadata
+/// pointing at where the compiled bytes live and need to fetch +
+/// deserialize.
+enum CachedOrBlob {
+    Cached(calimero_runtime::Module),
+    Blob(calimero_primitives::application::ApplicationBlob),
 }
 
 async fn internal_execute(
