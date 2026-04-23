@@ -806,7 +806,7 @@ mod hashing {
         let grandchild_index_with_greatgrandchild = <Index<MainStorage>>::get_index(grandchild_id)
             .unwrap()
             .unwrap();
-        let mut greatgrandchild_index = <Index<MainStorage>>::get_index(greatgrandchild_id)
+        let greatgrandchild_index = <Index<MainStorage>>::get_index(greatgrandchild_id)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -826,18 +826,10 @@ mod hashing {
             "9f4fb68f3e1dac82202f9aa581ce0bbf1f765df0e9ac3c8c57e20f685abab8ed"
         );
 
-        // Change greatgrandchild's own_hash and refresh its stored
-        // full_hash to match. After #2238 Fix 1, `calculate_full_merkle_hash_for`
-        // reads the stored value (so it can no longer be used to force a
-        // recompute after directly mutating own_hash). `update_hash_for`
-        // is the proper public API for this scenario; it rewrites the
-        // stored hashes in one call and keeps the invariant.
+        // Change greatgrandchild's own_hash. `update_hash_for` rewrites
+        // the stored own/full hashes and walks ancestors itself, so no
+        // separate `recalculate_ancestor_hashes_for` call is needed.
         <Index<MainStorage>>::update_hash_for(greatgrandchild_id, [9_u8; 32], None).unwrap();
-        greatgrandchild_index = <Index<MainStorage>>::get_index(greatgrandchild_id)
-            .unwrap()
-            .unwrap();
-
-        <Index<MainStorage>>::recalculate_ancestor_hashes_for(greatgrandchild_id).unwrap();
 
         let updated_root_index_with_greatgrandchild =
             <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
@@ -867,11 +859,8 @@ mod hashing {
             "8c0cc17a04942cc4f8e0fe0b302606d3108860c126428ba2ceeb5f9ed41c2b05"
         );
 
-        // Same pattern as above — use update_hash_for instead of directly
-        // mutating own_hash + calling calculate_full_merkle_hash_for.
+        // Same pattern — update_hash_for handles the ancestor walk itself.
         <Index<MainStorage>>::update_hash_for(greatgrandchild_id, [99_u8; 32], None).unwrap();
-
-        <Index<MainStorage>>::recalculate_ancestor_hashes_for(greatgrandchild_id).unwrap();
 
         let updated_root_index_with_greatgrandchild =
             <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();

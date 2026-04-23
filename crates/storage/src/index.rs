@@ -373,7 +373,7 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Calculates full Merkle hash from own hash and children.
-    fn calculate_full_hash_for_children(
+    pub(crate) fn calculate_full_hash_for_children(
         own_hash: [u8; 32],
         children: &Option<Vec<ChildInfo>>,
     ) -> Result<[u8; 32], StorageError> {

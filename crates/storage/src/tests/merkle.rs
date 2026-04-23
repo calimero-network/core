@@ -715,11 +715,15 @@ fn stored_full_hash_always_matches_fresh_recompute_after_add_root() {
 
 #[test]
 fn stored_full_hash_stays_authoritative_through_ancestor_walks() {
-    // Round-trip sanity: build a 3-level hierarchy, mutate a leaf via
-    // update_hash_for, walk ancestors. Every node's stored full_hash
-    // must equal what `calculate_full_hash_for_children` would produce
-    // from its current children — proving the stored values stay
-    // authoritative across the walk (Fix 1 relies on this).
+    // After #2238 Fix 1, `calculate_full_merkle_hash_for` is an O(1)
+    // stored-read, so comparing it against `get_hashes_for` would be
+    // circular. Instead, independently recompute each node's full_hash
+    // from its children (via `calculate_full_hash_for_children` on the
+    // raw EntityIndex) and assert it matches the stored value. This
+    // catches the class of bug the reviewer flagged: a future write
+    // site that forgets to refresh `full_hash` would leave the stored
+    // value out of sync with what the children imply, and this test
+    // would catch it.
     use crate::index::Index;
 
     crate::env::reset_for_testing();
@@ -737,22 +741,27 @@ fn stored_full_hash_stays_authoritative_through_ancestor_walks() {
     leaf.element_mut().update();
     TestInterface::save(&mut leaf).unwrap();
 
-    // Every node's stored full_hash must match the fresh recompute.
+    // Every node's stored full_hash must equal an INDEPENDENT recompute
+    // that walks its children's stored merkle_hashes — not another read
+    // of the stored full_hash value.
     for id in [root.id(), parent.id(), leaf.id()] {
-        let stored = Index::<TestStorage>::get_hashes_for(id).unwrap().unwrap().0;
-        // Because calculate_full_merkle_hash_for now returns the stored
-        // value, using it as an "independent check" is circular. Instead,
-        // compare two reads: if they're identical, storage is self-consistent.
-        // Structural consistency across the hierarchy is covered by
-        // `deferred_ancestor_scope_propagates_through_ancestors` above.
-        let reread = Index::<TestStorage>::calculate_full_merkle_hash_for(id).unwrap();
+        let index = Index::<TestStorage>::get_index(id).unwrap().unwrap();
+        let recomputed =
+            Index::<TestStorage>::calculate_full_hash_for_children(index.own_hash(), &{
+                // Clone the children slice into the Option<Vec<_>> shape the
+                // helper expects.
+                index.children().map(<[_]>::to_vec)
+            })
+            .unwrap();
         assert_eq!(
-            stored, reread,
-            "stored and reread full_hash must agree for id {:?}",
+            index.full_hash(),
+            recomputed,
+            "stored full_hash must equal independent recompute for id {:?}",
             id
         );
         assert_ne!(
-            stored, [0_u8; 32],
+            index.full_hash(),
+            [0_u8; 32],
             "full_hash must be set for every node after ops"
         );
     }
