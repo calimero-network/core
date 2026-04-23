@@ -27,7 +27,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
             async move {
                 let mut dag = dag.lock().await;
                 match dag.add_delta(delta, &applier).await {
-                    Ok(_applied) => Ok(()),
+                    Ok(applied) => Ok(applied),
                     Err(e) => Err(eyre::eyre!("namespace DAG apply error: {e}")),
                 }
             }

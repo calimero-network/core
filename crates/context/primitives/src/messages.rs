@@ -143,7 +143,22 @@ pub struct ApplySignedNamespaceOpRequest {
 }
 
 impl Message for ApplySignedNamespaceOpRequest {
-    type Result = eyre::Result<()>;
+    /// `Ok(true)`  — op was applied immediately.
+    /// `Ok(false)` — op is pending (missing parents) or a duplicate; caller may
+    ///               proactively trigger backfill to resolve the pending chain.
+    type Result = eyre::Result<bool>;
+}
+
+/// Query the number of pending (not-yet-applied) ops in a namespace's
+/// governance DAG. Used by the cross-peer parent-pull loop (#2198) to
+/// decide whether another backfill round is needed.
+#[derive(Debug, Clone)]
+pub struct NamespacePendingOpCountRequest {
+    pub namespace_id: [u8; 32],
+}
+
+impl Message for NamespacePendingOpCountRequest {
+    type Result = eyre::Result<usize>;
 }
 
 /// Parameters for executing a state migration during application update.
@@ -213,6 +228,10 @@ pub enum ContextMessage {
     ApplySignedNamespaceOp {
         request: ApplySignedNamespaceOpRequest,
         outcome: oneshot::Sender<<ApplySignedNamespaceOpRequest as Message>::Result>,
+    },
+    NamespacePendingOpCount {
+        request: NamespacePendingOpCountRequest,
+        outcome: oneshot::Sender<<NamespacePendingOpCountRequest as Message>::Result>,
     },
     RemoveGroupMembers {
         request: RemoveGroupMembersRequest,
