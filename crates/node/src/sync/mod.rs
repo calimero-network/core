@@ -41,6 +41,7 @@ pub(crate) mod helpers;
 pub mod level_sync;
 mod manager;
 pub mod metrics;
+pub(crate) mod parent_pull;
 pub mod prometheus_metrics;
 mod snapshot;
 pub(crate) mod stream;

@@ -1,0 +1,388 @@
+name: E2E KV Store - Subgroup Queued-Deltas Cold-Start
+description: >
+  Regression test for issue #2198: `join_context` deterministic first-attempt
+  failure when a subgroup-owned context has queued gossip deltas.
+
+  Reproduces the mero-drive e2e failure shape:
+
+    1. Node-1 (Alice) creates a subgroup and adds node-2 (Bob) to it.
+    2. Node-1 creates a subgroup-owned context.
+    3. Node-1 generates many writes on that context. Each write broadcasts
+       a delta over the context's gossipsub topic.
+    4. Because node-2 is a subgroup member, it receives those gossip deltas
+       into its `delta_store`. Parents are not in node-2's local DB yet
+       (node-2 has never synced the context), so the deltas accumulate as
+       pending.
+    5. Node-2 calls `join_context(subgroup_ctx)`. The fix under test makes
+       this succeed on the FIRST attempt.
+
+  Pre-fix behaviour (root cause, see docs/superpowers/specs/2026-04-22-join-
+  context-cold-start-design.md):
+    - `delta_store: Some deltas could not be loaded — remaining_count=N
+       loaded_count=0`
+    - `sync::manager: Failed to handle stream message err=context not found:
+       <subgroup-internal-ctx-id>` (an unrelated context leaking onto the
+      sync channel tears down the legitimate sync)
+    - `join_context` returns error ~30ms after the call.
+
+  Post-fix behaviour:
+    - Inbound streams for unknown contexts close cleanly without killing
+      the active sync (Fix C).
+    - The sync session pulls missing parents from additional mesh peers
+      within a bounded budget before reporting success, and reports a
+      typed error if it genuinely cannot (Fix B).
+    - Result: `join_context` succeeds deterministically on attempt 1 with
+      a fully-applied DAG; the post-join read sees the last value node-1
+      wrote before join.
+
+  Why this catches the bug that `group-subgroup-cold-sync.yml` misses:
+  that test has node-2 join the context IMMEDIATELY after creation, so
+  node-2's `delta_store` is empty at join time and the queued-deltas race
+  never fires. This workflow specifically delays the join so gossip deltas
+  can accumulate first.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # ── Setup: install app on both nodes ──────────────────────────────
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: e2e-node-2
+    path: res/e2e_kv_store.wasm
+    dev: true
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+    outputs:
+      member_identity_node2: memberIdentity
+
+  # Gossipsub mesh warmup: after joining the namespace, node-2 subscribes
+  # to `ns/{namespace_id}` but the mesh on that topic doesn't GRAFT between
+  # both nodes instantly. GRAFT typically takes a handful of heartbeat
+  # cycles (~1-3s). If we broadcast governance ops before GRAFT completes,
+  # node-2 misses them entirely and has to wait for the next periodic
+  # heartbeat (~30s) to catch up — which exceeds the probe's window.
+  #
+  # The proactive backfill path (#2198) only fires once node-2 actually
+  # receives a gossip op; it cannot recover from a mesh that hasn't formed
+  # yet. This small wait ensures gossip delivery works by the time we
+  # start touching the subgroup.
+  - name: Warm up namespace gossipsub mesh
+    type: wait
+    seconds: 3
+    message: allow gossipsub GRAFT on ns/<id> before broadcasting governance ops
+
+  # ── Subgroup: node-2 is a member BEFORE the context exists ────────
+  #
+  # Membership must precede context creation so that gossip deltas on
+  # the subgroup-owned context reach node-2 via auto-follow (#2169)
+  # and populate its delta_store.
+
+  - name: Create subgroup inside namespace
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: queued-deltas-subgroup
+    outputs:
+      subgroup_id: groupId
+
+  - name: Add node-2 to subgroup
+    type: add_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    members:
+      - identity: '{{member_identity_node2}}'
+        role: Member
+
+  # Wait + probe: we must verify node-2 has APPLIED the subgroup-membership
+  # governance op before we start burst-generating deltas on the subgroup
+  # context. If we skip this and rely on a fixed sleep alone, gossip
+  # delivery of the delta burst on the subgroup-context topic can
+  # interleave with governance op application on node-2's gossipsub /
+  # actor pipeline and push membership recognition past the join_context
+  # check, surfacing as ApiError 500 "identity is not a member of the
+  # group". That is a separate bug from #2198; we defend against it here
+  # by asserting node-2's local view of subgroup membership BEFORE the
+  # delta burst begins, so the two bugs can't conflate in this workflow.
+
+  # With the proactive-backfill code path (#2198) in place, governance ops
+  # that arrive on node-2 with missing parents trigger an immediate
+  # cross-peer backfill instead of waiting for the 30s heartbeat cycle.
+  # A short wall-clock window here covers gossip propagation latency; the
+  # probe below is the real gate.
+  - name: Short window for subgroup governance propagation
+    type: wait
+    seconds: 5
+    message: cover gossip hop + proactive backfill; probe is the real gate
+
+  - name: Node-2 lists subgroup members (local view)
+    type: list_group_members
+    node: e2e-node-2
+    group_id: '{{subgroup_id}}'
+    outputs:
+      node2_view_of_subgroup_members: members
+
+  - name: Assert node-2's local group_store knows about the subgroup
+    type: assert
+    statements:
+      - "is_set({{node2_view_of_subgroup_members}})"
+
+  - name: Node-1 lists subgroup members (authoritative view)
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      node1_view_of_subgroup_members: members
+
+  - name: Assert node-1 also knows about the subgroup
+    type: assert
+    statements:
+      - "is_set({{node1_view_of_subgroup_members}})"
+
+  # ── Create subgroup-owned context; node-2 does NOT join yet ───────
+
+  - name: Create context inside subgroup (node-1 only)
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_id}}'
+    outputs:
+      sub_ctx_id: contextId
+
+  # ── Generate many deltas on node-1 while node-2 has NOT joined ────
+  #
+  # Each call produces a delta that is broadcast on the context's
+  # gossipsub topic. Because node-2 is a subgroup member it is
+  # auto-subscribed to contexts owned by the subgroup and will
+  # accumulate these deltas in its delta_store as pending (parents
+  # absent from node-2's local DB).
+  #
+  # 20 deltas chosen to match mero-drive's "remaining_count=19" signal
+  # with a safety margin. Too few deltas may not reliably trigger the
+  # race; too many wastes CI time.
+
+  - name: Alice delta 01
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k01", value: "v01" }
+
+  - name: Alice delta 02
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k02", value: "v02" }
+
+  - name: Alice delta 03
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k03", value: "v03" }
+
+  - name: Alice delta 04
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k04", value: "v04" }
+
+  - name: Alice delta 05
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k05", value: "v05" }
+
+  - name: Alice delta 06
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k06", value: "v06" }
+
+  - name: Alice delta 07
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k07", value: "v07" }
+
+  - name: Alice delta 08
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k08", value: "v08" }
+
+  - name: Alice delta 09
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k09", value: "v09" }
+
+  - name: Alice delta 10
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k10", value: "v10" }
+
+  - name: Alice delta 11
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k11", value: "v11" }
+
+  - name: Alice delta 12
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k12", value: "v12" }
+
+  - name: Alice delta 13
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k13", value: "v13" }
+
+  - name: Alice delta 14
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k14", value: "v14" }
+
+  - name: Alice delta 15
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k15", value: "v15" }
+
+  - name: Alice delta 16
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k16", value: "v16" }
+
+  - name: Alice delta 17
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k17", value: "v17" }
+
+  - name: Alice delta 18
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k18", value: "v18" }
+
+  - name: Alice delta 19
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "k19", value: "v19" }
+
+  - name: Alice delta 20 (the sentinel the join_context read will check)
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args: { key: "sentinel", value: "queued_delta_20" }
+
+  # ── Let gossip catch up: node-2's delta_store should now be loaded
+  # ──  with ~20 pending children whose parents are not in local DB.
+  #
+  # This window mirrors mero-drive's "Wait 10s for docs-context gossip"
+  # step, which is the precondition for the original failure.
+
+  - name: Wait for gossip deltas to accumulate in node-2's delta_store
+    type: wait
+    seconds: 10
+    message: queued gossip deltas must be present before join_context
+
+  # ── The test: node-2 joins the context. Must succeed first attempt.
+  #
+  # Pre-fix: bails within ~30ms due to
+  #   - "context not found" (unrelated stream tears down sync), and/or
+  #   - pending parents never get pulled before sync "success".
+  # Post-fix: succeeds; DAG is fully applied by the time this returns.
+
+  - name: Node-2 joins subgroup context (regression point for #2198)
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+
+  # ── Post-join sanity: the sentinel (last delta written by node-1)
+  # ──  must be readable on node-2. This proves the DAG is fully
+  # ──  applied, not just that join_context returned Ok on a partial
+  # ──  DAG (which is the specific foot-gun the typed
+  # ──  PendingParentsUnresolved error in Fix B closes).
+
+  - name: Allow sync to finalise
+    type: wait_for_sync
+    context_id: '{{sub_ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 30
+    trigger_sync: true
+
+  - name: Node-2 reads the sentinel key
+    type: call
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+    method: get
+    args: { key: "sentinel" }
+    outputs:
+      sentinel_read: result
+
+  - name: Assert node-2 sees the final pre-join write
+    type: json_assert
+    statements:
+      - 'json_equal({{sentinel_read}}, {"output": "queued_delta_20"})'
+
+stop_all_nodes: false

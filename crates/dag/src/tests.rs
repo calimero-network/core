@@ -134,6 +134,57 @@ async fn test_dag_duplicate_delta() {
     assert_eq!(applied[0], [1; 32]);
 }
 
+/// Regression: `add_delta_with_outcome` must distinguish Pending from
+/// Duplicate. The bool-returning `add_delta` collapses both into `Ok(false)`,
+/// which caused the namespace governance handler to trigger a wasteful
+/// network backfill on every duplicate gossip op.
+#[tokio::test]
+async fn test_dag_add_delta_with_outcome_tri_state() {
+    use crate::AddDeltaOutcome;
+
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], TestPayload { value: 2 });
+    // delta3 has a parent we will never deliver, so it stays pending.
+    let delta3 = CausalDelta::new_test([3; 32], vec![[99; 32]], TestPayload { value: 3 });
+
+    assert_eq!(
+        dag.add_delta_with_outcome(delta1.clone(), &applier)
+            .await
+            .unwrap(),
+        AddDeltaOutcome::Applied,
+        "fresh delta with present parent applies immediately",
+    );
+
+    assert_eq!(
+        dag.add_delta_with_outcome(delta1, &applier).await.unwrap(),
+        AddDeltaOutcome::Duplicate,
+        "re-submitting the same delta must report Duplicate, NOT Pending",
+    );
+
+    assert_eq!(
+        dag.add_delta_with_outcome(delta2, &applier).await.unwrap(),
+        AddDeltaOutcome::Applied,
+        "chained delta with applied parent also applies immediately",
+    );
+
+    assert_eq!(
+        dag.add_delta_with_outcome(delta3.clone(), &applier)
+            .await
+            .unwrap(),
+        AddDeltaOutcome::Pending,
+        "delta with missing parent must report Pending",
+    );
+
+    assert_eq!(
+        dag.add_delta_with_outcome(delta3, &applier).await.unwrap(),
+        AddDeltaOutcome::Duplicate,
+        "re-submitting a pending delta must report Duplicate (already queued), not Pending again",
+    );
+}
+
 // ============================================================
 // Out-of-Order Delivery Tests
 // ============================================================
