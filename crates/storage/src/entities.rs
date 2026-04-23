@@ -393,6 +393,12 @@ pub struct SignatureData {
     pub signature: [u8; 64],
     /// Nonce (counter/timestamp) to avoid replaying attacks.
     pub nonce: u64,
+    /// Optional hint identifying which key produced the signature. Used by
+    /// `StorageType::Shared` to make verification O(1) (skip the per-writer
+    /// linear scan); ignored for `User` where the owner is already known.
+    /// `None` means "fall back to scanning the writer set" — older actions
+    /// without this hint still verify.
+    pub signer: Option<PublicKey>,
 }
 
 /// Defines the type of storage and its associated authorization rules.

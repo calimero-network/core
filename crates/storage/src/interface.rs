@@ -234,15 +234,28 @@ impl<S: StorageAdaptor> Interface<S> {
                             ))));
                         }
 
-                        // Identify the signer by trying each authoritative writer.
-                        // O(N) Ed25519 verifies in the writer-set size; expected to be small
-                        // (typically <100). For larger sets, future work could embed a
-                        // signer-pubkey hint in SignatureData for O(1) lookup.
+                        // Identify the signer.
+                        // Fast path: if the action carries a `signer` hint and that
+                        // signer is in the authoritative set, do exactly one verify.
+                        // Slow path (no hint): linear scan over authoritative writers.
                         let payload = action.payload_for_signing();
-                        let signer = authoritative_writers.iter().copied().find(|w| {
-                            crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
-                        });
-                        if signer.is_none() {
+                        let verified = match sig_data.signer {
+                            Some(hint) if authoritative_writers.contains(&hint) => {
+                                crate::env::ed25519_verify(
+                                    &sig_data.signature,
+                                    hint.digest(),
+                                    &payload,
+                                )
+                            }
+                            _ => authoritative_writers.iter().any(|w| {
+                                crate::env::ed25519_verify(
+                                    &sig_data.signature,
+                                    w.digest(),
+                                    &payload,
+                                )
+                            }),
+                        };
+                        if !verified {
                             return Err(StorageError::InvalidSignature);
                         }
                     }
@@ -909,6 +922,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature_data: Some(SignatureData {
                         signature: [0; 64], // Placeholder, added by signer
                         nonce: deleted_at,
+                        signer: None, // owner is already known for User
                     }),
                 };
             }
@@ -931,19 +945,20 @@ impl<S: StorageAdaptor> Interface<S> {
                 .unwrap_or(false);
             let claimed_has_executor = claimed.contains(&executor);
             if stored_has_executor || claimed_has_executor {
-                Some(claimed.clone())
+                Some((claimed.clone(), executor))
             } else {
                 None
             }
         } else {
             None
         };
-        if let Some(writers) = shared_to_stamp {
+        if let Some((writers, signer)) = shared_to_stamp {
             metadata.storage_type = StorageType::Shared {
                 writers,
                 signature_data: Some(SignatureData {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce: deleted_at,
+                    signer: Some(signer), // O(1) verifier lookup
                 }),
             };
         }
@@ -1367,6 +1382,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature_data: Some(SignatureData {
                         signature: [0; 64], // Placeholder, added by signer
                         nonce,
+                        signer: None, // owner is already known for User
                     }),
                 };
             }
@@ -1397,7 +1413,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     .unwrap_or(false);
                 let claimed_has_executor = claimed_writers.contains(&executor);
                 if stored_has_executor || claimed_has_executor {
-                    Some(claimed_writers.clone())
+                    Some((claimed_writers.clone(), executor))
                 } else {
                     None
                 }
@@ -1407,13 +1423,14 @@ impl<S: StorageAdaptor> Interface<S> {
         } else {
             None
         };
-        if let Some(writers) = shared_to_stamp {
+        if let Some((writers, signer)) = shared_to_stamp {
             let nonce = *metadata.updated_at;
             metadata.storage_type = StorageType::Shared {
                 writers,
                 signature_data: Some(SignatureData {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce,
+                    signer: Some(signer), // O(1) verifier lookup
                 }),
             };
         }

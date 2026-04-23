@@ -1085,6 +1085,7 @@ mod minimal_struct_layout_compat {
         let sig_data = SignatureData {
             signature: [0xEE; 64],
             nonce: 42,
+            signer: None,
         };
         let index = make_index(
             None,
