@@ -16,6 +16,13 @@ LABEL org.opencontainers.image.description="Calimero Node with Profiling Tools" 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     linux-tools-common \
+    # Generic perf binary — ships a version-agnostic perf that works for
+    # user-space sampling on most kernels. Pre-installing here avoids the
+    # entrypoint's runtime apt-get dance AND the apt-lock contention that
+    # starved 3/4 containers of perf when they all booted simultaneously.
+    # install_kernel_tools still tries the kernel-matched package at runtime
+    # and falls back to this generic perf via /usr/lib/linux-tools/*/perf.
+    linux-tools-generic \
     # Memory profiling
     heaptrack \
     # System monitoring
