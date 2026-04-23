@@ -156,6 +156,14 @@ where
         let old = mem::replace(&mut self.value, value);
         self.writers_nonce = next_nonce;
         self.storage.update();
+        // Emit a per-entity Update action so the merge-time verifier on remote
+        // peers actually runs. Guarded: only fires when the wrapper is registered
+        // as its own entity (top-level `#[app::state]` field via
+        // `new_with_field_name` + macro reassign). Nested or test-only usage
+        // propagates via the enclosing container's borsh instead.
+        if matches!(<Index<S>>::get_parent_id(self.id()), Ok(Some(_))) {
+            let _ = <Interface<S>>::save(self).map_err(StoreError::StorageError)?;
+        }
         Ok(Some(old))
     }
 
@@ -191,6 +199,13 @@ where
         self.writers = new_writers.clone();
         self.writers_nonce = next_nonce;
         self.storage.set_shared_domain(new_writers);
+        // Per-entity Update action (same guard as `insert`). Verifier on remote
+        // uses the *stored* (pre-rotation) writer set, so a writer rotating
+        // themselves out still produces a signed, verifiable rotation action
+        // (see save_raw stamping logic).
+        if matches!(<Index<S>>::get_parent_id(self.id()), Ok(Some(_))) {
+            let _ = <Interface<S>>::save(self).map_err(StoreError::StorageError)?;
+        }
         Ok(())
     }
 }
