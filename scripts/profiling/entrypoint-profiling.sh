@@ -273,13 +273,17 @@ preserve_to_host_mount() {
         fi
     fi
 
-    local reports_dir="${PROFILING_REPORTS_DIR:-/profiling/reports}"
     local node_name="${NODE_NAME:-merod}"
-    mkdir -p "$reports_dir" 2>/dev/null || true
+    local dest_reports="$dest/reports"
+    if ! mkdir -p "$dest_reports" 2>"$err_file"; then
+        echo "[Profiling] WARNING: could not create $dest_reports: $(head -1 "$err_file" 2>/dev/null)"
+    fi
 
+    # Write flamegraphs directly to the bind mount so they survive even if
+    # a subsequent copy step fails.
     local perf_data="$PROFILING_OUTPUT_DIR/perf-${node_name}.data"
-    if [ -f "$perf_data" ] && [ -s "$perf_data" ] && command -v perf >/dev/null 2>&1; then
-        local cpu_svg="$reports_dir/flamegraph-cpu-${node_name}.svg"
+    if [ -d "$dest_reports" ] && [ -f "$perf_data" ] && [ -s "$perf_data" ] && command -v perf >/dev/null 2>&1; then
+        local cpu_svg="$dest_reports/flamegraph-cpu-${node_name}.svg"
         if /profiling/scripts/generate-flamegraph.sh \
             --input "$perf_data" \
             --output "$cpu_svg" \
@@ -291,8 +295,10 @@ preserve_to_host_mount() {
         fi
     fi
 
-    if ls "$PROFILING_OUTPUT_DIR"/jemalloc.*.heap >/dev/null 2>&1; then
-        local mem_svg="$reports_dir/flamegraph-memory-${node_name}.svg"
+    # Match generate-memory-flamegraph.sh's own glob (no dot between
+    # "jemalloc" and the PID) so the guard and the script agree.
+    if [ -d "$dest_reports" ] && ls "$PROFILING_OUTPUT_DIR"/jemalloc*.heap >/dev/null 2>&1; then
+        local mem_svg="$dest_reports/flamegraph-memory-${node_name}.svg"
         if /profiling/scripts/generate-memory-flamegraph.sh \
             --latest \
             --input-dir "$PROFILING_OUTPUT_DIR" \
@@ -306,10 +312,11 @@ preserve_to_host_mount() {
         fi
     fi
 
-    if [ -d "$reports_dir" ]; then
-        if ! mkdir -p "$dest/reports" 2>"$err_file"; then
-            echo "[Profiling] WARNING: could not create $dest/reports: $(head -1 "$err_file" 2>/dev/null)"
-        elif ! cp -r "$reports_dir/." "$dest/reports/" 2>"$err_file"; then
+    # Also pick up any pre-existing files a caller might have placed under
+    # $PROFILING_REPORTS_DIR (e.g. older scripts). No-op in the common case.
+    local reports_dir="${PROFILING_REPORTS_DIR:-/profiling/reports}"
+    if [ -d "$reports_dir" ] && [ -d "$dest_reports" ]; then
+        if ! cp -r "$reports_dir/." "$dest_reports/" 2>"$err_file"; then
             echo "[Profiling] WARNING: cp from $reports_dir may be incomplete: $(head -3 "$err_file" 2>/dev/null | tr '\n' ' ')"
         fi
     fi

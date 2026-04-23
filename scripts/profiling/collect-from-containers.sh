@@ -55,20 +55,10 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
         ' 2>/dev/null || echo "  Could not stop perf (container may have stopped)"
         
         sleep 1
-        
-        # Check if container is running
-        CONTAINER_RUNNING=false
-        if docker ps -q -f "name=$container" 2>/dev/null | grep -q .; then
-            CONTAINER_RUNNING=true
-            echo "  Container is running"
-        else
-            echo "  WARNING: Container not running - collecting existing data only"
-        fi
-        
+
         # Flamegraph rendering happens inside the image entrypoint's
         # preserve_to_host_mount; harvest-host-profiling.sh picks up the
         # SVGs from the bind mount.
-
 
         # Copy data and reports from container to host
         echo "  Copying profiling data..."
