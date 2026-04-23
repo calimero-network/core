@@ -12,16 +12,16 @@ use tokio::sync::oneshot;
 use crate::group::{
     AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupAliasesRequest,
     BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
-    DeleteGroupRequest, DetachContextFromGroupRequest, GetGroupForContextRequest,
-    GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
-    GetNamespaceIdentityRequest, JoinContextRequest, JoinGroupRequest, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
-    SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest, SetGroupAliasRequest,
-    SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest,
-    StoreContextAliasRequest, StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest,
-    StoreGroupAliasRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest,
+    DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
+    GetMemberCapabilitiesRequest, GetNamespaceIdentityRequest, JoinContextRequest,
+    JoinGroupRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
+    RetryGroupUpgradeRequest, SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest,
+    SetGroupAliasRequest, SetMemberAliasRequest, SetMemberCapabilitiesRequest,
+    SetTeeAdmissionPolicyRequest, StoreContextAliasRequest, StoreDefaultCapabilitiesRequest,
+    StoreDefaultVisibilityRequest, StoreGroupAliasRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest,
     UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
@@ -216,6 +216,10 @@ pub enum ContextMessage {
     DeleteGroup {
         request: DeleteGroupRequest,
         outcome: oneshot::Sender<<DeleteGroupRequest as Message>::Result>,
+    },
+    DeleteNamespace {
+        request: DeleteNamespaceRequest,
+        outcome: oneshot::Sender<<DeleteNamespaceRequest as Message>::Result>,
     },
     AddGroupMembers {
         request: AddGroupMembersRequest,

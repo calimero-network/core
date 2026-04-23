@@ -3,7 +3,8 @@ use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     GroupLocalGovNonce, GroupMemberContext, GroupOpHead, GroupOpHeadValue, GroupOpLog,
-    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX,
+    NamespaceGovHead, NamespaceGovOp, NamespaceIdentity, GROUP_MEMBER_CONTEXT_PREFIX,
+    GROUP_OP_LOG_PREFIX, NAMESPACE_GOV_OP_PREFIX,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -270,5 +271,47 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     delete_all_group_signing_keys(store, group_id)?;
     delete_op_log_and_head(store, group_id)?;
     delete_group_meta(store, group_id)?;
+    Ok(())
+}
+
+/// Remove this node's namespace-level state: the signing identity, the
+/// governance DAG head, and every stored governance op for the namespace.
+///
+/// Complements [`delete_group_local_rows`], which handles per-group rows.
+/// The namespace root is itself a group, so a full namespace teardown calls
+/// `delete_group_local_rows` for every group in the subtree (including the
+/// root) and then this function to remove the namespace-scoped rows.
+///
+/// Ops are swept in batches to avoid materializing a large namespace log at
+/// once. Each batch opens its own store handle so the iterator sees the
+/// previous deletes committed.
+pub fn delete_namespace_local_state(
+    store: &Store,
+    namespace_id: &ContextGroupId,
+) -> EyreResult<()> {
+    const BATCH_SIZE: usize = 1000;
+    let ns_bytes = namespace_id.to_bytes();
+
+    loop {
+        let batch = super::collect_keys_with_prefix_paginated::<NamespaceGovOp>(
+            store,
+            NamespaceGovOp::new(ns_bytes, [0u8; 32]),
+            NAMESPACE_GOV_OP_PREFIX,
+            |k| k.namespace_id() == ns_bytes,
+            0,
+            BATCH_SIZE,
+        )?;
+        if batch.is_empty() {
+            break;
+        }
+        let mut handle = store.handle();
+        for key in batch {
+            handle.delete(&key)?;
+        }
+    }
+
+    let mut handle = store.handle();
+    handle.delete(&NamespaceGovHead::new(ns_bytes))?;
+    handle.delete(&NamespaceIdentity::new(ns_bytes))?;
     Ok(())
 }
