@@ -4,6 +4,8 @@
 #[path = "tests/index.rs"]
 mod tests;
 
+use core::any::TypeId;
+use core::cell::RefCell;
 use core::marker::PhantomData;
 use std::collections::BTreeSet;
 
@@ -16,6 +18,206 @@ use crate::entities::{ChildInfo, Metadata, UpdatedAt};
 use crate::env::time_now;
 use crate::interface::StorageError;
 use crate::store::{IterableStorage, Key, StorageAdaptor};
+
+// Deferred ancestor recomputation (#2238).
+//
+// `recalculate_ancestor_hashes_for` walks from a given node up to root,
+// re-reading and re-hashing each ancestor. During a merge (e.g. `Root::sync`
+// applying 20 deltas to the same parent), the per-action call pattern runs
+// this walk 20 times with ~identical starts, redoing the same O(K) hash
+// work at every parent along the path. Batching collapses that to one walk
+// per unique starting id per merge.
+//
+// Mechanism: a thread-local slot holding `Option<(TypeId, BTreeSet<Id>)>`.
+// The `TypeId` identifies the `StorageAdaptor` the active scope was opened
+// against. When `recalculate_ancestor_hashes_for<Index<S>>` is called it
+// only defers if the slot's `TypeId` matches `S`'s — calls against a
+// different adaptor (e.g. `Index<MockedStorage<1>>` while a
+// `DeferredAncestorScope<MockedStorage<2>>` is active) bypass the defer and
+// walk immediately, so a flush never runs against the wrong backend.
+//
+// The scope does not cross `.await` boundaries. `Root::sync` is synchronous
+// from the WASM side, so one scope per merge is sufficient.
+thread_local! {
+    static DEFERRED_ANCESTORS: RefCell<Option<(TypeId, BTreeSet<Id>)>> =
+        const { RefCell::new(None) };
+}
+
+/// RAII scope that defers ancestor-hash recomputation for a specific
+/// `StorageAdaptor`.
+///
+/// While this guard is alive, calls to `Index::<S>::recalculate_ancestor_hashes_for`
+/// record the starting id into a thread-local dirty-set instead of walking
+/// immediately. Walks are flushed either by [`DeferredAncestorScope::finish`]
+/// (propagates errors) or by `Drop` as a fail-safe (logs errors).
+///
+/// # Callers that care about errors
+///
+/// Prefer `finish()?` at end of scope so storage failures during flush
+/// propagate to the caller rather than being silently logged. `Drop` is a
+/// best-effort safety net for exception / panic paths.
+///
+/// # Nesting
+///
+/// Only the outermost scope owns the dirty-set; inner scopes of the same
+/// adaptor type are no-ops (their additions participate in the outer
+/// flush). Scopes of different adaptor types on the same thread log a
+/// warning and the inner becomes a no-op — mixing adaptors under a single
+/// scope has no well-defined semantics, production code never exercises this.
+///
+/// # `std::mem::forget` is unsafe in practice
+///
+/// Forgetting a scope without calling `finish()` or dropping leaves the
+/// thread-local dirty-set populated indefinitely. Every subsequent
+/// `recalculate_ancestor_hashes_for` on that thread for the same adaptor
+/// would silently defer with no flush, producing a stale merkle tree.
+/// This is safe Rust but incorrect — the API assumes the scope's lifetime
+/// ends before the thread returns to user code. Treat like `MutexGuard`:
+/// do not `mem::forget` it.
+///
+/// # Visibility
+///
+/// `pub(crate)` because misuse (opening a scope without corresponding
+/// storage operations, or losing it via `mem::forget`) can corrupt the
+/// merkle tree. Internal code paths (currently `Root::sync`) own the
+/// invariants around its use.
+#[must_use = "the scope must be held to defer recomputation; finish() it or let it drop to flush"]
+pub(crate) struct DeferredAncestorScope<S: StorageAdaptor> {
+    /// True iff this scope created the thread-local dirty-set.
+    is_outermost: bool,
+    /// True iff the caller already called `finish()`; Drop becomes a no-op.
+    flushed: bool,
+    _phantom: PhantomData<S>,
+}
+
+impl<S: StorageAdaptor> DeferredAncestorScope<S> {
+    /// Begin deferring ancestor recomputation. Flush via `finish()` (for
+    /// error-propagating flow) or let the scope drop (fail-safe).
+    pub(crate) fn new() -> Self {
+        let type_id = TypeId::of::<S>();
+        let is_outermost = DEFERRED_ANCESTORS.with(|slot| {
+            let mut borrowed = slot.borrow_mut();
+            match borrowed.as_ref() {
+                Some((existing, _)) if *existing == type_id => false,
+                Some((existing, _)) => {
+                    tracing::warn!(
+                        target: "storage::merkle",
+                        ?existing,
+                        new_type = ?type_id,
+                        "nested DeferredAncestorScope with a different StorageAdaptor; \
+                         inner scope is a no-op"
+                    );
+                    false
+                }
+                None => {
+                    *borrowed = Some((type_id, BTreeSet::new()));
+                    true
+                }
+            }
+        });
+        Self {
+            is_outermost,
+            flushed: false,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Flush deferred ancestor walks, propagating any storage error.
+    ///
+    /// After calling this, `Drop` is a no-op. Prefer this over relying on
+    /// `Drop` for call sites that want storage errors to surface (e.g.
+    /// `Root::sync` — an error here means the merkle tree is inconsistent
+    /// and the caller should be told).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` on the first failed ancestor walk. Any dirty
+    /// entries not yet processed are left in the thread-local set so the
+    /// `Drop` fail-safe can retry them after the caller's error unwinds.
+    /// If the `Drop` path also fails, the set is cleared to avoid leaking
+    /// into subsequent operations on the same thread.
+    pub(crate) fn finish(mut self) -> Result<(), StorageError> {
+        self.flushed = true;
+        if !self.is_outermost {
+            return Ok(());
+        }
+        Self::flush_impl()
+    }
+
+    /// Drains the thread-local dirty-set one entry at a time, running the
+    /// real ancestor walk for each. On error, the remaining entries stay in
+    /// the set (available for a `Drop`-time retry); on the Drop path the
+    /// caller is expected to clear what's left.
+    fn flush_impl() -> Result<(), StorageError> {
+        let type_id = TypeId::of::<S>();
+        loop {
+            // Pop one id at a time. Keep the BTreeSet (and TypeId tag) in
+            // place; only remove the tag entirely when the set is empty.
+            let next_id = DEFERRED_ANCESTORS.with(|slot| {
+                let mut borrowed = slot.borrow_mut();
+                match borrowed.as_mut() {
+                    Some((existing, set)) if *existing == type_id => {
+                        let next = set.pop_first();
+                        if set.is_empty() {
+                            *borrowed = None;
+                        }
+                        next
+                    }
+                    _ => None,
+                }
+            });
+            let Some(id) = next_id else {
+                return Ok(());
+            };
+            <Index<S>>::recalculate_ancestor_hashes_for_now(id)?;
+        }
+    }
+
+    /// Drops any dirty entries remaining in the thread-local after a failed
+    /// flush. Called from the `Drop` path when the fail-safe flush itself
+    /// errors, so a stuck set can't leak into the next operation on this
+    /// thread. Any entries discarded here were never flushed — the caller
+    /// has already logged the underlying error.
+    fn discard_dirty_set() {
+        let type_id = TypeId::of::<S>();
+        DEFERRED_ANCESTORS.with(|slot| {
+            let mut borrowed = slot.borrow_mut();
+            let matches = matches!(borrowed.as_ref(), Some((t, _)) if *t == type_id);
+            if matches {
+                *borrowed = None;
+            }
+        });
+    }
+}
+
+impl<S: StorageAdaptor> Drop for DeferredAncestorScope<S> {
+    fn drop(&mut self) {
+        // Explicit finish() was called — nothing to do.
+        if self.flushed {
+            return;
+        }
+        // Non-outermost scopes don't own the dirty-set; outer drops later.
+        if !self.is_outermost {
+            return;
+        }
+        // Fail-safe flush. Errors are logged because Drop can't return a
+        // Result. This path is typically reached when the caller returned
+        // `?` from inside the scope and never got to `finish()`, so the
+        // merkle tree is already in an uncertain state from the caller's
+        // original error. We still attempt to flush remaining entries,
+        // and if the flush itself fails, we discard the rest to avoid
+        // leaking the dirty set into the next operation on this thread.
+        if let Err(err) = Self::flush_impl() {
+            tracing::error!(
+                target: "storage::merkle",
+                ?err,
+                "deferred ancestor recompute failed during Drop; merkle tree may be inconsistent. \
+                 Prefer .finish()? over Drop for error propagation."
+            );
+            Self::discard_dirty_set();
+        }
+    }
+}
 
 /// Index entry for an entity.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -300,7 +502,42 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Recalculates ancestor hashes recursively up to root.
+    ///
+    /// Defers to a `DeferredAncestorScope<S>` if one is active on this
+    /// thread (#2238): during a merge, many calls with the same starting
+    /// id dedupe into a single walk at scope flush. A scope opened against
+    /// a *different* `StorageAdaptor` type does not apply — this call
+    /// falls through to the immediate walk, preventing cross-backend
+    /// contamination.
+    ///
+    /// The impl block's `S: 'static` bound is required to compute
+    /// `TypeId::of::<S>()` for the per-adaptor thread-local lookup. All
+    /// production `StorageAdaptor` impls are unit/const structs so they
+    /// trivially satisfy it.
     pub(crate) fn recalculate_ancestor_hashes_for(id: Id) -> Result<(), StorageError> {
+        let self_type = TypeId::of::<S>();
+        let deferred = DEFERRED_ANCESTORS.with(|slot| {
+            let mut borrowed = slot.borrow_mut();
+            match borrowed.as_mut() {
+                Some((existing_type, set)) if *existing_type == self_type => {
+                    let _ = set.insert(id);
+                    true
+                }
+                _ => false,
+            }
+        });
+        if deferred {
+            return Ok(());
+        }
+        Self::recalculate_ancestor_hashes_for_now(id)
+    }
+
+    /// The immediate, non-deferred ancestor walk.
+    ///
+    /// Called directly from `recalculate_ancestor_hashes_for` when no
+    /// defer scope is active, and from `DeferredAncestorScope::drop`
+    /// when flushing a deferred set.
+    pub(crate) fn recalculate_ancestor_hashes_for_now(id: Id) -> Result<(), StorageError> {
         let mut current_id = id;
 
         while let Some(parent_id) = Self::get_parent_id(current_id)? {

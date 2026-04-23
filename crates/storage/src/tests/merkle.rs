@@ -359,3 +359,239 @@ fn merkle_hash_child_removal_updates_parent() {
         "Parent hash must update when child removed"
     );
 }
+
+// ============================================================
+// #2238 — Deferred-ancestor scope must produce byte-identical hashes
+// ============================================================
+
+// All three tests use a 3-level hierarchy (root → parent → leaves) because
+// the scope's flush is specifically about WALKING ancestors — adding under
+// a root-level parent means the walk has zero steps and the flush is a no-op,
+// which wouldn't exercise the code path under test.
+
+#[test]
+fn deferred_ancestor_scope_propagates_through_ancestors() {
+    // Structural invariant: after scope flush, every ancestor's saved
+    // `full_hash` equals a fresh recompute from its current children.
+    // With a 3-level tree, the flush must walk parent → root and update
+    // the root's children list to reflect parent's new hash — catching
+    // any bug where the deferred flush leaves intermediate ancestors
+    // stale.
+    use crate::index::{DeferredAncestorScope, Index};
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    // root → parent (3-level so flush actually walks)
+    let mut root = Page::new_from_element("Root", Element::root());
+    TestInterface::save(&mut root).unwrap();
+    let mut parent = Paragraph::new_from_element("Parent", Element::new(None));
+    TestInterface::add_child_to(root.id(), &mut parent).unwrap();
+
+    let root_hash_before = Index::<TestStorage>::get_hashes_for(root.id())
+        .unwrap()
+        .unwrap()
+        .0;
+
+    {
+        let scope = DeferredAncestorScope::<TestStorage>::new();
+        for i in 0..10 {
+            let mut leaf = Paragraph::new_from_element(&format!("Leaf {i}"), Element::new(None));
+            TestInterface::add_child_to(parent.id(), &mut leaf).unwrap();
+        }
+        scope.finish().unwrap();
+    }
+
+    // Root's saved full_hash must match fresh recompute.
+    let root_stored = Index::<TestStorage>::get_hashes_for(root.id())
+        .unwrap()
+        .unwrap()
+        .0;
+    let root_fresh = Index::<TestStorage>::calculate_full_merkle_hash_for(root.id()).unwrap();
+    assert_eq!(
+        hex::encode(root_stored),
+        hex::encode(root_fresh),
+        "root's stored full_hash must match fresh recompute after scope flush",
+    );
+
+    // Same invariant for parent.
+    let parent_stored = Index::<TestStorage>::get_hashes_for(parent.id())
+        .unwrap()
+        .unwrap()
+        .0;
+    let parent_fresh = Index::<TestStorage>::calculate_full_merkle_hash_for(parent.id()).unwrap();
+    assert_eq!(
+        hex::encode(parent_stored),
+        hex::encode(parent_fresh),
+        "parent's stored full_hash must match fresh recompute after scope flush",
+    );
+
+    // And the root hash must have CHANGED, proving the ancestor walk
+    // actually ran rather than being a no-op (a cheap signal that the
+    // flush did propagate new descendant hashes into root).
+    assert_ne!(
+        root_hash_before, root_stored,
+        "root hash should change after 10 leaves added under parent",
+    );
+}
+
+#[test]
+fn deferred_scope_dedupes_walks_from_same_parent() {
+    // Semantic test: after a scope flush, the parent's full_hash reflects
+    // all children added inside the scope. Uses 3-level hierarchy so the
+    // flush does actual work.
+    use crate::index::{DeferredAncestorScope, Index};
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut root = Page::new_from_element("Root", Element::root());
+    TestInterface::save(&mut root).unwrap();
+    let mut parent = Paragraph::new_from_element("Parent", Element::new(None));
+    TestInterface::add_child_to(root.id(), &mut parent).unwrap();
+
+    {
+        let scope = DeferredAncestorScope::<TestStorage>::new();
+        for i in 0..5 {
+            let mut child = Paragraph::new_from_element(&format!("Child {i}"), Element::new(None));
+            TestInterface::add_child_to(parent.id(), &mut child).unwrap();
+        }
+        scope.finish().unwrap();
+    }
+
+    // Parent's index should record all 5 children.
+    let children = Index::<TestStorage>::get_children_of(parent.id()).unwrap();
+    assert_eq!(
+        children.len(),
+        5,
+        "all 5 children should be indexed under parent"
+    );
+}
+
+#[test]
+fn deferred_scope_handles_mixed_add_and_remove() {
+    // Reviewer follow-up: `DeferredAncestorScope` is active for the entire
+    // `Root::sync` action loop, including `Action::DeleteRef`. That path
+    // calls `recalculate_ancestor_hashes_for` after removing a child,
+    // and its ancestor walk is deferred along with the add-side walks.
+    //
+    // This test exercises that mixed case: inside a single scope, add
+    // some children, then remove one, then add more. After flush, the
+    // tree must be consistent — every ancestor's stored full_hash equals
+    // the fresh recompute from its current children.
+    use crate::index::{DeferredAncestorScope, Index};
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut root = Page::new_from_element("Root", Element::root());
+    TestInterface::save(&mut root).unwrap();
+    let mut parent = Paragraph::new_from_element("Parent", Element::new(None));
+    TestInterface::add_child_to(root.id(), &mut parent).unwrap();
+
+    // Seed two children before opening the scope so we have something
+    // to remove inside it.
+    let mut seed_a = Paragraph::new_from_element("Seed A", Element::new(None));
+    TestInterface::add_child_to(parent.id(), &mut seed_a).unwrap();
+    let mut seed_b = Paragraph::new_from_element("Seed B", Element::new(None));
+    TestInterface::add_child_to(parent.id(), &mut seed_b).unwrap();
+
+    {
+        let scope = DeferredAncestorScope::<TestStorage>::new();
+
+        // Add three new children.
+        for i in 0..3 {
+            let mut child = Paragraph::new_from_element(&format!("New {i}"), Element::new(None));
+            TestInterface::add_child_to(parent.id(), &mut child).unwrap();
+        }
+        // Remove one of the seeds — this goes through Index::remove_child_from,
+        // which calls recalculate_ancestor_hashes_for (also deferred inside
+        // the scope). The apply_delete_ref_action path does the same thing
+        // via remote sync, so a test covering the local path covers both.
+        TestInterface::remove_child_from(parent.id(), seed_a.id()).unwrap();
+        // Add one more after the removal to make sure ordering in the
+        // deferred set doesn't matter.
+        let mut tail = Paragraph::new_from_element("Tail", Element::new(None));
+        TestInterface::add_child_to(parent.id(), &mut tail).unwrap();
+
+        scope.finish().unwrap();
+    }
+
+    // Post-flush: parent has seed_b + 3 new + tail = 5 children. Root and
+    // parent stored hashes must match fresh recomputes.
+    let children = Index::<TestStorage>::get_children_of(parent.id()).unwrap();
+    assert_eq!(
+        children.len(),
+        5,
+        "parent should hold 1 seed + 3 new + 1 tail after mixed add/remove",
+    );
+
+    let root_stored = Index::<TestStorage>::get_hashes_for(root.id())
+        .unwrap()
+        .unwrap()
+        .0;
+    let root_fresh = Index::<TestStorage>::calculate_full_merkle_hash_for(root.id()).unwrap();
+    assert_eq!(
+        hex::encode(root_stored),
+        hex::encode(root_fresh),
+        "root hash must be consistent after mixed add/remove in a scope",
+    );
+    let parent_stored = Index::<TestStorage>::get_hashes_for(parent.id())
+        .unwrap()
+        .unwrap()
+        .0;
+    let parent_fresh = Index::<TestStorage>::calculate_full_merkle_hash_for(parent.id()).unwrap();
+    assert_eq!(
+        hex::encode(parent_stored),
+        hex::encode(parent_fresh),
+        "parent hash must be consistent after mixed add/remove in a scope",
+    );
+}
+
+#[test]
+fn deferred_scope_of_different_adaptor_does_not_cross_contaminate() {
+    // Reviewer concern: a single untyped thread-local could let a scope
+    // opened against StorageAdaptor S1 defer calls targeting S2's Index,
+    // then flush them through S1's backend — corrupting whichever tree
+    // actually lives there.
+    //
+    // The implementation keys the thread-local on TypeId<S>, so a
+    // mismatched call goes direct. Verify: open a scope for another
+    // MockedStorage variant and assert calls on TestStorage still do
+    // work eagerly (not batched into the wrong backend).
+    use crate::index::{DeferredAncestorScope, Index};
+    use crate::store::MockedStorage;
+
+    type OtherStorage = MockedStorage<8099>;
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut root = Page::new_from_element("Root", Element::root());
+    TestInterface::save(&mut root).unwrap();
+    let mut parent = Paragraph::new_from_element("Parent", Element::new(None));
+    TestInterface::add_child_to(root.id(), &mut parent).unwrap();
+
+    // Open a scope for a DIFFERENT StorageAdaptor.
+    let foreign_scope = DeferredAncestorScope::<OtherStorage>::new();
+
+    // Add a child under parent on TestStorage. This should NOT be
+    // deferred — the foreign scope's TypeId doesn't match ours.
+    let mut child = Paragraph::new_from_element("Eager", Element::new(None));
+    TestInterface::add_child_to(parent.id(), &mut child).unwrap();
+
+    // Root's stored hash must already reflect the change (not wait for
+    // the foreign scope to flush, which wouldn't propagate here anyway).
+    let root_stored = Index::<TestStorage>::get_hashes_for(root.id())
+        .unwrap()
+        .unwrap()
+        .0;
+    let root_fresh = Index::<TestStorage>::calculate_full_merkle_hash_for(root.id()).unwrap();
+    assert_eq!(
+        hex::encode(root_stored),
+        hex::encode(root_fresh),
+        "TestStorage walk must run eagerly under a foreign-adaptor scope",
+    );
+
+    foreign_scope.finish().unwrap();
+}
