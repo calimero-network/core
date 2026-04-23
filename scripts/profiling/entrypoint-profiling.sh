@@ -21,7 +21,25 @@ install_kernel_tools() {
     local kernel_version=$(uname -r)
     echo "[Profiling] Detected kernel: $kernel_version"
 
-    if perf record -o /dev/null -- true 2>/dev/null; then
+    # Helper: run the perf sanity check and, on failure, echo the first
+    # few lines of perf's own error output. Without this, failures look
+    # identical whether the cause is a missing binary, a version mismatch,
+    # or the kernel refusing sys_perf_event_open() due to missing
+    # capabilities (CAP_PERFMON / CAP_SYS_ADMIN). That last one was the
+    # actual blocker on Azure runners in recent investigations — we only
+    # found it by running perf manually inside a live container.
+    perf_sanity_check() {
+        local err
+        err=$(perf record -o /dev/null -- true 2>&1)
+        if [ $? -eq 0 ]; then
+            return 0
+        fi
+        echo "[Profiling] perf sanity check failed. First 5 lines of stderr:"
+        echo "$err" | head -5 | sed 's/^/[Profiling]   /'
+        return 1
+    }
+
+    if perf_sanity_check; then
         echo "[Profiling] perf is compatible with current kernel"
         return 0
     fi
@@ -30,7 +48,7 @@ install_kernel_tools() {
     apt-get update -qq 2>/dev/null || true
 
     if apt-get install -y -qq "linux-tools-${kernel_version}" 2>/dev/null; then
-        if perf record -o /dev/null -- true 2>/dev/null; then
+        if perf_sanity_check; then
             echo "[Profiling] perf is now working (linux-tools-${kernel_version})"
             return 0
         fi
@@ -43,7 +61,7 @@ install_kernel_tools() {
     #
     # The Ubuntu /usr/bin/perf wrapper looks up /usr/lib/linux-tools/$(uname -r)/perf
     # and errors if it's missing, so we symlink the generic binary into place.
-    echo "[Profiling] Exact-version tools unavailable, trying linux-tools-generic..."
+    echo "[Profiling] Version-matched perf didn't work, trying linux-tools-generic..."
     if apt-get install -y -qq linux-tools-generic 2>/dev/null; then
         # Glob-based lookup — avoids parsing ls output and avoids regex
         # pitfalls (dots in kernel_version are regex metacharacters).
@@ -64,7 +82,7 @@ install_kernel_tools() {
                 echo "[Profiling] WARNING: could not create $target_dir"
             elif ! ln -sf "$generic_perf" "$target_dir/perf" 2>/dev/null; then
                 echo "[Profiling] WARNING: could not symlink $target_dir/perf -> $generic_perf"
-            elif perf record -o /dev/null -- true 2>/dev/null; then
+            elif perf_sanity_check; then
                 echo "[Profiling] perf is now working (linux-tools-generic via $generic_perf)"
                 return 0
             fi
@@ -73,8 +91,10 @@ install_kernel_tools() {
         fi
     fi
 
-    echo "[Profiling] WARNING: Could not install compatible kernel tools"
-    echo "[Profiling] CPU profiling (flamegraphs) will not be available"
+    echo "[Profiling] WARNING: CPU profiling (flamegraphs) will not be available"
+    echo "[Profiling]   If the sanity-check stderr above mentions 'perf_event_paranoid'"
+    echo "[Profiling]   or 'Operation not permitted', the container is missing CAP_PERFMON /"
+    echo "[Profiling]   CAP_SYS_ADMIN. See crates/*/README for alternatives (e.g. samply)."
     return 1
 }
 
