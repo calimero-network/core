@@ -6,16 +6,35 @@
 //! production uses.
 //!
 //! This file lives under `tests/` and is compiled as a separate integration
-//! test binary WITHOUT `#[cfg(test)]`, so it links against the real
-//! `LazyLock<RwLock<HashMap<TypeId, MergeFn>>>` backend. Its job is to
-//! prove that register + dispatch plumb through correctly against the
-//! production code path.
+//! test binary. The binary itself IS built with `#[cfg(test)]` (so `#[test]`
+//! attributes work), but the `calimero-storage` *library* it links against
+//! is compiled WITHOUT `#[cfg(test)]` — which is what matters here. The
+//! library side is where the registry backend selection happens, so this
+//! test exercises the real `LazyLock<RwLock<HashMap<TypeId, MergeFn>>>`
+//! path. Its job is to prove that register + dispatch plumb through
+//! correctly against the production code.
 //!
 //! Intentionally not tested here: the abort-on-poison branch. Exercising
 //! it requires panicking inside the lock's critical section, and the
 //! response is `std::process::abort()` — which would tear down the test
 //! runner along with the lock. That branch is small enough to verify by
 //! review.
+//!
+//! # Only one test per file
+//!
+//! The production registry is a process-global `RwLock`; there is no
+//! `clear_merge_registry` available here because it's gated behind
+//! `#[cfg(test)]` on the library side. Every `#[test]` in this binary
+//! runs against the same registry and cannot clean up after itself. If
+//! two tests register different types with overlapping borsh layouts,
+//! `try_merge_registered`'s HashMap-order iteration could dispatch to
+//! the wrong one — a flake we just eliminated in the unit tests.
+//!
+//! Convention for this crate: **one registering test per `tests/*.rs`
+//! file**. Each file gets its own test binary (Cargo default), so
+//! process-global state doesn't leak between them. If you need another
+//! integration scenario, add a new `tests/merge_registry_<scenario>.rs`
+//! file rather than another `#[test]` here.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::crdt_meta::MergeError;

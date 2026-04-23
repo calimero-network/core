@@ -75,6 +75,13 @@ thread_local! {
 // either way a bug. The merge closure built in `register_crdt_merge` only
 // calls borsh and the type's own `Mergeable::merge`; adding registry
 // access to it would break this invariant.
+//
+// Production-path coverage: because unit tests only exercise the
+// `#[cfg(test)]` thread-local backend, register+dispatch against the
+// real `RwLock` path is covered by the integration test at
+// `tests/merge_registry_integration.rs`. If you touch the
+// `#[cfg(not(test))]` helpers below, that integration test is the thing
+// to run.
 
 /// Run `f` with mutable access to the registry.
 #[cfg(not(test))]
