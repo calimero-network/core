@@ -123,12 +123,19 @@ where
     S: StorageAdaptor,
 {
     /// Get a reference to the current value.
+    ///
+    /// # Errors
+    /// Currently infallible; the `Result` is preserved for forward compatibility
+    /// (e.g., a future variant could lazy-load the value from storage).
     pub fn get(&self) -> Result<&T, StoreError> {
         Ok(&self.value)
     }
 
     /// Replace the value. The executor must be in the current writer set.
     /// Returns the previous value.
+    ///
+    /// # Errors
+    /// Returns `ActionNotAllowed` if the executor is not in `writers`.
     pub fn insert(&mut self, value: T) -> Result<Option<T>, StoreError> {
         let executor: PublicKey = env::executor_id().into();
         if !self.writers.contains(&executor) {
@@ -143,11 +150,21 @@ where
     }
 
     /// Rotate the writer set. Must be called by a current writer; rejected if
-    /// `writers_frozen` was set at construction.
+    /// `writers_frozen` was set at construction or if `new_writers` is empty.
+    ///
+    /// # Errors
+    /// Returns `ActionNotAllowed` if `writers_frozen` is set, if `new_writers`
+    /// is empty (which would permanently lock the storage), or if the executor
+    /// is not currently in the writer set.
     pub fn rotate_writers(&mut self, new_writers: BTreeSet<PublicKey>) -> Result<(), StoreError> {
         if self.writers_frozen {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "Cannot rotate writers of frozen SharedStorage".to_owned(),
+            )));
+        }
+        if new_writers.is_empty() {
+            return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
+                "Cannot rotate to an empty writer set".to_owned(),
             )));
         }
         let executor: PublicKey = env::executor_id().into();
@@ -324,6 +341,28 @@ mod tests {
             .rotate_writers(writers(&[BOB]))
             .expect_err("non-writer rotation must fail");
         assert!(err.to_string().to_lowercase().contains("writer"));
+    }
+
+    #[test]
+    #[serial]
+    fn rotate_to_empty_writer_set_rejected() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+
+        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE, BOB]), false));
+        s.insert(TestVal(1)).unwrap();
+
+        let err = s
+            .rotate_writers(BTreeSet::new())
+            .expect_err("rotation to empty set must fail");
+        assert!(
+            err.to_string().to_lowercase().contains("empty"),
+            "error should mention empty, got: {err}"
+        );
+
+        // Storage is still functional — alice can still write.
+        let _ = s.insert(TestVal(2)).expect("alice can still write");
+        assert_eq!(s.get().unwrap(), &TestVal(2));
     }
 
     #[test]
