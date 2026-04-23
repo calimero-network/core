@@ -9,7 +9,7 @@ use super::{Collection, ROOT_ID};
 use crate::address::Id;
 use crate::delta::{push_comparison, StorageDelta};
 use crate::integration::Comparison;
-use crate::interface::{Action, Interface, StorageError};
+use crate::interface::{Action, ApplyContext, Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
 use borsh::{from_slice, BorshDeserialize, BorshSerialize};
 use tracing::info;
@@ -177,12 +177,20 @@ where
                                     updated_at = metadata.updated_at(),
                                     "SYNC CHILD: Applying Action::Add for child entity"
                                 );
-                                <Interface<S>>::apply_action(Action::Add {
-                                    id,
-                                    data,
-                                    metadata,
-                                    ancestors,
-                                })?;
+                                // Root::sync deserializes only the inner `StorageDelta`
+                                // and doesn't have access to the outer `CausalDelta`'s
+                                // parents here; pass empty context. The wire layer that
+                                // has the `CausalDelta` should migrate to a variant of
+                                // sync that threads parents through (P2 follow-up).
+                                <Interface<S>>::apply_action(
+                                    Action::Add {
+                                        id,
+                                        data,
+                                        metadata,
+                                        ancestors,
+                                    },
+                                    &ApplyContext::empty(),
+                                )?;
                             }
                         }
                         Action::Update {
@@ -202,16 +210,19 @@ where
                                     updated_at = metadata.updated_at(),
                                     "SYNC CHILD: Applying Action::Update for child entity"
                                 );
-                                <Interface<S>>::apply_action(Action::Update {
-                                    id,
-                                    data,
-                                    metadata,
-                                    ancestors,
-                                })?;
+                                <Interface<S>>::apply_action(
+                                    Action::Update {
+                                        id,
+                                        data,
+                                        metadata,
+                                        ancestors,
+                                    },
+                                    &ApplyContext::empty(),
+                                )?;
                             }
                         }
                         Action::DeleteRef { .. } => {
-                            <Interface<S>>::apply_action(action)?;
+                            <Interface<S>>::apply_action(action, &ApplyContext::empty())?;
                         }
                     };
                 }

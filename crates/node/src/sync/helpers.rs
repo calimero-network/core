@@ -8,7 +8,7 @@ use calimero_primitives::context::ContextId;
 use calimero_storage::address::Id;
 use calimero_storage::entities::{ChildInfo, Metadata};
 use calimero_storage::index::Index;
-use calimero_storage::interface::{Action, Interface};
+use calimero_storage::interface::{Action, ApplyContext, Interface};
 use calimero_storage::store::MainStorage;
 use eyre::{bail, Result};
 use rand::Rng;
@@ -88,7 +88,9 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
                 ancestors: vec![],
                 metadata: Metadata::default(),
             };
-            Interface::<MainStorage>::apply_action(root_action)?;
+            // P1 plumbing: this code path constructs a synthetic root from a
+            // peer-fetched leaf and doesn't have causal context for it.
+            Interface::<MainStorage>::apply_action(root_action, &ApplyContext::empty())?;
         }
 
         // Get root info for ancestor chain
@@ -113,7 +115,7 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
         }
     };
 
-    Interface::<MainStorage>::apply_action(action)?;
+    Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())?;
     Ok(())
 }
 

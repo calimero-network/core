@@ -56,6 +56,44 @@ use crate::store::{Key, MainStorage, StorageAdaptor};
 pub use crate::action::{Action, ComparisonData};
 pub use crate::error::StorageError;
 
+/// Context accompanying an [`Interface::apply_action`] invocation.
+///
+/// Carries the DAG-causal parent hashes of the [`crate::delta::CausalDelta`]
+/// the action came from, so the verifier can reason about happens-before
+/// relationships when checking signatures against time-varying authority
+/// sets (e.g., `SharedStorage`'s rotating writer set).
+///
+/// This is plumbing only in P1 of the DAG-causal epic (#2233): the verifier
+/// does not yet consult `causal_parents`. Callers without access to causal
+/// context should pass [`ApplyContext::empty`].
+///
+/// New apply-time context (delta hash, sender id, etc.) should be added as
+/// fields here rather than as positional parameters, so every callsite is
+/// forced to acknowledge new fields at compile time.
+#[derive(Debug, Default, Clone)]
+#[non_exhaustive]
+pub struct ApplyContext {
+    /// Hashes of the DAG-causal parents of the delta this action came from.
+    /// Empty for legacy callers (direct test invocations, the recursive
+    /// `Compare` follow-up emitted by `apply_action` itself, etc.).
+    pub causal_parents: Vec<[u8; 32]>,
+}
+
+impl ApplyContext {
+    /// Empty context — no causal parents. Use this in tests or when the
+    /// caller doesn't have access to the enclosing `CausalDelta`.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Construct with a known set of causal parents.
+    #[must_use]
+    pub fn with_parents(causal_parents: Vec<[u8; 32]>) -> Self {
+        Self { causal_parents }
+    }
+}
+
 /// Convenient type alias for the main storage system.
 pub type MainInterface = Interface<MainStorage>;
 
@@ -102,11 +140,18 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Handles Add/Update/Delete actions, creating missing ancestors if needed.
     /// Generates Compare action for hash verification after applying changes.
     ///
+    /// `ctx` carries DAG-causal context (e.g., parent delta hashes) used by
+    /// authority-set verification for time-varying writer sets. P1 of the
+    /// DAG-causal epic (#2233) plumbs this through; the verifier does not
+    /// yet consult it.
+    ///
     /// # Errors
     /// - `DeserializationError` if action data is invalid
     /// - `ActionNotAllowed` if Compare action is passed directly
     ///
-    pub fn apply_action(action: Action) -> Result<(), StorageError> {
+    pub fn apply_action(action: Action, ctx: &ApplyContext) -> Result<(), StorageError> {
+        // P1 plumbing: capture for future use. Verifier behavior is unchanged.
+        let _ = ctx;
         // Verify that the action timestamp is not too far in the future
         // to prevent LWW Time Drift attacks.
         verify_action_timestamp(&action)?;
@@ -766,7 +811,9 @@ impl<S: StorageAdaptor> Interface<S> {
                 continue;
             }
 
-            <Interface<S>>::apply_action(action)?;
+            // Comparison-derived actions don't carry causal context here (the
+            // comparison itself is independent of the originating delta DAG).
+            <Interface<S>>::apply_action(action, &ApplyContext::empty())?;
         }
 
         for action in remote {

@@ -204,12 +204,15 @@ mod tests {
         // Write: create root entity
         let root_id = Id::new(*context_id.as_ref());
         let write_result = with_runtime_env(env.clone(), || {
-            Interface::<MainStorage>::apply_action(Action::Update {
-                id: root_id,
-                data: vec![],
-                ancestors: vec![],
-                metadata: Metadata::default(),
-            })
+            Interface::<MainStorage>::apply_action(
+                Action::Update {
+                    id: root_id,
+                    data: vec![],
+                    ancestors: vec![],
+                    metadata: Metadata::default(),
+                },
+                &calimero_storage::interface::ApplyContext::empty(),
+            )
         });
         assert!(write_result.is_ok(), "apply_action should succeed");
 

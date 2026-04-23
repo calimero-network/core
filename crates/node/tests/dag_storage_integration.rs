@@ -19,7 +19,7 @@ use calimero_storage::address::Id;
 use calimero_storage::entities::{ChildInfo, Metadata};
 use calimero_storage::env::time_now;
 use calimero_storage::index::Index;
-use calimero_storage::interface::Interface;
+use calimero_storage::interface::{ApplyContext, Interface};
 use calimero_storage::store::MainStorage;
 use tokio::sync::Mutex;
 
@@ -61,7 +61,7 @@ impl DeltaApplier<Vec<Action>> for StorageApplier {
 
         // Actually apply each action to storage
         for action in &delta.payload {
-            Interface::<MainStorage>::apply_action(action.clone())
+            Interface::<MainStorage>::apply_action(action.clone(), &ApplyContext::empty())
                 .map_err(|e| ApplyError::Application(e.to_string()))?;
         }
 

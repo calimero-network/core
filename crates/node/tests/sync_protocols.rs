@@ -15,6 +15,7 @@ use calimero_dag::{ApplyError, CausalDelta, DagStore, DeltaApplier, MAX_DELTA_QU
 use calimero_primitives::hash::Hash;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
+use calimero_storage::interface::ApplyContext;
 use calimero_storage::snapshot::Snapshot;
 use calimero_storage::store::MainStorage;
 use calimero_storage::Interface;
@@ -46,7 +47,7 @@ impl DeltaApplier<Vec<Action>> for TestApplier {
     async fn apply(&self, delta: &CausalDelta<Vec<Action>>) -> Result<(), ApplyError> {
         // Apply actions to storage
         for action in &delta.payload {
-            Interface::<MainStorage>::apply_action(action.clone())
+            Interface::<MainStorage>::apply_action(action.clone(), &ApplyContext::empty())
                 .map_err(|e| ApplyError::Application(e.to_string()))?;
         }
 

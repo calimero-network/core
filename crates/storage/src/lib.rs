@@ -92,6 +92,8 @@ pub use interface::Interface;
 /// Shared test functionality.
 #[cfg(test)]
 pub mod tests {
+    /// `ApplyContext` plumbing tests (P1 of #2233 DAG-causal epic).
+    pub mod apply_context;
     /// AuthoredMap/AuthoredVector merge-time auth tests.
     pub mod authored_primitives;
     /// CRDT collections (UnorderedMap, Vector, Counter) tests.

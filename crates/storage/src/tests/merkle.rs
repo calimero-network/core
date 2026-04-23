@@ -7,7 +7,7 @@
 
 use super::common::{Page, Paragraph};
 use crate::entities::{Data, Element};
-use crate::interface::Interface;
+use crate::interface::{ApplyContext, Interface};
 use crate::store::MockedStorage;
 
 type TestStorage = MockedStorage<8000>;
@@ -235,7 +235,7 @@ fn merkle_hash_convergence_after_sync() {
         metadata: page1.element().metadata.clone(),
     };
 
-    Interface::<Storage2>::apply_action(action).unwrap();
+    Interface::<Storage2>::apply_action(action, &ApplyContext::empty()).unwrap();
 
     // After sync, hashes should match
     let page2 = Interface::<Storage2>::find_by_id::<Page>(page1.id())
