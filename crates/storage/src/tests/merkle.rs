@@ -504,8 +504,10 @@ fn deferred_scope_handles_mixed_add_and_remove() {
             let mut child = Paragraph::new_from_element(&format!("New {i}"), Element::new(None));
             TestInterface::add_child_to(parent.id(), &mut child).unwrap();
         }
-        // Remove one of the seeds — this goes through apply_delete_ref_action
-        // which also calls recalculate_ancestor_hashes_for, now deferred.
+        // Remove one of the seeds — this goes through Index::remove_child_from,
+        // which calls recalculate_ancestor_hashes_for (also deferred inside
+        // the scope). The apply_delete_ref_action path does the same thing
+        // via remote sync, so a test covering the local path covers both.
         TestInterface::remove_child_from(parent.id(), seed_a.id()).unwrap();
         // Add one more after the removal to make sure ordering in the
         // deferred set doesn't matter.

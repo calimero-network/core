@@ -60,12 +60,29 @@ thread_local! {
 /// # Nesting
 ///
 /// Only the outermost scope owns the dirty-set; inner scopes of the same
-/// adaptor type are no-ops. Scopes of different adaptor types on the same
-/// thread are rejected (the inner one is a no-op and logs a warning),
-/// since mixing adaptors under a single scope has no well-defined
-/// semantics — production code never exercises this.
+/// adaptor type are no-ops (their additions participate in the outer
+/// flush). Scopes of different adaptor types on the same thread log a
+/// warning and the inner becomes a no-op — mixing adaptors under a single
+/// scope has no well-defined semantics, production code never exercises this.
+///
+/// # `std::mem::forget` is unsafe in practice
+///
+/// Forgetting a scope without calling `finish()` or dropping leaves the
+/// thread-local dirty-set populated indefinitely. Every subsequent
+/// `recalculate_ancestor_hashes_for` on that thread for the same adaptor
+/// would silently defer with no flush, producing a stale merkle tree.
+/// This is safe Rust but incorrect — the API assumes the scope's lifetime
+/// ends before the thread returns to user code. Treat like `MutexGuard`:
+/// do not `mem::forget` it.
+///
+/// # Visibility
+///
+/// `pub(crate)` because misuse (opening a scope without corresponding
+/// storage operations, or losing it via `mem::forget`) can corrupt the
+/// merkle tree. Internal code paths (currently `Root::sync`) own the
+/// invariants around its use.
 #[must_use = "the scope must be held to defer recomputation; finish() it or let it drop to flush"]
-pub struct DeferredAncestorScope<S: StorageAdaptor + 'static> {
+pub(crate) struct DeferredAncestorScope<S: StorageAdaptor> {
     /// True iff this scope created the thread-local dirty-set.
     is_outermost: bool,
     /// True iff the caller already called `finish()`; Drop becomes a no-op.
@@ -73,10 +90,10 @@ pub struct DeferredAncestorScope<S: StorageAdaptor + 'static> {
     _phantom: PhantomData<S>,
 }
 
-impl<S: StorageAdaptor + 'static> DeferredAncestorScope<S> {
+impl<S: StorageAdaptor> DeferredAncestorScope<S> {
     /// Begin deferring ancestor recomputation. Flush via `finish()` (for
     /// error-propagating flow) or let the scope drop (fail-safe).
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let type_id = TypeId::of::<S>();
         let is_outermost = DEFERRED_ANCESTORS.with(|slot| {
             let mut borrowed = slot.borrow_mut();
@@ -114,10 +131,12 @@ impl<S: StorageAdaptor + 'static> DeferredAncestorScope<S> {
     ///
     /// # Errors
     ///
-    /// Returns `StorageError` if any of the deferred ancestor walks fails
-    /// (typically because an underlying storage read or write failed).
-    /// Flush stops at the first error; remaining dirty entries are dropped.
-    pub fn finish(mut self) -> Result<(), StorageError> {
+    /// Returns `StorageError` on the first failed ancestor walk. Any dirty
+    /// entries not yet processed are left in the thread-local set so the
+    /// `Drop` fail-safe can retry them after the caller's error unwinds.
+    /// If the `Drop` path also fails, the set is cleared to avoid leaking
+    /// into subsequent operations on the same thread.
+    pub(crate) fn finish(mut self) -> Result<(), StorageError> {
         self.flushed = true;
         if !self.is_outermost {
             return Ok(());
@@ -125,28 +144,53 @@ impl<S: StorageAdaptor + 'static> DeferredAncestorScope<S> {
         Self::flush_impl()
     }
 
-    /// Internal: drains the thread-local dirty-set (if it belongs to this
-    /// scope's adaptor) and runs the real ancestor walk for each entry.
+    /// Drains the thread-local dirty-set one entry at a time, running the
+    /// real ancestor walk for each. On error, the remaining entries stay in
+    /// the set (available for a `Drop`-time retry); on the Drop path the
+    /// caller is expected to clear what's left.
     fn flush_impl() -> Result<(), StorageError> {
         let type_id = TypeId::of::<S>();
-        let dirty = DEFERRED_ANCESTORS.with(|slot| {
-            let mut borrowed = slot.borrow_mut();
-            match borrowed.as_ref() {
-                Some((existing, _)) if *existing == type_id => borrowed.take().map(|(_, set)| set),
-                _ => None,
-            }
-        });
-        let Some(dirty) = dirty else {
-            return Ok(());
-        };
-        for id in dirty {
+        loop {
+            // Pop one id at a time. Keep the BTreeSet (and TypeId tag) in
+            // place; only remove the tag entirely when the set is empty.
+            let next_id = DEFERRED_ANCESTORS.with(|slot| {
+                let mut borrowed = slot.borrow_mut();
+                match borrowed.as_mut() {
+                    Some((existing, set)) if *existing == type_id => {
+                        let next = set.pop_first();
+                        if set.is_empty() {
+                            *borrowed = None;
+                        }
+                        next
+                    }
+                    _ => None,
+                }
+            });
+            let Some(id) = next_id else {
+                return Ok(());
+            };
             <Index<S>>::recalculate_ancestor_hashes_for_now(id)?;
         }
-        Ok(())
+    }
+
+    /// Drops any dirty entries remaining in the thread-local after a failed
+    /// flush. Called from the `Drop` path when the fail-safe flush itself
+    /// errors, so a stuck set can't leak into the next operation on this
+    /// thread. Any entries discarded here were never flushed — the caller
+    /// has already logged the underlying error.
+    fn discard_dirty_set() {
+        let type_id = TypeId::of::<S>();
+        DEFERRED_ANCESTORS.with(|slot| {
+            let mut borrowed = slot.borrow_mut();
+            let matches = matches!(borrowed.as_ref(), Some((t, _)) if *t == type_id);
+            if matches {
+                *borrowed = None;
+            }
+        });
     }
 }
 
-impl<S: StorageAdaptor + 'static> Drop for DeferredAncestorScope<S> {
+impl<S: StorageAdaptor> Drop for DeferredAncestorScope<S> {
     fn drop(&mut self) {
         // Explicit finish() was called — nothing to do.
         if self.flushed {
@@ -157,15 +201,20 @@ impl<S: StorageAdaptor + 'static> Drop for DeferredAncestorScope<S> {
             return;
         }
         // Fail-safe flush. Errors are logged because Drop can't return a
-        // Result. The log is a strong signal that the caller should have
-        // used finish() — an error here means a partially-propagated
-        // merkle tree.
+        // Result. This path is typically reached when the caller returned
+        // `?` from inside the scope and never got to `finish()`, so the
+        // merkle tree is already in an uncertain state from the caller's
+        // original error. We still attempt to flush remaining entries,
+        // and if the flush itself fails, we discard the rest to avoid
+        // leaking the dirty set into the next operation on this thread.
         if let Err(err) = Self::flush_impl() {
             tracing::error!(
                 target: "storage::merkle",
                 ?err,
-                "deferred ancestor recompute failed during Drop; caller should use .finish()? for error propagation"
+                "deferred ancestor recompute failed during Drop; merkle tree may be inconsistent. \
+                 Prefer .finish()? over Drop for error propagation."
             );
+            Self::discard_dirty_set();
         }
     }
 }
@@ -235,9 +284,9 @@ impl EntityIndex {
 
 /// Entity index manager.
 #[derive(Debug)]
-pub struct Index<S: StorageAdaptor + 'static>(PhantomData<S>);
+pub struct Index<S: StorageAdaptor>(PhantomData<S>);
 
-impl<S: StorageAdaptor + 'static> Index<S> {
+impl<S: StorageAdaptor> Index<S> {
     /// Adds a child to a parent's collection.
     pub(crate) fn add_child_to(parent_id: Id, child: ChildInfo) -> Result<(), StorageError> {
         // Get or create parent index
@@ -704,7 +753,7 @@ impl<S: StorageAdaptor + 'static> Index<S> {
     #[allow(dead_code, reason = "planned feature for tombstone cleanup")]
     pub(crate) fn garbage_collect_tombstones(retention_nanos: u64) -> Result<usize, StorageError>
     where
-        S: IterableStorage + 'static,
+        S: IterableStorage,
     {
         let cutoff_time = time_now().saturating_sub(retention_nanos);
         let mut collected = 0;

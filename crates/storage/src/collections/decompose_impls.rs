@@ -16,7 +16,7 @@ impl<K, V, S> Decomposable for UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
     V: BorshSerialize + BorshDeserialize + Clone,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     type Key = CompositeKey;
     type Value = V;
@@ -76,7 +76,7 @@ where
 impl<T, S> Decomposable for Vector<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Clone,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     type Key = CompositeKey;
     type Value = T;

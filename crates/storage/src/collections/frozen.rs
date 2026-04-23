@@ -20,10 +20,7 @@ type Hash = [u8; 32];
 /// Under the hood, this is an `UnorderedMap<Hash, FrozenValue<Vec<u8>>>`.
 /// The user interacts with type `T`, but we store its serialized bytes.
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
-pub struct FrozenStorage<
-    T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static = MainStorage,
-> {
+pub struct FrozenStorage<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor = MainStorage> {
     /// The underlying map storing immutable data.
     #[borsh(bound(serialize = "", deserialize = ""))]
     inner: UnorderedMap<Hash, FrozenValue<T>, S>,
@@ -98,7 +95,7 @@ where
 impl<T, S> FrozenStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// Inserts a value into frozen storage.
     ///
@@ -133,7 +130,7 @@ where
 impl<T, S> FrozenStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// Gets a value from frozen storage by its hash.
     /// Returns the deserialized value `T`.
@@ -167,7 +164,7 @@ where
 impl<T, S> Data for FrozenStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn collections(&self) -> BTreeMap<String, Vec<crate::entities::ChildInfo>> {
         // FrozenStorage itself does not have child collections.
@@ -190,7 +187,7 @@ where
 impl<T, S> Mergeable for FrozenStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Clone,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
         self.inner.merge(&other.inner)
@@ -201,7 +198,7 @@ where
 impl<T, S> CrdtMeta for FrozenStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
         CrdtType::FrozenStorage

@@ -29,7 +29,7 @@ use crate::store::{MainStorage, StorageAdaptor};
 /// `User { owner }`, set at insert time from `env::executor_id()`. Only the
 /// owner can `update` or `remove` their entry.
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
-pub struct AuthoredMap<K, V, S: StorageAdaptor + 'static = MainStorage>
+pub struct AuthoredMap<K, V, S: StorageAdaptor = MainStorage>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
@@ -97,7 +97,7 @@ impl<K, V, S> AuthoredMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// Inserts a new entry, stamping the current executor as its owner.
     ///
@@ -234,7 +234,7 @@ impl<K, V, S> Data for AuthoredMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         self.inner.collections()
@@ -253,7 +253,7 @@ impl<K, V, S> Mergeable for AuthoredMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
     V: BorshSerialize + BorshDeserialize + Mergeable,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// `AuthoredMap` deliberately does **not** perform structural merge.
     ///
@@ -277,7 +277,7 @@ impl<K, V, S> CrdtMeta for AuthoredMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
         CrdtType::UserStorage

@@ -134,7 +134,7 @@ impl RgaChar {
 ///
 /// Built on UnorderedMap for automatic CRDT behavior, with RGA ordering logic.
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
-pub struct ReplicatedGrowableArray<S: StorageAdaptor + 'static = MainStorage> {
+pub struct ReplicatedGrowableArray<S: StorageAdaptor = MainStorage> {
     /// Characters stored by CharKey with ordering metadata
     #[borsh(bound(serialize = "", deserialize = ""))]
     pub(crate) chars: UnorderedMap<CharKey, RgaChar, S>,
@@ -177,7 +177,7 @@ impl Default for ReplicatedGrowableArray<MainStorage> {
     }
 }
 
-impl<S: StorageAdaptor + 'static> ReplicatedGrowableArray<S> {
+impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     fn new_internal() -> Self {
         Self {
             chars: UnorderedMap::new_internal(),

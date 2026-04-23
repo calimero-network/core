@@ -14,7 +14,7 @@ use crate::store::{MainStorage, StorageAdaptor};
 
 /// A set collection that stores unqiue values once.
 #[derive(BorshSerialize, BorshDeserialize)]
-pub struct UnorderedSet<V, S: StorageAdaptor + 'static = MainStorage> {
+pub struct UnorderedSet<V, S: StorageAdaptor = MainStorage> {
     #[borsh(bound(serialize = "", deserialize = ""))]
     inner: Collection<V, S>,
 }
@@ -54,7 +54,7 @@ where
 impl<V, S> UnorderedSet<V, S>
 where
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// Create a new set collection.
     fn new_internal() -> Self {
@@ -295,7 +295,7 @@ where
 impl<V, S> Serialize for UnorderedSet<V, S>
 where
     V: BorshSerialize + BorshDeserialize + Serialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
     where
@@ -316,7 +316,7 @@ where
 impl<V, S> Extend<V> for UnorderedSet<V, S>
 where
     V: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn extend<I: IntoIterator<Item = V>>(&mut self, iter: I) {
         let parent = self.inner.id();
@@ -334,7 +334,7 @@ where
 impl<V, S> FromIterator<V> for UnorderedSet<V, S>
 where
     V: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn from_iter<I: IntoIterator<Item = V>>(iter: I) -> Self {
         let mut map = UnorderedSet::new_internal();

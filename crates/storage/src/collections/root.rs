@@ -16,7 +16,7 @@ use borsh::{from_slice, BorshDeserialize, BorshSerialize};
 use tracing::info;
 
 /// A set collection that stores unqiue values once.
-pub struct Root<T, S: StorageAdaptor + 'static = MainStorage> {
+pub struct Root<T, S: StorageAdaptor = MainStorage> {
     inner: Collection<T, S>,
     value: RefCell<Option<T>>,
     dirty: bool,
@@ -25,7 +25,7 @@ pub struct Root<T, S: StorageAdaptor + 'static = MainStorage> {
 impl<T, S> fmt::Debug for Root<T, S>
 where
     T: BorshSerialize + BorshDeserialize + fmt::Debug,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Root")
@@ -49,7 +49,7 @@ where
 impl<T, S> Root<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// Creates a new root collection with the given value.
     #[expect(clippy::unwrap_used, reason = "fatal error if it happens")]
@@ -272,7 +272,7 @@ where
 impl<T, S> Deref for Root<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     type Target = T;
 
@@ -284,7 +284,7 @@ where
 impl<T, S> DerefMut for Root<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.dirty = true;

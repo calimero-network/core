@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 /// A map collection that stores key-value pairs.
 #[derive(BorshSerialize, BorshDeserialize)]
-pub struct UnorderedMap<K, V, S: StorageAdaptor + 'static = MainStorage> {
+pub struct UnorderedMap<K, V, S: StorageAdaptor = MainStorage> {
     #[borsh(bound(serialize = "", deserialize = ""))]
     inner: Collection<(K, V), S>,
 }
@@ -61,7 +61,7 @@ impl<K, V, S> UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// Create a new map collection (internal, shared with Counter).
     pub(super) fn new_internal() -> Self {
@@ -389,7 +389,7 @@ impl<K, V, S> Data for UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         self.inner.collections()
@@ -408,7 +408,7 @@ impl<K, V, S> Eq for UnorderedMap<K, V, S>
 where
     K: Eq + BorshSerialize + BorshDeserialize,
     V: Eq + BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
 }
 
@@ -416,7 +416,7 @@ impl<K, V, S> PartialEq for UnorderedMap<K, V, S>
 where
     K: PartialEq + BorshSerialize + BorshDeserialize,
     V: PartialEq + BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn eq(&self, other: &Self) -> bool {
@@ -431,7 +431,7 @@ impl<K, V, S> Ord for UnorderedMap<K, V, S>
 where
     K: Ord + BorshSerialize + BorshDeserialize,
     V: Ord + BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -446,7 +446,7 @@ impl<K, V, S> PartialOrd for UnorderedMap<K, V, S>
 where
     K: PartialOrd + BorshSerialize + BorshDeserialize,
     V: PartialOrd + BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         let l = self.entries().ok()?;
@@ -460,7 +460,7 @@ impl<K, V, S> fmt::Debug for UnorderedMap<K, V, S>
 where
     K: fmt::Debug + BorshSerialize + BorshDeserialize,
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     #[expect(clippy::unwrap_used, clippy::unwrap_in_result, reason = "'tis fine")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -478,7 +478,7 @@ impl<K, V, S> Default for UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn default() -> Self {
         Self::new_internal()
@@ -489,7 +489,7 @@ impl<K, V, S> Serialize for UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + Serialize,
     V: BorshSerialize + BorshDeserialize + Serialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
     where
@@ -511,7 +511,7 @@ impl<K, V, S> Extend<(K, V)> for UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
         let parent = self.inner.id();
@@ -530,7 +530,7 @@ impl<K, V, S> FromIterator<(K, V)> for UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
         let mut map = UnorderedMap::new_internal();
@@ -549,7 +549,7 @@ pub struct ValueMut<'a, K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// This holds the mutable entry for the *entire* tuple.
     entry_mut: EntryMut<'a, (K, V), S>,
@@ -559,7 +559,7 @@ impl<K, V, S> Deref for ValueMut<'_, K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     type Target = V;
 
@@ -573,7 +573,7 @@ impl<K, V, S> DerefMut for ValueMut<'_, K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // self.entry_mut.deref() returns &(K, V), so with .1 it accesses the V
@@ -590,7 +590,7 @@ pub enum Entry<'a, K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// An occupied entry.
     Occupied(OccupiedEntry<'a, K, V, S>),
@@ -605,7 +605,7 @@ pub struct OccupiedEntry<'a, K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     entry_mut: EntryMut<'a, (K, V), S>,
 }
@@ -617,7 +617,7 @@ pub struct VacantEntry<'a, K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     map: &'a mut UnorderedMap<K, V, S>,
     key: K,
@@ -627,7 +627,7 @@ impl<'a, K, V, S> Entry<'a, K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// Ensures a value is in the entry by inserting the default if empty,
     /// and returns a mutable `ValueMut` guard to the value.
@@ -669,7 +669,7 @@ impl<K, V, S> OccupiedEntry<'_, K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// Gets a reference to the value in the entry.
     pub fn get(&self) -> &V {
@@ -704,7 +704,7 @@ impl<'a, K, V, S> VacantEntry<'a, K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq,
     V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// Inserts a new value into the entry and returns a mutable `ValueMut`
     /// guard to the new value.

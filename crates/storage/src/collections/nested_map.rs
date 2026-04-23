@@ -38,7 +38,7 @@ where
     K1: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + Clone,
     K2: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + Clone,
     V: BorshSerialize + BorshDeserialize + Clone,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     /// Insert a value into a nested map
     ///
@@ -83,7 +83,7 @@ where
     K1: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + Clone,
     K2: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + Clone,
     V: BorshSerialize + BorshDeserialize + Clone,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn insert_nested(
         &mut self,
