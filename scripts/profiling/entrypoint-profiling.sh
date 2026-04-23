@@ -307,10 +307,30 @@ preserve_to_host_mount() {
         [ "$err_file" != /dev/null ] && rm -f "$err_file"
         return 0
     fi
+    # Diagnostics log — runtime-container stdout is not captured by the
+    # GHA collector (containers are removed before docker logs is called),
+    # so mirror preserve's view of the world onto the bind mount where
+    # harvest-host-profiling.sh can pick it up. Otherwise investigating
+    # "file X wasn't preserved" is blind.
+    local preserve_log="$dest/preserve.log"
+    {
+        echo "=== preserve_to_host_mount @ $(date -Iseconds) ==="
+        echo "PROFILING_OUTPUT_DIR=$PROFILING_OUTPUT_DIR"
+        echo "dest=$dest"
+        echo "--- ls -la $PROFILING_OUTPUT_DIR (source) ---"
+        ls -la "$PROFILING_OUTPUT_DIR" 2>&1 || true
+    } >> "$preserve_log" 2>&1
     if [ -d "$PROFILING_OUTPUT_DIR" ]; then
-        if ! cp -r "$PROFILING_OUTPUT_DIR/." "$dest/" 2>"$err_file"; then
+        # Log cp stderr to both the preserve log (always) and err_file (for
+        # the summary WARNING below). Capture via tee so we see partial
+        # progress even if cp trips on one specific file.
+        if ! cp -rv "$PROFILING_OUTPUT_DIR/." "$dest/" >>"$preserve_log" 2> >(tee -a "$preserve_log" > "$err_file"); then
             echo "[Profiling] WARNING: cp from $PROFILING_OUTPUT_DIR may be incomplete: $(head -3 "$err_file" 2>/dev/null | tr '\n' ' ')"
         fi
+        {
+            echo "--- ls -la $dest (after cp) ---"
+            ls -la "$dest" 2>&1 || true
+        } >> "$preserve_log" 2>&1
     fi
     local reports_dir="${PROFILING_REPORTS_DIR:-/profiling/reports}"
     if [ -d "$reports_dir" ]; then
