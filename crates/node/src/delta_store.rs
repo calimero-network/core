@@ -783,6 +783,45 @@ impl DeltaStore {
         Ok(result.applied)
     }
 
+    /// Incrementally register a locally-generated delta that the execute
+    /// path has just persisted to the DB. Updates the in-memory DAG
+    /// topology + hash tracking **without** re-applying the delta (the
+    /// WASM pass inside `execute.rs` already did that).
+    ///
+    /// Equivalent to one row of `load_persisted_deltas`'s main loop.
+    /// Previously the execute path wrote only to RocksDB and relied on
+    /// the next `perform_interval_sync` to rescan and catch up; this
+    /// method lets us keep the DAG in sync at write time and drop the
+    /// per-sync rescan.
+    pub async fn add_local_applied_delta(&self, delta: CausalDelta<Vec<Action>>) -> Result<()> {
+        let delta_id = delta.id;
+        let expected_root_hash = delta.expected_root_hash;
+
+        // Already known — nothing to do (handles the benign race where
+        // the same delta arrives via sync before the local notify lands).
+        {
+            let dag = self.dag.read().await;
+            if dag.is_applied(&delta_id) {
+                return Ok(());
+            }
+        }
+
+        // Mirror the hash-tracking writes load_persisted_deltas does.
+        {
+            let mut head_hashes = self.head_root_hashes.write().await;
+            let _ = head_hashes.insert(delta_id, expected_root_hash);
+        }
+        {
+            let mut parent_hashes = self.applier.parent_hashes.write().await;
+            let _ = parent_hashes.insert(delta_id, expected_root_hash);
+        }
+
+        // Register topology without re-applying.
+        let mut dag = self.dag.write().await;
+        let _ = dag.restore_applied_delta(delta);
+        Ok(())
+    }
+
     /// Internal add_delta implementation
     async fn add_delta_internal(
         &self,

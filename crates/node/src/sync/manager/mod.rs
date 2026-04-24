@@ -1141,9 +1141,13 @@ impl SyncManager {
         // Check if we have pending deltas (incomplete DAG)
         // Even if node has some state, it might be missing parent deltas
         if let Some(delta_store) = self.node_state.delta_stores.get(&context_id) {
-            // Reload persisted deltas to catch locally-created deltas from execute.rs
-            // that are in the database but not in the in-memory DeltaStore
-            let _ = delta_store.load_persisted_deltas().await;
+            // NOTE: previously called `load_persisted_deltas()` here to
+            // catch locally-created deltas from execute.rs that are in
+            // the DB but not in the in-memory DAG. That rescan was
+            // ~21% of CPU (pre #2244) and ~6% after. execute.rs and
+            // create_context.rs now notify the node-side drainer via
+            // `NodeClient::notify_local_applied_delta`, keeping the
+            // DAG current without the per-sync full-column scan.
             let missing_result = delta_store.get_missing_parents().await;
 
             // Note: Cascaded events from DB loads are handled in state_delta handler
@@ -1711,17 +1715,16 @@ impl SyncManager {
                     delta_store.clone()
                 };
 
-                // Always reload persisted deltas from database before sync operations
-                // This is critical because local deltas created via execute.rs are persisted
-                // to the database but NOT added to the in-memory DeltaStore. Without this
-                // reload, the DeltaStore would be missing locally-created deltas.
-                if let Err(e) = delta_store_ref.load_persisted_deltas().await {
-                    warn!(
-                        ?e,
-                        %context_id,
-                        "Failed to load persisted deltas, starting with empty DAG"
-                    );
-                }
+                // NOTE: the previous revision called
+                // `delta_store_ref.load_persisted_deltas().await` here
+                // to pick up execute.rs's DB-only writes. That rescan
+                // ran on every sync and was the dominant hot-path CPU
+                // cost. execute.rs now notifies the node-side drainer
+                // directly, so the in-memory DAG stays current without
+                // a full-column scan. `load_persisted_deltas` still
+                // runs on startup (via state_delta init) as the
+                // crash-recovery path.
+                let _ = &delta_store_ref;
 
                 // Phase 1: Request and add ALL DAG heads
                 for head_id in &dag_heads {
@@ -2203,7 +2206,10 @@ impl SyncManager {
             })
             .clone();
 
-        let _ = delta_store.load_persisted_deltas().await;
+        // Previously: `delta_store.load_persisted_deltas().await` —
+        // dropped, the DAG is kept current incrementally via
+        // `NodeClient::notify_local_applied_delta`.
+        let _ = &delta_store;
 
         let request_msg = StreamMessage::Init {
             context_id,

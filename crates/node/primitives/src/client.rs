@@ -116,6 +116,22 @@ impl SyncClient {
     }
 }
 
+/// Notification payload sent by the execute path after a locally-created
+/// delta has been persisted to the DB, so the node-side can update its
+/// in-memory `DeltaStore` incrementally instead of re-scanning the DB on
+/// every interval sync. Kept as plain types so this crate doesn't need
+/// a direct dependency on `calimero-dag` — the receiver reconstructs
+/// `CausalDelta` internally.
+#[derive(Debug)]
+pub struct LocalAppliedDelta {
+    pub context_id: ContextId,
+    pub delta_id: [u8; 32],
+    pub parents: Vec<[u8; 32]>,
+    pub hlc: calimero_storage::logical_clock::HybridTimestamp,
+    pub expected_root_hash: [u8; 32],
+    pub actions: Vec<calimero_storage::action::Action>,
+}
+
 #[derive(Clone, Debug)]
 pub struct NodeClient {
     datastore: Store,
@@ -126,6 +142,11 @@ pub struct NodeClient {
     event_sender: broadcast::Sender<NodeEvent>,
     sync_client: SyncClient,
     specialized_node_invite_topic: String,
+    /// Channel for notifying the node about locally-applied deltas so
+    /// its in-memory `DeltaStore` stays in sync without re-scanning the
+    /// DB each `perform_interval_sync`. `None` in unit/integration
+    /// tests that construct `NodeClient` without a running node.
+    local_delta_tx: Option<mpsc::Sender<LocalAppliedDelta>>,
 }
 
 impl NodeClient {
@@ -138,6 +159,7 @@ impl NodeClient {
         event_sender: broadcast::Sender<NodeEvent>,
         sync_client: SyncClient,
         specialized_node_invite_topic: String,
+        local_delta_tx: Option<mpsc::Sender<LocalAppliedDelta>>,
     ) -> Self {
         let topic_manager = TopicManager::new(network_client.clone());
         Self {
@@ -149,6 +171,28 @@ impl NodeClient {
             event_sender,
             sync_client,
             specialized_node_invite_topic,
+            local_delta_tx,
+        }
+    }
+
+    /// Notify the node that a locally-applied delta was just persisted to
+    /// the DB. The node's `DeltaStore` will add it to the in-memory DAG
+    /// asynchronously, removing the need for periodic `load_persisted_
+    /// deltas` rescans on the sync hot path.
+    ///
+    /// Best-effort: if the channel is closed (node shutting down) or
+    /// full, logs and moves on. Worst case on restart,
+    /// `load_persisted_deltas` catches up at startup.
+    pub fn notify_local_applied_delta(&self, delta: LocalAppliedDelta) {
+        let Some(tx) = self.local_delta_tx.as_ref() else {
+            return;
+        };
+        if let Err(err) = tx.try_send(delta) {
+            warn!(
+                ?err,
+                "failed to enqueue local applied delta for in-memory DAG update — \
+                 next startup will recover via load_persisted_deltas"
+            );
         }
     }
 

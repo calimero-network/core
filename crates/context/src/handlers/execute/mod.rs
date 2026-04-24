@@ -1214,6 +1214,22 @@ async fn internal_execute(
                 delta_id = ?delta.id,
                 "Persisted delta to database for future requests"
             );
+
+            // Keep the in-memory DeltaStore in sync with the write we
+            // just made. Without this the sync path would have to
+            // rescan the DB every ~2s to pick up locally-created
+            // deltas; instead the DAG is updated at write time and
+            // `load_persisted_deltas` only runs on startup.
+            node_client.notify_local_applied_delta(
+                calimero_node_primitives::client::LocalAppliedDelta {
+                    context_id: context.id,
+                    delta_id: delta.id,
+                    parents: delta.parents.clone(),
+                    hlc: delta.hlc,
+                    expected_root_hash: delta.expected_root_hash,
+                    actions: delta.actions.clone(),
+                },
+            );
         }
 
         debug!(
