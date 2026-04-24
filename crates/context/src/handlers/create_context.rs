@@ -327,6 +327,10 @@ async fn create_context(
         );
     }
 
+    // Returns `(db-row, actions)` — actions are kept alongside the
+    // serialized delta so we can notify the node-side DeltaStore to
+    // update its in-memory DAG without having to borsh-deserialize
+    // the serialized blob back out.
     let init_delta = if let Some(root_hash) = outcome.root_hash {
         context.root_hash = root_hash.into();
 
@@ -379,7 +383,7 @@ async fn create_context(
             "Created genesis delta with dag_heads"
         );
 
-        Some(delta)
+        Some((delta, actions))
     } else {
         None
     };
@@ -408,7 +412,7 @@ async fn create_context(
     )?;
 
     // Persist init delta if created
-    if let Some(delta) = init_delta {
+    if let Some((delta, actions)) = init_delta {
         handle.put(
             &key::ContextDagDelta::new(context.id, delta.delta_id),
             &delta,
@@ -418,6 +422,19 @@ async fn create_context(
             context_id = %context.id,
             delta_id = ?delta.delta_id,
             "Persisted init delta to database"
+        );
+
+        // Register into the in-memory DAG so sync doesn't have to
+        // rescan the DB to pick up this newly-persisted genesis delta.
+        node_client.notify_local_applied_delta(
+            calimero_node_primitives::client::LocalAppliedDelta {
+                context_id: context.id,
+                delta_id: delta.delta_id,
+                parents: delta.parents.clone(),
+                hlc: delta.hlc,
+                expected_root_hash: delta.expected_root_hash,
+                actions,
+            },
         );
     }
 

@@ -651,18 +651,27 @@ impl DeltaStore {
             drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
         }
 
-        if all_deltas.is_empty() {
-            return Ok(LoadPersistedResult {
-                loaded_count: 0,
-                pending_handler_events,
-            });
+        // Historically this function bailed early when `all_deltas`
+        // was empty, skipping the `try_process_pending` call below.
+        // That was harmless when every in-context DB row was always
+        // collected (pre-#2244), because any non-empty context made
+        // `all_deltas` non-empty. After #2244 introduced the
+        // skip-if-already-in-DAG path, `all_deltas` is empty whenever
+        // a warmed-up node scans a context whose rows are all already
+        // in the DAG — i.e. the steady state. The early return then
+        // permanently prevents pending deltas (received via gossip
+        // before their parents were available) from being retried,
+        // which strands late joiners whose seed deltas arrived before
+        // their parents (root-hash stuck at the wrong value until
+        // restart). Keep going; step 2's while-loop is a no-op on
+        // empty input.
+        if !all_deltas.is_empty() {
+            debug!(
+                context_id = %self.applier.context_id,
+                total_deltas = all_deltas.len(),
+                "Collected persisted deltas, starting topological restore"
+            );
         }
-
-        debug!(
-            context_id = %self.applier.context_id,
-            total_deltas = all_deltas.len(),
-            "Collected persisted deltas, starting topological restore"
-        );
 
         // Step 2: Restore deltas in topological order (parents before children)
         // We keep trying to restore deltas whose parents are already in the DAG
@@ -781,6 +790,132 @@ impl DeltaStore {
     pub async fn add_delta(&self, delta: CausalDelta<Vec<Action>>) -> Result<bool> {
         let result = self.add_delta_internal(delta, None).await?;
         Ok(result.applied)
+    }
+
+    /// Incrementally register a locally-generated delta that the execute
+    /// path has just persisted to the DB. Updates the in-memory DAG
+    /// topology + hash tracking **without** re-applying the delta (the
+    /// WASM pass inside `execute.rs` already did that).
+    ///
+    /// Equivalent to one row of `load_persisted_deltas`'s main loop.
+    /// Previously the execute path wrote only to RocksDB and relied on
+    /// the next `perform_interval_sync` to rescan and catch up; this
+    /// method lets us keep the DAG in sync at write time and drop the
+    /// per-sync rescan.
+    pub async fn add_local_applied_delta(
+        &self,
+        delta: CausalDelta<Vec<Action>>,
+    ) -> Result<Vec<([u8; 32], Vec<u8>)>> {
+        let delta_id = delta.id;
+        let expected_root_hash = delta.expected_root_hash;
+
+        // Already known — nothing to do (handles the benign race where
+        // the same delta arrives via sync before the local notify lands).
+        {
+            let dag = self.dag.read().await;
+            if dag.is_applied(&delta_id) {
+                return Ok(Vec::new());
+            }
+        }
+
+        // Mirror the hash-tracking writes load_persisted_deltas does.
+        {
+            let mut head_hashes = self.head_root_hashes.write().await;
+            let _ = head_hashes.insert(delta_id, expected_root_hash);
+        }
+        {
+            let mut parent_hashes = self.applier.parent_hashes.write().await;
+            let _ = parent_hashes.insert(delta_id, expected_root_hash);
+        }
+
+        // Register topology, nudge cascades, collect cascaded IDs + heads
+        // all under one write-lock scope (matches add_delta_internal).
+        let (cascaded_ids, heads) = {
+            let mut dag = self.dag.write().await;
+
+            let pending_before: HashSet<[u8; 32]> =
+                dag.get_pending_delta_ids().into_iter().collect();
+
+            let added = dag.restore_applied_delta(delta);
+
+            // `restore_applied_delta` does not call `apply_pending` —
+            // mirror the explicit nudge documented in `get_missing_parents`
+            // (#2238 review). Without this, a sync-received child that
+            // went pending because its locally-created parent wasn't yet
+            // visible in the DAG stays stranded in the pending queue
+            // until restart or an unrelated remote-delta application
+            // happens to trigger `apply_pending`.
+            let mut cascaded: Vec<[u8; 32]> = Vec::new();
+            if added {
+                match dag.try_process_pending(&*self.applier).await {
+                    Ok(0) => {}
+                    Ok(n) => {
+                        let pending_after: HashSet<[u8; 32]> =
+                            dag.get_pending_delta_ids().into_iter().collect();
+                        cascaded = pending_before.difference(&pending_after).copied().collect();
+                        tracing::info!(
+                            context_id = %self.applier.context_id,
+                            cascaded_count = n,
+                            "Cascaded pending deltas after registering local applied delta"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            ?e,
+                            context_id = %self.applier.context_id,
+                            "Failed to process pending deltas after local applied delta"
+                        );
+                    }
+                }
+            }
+            (cascaded, dag.get_heads())
+        };
+
+        // Prune head_root_hashes down to the actual current DAG heads.
+        // `add_delta_internal` does the same after its own add (line ~1063);
+        // without this mirror, ancestors accumulate here over the lifetime
+        // of a DeltaStore and head-state lookups by peers can return a
+        // non-head's root hash. Safe to run unconditionally: retain is a
+        // no-op when the map is already a subset of `heads`.
+        {
+            let heads_set: HashSet<[u8; 32]> = heads.iter().copied().collect();
+            let mut head_hashes = self.head_root_hashes.write().await;
+            head_hashes.retain(|id, _| heads_set.contains(id));
+        }
+
+        // Persist cascaded children's DB state + updated dag_heads. Without
+        // this, cascaded children that ran through WASM via the applier
+        // above would leave the DB record at `applied: false, events: Some(..)`,
+        // and `dag_heads` would still reference pre-cascade heads. On restart
+        // `load_persisted_deltas` would re-execute WASM for these rows
+        // (correctness is preserved — CRDT merge is idempotent — but it's
+        // wasted work), and any peer reading `dag_heads` between now and the
+        // next sync would see stale heads. See #2248 reviewer comment.
+        //
+        // Events returned here flow back to the drainer; today they sit in
+        // the DB as `applied: true, events: Some(..)` until the next startup
+        // `load_persisted_deltas` surfaces them via `pending_handler_events`.
+        // Immediate handler dispatch from the drainer would need plumbing to
+        // NodeManager / NodeClients and is tracked as a follow-up — the
+        // restart-replay path is the existing safety net for cascaded events
+        // whose handlers couldn't run synchronously (#2185 contract).
+        if cascaded_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let cascaded_bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = {
+            let dag = self.dag.read().await;
+            cascaded_ids
+                .iter()
+                .filter_map(|cid| dag.get_delta(cid).map(|d| (*cid, d.clone())))
+                .collect()
+        };
+
+        let cascaded_events = self
+            .persist_cascaded_deltas_and_update_heads(&cascaded_bodies, heads)
+            .await;
+
+        Ok(cascaded_events)
     }
 
     /// Internal add_delta implementation
@@ -1639,6 +1774,15 @@ impl DeltaStore {
     pub async fn get_heads(&self) -> Vec<[u8; 32]> {
         let dag = self.dag.read().await;
         dag.get_heads()
+    }
+
+    /// Snapshot of the `head_root_hashes` map keys. Test-only accessor for
+    /// asserting that the `add_local_applied_delta` path prunes non-head
+    /// ancestors, matching `add_delta_internal`'s `retain(...)` at the end.
+    #[cfg(test)]
+    pub async fn head_root_hash_ids(&self) -> Vec<[u8; 32]> {
+        let head_hashes = self.head_root_hashes.read().await;
+        head_hashes.keys().copied().collect()
     }
 
     /// Cleanup stale pending deltas (timeout eviction)
