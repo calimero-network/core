@@ -37,12 +37,10 @@ pub struct SharedStorage<
     writers_nonce: u64,
     /// Storage element for this entity.
     storage: Element,
-    /// Signature attached at the runtime layer. The authoritative copy lives
-    /// in `storage.metadata.storage_type` (`StorageType::Shared.signature_data`)
-    /// and is set by the runtime/verifier path; this field is borsh-skipped
-    /// (in-memory only) so it doesn't bloat the wire format. Read via
-    /// `signature()`, which falls back to the metadata copy.
-    #[borsh(skip)]
+    /// Signature attached at the runtime layer; mirrored from the metadata
+    /// after signing. Per spec — currently always `None` in v2; populated
+    /// by the runtime sign path in a future iteration. Kept serialized for
+    /// wire-format stability across v2 → future versions.
     signature_data: Option<SignatureData>,
     #[borsh(skip)]
     _adaptor: core::marker::PhantomData<S>,
