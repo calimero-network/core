@@ -29,21 +29,31 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
-  # No `pull_request` trigger — fuzzy-load-test is a 45-minute soak/perf
-  # run whose job needs `ghcr.io/calimero-network/merod:pr-<N>-profiling`,
-  # and the `release-merod-profiling-container` job that would publish
-  # that tag is gated `if: github.event_name != 'pull_request'` in
-  # release.yml. Any PR that modifies this workflow's own paths — e.g.
-  # this YAML or `workflows/fuzzy-tests/**` — would fire the test and
-  # fail on `docker pull ... "manifest unknown"`. Run this job on
-  # master pushes (where the profiling image IS published) or manually
-  # via `workflow_dispatch`.
+  # No `pull_request` trigger — fuzzy-load-test is a perf/soak run whose
+  # job needs `ghcr.io/calimero-network/merod:pr-<N>-profiling`, and the
+  # `release-merod-profiling-container` job that would publish that tag
+  # is gated `if: github.event_name != 'pull_request'` in release.yml.
+  # Any PR that modifies this workflow's own paths — e.g. this YAML or
+  # `workflows/fuzzy-tests/**` — would fire the test and fail on
+  # `docker pull ... "manifest unknown"`. Run this job on master pushes
+  # (where the profiling image IS published) or manually via
+  # `workflow_dispatch`.
+  #
+  # Nightly soak: a longer run (default 60 minutes per app vs the 15
+  # minutes used for routine triggers) fires at 00:00 UTC daily. The
+  # 15-minute baseline gives statistically usable CPU samples and
+  # exercises most code paths — enough for catching regressions on
+  # every push. The nightly extends the window so slow leaks, rare
+  # cascade orderings, and gradual degradation that need >15 min to
+  # materialize still get caught daily.
+  schedule:
+    - cron: "0 0 * * *"
   workflow_dispatch:
     inputs:
       duration_override:
-        description: "Override test duration (minutes per app)"
+        description: "Override test duration (minutes per app). Empty = default (15 normally, 60 for scheduled nightly soak)."
         required: false
-        default: "45"
+        default: ""
         type: string
       test_app:
         description: "Run specific app test (kv-store, kv-store-with-handlers, or all)"
@@ -161,8 +171,19 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
+        # Default is 15 minutes for routine triggers (push, workflow_run,
+        # workflow_dispatch with empty input) and 60 minutes for the
+        # nightly schedule. workflow_dispatch.inputs.duration_override
+        # wins over both when set.
         run: |
-          DURATION="${{ github.event.inputs.duration_override || '45' }}"
+          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
+            DURATION="${{ github.event.inputs.duration_override }}"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            DURATION="60"
+          else
+            DURATION="15"
+          fi
+          echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
           cd workflows/fuzzy-tests/kv-store
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
 
@@ -415,8 +436,18 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
+        # Default is 15 minutes for routine triggers and 60 minutes for
+        # the nightly schedule. See the equivalent step in
+        # fuzzy-test-kv-store for details.
         run: |
-          DURATION="${{ github.event.inputs.duration_override || '45' }}"
+          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
+            DURATION="${{ github.event.inputs.duration_override }}"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            DURATION="60"
+          else
+            DURATION="15"
+          fi
+          echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
           cd workflows/fuzzy-tests/kv-store-with-handlers
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
 
@@ -640,9 +671,26 @@ jobs:
     if: always()
     steps:
       - name: Generate summary
+        # Priority must match the duration-resolution blocks in both
+        # fuzzy-test jobs above: `duration_override` first (it wins when
+        # set, regardless of trigger), schedule second, routine last.
+        # The three conditions are mutually exclusive in practice today
+        # because `schedule` events carry no `inputs`, but keeping the
+        # priority consistent avoids a silent drift if GitHub ever lets
+        # scheduled runs accept dispatch inputs or if a future operator
+        # adds another trigger that can set both.
         run: |
+          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
+            RUN_KIND="Manual override (${{ github.event.inputs.duration_override }} min)"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            RUN_KIND="Nightly soak (60 min)"
+          else
+            RUN_KIND="Routine (15 min)"
+          fi
           echo "## Fuzzy Load Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Run kind:** ${RUN_KIND}" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
           echo "**Profiling Enabled:** ${{ github.event.inputs.enable_profiling || 'true' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
