@@ -61,10 +61,18 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     // Check if entity already exists
     let existing_index = Index::<MainStorage>::get_index(entity_id).ok().flatten();
 
-    // Build metadata from leaf info
+    // Build metadata from leaf info. Preserve the existing storage_type from
+    // the index (if any) — `Metadata::default()` would set it to `Public`,
+    // which clashes with `Shared`/`User`/`Frozen` entities that the receiver
+    // already has stored, causing `verify_action_update` to reject the Update
+    // with "Cannot change StorageType". TreeLeafData doesn't carry storage_type
+    // over the wire, so the index is the source of truth.
     let mut metadata = Metadata::default();
     metadata.crdt_type = Some(leaf.metadata.crdt_type.clone());
     metadata.updated_at = leaf.metadata.hlc_timestamp.into();
+    if let Some(existing) = existing_index.as_ref() {
+        metadata.storage_type = existing.metadata.storage_type.clone();
+    }
 
     let action = if existing_index.is_some() {
         // Update existing entity - storage layer handles CRDT merge
