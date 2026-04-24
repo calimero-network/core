@@ -1,0 +1,65 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review"
+        required: true
+        type: number
+      agents:
+        description: "Number of agents (1-5)"
+        required: false
+        default: "3"
+        type: choice
+        options: ["1", "2", "3", "4", "5"]
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ai-code-reviewer
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git
+
+      - name: Determine PR number and agent count
+        id: pr
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "number=${{ github.event.inputs.pr_number }}" >> $GITHUB_OUTPUT
+            echo "agents=${{ github.event.inputs.agents }}"    >> $GITHUB_OUTPUT
+          else
+            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+            echo "agents=3"                                        >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run AI Code Review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          ai-reviewer review-pr \
+            ${{ github.repository }} \
+            ${{ steps.pr.outputs.number }} \
+            --agents ${{ steps.pr.outputs.agents }} \
+            --reviewer-name "MeroReviewer" \
+            --output github
