@@ -4,7 +4,7 @@ use crate::store::MainStorage;
 mod index__public_methods {
     use super::*;
     use crate::entities::StorageType;
-    use crate::interface::{Action, Interface};
+    use crate::interface::{Action, ApplyContext, Interface};
     use crate::store::MockedStorage;
 
     #[test]
@@ -51,7 +51,13 @@ mod index__public_methods {
         // --------------------------------------------------------------
         // applying just the root, what do we find? just the root, simple
         // --------------------------------------------------------------
-        assert!(<Interface<MockedStorage<0>>>::apply_action(a1.clone()).is_ok());
+        assert!(<Interface<MockedStorage<0>>>::apply_action(
+            a1.clone(),
+            ApplyContext {
+                causal_parents: &[]
+            }
+        )
+        .is_ok());
 
         let e1 = <Index<MockedStorage<0>>>::get_index(root_id).unwrap();
         let e2 = <Index<MockedStorage<0>>>::get_index(p1_id).unwrap();
@@ -69,7 +75,13 @@ mod index__public_methods {
         // --------------------------------------------------------------
         // applying just a2, what do we find? a2 + a1 (sparse)
         // --------------------------------------------------------------
-        assert!(<Interface<MockedStorage<1>>>::apply_action(a2.clone()).is_ok());
+        assert!(<Interface<MockedStorage<1>>>::apply_action(
+            a2.clone(),
+            ApplyContext {
+                causal_parents: &[]
+            }
+        )
+        .is_ok());
 
         let e1 = <Index<MockedStorage<1>>>::get_index(root_id).unwrap();
         let e2 = <Index<MockedStorage<1>>>::get_index(p1_id).unwrap();
@@ -94,8 +106,20 @@ mod index__public_methods {
         // --------------------------------------------------------------
         // applying a1, and then a2, what do we find?
         // --------------------------------------------------------------
-        assert!(<Interface<MockedStorage<2>>>::apply_action(a1.clone()).is_ok());
-        assert!(<Interface<MockedStorage<2>>>::apply_action(a2.clone()).is_ok());
+        assert!(<Interface<MockedStorage<2>>>::apply_action(
+            a1.clone(),
+            ApplyContext {
+                causal_parents: &[]
+            }
+        )
+        .is_ok());
+        assert!(<Interface<MockedStorage<2>>>::apply_action(
+            a2.clone(),
+            ApplyContext {
+                causal_parents: &[]
+            }
+        )
+        .is_ok());
 
         let e1 = <Index<MockedStorage<2>>>::get_index(root_id).unwrap();
         let e2 = <Index<MockedStorage<2>>>::get_index(p1_id).unwrap();
@@ -120,8 +144,20 @@ mod index__public_methods {
         // --------------------------------------------------------------
         // applying a2, and then a1, what do we find?
         // --------------------------------------------------------------
-        assert!(<Interface<MockedStorage<3>>>::apply_action(a2.clone()).is_ok());
-        assert!(<Interface<MockedStorage<3>>>::apply_action(a1.clone()).is_ok());
+        assert!(<Interface<MockedStorage<3>>>::apply_action(
+            a2.clone(),
+            ApplyContext {
+                causal_parents: &[]
+            }
+        )
+        .is_ok());
+        assert!(<Interface<MockedStorage<3>>>::apply_action(
+            a1.clone(),
+            ApplyContext {
+                causal_parents: &[]
+            }
+        )
+        .is_ok());
 
         let e1 = <Index<MockedStorage<3>>>::get_index(root_id).unwrap();
         let e2 = <Index<MockedStorage<3>>>::get_index(p1_id).unwrap();

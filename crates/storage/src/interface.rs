@@ -59,6 +59,33 @@ pub use crate::error::StorageError;
 /// Convenient type alias for the main storage system.
 pub type MainInterface = Interface<MainStorage>;
 
+/// Apply-time context passed to [`Interface::apply_action`].
+///
+/// Centralizes apply-time metadata so the call signature doesn't accumulate
+/// positional parameters. Currently carries DAG-causal parent hashes for the
+/// delta the action belongs to; future fields (delta hash, sender id, etc.)
+/// plug in here without re-touching every call site.
+///
+/// In phase P1 of #2233 the field is collected and threaded through but not
+/// consulted by the verifier. P2/P3 wire it into per-entity writer-set
+/// resolution at the causal point.
+///
+/// Construct explicitly at every call site:
+/// - When no causal context is available (local apply, snapshot leaf push,
+///   tests): `ApplyContext { causal_parents: &[] }`.
+/// - In sync paths with a `CausalDelta` in scope:
+///   `ApplyContext { causal_parents: &delta.parents }`.
+///
+/// No `Default` / shorthand constructor on purpose — when a new field lands,
+/// every call site should be a compile error so we don't silently default a
+/// new piece of context.
+#[derive(Clone, Copy, Debug)]
+pub struct ApplyContext<'a> {
+    /// Hashes of the parent deltas in the DAG. Empty when no causal context
+    /// is available.
+    pub causal_parents: &'a [[u8; 32]],
+}
+
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
@@ -102,13 +129,19 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Handles Add/Update/Delete actions, creating missing ancestors if needed.
     /// Generates Compare action for hash verification after applying changes.
     ///
+    /// `ctx` carries DAG-causal apply-time context (parents of the delta
+    /// this action belongs to). In phase P1 of #2233 it is plumbed through
+    /// but not consulted; P2/P3 will use it to resolve the writer set at
+    /// the causal point for `Shared`-storage verification.
+    ///
     /// # Errors
     /// - `DeserializationError` if action data is invalid
     /// - `ActionNotAllowed` if Compare action is passed directly
     ///
-    pub fn apply_action(action: Action) -> Result<(), StorageError> {
-        // Verify that the action timestamp is not too far in the future
-        // to prevent LWW Time Drift attacks.
+    pub fn apply_action(action: Action, ctx: ApplyContext<'_>) -> Result<(), StorageError> {
+        let _ = ctx; // P1: collected and forwarded only; verifier behavior unchanged.
+                     // Verify that the action timestamp is not too far in the future
+                     // to prevent LWW Time Drift attacks.
         verify_action_timestamp(&action)?;
 
         // TODO: refactor to a separate function.
@@ -782,6 +815,7 @@ impl<S: StorageAdaptor> Interface<S> {
     pub fn compare_affective(
         data: Option<Vec<u8>>,
         comparison_data: ComparisonData,
+        ctx: ApplyContext<'_>,
     ) -> Result<(), StorageError> {
         let (local, remote) = <Interface<S>>::compare_trees(data, comparison_data)?;
 
@@ -790,7 +824,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 continue;
             }
 
-            <Interface<S>>::apply_action(action)?;
+            <Interface<S>>::apply_action(action, ctx)?;
         }
 
         for action in remote {

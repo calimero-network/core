@@ -192,7 +192,7 @@ mod tests {
     fn test_write_and_read_entity_via_bridge() {
         use calimero_storage::address::Id;
         use calimero_storage::entities::Metadata;
-        use calimero_storage::interface::{Action, Interface};
+        use calimero_storage::interface::{Action, ApplyContext, Interface};
 
         let db = InMemoryDB::owned();
         let store = Store::new(Arc::new(db));
@@ -204,12 +204,17 @@ mod tests {
         // Write: create root entity
         let root_id = Id::new(*context_id.as_ref());
         let write_result = with_runtime_env(env.clone(), || {
-            Interface::<MainStorage>::apply_action(Action::Update {
-                id: root_id,
-                data: vec![],
-                ancestors: vec![],
-                metadata: Metadata::default(),
-            })
+            Interface::<MainStorage>::apply_action(
+                Action::Update {
+                    id: root_id,
+                    data: vec![],
+                    ancestors: vec![],
+                    metadata: Metadata::default(),
+                },
+                ApplyContext {
+                    causal_parents: &[],
+                },
+            )
         });
         assert!(write_result.is_ok(), "apply_action should succeed");
 

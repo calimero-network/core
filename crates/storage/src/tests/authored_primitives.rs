@@ -16,7 +16,7 @@ use crate::collections::{AuthoredMap, AuthoredVector, Root};
 use crate::entities::{Metadata, SignatureData, StorageType};
 use crate::env;
 use crate::error::StorageError;
-use crate::interface::Interface;
+use crate::interface::{ApplyContext, Interface};
 use crate::store::MainStorage;
 use crate::tests::common::{create_test_keypair, sign_action};
 
@@ -164,7 +164,12 @@ fn authored_map_update_with_forged_owner_claim_is_rejected() {
         env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),
     );
 
-    match MainInterface::apply_action(forged) {
+    match MainInterface::apply_action(
+        forged,
+        ApplyContext {
+            causal_parents: &[],
+        },
+    ) {
         Err(StorageError::InvalidSignature) => {}
         other => panic!("expected InvalidSignature, got {:?}", other),
     }
@@ -200,7 +205,12 @@ fn authored_map_delete_by_non_owner_is_rejected() {
         env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),
     );
 
-    match MainInterface::apply_action(forged) {
+    match MainInterface::apply_action(
+        forged,
+        ApplyContext {
+            causal_parents: &[],
+        },
+    ) {
         Err(StorageError::InvalidSignature) => {}
         other => panic!("expected InvalidSignature, got {:?}", other),
     }
@@ -232,7 +242,12 @@ fn authored_vector_update_with_forged_owner_claim_is_rejected() {
         env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),
     );
 
-    match MainInterface::apply_action(forged) {
+    match MainInterface::apply_action(
+        forged,
+        ApplyContext {
+            causal_parents: &[],
+        },
+    ) {
         Err(StorageError::InvalidSignature) => {}
         other => panic!("expected InvalidSignature, got {:?}", other),
     }
@@ -263,7 +278,12 @@ fn authored_vector_delete_by_non_owner_is_rejected() {
         env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),
     );
 
-    match MainInterface::apply_action(forged) {
+    match MainInterface::apply_action(
+        forged,
+        ApplyContext {
+            causal_parents: &[],
+        },
+    ) {
         Err(StorageError::InvalidSignature) => {}
         other => panic!("expected InvalidSignature, got {:?}", other),
     }

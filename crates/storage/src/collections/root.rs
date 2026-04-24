@@ -123,8 +123,12 @@ where
     }
 
     /// Syncs the root collection.
+    ///
+    /// `ctx` is the apply-time context for the inner [`Interface::apply_action`]
+    /// calls (DAG-causal parents of the delta the artifact came from). In phase
+    /// P1 of #2233 it is plumbed through but not consulted.
     #[expect(clippy::missing_errors_doc, reason = "NO")]
-    pub fn sync(args: &[u8]) -> Result<(), StorageError> {
+    pub fn sync(args: &[u8], ctx: crate::interface::ApplyContext<'_>) -> Result<(), StorageError> {
         let artifact =
             from_slice::<StorageDelta>(args).map_err(StorageError::DeserializationError)?;
 
@@ -188,12 +192,15 @@ where
                                     updated_at = metadata.updated_at(),
                                     "SYNC CHILD: Applying Action::Add for child entity"
                                 );
-                                <Interface<S>>::apply_action(Action::Add {
-                                    id,
-                                    data,
-                                    metadata,
-                                    ancestors,
-                                })?;
+                                <Interface<S>>::apply_action(
+                                    Action::Add {
+                                        id,
+                                        data,
+                                        metadata,
+                                        ancestors,
+                                    },
+                                    ctx,
+                                )?;
                             }
                         }
                         Action::Update {
@@ -213,16 +220,19 @@ where
                                     updated_at = metadata.updated_at(),
                                     "SYNC CHILD: Applying Action::Update for child entity"
                                 );
-                                <Interface<S>>::apply_action(Action::Update {
-                                    id,
-                                    data,
-                                    metadata,
-                                    ancestors,
-                                })?;
+                                <Interface<S>>::apply_action(
+                                    Action::Update {
+                                        id,
+                                        data,
+                                        metadata,
+                                        ancestors,
+                                    },
+                                    ctx,
+                                )?;
                             }
                         }
                         Action::DeleteRef { .. } => {
-                            <Interface<S>>::apply_action(action)?;
+                            <Interface<S>>::apply_action(action, ctx)?;
                         }
                     };
                 }
@@ -254,7 +264,7 @@ where
                     comparison_data,
                 } in comparisons
                 {
-                    <Interface<S>>::compare_affective(data, comparison_data)?;
+                    <Interface<S>>::compare_affective(data, comparison_data, ctx)?;
                 }
             }
         }
