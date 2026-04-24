@@ -870,13 +870,44 @@ impl ContextManager {
                     //    writeback and module cache insert so we don't
                     //    stomp the fresh state.
                     if let Some(app) = act.applications.get_mut(&application_id) {
+                        // Both the staleness lookup and the writeback
+                        // must mirror `Application::resolve_service_blob`
+                        // exactly — that's where `blob` came from at
+                        // load time. For single-service bundles called
+                        // with `svc_name = None`, `resolve_service_blob`
+                        // returns `services.values().next()`, *not*
+                        // `app.blob`. Reading `app.blob.compiled` for
+                        // the staleness check would fail every time on
+                        // such bundles (the two blob_ids would never
+                        // match), defeating both the cache and the
+                        // recompile writeback.
                         let current_blob_id = match svc_name.as_deref() {
+                            None if app.services.is_empty() => Some(app.blob.compiled),
+                            None if app.services.len() == 1 => {
+                                app.services.values().next().map(|b| b.compiled)
+                            }
+                            // Multi-service with no name is ambiguous —
+                            // `resolve_service_blob` returns None so we
+                            // never get here via the happy path. Treat
+                            // as stale.
+                            None => None,
                             Some(name) => app.services.get(name).map(|b| b.compiled),
-                            None => Some(app.blob.compiled),
                         };
 
                         if current_blob_id == Some(original_blob_id) {
-                            match svc_name.as_deref() {
+                            // Writeback target must match the same
+                            // resolution. `services.len() == 1` with
+                            // `svc_name = None` means the single
+                            // service entry is the owner — pull its
+                            // key so we can `get_mut` into it without
+                            // iterating twice.
+                            let target_service_key =
+                                if svc_name.is_none() && app.services.len() == 1 {
+                                    app.services.keys().next().cloned()
+                                } else {
+                                    svc_name.clone()
+                                };
+                            match target_service_key.as_deref() {
                                 Some(name) => {
                                     if let Some(svc_blob) = app.services.get_mut(name) {
                                         *svc_blob = blob;
