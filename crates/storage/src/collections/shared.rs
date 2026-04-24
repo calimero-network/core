@@ -228,11 +228,22 @@ where
 
         // Writer-set: higher writers_nonce wins. On tie, lexically smaller set
         // wins (deterministic across nodes).
-        if other.writers_nonce > self.writers_nonce
-            || (other.writers_nonce == self.writers_nonce && other.writers < self.writers)
+        //
+        // Guard against accepting an empty writer set from a peer — this would
+        // permanently lock the storage (no one could write or rotate again).
+        // The local API rejects empty rotations; mirror that here so a tampered
+        // or buggy peer can't propagate a lockout via merge.
+        if !other.writers.is_empty()
+            && (other.writers_nonce > self.writers_nonce
+                || (other.writers_nonce == self.writers_nonce && other.writers < self.writers))
         {
             self.writers = other.writers.clone();
             self.writers_nonce = other.writers_nonce;
+            // Mirror the new writer set into the element's metadata so
+            // metadata.storage_type stays in sync with self.writers. Matters
+            // for the per-entity verification path (v2) but kept consistent
+            // here regardless.
+            self.storage.set_shared_domain(self.writers.clone());
         }
 
         // Frozen is monotonic.

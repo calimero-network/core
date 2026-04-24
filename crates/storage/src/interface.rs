@@ -338,6 +338,23 @@ impl<S: StorageAdaptor> Interface<S> {
                                         "Remote Shared delete must be signed".to_owned(),
                                     ))?;
 
+                                // Replay protection (per-entity monotonic nonce).
+                                // Done BEFORE per-writer Ed25519 scan so replays are
+                                // O(1)-rejected (matches User arm + upsert arm).
+                                let new_nonce = sig_data.nonce;
+                                let last_nonce = *existing_metadata.updated_at;
+                                if new_nonce <= last_nonce {
+                                    let placeholder = existing_writers
+                                        .iter()
+                                        .copied()
+                                        .next()
+                                        .unwrap_or_else(|| [0u8; 32].into());
+                                    return Err(StorageError::NonceReplay(Box::new((
+                                        placeholder,
+                                        new_nonce,
+                                    ))));
+                                }
+
                                 // Identify the signer.
                                 let payload = action.payload_for_signing();
                                 let signer = existing_writers.iter().copied().find(|w| {
@@ -347,17 +364,8 @@ impl<S: StorageAdaptor> Interface<S> {
                                         &payload,
                                     )
                                 });
-                                let Some(signer) = signer else {
+                                if signer.is_none() {
                                     return Err(StorageError::InvalidSignature);
-                                };
-
-                                // Replay protection check
-                                let new_nonce = sig_data.nonce;
-                                let last_nonce = *existing_metadata.updated_at;
-                                if new_nonce <= last_nonce {
-                                    return Err(StorageError::NonceReplay(Box::new((
-                                        signer, new_nonce,
-                                    ))));
                                 }
                             }
                             _ => {

@@ -3,9 +3,11 @@
 Demonstrates the `SharedStorage<T>` primitive (issue #2197): a single-slot
 group-writable storage with a mutable writer set.
 
-The app holds a `SharedStorage<NestedMap>` keyed at the collection level
-(not per-entry, like `AuthoredMap`). Any signer in the writer set can mutate
-the value; rotation is signed by a current writer.
+The app holds a `SharedStorage<LwwRegister<String>>` — a single-slot
+register writable by any signer in the writer set. Authority lives at
+the collection level (one writer set governs the whole value), unlike
+`AuthoredMap` which authors per entry. Rotations are signed by a
+current writer.
 
 ## Methods
 
