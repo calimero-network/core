@@ -214,13 +214,13 @@ where
         self.writers = new_writers.clone();
         self.writers_nonce = next_nonce;
         self.storage.set_shared_domain(new_writers);
-        // Per-entity Update action (same guard as `insert`). Verifier on remote
-        // uses the *stored* (pre-rotation) writer set, so a writer rotating
-        // themselves out still produces a signed, verifiable rotation action
-        // (see save_raw stamping logic).
-        if matches!(<Index<S>>::get_parent_id(self.id()), Ok(Some(_))) {
-            let _ = <Interface<S>>::save(self).map_err(StoreError::StorageError)?;
-        }
+        // (v2 attempted to emit a per-entity Update action here so the
+        // merge-time verifier on remote peers would run against the rotation.
+        // Disabled: the wrapper also propagates inline via root-state borsh,
+        // and the dual-write path makes the receiver compute a different root
+        // hash from the sender — every rotation produces a permanent
+        // divergence. Per-entity live verification will become safe once the
+        // DAG-causal epic #2233 lands and we can drop the root-state path.)
         Ok(())
     }
 }
