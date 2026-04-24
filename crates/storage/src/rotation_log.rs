@@ -156,8 +156,16 @@ pub fn save<S: StorageAdaptor>(id: Id, log: &RotationLog) -> Result<(), StorageE
 /// Reads the existing log (creating an empty one if absent), pushes the new
 /// entry to the live tail, and writes back. Order in storage matches
 /// insertion order; causal resolution happens at read time.
+///
+/// **Idempotent on `delta_id`**: a delta delivered twice (out-of-order sync,
+/// retransmit) only produces one log entry. The duplicate is silently
+/// dropped — no error. This matches the broader CRDT model where applying
+/// the same operation twice is safe.
 pub fn append<S: StorageAdaptor>(id: Id, entry: RotationLogEntry) -> Result<(), StorageError> {
     let mut log = load::<S>(id)?.unwrap_or_else(RotationLog::empty);
+    if log.entries.iter().any(|e| e.delta_id == entry.delta_id) {
+        return Ok(());
+    }
     log.entries.push(entry);
     save::<S>(id, &log)
 }
