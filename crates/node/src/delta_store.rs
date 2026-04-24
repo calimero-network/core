@@ -802,7 +802,10 @@ impl DeltaStore {
     /// the next `perform_interval_sync` to rescan and catch up; this
     /// method lets us keep the DAG in sync at write time and drop the
     /// per-sync rescan.
-    pub async fn add_local_applied_delta(&self, delta: CausalDelta<Vec<Action>>) -> Result<()> {
+    pub async fn add_local_applied_delta(
+        &self,
+        delta: CausalDelta<Vec<Action>>,
+    ) -> Result<Vec<([u8; 32], Vec<u8>)>> {
         let delta_id = delta.id;
         let expected_root_hash = delta.expected_root_hash;
 
@@ -811,7 +814,7 @@ impl DeltaStore {
         {
             let dag = self.dag.read().await;
             if dag.is_applied(&delta_id) {
-                return Ok(());
+                return Ok(Vec::new());
             }
         }
 
@@ -825,9 +828,14 @@ impl DeltaStore {
             let _ = parent_hashes.insert(delta_id, expected_root_hash);
         }
 
-        // Register topology without re-applying.
-        let heads = {
+        // Register topology, nudge cascades, collect cascaded IDs + heads
+        // all under one write-lock scope (matches add_delta_internal).
+        let (cascaded_ids, heads) = {
             let mut dag = self.dag.write().await;
+
+            let pending_before: HashSet<[u8; 32]> =
+                dag.get_pending_delta_ids().into_iter().collect();
+
             let added = dag.restore_applied_delta(delta);
 
             // `restore_applied_delta` does not call `apply_pending` —
@@ -837,10 +845,14 @@ impl DeltaStore {
             // visible in the DAG stays stranded in the pending queue
             // until restart or an unrelated remote-delta application
             // happens to trigger `apply_pending`.
+            let mut cascaded: Vec<[u8; 32]> = Vec::new();
             if added {
                 match dag.try_process_pending(&*self.applier).await {
                     Ok(0) => {}
                     Ok(n) => {
+                        let pending_after: HashSet<[u8; 32]> =
+                            dag.get_pending_delta_ids().into_iter().collect();
+                        cascaded = pending_before.difference(&pending_after).copied().collect();
                         tracing::info!(
                             context_id = %self.applier.context_id,
                             cascaded_count = n,
@@ -856,11 +868,11 @@ impl DeltaStore {
                     }
                 }
             }
-            dag.get_heads()
+            (cascaded, dag.get_heads())
         };
 
         // Prune head_root_hashes down to the actual current DAG heads.
-        // `add_delta_internal` does the same after its own add (line ~1048);
+        // `add_delta_internal` does the same after its own add (line ~1063);
         // without this mirror, ancestors accumulate here over the lifetime
         // of a DeltaStore and head-state lookups by peers can return a
         // non-head's root hash. Safe to run unconditionally: retain is a
@@ -870,7 +882,40 @@ impl DeltaStore {
             let mut head_hashes = self.head_root_hashes.write().await;
             head_hashes.retain(|id, _| heads_set.contains(id));
         }
-        Ok(())
+
+        // Persist cascaded children's DB state + updated dag_heads. Without
+        // this, cascaded children that ran through WASM via the applier
+        // above would leave the DB record at `applied: false, events: Some(..)`,
+        // and `dag_heads` would still reference pre-cascade heads. On restart
+        // `load_persisted_deltas` would re-execute WASM for these rows
+        // (correctness is preserved — CRDT merge is idempotent — but it's
+        // wasted work), and any peer reading `dag_heads` between now and the
+        // next sync would see stale heads. See #2248 reviewer comment.
+        //
+        // Events returned here flow back to the drainer; today they sit in
+        // the DB as `applied: true, events: Some(..)` until the next startup
+        // `load_persisted_deltas` surfaces them via `pending_handler_events`.
+        // Immediate handler dispatch from the drainer would need plumbing to
+        // NodeManager / NodeClients and is tracked as a follow-up — the
+        // restart-replay path is the existing safety net for cascaded events
+        // whose handlers couldn't run synchronously (#2185 contract).
+        if cascaded_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let cascaded_bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = {
+            let dag = self.dag.read().await;
+            cascaded_ids
+                .iter()
+                .filter_map(|cid| dag.get_delta(cid).map(|d| (*cid, d.clone())))
+                .collect()
+        };
+
+        let cascaded_events = self
+            .persist_cascaded_deltas_and_update_heads(&cascaded_bodies, heads)
+            .await;
+
+        Ok(cascaded_events)
     }
 
     /// Internal add_delta implementation

@@ -80,10 +80,14 @@ async fn add_local_applied_delta_prunes_non_head_ancestors() {
     // Register a "parent" delta (genesis as its parent).
     let parent_id = [0x11u8; 32];
     let parent_hash = [0xA1; 32];
-    delta_store
+    let cascaded = delta_store
         .add_local_applied_delta(make_delta(parent_id, vec![[0u8; 32]], parent_hash))
         .await
-        .expect("add parent");
+        .expect("add parent succeeds");
+    assert!(
+        cascaded.is_empty(),
+        "no pending children → no cascaded events"
+    );
 
     let ids = delta_store.head_root_hash_ids().await;
     assert_eq!(
@@ -97,10 +101,11 @@ async fn add_local_applied_delta_prunes_non_head_ancestors() {
     // return its root hash.
     let child_id = [0x22u8; 32];
     let child_hash = [0xC1; 32];
-    delta_store
+    let cascaded = delta_store
         .add_local_applied_delta(make_delta(child_id, vec![parent_id], child_hash))
         .await
         .expect("add child");
+    assert!(cascaded.is_empty(), "still no pending children to cascade");
 
     let ids = delta_store.head_root_hash_ids().await;
     assert_eq!(

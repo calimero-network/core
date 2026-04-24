@@ -208,12 +208,32 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                     expected_root_hash: msg.expected_root_hash,
                     kind: calimero_dag::DeltaKind::Regular,
                 };
-                if let Err(e) = store.add_local_applied_delta(delta).await {
-                    tracing::warn!(
-                        error = ?e,
-                        context_id = %msg.context_id,
-                        "failed to register local applied delta in DAG"
-                    );
+                match store.add_local_applied_delta(delta).await {
+                    Ok(cascaded_events) if !cascaded_events.is_empty() => {
+                        // Cascaded children's DB state + dag_heads were
+                        // persisted inside add_local_applied_delta; the
+                        // events list returned here carries payloads that
+                        // still need handler execution. Today the drainer
+                        // has no line into NodeClients / NodeManager, so
+                        // we rely on the restart-replay contract (#2185):
+                        // records stay `applied: true, events: Some(..)`
+                        // until the next `load_persisted_deltas` surfaces
+                        // them. Log at info so missed handler runs are
+                        // observable while plumbing is added.
+                        tracing::info!(
+                            context_id = %msg.context_id,
+                            cascaded_count = cascaded_events.len(),
+                            "Cascaded events persisted; awaiting restart replay for handler execution"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            error = ?e,
+                            context_id = %msg.context_id,
+                            "failed to register local applied delta in DAG"
+                        );
+                    }
                 }
             }
         });
