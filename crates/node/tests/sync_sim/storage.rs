@@ -340,6 +340,9 @@ impl SimStorage {
                 action,
                 ApplyContext {
                     causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
                 },
             );
         });
@@ -376,6 +379,9 @@ impl SimStorage {
                 action,
                 ApplyContext {
                     causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
                 },
             );
         });
@@ -421,6 +427,9 @@ impl SimStorage {
                     action,
                     ApplyContext {
                         causal_parents: &[],
+                        delta_id: None,
+                        delta_hlc: None,
+                        happens_before: None,
                     },
                 );
             } else {
@@ -442,6 +451,9 @@ impl SimStorage {
                         root_action,
                         ApplyContext {
                             causal_parents: &[],
+                            delta_id: None,
+                            delta_hlc: None,
+                            happens_before: None,
                         },
                     );
                 }
@@ -457,6 +469,9 @@ impl SimStorage {
                     action,
                     ApplyContext {
                         causal_parents: &[],
+                        delta_id: None,
+                        delta_hlc: None,
+                        happens_before: None,
                     },
                 );
             }
@@ -476,6 +491,9 @@ impl SimStorage {
                     action,
                     ApplyContext {
                         causal_parents: &[],
+                        delta_id: None,
+                        delta_hlc: None,
+                        happens_before: None,
                     },
                 );
             }

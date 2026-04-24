@@ -93,6 +93,9 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
                 root_action,
                 ApplyContext {
                     causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
                 },
             )?;
         }
@@ -124,6 +127,9 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
         action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )?;
     Ok(())

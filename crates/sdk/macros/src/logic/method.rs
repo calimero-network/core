@@ -182,6 +182,9 @@ impl ToTokens for PublicLogicMethod<'_> {
                     // CausalDelta.parents through the WASM ABI is part of P3.
                     let __sync_ctx = ::calimero_storage::interface::ApplyContext {
                         causal_parents: &[],
+                        delta_id: None,
+                        delta_hlc: None,
+                        happens_before: None,
                     };
                     ::calimero_storage::collections::Root::<#self_>::sync(&args, __sync_ctx).expect("fatal: sync failed");
                 }

@@ -62,28 +62,77 @@ pub type MainInterface = Interface<MainStorage>;
 /// Apply-time context passed to [`Interface::apply_action`].
 ///
 /// Centralizes apply-time metadata so the call signature doesn't accumulate
-/// positional parameters. Currently carries DAG-causal parent hashes for the
-/// delta the action belongs to; future fields (delta hash, sender id, etc.)
-/// plug in here without re-touching every call site.
+/// positional parameters. P1 of #2233 introduced the struct with
+/// `causal_parents`; **P3** extends it with `delta_id`, `delta_hlc`, and
+/// `happens_before` so the rotation-log write hook can capture entries and
+/// the verifier can resolve `writers_at(causal_point)` per ADR 0001.
 ///
-/// In phase P1 of #2233 the field is collected and threaded through but not
-/// consulted by the verifier. P2/P3 wire it into per-entity writer-set
-/// resolution at the causal point.
+/// Construct explicitly at every call site — no `Default` on purpose so a
+/// future new field is a compile error everywhere, not a silent semantic
+/// change. For paths that genuinely have no causal context (snapshot leaf
+/// push, local apply, tests, P1-era code), construct as:
 ///
-/// Construct explicitly at every call site:
-/// - When no causal context is available (local apply, snapshot leaf push,
-///   tests): `ApplyContext { causal_parents: &[] }`.
-/// - In sync paths with a `CausalDelta` in scope:
-///   `ApplyContext { causal_parents: &delta.parents }`.
+/// ```ignore
+/// ApplyContext {
+///     causal_parents: &[],
+///     delta_id: None,
+///     delta_hlc: None,
+///     happens_before: None,
+/// }
+/// ```
 ///
-/// No `Default` / shorthand constructor on purpose — when a new field lands,
-/// every call site should be a compile error so we don't silently default a
-/// new piece of context.
-#[derive(Clone, Copy, Debug)]
+/// Sync paths with a `CausalDelta` in scope should populate the matching
+/// fields. Wiring the WASM ABI to thread `CausalDelta.{id,hlc,parents}` and
+/// a DAG-ancestry closure through `__calimero_sync_next` to here is a
+/// separate follow-up — see the `// P3 of #2233:` markers at production
+/// call sites.
+///
+/// # Field semantics
+///
+/// All new fields are `Option`. Convention:
+/// - `None` → "this caller doesn't have it"; the verifier and write hook
+///   degrade gracefully (skip writes, fall back to v2 stored writers).
+/// - `Some(_)` → "this caller has it"; verifier MUST consult the new
+///   path, write hook MAY append a rotation entry.
+///
+/// `happens_before` is a closure rather than a precomputed set because the
+/// DAG is owned by the node sync layer; storage shouldn't need to pull it
+/// in. Caller closes over its DAG view and passes the predicate.
+#[derive(Clone, Copy)]
 pub struct ApplyContext<'a> {
     /// Hashes of the parent deltas in the DAG. Empty when no causal context
     /// is available.
     pub causal_parents: &'a [[u8; 32]],
+
+    /// Hash of the `CausalDelta` containing the action being applied. Used
+    /// by the rotation-log write hook to record the originating delta on
+    /// detected rotations. `None` for local apply / snapshot leaf push.
+    pub delta_id: Option<[u8; 32]>,
+
+    /// Hybrid timestamp of the containing `CausalDelta`. Used by the
+    /// rotation-log write hook (sibling tiebreak per ADR 0001). `None` for
+    /// callers without a `CausalDelta` in scope.
+    pub delta_hlc: Option<crate::logical_clock::HybridTimestamp>,
+
+    /// DAG-ancestry predicate: `happens_before(a, b)` returns `true` iff
+    /// delta `a` is in the transitive ancestry of delta `b`. Provided by
+    /// the caller (typically the node sync layer with DAG access). `None`
+    /// when no DAG is available — the verifier then falls back to
+    /// [`rotation_log::latest_writers`](crate::rotation_log::latest_writers).
+    pub happens_before: Option<&'a dyn Fn(&[u8; 32], &[u8; 32]) -> bool>,
+}
+
+impl core::fmt::Debug for ApplyContext<'_> {
+    // Manual impl: `&dyn Fn` doesn't implement Debug. Print the rest and
+    // mark `happens_before` by presence only.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ApplyContext")
+            .field("causal_parents", &self.causal_parents)
+            .field("delta_id", &self.delta_id)
+            .field("delta_hlc", &self.delta_hlc)
+            .field("happens_before", &self.happens_before.map(|_| "<closure>"))
+            .finish()
+    }
 }
 
 /// The primary interface for the storage system.
@@ -130,18 +179,22 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Generates Compare action for hash verification after applying changes.
     ///
     /// `ctx` carries DAG-causal apply-time context (parents of the delta
-    /// this action belongs to). In phase P1 of #2233 it is plumbed through
-    /// but not consulted; P2/P3 will use it to resolve the writer set at
-    /// the causal point for `Shared`-storage verification.
+    /// this action belongs to, plus the delta's id/HLC and a DAG-ancestry
+    /// closure). For `Shared`-storage actions, **P3** of #2233 swaps the
+    /// signature verifier from "stored writers" to
+    /// `writers_at(id, ctx.causal_parents)` per ADR 0001, and appends a
+    /// [`RotationLogEntry`](crate::rotation_log::RotationLogEntry) on
+    /// detected rotations. Both behaviors degrade gracefully when ctx
+    /// fields are `None` / empty (callers without DAG context behave
+    /// identically to v2).
     ///
     /// # Errors
     /// - `DeserializationError` if action data is invalid
     /// - `ActionNotAllowed` if Compare action is passed directly
     ///
     pub fn apply_action(action: Action, ctx: ApplyContext<'_>) -> Result<(), StorageError> {
-        let _ = ctx; // P1: collected and forwarded only; verifier behavior unchanged.
-                     // Verify that the action timestamp is not too far in the future
-                     // to prevent LWW Time Drift attacks.
+        // Verify that the action timestamp is not too far in the future
+        // to prevent LWW Time Drift attacks.
         verify_action_timestamp(&action)?;
 
         // TODO: refactor to a separate function.
@@ -234,22 +287,71 @@ impl<S: StorageAdaptor> Interface<S> {
                             "Remote Shared action must be signed".to_owned(),
                         ))?;
 
-                        // Determine the authoritative writer set: stored if present,
-                        // else the action's claim (bootstrap).
+                        // Snapshot of stored state. Used both for the v2-style
+                        // bootstrap fallback below and for the rotation-log write
+                        // hook (post-apply, in the Add/Update branch).
                         let stored_metadata = <Index<S>>::get_metadata(*id)?;
+                        let stored_writers = match stored_metadata.as_ref().map(|m| &m.storage_type)
+                        {
+                            Some(StorageType::Shared {
+                                writers: stored_w, ..
+                            }) => Some(stored_w.clone()),
+                            _ => None,
+                        };
+
+                        // P3 of #2233: resolve the *effective* writer set the
+                        // signature must verify against.
+                        //
+                        // ADR 0001 says the verifier consults `writers_at(causal
+                        // parents)` — the writer set as of the apply context's
+                        // causal point — instead of the currently-stored writers.
+                        // That's the partition-correctness fix.
+                        //
+                        // Graceful degradation: when ctx lacks the DAG-ancestry
+                        // closure or the rotation log has nothing reachable,
+                        // fall through to the v2 stored set. Callers without
+                        // DAG context (snapshot leaf push, local apply, P1-era
+                        // code) continue to behave exactly as v2.
+                        let dag_causal_writers = if let Some(hb) = ctx.happens_before {
+                            crate::rotation_log::writers_at::<S, _>(*id, ctx.causal_parents, hb)?
+                        } else {
+                            None
+                        };
+
                         let authoritative_writers =
-                            match stored_metadata.as_ref().map(|m| &m.storage_type) {
-                                Some(StorageType::Shared {
-                                    writers: stored_w, ..
-                                }) => stored_w.clone(),
-                                // Bootstrap (or non-Shared existing — rejected by
-                                // verify_action_update; treat defensively as bootstrap).
-                                _ => writers.clone(),
+                            match (dag_causal_writers.as_ref(), stored_writers.as_ref()) {
+                                (Some(causal), Some(stored)) => {
+                                    // Both paths returned a set. Telemetry hook for
+                                    // rollout: warn on divergence so it's visible in
+                                    // production logs before we commit to dropping
+                                    // the v2 nonce check (epic exit criterion).
+                                    if causal != stored {
+                                        warn!(
+                                            target: "storage::p3_verifier",
+                                            %id,
+                                            stored_count = stored.len(),
+                                            causal_count = causal.len(),
+                                            "P3 verifier divergence: DAG-causal writer set \
+                                             differs from stored. Using DAG-causal per #2233."
+                                        );
+                                    }
+                                    causal.clone()
+                                }
+                                (Some(causal), None) => causal.clone(),
+                                // No DAG-causal answer → v2 fallback to stored, then
+                                // to the action's claim for bootstrap (preserves the
+                                // pre-P3 behavior exactly).
+                                (None, Some(stored)) => stored.clone(),
+                                (None, None) => writers.clone(),
                             };
 
                         // Replay protection (per-entity monotonic nonce). Done BEFORE
                         // signature verification so replays are O(1)-rejected without
                         // iterating Ed25519 verifies over each writer (matches User arm).
+                        //
+                        // P3 keeps the nonce check unchanged. Per the epic exit
+                        // criterion, the nonce check is removed only after weeks
+                        // of zero-divergence telemetry between nonce + DAG-causal.
                         let new_nonce = sig_data.nonce;
                         let last_nonce =
                             stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
@@ -271,6 +373,11 @@ impl<S: StorageAdaptor> Interface<S> {
                         // Fast path: if the action carries a `signer` hint and that
                         // signer is in the authoritative set, do exactly one verify.
                         // Slow path (no hint): linear scan over authoritative writers.
+                        //
+                        // Per the #2233 epic compatibility rule, the signer hint is
+                        // validated against the *causal* writer set above, not stored —
+                        // that's already how it works here since `authoritative_writers`
+                        // is now the DAG-causal answer when available.
                         let payload = action.payload_for_signing();
                         let verified = match sig_data.signer {
                             Some(hint) if authoritative_writers.contains(&hint) => {
@@ -496,6 +603,23 @@ impl<S: StorageAdaptor> Interface<S> {
                     <Index<S>>::add_child_to(parent.id(), this.clone())?;
                 }
 
+                // P3 of #2233: snapshot the pre-apply writer set for Shared
+                // entities BEFORE the placeholder-index creation below overwrites
+                // the entry with `metadata` (which is the action's own metadata,
+                // not the pre-apply state). `None` here means bootstrap — the
+                // entity genuinely didn't exist. The write hook interprets
+                // `None` as "first rotation, append".
+                let pre_apply_shared_writers: Option<
+                    std::collections::BTreeSet<calimero_primitives::identity::PublicKey>,
+                > = if matches!(metadata.storage_type, StorageType::Shared { .. }) {
+                    match <Index<S>>::get_metadata(id)?.map(|m| m.storage_type) {
+                        Some(StorageType::Shared { writers, .. }) => Some(writers),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
                 // For new entities, create a minimal index entry first to avoid orphan errors
                 if !<Index<S>>::has_index(id) {
                     if id.is_root() {
@@ -527,6 +651,20 @@ impl<S: StorageAdaptor> Interface<S> {
                     // we didn't save anything, so we skip updating the ancestors
                     return Ok(());
                 };
+
+                // P3 of #2233: rotation-log write hook. Appends a
+                // RotationLogEntry when applying a Shared rotation, so the
+                // verifier (this same function, on a future apply with DAG
+                // context) can resolve writers_at(causal point).
+                //
+                // Skips silently if:
+                // - the action isn't Shared,
+                // - the writer set didn't change (this is a value-write, not a
+                //   rotation),
+                // - the apply context lacks delta_id/delta_hlc (P3-era code
+                //   without WASM ABI extensions; the production sync path
+                //   doesn't yet thread CausalDelta.{id,hlc} through here).
+                Self::maybe_append_rotation_log(id, &metadata, &ctx, pre_apply_shared_writers)?;
 
                 debug!(
                     %id,
@@ -574,6 +712,79 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Uses guard clauses for clarity (KISS principle).
     /// Handles three cases:
     /// 1. Already deleted - update tombstone if newer
+    /// Append to the rotation log when applying a Shared rotation.
+    ///
+    /// P3 of #2233 write hook. Called from [`apply_action`] after
+    /// `save_internal` succeeds. No-op for non-Shared actions, for
+    /// value-writes (writers unchanged), or when ctx lacks the delta
+    /// id/hlc the entry needs.
+    ///
+    /// `pre_apply_writers` is the writer set in the index *before* this
+    /// action mutated it — `Some` for an existing Shared entity, `None`
+    /// for bootstrap (first time we see this entity). Bootstrap counts as
+    /// the first rotation.
+    ///
+    /// Skips silently rather than erroring on missing context: P3-era
+    /// production paths don't yet thread `CausalDelta.{id,hlc}` through
+    /// the WASM ABI, so the hook is dormant in production until that
+    /// follow-up lands. Tests construct full ctx explicitly.
+    fn maybe_append_rotation_log(
+        id: Id,
+        metadata: &Metadata,
+        ctx: &ApplyContext<'_>,
+        pre_apply_writers: Option<
+            std::collections::BTreeSet<calimero_primitives::identity::PublicKey>,
+        >,
+    ) -> Result<(), StorageError> {
+        // Only Shared entities have a rotation log.
+        let StorageType::Shared {
+            writers,
+            signature_data,
+        } = &metadata.storage_type
+        else {
+            return Ok(());
+        };
+
+        // Only append on rotation: bootstrap (no prior entry) OR writers changed.
+        // Value-writes that don't touch the writer set don't need to log.
+        let is_rotation = match &pre_apply_writers {
+            Some(stored) => stored != writers,
+            None => true,
+        };
+        if !is_rotation {
+            return Ok(());
+        }
+
+        // Need the originating delta's identity to record an entry the
+        // verifier can later look up. P3-era callers without WASM ABI
+        // extensions pass None here; the hook then silently no-ops so the
+        // log stays empty and writers_at falls back to v2 stored writers.
+        let (Some(delta_id), Some(delta_hlc)) = (ctx.delta_id, ctx.delta_hlc) else {
+            return Ok(());
+        };
+
+        let signer = signature_data.as_ref().and_then(|s| s.signer);
+        let nonce = signature_data.as_ref().map(|s| s.nonce).unwrap_or(0);
+
+        crate::rotation_log::append::<S>(
+            id,
+            crate::rotation_log::RotationLogEntry {
+                delta_id,
+                delta_hlc,
+                signer,
+                new_writers: writers.clone(),
+                writers_nonce: nonce,
+            },
+        )?;
+        debug!(
+            target: "storage::p3_write_hook",
+            %id,
+            writer_count = writers.len(),
+            "Rotation log entry appended"
+        );
+        Ok(())
+    }
+
     /// 2. Exists locally - compare timestamps (LWW)
     /// 3. Never seen - ignore (could create tombstone in future)
     ///

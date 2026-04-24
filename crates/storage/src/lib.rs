@@ -111,6 +111,8 @@ pub mod tests {
     pub mod merge_integration;
     /// Merkle hash propagation tests.
     pub mod merkle;
+    /// P3 (DAG-causal) verifier swap + rotation-log write hook tests.
+    pub mod p3_dag_causal;
     /// RGA (Replicated Growable Array) CRDT tests.
     pub mod rga;
     // TODO: Re-enable once Clone is implemented for collections

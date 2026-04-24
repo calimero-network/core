@@ -54,7 +54,10 @@ mod index__public_methods {
         assert!(<Interface<MockedStorage<0>>>::apply_action(
             a1.clone(),
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -78,7 +81,10 @@ mod index__public_methods {
         assert!(<Interface<MockedStorage<1>>>::apply_action(
             a2.clone(),
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -109,14 +115,20 @@ mod index__public_methods {
         assert!(<Interface<MockedStorage<2>>>::apply_action(
             a1.clone(),
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
         assert!(<Interface<MockedStorage<2>>>::apply_action(
             a2.clone(),
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -147,14 +159,20 @@ mod index__public_methods {
         assert!(<Interface<MockedStorage<3>>>::apply_action(
             a2.clone(),
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
         assert!(<Interface<MockedStorage<3>>>::apply_action(
             a1.clone(),
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());

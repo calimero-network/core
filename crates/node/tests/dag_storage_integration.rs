@@ -65,6 +65,9 @@ impl DeltaApplier<Vec<Action>> for StorageApplier {
                 action.clone(),
                 ApplyContext {
                     causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
                 },
             )
             .map_err(|e| ApplyError::Application(e.to_string()))?;

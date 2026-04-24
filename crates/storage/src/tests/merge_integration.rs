@@ -1153,6 +1153,9 @@ fn test_e2e_sync_flow_with_isolated_storage() {
             &sync_artifact,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         )
         .unwrap();
@@ -1456,6 +1459,9 @@ fn test_e2e_counter_sync_with_isolated_storage() {
             &sync_payload,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         )
         .unwrap();

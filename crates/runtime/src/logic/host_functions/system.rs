@@ -932,6 +932,9 @@ impl VMHostFunctions<'_> {
                 // the ABI to pass CausalDelta.parents through to apply_action.
                 let sync_ctx = calimero_storage::interface::ApplyContext {
                     causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
                 };
                 calimero_storage::collections::Root::<Vec<u8>>::sync(&payload, sync_ctx)
             })

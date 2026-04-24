@@ -213,6 +213,9 @@ mod tests {
                 },
                 ApplyContext {
                     causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
                 },
             )
         });

@@ -121,6 +121,9 @@ fn tombstone_marks_deleted() {
         delete_action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -156,6 +159,9 @@ fn tombstone_prevents_old_resurrection() {
         resurrect_action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -195,6 +201,9 @@ fn tombstone_allows_newer_update() {
         update_action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -242,6 +251,9 @@ fn delete_vs_update_conflict() {
         delete_action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -249,6 +261,9 @@ fn delete_vs_update_conflict() {
         update_action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -292,6 +307,9 @@ fn update_vs_delete_conflict() {
         update_action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -299,6 +317,9 @@ fn update_vs_delete_conflict() {
         delete_action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -383,6 +404,9 @@ fn concurrent_update_same_entity_different_fields() {
         action1,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -390,6 +414,9 @@ fn concurrent_update_same_entity_different_fields() {
         action2,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -422,6 +449,9 @@ fn actions_idempotent() {
         action.clone(),
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -429,6 +459,9 @@ fn actions_idempotent() {
         action.clone(),
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -436,6 +469,9 @@ fn actions_idempotent() {
         action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -461,6 +497,9 @@ fn update_before_add_creates_entity() {
         action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -488,6 +527,9 @@ fn delete_prevents_old_add() {
         delete_action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -504,6 +546,9 @@ fn delete_prevents_old_add() {
         add_action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -555,6 +600,9 @@ fn same_timestamp_lww_behavior() {
         action1,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -562,6 +610,9 @@ fn same_timestamp_lww_behavior() {
         action2,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -588,6 +639,9 @@ fn empty_entity_data() {
         action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     );
     // Just verify it doesn't panic - result may vary
@@ -610,6 +664,9 @@ fn malformed_entity_data() {
         action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     );
     assert!(result.is_err());
@@ -631,6 +688,9 @@ fn multiple_deletes_idempotent() {
         delete_action.clone(),
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -638,6 +698,9 @@ fn multiple_deletes_idempotent() {
         delete_action.clone(),
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -645,6 +708,9 @@ fn multiple_deletes_idempotent() {
         delete_action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
@@ -685,6 +751,9 @@ fn many_sequential_updates() {
             action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         )
         .unwrap();
@@ -721,6 +790,9 @@ fn rapid_add_delete_cycles() {
                 action,
                 ApplyContext {
                     causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
                 },
             )
             .unwrap();
@@ -739,6 +811,9 @@ fn rapid_add_delete_cycles() {
                 action,
                 ApplyContext {
                     causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
                 },
             )
             .unwrap();
@@ -770,6 +845,9 @@ fn test_future_timestamp_rejected() {
         action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     );
 
@@ -806,7 +884,10 @@ fn test_near_future_timestamp_accepted() {
         TestInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok(),
@@ -836,7 +917,10 @@ fn test_past_timestamp_accepted() {
         TestInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok(),
@@ -863,6 +947,9 @@ fn test_delete_future_timestamp_rejected() {
         action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     );
     assert!(
@@ -894,7 +981,10 @@ fn test_delete_near_future_accepted() {
         TestInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok(),

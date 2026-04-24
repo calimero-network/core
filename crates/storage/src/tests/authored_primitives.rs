@@ -168,6 +168,9 @@ fn authored_map_update_with_forged_owner_claim_is_rejected() {
         forged,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     ) {
         Err(StorageError::InvalidSignature) => {}
@@ -209,6 +212,9 @@ fn authored_map_delete_by_non_owner_is_rejected() {
         forged,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     ) {
         Err(StorageError::InvalidSignature) => {}
@@ -246,6 +252,9 @@ fn authored_vector_update_with_forged_owner_claim_is_rejected() {
         forged,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     ) {
         Err(StorageError::InvalidSignature) => {}
@@ -282,6 +291,9 @@ fn authored_vector_delete_by_non_owner_is_rejected() {
         forged,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     ) {
         Err(StorageError::InvalidSignature) => {}

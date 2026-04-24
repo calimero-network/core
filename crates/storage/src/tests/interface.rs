@@ -168,7 +168,10 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -198,7 +201,10 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -224,7 +230,10 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -250,7 +259,10 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -286,7 +298,10 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(
             old_delete,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -306,7 +321,10 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(
             new_delete,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -325,7 +343,10 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_err());
@@ -346,7 +367,10 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -777,7 +801,10 @@ mod user_storage_signature_verification {
         assert!(MainInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -811,6 +838,9 @@ mod user_storage_signature_verification {
             action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -855,6 +885,9 @@ mod user_storage_signature_verification {
             action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -907,6 +940,9 @@ mod user_storage_signature_verification {
             action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -935,7 +971,10 @@ mod user_storage_signature_verification {
         assert!(MainInterface::apply_action(
             action1,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -961,7 +1000,10 @@ mod user_storage_signature_verification {
         assert!(MainInterface::apply_action(
             action2,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1009,7 +1051,10 @@ mod user_storage_replay_protection {
         assert!(MainInterface::apply_action(
             action1,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1030,6 +1075,9 @@ mod user_storage_replay_protection {
             action2,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -1062,7 +1110,10 @@ mod user_storage_replay_protection {
         assert!(MainInterface::apply_action(
             action1,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1084,6 +1135,9 @@ mod user_storage_replay_protection {
             action2,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -1111,7 +1165,10 @@ mod user_storage_replay_protection {
         assert!(MainInterface::apply_action(
             action1,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1135,7 +1192,10 @@ mod user_storage_replay_protection {
                 MainInterface::apply_action(
                     action,
                     ApplyContext {
-                        causal_parents: &[]
+                        causal_parents: &[],
+                        delta_id: None,
+                        delta_hlc: None,
+                        happens_before: None,
                     }
                 )
                 .is_ok(),
@@ -1173,7 +1233,10 @@ mod user_storage_replay_protection {
         assert!(MainInterface::apply_action(
             action_first,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1196,6 +1259,9 @@ mod user_storage_replay_protection {
             action_old,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -1266,7 +1332,10 @@ mod frozen_storage_verification {
         assert!(MainInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1303,6 +1372,9 @@ mod frozen_storage_verification {
             action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -1344,7 +1416,10 @@ mod frozen_storage_verification {
         assert!(MainInterface::apply_action(
             add_action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1373,6 +1448,9 @@ mod frozen_storage_verification {
             update_action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -1414,7 +1492,10 @@ mod frozen_storage_verification {
         assert!(MainInterface::apply_action(
             add_action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1432,6 +1513,9 @@ mod frozen_storage_verification {
             delete_action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -1475,6 +1559,9 @@ mod frozen_storage_verification {
             action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -1522,7 +1609,10 @@ mod frozen_storage_verification {
         assert!(MainInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1566,6 +1656,9 @@ mod timestamp_drift_protection {
             action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -1605,7 +1698,10 @@ mod timestamp_drift_protection {
         assert!(MainInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1639,7 +1735,10 @@ mod timestamp_drift_protection {
         assert!(MainInterface::apply_action(
             action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1666,6 +1765,9 @@ mod timestamp_drift_protection {
             action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -1770,7 +1872,10 @@ mod storage_type_edge_cases {
         assert!(MainInterface::apply_action(
             action1,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1792,6 +1897,9 @@ mod storage_type_edge_cases {
             action2,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -1821,7 +1929,10 @@ mod storage_type_edge_cases {
         assert!(MainInterface::apply_action(
             action1,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1835,7 +1946,10 @@ mod storage_type_edge_cases {
         assert!(MainInterface::apply_action(
             delete_action,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1864,7 +1978,10 @@ mod storage_type_edge_cases {
         assert!(MainInterface::apply_action(
             action1,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1879,6 +1996,9 @@ mod storage_type_edge_cases {
             delete_action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -1906,7 +2026,10 @@ mod storage_type_edge_cases {
         assert!(MainInterface::apply_action(
             action1,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -1933,6 +2056,9 @@ mod storage_type_edge_cases {
             delete_action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -1975,6 +2101,9 @@ mod storage_type_edge_cases {
             action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -2013,7 +2142,10 @@ mod storage_type_edge_cases {
         assert!(MainInterface::apply_action(
             action1,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -2039,6 +2171,9 @@ mod storage_type_edge_cases {
             action2,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());
@@ -2078,7 +2213,10 @@ mod storage_type_edge_cases {
         assert!(MainInterface::apply_action(
             action1,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -2098,7 +2236,10 @@ mod storage_type_edge_cases {
         assert!(MainInterface::apply_action(
             action2,
             ApplyContext {
-                causal_parents: &[]
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             }
         )
         .is_ok());
@@ -2112,6 +2253,9 @@ mod storage_type_edge_cases {
             delete_action,
             ApplyContext {
                 causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
             },
         );
         assert!(result.is_err());

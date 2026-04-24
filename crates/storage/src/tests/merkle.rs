@@ -257,6 +257,9 @@ fn merkle_hash_convergence_after_sync() {
         action,
         ApplyContext {
             causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
         },
     )
     .unwrap();
