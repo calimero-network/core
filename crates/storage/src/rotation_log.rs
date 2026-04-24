@@ -194,11 +194,17 @@ pub fn latest_writers<S: StorageAdaptor>(
 
 /// Returns the writer set as-of a causal point in the DAG.
 ///
-/// Implements ADR 0001's merge rule:
+/// Implements ADR 0001's merge rule end-to-end:
 /// 1. Filter entries to those reachable from `causal_parents`.
 /// 2. Among reachable entries, pick the causally latest.
 /// 3. Truly-concurrent tie → larger `delta_hlc` wins.
 /// 4. HLC tie → smaller `signer` pubkey bytes win (`None` treated as larger).
+///
+/// **P4-impl** of #2233 is a no-op for the chosen rule — there's no
+/// intermediate state to materialise, no convergence reduction step.
+/// The whole rule lives here, with the per-entity write hook in
+/// [`Interface::apply_action`](crate::interface::Interface::apply_action)
+/// (P3) keeping the log fed.
 ///
 /// `happens_before(a, b)` is the caller-provided DAG-ancestry predicate:
 /// returns true iff delta `a` is in the transitive ancestry of delta `b`

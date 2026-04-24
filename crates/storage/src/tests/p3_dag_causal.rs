@@ -522,3 +522,188 @@ fn write_hook_appends_on_writer_set_change() {
         [alice, bob].into_iter().collect()
     );
 }
+
+// =============================================================================
+// P4-impl coverage: ADR Example D (write vs rotate on the same entity)
+// =============================================================================
+//
+// The other ADR examples (A sequential, B concurrent siblings HLC, C HLC tie)
+// are exercised in `rotation_log::tests`. Example D — a value-write signed by
+// a pre-rotation writer must still verify after the rotation lands locally —
+// is the central guarantee that makes concurrent operation safe, and it
+// involves the full apply_action verifier swap, so it lives here next to
+// the rest of the P3 verifier coverage.
+
+/// ADR Example D: pre-rotation value-write is accepted even after the
+/// rotation that removes the signer is applied locally. The verifier must
+/// consult `writers_at(value_write.parents)`, NOT the post-merge writer set.
+#[test]
+fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
+    env::reset_for_testing();
+    let root = setup_root::<S<420>>();
+
+    let alice_sk = make_signing_key(0xA9);
+    let bob_sk = make_signing_key(0xB9);
+    let alice = pubkey_of(&alice_sk);
+    let bob = pubkey_of(&bob_sk);
+    let id = entity_id(0x60);
+
+    // D_root: writers = {Alice, Bob}. Bootstrap so the entity exists locally.
+    let d_root = [0xD0; 32];
+    let bootstrap = build_signed_shared_action(
+        true,
+        id,
+        b"hello".to_vec(),
+        [alice, bob].into_iter().collect(),
+        hlc_at(0),
+        &alice_sk,
+        vec![root.clone()],
+    );
+    let happens_before_simple: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
+    Interface::<S<420>>::apply_action(
+        bootstrap,
+        dag_ctx(&[], d_root, hlc_at(0), happens_before_simple),
+    )
+    .unwrap();
+
+    // D1 (concurrent sibling of D_root from D2's perspective): Alice rotates
+    // Bob out → writers = {Alice}. Apply this first.
+    let d1 = [0xD1; 32];
+    let rotation = build_signed_shared_action(
+        false,
+        id,
+        b"hello".to_vec(),
+        [alice].into_iter().collect(),
+        hlc_at(1),
+        &alice_sk,
+        vec![],
+    );
+    Interface::<S<420>>::apply_action(
+        rotation,
+        dag_ctx(&[d_root], d1, hlc_at(1), happens_before_simple),
+    )
+    .unwrap();
+
+    // Sanity: the local stored writer set is now {Alice} and the rotation log
+    // has two entries (bootstrap + rotation).
+    let log = rotation_log::load::<S<420>>(id).unwrap().unwrap();
+    assert_eq!(log.entries.len(), 2);
+
+    // D2 (concurrent sibling of D1): Bob writes "world" against the writer
+    // set he saw — {Alice, Bob}. From Bob's local view this is valid; D2's
+    // parent is D_root, NOT D1. Carry that into ctx.causal_parents.
+    let d2 = [0xD2; 32];
+    let bob_write = build_signed_shared_action(
+        false,
+        id,
+        b"world".to_vec(),
+        [alice, bob].into_iter().collect(), // Bob's view of writers
+        hlc_at(2),
+        &bob_sk,
+        vec![],
+    );
+
+    // happens_before: D_root precedes everything; D1 and D2 are siblings so
+    // neither precedes the other.
+    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|a, b| {
+        // D_root happens-before D1 and D2.
+        if *a == d_root && (*b == d1 || *b == d2) {
+            return true;
+        }
+        false
+    };
+    let parents = [d_root];
+    let ctx = dag_ctx(&parents, d2, hlc_at(2), happens_before);
+
+    // Crucial: even though stored writers (post-D1) is {Alice}, D2 is causally
+    // a sibling of D1 — it never saw the rotation. writers_at(D2.parents=[D_root])
+    // returns the bootstrap writer set {Alice, Bob}, so Bob's signature
+    // verifies. Without P3 this would fail (sig vs stored {Alice}).
+    Interface::<S<420>>::apply_action(bob_write, ctx).expect(
+        "ADR Example D: pre-rotation write by Bob accepted because writers_at \
+         (causal parents of D2) includes Bob, even though stored writers no longer do",
+    );
+}
+
+/// Inverse of Example D: a write whose causal parents *include* the rotation
+/// (i.e., the writer saw the rotation and chose to write anyway) must be
+/// rejected if the signer is no longer in the writer set as-of those parents.
+#[test]
+fn write_post_rotation_by_removed_writer_rejected() {
+    env::reset_for_testing();
+    let root = setup_root::<S<421>>();
+
+    let alice_sk = make_signing_key(0xAA);
+    let bob_sk = make_signing_key(0xBA);
+    let alice = pubkey_of(&alice_sk);
+    let bob = pubkey_of(&bob_sk);
+    let id = entity_id(0x61);
+
+    let d_root = [0xD0; 32];
+    let bootstrap = build_signed_shared_action(
+        true,
+        id,
+        b"hello".to_vec(),
+        [alice, bob].into_iter().collect(),
+        hlc_at(0),
+        &alice_sk,
+        vec![root.clone()],
+    );
+    let happens_before_simple: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
+    Interface::<S<421>>::apply_action(
+        bootstrap,
+        dag_ctx(&[], d_root, hlc_at(0), happens_before_simple),
+    )
+    .unwrap();
+
+    // D1: Alice rotates Bob out.
+    let d1 = [0xD1; 32];
+    let rotation = build_signed_shared_action(
+        false,
+        id,
+        b"hello".to_vec(),
+        [alice].into_iter().collect(),
+        hlc_at(1),
+        &alice_sk,
+        vec![],
+    );
+    Interface::<S<421>>::apply_action(
+        rotation,
+        dag_ctx(&[d_root], d1, hlc_at(1), happens_before_simple),
+    )
+    .unwrap();
+
+    // D2 has D1 as a parent — Bob saw the rotation and tries to write anyway.
+    let d2 = [0xD2; 32];
+    let bob_write_post = build_signed_shared_action(
+        false,
+        id,
+        b"world".to_vec(),
+        [alice].into_iter().collect(), // Bob acknowledges the rotation in his claim
+        hlc_at(2),
+        &bob_sk,
+        vec![],
+    );
+    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|a, b| {
+        // D_root → D1 → D2. (D_root → D2 transitively.)
+        matches!(
+            (*a, *b),
+            (x, y) if x == d_root && (y == d1 || y == d2)
+                || (x == d1 && y == d2)
+        )
+    };
+    let parents = [d1];
+    let ctx = dag_ctx(&parents, d2, hlc_at(2), happens_before);
+
+    // writers_at(D2.parents=[D1]) returns {Alice} — Bob is no longer a writer
+    // and his signature must fail.
+    let result = Interface::<S<421>>::apply_action(bob_write_post, ctx);
+    assert!(
+        matches!(
+            result,
+            Err(crate::interface::StorageError::InvalidSignature)
+        ),
+        "post-rotation write by removed writer must be rejected; got {:?}",
+        result
+    );
+}
