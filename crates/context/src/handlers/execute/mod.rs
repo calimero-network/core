@@ -824,7 +824,23 @@ impl ContextManager {
 
         module_task
             .map_ok(move |(module, blob_info), act, _ctx| {
-                if let Some((blob, svc_name, recompiled)) = blob_info {
+                if let Some((blob, svc_name, _recompiled)) = blob_info {
+                    // The `applications` map is the source of truth for
+                    // whether this app is still live. If an
+                    // `update_application` (migration) message landed
+                    // while our async compile/load was awaiting, it
+                    // would have evicted both `applications[app_id]`
+                    // and `modules[(app_id, *)]`. In that case the
+                    // module we just finished loading is from the
+                    // pre-migration WASM and must NOT be re-cached —
+                    // otherwise every subsequent execute would serve
+                    // the stale module until the next migration.
+                    //
+                    // Tie both the blob writeback and the module cache
+                    // update to the same `Some(app)` guard so they
+                    // stay consistent: either the app is still present
+                    // (our work is fresh, write both) or it's been
+                    // evicted (our work is stale, write neither).
                     if let Some(app) = act.applications.get_mut(&application_id) {
                         match svc_name.as_deref() {
                             Some(name) => {
@@ -836,17 +852,11 @@ impl ContextManager {
                                 app.blob = blob;
                             }
                         }
-                    }
 
-                    // Populate the module cache on cache miss. When a
-                    // recompile happened, the previous cached entry (if
-                    // any, for this same key) was stale; overwriting it
-                    // here keeps the cache aligned with the latest
-                    // compiled blob. `insert` is idempotent either way.
-                    let _ = recompiled;
-                    let _ = act
-                        .modules
-                        .insert((application_id, svc_name), module.clone());
+                        let _ = act
+                            .modules
+                            .insert((application_id, svc_name), module.clone());
+                    }
                 }
 
                 module
