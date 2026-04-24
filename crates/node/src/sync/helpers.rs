@@ -61,18 +61,27 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     // Check if entity already exists
     let existing_index = Index::<MainStorage>::get_index(entity_id).ok().flatten();
 
-    // Build metadata from leaf info. Preserve the existing storage_type from
-    // the index (if any) — `Metadata::default()` would set it to `Public`,
-    // which clashes with `Shared`/`User`/`Frozen` entities that the receiver
-    // already has stored, causing `verify_action_update` to reject the Update
-    // with "Cannot change StorageType". TreeLeafData doesn't carry storage_type
-    // over the wire, so the index is the source of truth.
+    // Skip signed entities (User/Shared/Frozen) — EntityPush only carries
+    // leaf data + crdt_type/timestamp, NOT the original signature_data. The
+    // verifier requires signed actions to have signature_data; reconstructing
+    // it here is impossible (we don't hold the original signer's key). Signed
+    // entities propagate via their per-entity signed actions through the DAG
+    // sync path instead. Without this skip, EntityPush fails with
+    // "Cannot change StorageType" (default Public vs stored Shared) or
+    // "Remote Shared action must be signed".
+    if let Some(existing) = existing_index.as_ref() {
+        match existing.metadata.storage_type {
+            calimero_storage::entities::StorageType::User { .. }
+            | calimero_storage::entities::StorageType::Shared { .. }
+            | calimero_storage::entities::StorageType::Frozen => return Ok(()),
+            calimero_storage::entities::StorageType::Public => {}
+        }
+    }
+
+    // Build metadata from leaf info.
     let mut metadata = Metadata::default();
     metadata.crdt_type = Some(leaf.metadata.crdt_type.clone());
     metadata.updated_at = leaf.metadata.hlc_timestamp.into();
-    if let Some(existing) = existing_index.as_ref() {
-        metadata.storage_type = existing.metadata.storage_type.clone();
-    }
 
     let action = if existing_index.is_some() {
         // Update existing entity - storage layer handles CRDT merge
