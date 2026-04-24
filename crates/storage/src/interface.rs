@@ -822,13 +822,10 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let mut item = from_slice::<D>(&slice).map_err(StorageError::DeserializationError)?;
 
-        let (full_hash, _) =
-            <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
-
-        item.element_mut().merkle_hash = full_hash;
-
-        item.element_mut().metadata =
-            <Index<S>>::get_metadata(id)?.ok_or(StorageError::IndexNotFound(id))?;
+        // Single `EntityIndex` read for both merkle_hash and metadata.
+        let index = <Index<S>>::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
+        item.element_mut().merkle_hash = index.full_hash();
+        item.element_mut().metadata = index.metadata;
 
         Ok(Some(item))
     }
