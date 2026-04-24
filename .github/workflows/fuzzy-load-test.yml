@@ -671,11 +671,19 @@ jobs:
     if: always()
     steps:
       - name: Generate summary
+        # Priority must match the duration-resolution blocks in both
+        # fuzzy-test jobs above: `duration_override` first (it wins when
+        # set, regardless of trigger), schedule second, routine last.
+        # The three conditions are mutually exclusive in practice today
+        # because `schedule` events carry no `inputs`, but keeping the
+        # priority consistent avoids a silent drift if GitHub ever lets
+        # scheduled runs accept dispatch inputs or if a future operator
+        # adds another trigger that can set both.
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            RUN_KIND="Nightly soak (60 min)"
-          elif [ -n "${{ github.event.inputs.duration_override }}" ]; then
+          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
             RUN_KIND="Manual override (${{ github.event.inputs.duration_override }} min)"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            RUN_KIND="Nightly soak (60 min)"
           else
             RUN_KIND="Routine (15 min)"
           fi
