@@ -526,32 +526,78 @@ impl DeltaStore {
 
         let handle = self.applier.context_client.datastore_handle();
 
-        // Step 1: Collect ALL deltas for this context from DB
+        // Step 1: Collect deltas for this context from DB.
+        //
+        // Scoped via prefix seek (keys are `context_id || delta_id`),
+        // then streams key+value together via `iter.entries()` so the
+        // value decode shares the iterator's block buffer rather than
+        // doing an extra point-lookup per row. The seek result itself
+        // needs a manual value read since `entries()` advances past it.
+        //
+        // Event harvesting runs for every applied row to preserve the
+        // pre-refactor contract (crash-leftover retry until the caller
+        // clears `events` on disk). The `is_applied` short-circuit
+        // skips only the expensive work — nested actions decode and
+        // HashMap / topology rebuilds.
+        let start_key =
+            calimero_store::key::ContextDagDelta::new(self.applier.context_id, [0u8; 32]);
         let mut iter = handle.iter::<calimero_store::key::ContextDagDelta>()?;
+        let first_key = iter.seek(start_key)?;
+
         let mut all_deltas: HashMap<[u8; 32], CausalDelta<Vec<Action>>> = HashMap::new();
-        // Collected in the same pass: records with `applied: true,
-        // events: Some(..)` are crash-leftovers whose handlers never
-        // completed. Surfaced via the return struct so the caller can
-        // replay through `execute_cascaded_events` without re-scanning
-        // the DB (#2185 / #2194 review).
         let mut pending_handler_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
-        for entry in iter.entries() {
-            let (key_result, value_result) = entry;
-            let key = key_result?;
-            let stored_delta = value_result?;
+        // Process the seek result's (key, value) manually — entries()
+        // advances past the cursor's current position. One handle.get
+        // for the first row is the only non-buffered value read.
+        let first_entry = if let Some(key) = first_key {
+            if key.context_id() == self.applier.context_id {
+                handle.get(&key)?.map(|v| (key, v))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-            // Filter by context_id
+        // Combined stream: first (manual) entry + subsequent
+        // value-buffered entries from the iterator.
+        let mut stream: Box<dyn Iterator<Item = Result<_>>> = match first_entry {
+            Some(entry) => Box::new(
+                std::iter::once(Ok(entry))
+                    .chain(iter.entries().map(|(k, v)| -> Result<_> { Ok((k?, v?)) })),
+            ),
+            None => Box::new(iter.entries().map(|(k, v)| -> Result<_> { Ok((k?, v?)) })),
+        };
+
+        while let Some(entry) = stream.next() {
+            let (key, stored_delta) = entry?;
+
+            // Sorted by context_id first — once the prefix changes we're
+            // past our context's range and can stop.
             if key.context_id() != self.applier.context_id {
-                continue;
+                break;
             }
 
-            // Harvest pending handler events before taking ownership of
-            // `events` fields we may clone elsewhere.
+            let delta_id = key.delta_id();
+
+            // Event harvest runs for every applied row regardless of
+            // DAG membership, preserving retry of crash-leftovers
+            // until `execute_cascaded_events` clears `events` on disk.
             if stored_delta.applied {
                 if let Some(ref events_data) = stored_delta.events {
                     pending_handler_events.push((stored_delta.delta_id, events_data.clone()));
                 }
+            }
+
+            // Skip the expensive work (actions decode + map inserts)
+            // if the DAG already has topology for this delta.
+            let already_in_dag = {
+                let dag = self.dag.read().await;
+                dag.is_applied(&delta_id)
+            };
+            if already_in_dag {
+                continue;
             }
 
             // Deserialize actions
