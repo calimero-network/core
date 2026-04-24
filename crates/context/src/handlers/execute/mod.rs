@@ -48,6 +48,18 @@ pub mod storage;
 
 use storage::{ContextPrivateStorage, ContextStorage};
 
+/// Upper bound on entries in `ContextManager::modules` to prevent
+/// unbounded growth on nodes that cycle through many distinct
+/// applications (multi-tenant / churn-heavy workloads). Each entry
+/// holds native machine code that's 2–10× the WASM source size, so
+/// a cap here matters even if the peer `applications` map is larger.
+///
+/// TODO: this is a simple size cap with first-entry eviction — not
+/// true LRU. When the hot-path behaviour is understood better,
+/// upgrade to LRU or TTL-based eviction (tracked alongside the
+/// existing TODOs on `contexts` / `applications` in `lib.rs`).
+const MAX_CACHED_MODULES: usize = 32;
+
 impl Handler<ExecuteRequest> for ContextManager {
     type Result = ActorResponse<Self, <ExecuteRequest as Message>::Result>;
 
@@ -761,13 +773,26 @@ impl ContextManager {
                     CachedOrBlob::Blob(blob) => blob,
                 };
 
+                // Staleness anchor for the `map_ok` below. Captures the
+                // blob_id we loaded from *before* any recompile rewrites
+                // `blob.compiled`. A concurrent `update_application`
+                // migration between now and `map_ok` would evict and
+                // repopulate `applications[app_id]` with a different
+                // blob_id — the post-task closure compares against this
+                // anchor and drops both the blob writeback and the
+                // module cache insert when they disagree.
+                let original_blob_id = blob.compiled;
+
                 if let Some(compiled) = node_client.get_blob_bytes(&blob.compiled, None).await? {
                     let module =
                         unsafe { calimero_runtime::Engine::headless().from_precompiled(&compiled) };
 
                     match module {
                         Ok(module) => {
-                            return Ok((module, Some((blob, service_name_for_bytes, false))))
+                            return Ok((
+                                module,
+                                Some((blob, service_name_for_bytes, original_blob_id)),
+                            ))
                         }
                         Err(err) => {
                             debug!(
@@ -815,47 +840,76 @@ impl ContextManager {
                     service_name_for_bytes.as_deref(),
                 )?;
 
-                // `recompiled = true`: the old cached entry (if any) is
-                // stale since the underlying blob_id just changed.
-                Ok((module, Some((blob, service_name_for_bytes, true))))
+                Ok((
+                    module,
+                    Some((blob, service_name_for_bytes, original_blob_id)),
+                ))
             }
             .into_actor(act)
         });
 
         module_task
             .map_ok(move |(module, blob_info), act, _ctx| {
-                if let Some((blob, svc_name, _recompiled)) = blob_info {
+                if let Some((blob, svc_name, original_blob_id)) = blob_info {
                     // The `applications` map is the source of truth for
-                    // whether this app is still live. If an
-                    // `update_application` (migration) message landed
-                    // while our async compile/load was awaiting, it
-                    // would have evicted both `applications[app_id]`
-                    // and `modules[(app_id, *)]`. In that case the
-                    // module we just finished loading is from the
-                    // pre-migration WASM and must NOT be re-cached —
-                    // otherwise every subsequent execute would serve
-                    // the stale module until the next migration.
+                    // whether this app is still live. Tie both the blob
+                    // writeback and the module cache update to the same
+                    // guard, plus a staleness check on `original_blob_id`.
                     //
-                    // Tie both the blob writeback and the module cache
-                    // update to the same `Some(app)` guard so they
-                    // stay consistent: either the app is still present
-                    // (our work is fresh, write both) or it's been
-                    // evicted (our work is stale, write neither).
+                    // Three cases we need to handle correctly:
+                    //
+                    // 1. App still present with the same blob_id we
+                    //    loaded from → our module is current, write
+                    //    back and cache.
+                    // 2. App evicted (`get_mut` → None) — an
+                    //    `update_application` migration ran and hasn't
+                    //    repopulated yet → our work is stale, drop.
+                    // 3. App repopulated with a different blob_id —
+                    //    another `get_module` call beat us to it with
+                    //    fresher data → our work is stale, drop both
+                    //    writeback and module cache insert so we don't
+                    //    stomp the fresh state.
                     if let Some(app) = act.applications.get_mut(&application_id) {
-                        match svc_name.as_deref() {
-                            Some(name) => {
-                                if let Some(svc_blob) = app.services.get_mut(name) {
-                                    *svc_blob = blob;
+                        let current_blob_id = match svc_name.as_deref() {
+                            Some(name) => app.services.get(name).map(|b| b.compiled),
+                            None => Some(app.blob.compiled),
+                        };
+
+                        if current_blob_id == Some(original_blob_id) {
+                            match svc_name.as_deref() {
+                                Some(name) => {
+                                    if let Some(svc_blob) = app.services.get_mut(name) {
+                                        *svc_blob = blob;
+                                    }
+                                }
+                                None => {
+                                    app.blob = blob;
                                 }
                             }
-                            None => {
-                                app.blob = blob;
-                            }
-                        }
 
-                        let _ = act
-                            .modules
-                            .insert((application_id, svc_name), module.clone());
+                            // Bounded insert: drop the oldest entry
+                            // before adding a new one when at capacity.
+                            // BTreeMap iteration order isn't LRU; this
+                            // is a simple size cap to prevent unbounded
+                            // growth on multi-tenant nodes. Upgrading
+                            // to proper LRU is a follow-up (see the
+                            // `modules` field doc in `lib.rs`).
+                            if !act.modules.contains_key(&(application_id, svc_name.clone()))
+                                && act.modules.len() >= MAX_CACHED_MODULES
+                            {
+                                let _ = act.modules.pop_first();
+                            }
+                            let _ = act
+                                .modules
+                                .insert((application_id, svc_name), module.clone());
+                        } else {
+                            debug!(
+                                %application_id,
+                                loaded_blob = %original_blob_id,
+                                current_blob = ?current_blob_id,
+                                "module load result stale — applications was repopulated while loading, dropping"
+                            );
+                        }
                     }
                 }
 

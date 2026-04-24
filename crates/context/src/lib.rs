@@ -84,6 +84,14 @@ pub struct ContextManager {
     /// Without this, every execute request paid ~5% CPU to re-run
     /// `Engine::from_precompiled` (observed in #2238 follow-up
     /// profiling).
+    ///
+    /// Size-capped to `MAX_CACHED_MODULES` (see
+    /// `handlers/execute/mod.rs`). Compiled modules are 2–10× larger
+    /// than the source WASM, so we cap to prevent unbounded growth on
+    /// multi-tenant nodes that rotate through many applications.
+    /// Eviction is currently first-entry-by-key-order rather than
+    /// true LRU — good enough as a safety valve; upgrade tracked
+    /// alongside the `contexts` LRU TODO above.
     modules: BTreeMap<(ApplicationId, Option<String>), calimero_runtime::Module>,
 
     /// Prometheus metrics for monitoring the health and performance of the manager,
