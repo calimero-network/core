@@ -93,6 +93,14 @@ pub async fn handle_state_delta(
         bail!("context '{}' not found", context_id);
     };
 
+    // Record the HLC we're seeing so later handler-gating checks
+    // (including this delta's own cascade-applied children and any
+    // subsequent deltas for this context) have an accurate frontier to
+    // compare against. Safe to call before the author/read-only filters
+    // below: observation is a pure update to an AtomicU64 per context and
+    // has no side effect beyond bumping the max. See `crate::handler_gating`.
+    node_state.observe_hlc(&context_id, hlc.get_time().as_u64());
+
     if calimero_context::group_store::is_read_only_for_context(
         node_clients.context.datastore(),
         &context_id,
@@ -313,6 +321,7 @@ pub async fn handle_state_delta(
         let cascade_outcome = execute_cascaded_events(
             &missing_result.cascaded_events,
             &node_clients,
+            &node_state,
             &context_id,
             &our_identity,
             sync_timeout,
@@ -380,6 +389,7 @@ pub async fn handle_state_delta(
                         let cascade_outcome = execute_cascaded_events(
                             &peer_fetch_cascaded_events,
                             &node_clients,
+                            &node_state,
                             &context_id,
                             &our_identity,
                             sync_timeout,
@@ -438,30 +448,46 @@ pub async fn handle_state_delta(
                 "Evaluating event handler execution for applied delta"
             );
             if !is_author {
-                // Application availability was already verified at the start of this function,
-                // so we can safely execute handlers without re-checking.
-                let all_succeeded = execute_event_handlers_parsed(
-                    &node_clients.context,
-                    &context_id,
-                    &our_identity,
-                    payload,
-                )
-                .await?;
-
-                // Clear the DB's `events` blob once every handler ran
-                // successfully (#2185, #2194 review). Partial failure
-                // leaves the blob for restart replay. `add_delta_internal`
-                // preserves `events: Some(..)` when a delta is directly
-                // applied, so this clear is the normal termination
-                // point for the direct-apply path.
-                if all_succeeded {
-                    delta_store_ref.mark_events_executed(&delta_id);
-                } else {
-                    warn!(
+                // Handler-gating: skip dispatch if the node is "behind"
+                // for this delta per `crate::handler_gating`. Direct-apply
+                // hits this when a sync session is active (delta arrived
+                // via pubsub mid-sync) or when `handler_staleness_threshold`
+                // is very low and another delta has pushed max-seen HLC
+                // past us. On skip, clear the events blob so restart
+                // replay doesn't resurrect it.
+                if node_state.is_behind(&context_id, hlc.get_time().as_u64()) {
+                    info!(
                         %context_id,
                         delta_id = ?delta_id,
-                        "One or more handlers failed on direct-apply path; keeping events in DB for restart replay"
+                        "Skipping direct-apply handlers (node is behind per handler-gating policy)"
                     );
+                    delta_store_ref.mark_events_executed(&delta_id);
+                } else {
+                    // Application availability was already verified at the start of this function,
+                    // so we can safely execute handlers without re-checking.
+                    let all_succeeded = execute_event_handlers_parsed(
+                        &node_clients.context,
+                        &context_id,
+                        &our_identity,
+                        payload,
+                    )
+                    .await?;
+
+                    // Clear the DB's `events` blob once every handler ran
+                    // successfully (#2185, #2194 review). Partial failure
+                    // leaves the blob for restart replay. `add_delta_internal`
+                    // preserves `events: Some(..)` when a delta is directly
+                    // applied, so this clear is the normal termination
+                    // point for the direct-apply path.
+                    if all_succeeded {
+                        delta_store_ref.mark_events_executed(&delta_id);
+                    } else {
+                        warn!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            "One or more handlers failed on direct-apply path; keeping events in DB for restart replay"
+                        );
+                    }
                 }
             } else {
                 info!(
@@ -493,6 +519,7 @@ pub async fn handle_state_delta(
     execute_cascaded_events(
         &add_result.cascaded_events,
         &node_clients,
+        &node_state,
         &context_id,
         &our_identity,
         sync_timeout,
@@ -642,6 +669,7 @@ async fn init_delta_store(
             execute_cascaded_events(
                 &events_to_run,
                 node_clients,
+                node_state,
                 &context_id,
                 &our_identity,
                 sync_timeout,
@@ -674,6 +702,7 @@ async fn init_delta_store(
 async fn execute_cascaded_events(
     cascaded_events: &[([u8; 32], Vec<u8>)],
     node_clients: &crate::NodeClients,
+    node_state: &crate::NodeState,
     context_id: &ContextId,
     our_identity: &PublicKey,
     sync_timeout: std::time::Duration,
@@ -727,6 +756,41 @@ async fn execute_cascaded_events(
     }
 
     for (cascaded_id, events_data) in cascaded_events {
+        // Handler-gating: a cascaded delta by definition applied later than
+        // the delta currently at our frontier. If the gap to our max-seen
+        // HLC exceeds `handler_staleness_threshold` (or we're in a sync
+        // session), skip dispatch and clear the blob. Look up the HLC from
+        // the DAG — it was set when the delta first arrived via pubsub.
+        let cascade_hlc_ntp64 = match delta_store.get_delta(cascaded_id).await {
+            Some(d) => d.hlc.get_time().as_u64(),
+            None => {
+                // Row in the cascade list but no DAG entry — benign race
+                // against eviction / rewriting. Skip defensively to avoid
+                // firing handlers whose source we can't re-inspect.
+                debug!(
+                    %context_id,
+                    delta_id = ?cascaded_id,
+                    phase = phase,
+                    "Cascaded delta not in DAG at dispatch time; skipping handlers"
+                );
+                delta_store.mark_events_executed(cascaded_id);
+                continue;
+            }
+        };
+        if node_state.is_behind(context_id, cascade_hlc_ntp64) {
+            info!(
+                %context_id,
+                delta_id = ?cascaded_id,
+                phase = phase,
+                "Skipping cascaded handlers (node is behind per handler-gating policy)"
+            );
+            delta_store.mark_events_executed(cascaded_id);
+            if current_delta == Some(cascaded_id) {
+                outcome.handlers_executed_for_current = true;
+            }
+            continue;
+        }
+
         match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
             Ok(cascaded_payload) => {
                 info!(
@@ -1302,6 +1366,10 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         "Replaying buffered delta"
     );
 
+    // Observe the buffered delta's HLC so subsequent gating checks see the
+    // correct frontier. `buffered.hlc` is already the NTP64 `u64`.
+    node_state.observe_hlc(&context_id, buffered.hlc);
+
     // Skip if this is our own delta
     if buffered.author_id == our_identity {
         debug!(
@@ -1401,6 +1469,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         if let Err(e) = execute_cascaded_events(
             &pending_from_load,
             &node_clients,
+            &node_state,
             &context_id,
             &our_identity,
             sync_timeout,
@@ -1475,35 +1544,48 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                 // Check if we are the author (shouldn't be, but check anyway)
                 let is_author = buffered.author_id == our_identity;
                 if !is_author {
-                    info!(
-                        %context_id,
-                        delta_id = ?delta_id,
-                        events_count = events.len(),
-                        applied_via_dag = add_result.applied,
-                        is_checkpoint_match,
-                        is_covered_by_checkpoint,
-                        "Executing handlers for replayed buffered delta"
-                    );
-
-                    let all_succeeded = execute_event_handlers_parsed(
-                        &context_client,
-                        &context_id,
-                        &our_identity,
-                        &events,
-                    )
-                    .await?;
-
-                    // Same clear-on-success contract as the other two
-                    // caller sites: keep `events: Some(..)` if any
-                    // handler failed so the next restart replays.
-                    if all_succeeded {
-                        delta_store.mark_events_executed(&delta_id);
-                    } else {
-                        warn!(
+                    // Handler-gating: buffered deltas are by definition
+                    // replayed after a sync session ended. The HLC gap
+                    // check will normally catch them, but the predicate
+                    // is the single source of truth — defer to it.
+                    if node_state.is_behind(&context_id, buffered.hlc) {
+                        info!(
                             %context_id,
                             delta_id = ?delta_id,
-                            "One or more handlers failed on buffered-replay path; keeping events in DB for restart replay"
+                            "Skipping buffered-replay handlers (node is behind per handler-gating policy)"
                         );
+                        delta_store.mark_events_executed(&delta_id);
+                    } else {
+                        info!(
+                            %context_id,
+                            delta_id = ?delta_id,
+                            events_count = events.len(),
+                            applied_via_dag = add_result.applied,
+                            is_checkpoint_match,
+                            is_covered_by_checkpoint,
+                            "Executing handlers for replayed buffered delta"
+                        );
+
+                        let all_succeeded = execute_event_handlers_parsed(
+                            &context_client,
+                            &context_id,
+                            &our_identity,
+                            &events,
+                        )
+                        .await?;
+
+                        // Same clear-on-success contract as the other two
+                        // caller sites: keep `events: Some(..)` if any
+                        // handler failed so the next restart replays.
+                        if all_succeeded {
+                            delta_store.mark_events_executed(&delta_id);
+                        } else {
+                            warn!(
+                                %context_id,
+                                delta_id = ?delta_id,
+                                "One or more handlers failed on buffered-replay path; keeping events in DB for restart replay"
+                            );
+                        }
                     }
                 } else {
                     // Author path: handlers already ran locally at
@@ -1540,6 +1622,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     execute_cascaded_events(
         &add_result.cascaded_events,
         &node_clients,
+        &node_state,
         &context_id,
         &our_identity,
         sync_timeout,
