@@ -516,62 +516,50 @@ impl DeltaStore {
 
         // Step 1: Collect deltas for this context from DB.
         //
-        // Called on every `perform_interval_sync` (~2s cadence). Two
-        // optimisations matter:
+        // Scoped via prefix seek (keys are `context_id || delta_id`),
+        // then streams key+value together via `iter.entries()` so the
+        // value decode shares the iterator's block buffer rather than
+        // doing an extra point-lookup per row. The seek result itself
+        // needs a manual value read since `entries()` advances past it.
         //
-        // 1. Scope iteration to *our* context via a prefix scan. Keys
-        //    are stored as `context_id || delta_id`, so seeking to
-        //    `(context_id, 0..)` jumps past other contexts entirely.
-        //    The previous full-column iterator walked every
-        //    `ContextDagDelta` row regardless of owner and filtered by
-        //    calling `key.context_id()` per row — which constructed a
-        //    fresh `ContextId` wrapping a `Hash` each time. Worth ~4%
-        //    of total CPU before the `Hash` base58 cache was made
-        //    lazy (PR #2242), and still a pile of wasted memcpy /
-        //    HashMap work afterward.
-        //
-        // 2. Skip the *expensive* work for rows the DAG already knows
-        //    about: the nested `borsh::from_slice(actions)` + Vec/
-        //    HashMap rebuilds + the downstream topological-restore
-        //    loop. In steady state 99% of persisted deltas were
-        //    applied on a prior call; `dag.is_applied(delta_id)` is a
-        //    HashSet lookup. We still fetch and borsh-decode the outer
-        //    `ContextDagDelta` value for every row so the
-        //    `pending_handler_events` contract is preserved — without
-        //    that read we'd silently drop crash-leftover events
-        //    (records with `applied: true, events: Some(..)`) on every
-        //    scan after the first, breaking retry semantics for
-        //    callers that re-invoke on a warm DeltaStore. The outer
-        //    borsh decode is comparatively cheap; the big wins are in
-        //    skipping the actions decode and the HashMap writes.
-        //
-        // 3. Take the DAG read lock once for the whole classification
-        //    pass rather than per-row. An `.await` point on every row
-        //    was gratuitous — the lock is cheap when uncontended but
-        //    each acquire is still a yield-point, and a pending writer
-        //    could force the scan to block mid-iteration. The read
-        //    guard is dropped before step 2 below, which takes the
-        //    write lock for topological restore.
+        // Event harvesting runs for every applied row to preserve the
+        // pre-refactor contract (crash-leftover retry until the caller
+        // clears `events` on disk). The `is_applied` short-circuit
+        // skips only the expensive work — nested actions decode and
+        // HashMap / topology rebuilds.
         let start_key =
             calimero_store::key::ContextDagDelta::new(self.applier.context_id, [0u8; 32]);
         let mut iter = handle.iter::<calimero_store::key::ContextDagDelta>()?;
-        let first = iter.seek(start_key).transpose();
+        let first_key = iter.seek(start_key)?;
 
         let mut all_deltas: HashMap<[u8; 32], CausalDelta<Vec<Action>>> = HashMap::new();
-        // Collected in the same pass: records with `applied: true,
-        // events: Some(..)` are crash-leftovers whose handlers never
-        // completed. Surfaced via the return struct so the caller can
-        // replay through `execute_cascaded_events` without re-scanning
-        // the DB (#2185 / #2194 review).
         let mut pending_handler_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
-        // Single read-lock acquisition across the whole key scan.
-        // Scoped in its own block so the guard drops before step 2's
-        // write lock.
-        let dag_applied = self.dag.read().await;
+        // Process the seek result's (key, value) manually — entries()
+        // advances past the cursor's current position. One handle.get
+        // for the first row is the only non-buffered value read.
+        let first_entry = if let Some(key) = first_key {
+            if key.context_id() == self.applier.context_id {
+                handle.get(&key)?.map(|v| (key, v))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-        for key_result in first.into_iter().chain(iter.keys()) {
-            let key = key_result?;
+        // Combined stream: first (manual) entry + subsequent
+        // value-buffered entries from the iterator.
+        let mut stream: Box<dyn Iterator<Item = Result<_>>> = match first_entry {
+            Some(entry) => Box::new(
+                std::iter::once(Ok(entry))
+                    .chain(iter.entries().map(|(k, v)| -> Result<_> { Ok((k?, v?)) })),
+            ),
+            None => Box::new(iter.entries().map(|(k, v)| -> Result<_> { Ok((k?, v?)) })),
+        };
+
+        while let Some(entry) = stream.next() {
+            let (key, stored_delta) = entry?;
 
             // Sorted by context_id first — once the prefix changes we're
             // past our context's range and can stop.
@@ -581,30 +569,22 @@ impl DeltaStore {
 
             let delta_id = key.delta_id();
 
-            let Some(stored_delta) = handle.get(&key)? else {
-                // Key existed in iteration but value gone (concurrent
-                // delete). Benign — just skip.
-                continue;
-            };
-
-            // Harvest pending handler events for EVERY applied row
-            // regardless of DAG membership. This preserves the
-            // pre-refactor contract: crash-leftovers
-            // (`applied: true, events: Some(..)`) surface on every
-            // call until a successful `execute_cascaded_events` clears
-            // the `events` field in the DB. Only the topology
-            // restoration below is skipped for already-applied rows.
+            // Event harvest runs for every applied row regardless of
+            // DAG membership, preserving retry of crash-leftovers
+            // until `execute_cascaded_events` clears `events` on disk.
             if stored_delta.applied {
                 if let Some(ref events_data) = stored_delta.events {
                     pending_handler_events.push((stored_delta.delta_id, events_data.clone()));
                 }
             }
 
-            // Topology already in the in-memory DAG — skip the
-            // expensive actions decode + map inserts. The outer value
-            // read above is retained; see the big-comment at the top
-            // of this function for the trade-off.
-            if dag_applied.is_applied(&delta_id) {
+            // Skip the expensive work (actions decode + map inserts)
+            // if the DAG already has topology for this delta.
+            let already_in_dag = {
+                let dag = self.dag.read().await;
+                dag.is_applied(&delta_id)
+            };
+            if already_in_dag {
                 continue;
             }
 
@@ -658,10 +638,6 @@ impl DeltaStore {
 
             drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
         }
-
-        // Release the scan-wide read lock before step 2 takes
-        // `self.dag.write().await` — holding both would deadlock.
-        drop(dag_applied);
 
         if all_deltas.is_empty() {
             return Ok(LoadPersistedResult {
