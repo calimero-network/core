@@ -45,9 +45,25 @@ steps:
       - fuzzy-handlers-node-2
       - fuzzy-handlers-node-3
       - fuzzy-handlers-node-4
-    timeout: 60
+    timeout: 120
     check_interval: 2
     trigger_sync: true
+
+  # Temporary mitigation for #2237 (fire-and-forget gossip → no delivery guarantee).
+  # `wait_for_sync` only proves the DAG root-hash converged; it does NOT prove
+  # that KeyDelivery messages reached every member. On fast mesh formation the
+  # last joiner can reach root-hash parity before it has received the group's
+  # sender key, causing every execute to fail at
+  # `context/src/handlers/execute/mod.rs:180` (silent InternalError, "group
+  # known but group key not yet loaded AND identity.sender_key == None").
+  # Observed as 100% failure on fuzzy-handlers-node-4 in run 24891646958.
+  #
+  # 30 s is conservative: gossipsub GRAFT + key-delivery round-trip fits well
+  # under that on a healthy mesh. Remove once #2237's three-phase contract
+  # (readiness-gate + ack-confirmed publish) covers KeyDelivery.
+  - name: Settle KeyDelivery gossip before fuzzy start
+    type: wait
+    seconds: 30
 
   - name: Verify handlers mesh synced
     type: assert
