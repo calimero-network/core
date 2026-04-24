@@ -181,11 +181,18 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
 
         let wasm_elapsed_ms = wasm_start.elapsed().as_secs_f64() * 1000.0;
 
+        // Hot path — prefer Display over Debug to skip per-byte formatting.
+        let (returns_ok, returns_len) = match &outcome.returns {
+            Ok(Some(v)) => (true, v.len()),
+            Ok(None) => (true, 0),
+            Err(_) => (false, 0),
+        };
         debug!(
             context_id = %self.context_id,
-            delta_id = ?delta.id,
-            root_hash = ?outcome.root_hash,
-            return_registers = ?outcome.returns,
+            delta_id = %Hash::from(delta.id),
+            root_hash = %outcome.root_hash,
+            returns_ok,
+            returns_len,
             is_merge = is_merge_scenario,
             wasm_ms = format!("{:.2}", wasm_elapsed_ms),
             "WASM sync completed execution"
@@ -641,16 +648,21 @@ impl DeltaStore {
             }
         }
 
-        // Log any deltas that couldn't be loaded
+        // Count + small hex sample rather than full-list Debug —
+        // this warn fires every interval sync during mesh bootstrap.
         if !remaining.is_empty() {
-            // Collect the IDs of deltas that are still unloadable
-            let unloadable_ids: Vec<[u8; 32]> = remaining.keys().copied().collect();
+            let sample = remaining
+                .keys()
+                .take(3)
+                .map(hex::encode)
+                .collect::<Vec<_>>()
+                .join(",");
 
             warn!(
                 context_id = %self.applier.context_id,
                 remaining_count = remaining.len(),
                 loaded_count,
-                unloadable_deltas = ?unloadable_ids,
+                sample_unloadable = %sample,
                 "Some deltas could not be loaded - they will remain pending until parents arrive"
             );
 
