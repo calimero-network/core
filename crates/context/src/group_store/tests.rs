@@ -1464,6 +1464,48 @@ fn register_and_unregister_context() {
     assert!(get_group_for_context(&store, &cid).unwrap().is_none());
 }
 
+/// The `join_group` handler registers every context listed in the
+/// received `JoinBundle` by calling `register_context_in_group`
+/// directly, rather than relying on the bundle's governance-op stream
+/// to apply a `ContextRegistered` op. This test pins the invariant:
+/// after that direct-register call, `get_group_for_context` resolves
+/// the mapping with no governance op applied. Removing the
+/// direct-register call from the handler would leave the mapping empty
+/// and break every downstream caller that resolves namespace from
+/// context (e.g. the unknown-member catch-up on the sync path).
+#[test]
+fn join_bundle_registration_writes_context_group_ref_without_governance_op() {
+    let store = test_store();
+    let gid = test_group_id();
+
+    let context_ids = [
+        ContextId::from([0x11; 32]),
+        ContextId::from([0x22; 32]),
+        ContextId::from([0x33; 32]),
+    ];
+
+    for cid in &context_ids {
+        assert!(
+            get_group_for_context(&store, cid).unwrap().is_none(),
+            "precondition: no mapping before register",
+        );
+    }
+
+    // Same call the join handler makes for each context in the bundle.
+    for cid in &context_ids {
+        register_context_in_group(&store, &gid, cid).unwrap();
+    }
+
+    for cid in &context_ids {
+        assert_eq!(
+            get_group_for_context(&store, cid).unwrap(),
+            Some(gid),
+            "every bundled context must have its group mapping after join \
+             registration, independent of governance-op application",
+        );
+    }
+}
+
 #[test]
 fn re_register_context_cleans_old_group() {
     let store = test_store();

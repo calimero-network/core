@@ -218,6 +218,27 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             }
                         }
 
+                        // Register the context-under-group mapping
+                        // (`ContextGroupRef`) directly from the bundle's
+                        // `context_ids`. The bundle's `governance_ops`
+                        // normally include a `ContextRegistered` op
+                        // that would write the same mapping on apply,
+                        // but the op list can be an incomplete snapshot
+                        // — missing the op leaves the mapping unwritten
+                        // and `get_group_for_context` returns `None`.
+                        // Idempotent with the governance-op path.
+                        for context_id in contexts {
+                            if let Err(err) = group_store::register_context_in_group(
+                                &datastore, &group_id, context_id,
+                            ) {
+                                warn!(
+                                    %context_id,
+                                    ?err,
+                                    "failed to register context under group during join"
+                                );
+                            }
+                        }
+
                         for context_id in contexts {
                             let config = if !context_client.has_context(context_id)? {
                                 let zero_app =
