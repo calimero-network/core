@@ -263,17 +263,20 @@ where
         // permanently lock the storage (no one could write or rotate again).
         // The local API rejects empty rotations; mirror that here so a tampered
         // or buggy peer can't propagate a lockout via merge.
+        //
+        // Important: do NOT call `self.storage.set_shared_domain(...)` here.
+        // That would mark the wrapper element dirty, which on the receiving
+        // node makes `commit_root` emit a per-entity Update action that the
+        // sender never produced — divergent DAG, divergent root hash.
+        // The wrapper's `writers` field on the struct (borsh-serialized) is
+        // the source of truth on the wire; metadata's storage_type only
+        // matters for actions emitted by the originator, not by the merger.
         if !other.writers.is_empty()
             && (other.writers_nonce > self.writers_nonce
                 || (other.writers_nonce == self.writers_nonce && other.writers < self.writers))
         {
             self.writers = other.writers.clone();
             self.writers_nonce = other.writers_nonce;
-            // Mirror the new writer set into the element's metadata so
-            // metadata.storage_type stays in sync with self.writers. Matters
-            // for the per-entity verification path (v2) but kept consistent
-            // here regardless.
-            self.storage.set_shared_domain(self.writers.clone());
         }
 
         // Frozen is monotonic.
