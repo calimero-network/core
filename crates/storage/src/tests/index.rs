@@ -1005,12 +1005,17 @@ mod minimal_struct_layout_compat {
             signature_data: Option<SignatureDataMinimal>,
         },
         Frozen,
+        Shared {
+            writers: std::collections::BTreeSet<[u8; 32]>,
+            signature_data: Option<SignatureDataMinimal>,
+        },
     }
 
     #[derive(BorshDeserialize)]
     struct SignatureDataMinimal {
         _signature: [u8; 64],
         _nonce: u64,
+        _signer: Option<[u8; 32]>,
     }
 
     fn make_index(
@@ -1085,6 +1090,7 @@ mod minimal_struct_layout_compat {
         let sig_data = SignatureData {
             signature: [0xEE; 64],
             nonce: 42,
+            signer: None,
         };
         let index = make_index(
             None,

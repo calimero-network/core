@@ -1519,6 +1519,7 @@ mod storage_type_edge_cases {
                 signature_data: Some(SignatureData {
                     signature: [0; 64],
                     nonce,
+                    signer: None,
                 }),
             },
             crdt_type: None,
@@ -1542,7 +1543,11 @@ mod storage_type_edge_cases {
                 ..
             } = metadata.storage_type
             {
-                *signature_data = Some(SignatureData { signature, nonce });
+                *signature_data = Some(SignatureData {
+                    signature,
+                    nonce,
+                    signer: None,
+                });
             }
         }
 

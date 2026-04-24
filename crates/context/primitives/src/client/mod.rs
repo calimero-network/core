@@ -376,6 +376,10 @@ impl ContextRegistry {
                 signature_data: Option<SignatureDataMinimal>,
             },
             Frozen,
+            Shared {
+                writers: std::collections::BTreeSet<[u8; 32]>, // BTreeSet<PublicKey>
+                signature_data: Option<SignatureDataMinimal>,
+            },
         }
 
         // Must match SignatureData in calimero-storage/src/entities.rs
@@ -383,6 +387,7 @@ impl ContextRegistry {
         struct SignatureDataMinimal {
             _signature: [u8; 64],
             _nonce: u64,
+            _signer: Option<[u8; 32]>, // Option<PublicKey>
         }
 
         let mut reader: &[u8] = bytes;

@@ -234,15 +234,28 @@ impl<S: StorageAdaptor> Interface<S> {
                             ))));
                         }
 
-                        // Identify the signer by trying each authoritative writer.
-                        // O(N) Ed25519 verifies in the writer-set size; expected to be small
-                        // (typically <100). For larger sets, future work could embed a
-                        // signer-pubkey hint in SignatureData for O(1) lookup.
+                        // Identify the signer.
+                        // Fast path: if the action carries a `signer` hint and that
+                        // signer is in the authoritative set, do exactly one verify.
+                        // Slow path (no hint): linear scan over authoritative writers.
                         let payload = action.payload_for_signing();
-                        let signer = authoritative_writers.iter().copied().find(|w| {
-                            crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
-                        });
-                        if signer.is_none() {
+                        let verified = match sig_data.signer {
+                            Some(hint) if authoritative_writers.contains(&hint) => {
+                                crate::env::ed25519_verify(
+                                    &sig_data.signature,
+                                    hint.digest(),
+                                    &payload,
+                                )
+                            }
+                            _ => authoritative_writers.iter().any(|w| {
+                                crate::env::ed25519_verify(
+                                    &sig_data.signature,
+                                    w.digest(),
+                                    &payload,
+                                )
+                            }),
+                        };
+                        if !verified {
                             return Err(StorageError::InvalidSignature);
                         }
                     }
@@ -356,14 +369,30 @@ impl<S: StorageAdaptor> Interface<S> {
                                 }
 
                                 // Identify the signer.
+                                // Fast path: if the action carries a `signer` hint and that
+                                // signer is in the authoritative set, do exactly one verify.
+                                // Slow path (no hint): linear scan (matches Add/Update arm).
                                 let payload = action.payload_for_signing();
-                                let signer = existing_writers.iter().copied().find(|w| {
-                                    crate::env::ed25519_verify(
-                                        &sig_data.signature,
-                                        w.digest(),
-                                        &payload,
-                                    )
-                                });
+                                let signer = match sig_data.signer {
+                                    Some(hint) if existing_writers.contains(&hint) => {
+                                        if crate::env::ed25519_verify(
+                                            &sig_data.signature,
+                                            hint.digest(),
+                                            &payload,
+                                        ) {
+                                            Some(hint)
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    _ => existing_writers.iter().copied().find(|w| {
+                                        crate::env::ed25519_verify(
+                                            &sig_data.signature,
+                                            w.digest(),
+                                            &payload,
+                                        )
+                                    }),
+                                };
                                 if signer.is_none() {
                                     return Err(StorageError::InvalidSignature);
                                 }
@@ -909,29 +938,38 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature_data: Some(SignatureData {
                         signature: [0; 64], // Placeholder, added by signer
                         nonce: deleted_at,
+                        signer: None, // owner is already known for User
                     }),
                 };
             }
         }
 
-        // If this is a local shared action by a writer, set the nonce
-        let shared_to_stamp = if let StorageType::Shared { writers, .. } = &metadata.storage_type {
+        // If this is a local shared action by a writer, set the nonce.
+        // Note: unlike save_raw, here `metadata` was just loaded from the index
+        // a few lines above and represents the current stored state. There's
+        // no separate "claimed" set to union against — the executor must be
+        // in the stored writer set to authorize the delete.
+        let shared_to_stamp = if let StorageType::Shared {
+            writers: stored, ..
+        } = &metadata.storage_type
+        {
             let executor: calimero_primitives::identity::PublicKey =
                 crate::env::executor_id().into();
-            if writers.contains(&executor) {
-                Some(writers.clone())
+            if stored.contains(&executor) {
+                Some((stored.clone(), executor))
             } else {
                 None
             }
         } else {
             None
         };
-        if let Some(writers) = shared_to_stamp {
+        if let Some((writers, signer)) = shared_to_stamp {
             metadata.storage_type = StorageType::Shared {
                 writers,
                 signature_data: Some(SignatureData {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce: deleted_at,
+                    signer: Some(signer), // O(1) verifier lookup
                 }),
             };
         }
@@ -1355,34 +1393,55 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature_data: Some(SignatureData {
                         signature: [0; 64], // Placeholder, added by signer
                         nonce,
+                        signer: None, // owner is already known for User
                     }),
                 };
             }
         }
 
-        // If this is a local shared action by a writer, set the nonce
+        // If this is a local shared action by a writer, set the nonce.
+        //
+        // Stamping authority is the union of (stored writers) and (action's claimed writers):
+        //   - Stored: the writer set as currently persisted in the index.
+        //   - Claimed: the writer set in the action's own metadata.
+        // Stamp if the executor is in EITHER. This is what enables rotate-self-out:
+        // a writer rotating themselves out has executor ∈ stored but ∉ claimed; the
+        // verifier on remote also uses stored, so the signature still verifies there.
         let shared_to_stamp = if let StorageType::Shared {
-            writers,
+            writers: claimed_writers,
             signature_data,
         } = &metadata.storage_type
         {
-            let executor: calimero_primitives::identity::PublicKey =
-                crate::env::executor_id().into();
-            if writers.contains(&executor) && signature_data.is_none() {
-                Some(writers.clone())
+            if signature_data.is_none() {
+                let executor: calimero_primitives::identity::PublicKey =
+                    crate::env::executor_id().into();
+                let stored_has_executor = <Index<S>>::get_metadata(id)?
+                    .as_ref()
+                    .map(|m| match &m.storage_type {
+                        StorageType::Shared { writers, .. } => writers.contains(&executor),
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                let claimed_has_executor = claimed_writers.contains(&executor);
+                if stored_has_executor || claimed_has_executor {
+                    Some((claimed_writers.clone(), executor))
+                } else {
+                    None
+                }
             } else {
                 None
             }
         } else {
             None
         };
-        if let Some(writers) = shared_to_stamp {
+        if let Some((writers, signer)) = shared_to_stamp {
             let nonce = *metadata.updated_at;
             metadata.storage_type = StorageType::Shared {
                 writers,
                 signature_data: Some(SignatureData {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce,
+                    signer: Some(signer), // O(1) verifier lookup
                 }),
             };
         }

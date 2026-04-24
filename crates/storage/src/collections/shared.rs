@@ -38,7 +38,9 @@ pub struct SharedStorage<
     /// Storage element for this entity.
     storage: Element,
     /// Signature attached at the runtime layer; mirrored from the metadata
-    /// after signing.
+    /// after signing. Per spec — currently always `None` in v2; populated
+    /// by the runtime sign path in a future iteration. Kept serialized for
+    /// wire-format stability across v2 → future versions.
     signature_data: Option<SignatureData>,
     #[borsh(skip)]
     _adaptor: core::marker::PhantomData<S>,
@@ -131,6 +133,21 @@ where
         Ok(&self.value)
     }
 
+    /// Returns the signature attached to the most recently applied state of
+    /// this entity, if any. Reads from the wrapper field first; if unset
+    /// (e.g., the wrapper was just deserialized and the field hasn't been
+    /// mirrored in this execution), falls back to the metadata copy populated
+    /// by `find_by_id` from the index.
+    pub fn signature(&self) -> Option<SignatureData> {
+        if self.signature_data.is_some() {
+            return self.signature_data;
+        }
+        match &self.storage.metadata.storage_type {
+            crate::entities::StorageType::Shared { signature_data, .. } => *signature_data,
+            _ => None,
+        }
+    }
+
     /// Replace the value. The executor must be in the current writer set.
     ///
     /// Returns the previous value. Note: on the first call, returns
@@ -156,6 +173,12 @@ where
         let old = mem::replace(&mut self.value, value);
         self.writers_nonce = next_nonce;
         self.storage.update();
+        // (v2 attempted to emit a per-entity Update action here so the
+        // merge-time verifier on remote peers would run. Disabled: it
+        // breaks cross-node sync because the wrapper also propagates inline
+        // via root-state borsh, and the dual-write path causes a WASM trap
+        // during `__calimero_sync_next`. Per-entity verification will become
+        // live as part of the DAG-causal epic #2233 with a proper design.)
         Ok(Some(old))
     }
 
@@ -191,6 +214,13 @@ where
         self.writers = new_writers.clone();
         self.writers_nonce = next_nonce;
         self.storage.set_shared_domain(new_writers);
+        // (v2 attempted to emit a per-entity Update action here so the
+        // merge-time verifier on remote peers would run against the rotation.
+        // Disabled: the wrapper also propagates inline via root-state borsh,
+        // and the dual-write path makes the receiver compute a different root
+        // hash from the sender — every rotation produces a permanent
+        // divergence. Per-entity live verification will become safe once the
+        // DAG-causal epic #2233 lands and we can drop the root-state path.)
         Ok(())
     }
 }
@@ -233,17 +263,20 @@ where
         // permanently lock the storage (no one could write or rotate again).
         // The local API rejects empty rotations; mirror that here so a tampered
         // or buggy peer can't propagate a lockout via merge.
+        //
+        // Important: do NOT call `self.storage.set_shared_domain(...)` here.
+        // That would mark the wrapper element dirty, which on the receiving
+        // node makes `commit_root` emit a per-entity Update action that the
+        // sender never produced — divergent DAG, divergent root hash.
+        // The wrapper's `writers` field on the struct (borsh-serialized) is
+        // the source of truth on the wire; metadata's storage_type only
+        // matters for actions emitted by the originator, not by the merger.
         if !other.writers.is_empty()
             && (other.writers_nonce > self.writers_nonce
                 || (other.writers_nonce == self.writers_nonce && other.writers < self.writers))
         {
             self.writers = other.writers.clone();
             self.writers_nonce = other.writers_nonce;
-            // Mirror the new writer set into the element's metadata so
-            // metadata.storage_type stays in sync with self.writers. Matters
-            // for the per-entity verification path (v2) but kept consistent
-            // here regardless.
-            self.storage.set_shared_domain(self.writers.clone());
         }
 
         // Frozen is monotonic.
