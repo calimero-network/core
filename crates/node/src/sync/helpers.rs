@@ -66,9 +66,10 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     // verifier requires signed actions to have signature_data; reconstructing
     // it here is impossible (we don't hold the original signer's key). Signed
     // entities propagate via their per-entity signed actions through the DAG
-    // sync path instead. Without this skip, EntityPush fails with
-    // "Cannot change StorageType" (default Public vs stored Shared) or
-    // "Remote Shared action must be signed".
+    // sync path. Without this skip, EntityPush fails with "Cannot change
+    // StorageType" (default Public vs stored Shared) or "Remote Shared action
+    // must be signed". Defensive against any signed entity that may end up in
+    // the EntityPush stream.
     if let Some(existing) = existing_index.as_ref() {
         match existing.metadata.storage_type {
             calimero_storage::entities::StorageType::User { .. }

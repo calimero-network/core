@@ -175,14 +175,12 @@ where
         let old = mem::replace(&mut self.value, value);
         self.writers_nonce = next_nonce;
         self.storage.update();
-        // Emit a per-entity Update action so the merge-time verifier on remote
-        // peers actually runs. Guarded: only fires when the wrapper is registered
-        // as its own entity (top-level `#[app::state]` field via
-        // `new_with_field_name` + macro reassign). Nested or test-only usage
-        // propagates via the enclosing container's borsh instead.
-        if matches!(<Index<S>>::get_parent_id(self.id()), Ok(Some(_))) {
-            let _ = <Interface<S>>::save(self).map_err(StoreError::StorageError)?;
-        }
+        // (v2 attempted to emit a per-entity Update action here so the
+        // merge-time verifier on remote peers would run. Disabled: it
+        // breaks cross-node sync because the wrapper also propagates inline
+        // via root-state borsh, and the dual-write path causes a WASM trap
+        // during `__calimero_sync_next`. Per-entity verification will become
+        // live as part of the DAG-causal epic #2233 with a proper design.)
         Ok(Some(old))
     }
 
