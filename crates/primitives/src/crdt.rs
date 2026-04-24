@@ -114,6 +114,13 @@ pub enum CrdtType {
     /// Merge: First-write-wins (subsequent writes are no-ops).
     FrozenStorage,
 
+    /// Shared Storage.
+    ///
+    /// Group-writable storage with a mutable writer set.
+    /// Any key in the stored writer set can modify; rotation is signed by a current writer.
+    /// Merge: Latest update per writer based on nonce/timestamp.
+    SharedStorage,
+
     /// Custom CRDT with app-defined merge.
     ///
     /// For types annotated with `#[derive(CrdtState)]` that define custom merge logic.
@@ -194,7 +201,10 @@ impl CrdtType {
     /// Returns `true` if this type requires special storage handling.
     #[must_use]
     pub const fn is_special_storage(&self) -> bool {
-        matches!(self, Self::UserStorage | Self::FrozenStorage)
+        matches!(
+            self,
+            Self::UserStorage | Self::FrozenStorage | Self::SharedStorage
+        )
     }
 }
 
@@ -254,6 +264,7 @@ mod tests {
     fn test_is_special_storage() {
         assert!(CrdtType::UserStorage.is_special_storage());
         assert!(CrdtType::FrozenStorage.is_special_storage());
+        assert!(CrdtType::SharedStorage.is_special_storage());
         assert!(!CrdtType::lww_register("u64").is_special_storage());
         assert!(!CrdtType::GCounter.is_special_storage());
     }
@@ -271,6 +282,7 @@ mod tests {
             CrdtType::vector("u64"),
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,
+            CrdtType::SharedStorage,
             CrdtType::Custom("my_type".to_string()),
         ];
 
@@ -295,6 +307,7 @@ mod tests {
             CrdtType::vector("u64"),
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,
+            CrdtType::SharedStorage,
             CrdtType::Custom("my_type".to_string()),
         ];
 

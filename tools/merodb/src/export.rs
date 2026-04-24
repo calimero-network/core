@@ -1388,6 +1388,53 @@ fn try_manual_entity_index_decode(
                             }
                         }
                         2 => StorageType::Frozen,
+                        3 => {
+                            // Shared { writers: BTreeSet<PublicKey>, signature_data: Option<SignatureData> }
+                            // Borsh wire format: [u32 set_len][N * 32 bytes for keys][1 byte sig_opt][optional 72 bytes sig]
+                            if bytes.len() < manual_offset + 4 {
+                                eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].Shared.writers length");
+                                break;
+                            }
+                            let set_len_bytes: [u8; 4] = bytes[manual_offset..manual_offset + 4]
+                                .try_into()
+                                .expect("4 bytes");
+                            let set_len = u32::from_le_bytes(set_len_bytes) as usize;
+                            manual_offset += 4;
+
+                            if bytes.len() < manual_offset + set_len * 32 {
+                                eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].Shared.writers entries");
+                                break;
+                            }
+                            let mut writers = Vec::with_capacity(set_len);
+                            for _ in 0..set_len {
+                                let mut key_bytes = [0u8; 32];
+                                key_bytes
+                                    .copy_from_slice(&bytes[manual_offset..manual_offset + 32]);
+                                writers.push(Id { bytes: key_bytes });
+                                manual_offset += 32;
+                            }
+
+                            if bytes.len() <= manual_offset {
+                                eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].Shared.signature_data");
+                                break;
+                            }
+                            let signature_data = if bytes[manual_offset] == 1 {
+                                manual_offset += 1;
+                                if bytes.len() < manual_offset + 72 {
+                                    eprintln!("[try_manual_entity_index_decode] Not enough bytes for ChildInfo[{i}].Shared.signature_data");
+                                    break;
+                                }
+                                manual_offset += 72;
+                                None
+                            } else {
+                                manual_offset += 1;
+                                None
+                            };
+                            StorageType::Shared {
+                                writers,
+                                signature_data,
+                            }
+                        }
                         _ => {
                             eprintln!("[try_manual_entity_index_decode] Invalid StorageType variant: {variant} for ChildInfo[{i}]");
                             break;
@@ -1562,6 +1609,12 @@ enum StorageType {
         signature_data: Option<SignatureData>,
     },
     Frozen,
+    Shared {
+        // Vec preserves Borsh wire format (BTreeSet serializes as length-prefixed
+        // sorted entries) without requiring Ord on the local Id type.
+        writers: Vec<Id>,
+        signature_data: Option<SignatureData>,
+    },
 }
 
 #[derive(borsh::BorshDeserialize, Clone)]

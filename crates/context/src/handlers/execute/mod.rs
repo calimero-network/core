@@ -1095,7 +1095,7 @@ async fn internal_execute(
                     actions_count = actions.len(),
                     "Received several actions. Verify if there any user actions..."
                 );
-                sign_user_actions(&mut actions, identity_private_key)
+                sign_authorized_actions(&mut actions, identity_private_key)
                     .wrap_err("Failed to sign user actions")?;
 
                 // Re-serialize the *signed* actions into a new artifact
@@ -1328,14 +1328,16 @@ fn substitute_aliases_in_payload(
     Ok(result)
 }
 
-/// Helper function to sign user actions
-/// Iterates over actions and signs any that are local, user-owned, and unsigned.
-fn sign_user_actions(
+/// Helper function to sign authorized actions (User and Shared storage).
+/// Iterates over actions and signs any that are local and unsigned.
+fn sign_authorized_actions(
     actions: &mut [Action],
     identity_private_key: &PrivateKey,
 ) -> eyre::Result<()> {
-    // Sign the actions
-    info!(actions_count = actions.len(), "Signing user actions...");
+    info!(
+        actions_count = actions.len(),
+        "Signing authorized actions..."
+    );
     for action in actions.iter_mut() {
         let action_id = action.id();
         let payload_for_signing = action.payload_for_signing();
@@ -1396,6 +1398,38 @@ fn sign_user_actions(
                     signature = ?sig_data.signature,
                     signature_len = sig_data.signature.len(),
                     "Signed user action"
+                );
+            }
+        }
+
+        if let StorageType::Shared {
+            writers,
+            signature_data: Some(sig_data),
+            ..
+        } = &mut metadata.storage_type
+        {
+            let executor_pk = identity_private_key.public_key();
+            debug!(
+                action_id = ?action_id,
+                writer_count = writers.len(),
+                executor = %executor_pk,
+                nonce = %nonce,
+                "Received shared action from the outcome"
+            );
+
+            // Sign if executor is in the writer set and the placeholder is still present.
+            if writers.contains(&executor_pk) && sig_data.signature == [0; 64] {
+                sig_data.nonce = nonce;
+                let signature = identity_private_key.sign(&payload_for_signing)?;
+                sig_data.signature = signature.to_bytes();
+
+                debug!(
+                    action_id = ?action_id,
+                    executor = %executor_pk,
+                    nonce = %nonce,
+                    payload_for_signing = ?payload_for_signing,
+                    ed25519_signature = ?signature,
+                    "Signed shared action"
                 );
             }
         }

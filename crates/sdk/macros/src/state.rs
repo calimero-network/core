@@ -353,7 +353,8 @@ fn generate_mergeable_impl(
                 || type_str.contains("ReplicatedGrowableArray")
                 || type_str.contains("LwwRegister")
                 || type_str.contains("UserStorage")
-                || type_str.contains("FrozenStorage");
+                || type_str.contains("FrozenStorage")
+                || type_str.contains("SharedStorage");
 
             if !is_crdt {
                 // Skip non-CRDT fields
@@ -487,6 +488,7 @@ fn generate_assign_deterministic_ids_impl(
             || type_str.contains("ReplicatedGrowableArray")
             || type_str.contains("UserStorage")
             || type_str.contains("FrozenStorage")
+            || type_str.contains("SharedStorage")
     }
 
     // Generate reassign calls for each collection field

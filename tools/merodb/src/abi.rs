@@ -207,6 +207,13 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::UnorderedMap),
                                     inner_type: None,
                                 },
+                                CrdtType::SharedStorage => TypeRef::Collection {
+                                    // SharedStorage is single-slot; no rich shape inferable
+                                    // here without the inner type. Default to a record.
+                                    collection: CollectionType::Record { fields: Vec::new() },
+                                    crdt_type: None,
+                                    inner_type: None,
+                                },
                                 CrdtType::Custom(_) => {
                                     // Custom type - can't infer without schema
                                     TypeRef::Collection {
