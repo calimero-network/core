@@ -8,6 +8,7 @@ use std::ptr;
 use super::{Collection, ROOT_ID};
 use crate::address::Id;
 use crate::delta::{push_comparison, StorageDelta};
+use crate::index::DeferredAncestorScope;
 use crate::integration::Comparison;
 use crate::interface::{Action, Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
@@ -131,6 +132,16 @@ where
             StorageDelta::Actions(actions) => {
                 let mut root_snapshot: Option<(Vec<u8>, crate::entities::Metadata)> = None;
 
+                // #2238: defer ancestor-hash recomputation until the end of
+                // the action loop. Many deltas in a single merge often touch
+                // the same parent; without batching, each `add_child_to`
+                // walks from that parent to the root redoing the same O(K)
+                // hash work. The scope dedupes starting ids and flushes via
+                // `finish()?` after the loop so storage errors during flush
+                // propagate back to the caller (an error here means the
+                // merkle tree is left inconsistent).
+                let defer_scope = DeferredAncestorScope::<S>::new();
+
                 for action in actions {
                     match &action {
                         Action::Add {
@@ -215,6 +226,11 @@ where
                         }
                     };
                 }
+
+                // Flush deferred ancestor walks. Errors here indicate a
+                // partially-propagated merkle tree and must surface to the
+                // caller rather than being silently logged by Drop.
+                defer_scope.finish()?;
 
                 if let Some((payload, metadata)) = root_snapshot {
                     if <Interface<S>>::save_raw(Id::root(), payload, metadata)?.is_some() {

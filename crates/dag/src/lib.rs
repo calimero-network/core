@@ -190,6 +190,41 @@ pub struct PendingStats {
     pub total_missing_parents: usize,
 }
 
+/// Detailed outcome of [`DagStore::add_delta_with_outcome`].
+///
+/// The bool-returning [`DagStore::add_delta`] collapses `Pending` and
+/// `Duplicate` into `Ok(false)`. Callers that need to distinguish the two —
+/// e.g. to avoid triggering a network backfill on a duplicate gossip op —
+/// should use the `_with_outcome` variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddDeltaOutcome {
+    /// The delta was applied immediately (all parents present).
+    Applied,
+    /// The delta was stored as pending (at least one parent missing).
+    Pending,
+    /// The delta was already present in the DAG; no work performed.
+    Duplicate,
+}
+
+impl AddDeltaOutcome {
+    /// `true` when the outcome is [`AddDeltaOutcome::Applied`].
+    pub fn is_applied(&self) -> bool {
+        matches!(self, Self::Applied)
+    }
+
+    /// `true` when the outcome is [`AddDeltaOutcome::Pending`] — i.e. the
+    /// delta was accepted but is waiting for missing parents. This is the
+    /// only outcome that warrants proactive backfill.
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending)
+    }
+
+    /// `true` when the outcome is [`AddDeltaOutcome::Duplicate`].
+    pub fn is_duplicate(&self) -> bool {
+        matches!(self, Self::Duplicate)
+    }
+}
+
 /// DAG-based delta store
 ///
 /// Manages causal deltas in a DAG structure, applying them in topological order.
@@ -320,17 +355,39 @@ impl<T: Clone> DagStore<T> {
         Ok(applied_count)
     }
 
-    /// Add a delta to the DAG
+    /// Add a delta to the DAG.
     ///
+    /// Bool-returning compatibility wrapper over [`Self::add_delta_with_outcome`].
     /// Returns:
     /// - `Ok(true)` if applied immediately
-    /// - `Ok(false)` if pending (waiting for parents)
-    /// - `Err(DagError)` if delta already exists or application fails
+    /// - `Ok(false)` if pending *or* a duplicate
+    ///
+    /// Callers that need to distinguish pending from duplicate (e.g. to avoid
+    /// triggering a network backfill on a duplicate gossip op) should use
+    /// [`Self::add_delta_with_outcome`] instead.
     pub async fn add_delta(
         &mut self,
         delta: CausalDelta<T>,
         applier: &impl DeltaApplier<T>,
     ) -> Result<bool, DagError> {
+        Ok(matches!(
+            self.add_delta_with_outcome(delta, applier).await?,
+            AddDeltaOutcome::Applied
+        ))
+    }
+
+    /// Add a delta to the DAG and return the detailed outcome.
+    ///
+    /// Differentiates the three success states that `add_delta` collapses into
+    /// a bool:
+    /// - `AddDeltaOutcome::Applied`   — applied immediately
+    /// - `AddDeltaOutcome::Pending`   — stored pending, waiting for parents
+    /// - `AddDeltaOutcome::Duplicate` — already present in the DAG
+    pub async fn add_delta_with_outcome(
+        &mut self,
+        delta: CausalDelta<T>,
+        applier: &impl DeltaApplier<T>,
+    ) -> Result<AddDeltaOutcome, DagError> {
         let delta_id = delta.id;
 
         // Check if delta already exists
@@ -344,8 +401,7 @@ impl<T: Clone> DagStore<T> {
                     "Received real delta for existing checkpoint - skipping (state already present via snapshot)"
                 );
             }
-            // Skip duplicate
-            return Ok(false);
+            return Ok(AddDeltaOutcome::Duplicate);
         }
 
         // Store delta in memory
@@ -354,11 +410,11 @@ impl<T: Clone> DagStore<T> {
         // Check if we can apply immediately
         if self.can_apply(&delta) {
             self.apply_delta(delta, applier).await?;
-            Ok(true)
+            Ok(AddDeltaOutcome::Applied)
         } else {
             // Missing parents - store as pending
             self.pending.insert(delta_id, PendingDelta::new(delta));
-            Ok(false)
+            Ok(AddDeltaOutcome::Pending)
         }
     }
 

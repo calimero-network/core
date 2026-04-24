@@ -106,6 +106,29 @@ pub async fn handler(
         Ok(()) => {
             let group_id = calimero_context_config::types::ContextGroupId::from(group_id);
 
+            // Store the creator's signing key for the new subgroup. Without
+            // this, any subsequent group-scoped op that needs to sign a
+            // local governance message (delete_context -> ContextDetached,
+            // add_group_members -> MemberAdded, etc.) fails with
+            // "signing key not found for requester in group '...'".
+            //
+            // The direct create_group handler already stores the signing
+            // key at crates/context/src/handlers/create_group.rs:85-94;
+            // this keeps subgroups created via create_group_in_namespace in
+            // sync with that invariant.
+            if let Err(err) = calimero_context::group_store::store_group_signing_key(
+                &state.store,
+                &group_id,
+                &signer_pk,
+                &sk_bytes,
+            ) {
+                warn!(
+                    group_id=%hex::encode(group_id.to_bytes()),
+                    ?err,
+                    "Group created but failed to store admin signing key"
+                );
+            }
+
             // Generate a group key for the subgroup so that encrypted
             // group-scoped governance ops (MemberAdded, ContextRegistered)
             // can be published and later decrypted by members.

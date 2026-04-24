@@ -47,7 +47,16 @@ impl Key {
 /// Base trait for all storage backends. Provides fundamental CRUD operations
 /// without requiring iteration support.
 ///
-pub trait StorageAdaptor {
+/// # `'static` supertrait bound
+///
+/// Implementors must be `'static` so that `TypeId::of::<Self>()` works — it
+/// keys the per-adaptor thread-local state used by
+/// `DeferredAncestorScope` (#2238). In practice every implementor is a
+/// unit/const struct (`MainStorage`, `MockedStorage<N>`), so this is
+/// satisfied trivially; the explicit bound just removes the need for
+/// `+ 'static` at every use site of `Index<S>` / `Interface<S>` /
+/// `Collection<T, S>` across the crate.
+pub trait StorageAdaptor: 'static {
     /// Reads data from persistent storage.
     fn storage_read(key: Key) -> Option<Vec<u8>>;
 

@@ -223,6 +223,7 @@ jobs:
         id: kv-test
         run: |
           chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
+          mkdir -p fuzzy-test-logs/kv-store/docker-logs
           cd workflows/fuzzy-tests/kv-store
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
@@ -250,8 +251,37 @@ jobs:
             UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
             VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
           fi
+
+          # Stream docker logs live to disk so we keep them even when
+          # `merobox bootstrap run` tears containers down on exit — a
+          # post-run `docker logs` loop loses everything because the
+          # containers are already gone. Mirrors the pattern we settled
+          # on in e2e-rust-apps.yml (see merobox#207, #2179).
+          LOGDIR="$GITHUB_WORKSPACE/fuzzy-test-logs/kv-store/docker-logs"
+          WATCHER_STATE_DIR="$(mktemp -d)"
+          (
+            while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
+              # Label filter matches merobox-started containers; exclude
+              # short-lived `*-init` containers (setup-only, torn down
+              # quickly and not useful for diagnosing steady-state).
+              for c in $(docker ps --filter "label=calimero.node=true" \
+                                   --format "{{.Names}}" 2>/dev/null \
+                         | grep -v -- '-init$' || true); do
+                mark="$WATCHER_STATE_DIR/${c}"
+                if [ ! -f "$mark" ]; then
+                  touch "$mark"
+                  echo "[log-watcher] following $c"
+                  docker logs -f --timestamps "$c" \
+                    > "$LOGDIR/${c}.log" 2>&1 &
+                fi
+              done
+              sleep 1
+            done
+          ) &
+          WATCHER_PID=$!
+
           set +e
-          set -o pipefail 
+          set -o pipefail
           merobox bootstrap run \
               fuzzy-test.yml \
               --image "$IMAGE" \
@@ -260,6 +290,14 @@ jobs:
 
           exit_code=$?
           set +o pipefail
+
+          # Signal the watcher to stop and let the `docker logs -f`
+          # followers flush their final output before we move on.
+          touch "$WATCHER_STATE_DIR/stop"
+          sleep 2
+          kill "$WATCHER_PID" 2>/dev/null || true
+          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
 
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
@@ -439,6 +477,7 @@ jobs:
         id: handlers-test
         run: |
           chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
+          mkdir -p fuzzy-test-logs/kv-store-with-handlers/docker-logs
           cd workflows/fuzzy-tests/kv-store-with-handlers
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
@@ -466,8 +505,31 @@ jobs:
             UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
             VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
           fi
+
+          # Live docker-logs watcher — see the kv-store job for the
+          # rationale (merobox tears containers down on exit).
+          LOGDIR="$GITHUB_WORKSPACE/fuzzy-test-logs/kv-store-with-handlers/docker-logs"
+          WATCHER_STATE_DIR="$(mktemp -d)"
+          (
+            while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
+              for c in $(docker ps --filter "label=calimero.node=true" \
+                                   --format "{{.Names}}" 2>/dev/null \
+                         | grep -v -- '-init$' || true); do
+                mark="$WATCHER_STATE_DIR/${c}"
+                if [ ! -f "$mark" ]; then
+                  touch "$mark"
+                  echo "[log-watcher] following $c"
+                  docker logs -f --timestamps "$c" \
+                    > "$LOGDIR/${c}.log" 2>&1 &
+                fi
+              done
+              sleep 1
+            done
+          ) &
+          WATCHER_PID=$!
+
           set +e
-          set -o pipefail 
+          set -o pipefail
           merobox bootstrap run \
               fuzzy-test.yml \
               --image "$IMAGE" \
@@ -476,6 +538,12 @@ jobs:
 
           exit_code=$?
           set +o pipefail
+
+          touch "$WATCHER_STATE_DIR/stop"
+          sleep 2
+          kill "$WATCHER_PID" 2>/dev/null || true
+          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
 
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT

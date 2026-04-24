@@ -425,7 +425,7 @@ impl FileSystem {
     }
 
     fn path(&self, id: BlobId) -> Utf8PathBuf {
-        self.root.join(id.as_str())
+        self.root.join(id.to_string())
     }
 
     /// Get the path for a blob stored in a package/version directory
@@ -438,7 +438,7 @@ impl FileSystem {
             .join(package)
             .join(version)
             .join("blobs")
-            .join(id.as_str())
+            .join(id.to_string())
     }
 
     /// Get the package directory path

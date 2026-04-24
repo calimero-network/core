@@ -39,7 +39,7 @@ pub trait UrlFragment: ScopedAlias + AliasKind {
 
     fn create(self) -> Self::Value;
 
-    fn scoped(scope: Option<&Self::Scope>) -> Option<&str>;
+    fn scoped(scope: Option<&Self::Scope>) -> Option<String>;
 }
 
 impl UrlFragment for ContextId {
@@ -49,7 +49,7 @@ impl UrlFragment for ContextId {
         CreateContextIdAlias { context_id: self }
     }
 
-    fn scoped(_: Option<&Self::Scope>) -> Option<&str> {
+    fn scoped(_: Option<&Self::Scope>) -> Option<String> {
         None
     }
 }
@@ -61,8 +61,8 @@ impl UrlFragment for PublicKey {
         CreateContextIdentityAlias { identity: self }
     }
 
-    fn scoped(context: Option<&Self::Scope>) -> Option<&str> {
-        context.map(ContextId::as_str)
+    fn scoped(context: Option<&Self::Scope>) -> Option<String> {
+        context.map(ContextId::to_string)
     }
 }
 
@@ -75,7 +75,7 @@ impl UrlFragment for ApplicationId {
         }
     }
 
-    fn scoped(_: Option<&Self::Scope>) -> Option<&str> {
+    fn scoped(_: Option<&Self::Scope>) -> Option<String> {
         None
     }
 }

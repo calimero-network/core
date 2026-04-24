@@ -74,6 +74,26 @@ pub struct ContextManager {
     /// so we cannot blindly reuse compiled blobs across apps.
     applications: BTreeMap<ApplicationId, Application>,
 
+    /// In-memory cache of compiled WASM modules, keyed by
+    /// `(application_id, service_name)`. Populated on the first
+    /// `get_module` call for a given key; reused on every subsequent
+    /// execute. Cheap to clone (Arc-backed inside wasmer).
+    ///
+    /// Invalidated alongside `applications` on application updates or
+    /// migrations, and replaced when `get_module` has to recompile.
+    /// Without this, every execute request paid ~5% CPU to re-run
+    /// `Engine::from_precompiled` (observed in #2238 follow-up
+    /// profiling).
+    ///
+    /// Size-capped to `MAX_CACHED_MODULES` (see
+    /// `handlers/execute/mod.rs`). Compiled modules are 2–10× larger
+    /// than the source WASM, so we cap to prevent unbounded growth on
+    /// multi-tenant nodes that rotate through many applications.
+    /// Eviction is currently first-entry-by-key-order rather than
+    /// true LRU — good enough as a safety valve; upgrade tracked
+    /// alongside the `contexts` LRU TODO above.
+    modules: BTreeMap<(ApplicationId, Option<String>), calimero_runtime::Module>,
+
     /// Prometheus metrics for monitoring the health and performance of the manager,
     /// such as number of active contexts, message processing latency, etc.
     metrics: Option<Metrics>,
@@ -110,6 +130,7 @@ impl ContextManager {
 
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
+            modules: BTreeMap::new(),
 
             metrics: prometheus_registry.map(Metrics::new),
             active_propagators: HashSet::new(),

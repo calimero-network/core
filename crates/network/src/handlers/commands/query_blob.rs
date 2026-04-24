@@ -26,7 +26,7 @@ impl Handler<QueryBlob> for NetworkManager {
 
             debug!(
                 blob_id = %request.blob_id,
-                context_id = context_id.as_str(),
+                context_id = %context_id,
                 key_len = key.as_ref().len(),
                 "QUERY: searching for blob"
             );

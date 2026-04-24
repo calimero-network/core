@@ -15,6 +15,7 @@ pub mod create_group;
 pub mod create_group_invitation;
 pub mod delete_context;
 pub mod delete_group;
+pub mod delete_namespace;
 pub mod detach_context_from_group;
 pub mod execute;
 pub mod get_group_for_context;
@@ -29,6 +30,7 @@ pub mod list_group_contexts;
 pub mod list_group_members;
 pub mod list_namespaces;
 pub mod list_namespaces_for_application;
+pub mod namespace_pending_op_count;
 pub mod remove_group_members;
 pub mod retry_group_upgrade;
 pub mod set_default_capabilities;
@@ -78,6 +80,9 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::DeleteGroup { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
+            ContextMessage::DeleteNamespace { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
             ContextMessage::AddGroupMembers { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
@@ -85,6 +90,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::ApplySignedNamespaceOp { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::NamespacePendingOpCount { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RemoveGroupMembers { request, outcome } => {
