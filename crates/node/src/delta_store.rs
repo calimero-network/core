@@ -826,34 +826,49 @@ impl DeltaStore {
         }
 
         // Register topology without re-applying.
-        let mut dag = self.dag.write().await;
-        let added = dag.restore_applied_delta(delta);
+        let heads = {
+            let mut dag = self.dag.write().await;
+            let added = dag.restore_applied_delta(delta);
 
-        // `restore_applied_delta` does not call `apply_pending` —
-        // mirror the explicit nudge documented in `get_missing_parents`
-        // (#2238 review). Without this, a sync-received child that
-        // went pending because its locally-created parent wasn't yet
-        // visible in the DAG stays stranded in the pending queue
-        // until restart or an unrelated remote-delta application
-        // happens to trigger `apply_pending`.
-        if added {
-            match dag.try_process_pending(&*self.applier).await {
-                Ok(0) => {}
-                Ok(n) => {
-                    tracing::info!(
-                        context_id = %self.applier.context_id,
-                        cascaded_count = n,
-                        "Cascaded pending deltas after registering local applied delta"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        ?e,
-                        context_id = %self.applier.context_id,
-                        "Failed to process pending deltas after local applied delta"
-                    );
+            // `restore_applied_delta` does not call `apply_pending` —
+            // mirror the explicit nudge documented in `get_missing_parents`
+            // (#2238 review). Without this, a sync-received child that
+            // went pending because its locally-created parent wasn't yet
+            // visible in the DAG stays stranded in the pending queue
+            // until restart or an unrelated remote-delta application
+            // happens to trigger `apply_pending`.
+            if added {
+                match dag.try_process_pending(&*self.applier).await {
+                    Ok(0) => {}
+                    Ok(n) => {
+                        tracing::info!(
+                            context_id = %self.applier.context_id,
+                            cascaded_count = n,
+                            "Cascaded pending deltas after registering local applied delta"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            ?e,
+                            context_id = %self.applier.context_id,
+                            "Failed to process pending deltas after local applied delta"
+                        );
+                    }
                 }
             }
+            dag.get_heads()
+        };
+
+        // Prune head_root_hashes down to the actual current DAG heads.
+        // `add_delta_internal` does the same after its own add (line ~1048);
+        // without this mirror, ancestors accumulate here over the lifetime
+        // of a DeltaStore and head-state lookups by peers can return a
+        // non-head's root hash. Safe to run unconditionally: retain is a
+        // no-op when the map is already a subset of `heads`.
+        {
+            let heads_set: HashSet<[u8; 32]> = heads.iter().copied().collect();
+            let mut head_hashes = self.head_root_hashes.write().await;
+            head_hashes.retain(|id, _| heads_set.contains(id));
         }
         Ok(())
     }
@@ -1714,6 +1729,15 @@ impl DeltaStore {
     pub async fn get_heads(&self) -> Vec<[u8; 32]> {
         let dag = self.dag.read().await;
         dag.get_heads()
+    }
+
+    /// Snapshot of the `head_root_hashes` map keys. Test-only accessor for
+    /// asserting that the `add_local_applied_delta` path prunes non-head
+    /// ancestors, matching `add_delta_internal`'s `retain(...)` at the end.
+    #[cfg(test)]
+    pub async fn head_root_hash_ids(&self) -> Vec<[u8; 32]> {
+        let head_hashes = self.head_root_hashes.read().await;
+        head_hashes.keys().copied().collect()
     }
 
     /// Cleanup stale pending deltas (timeout eviction)
