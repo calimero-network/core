@@ -1,0 +1,139 @@
+description: KV-Store shared storage workflow test
+name: KV-store shared storage workflow
+
+# Configuration
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
+
+nodes:
+  chain_id: testnet-1
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: new-calimero-node
+
+steps:
+  # Step 1: Install on node 1. Installer becomes the sole initial writer.
+  - name: Install Application on Node 1
+    type: install_application
+    node: new-calimero-node-1
+    path: "./res/kv_store_with_shared_storage.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # Step 2: Create mesh with node 2.
+  - name: Create Mesh
+    type: create_mesh
+    context_node: new-calimero-node-1
+    application_id: '{{app_id}}'
+    path: "./res/kv_store_with_shared_storage.wasm"
+    nodes:
+      - new-calimero-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      member_public_key: memberPublicKey
+
+  # ============================================
+  # Happy path: writer sets and reads
+  # ============================================
+
+  - name: Node 1 (initial writer) sets value
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: set_shared
+    args:
+      value: "initial-from-node1"
+
+  - name: Node 1 reads its own write
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: get_shared
+    outputs:
+      node1_read: result
+
+  - name: Assert node 1 read matches
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_read}}, {"output": "initial-from-node1"})'
+
+  - name: Wait for sync to node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads the synced value
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: get_shared
+    outputs:
+      node2_read: result
+
+  - name: Assert node 2 read matches
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_read}}, {"output": "initial-from-node1"})'
+
+  # ============================================
+  # Rotation: node 1 hands the writer set to node 2
+  # ============================================
+
+  - name: Node 1 rotates writer set to node 2
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: rotate_writers
+    args:
+      new_writers:
+        - "{{public_key_new-calimero-node-2}}"
+
+  - name: Wait for rotation to sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  # ============================================
+  # Post-rotation: node 2 (new writer) writes, node 1 reads
+  # ============================================
+
+  - name: Node 2 (new writer) sets value after rotation
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: set_shared
+    args:
+      value: "post-rotation-from-node2"
+
+  - name: Wait for post-rotation value to sync
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 1 reads the post-rotation value
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: get_shared
+    outputs:
+      node1_read_after_rotation: result
+
+  - name: Assert node 1 sees post-rotation value
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_read_after_rotation}}, {"output": "post-rotation-from-node2"})'

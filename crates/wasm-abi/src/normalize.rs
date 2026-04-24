@@ -410,6 +410,23 @@ fn normalize_generic_type(
                 inner_type: None,
             })
         }
+        // SharedStorage<T> is a single-slot wrapper: the writer set lives in
+        // metadata and is not part of the user-facing data shape, so it
+        // normalizes to its inner T.
+        "SharedStorage" => {
+            if args.args.is_empty() {
+                return Err(NormalizeError::TypePathError(
+                    "invalid SharedStorage type - expected 1 type argument".to_owned(),
+                ));
+            }
+            let arg = &args.args[0];
+            let GenericArgument::Type(ty) = arg else {
+                return Err(NormalizeError::TypePathError(
+                    "invalid storage argument".to_owned(),
+                ));
+            };
+            normalize_type(ty, wasm32, resolver)
+        }
         _ => Err(NormalizeError::TypePathError(format!(
             "unknown generic type: {ident}"
         ))),
