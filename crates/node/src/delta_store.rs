@@ -130,9 +130,9 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         if is_merge_scenario {
             info!(
                 context_id = %self.context_id,
-                delta_id = ?delta.id,
-                current_root_hash = ?Hash::from(current_root_hash),
-                delta_expected_hash = ?Hash::from(delta.expected_root_hash),
+                delta_id = %Hash::from(delta.id),
+                current_root_hash = %Hash::from(current_root_hash),
+                delta_expected_hash = %Hash::from(delta.expected_root_hash),
                 "Concurrent branch detected - applying with CRDT merge semantics"
             );
         }
@@ -181,15 +181,27 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
 
         let wasm_elapsed_ms = wasm_start.elapsed().as_secs_f64() * 1000.0;
 
-        debug!(
-            context_id = %self.context_id,
-            delta_id = ?delta.id,
-            root_hash = ?outcome.root_hash,
-            return_registers = ?outcome.returns,
-            is_merge = is_merge_scenario,
-            wasm_ms = format!("{:.2}", wasm_elapsed_ms),
-            "WASM sync completed execution"
-        );
+        // Hot path — prefer Display over Debug to skip per-byte formatting.
+        // Gate the returns_ok/returns_len derivation behind the same
+        // level check the debug! expansion uses internally, matching
+        // the `tracing::enabled!` convention used above at line 143.
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let (returns_ok, returns_len) = match &outcome.returns {
+                Ok(Some(v)) => (true, v.len()),
+                Ok(None) => (true, 0),
+                Err(_) => (false, 0),
+            };
+            debug!(
+                context_id = %self.context_id,
+                delta_id = %Hash::from(delta.id),
+                root_hash = %outcome.root_hash,
+                returns_ok,
+                returns_len,
+                is_merge = is_merge_scenario,
+                wasm_ms = format!("{:.2}", wasm_elapsed_ms),
+                "WASM sync completed execution"
+            );
+        }
 
         if outcome.returns.is_err() {
             return Err(ApplyError::Application(format!(
@@ -212,9 +224,9 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             if is_merge_scenario {
                 info!(
                     context_id = %self.context_id,
-                    delta_id = ?delta.id,
-                    computed_hash = ?computed_hash,
-                    delta_expected_hash = ?Hash::from(delta.expected_root_hash),
+                    delta_id = %Hash::from(delta.id),
+                    computed_hash = %computed_hash,
+                    delta_expected_hash = %Hash::from(delta.expected_root_hash),
                     merge_wasm_ms = format!("{:.2}", wasm_elapsed_ms),
                     "Merge produced new hash (expected - concurrent branches merged)"
                 );
@@ -224,9 +236,9 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
                 // a distributed CRDT system.
                 debug!(
                     context_id = %self.context_id,
-                    delta_id = ?delta.id,
-                    computed_hash = ?computed_hash,
-                    expected_hash = ?Hash::from(delta.expected_root_hash),
+                    delta_id = %Hash::from(delta.id),
+                    computed_hash = %computed_hash,
+                    expected_hash = %Hash::from(delta.expected_root_hash),
                     "Hash mismatch (concurrent state) - CRDT merge ensures consistency"
                 );
             }
@@ -292,9 +304,9 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // Log with unique marker for parsing: DELTA_APPLY_TIMING
         info!(
             context_id = %self.context_id,
-            delta_id = ?delta.id,
+            delta_id = %Hash::from(delta.id),
             action_count = delta.payload.len(),
-            final_root_hash = ?computed_hash,
+            final_root_hash = %computed_hash,
             was_merge = is_merge_scenario,
             wasm_ms = format!("{:.2}", wasm_elapsed_ms),
             total_ms = format!("{:.2}", total_elapsed_ms),
@@ -641,16 +653,23 @@ impl DeltaStore {
             }
         }
 
-        // Log any deltas that couldn't be loaded
+        // Count + small bs58 sample rather than full-list Debug —
+        // this warn fires every interval sync during mesh bootstrap.
+        // Match the bs58 encoding used by delta_id elsewhere so
+        // operators can cross-reference sample IDs against other logs.
         if !remaining.is_empty() {
-            // Collect the IDs of deltas that are still unloadable
-            let unloadable_ids: Vec<[u8; 32]> = remaining.keys().copied().collect();
+            let sample = remaining
+                .keys()
+                .take(3)
+                .map(|id| Hash::from(*id).to_base58())
+                .collect::<Vec<_>>()
+                .join(",");
 
             warn!(
                 context_id = %self.applier.context_id,
                 remaining_count = remaining.len(),
                 loaded_count,
-                unloadable_deltas = ?unloadable_ids,
+                sample_unloadable = %sample,
                 "Some deltas could not be loaded - they will remain pending until parents arrive"
             );
 
