@@ -87,6 +87,9 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                     "Invalidated stale cached application before migration module load"
                 );
             }
+            // Same reason for the compiled-module cache: every service
+            // under this application_id is now potentially stale.
+            self.modules.retain(|(id, _), _| *id != application_id);
 
             // Clone values needed for migration
             let datastore = self.datastore.clone();
@@ -131,6 +134,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                     if act.applications.remove(&application_id).is_some() {
                         debug!(%context_id, %application_id, "Invalidated cached application module after migration");
                     }
+                    act.modules.retain(|(id, _), _| *id != application_id);
 
                     if let Some(cached) = act.contexts.get_mut(&context_id) {
                         debug!(
