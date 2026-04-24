@@ -514,8 +514,36 @@ impl DeltaStore {
 
         let handle = self.applier.context_client.datastore_handle();
 
-        // Step 1: Collect ALL deltas for this context from DB
+        // Step 1: Collect deltas for this context from DB.
+        //
+        // Called on every `perform_interval_sync` (~2s cadence). Two
+        // optimisations matter:
+        //
+        // 1. Scope iteration to *our* context via a prefix scan. Keys
+        //    are stored as `context_id || delta_id`, so seeking to
+        //    `(context_id, 0..)` jumps past other contexts entirely.
+        //    The previous full-column iterator walked every
+        //    `ContextDagDelta` row regardless of owner and filtered by
+        //    calling `key.context_id()` per row — which constructed a
+        //    fresh `ContextId` wrapping a `Hash` each time. Worth ~4%
+        //    of total CPU before the `Hash` base58 cache was made
+        //    lazy (PR #2242), and still a pile of wasted memcpy /
+        //    HashMap work afterward.
+        //
+        // 2. Skip rows the DAG already knows about before decoding
+        //    them. In steady state 99% of persisted deltas were
+        //    applied on a prior call; `dag.is_applied(delta_id)` is a
+        //    HashSet lookup and avoids the borsh decode + Vec clone +
+        //    HashMap insert triple that dominated the per-row cost.
+        //    Only genuinely new rows — locally-written deltas from
+        //    `execute.rs` since the previous scan, or remote deltas
+        //    persisted outside the normal ingress path — pay the
+        //    decode cost.
+        let start_key =
+            calimero_store::key::ContextDagDelta::new(self.applier.context_id, [0u8; 32]);
         let mut iter = handle.iter::<calimero_store::key::ContextDagDelta>()?;
+        let first = iter.seek(start_key).transpose();
+
         let mut all_deltas: HashMap<[u8; 32], CausalDelta<Vec<Action>>> = HashMap::new();
         // Collected in the same pass: records with `applied: true,
         // events: Some(..)` are crash-leftovers whose handlers never
@@ -524,15 +552,32 @@ impl DeltaStore {
         // the DB (#2185 / #2194 review).
         let mut pending_handler_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
-        for entry in iter.entries() {
-            let (key_result, value_result) = entry;
+        for key_result in first.into_iter().chain(iter.keys()) {
             let key = key_result?;
-            let stored_delta = value_result?;
 
-            // Filter by context_id
+            // Sorted by context_id first — once the prefix changes we're
+            // past our context's range and can stop.
             if key.context_id() != self.applier.context_id {
+                break;
+            }
+
+            let delta_id = key.delta_id();
+
+            // Fast path: DAG already has topology for this delta.
+            // Short read lock, no DB value fetch, no borsh decode.
+            let already_in_dag = {
+                let dag = self.dag.read().await;
+                dag.is_applied(&delta_id)
+            };
+            if already_in_dag {
                 continue;
             }
+
+            let Some(stored_delta) = handle.get(&key)? else {
+                // Key existed in iteration but value gone (concurrent
+                // delete). Benign — just skip.
+                continue;
+            };
 
             // Harvest pending handler events before taking ownership of
             // `events` fields we may clone elsewhere.
