@@ -419,6 +419,12 @@ impl<T: Clone> DagStore<T> {
         // Check if we can apply immediately
         if self.can_apply(&delta) {
             self.apply_delta(delta, applier).await?;
+            // Cascade any pending children that this delta unblocked.
+            // Cascading is now done iteratively at the call site rather
+            // than recursively from inside `apply_delta` so the stack
+            // depth stays constant regardless of cascade length. See
+            // `test_cascade_does_not_grow_stack`.
+            self.apply_pending(applier).await?;
             Ok(AddDeltaOutcome::Applied)
         } else {
             // Missing parents - store as pending
@@ -465,8 +471,14 @@ impl<T: Clone> DagStore<T> {
             }
             self.heads.insert(delta.id);
 
-            // Try to apply pending deltas
-            self.apply_pending(applier).await?;
+            // Cascade is intentionally NOT triggered here. Doing so made
+            // `apply_delta` and `apply_pending` mutually recursive: each
+            // cascaded child added another `apply_delta` frame on the
+            // stack, overflowing the (default 2 MB) tokio test thread
+            // stack at ~1000-deep linear chains. Callers
+            // (`add_delta_with_outcome`, `apply_pending`,
+            // `try_process_pending`) drive the cascade iteratively
+            // instead. See `test_cascade_does_not_grow_stack`.
 
             Ok(())
         })
