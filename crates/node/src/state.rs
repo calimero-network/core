@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -76,6 +77,12 @@ pub(crate) struct SyncSession {
     pub last_drop_warning: Option<Instant>,
 }
 
+/// Default staleness cutoff for handler gating. See `crate::handler_gating`
+/// for the full rationale and threshold semantics. 5 s is "tolerates normal
+/// network jitter and brief pending-cascade windows, skips multi-second
+/// catch-up replay."
+pub(crate) const DEFAULT_HANDLER_STALENESS_THRESHOLD: Duration = Duration::from_secs(5);
+
 /// Mutable runtime state
 #[derive(Clone, Debug)]
 pub(crate) struct NodeState {
@@ -89,6 +96,17 @@ pub(crate) struct NodeState {
     pub(crate) node_mode: NodeMode,
     /// Active sync sessions (for delta buffering during snapshot sync).
     pub(crate) sync_sessions: Arc<DashMap<ContextId, SyncSession>>,
+    /// Highest NTP64 HLC value observed per context, across every arrival
+    /// path (pubsub, sync fetch, cascade, buffered replay). Used by the
+    /// handler-gating predicate to detect stale deltas without a wall
+    /// clock. See `crate::handler_gating` for semantics. Raw NTP64 value
+    /// (upper 32 bits = seconds, lower 32 bits = fraction).
+    pub(crate) max_seen_hlc: Arc<DashMap<ContextId, AtomicU64>>,
+    /// Threshold for `is_behind`'s HLC-staleness arm. See module doc on
+    /// `crate::handler_gating` for threshold semantics. `0` is a legal
+    /// (strictest) value, not a sentinel for "disabled"; use
+    /// `Duration::MAX` to disable gating.
+    pub(crate) handler_staleness_threshold: Duration,
 }
 
 impl NodeState {
@@ -113,6 +131,23 @@ impl NodeState {
     }
 
     pub(crate) fn new(accept_mock_tee: bool, node_mode: NodeMode) -> Self {
+        Self::with_handler_staleness_threshold(
+            accept_mock_tee,
+            node_mode,
+            DEFAULT_HANDLER_STALENESS_THRESHOLD,
+        )
+    }
+
+    /// Construct a NodeState with an explicit handler-staleness threshold.
+    /// Use this when tuning for strict ("only live pubsub receipts",
+    /// threshold = 0) or loose ("effectively disabled", threshold =
+    /// `Duration::MAX`) semantics. See `crate::handler_gating` for
+    /// guidance.
+    pub(crate) fn with_handler_staleness_threshold(
+        accept_mock_tee: bool,
+        node_mode: NodeMode,
+        handler_staleness_threshold: Duration,
+    ) -> Self {
         Self {
             blob_cache: Arc::new(DashMap::new()),
             delta_stores: Arc::new(DashMap::new()),
@@ -120,7 +155,100 @@ impl NodeState {
             accept_mock_tee,
             node_mode,
             sync_sessions: Arc::new(DashMap::new()),
+            max_seen_hlc: Arc::new(DashMap::new()),
+            handler_staleness_threshold,
         }
+    }
+
+    /// Record that we have observed `hlc_ntp64` for `context_id`. Pushes
+    /// `max_seen_hlc[context_id]` forward if the value is newer than the
+    /// current max. Cheap, lock-free in the common case (CAS loop on a
+    /// single `AtomicU64`). Call at every delta-arrival entry point; see
+    /// `crate::handler_gating` for the full list.
+    ///
+    /// Takes a raw NTP64 `u64` so both `HybridTimestamp` callers (via
+    /// `hlc.get_time().as_u64()`) and `BufferedDelta.hlc` callers (already
+    /// `u64`) work without a conversion dance.
+    pub(crate) fn observe_hlc(&self, context_id: &ContextId, hlc_ntp64: u64) {
+        let raw = hlc_ntp64;
+        // Fast path: entry exists — bump via CAS loop on the AtomicU64.
+        if let Some(entry) = self.max_seen_hlc.get(context_id) {
+            let atomic = entry.value();
+            let mut current = atomic.load(Ordering::Relaxed);
+            while raw > current {
+                match atomic.compare_exchange_weak(
+                    current,
+                    raw,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => return,
+                    Err(observed) => current = observed,
+                }
+            }
+            return;
+        }
+        // Slow path: first observation for this context. Insert-or-bump
+        // in a single entry() call to handle races against another
+        // observer creating the entry.
+        self.max_seen_hlc
+            .entry(*context_id)
+            .and_modify(|atomic| {
+                let mut current = atomic.load(Ordering::Relaxed);
+                while raw > current {
+                    match atomic.compare_exchange_weak(
+                        current,
+                        raw,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(observed) => current = observed,
+                    }
+                }
+            })
+            .or_insert_with(|| AtomicU64::new(raw));
+    }
+
+    /// Highest NTP64 HLC value observed for this context, or `None` if we
+    /// have never seen a delta for it. Exposed primarily for tests and
+    /// diagnostics; production call sites should use `is_behind`.
+    pub(crate) fn max_seen_hlc(&self, context_id: &ContextId) -> Option<u64> {
+        self.max_seen_hlc
+            .get(context_id)
+            .map(|entry| entry.value().load(Ordering::Relaxed))
+    }
+
+    /// Handler-gating predicate. Returns `true` when handlers should be
+    /// *skipped* for a delta with the given HLC, per the two-arm rule in
+    /// `crate::handler_gating`:
+    ///
+    /// 1. A sync session is active for `context_id` (explicit catch-up).
+    /// 2. `max_seen_hlc(context_id) - delta.hlc` exceeds
+    ///    `handler_staleness_threshold`.
+    ///
+    /// Call at every site that would dispatch application event handlers:
+    /// direct-apply, cascaded-events execution, buffered-replay,
+    /// restart-replay. When the predicate returns `true`, the caller is
+    /// expected to clear the DB `events` blob via
+    /// `DeltaStore::mark_events_executed` to prevent re-evaluation on
+    /// restart.
+    pub(crate) fn is_behind(&self, context_id: &ContextId, delta_hlc_ntp64: u64) -> bool {
+        if self.should_buffer_delta(context_id) {
+            return true;
+        }
+        let Some(max_raw) = self.max_seen_hlc(context_id) else {
+            // No observation yet — can't be behind what we haven't seen.
+            return false;
+        };
+        // NTP64 units: upper 32 bits = seconds, lower 32 bits = fraction.
+        // Compute gap in milliseconds at full precision:
+        // `gap_ms = (gap_ntp64 * 1000) >> 32`. Bounded: gap_ntp64 ≤ 2^64,
+        // but in practice ≤ ~2^32 (years of wall-clock), so
+        // `gap_ntp64 * 1000` cannot overflow u64.
+        let gap_ntp64 = max_raw.saturating_sub(delta_hlc_ntp64);
+        let gap_ms = gap_ntp64.saturating_mul(1000) >> 32;
+        gap_ms > self.handler_staleness_threshold.as_millis() as u64
     }
 
     /// Check if we should buffer a delta (during snapshot sync).
@@ -393,5 +521,124 @@ impl NodeState {
                 "Blob cache eviction completed"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod handler_gating_tests {
+    use super::*;
+    use crate::run::NodeMode;
+
+    /// Build an NTP64 `u64` from a whole-seconds value. NTP64 lays seconds
+    /// in the upper 32 bits; the lower 32 bits (fraction) stay zero.
+    fn ntp64_from_secs(seconds: u64) -> u64 {
+        seconds << 32
+    }
+
+    fn ctx(byte: u8) -> ContextId {
+        ContextId::from([byte; 32])
+    }
+
+    #[test]
+    fn no_observation_yet_is_not_behind() {
+        let state = NodeState::new(false, NodeMode::Standard);
+        // Never called observe_hlc → max is `None` → predicate must
+        // return false regardless of delta HLC. Guards the "isolated
+        // node" case in the doc: no peers observed, can't be behind.
+        assert!(!state.is_behind(&ctx(0), ntp64_from_secs(100)));
+    }
+
+    #[test]
+    fn delta_at_frontier_is_not_behind() {
+        let state = NodeState::new(false, NodeMode::Standard);
+        let c = ctx(1);
+        let t = ntp64_from_secs(100);
+        state.observe_hlc(&c, t);
+        // Gap = 0 → not behind. This is the direct-apply path invariant:
+        // observing immediately before the check guarantees `false`.
+        assert!(!state.is_behind(&c, t));
+    }
+
+    #[test]
+    fn stale_delta_beyond_threshold_is_behind() {
+        let state = NodeState::new(false, NodeMode::Standard);
+        let c = ctx(2);
+        state.observe_hlc(&c, ntp64_from_secs(1_000));
+        // Delta is 100 s behind the frontier; default threshold is 5 s.
+        assert!(state.is_behind(&c, ntp64_from_secs(900)));
+    }
+
+    #[test]
+    fn stale_delta_within_threshold_is_not_behind() {
+        let state = NodeState::new(false, NodeMode::Standard);
+        let c = ctx(3);
+        state.observe_hlc(&c, ntp64_from_secs(1_000));
+        // 3 s gap, 5 s threshold → tolerated.
+        assert!(!state.is_behind(&c, ntp64_from_secs(997)));
+    }
+
+    #[test]
+    fn zero_threshold_fires_only_at_ms_precision_frontier() {
+        let state = NodeState::with_handler_staleness_threshold(
+            false,
+            NodeMode::Standard,
+            Duration::from_millis(0),
+        );
+        let c = ctx(4);
+        state.observe_hlc(&c, ntp64_from_secs(100));
+        // At the frontier: not behind.
+        assert!(!state.is_behind(&c, ntp64_from_secs(100)));
+        // Sub-millisecond gap: rounds to 0 ms, `0 > 0` is false, not
+        // behind. Threshold `0` is "any ms-scale gap skips", not "bit-exact
+        // frontier" — the predicate operates at millisecond precision.
+        let sub_ms_gap = ntp64_from_secs(100) - 1; // 1 NTP64 unit ≈ 233 ps
+        assert!(!state.is_behind(&c, sub_ms_gap));
+        // 2 ms behind: clearly skipped at threshold 0.
+        let two_ms_gap = ntp64_from_secs(100) - ((2_u64 << 32) / 1000 + 1); // 2+ ms worth
+        assert!(state.is_behind(&c, two_ms_gap));
+    }
+
+    #[test]
+    fn max_threshold_only_gated_by_sync_session() {
+        let state =
+            NodeState::with_handler_staleness_threshold(false, NodeMode::Standard, Duration::MAX);
+        let c = ctx(5);
+        state.observe_hlc(&c, ntp64_from_secs(1_000_000));
+        // Even a massive gap doesn't trigger the HLC arm with MAX threshold.
+        assert!(!state.is_behind(&c, ntp64_from_secs(1)));
+    }
+
+    #[test]
+    fn active_sync_session_always_flags_behind() {
+        let state =
+            NodeState::with_handler_staleness_threshold(false, NodeMode::Standard, Duration::MAX);
+        let c = ctx(6);
+        state.observe_hlc(&c, ntp64_from_secs(100));
+        // Threshold arm disabled (MAX), but sync-session arm is the only
+        // signal that gates: start a session and the predicate flips.
+        state.start_sync_session(c, 0);
+        assert!(state.is_behind(&c, ntp64_from_secs(100)));
+    }
+
+    #[test]
+    fn observe_hlc_never_goes_backwards() {
+        let state = NodeState::new(false, NodeMode::Standard);
+        let c = ctx(7);
+        state.observe_hlc(&c, ntp64_from_secs(1_000));
+        state.observe_hlc(&c, ntp64_from_secs(500)); // older, should be ignored
+        assert_eq!(state.max_seen_hlc(&c), Some(ntp64_from_secs(1_000)));
+        state.observe_hlc(&c, ntp64_from_secs(2_000)); // newer, bumps
+        assert_eq!(state.max_seen_hlc(&c), Some(ntp64_from_secs(2_000)));
+    }
+
+    #[test]
+    fn per_context_isolation() {
+        let state = NodeState::new(false, NodeMode::Standard);
+        let a = ctx(0xAA);
+        let b = ctx(0xBB);
+        state.observe_hlc(&a, ntp64_from_secs(1_000));
+        // Context B has no observations; its predicate is independent.
+        assert!(!state.is_behind(&b, ntp64_from_secs(0)));
+        assert_eq!(state.max_seen_hlc(&b), None);
     }
 }

@@ -180,8 +180,14 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // solely to catch up on execute-side writes.
     {
         let delta_stores = node_state.delta_stores_handle();
+        let node_state_for_drainer = node_state.clone();
         let _drainer = tokio::spawn(async move {
             while let Some(msg) = local_delta_rx.recv().await {
+                // Push the local delta's HLC into the max-seen tracker so
+                // handler-gating checks for any subsequent or cascaded
+                // deltas see the current frontier. See `crate::handler_gating`.
+                node_state_for_drainer.observe_hlc(&msg.context_id, msg.hlc.get_time().as_u64());
+
                 // Clone the DeltaStore value out of the DashMap and
                 // drop the Ref before awaiting — holding a shard lock
                 // across `.await` would block other context shards.
