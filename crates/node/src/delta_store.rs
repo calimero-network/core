@@ -827,7 +827,34 @@ impl DeltaStore {
 
         // Register topology without re-applying.
         let mut dag = self.dag.write().await;
-        let _ = dag.restore_applied_delta(delta);
+        let added = dag.restore_applied_delta(delta);
+
+        // `restore_applied_delta` does not call `apply_pending` —
+        // mirror the explicit nudge documented in `get_missing_parents`
+        // (#2238 review). Without this, a sync-received child that
+        // went pending because its locally-created parent wasn't yet
+        // visible in the DAG stays stranded in the pending queue
+        // until restart or an unrelated remote-delta application
+        // happens to trigger `apply_pending`.
+        if added {
+            match dag.try_process_pending(&*self.applier).await {
+                Ok(0) => {}
+                Ok(n) => {
+                    tracing::info!(
+                        context_id = %self.applier.context_id,
+                        cascaded_count = n,
+                        "Cascaded pending deltas after registering local applied delta"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        ?e,
+                        context_id = %self.applier.context_id,
+                        "Failed to process pending deltas after local applied delta"
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
