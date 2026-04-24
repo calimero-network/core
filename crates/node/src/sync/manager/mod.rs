@@ -1696,7 +1696,7 @@ impl SyncManager {
                 // This ensures we don't miss sibling heads that might be the missing parents
 
                 // Get or create DeltaStore for this context (do this once before the loop)
-                let delta_store_ref = {
+                let (delta_store_ref, is_new) = {
                     let mut is_new = false;
                     let delta_store = self
                         .node_state
@@ -1712,19 +1712,28 @@ impl SyncManager {
                             )
                         });
 
-                    delta_store.clone()
+                    (delta_store.clone(), is_new)
                 };
 
-                // NOTE: the previous revision called
-                // `delta_store_ref.load_persisted_deltas().await` here
-                // to pick up execute.rs's DB-only writes. That rescan
-                // ran on every sync and was the dominant hot-path CPU
-                // cost. execute.rs now notifies the node-side drainer
-                // directly, so the in-memory DAG stays current without
-                // a full-column scan. `load_persisted_deltas` still
-                // runs on startup (via state_delta init) as the
-                // crash-recovery path.
-                let _ = &delta_store_ref;
+                // The previous revision ran `load_persisted_deltas`
+                // unconditionally here on every sync — the rescan
+                // dominated the hot path. execute.rs now notifies the
+                // node-side drainer directly, so warm stores don't
+                // need rehydration. But when *this* path is the first
+                // to create the DeltaStore for a context (fresh boot,
+                // sync arrives before the first local execute), the
+                // in-memory DAG is empty and we still need a one-time
+                // load so `get_delta` can serve peers and missing-
+                // parent queries have the right picture.
+                if is_new {
+                    if let Err(e) = delta_store_ref.load_persisted_deltas().await {
+                        warn!(
+                            ?e,
+                            %context_id,
+                            "Failed to hydrate freshly-created DeltaStore from DB"
+                        );
+                    }
+                }
 
                 // Phase 1: Request and add ALL DAG heads
                 for head_id in &dag_heads {
@@ -2065,20 +2074,37 @@ impl SyncManager {
         // 2. Deltas that are ancestors of checkpoints (their state is included in snapshot)
         let mut covered_delta_ids: HashSet<[u8; 32]> = HashSet::new();
 
-        // Get the delta store to check for existing checkpoints
-        let delta_store = self
-            .node_state
-            .delta_stores
-            .entry(context_id)
-            .or_insert_with(|| {
-                crate::delta_store::DeltaStore::new(
-                    [0u8; 32],
-                    self.context_client.clone(),
-                    context_id,
-                    our_identity,
-                )
-            })
-            .clone();
+        // Get the delta store to check for existing checkpoints.
+        // If this path is the first to create the DeltaStore, hydrate
+        // from DB once — incremental updates via execute.rs handle the
+        // warm-store case, but a fresh store here would otherwise miss
+        // everything on disk and we'd later fail to match checkpoints.
+        let (delta_store, is_new) = {
+            let mut is_new = false;
+            let entry = self
+                .node_state
+                .delta_stores
+                .entry(context_id)
+                .or_insert_with(|| {
+                    is_new = true;
+                    crate::delta_store::DeltaStore::new(
+                        [0u8; 32],
+                        self.context_client.clone(),
+                        context_id,
+                        our_identity,
+                    )
+                });
+            (entry.clone(), is_new)
+        };
+        if is_new {
+            if let Err(e) = delta_store.load_persisted_deltas().await {
+                warn!(
+                    ?e,
+                    %context_id,
+                    "Failed to hydrate freshly-created DeltaStore from DB"
+                );
+            }
+        }
 
         // Build parent -> children map from buffered deltas
         let mut parent_to_children: HashMap<[u8; 32], Vec<[u8; 32]>> = HashMap::new();
@@ -2192,24 +2218,35 @@ impl SyncManager {
         our_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
-        let delta_store = self
-            .node_state
-            .delta_stores
-            .entry(context_id)
-            .or_insert_with(|| {
-                crate::delta_store::DeltaStore::new(
-                    [0u8; 32],
-                    self.context_client.clone(),
-                    context_id,
-                    our_identity,
-                )
-            })
-            .clone();
-
-        // Previously: `delta_store.load_persisted_deltas().await` —
-        // dropped, the DAG is kept current incrementally via
-        // `NodeClient::notify_local_applied_delta`.
-        let _ = &delta_store;
+        // Fresh DeltaStore created here must be hydrated once from DB;
+        // warm stores are kept current by execute-side incremental
+        // notifications.
+        let (delta_store, is_new) = {
+            let mut is_new = false;
+            let entry = self
+                .node_state
+                .delta_stores
+                .entry(context_id)
+                .or_insert_with(|| {
+                    is_new = true;
+                    crate::delta_store::DeltaStore::new(
+                        [0u8; 32],
+                        self.context_client.clone(),
+                        context_id,
+                        our_identity,
+                    )
+                });
+            (entry.clone(), is_new)
+        };
+        if is_new {
+            if let Err(e) = delta_store.load_persisted_deltas().await {
+                warn!(
+                    ?e,
+                    %context_id,
+                    "Failed to hydrate freshly-created DeltaStore from DB"
+                );
+            }
+        }
 
         let request_msg = StreamMessage::Init {
             context_id,

@@ -651,18 +651,27 @@ impl DeltaStore {
             drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
         }
 
-        if all_deltas.is_empty() {
-            return Ok(LoadPersistedResult {
-                loaded_count: 0,
-                pending_handler_events,
-            });
+        // Historically this function bailed early when `all_deltas`
+        // was empty, skipping the `try_process_pending` call below.
+        // That was harmless when every in-context DB row was always
+        // collected (pre-#2244), because any non-empty context made
+        // `all_deltas` non-empty. After #2244 introduced the
+        // skip-if-already-in-DAG path, `all_deltas` is empty whenever
+        // a warmed-up node scans a context whose rows are all already
+        // in the DAG — i.e. the steady state. The early return then
+        // permanently prevents pending deltas (received via gossip
+        // before their parents were available) from being retried,
+        // which strands late joiners whose seed deltas arrived before
+        // their parents (root-hash stuck at the wrong value until
+        // restart). Keep going; step 2's while-loop is a no-op on
+        // empty input.
+        if !all_deltas.is_empty() {
+            debug!(
+                context_id = %self.applier.context_id,
+                total_deltas = all_deltas.len(),
+                "Collected persisted deltas, starting topological restore"
+            );
         }
-
-        debug!(
-            context_id = %self.applier.context_id,
-            total_deltas = all_deltas.len(),
-            "Collected persisted deltas, starting topological restore"
-        );
 
         // Step 2: Restore deltas in topological order (parents before children)
         // We keep trying to restore deltas whose parents are already in the DAG
