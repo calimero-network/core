@@ -2390,6 +2390,11 @@ pub async fn join_namespace(
     invitation: SignedGroupOpenInvitation,
     deadline: Duration,
 ) -> Result<JoinStarted, JoinError> {
+    // Anchor the clock at function entry so `JoinStarted.elapsed_ms` and
+    // `JoinError::NoReadyPeers.waited_ms` capture the FULL join latency
+    // (mark_membership_pending + subscribe + publish probe + beacon wait),
+    // not just the step-4 beacon wait. Mirrors spec §8.1.
+    let start = Instant::now();
     let ns_id = invitation.namespace_id();
 
     // step 1: mark pending-membership locally (existing behavior)
@@ -2414,8 +2419,7 @@ pub async fn join_namespace(
         .await
         .map_err(|e| JoinError::Transport(e.to_string()))?;
 
-    // step 4: collect first fresh beacon
-    let start = Instant::now();
+    // step 4: collect first fresh beacon (start anchored above for full-latency timing)
     let beacon = self.readiness_cache
         .await_first_fresh_beacon(
             &self.readiness_notify,

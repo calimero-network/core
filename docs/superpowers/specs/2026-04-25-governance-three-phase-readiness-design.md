@@ -192,10 +192,16 @@ async fn assert_transport_ready(
 // NOTE: `publish_and_await_ack` does NOT apply the op locally. Local apply
 // happens at the caller (e.g. `sign_apply_and_publish_namespace_op`) AFTER
 // `assert_transport_ready` (Phase 1) passes. See §6.1 Contract requirement.
+//
+// Dependencies are passed narrowly (rather than via a fat `&ContextClient`):
+// `ack_router` for subscription, `store` + `namespace_id` for `verify_ack`'s
+// member-set lookup. This matches the implementation plan Task 3.4 and lets
+// unit tests inject a stub `AckRouter` without standing up a full client.
 async fn publish_and_await_ack(
     store: &Store,
     net: &NetworkClient,
-    ctx: &ContextClient,
+    ack_router: &AckRouter,
+    namespace_id: [u8; 32],
     topic: TopicHash,
     op: SignedNamespaceOp,
     op_timeout: Duration,
@@ -204,7 +210,7 @@ async fn publish_and_await_ack(
 ) -> Result<DeliveryReport, GovernanceBroadcastError> {
     let start = Instant::now();
     let op_hash = hash_scoped(topic, &op);
-    let mut collector = ctx.ack_router.subscribe(op_hash);
+    let mut collector = ack_router.subscribe(op_hash);
     net.publish(topic.clone(), NamespaceTopicMsg::Op(op)).await?;
 
     let deadline = start + op_timeout;
@@ -229,7 +235,7 @@ async fn publish_and_await_ack(
         //                  burn CPU until the outer deadline. Must terminate.
         match timeout(remaining, collector.recv()).await {
             Ok(Ok(ack)) => {
-                if !verify_ack(ctx, &ack, op_hash) { continue; }
+                if !verify_ack(store, namespace_id, op_hash, &ack) { continue; }
                 if let Some(req) = &required_signers {
                     if !req.contains(&ack.signer_pubkey) { continue; }
                 }
@@ -325,14 +331,16 @@ enum DemotionReason { PendingOps(usize), NoRecentPeers, PeerSawHigherThroughput 
 
 ```
 Bootstrapping ──► PeerValidatedReady:
-    heard_fresh_beacon AND local.head ∈ max_heads AND local.pending == 0
+    heard_fresh_beacon AND local.pending == 0
+    [DEFERRED head-match] AND local.head ∈ max_heads
 
 Bootstrapping ──► LocallyReady:
     BOOT_GRACE_elapsed AND local.applied_through > 0 AND local.pending == 0
     AND no peer beacons with received_at ≥ now - TTL_HEARTBEAT exist in cache
 
 LocallyReady ──► PeerValidatedReady:
-    heard_fresh_beacon AND local.head ∈ max_heads
+    heard_fresh_beacon
+    [DEFERRED head-match] AND local.head ∈ max_heads
 
 LocallyReady ──► CatchingUp:
     heard_fresh_beacon with applied_through > local.applied_through + GRACE
@@ -353,7 +361,13 @@ CatchingUp ──► LocallyReady / PeerValidatedReady:
 
 `GRACE` (default 2) on applied_through avoids thrashing when our own in-flight ops have not yet been heard back by peers.
 
-**Note on the `[DEFERRED]` transition.** The "no fresh beacons for 2·TTL_HEARTBEAT → Degraded { reason: NoRecentPeers }" path is intentionally **not** implemented in the initial plan's `evaluate_readiness`. Today the evaluator is stateless w.r.t. peer-beacon recency: it only knows whether peers are *currently* fresh-within-TTL via `PeerSummary { heard_recent_beacon }`. Implementing the deferred transition requires extending `PeerSummary` (and `ReadinessCache::peer_summary`) to surface "age of most recent fresh beacon" so the evaluator can compare against `2 · TTL_HEARTBEAT`. The behavioural cost of deferring this is bounded — between `TTL_HEARTBEAT` and `2 · TTL_HEARTBEAT` of beacon silence, a previously *Ready node sits in `LocallyReady` (still serves, but with the weaker self-promoted claim); operators detect the condition via `governance_publish_outcome{outcome="no_ack"}` rates rather than via the FSM tier. Track the follow-up under #2237's implementation issue.
+**Note on the `[DEFERRED]` annotations.** Two strictness guarantees are intentionally **not** implemented in the initial plan's `evaluate_readiness`:
+
+1. **`*Ready → Degraded` on no fresh beacons for `2 · TTL_HEARTBEAT`.** The evaluator is currently stateless w.r.t. beacon recency — it only knows whether peers are *currently* fresh-within-TTL via `PeerSummary { heard_recent_beacon }`. Implementing the transition requires extending `PeerSummary` (and `ReadinessCache::peer_summary`) to surface "age of most recent fresh beacon" so the evaluator can compare against `2 · TTL_HEARTBEAT`. While deferred, between `TTL_HEARTBEAT` and `2 · TTL_HEARTBEAT` of silence a previously `*Ready` node sits in `LocallyReady` (still serves, weaker claim) instead of `Degraded`. Operators detect the condition via `governance_publish_outcome{outcome="no_ack"}` rates.
+
+2. **`local.head ∈ max_heads` (head-match) on transitions into `PeerValidatedReady`.** The plan's evaluator currently checks only `local_applied_through + GRACE >= peer.applied_through`. That's a *weaker* claim — a node on a divergent fork with the same `applied_through` would also satisfy the check, even though its `head` differs. To enforce the strict spec semantics, `PeerSummary` would need an `observed_heads: HashSet<[u8; 32]>` field populated from cache entries, and `evaluate_readiness` would compare `state.local_head ∈ observed_heads` before promoting. Behavioural impact while deferred: in a pathological fork scenario, a node on a minority fork could briefly self-report `PeerValidatedReady` before the next ack-driven correction lands. Acks (Phase 2) and the next governance publish surface the divergence; the FSM tier is a hint, not a safety boundary, so the weakened check does not violate any data-correctness invariant.
+
+Track both follow-ups under #2237's implementation issue.
 
 ### 7.3 Why split into tiers — the cold-start deadlock
 
@@ -415,6 +429,12 @@ Blocks through steps 1-4:
 
 ```rust
 async fn join_namespace(invitation: SignedGroupOpenInvitation, deadline: Duration) -> Result<JoinStarted> {
+    // Start the clock at function entry so `JoinStarted.elapsed_ms` and
+    // `JoinError::NoReadyPeers.waited_ms` capture the *full* join latency,
+    // including the cost of mark_membership_pending + subscribe + publish probe.
+    // Anchoring at step 4 would understate latency vs. the §16.2 acceptance
+    // criterion ("join + 20 ops + read ≤ 2s on 2-node localhost").
+    let start = Instant::now();
     let ns_id = invitation.namespace_id();
     let topic = ns_topic(ns_id);
 
@@ -424,7 +444,6 @@ async fn join_namespace(invitation: SignedGroupOpenInvitation, deadline: Duratio
     let probe = ReadinessProbe { namespace_id: ns_id, nonce: random_nonce() };  // step 3
     net.publish(topic.clone(), NamespaceTopicMsg::ReadinessProbe(probe)).await?;
 
-    let start = Instant::now();                                 // step 4
     let beacon = readiness_cache.await_first_fresh_beacon(ns_id, deadline).await
         .ok_or(JoinError::NoReadyPeers { waited_ms: start.elapsed().as_millis() as u64 })?;
 
