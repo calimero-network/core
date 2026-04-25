@@ -860,7 +860,20 @@ pub async fn publish_and_await_ack_namespace(
                     });
                 }
             }
-            Ok(Err(_lagged_or_closed)) => continue,
+            // `Lagged(n)`: we missed n messages but the channel is still open — keep
+            // polling, more acks may arrive (n is bounded by broadcast capacity = 64).
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            // `Closed`: all senders dropped (typically because a concurrent flow
+            // released the AckRouter entry as the last subscriber). `recv()` will
+            // return immediately on every subsequent call — `continue` would burn
+            // CPU in a tight loop until the deadline. Treat as a terminal NoAck.
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                ack_router.release(op_hash, rx);
+                return Err(GovernanceBroadcastError::NoAckReceived {
+                    waited_ms: start.elapsed().as_millis() as u64,
+                    op_hash,
+                });
+            }
             Err(_elapsed) => {
                 ack_router.release(op_hash, rx);
                 return Err(GovernanceBroadcastError::NoAckReceived {
@@ -1556,6 +1569,10 @@ use calimero_context_client::local_governance::SignedReadinessBeacon;
 pub struct CacheEntry {
     pub head: [u8; 32],
     pub applied_through: u64,
+    /// Peer-signed millis-since-epoch from the beacon itself. Authoritative
+    /// per-peer ordering signal — used by `insert` to drop stale beacons that
+    /// gossipsub may re-deliver out-of-order on mesh churn / peer reconnect.
+    pub ts_millis: u64,
     pub received_at: Instant,
     pub strong: bool,
 }
@@ -1566,13 +1583,30 @@ pub struct ReadinessCache {
 }
 
 impl ReadinessCache {
+    /// Insert iff the incoming beacon is *newer* than any cached entry from the
+    /// same peer (by `ts_millis`, with `applied_through` as tiebreaker on clock
+    /// equality). Gossipsub does not guarantee delivery order — without this
+    /// filter, an older re-delivered beacon could overwrite a fresher one,
+    /// causing `pick_sync_partner` and `peer_summary` to regress and the FSM to
+    /// spuriously demote `PeerValidatedReady → CatchingUp`.
     pub fn insert(&self, beacon: &SignedReadinessBeacon) {
         let mut g = self.entries.lock().expect("readiness cache lock");
-        g.insert(
-            (beacon.namespace_id, beacon.peer_pubkey),
+        let key = (beacon.namespace_id, beacon.peer_pubkey);
+        if let Some(existing) = g.get(&key) {
+            // Drop the beacon if it's older or equal-clock-but-not-fresher.
+            if beacon.ts_millis < existing.ts_millis
+                || (beacon.ts_millis == existing.ts_millis
+                    && beacon.applied_through <= existing.applied_through)
+            {
+                return;
+            }
+        }
+        let _ = g.insert(
+            key,
             CacheEntry {
                 head: beacon.dag_head,
                 applied_through: beacon.applied_through,
+                ts_millis: beacon.ts_millis,
                 received_at: Instant::now(),
                 strong: beacon.strong,
             },
@@ -1689,6 +1723,57 @@ fn pick_sync_partner_excludes_stale_entries() {
 fn pick_sync_partner_empty_cache_returns_none() {
     let cache = ReadinessCache::default();
     assert!(cache.pick_sync_partner([42u8; 32], Duration::from_secs(60)).is_none());
+}
+
+#[test]
+fn insert_drops_stale_beacon_from_same_peer() {
+    // Regression: gossipsub out-of-order delivery must not stale-overwrite a
+    // fresher entry. The fresher beacon's `applied_through` and `ts_millis`
+    // should remain after the older beacon arrives second.
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let mut fresh = make_beacon(pk, 100, true);
+    fresh.ts_millis = 2000;
+    let mut stale = make_beacon(pk, 50, true);
+    stale.ts_millis = 1000;
+    cache.insert(&fresh);
+    cache.insert(&stale); // arrives second but is older — must be dropped
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert_eq!(
+        s.max_applied_through,
+        Some(100),
+        "stale beacon must not overwrite fresher entry from same peer",
+    );
+}
+
+#[test]
+fn insert_accepts_newer_beacon_from_same_peer() {
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let mut older = make_beacon(pk, 50, true);
+    older.ts_millis = 1000;
+    let mut newer = make_beacon(pk, 100, true);
+    newer.ts_millis = 2000;
+    cache.insert(&older);
+    cache.insert(&newer); // arrives second and IS newer — must replace
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert_eq!(s.max_applied_through, Some(100));
+}
+
+#[test]
+fn insert_uses_applied_through_to_break_ts_millis_ties() {
+    // Same wall-clock millis (rare but possible across reboots / clock skew):
+    // the higher applied_through wins.
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let mut a = make_beacon(pk, 10, true);
+    a.ts_millis = 1000;
+    let mut b = make_beacon(pk, 20, true);
+    b.ts_millis = 1000;
+    cache.insert(&a);
+    cache.insert(&b);
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert_eq!(s.max_applied_through, Some(20));
 }
 
 #[test]

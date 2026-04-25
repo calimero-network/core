@@ -215,10 +215,12 @@ async fn publish_and_await_ack(
                 waited_ms: start.elapsed().as_millis() as u64,
                 op_hash,
             })?;
-        // `tokio::sync::broadcast::Receiver::recv()` returns `Result<T, RecvError>`,
-        // not `Result<Option<T>, _>` — `RecvError::Lagged(n)` reports a skipped-messages
-        // count and should NOT terminate the loop; only the outer `Err(_elapsed)` from
-        // `timeout` is a true deadline-hit.
+        // `tokio::sync::broadcast::Receiver::recv()` returns `Result<T, RecvError>`.
+        // The two RecvError variants have OPPOSITE semantics:
+        //   - `Lagged(n)`: we missed n messages, channel is still open → continue.
+        //   - `Closed`:    all senders dropped, no more messages will EVER arrive.
+        //                  `recv()` returns synchronously forever; `continue` would
+        //                  burn CPU until the outer deadline. Must terminate.
         match timeout(remaining, collector.recv()).await {
             Ok(Ok(ack)) => {
                 if !verify_ack(ctx, &ack, op_hash) { continue; }
@@ -230,11 +232,13 @@ async fn publish_and_await_ack(
                 }
                 if acked_by.len() >= min_acks { break; }
             }
-            Ok(Err(_lagged_or_closed)) => continue,
-            Err(_elapsed) => return Err(GovernanceBroadcastError::NoAckReceived {
-                waited_ms: start.elapsed().as_millis() as u64,
-                op_hash,
-            }),
+            Ok(Err(RecvError::Lagged(_))) => continue,
+            Ok(Err(RecvError::Closed)) | Err(_elapsed) => return Err(
+                GovernanceBroadcastError::NoAckReceived {
+                    waited_ms: start.elapsed().as_millis() as u64,
+                    op_hash,
+                }
+            ),
         }
     }
     Ok(DeliveryReport { op_hash, acked_by, elapsed_ms: start.elapsed().as_millis() as u64 })
