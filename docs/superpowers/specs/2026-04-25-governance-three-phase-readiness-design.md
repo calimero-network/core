@@ -210,11 +210,17 @@ async fn publish_and_await_ack(
     let deadline = start + op_timeout;
     let mut acked_by: Vec<PublicKey> = Vec::new();
     loop {
-        let remaining = deadline.checked_duration_since(Instant::now())
-            .ok_or_else(|| GovernanceBroadcastError::NoAckReceived {
+        // `saturating_duration_since` returns ZERO past the deadline (no Instant
+        // subtraction panic) and `tokio::time::timeout` resolves immediately as
+        // `Err(_elapsed)` on a zero duration — same control flow as a separate
+        // `if now >= deadline` guard, but expressed in one line.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(GovernanceBroadcastError::NoAckReceived {
                 waited_ms: start.elapsed().as_millis() as u64,
                 op_hash,
-            })?;
+            });
+        }
         // `tokio::sync::broadcast::Receiver::recv()` returns `Result<T, RecvError>`.
         // The two RecvError variants have OPPOSITE semantics:
         //   - `Lagged(n)`: we missed n messages, channel is still open → continue.
@@ -335,7 +341,8 @@ PeerValidatedReady ──► CatchingUp:
     heard_fresh_beacon with applied_through > local.applied_through + GRACE
 
 *Ready ──► Degraded:
-    pending_ops > 0 OR no fresh beacons for 2·TTL_HEARTBEAT
+    pending_ops > 0
+    [DEFERRED] OR no fresh beacons for 2·TTL_HEARTBEAT
 
 Degraded ──► CatchingUp / LocallyReady:
     trigger backfill OR wait for pending to drain
@@ -345,6 +352,8 @@ CatchingUp ──► LocallyReady / PeerValidatedReady:
 ```
 
 `GRACE` (default 2) on applied_through avoids thrashing when our own in-flight ops have not yet been heard back by peers.
+
+**Note on the `[DEFERRED]` transition.** The "no fresh beacons for 2·TTL_HEARTBEAT → Degraded { reason: NoRecentPeers }" path is intentionally **not** implemented in the initial plan's `evaluate_readiness`. Today the evaluator is stateless w.r.t. peer-beacon recency: it only knows whether peers are *currently* fresh-within-TTL via `PeerSummary { heard_recent_beacon }`. Implementing the deferred transition requires extending `PeerSummary` (and `ReadinessCache::peer_summary`) to surface "age of most recent fresh beacon" so the evaluator can compare against `2 · TTL_HEARTBEAT`. The behavioural cost of deferring this is bounded — between `TTL_HEARTBEAT` and `2 · TTL_HEARTBEAT` of beacon silence, a previously *Ready node sits in `LocallyReady` (still serves, but with the weaker self-promoted claim); operators detect the condition via `governance_publish_outcome{outcome="no_ack"}` rates rather than via the FSM tier. Track the follow-up under #2237's implementation issue.
 
 ### 7.3 Why split into tiers — the cold-start deadlock
 
