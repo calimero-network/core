@@ -215,8 +215,12 @@ async fn publish_and_await_ack(
                 waited_ms: start.elapsed().as_millis() as u64,
                 op_hash,
             })?;
+        // `tokio::sync::broadcast::Receiver::recv()` returns `Result<T, RecvError>`,
+        // not `Result<Option<T>, _>` — `RecvError::Lagged(n)` reports a skipped-messages
+        // count and should NOT terminate the loop; only the outer `Err(_elapsed)` from
+        // `timeout` is a true deadline-hit.
         match timeout(remaining, collector.recv()).await {
-            Ok(Some(ack)) => {
+            Ok(Ok(ack)) => {
                 if !verify_ack(ctx, &ack, op_hash) { continue; }
                 if let Some(req) = &required_signers {
                     if !req.contains(&ack.signer_pubkey) { continue; }
@@ -226,7 +230,8 @@ async fn publish_and_await_ack(
                 }
                 if acked_by.len() >= min_acks { break; }
             }
-            _ => return Err(GovernanceBroadcastError::NoAckReceived {
+            Ok(Err(_lagged_or_closed)) => continue,
+            Err(_elapsed) => return Err(GovernanceBroadcastError::NoAckReceived {
                 waited_ms: start.elapsed().as_millis() as u64,
                 op_hash,
             }),
@@ -533,7 +538,7 @@ PR #2252's "request governance catch-up on unknown peer instead of closing" rema
 
 ### 11.1 No peers respond to `ReadinessProbe` — subcase 1 (namespace empty / offline)
 
-A joiner with `applied_through == 0` has no DAG to self-promote from. They must genuinely wait for a peer. `join_namespace` returns `Err(NoReadyPeers)` after the deadline. Handle via `join_namespace_with_retry`. Telemetry: `governance.join.no_ready_peers` counter tagged by namespace_id surfaces dead namespaces to operators.
+A joiner with `applied_through == 0` has no DAG to self-promote from. They must genuinely wait for a peer. `join_namespace` returns `Err(NoReadyPeers)` after the deadline. Handle via `join_namespace_with_retry`. Telemetry: `governance.join.no_ready_peers` counter tagged by `namespace_bucket` (per §15 — 1-byte SHA-256 prefix; full `namespace_id` only in structured logs) surfaces dead namespaces to operators.
 
 ### 11.2 No peers respond to `ReadinessProbe` — subcase 2 (cold fleet startup)
 
@@ -554,6 +559,14 @@ A publisher that is mid-`publish_and_await_ack` when its own FSM transitions to 
 ### 11.6 Probe storm
 
 A pathological client calling `join_namespace` in a tight loop. Each probe triggers at most one out-of-cycle beacon from each `*Ready` peer; beacon emission is rate-limited per peer at `BEACON_INTERVAL / 2` minimum spacing. Probes that arrive faster than that are absorbed — responder has already beaconed recently. Gossipsub peer scoring also applies.
+
+**Sybil amplification edge case.** Because `ReadinessProbe` is unsigned (§5.4 — joiner has no namespace identity at probe time), the per-(peer, namespace) rate limit can in principle be bypassed by an attacker who controls N gossipsub PeerIds (Sybil): each identity gets its own probe-response budget, so the attacker amplifies by ~N. This is bounded by:
+
+1. **Gossipsub connection limits** — libp2p caps inbound connections per peer and the gossipsub mesh has bounded fanout, so beacons leave the responder at a rate dominated by `mesh_n` × `BEACON_INTERVAL/2`, not the attacker's probe rate.
+2. **Per-namespace beacon volume cap** — even with infinite probe sources, each `*Ready` peer emits at most one out-of-cycle beacon per `BEACON_INTERVAL/2` per *requesting* peer per namespace; the steady-state outbound rate per namespace is therefore bounded by the size of the connected peer set.
+3. **Operator monitoring** — emit beacon rates as `readiness_beacons_emitted_total{namespace_bucket, kind}` so a sudden spike vs. baseline triggers an investigation. Sybil amplification is detectable as an outlier in this metric long before it threatens overall throughput.
+
+A global cross-namespace cap (e.g. "max N out-of-cycle beacons/sec total") is **not** added here — it would lose per-namespace fairness during legitimate cold-fleet bursts. Operators who observe abuse can tighten gossipsub peer-scoring thresholds and add per-PeerId connection limits at the libp2p layer, both of which already exist as configuration knobs.
 
 ## 12. Code injection points
 

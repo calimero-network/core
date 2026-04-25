@@ -824,8 +824,13 @@ pub async fn publish_and_await_ack_namespace(
     let mut acked_by: Vec<PublicKey> = Vec::new();
     let deadline = start + op_timeout;
     loop {
-        let now = Instant::now();
-        if now >= deadline {
+        // `saturating_duration_since` returns ZERO when `now >= deadline` (instead of
+        // panicking on `Instant - Instant` underflow), letting `tokio::time::timeout`
+        // immediately resolve as `Err(_elapsed)` below — same control flow as the
+        // earlier explicit `if now >= deadline` check, but symmetric with the spec's
+        // `checked_duration_since` pattern (§6.2) and a tiny bit more defensive.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             // Move `rx` into release so the receiver is dropped before the count check.
             ack_router.release(op_hash, rx);
             return Err(GovernanceBroadcastError::NoAckReceived {
@@ -833,7 +838,6 @@ pub async fn publish_and_await_ack_namespace(
                 op_hash,
             });
         }
-        let remaining = deadline - now;
         match timeout(remaining, rx.recv()).await {
             Ok(Ok(ack)) => {
                 if !verify_ack(store, namespace_id, op_hash, &ack) {
