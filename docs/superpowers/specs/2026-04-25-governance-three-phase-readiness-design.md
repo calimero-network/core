@@ -184,6 +184,7 @@ fn assert_transport_ready(
 - `known_subscribers` is maintained by an extended `handle_subscribed` in `crates/node/src/handlers/network_event/subscriptions.rs` as `HashMap<TopicHash, HashSet<PeerId>>` — bounding the required threshold by "peers we have ever observed subscribing to this topic" avoids demanding `MESH_N_LOW=4` in a 1-peer-namespace.
 - Solo-node case: `known_subscribers = 0` ⟹ `required = 0` ⟹ publish freely. Preserves existing single-node test workflows.
 - On `NamespaceNotReady`, no publish attempt, no side effects. Caller retries.
+- **Contract requirement:** wrappers that combine `sign + apply_signed_op + publish_and_await_ack` (e.g. `sign_apply_and_publish_namespace_op`) MUST run `assert_transport_ready` *before* `apply_signed_op`, not after. Applying first and gating second leaves the op durably committed to the local DAG when the gate rejects, breaking the "no side effects on `NamespaceNotReady`" invariant — and a retry would sign+apply a *different* op (new `op_hash`), producing duplicate DAG entries on every rejection. Phase 1 is a precondition, not a post-condition.
 
 ### 6.2 Phase 2 — Publish and collect acks
 

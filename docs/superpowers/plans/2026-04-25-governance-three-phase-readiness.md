@@ -413,12 +413,16 @@ impl AckRouter {
     }
 
     /// Called when a publish completes (Ok or NoAck) to GC entries with no
-    /// remaining receivers. Idempotent.
-    pub fn release(&self, op_hash: [u8; 32]) {
+    /// remaining receivers. **Consumes the receiver** so it is dropped before we
+    /// inspect `receiver_count()`; otherwise the caller's still-live `rx` on the
+    /// stack would keep the count ≥ 1 and the entry would never be reaped,
+    /// leaking one map entry per publish. Idempotent.
+    pub fn release(&self, op_hash: [u8; 32], rx: broadcast::Receiver<SignedAck>) {
+        drop(rx);
         let mut g = self.inner.lock().expect("ack_router lock");
         if let Some(tx) = g.get(&op_hash) {
             if tx.receiver_count() == 0 {
-                g.remove(&op_hash);
+                let _ = g.remove(&op_hash);
             }
         }
     }
@@ -463,9 +467,38 @@ async fn ack_router_route_with_no_subscriber_returns_false() {
 async fn ack_router_release_drops_empty_entry() {
     let router = AckRouter::default();
     let rx = router.subscribe([3u8; 32]);
-    drop(rx);
-    router.release([3u8; 32]);
+    router.release([3u8; 32], rx);
     assert!(router.inner.lock().unwrap().get(&[3u8; 32]).is_none());
+}
+
+#[tokio::test]
+async fn ack_router_release_keeps_entry_when_other_receivers_alive() {
+    // A second concurrent publish for the same op_hash must keep its subscription alive.
+    let router = AckRouter::default();
+    let rx_a = router.subscribe([4u8; 32]);
+    let _rx_b = router.subscribe([4u8; 32]);
+    router.release([4u8; 32], rx_a);
+    assert!(
+        router.inner.lock().unwrap().get(&[4u8; 32]).is_some(),
+        "entry must survive while another receiver is alive"
+    );
+}
+
+#[tokio::test]
+async fn ack_router_release_does_not_leak_when_caller_holds_rx() {
+    // Regression: previously `release(op_hash)` checked `receiver_count() == 0`
+    // while the caller's `rx` was still on the stack, leaking one entry per
+    // publish. The new signature consumes `rx`, eliminating the leak.
+    let router = AckRouter::default();
+    for i in 0..16u8 {
+        let key = [i; 32];
+        let rx = router.subscribe(key);
+        router.release(key, rx);
+    }
+    assert!(
+        router.inner.lock().unwrap().is_empty(),
+        "release must reap every entry; previously this map would have grown to 16"
+    );
 }
 ```
 
@@ -793,7 +826,8 @@ pub async fn publish_and_await_ack_namespace(
     loop {
         let now = Instant::now();
         if now >= deadline {
-            ack_router.release(op_hash);
+            // Move `rx` into release so the receiver is dropped before the count check.
+            ack_router.release(op_hash, rx);
             return Err(GovernanceBroadcastError::NoAckReceived {
                 waited_ms: start.elapsed().as_millis() as u64,
                 op_hash,
@@ -814,7 +848,7 @@ pub async fn publish_and_await_ack_namespace(
                     acked_by.push(ack.signer_pubkey);
                 }
                 if acked_by.len() >= min_acks {
-                    ack_router.release(op_hash);
+                    ack_router.release(op_hash, rx);
                     return Ok(DeliveryReport {
                         op_hash,
                         acked_by,
@@ -824,7 +858,7 @@ pub async fn publish_and_await_ack_namespace(
             }
             Ok(Err(_lagged_or_closed)) => continue,
             Err(_elapsed) => {
-                ack_router.release(op_hash);
+                ack_router.release(op_hash, rx);
                 return Err(GovernanceBroadcastError::NoAckReceived {
                     waited_ms: start.elapsed().as_millis() as u64,
                     op_hash,
@@ -1060,12 +1094,19 @@ pub async fn sign_apply_and_publish_namespace_op(
     op: NamespaceOp,
     op_timeout: Duration,
 ) -> EyreResult<DeliveryReport> {
-    let signed_op = NamespaceGovernance::new(store, namespace_id).sign(signer_sk, op)?;
-    // Local apply remains in NamespaceGovernance — we want apply-before-publish.
-    NamespaceGovernance::new(store, namespace_id).apply_signed_op(&signed_op)?;
-
     let topic = ns_topic(namespace_id);
-    // known_subscribers: pull from NodeManager state via NodeClient extension; default to mesh_n_low.
+    // Phase 1 readiness gate FIRST — before any signing or local DAG mutation.
+    //
+    // Rationale: signing and `apply_signed_op` durably commit the op to our local
+    // DAG. If we apply first and Phase 1 then rejects with `NamespaceNotReady`,
+    // the caller is left with an op that exists locally but was never published.
+    // Retrying calls this helper again, which signs a *different* op (new
+    // op_hash) and applies it a second time — duplicate DAG entries / apply
+    // errors / unbounded growth on every retry. Checking readiness before
+    // sign+apply makes the rejection side-effect-free and cleanly retryable.
+    //
+    // known_subscribers: pulled from NodeManager state via NodeClient extension;
+    // default to mesh_n_low when no subscriptions have been observed yet.
     let known = node_client.known_subscribers(topic.clone()).await.unwrap_or(0);
     governance_broadcast::assert_transport_ready(
         node_client.network_client(),
@@ -1075,6 +1116,11 @@ pub async fn sign_apply_and_publish_namespace_op(
     )
     .await
     .map_err(|e| eyre::eyre!(e))?;
+
+    // Readiness OK — now sign and apply locally (apply-before-publish keeps the
+    // publisher's own state immediately consistent for the subsequent publish).
+    let signed_op = NamespaceGovernance::new(store, namespace_id).sign(signer_sk, op)?;
+    NamespaceGovernance::new(store, namespace_id).apply_signed_op(&signed_op)?;
 
     let report = governance_broadcast::publish_and_await_ack_namespace(
         store,
@@ -1093,6 +1139,8 @@ pub async fn sign_apply_and_publish_namespace_op(
     Ok(report)
 }
 ```
+
+(Engineer: there is a residual narrow window where `assert_transport_ready` passes but the subsequent `publish_and_await_ack_namespace` fails its `network_client.publish()` call — leaving the op locally applied but not on the wire. This is the standard TOCTOU between Phase 1 and Phase 2 transmit; gossipsub's mesh state can shift in microseconds. Recovery is handled by the existing heartbeat reconciliation arm and any subsequent re-publish on retry; document this in the spec as a known asymmetric window rather than trying to make Phase 1+Phase 2 atomic.)
 
 (Engineer: `node_client.known_subscribers(topic).await` and `node_client.gossipsub_mesh_n_low()` are new accessors — add them to `NodeClient` proxying through the actor message system. Keep them tightly scoped to this caller path.)
 
@@ -1304,11 +1352,12 @@ pub fn evaluate_readiness(
         return ReadinessTier::Degraded;
     }
 
-    // Empty-DAG joiners never self-promote.
+    // Empty-DAG joiners never self-promote (no LocallyReady from local_applied_through=0).
+    // If we hear a peer beacon we know there's a target to catch up to → CatchingUp;
+    // otherwise we don't know whether a network exists yet → stay Bootstrapping.
     if state.local_applied_through == 0 {
         return if peers.heard_recent_beacon {
-            // Will transition to CatchingUp once we know a target.
-            ReadinessTier::Bootstrapping
+            ReadinessTier::CatchingUp
         } else {
             ReadinessTier::Bootstrapping
         };
@@ -1332,7 +1381,15 @@ pub fn evaluate_readiness(
         // Edge cases: peer existed but TTL expired since.
         (Some(_), false, true) => ReadinessTier::LocallyReady,
         (Some(_), false, false) => ReadinessTier::Bootstrapping,
-        (None, true, _) => unreachable!("heard_recent_beacon implies max_applied_through is Some"),
+        // Defensive: with an atomic `ReadinessCache::peer_summary` snapshot this arm is
+        // unreachable — `heard_recent_beacon == true` ⇔ at least one fresh peer ⇒
+        // `max_applied_through.is_some()`. Kept as a safe fallback in case a future
+        // call site builds `PeerSummary` from non-atomic reads. Stay Bootstrapping
+        // (no self-promotion) and let the next beacon re-evaluate.
+        (None, true, _) => {
+            debug_assert!(false, "PeerSummary built from non-atomic reads — use ReadinessCache::peer_summary");
+            ReadinessTier::Bootstrapping
+        }
     }
 }
 ```
@@ -1383,10 +1440,36 @@ fn bootstrapping_to_locally_ready_after_boot_grace_with_no_peers() {
 }
 
 #[test]
-fn empty_dag_never_self_promotes() {
+fn empty_dag_with_no_beacon_stays_bootstrapping() {
     let state = ReadinessState {
         local_applied_through: 0,
         subscribed_at: Instant::now() - Duration::from_secs(60),
+        ..base_state()
+    };
+    let peers = PeerSummary { max_applied_through: None, heard_recent_beacon: false };
+    let result = evaluate_readiness(&state, &peers, &ReadinessConfig::default(), Instant::now());
+    assert_eq!(result, ReadinessTier::Bootstrapping);
+}
+
+#[test]
+fn empty_dag_with_peer_beacon_transitions_to_catching_up() {
+    // Empty-DAG joiner that hears a peer beacon must move to CatchingUp so backfill begins.
+    let state = ReadinessState {
+        local_applied_through: 0,
+        subscribed_at: Instant::now() - Duration::from_secs(60),
+        ..base_state()
+    };
+    let peers = PeerSummary { max_applied_through: Some(7), heard_recent_beacon: true };
+    let result = evaluate_readiness(&state, &peers, &ReadinessConfig::default(), Instant::now());
+    assert_eq!(result, ReadinessTier::CatchingUp);
+}
+
+#[test]
+fn empty_dag_never_promotes_to_locally_ready_after_boot_grace() {
+    // Even after boot grace with no peers, an empty DAG must NOT self-promote.
+    let state = ReadinessState {
+        local_applied_through: 0,
+        subscribed_at: Instant::now() - Duration::from_secs(3600),
         ..base_state()
     };
     let peers = PeerSummary { max_applied_through: None, heard_recent_beacon: false };
@@ -1504,6 +1587,29 @@ impl ReadinessCache {
             .map(|(_, e)| e.applied_through)
             .max()
     }
+
+    /// Atomic snapshot — `max_applied_through` and `heard_recent_beacon` are read
+    /// under a single lock acquisition so the FSM's match arms cannot observe a
+    /// torn state (e.g. `heard_recent_beacon=true` while `max_applied_through=None`).
+    /// All call sites that build a `PeerSummary` MUST use this rather than two
+    /// separate calls to `max_applied_through` and `fresh_peers`.
+    pub fn peer_summary(&self, ns: [u8; 32], ttl: Duration) -> PeerSummary {
+        let g = self.entries.lock().expect("readiness cache lock");
+        let now = Instant::now();
+        let mut max_applied: Option<u64> = None;
+        let mut any_fresh = false;
+        for ((nns, _), e) in g.iter() {
+            if *nns != ns || now.duration_since(e.received_at) > ttl {
+                continue;
+            }
+            any_fresh = true;
+            max_applied = Some(max_applied.map_or(e.applied_through, |m| m.max(e.applied_through)));
+        }
+        PeerSummary {
+            max_applied_through: max_applied,
+            heard_recent_beacon: any_fresh,
+        }
+    }
 }
 ```
 
@@ -1565,6 +1671,36 @@ fn pick_sync_partner_empty_cache_returns_none() {
     let cache = ReadinessCache::default();
     assert!(cache.pick_sync_partner([42u8; 32], Duration::from_secs(60)).is_none());
 }
+
+#[test]
+fn peer_summary_atomic_when_fresh_peer_present() {
+    // Snapshot must always have heard_recent_beacon == true ⇒ max_applied_through.is_some().
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    cache.insert(&make_beacon(pk, 7, true));
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert!(s.heard_recent_beacon);
+    assert_eq!(s.max_applied_through, Some(7));
+}
+
+#[test]
+fn peer_summary_no_fresh_peers_returns_none_and_false() {
+    let cache = ReadinessCache::default();
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert!(!s.heard_recent_beacon);
+    assert_eq!(s.max_applied_through, None);
+}
+
+#[test]
+fn peer_summary_excludes_stale_and_returns_none_after_ttl() {
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    cache.insert(&make_beacon(pk, 9, false));
+    std::thread::sleep(Duration::from_millis(10));
+    let s = cache.peer_summary([42u8; 32], Duration::from_millis(5));
+    assert!(!s.heard_recent_beacon);
+    assert_eq!(s.max_applied_through, None);
+}
 ```
 
 - [ ] **Step 3: Run.**
@@ -1573,7 +1709,7 @@ fn pick_sync_partner_empty_cache_returns_none() {
 cargo test -p calimero-node readiness::tests 2>&1 | tail -15
 ```
 
-Expected: 10 tests pass (6 from 6.1 + 4 new).
+Expected: 13 tests pass (6 from 6.1 + 4 partner-picker tests + 3 new peer_summary atomicity tests).
 
 - [ ] **Step 4: Commit.**
 
@@ -1665,10 +1801,8 @@ impl Handler<LocalStateChanged> for ReadinessManager {
         entry.local_applied_through = msg.local_applied_through;
         entry.local_head = msg.local_head;
         entry.local_pending_ops = msg.local_pending_ops;
-        let peers = PeerSummary {
-            max_applied_through: self.cache.max_applied_through(msg.namespace_id, self.config.ttl_heartbeat),
-            heard_recent_beacon: self.cache.fresh_peers(msg.namespace_id, self.config.ttl_heartbeat).len() > 0,
-        };
+        // Atomic single-lock snapshot — see ReadinessCache::peer_summary for why.
+        let peers = self.cache.peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
         let new_tier = evaluate_readiness(entry, &peers, &self.config, Instant::now());
         if new_tier != entry.tier {
             entry.tier = new_tier;
@@ -1909,10 +2043,8 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
     fn handle(&mut self, msg: ApplyBeaconLocal, _ctx: &mut Self::Context) {
         // Re-evaluate FSM with possibly updated peer summary.
         let Some(state) = self.state_per_namespace.get(&msg.namespace_id).cloned() else { return; };
-        let peers = PeerSummary {
-            max_applied_through: self.cache.max_applied_through(msg.namespace_id, self.config.ttl_heartbeat),
-            heard_recent_beacon: self.cache.fresh_peers(msg.namespace_id, self.config.ttl_heartbeat).len() > 0,
-        };
+        // Atomic single-lock snapshot — see ReadinessCache::peer_summary.
+        let peers = self.cache.peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
         let new_tier = evaluate_readiness(&state, &peers, &self.config, Instant::now());
         if new_tier != state.tier {
             if let Some(s) = self.state_per_namespace.get_mut(&msg.namespace_id) {
