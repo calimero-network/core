@@ -480,10 +480,13 @@ async fn await_namespace_ready(ns_id: NamespaceId, deadline: Duration) -> Result
 
 ```rust
 async fn join_and_wait_ready(invitation: ..., deadline: Duration) -> Result<ReadyReport> {
-    // Floor the join phase at 1s — Duration division on a deadline < 3s would otherwise
-    // round to 0 and force `join_namespace` to time out immediately with NoReadyPeers.
-    // The ready phase still gets the remainder, possibly less than 2/3 for tiny deadlines.
-    let join_deadline = std::cmp::max(deadline / 3, Duration::from_secs(1));
+    // join_deadline ∈ [1s, deadline]: floor prevents near-zero on small deadlines,
+    // cap prevents the floor from exceeding the caller's total budget (which would
+    // let `join_namespace` run past `deadline` and zero out `ready_deadline`).
+    let join_deadline = std::cmp::min(
+        std::cmp::max(deadline / 3, Duration::from_secs(1)),
+        deadline,
+    );
     let ready_deadline = deadline.saturating_sub(join_deadline);
     let started = join_namespace(invitation, join_deadline).await?;
     await_namespace_ready(started.namespace_id, ready_deadline).await

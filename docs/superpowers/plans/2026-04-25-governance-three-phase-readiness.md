@@ -2524,11 +2524,22 @@ pub async fn join_and_wait_ready(
     invitation: SignedGroupOpenInvitation,
     deadline: Duration,
 ) -> Result<ReadyReport, ReadyError> {
-    // Floor the join phase at 1s — `Duration / 3` rounds to zero on deadlines under 3s,
-    // which would force `join_namespace` to time out immediately with NoReadyPeers and
-    // make this aggregate unusable for short-deadline callers (tests, retry-loop probes).
-    let join_deadline = std::cmp::max(deadline / 3, Duration::from_secs(1));
+    // join_deadline lives in [1s, deadline]: the floor prevents `deadline / 3`
+    // from rounding to a near-zero value on small deadlines, the cap stops the
+    // floor from EXCEEDING the caller's total budget (which would let
+    // `join_namespace` run past the caller's deadline and zero out the ready
+    // phase). `min(max(deadline / 3, 1s), deadline)` enforces both bounds.
+    let join_deadline = std::cmp::min(
+        std::cmp::max(deadline / 3, Duration::from_secs(1)),
+        deadline,
+    );
     let ready_deadline = deadline.saturating_sub(join_deadline);
+    debug_assert!(
+        deadline >= Duration::from_secs(2),
+        "join_and_wait_ready called with deadline < 2s; ready_deadline saturates to ~zero, \
+         await_namespace_ready will fail immediately. Use join_namespace + await_namespace_ready \
+         directly if you genuinely need a sub-2s budget."
+    );
     let started = self.join_namespace(invitation, join_deadline).await
         .map_err(|e| ReadyError::JoinFailed(e.to_string()))?;
     self.await_namespace_ready(started.namespace_id, ready_deadline).await
@@ -2608,7 +2619,16 @@ pub async fn join_namespace_with_retry(
     let mut delay = Duration::from_secs(3);
     let start = Instant::now();
     loop {
-        match client.join_namespace(invitation.clone(), ATTEMPT_DEADLINE).await {
+        // Each attempt must respect the *remaining* total budget — otherwise a
+        // caller passing `max_total < ATTEMPT_DEADLINE` (e.g. 2s) would block on
+        // a single 10s attempt and only "respect" `max_total` between attempts,
+        // overshooting the caller's stated budget by up to ATTEMPT_DEADLINE.
+        let remaining = max_total.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            return Err(JoinError::NoReadyPeers { waited_ms: start.elapsed().as_millis() as u64 });
+        }
+        let attempt_deadline = std::cmp::min(ATTEMPT_DEADLINE, remaining);
+        match client.join_namespace(invitation.clone(), attempt_deadline).await {
             Ok(started) => return Ok(started),
             Err(JoinError::NoReadyPeers { .. }) => {
                 if start.elapsed() + delay > max_total {
