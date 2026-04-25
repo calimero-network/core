@@ -739,7 +739,7 @@ async fn assert_transport_ready_rejects_when_mesh_below_threshold() {
     let net = mock_network_client_with_mesh_count(1);
     let topic = TopicHash::from_raw("ns/0000");
     let err = assert_transport_ready(&net, topic, 4, 4).await.unwrap_err();
-    matches!(err, GovernanceBroadcastError::NamespaceNotReady { mesh: 1, required: 4 });
+    assert!(matches!(err, GovernanceBroadcastError::NamespaceNotReady { mesh: 1, required: 4 }));
 }
 
 #[tokio::test]
@@ -1290,22 +1290,27 @@ use calimero_primitives::identity::PublicKey;
 #[cfg(test)]
 mod tests;
 
+// Match spec §7.1: data-carrying variants so demotion reason and target
+// applied_through propagate through the FSM and metrics/logs without a
+// parallel side-channel struct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadinessTier {
     Bootstrapping,
     LocallyReady,
     PeerValidatedReady,
-    CatchingUp,
-    Degraded,
+    CatchingUp { target_applied_through: u64 },
+    Degraded { reason: DemotionReason },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DemotionReason {
-    PendingOps,
+    PendingOps(usize),
     NoRecentPeers,
     PeerSawHigherThroughput,
 }
 
+// `demotion_reason` is no longer carried separately — it lives inside
+// `ReadinessTier::Degraded` and is recovered via pattern matching.
 #[derive(Debug, Clone)]
 pub struct ReadinessState {
     pub tier: ReadinessTier,
@@ -1313,7 +1318,6 @@ pub struct ReadinessState {
     pub local_head: [u8; 32],
     pub local_pending_ops: usize,
     pub subscribed_at: Instant,
-    pub demotion_reason: Option<DemotionReason>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1347,17 +1351,25 @@ pub fn evaluate_readiness(
     cfg: &ReadinessConfig,
     now: Instant,
 ) -> ReadinessTier {
-    // Pending ops always demote.
+    // Pending ops always demote — record the count so observability can see
+    // *how many* ops are blocking promotion, not just that *some* exist.
     if state.local_pending_ops > 0 {
-        return ReadinessTier::Degraded;
+        return ReadinessTier::Degraded {
+            reason: DemotionReason::PendingOps(state.local_pending_ops),
+        };
     }
 
     // Empty-DAG joiners never self-promote (no LocallyReady from local_applied_through=0).
-    // If we hear a peer beacon we know there's a target to catch up to → CatchingUp;
-    // otherwise we don't know whether a network exists yet → stay Bootstrapping.
+    // If we hear a peer beacon we know there's a target to catch up to → CatchingUp
+    // carrying that target; otherwise we don't know whether a network exists yet →
+    // stay Bootstrapping. With the atomic `ReadinessCache::peer_summary` snapshot,
+    // `heard_recent_beacon == true` implies `max_applied_through.is_some()`, so the
+    // `unwrap_or(0)` is a defensive fallback only.
     if state.local_applied_through == 0 {
         return if peers.heard_recent_beacon {
-            ReadinessTier::CatchingUp
+            ReadinessTier::CatchingUp {
+                target_applied_through: peers.max_applied_through.unwrap_or(0),
+            }
         } else {
             ReadinessTier::Bootstrapping
         };
@@ -1366,12 +1378,12 @@ pub fn evaluate_readiness(
     let boot_grace_elapsed = now.duration_since(state.subscribed_at) >= cfg.boot_grace;
 
     match (peers.max_applied_through, peers.heard_recent_beacon, boot_grace_elapsed) {
-        // Heard a peer beacon: tip-fresh → PeerValidatedReady; behind → CatchingUp.
+        // Heard a peer beacon: tip-fresh → PeerValidatedReady; behind → CatchingUp{target}.
         (Some(peer_at), true, _) => {
             if state.local_applied_through + cfg.applied_through_grace >= peer_at {
                 ReadinessTier::PeerValidatedReady
             } else {
-                ReadinessTier::CatchingUp
+                ReadinessTier::CatchingUp { target_applied_through: peer_at }
             }
         }
         // No peer beacons but we've waited BOOT_GRACE: self-promote (LocallyReady).
@@ -1408,7 +1420,6 @@ fn base_state() -> ReadinessState {
         local_head: [0u8; 32],
         local_pending_ops: 0,
         subscribed_at: Instant::now(),
-        demotion_reason: None,
     }
 }
 
@@ -1425,7 +1436,9 @@ fn bootstrapping_to_catching_up_when_behind_peer() {
     let state = base_state();
     let peers = PeerSummary { max_applied_through: Some(10), heard_recent_beacon: true };
     let result = evaluate_readiness(&state, &peers, &ReadinessConfig::default(), Instant::now());
-    assert_eq!(result, ReadinessTier::CatchingUp);
+    // CatchingUp now carries the target — verify both the variant and the value so
+    // a regression that loses the target wouldn't pass with a `matches!(_, _ { .. })` wildcard.
+    assert_eq!(result, ReadinessTier::CatchingUp { target_applied_through: 10 });
 }
 
 #[test]
@@ -1453,7 +1466,8 @@ fn empty_dag_with_no_beacon_stays_bootstrapping() {
 
 #[test]
 fn empty_dag_with_peer_beacon_transitions_to_catching_up() {
-    // Empty-DAG joiner that hears a peer beacon must move to CatchingUp so backfill begins.
+    // Empty-DAG joiner that hears a peer beacon must move to CatchingUp so backfill
+    // begins, and the variant must carry the peer's applied_through as the target.
     let state = ReadinessState {
         local_applied_through: 0,
         subscribed_at: Instant::now() - Duration::from_secs(60),
@@ -1461,7 +1475,7 @@ fn empty_dag_with_peer_beacon_transitions_to_catching_up() {
     };
     let peers = PeerSummary { max_applied_through: Some(7), heard_recent_beacon: true };
     let result = evaluate_readiness(&state, &peers, &ReadinessConfig::default(), Instant::now());
-    assert_eq!(result, ReadinessTier::CatchingUp);
+    assert_eq!(result, ReadinessTier::CatchingUp { target_applied_through: 7 });
 }
 
 #[test]
@@ -1482,7 +1496,8 @@ fn pending_ops_always_demotes_to_degraded() {
     let state = ReadinessState { local_pending_ops: 3, ..base_state() };
     let peers = PeerSummary { max_applied_through: Some(5), heard_recent_beacon: true };
     let result = evaluate_readiness(&state, &peers, &ReadinessConfig::default(), Instant::now());
-    assert_eq!(result, ReadinessTier::Degraded);
+    // Degraded now carries the reason — verify the count flows through verbatim.
+    assert_eq!(result, ReadinessTier::Degraded { reason: DemotionReason::PendingOps(3) });
 }
 
 #[test]
@@ -1744,6 +1759,11 @@ pub struct ReadinessManager {
     pub network_client: calimero_network_primitives::client::NetworkClient,
     // Identity provider, store handle — wire on construction.
     pub store: calimero_store::Store,
+    /// Per-(peer, namespace) timestamp of the last out-of-cycle beacon emitted in
+    /// response to a `ReadinessProbe`. Used to rate-limit probe responses at
+    /// `BEACON_INTERVAL / 2` and close the unsigned-probe amplification path —
+    /// see `Handler<EmitOutOfCycleBeacon>` below for rationale.
+    pub last_probe_response_at: HashMap<(libp2p::PeerId, [u8; 32]), Instant>,
 }
 
 impl Actor for ReadinessManager {
@@ -1795,7 +1815,6 @@ impl Handler<LocalStateChanged> for ReadinessManager {
                 local_head: [0u8; 32],
                 local_pending_ops: 0,
                 subscribed_at: Instant::now(),
-                demotion_reason: None,
             }
         });
         entry.local_applied_through = msg.local_applied_through;
@@ -1827,6 +1846,7 @@ pub(super) fn setup_readiness_manager(&self, _ctx: &mut actix::Context<Self>) {
         state_per_namespace: HashMap::new(),
         network_client: self.clients.network.clone(),
         store: self.store.clone(),
+        last_probe_response_at: HashMap::new(),
     };
     let addr = manager.start();
     self.readiness_addr = Some(addr);
@@ -2006,13 +2026,16 @@ pub(super) fn handle_readiness_beacon(
 pub(super) fn handle_readiness_probe(
     manager: &mut NodeManager,
     _ctx: &mut actix::Context<NodeManager>,
-    _peer_id: PeerId,
+    peer_id: PeerId,
     probe: ReadinessProbe,
 ) {
     // Out-of-cycle beacon: only if we're *Ready for this namespace.
+    // The (peer_id, namespace_id) tuple is forwarded so the FSM actor can
+    // rate-limit per-(peer, namespace) — see EmitOutOfCycleBeacon handler.
     if let Some(addr) = &manager.readiness_addr {
         let _ = addr.do_send(crate::readiness::EmitOutOfCycleBeacon {
             namespace_id: probe.namespace_id,
+            requesting_peer: peer_id,
         });
     }
 }
@@ -2025,14 +2048,31 @@ Add the matching message and handler to `readiness.rs`:
 
 #[derive(Message)]
 #[rtype(result = "()")]
-pub struct EmitOutOfCycleBeacon { pub namespace_id: [u8; 32] }
+pub struct EmitOutOfCycleBeacon {
+    pub namespace_id: [u8; 32],
+    pub requesting_peer: PeerId,
+}
 
 impl Handler<EmitOutOfCycleBeacon> for ReadinessManager {
     type Result = ();
     fn handle(&mut self, msg: EmitOutOfCycleBeacon, _ctx: &mut Self::Context) {
+        // Rate-limit probe responses per (peer, namespace) at BEACON_INTERVAL / 2 to
+        // close the unsigned-`ReadinessProbe` traffic-amplification path: one ~48-byte
+        // probe would otherwise trigger one ~200-byte signed beacon from EVERY *Ready
+        // peer on the topic (≈Nx amplification). Bypass via varying `nonce` is blocked
+        // because the limit keys on (peer, namespace), not on the probe content.
+        let now = Instant::now();
+        let min_spacing = self.config.beacon_interval / 2;
+        let key = (msg.requesting_peer, msg.namespace_id);
+        if let Some(last) = self.last_probe_response_at.get(&key) {
+            if now.duration_since(*last) < min_spacing {
+                return; // within rate-limit window — drop silently
+            }
+        }
         if let Some(state) = self.state_per_namespace.get(&msg.namespace_id) {
             if matches!(state.tier, ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady) {
                 self.publish_beacon(msg.namespace_id, state);
+                self.last_probe_response_at.insert(key, now);
             }
         }
     }
@@ -2319,7 +2359,7 @@ async fn join_namespace_returns_no_ready_peers_when_alone() {
     let client = build_test_client_solo().await;
     let invitation = mk_test_invitation();
     let err = client.join_namespace(invitation, Duration::from_millis(200)).await.unwrap_err();
-    matches!(err, JoinError::NoReadyPeers { .. });
+    assert!(matches!(err, JoinError::NoReadyPeers { .. }));
 }
 ```
 
@@ -2397,8 +2437,11 @@ pub async fn join_and_wait_ready(
     invitation: SignedGroupOpenInvitation,
     deadline: Duration,
 ) -> Result<ReadyReport, ReadyError> {
-    let join_deadline = deadline / 3;
-    let ready_deadline = deadline - join_deadline;
+    // Floor the join phase at 1s — `Duration / 3` rounds to zero on deadlines under 3s,
+    // which would force `join_namespace` to time out immediately with NoReadyPeers and
+    // make this aggregate unusable for short-deadline callers (tests, retry-loop probes).
+    let join_deadline = std::cmp::max(deadline / 3, Duration::from_secs(1));
+    let ready_deadline = deadline.saturating_sub(join_deadline);
     let started = self.join_namespace(invitation, join_deadline).await
         .map_err(|e| ReadyError::JoinFailed(e.to_string()))?;
     self.await_namespace_ready(started.namespace_id, ready_deadline).await
@@ -2959,6 +3002,46 @@ pub static ACK_ROUTER_PENDING_OPS: Lazy<IntGauge> = Lazy::new(|| { /* ... */ });
 - [ ] **Step 2: Wire the emission sites.**
 
 For each metric, add `.with_label_values(...).inc()` / `.observe(...)` at the matching code site. Spec §15 names the site for each.
+
+For `readiness_transitions` and `readiness_locally_ready_fallback`, **do not** pass the raw 32-byte `namespace_id` as a label — that explodes Prometheus cardinality and is exploitable as a DoS vector by an attacker who can create many namespaces. Use the bucketing helper from spec §15 to emit a stable 256-bucket label:
+
+```rust
+// crates/node/src/sync/prometheus_metrics.rs — add helper near the metric registrations
+
+use sha2::{Digest, Sha256};
+
+/// Maps a 32-byte namespace_id to one of 256 stable buckets — a 1-byte SHA-256 prefix
+/// formatted as 2 hex chars. Use this for any per-namespace Prometheus label;
+/// emit the full namespace_id only via structured logging (`tracing::info!`).
+pub fn ns_metric_bucket(ns: [u8; 32]) -> String {
+    let h = Sha256::digest(ns);
+    format!("{:02x}", h[0])
+}
+```
+
+Emission sites:
+
+```rust
+// crates/node/src/readiness.rs — on FSM transition
+READINESS_TRANSITIONS
+    .with_label_values(&[
+        &ns_metric_bucket(namespace_id),
+        tier_label(old_tier),
+        tier_label(new_tier),
+    ])
+    .inc();
+tracing::info!(
+    namespace_id = %hex::encode(namespace_id),
+    from = tier_label(old_tier),
+    to = tier_label(new_tier),
+    "readiness tier transition"
+);
+
+// crates/node/src/readiness.rs — on LocallyReady fallback firing
+READINESS_LOCALLY_READY_FALLBACK
+    .with_label_values(&[&ns_metric_bucket(namespace_id)])
+    .inc();
+```
 
 - [ ] **Step 3: Build clean.**
 

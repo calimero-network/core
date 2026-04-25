@@ -1,6 +1,6 @@
 # Governance three-phase contract + peer-readiness handshake — design
 
-- **Status**: Design, pending implementation plan
+- **Status**: Design + implementation plan complete; pending implementation
 - **Date**: 2026-04-25
 - **Tracking issue**: [#2237](https://github.com/calimero-network/core/issues/2237)
 - **Supersedes / related**: [#2198](https://github.com/calimero-network/core/issues/2198), [#2236](https://github.com/calimero-network/core/issues/2236)
@@ -166,12 +166,12 @@ Pre-1.0, single wire version. New nodes on the enum'd wire against old-wire node
 
 ```rust
 // crates/context/src/governance_broadcast.rs (new)
-fn assert_transport_ready(
+async fn assert_transport_ready(
     net: &NetworkClient,
     topic: TopicHash,
     known_subscribers: usize,
 ) -> Result<(), GovernanceBroadcastError> {
-    let mesh = net.mesh_peer_count(topic).await;        // existing primitive
+    let mesh = net.mesh_peer_count(topic).await;        // existing primitive — see crates/network/primitives/src/client.rs:140
     let required = min(MESH_N_LOW, known_subscribers);
     if mesh < required {
         return Err(GovernanceBroadcastError::NamespaceNotReady { mesh, required });
@@ -189,6 +189,9 @@ fn assert_transport_ready(
 ### 6.2 Phase 2 — Publish and collect acks
 
 ```rust
+// NOTE: `publish_and_await_ack` does NOT apply the op locally. Local apply
+// happens at the caller (e.g. `sign_apply_and_publish_namespace_op`) AFTER
+// `assert_transport_ready` (Phase 1) passes. See §6.1 Contract requirement.
 async fn publish_and_await_ack(
     store: &Store,
     net: &NetworkClient,
@@ -199,16 +202,19 @@ async fn publish_and_await_ack(
     min_acks: usize,                             // defaults to 1
     required_signers: Option<Vec<PublicKey>>,    // Some(_) for KeyDelivery → ack must come from recipient
 ) -> Result<DeliveryReport, GovernanceBroadcastError> {
+    let start = Instant::now();
     let op_hash = hash_scoped(topic, &op);
-    apply_signed_namespace_op(store, ctx, &op).await?;     // existing path; local DAG apply
     let mut collector = ctx.ack_router.subscribe(op_hash);
     net.publish(topic.clone(), NamespaceTopicMsg::Op(op)).await?;
 
-    let deadline = Instant::now() + op_timeout;
+    let deadline = start + op_timeout;
     let mut acked_by: Vec<PublicKey> = Vec::new();
     loop {
         let remaining = deadline.checked_duration_since(Instant::now())
-            .ok_or(GovernanceBroadcastError::NoAckReceived { waited_ms, op_hash })?;
+            .ok_or_else(|| GovernanceBroadcastError::NoAckReceived {
+                waited_ms: start.elapsed().as_millis() as u64,
+                op_hash,
+            })?;
         match timeout(remaining, collector.recv()).await {
             Ok(Some(ack)) => {
                 if !verify_ack(ctx, &ack, op_hash) { continue; }
@@ -220,10 +226,13 @@ async fn publish_and_await_ack(
                 }
                 if acked_by.len() >= min_acks { break; }
             }
-            _ => return Err(GovernanceBroadcastError::NoAckReceived { waited_ms, op_hash }),
+            _ => return Err(GovernanceBroadcastError::NoAckReceived {
+                waited_ms: start.elapsed().as_millis() as u64,
+                op_hash,
+            }),
         }
     }
-    Ok(DeliveryReport { op_hash, acked_by, elapsed_ms: deadline_elapsed() })
+    Ok(DeliveryReport { op_hash, acked_by, elapsed_ms: start.elapsed().as_millis() as u64 })
 }
 ```
 
@@ -453,8 +462,11 @@ async fn await_namespace_ready(ns_id: NamespaceId, deadline: Duration) -> Result
 
 ```rust
 async fn join_and_wait_ready(invitation: ..., deadline: Duration) -> Result<ReadyReport> {
-    let join_deadline = deadline / 3;
-    let ready_deadline = deadline - join_deadline;
+    // Floor the join phase at 1s — Duration division on a deadline < 3s would otherwise
+    // round to 0 and force `join_namespace` to time out immediately with NoReadyPeers.
+    // The ready phase still gets the remainder, possibly less than 2/3 for tiny deadlines.
+    let join_deadline = std::cmp::max(deadline / 3, Duration::from_secs(1));
+    let ready_deadline = deadline.saturating_sub(join_deadline);
     let started = join_namespace(invitation, join_deadline).await?;
     await_namespace_ready(started.namespace_id, ready_deadline).await
 }
@@ -634,9 +646,9 @@ Prometheus metrics, extending `crates/node/src/sync/prometheus_metrics.rs`:
 | `governance_publish_mesh_peers_at_publish` | Histogram | `op_kind` | Mesh size at publish time — detects cold-publish regressions (added at stage 0). |
 | `governance_publish_outcome` | Counter | `op_kind, outcome={ok, not_ready, no_ack, publish_err}` | Per-endpoint health. |
 | `governance_publish_ack_latency_ms` | Histogram | `op_kind` | Time from publish to first valid ack. |
-| `readiness_transitions` | Counter | `namespace_id, from, to` | FSM transition log — spots thrashing. |
+| `readiness_transitions` | Counter | `namespace_bucket, from, to` | FSM transition log — spots thrashing. |
 | `readiness_boot_to_ready_ms` | Histogram | `tier={locally, peer_validated}` | Time to become a sync partner after boot. |
-| `readiness_locally_ready_fallback` | Counter | `namespace_id` | How often `BOOT_GRACE` fallback fires. Zero in steady state; non-zero during cold-fleet events. |
+| `readiness_locally_ready_fallback` | Counter | `namespace_bucket` | How often `BOOT_GRACE` fallback fires. Zero in steady state; non-zero during cold-fleet events. |
 | `join_namespace_outcome` | Counter | `outcome={ok, no_ready_peers, timeout, key_not_received}` | Retry-loop health from the SDK helper. |
 | `ack_router_pending_ops` | Gauge | — | In-flight ack-collection map size. Should stay small. |
 
@@ -644,6 +656,8 @@ Three Grafana rows to add:
 - **Governance publish health** — `governance_publish_outcome` split by outcome, per `op_kind`.
 - **Readiness FSM** — `readiness_transitions` and `readiness_boot_to_ready_ms` over time.
 - **Join funnel** — `join_namespace_outcome` + retry counts.
+
+**Cardinality note:** the raw 32-byte `namespace_id` (~2^256 possible values) is *not* used as a Prometheus label — that would explode metric cardinality and is exploitable as a DoS vector by an attacker who can create many namespaces. Instead, emit `namespace_bucket = hex_prefix(sha256(namespace_id), 1)` — a 1-byte SHA-256 prefix giving 256 stable, deterministic buckets. The full `namespace_id` is still logged via structured logging (`tracing::info!(namespace_id = %hex(ns), …)`) for per-namespace debugging without polluting the metric label set. Helper: `fn ns_metric_bucket(ns: [u8; 32]) -> String { format!("{:02x}", sha256(&ns)[0]) }`.
 
 ## 16. Acceptance criteria
 
