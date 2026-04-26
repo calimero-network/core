@@ -1,10 +1,17 @@
 use std::collections::HashSet;
 
 use actix::{AsyncContext, WrapFuture};
-use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedNamespaceOp};
+use calimero_context::governance_broadcast::sign_ack;
+use calimero_context::group_store::get_namespace_identity;
+use calimero_context_client::local_governance::{
+    hash_scoped_namespace, NamespaceTopicMsg, SignedNamespaceOp,
+};
 use calimero_context_client::messages::NamespaceApplyOutcome;
+use calimero_context_config::types::ContextGroupId;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
+use calimero_primitives::identity::PrivateKey;
+use libp2p::gossipsub::TopicHash;
 use tracing::{debug, info, warn};
 
 use crate::sync::parent_pull::{NextPeer, ParentPullBudget};
@@ -35,13 +42,19 @@ pub(super) fn handle_namespace_governance_delta(
 
     let op = match msg {
         NamespaceTopicMsg::Op(op) => op,
-        // Phases 5/7/8 will wire these variants. Until then, drop them
-        // forward-compatibly so the wire schema can be rolled in this
-        // phase without a coordinated cluster upgrade per follow-up.
-        NamespaceTopicMsg::Ack(_)
-        | NamespaceTopicMsg::ReadinessBeacon(_)
-        | NamespaceTopicMsg::ReadinessProbe(_) => {
-            debug!("NamespaceTopicMsg variant not yet handled; dropping");
+        NamespaceTopicMsg::Ack(ack) => {
+            // Phase 4: route the ack to whatever in-flight
+            // `publish_and_await_ack` caller is waiting on this op_hash.
+            // `route` returns false if no subscriber registered — fine,
+            // it just means the publish completed already (or wasn't ours).
+            let _ = this.clients.context.ack_router().route(ack);
+            return;
+        }
+        // Phases 7/8 will wire these variants. Until then, drop them
+        // forward-compatibly so the wire schema reservations don't
+        // require another cluster-wide upgrade.
+        NamespaceTopicMsg::ReadinessBeacon(_) | NamespaceTopicMsg::ReadinessProbe(_) => {
+            debug!("NamespaceTopicMsg readiness variant not yet handled; dropping");
             return;
         }
     };
@@ -64,6 +77,7 @@ pub(super) fn handle_namespace_governance_delta(
     let pull_budget_duration = this.managers.sync.sync_config.parent_pull_budget;
     let op_for_delivery = op.clone();
 
+    let op_for_ack = op.clone();
     let _ignored = ctx.spawn(
         async move {
             let outcome = match context_client.apply_signed_namespace_op(op).await {
@@ -73,6 +87,18 @@ pub(super) fn handle_namespace_governance_delta(
                     return;
                 }
             };
+
+            // Phase 4: emit a `SignedAck` on the same topic when we've
+            // newly applied the op. `Pending` (waiting on parents) and
+            // `Duplicate` (we already had it — likely already acked
+            // earlier) deliberately don't ack: Pending would lie about
+            // application, and Duplicate would just inflate gossip with
+            // no observable change to the publisher's dedup-by-signer
+            // counting.
+            if matches!(outcome, NamespaceApplyOutcome::Applied) {
+                emit_namespace_ack(&context_client, &network_client, namespace_id, &op_for_ack)
+                    .await;
+            }
 
             // Proactive backfill (#2198) fires ONLY for `Pending` — the
             // DAG accepted the op but can't apply it until missing parents
@@ -416,4 +442,64 @@ async fn namespace_has_pending(
         .namespace_pending_op_count(namespace_id)
         .await?
         > 0)
+}
+
+/// Sign and publish a `SignedAck` for an applied namespace op.
+///
+/// Best-effort: every failure path (no namespace identity yet, ack
+/// signing error, gossipsub publish error) logs at debug/warn and
+/// returns. The publisher will time out and retry the op rather than
+/// being told falsely that it was acked.
+async fn emit_namespace_ack(
+    context_client: &calimero_context_client::client::ContextClient,
+    network_client: &NetworkClient,
+    namespace_id: [u8; 32],
+    op: &SignedNamespaceOp,
+) {
+    let topic_str = format!("ns/{}", hex::encode(namespace_id));
+    let topic = TopicHash::from_raw(topic_str.clone());
+    let op_hash = match hash_scoped_namespace(topic_str.as_bytes(), op) {
+        Ok(h) => h,
+        Err(err) => {
+            warn!(%err, "ack: failed to hash op for ack signing; skipping");
+            return;
+        }
+    };
+
+    let store = context_client.datastore();
+    let ns_group = ContextGroupId::from(namespace_id);
+    let identity = match get_namespace_identity(store, &ns_group) {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            debug!(
+                namespace_id = %hex::encode(namespace_id),
+                "ack: no namespace identity yet; skipping"
+            );
+            return;
+        }
+        Err(err) => {
+            warn!(%err, "ack: namespace identity lookup failed; skipping");
+            return;
+        }
+    };
+    let signer_sk = PrivateKey::from(identity.1);
+
+    let ack = match sign_ack(&signer_sk, op_hash) {
+        Ok(ack) => ack,
+        Err(err) => {
+            warn!(%err, "ack: signing failed; skipping");
+            return;
+        }
+    };
+    let payload = match borsh::to_vec(&NamespaceTopicMsg::Ack(ack)) {
+        Ok(p) => p,
+        Err(err) => {
+            warn!(%err, "ack: borsh encode failed; skipping");
+            return;
+        }
+    };
+    if let Err(err) = network_client.publish(topic, payload).await {
+        // Non-fatal — ack is fire-and-forget; sender will time out and retry.
+        debug!(%err, "ack: publish failed; sender will retry on timeout");
+    }
 }

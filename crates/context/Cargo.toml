@@ -17,6 +17,7 @@ either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
+libp2p.workspace = true
 memchr.workspace = true
 ouroboros.workspace = true
 prometheus-client.workspace = true
@@ -32,6 +33,7 @@ calimero-context-config.workspace = true
 calimero-context-client.workspace = true
 calimero-crypto.workspace = true
 calimero-dag.workspace = true
+calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-prelude.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
