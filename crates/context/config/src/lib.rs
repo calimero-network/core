@@ -120,7 +120,16 @@ impl<'a> GroupRequest<'a> {
     }
 }
 
-/// Visibility mode for a context within a group.
+/// Visibility mode for a subgroup within its parent group.
+///
+/// `Open`       — parent-group members are inherited as members of this subgroup
+///                (and, transitively, of any contexts it contains), provided they
+///                hold [`MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS`] at the
+///                anchor parent.
+/// `Restricted` — membership requires an explicit `add_group_members` call.
+///
+/// The walk in `check_group_membership` stops at the first `Restricted`
+/// ancestor; a `Restricted` subgroup is a wall regardless of what sits above.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum VisibilityMode {
     Open,
@@ -134,7 +143,15 @@ pub struct MemberCapabilities;
 impl MemberCapabilities {
     pub const CAN_CREATE_CONTEXT: u32 = 1 << 0;
     pub const CAN_INVITE_MEMBERS: u32 = 1 << 1;
-    pub const CAN_JOIN_OPEN_CONTEXTS: u32 = 1 << 2;
+    /// Permits a parent-group member to be inherited as a member of any
+    /// `Open` subgroup beneath them (and transitively, any contexts those
+    /// subgroups contain). Granted by default to non-admin members; admins
+    /// revoke per-member as a deny-list when they want a specific user kept
+    /// out of `Open` subgroups even though they remain in the parent.
+    ///
+    /// Reuses bit slot `1 << 2`, vacated by the prior `CAN_JOIN_OPEN_CONTEXTS`
+    /// (never enforced — see issue #2256).
+    pub const CAN_JOIN_OPEN_SUBGROUPS: u32 = 1 << 2;
     pub const MANAGE_MEMBERS: u32 = 1 << 3;
     pub const MANAGE_APPLICATION: u32 = 1 << 4;
 }

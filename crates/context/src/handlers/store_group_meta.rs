@@ -66,7 +66,9 @@ impl Handler<StoreGroupMetaRequest> for ContextManager {
         }
 
         // Set default capabilities so members added before the separate
-        // DefaultCapabilitiesSet gossip arrives still get CAN_JOIN_OPEN_CONTEXTS.
+        // DefaultCapabilitiesSet gossip arrives still get
+        // CAN_JOIN_OPEN_SUBGROUPS, which gates inheritance into Open
+        // child subgroups.
         if group_store::get_default_capabilities(&self.datastore, &group_id)
             .ok()
             .flatten()
@@ -75,7 +77,7 @@ impl Handler<StoreGroupMetaRequest> for ContextManager {
             let _ = group_store::set_default_capabilities(
                 &self.datastore,
                 &group_id,
-                MemberCapabilities::CAN_JOIN_OPEN_CONTEXTS,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
             );
         }
 

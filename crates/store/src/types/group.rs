@@ -44,9 +44,9 @@ impl PredefinedEntry for key::GroupDefaultCaps {
     type DataType<'a> = key::GroupDefaultCapsValue;
 }
 
-impl PredefinedEntry for key::GroupDefaultVis {
+impl PredefinedEntry for key::GroupSubgroupVis {
     type Codec = Borsh;
-    type DataType<'a> = key::GroupDefaultVisValue;
+    type DataType<'a> = key::GroupSubgroupVisValue;
 }
 
 impl PredefinedEntry for key::GroupContextLastMigration {

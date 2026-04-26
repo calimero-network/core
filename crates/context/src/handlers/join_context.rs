@@ -129,9 +129,11 @@ impl Handler<JoinContextRequest> for ContextManager {
                         )
                         })?;
 
-                // Group membership already verified above. All contexts in a group
-                // a member has access to are joinable. Restricted access is handled
-                // at the subgroup level (admin must explicitly add member to the subgroup).
+                // Group membership covers both direct members and parent-chain
+                // members inherited through `Open` subgroups (gated by the
+                // `CAN_JOIN_OPEN_SUBGROUPS` capability at the anchor parent).
+                // `Restricted` subgroups still require an explicit
+                // `add_group_members` call by an admin.
                 if group_store::load_group_meta(&datastore, &group_id)?.is_none() {
                     bail!("group not found");
                 }

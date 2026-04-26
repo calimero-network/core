@@ -46,10 +46,10 @@ pub use self::aliases::{
     get_group_alias, get_member_alias, set_context_alias, set_group_alias, set_member_alias,
 };
 pub use self::capabilities::{
-    delete_all_member_capabilities, delete_default_capabilities, delete_default_visibility,
+    delete_all_member_capabilities, delete_default_capabilities, delete_subgroup_visibility,
     enumerate_member_capabilities, get_context_member_capability, get_default_capabilities,
-    get_default_visibility, get_member_capability, set_context_member_capability,
-    set_default_capabilities, set_default_visibility, set_member_capability,
+    get_member_capability, get_subgroup_visibility, set_context_member_capability,
+    set_default_capabilities, set_member_capability, set_subgroup_visibility,
 };
 pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
@@ -518,11 +518,14 @@ impl<'a> GroupHandle<'a> {
     pub fn set_default_capabilities(&self, caps: u32) -> EyreResult<()> {
         set_default_capabilities(self.store, &self.group_id, caps)
     }
-    pub fn get_default_visibility(&self) -> EyreResult<Option<u8>> {
-        get_default_visibility(self.store, &self.group_id)
+    pub fn get_subgroup_visibility(&self) -> EyreResult<calimero_context_config::VisibilityMode> {
+        get_subgroup_visibility(self.store, &self.group_id)
     }
-    pub fn set_default_visibility(&self, mode: u8) -> EyreResult<()> {
-        set_default_visibility(self.store, &self.group_id, mode)
+    pub fn set_subgroup_visibility(
+        &self,
+        mode: calimero_context_config::VisibilityMode,
+    ) -> EyreResult<()> {
+        set_subgroup_visibility(self.store, &self.group_id, mode)
     }
 
     // --- Tree ---
@@ -927,8 +930,12 @@ fn apply_group_op_mutations(
         GroupOp::ContextDetached { context_id } => {
             context_registration.detach(&permissions, signer, context_id)?;
         }
-        GroupOp::DefaultVisibilitySet { mode } => {
-            settings.set_default_visibility(signer, *mode)?;
+        GroupOp::SubgroupVisibilitySet { mode } => {
+            let visibility = match *mode {
+                0 => calimero_context_config::VisibilityMode::Open,
+                _ => calimero_context_config::VisibilityMode::Restricted,
+            };
+            settings.set_subgroup_visibility(signer, visibility)?;
         }
         GroupOp::ContextAliasSet { context_id, alias } => {
             permissions.require_admin(signer)?;

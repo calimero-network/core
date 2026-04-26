@@ -335,7 +335,7 @@ impl CheckAccessCommand {
             }
         );
         println!(
-            "CAN_JOIN_OPEN_CONTEXTS:  {}",
+            "CAN_JOIN_OPEN_SUBGROUPS: {}",
             if caps & (1 << 2) != 0 {
                 "true"
             } else {

@@ -1,9 +1,10 @@
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::VisibilityMode;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
-    GroupContextMemberCap, GroupDefaultCaps, GroupDefaultCapsValue, GroupDefaultVis,
-    GroupDefaultVisValue, GroupMemberCapability, GroupMemberCapabilityValue,
+    GroupContextMemberCap, GroupDefaultCaps, GroupDefaultCapsValue, GroupMemberCapability,
+    GroupMemberCapabilityValue, GroupSubgroupVis, GroupSubgroupVisValue,
     GROUP_MEMBER_CAPABILITY_PREFIX,
 };
 use calimero_store::Store;
@@ -77,21 +78,36 @@ pub fn set_default_capabilities(
     Ok(())
 }
 
-pub fn get_default_visibility(store: &Store, group_id: &ContextGroupId) -> EyreResult<Option<u8>> {
-    let handle = store.handle();
-    let key = GroupDefaultVis::new(group_id.to_bytes());
-    let value = handle.get(&key)?;
-    Ok(value.map(|v| v.mode))
-}
-
-pub fn set_default_visibility(
+/// Read the subgroup visibility setting for `group_id`.
+///
+/// An absent key is treated as [`VisibilityMode::Restricted`] — the safer
+/// default. Membership inheritance via [`super::check_group_membership`]
+/// only walks parents when the subgroup is `Open`.
+pub fn get_subgroup_visibility(
     store: &Store,
     group_id: &ContextGroupId,
-    mode: u8,
+) -> EyreResult<VisibilityMode> {
+    let handle = store.handle();
+    let key = GroupSubgroupVis::new(group_id.to_bytes());
+    let value = handle.get(&key)?;
+    Ok(match value.map(|v| v.mode) {
+        Some(0) => VisibilityMode::Open,
+        _ => VisibilityMode::Restricted,
+    })
+}
+
+pub fn set_subgroup_visibility(
+    store: &Store,
+    group_id: &ContextGroupId,
+    mode: VisibilityMode,
 ) -> EyreResult<()> {
     let mut handle = store.handle();
-    let key = GroupDefaultVis::new(group_id.to_bytes());
-    handle.put(&key, &GroupDefaultVisValue { mode })?;
+    let key = GroupSubgroupVis::new(group_id.to_bytes());
+    let mode_byte = match mode {
+        VisibilityMode::Open => 0u8,
+        VisibilityMode::Restricted => 1u8,
+    };
+    handle.put(&key, &GroupSubgroupVisValue { mode: mode_byte })?;
     Ok(())
 }
 
@@ -101,9 +117,9 @@ pub fn delete_default_capabilities(store: &Store, group_id: &ContextGroupId) -> 
     Ok(())
 }
 
-pub fn delete_default_visibility(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
+pub fn delete_subgroup_visibility(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     let mut handle = store.handle();
-    handle.delete(&GroupDefaultVis::new(group_id.to_bytes()))?;
+    handle.delete(&GroupSubgroupVis::new(group_id.to_bytes()))?;
     Ok(())
 }
 

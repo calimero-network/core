@@ -85,8 +85,10 @@ pub enum GroupOp {
     },
     /// Unregister a context from this group.
     ContextDetached { context_id: ContextId },
-    /// Default visibility for new contexts (`0` = Open, `1` = Restricted).
-    DefaultVisibilitySet { mode: u8 },
+    /// Subgroup visibility (`0` = Open, `1` = Restricted). When `Open`,
+    /// parent-group members holding `CAN_JOIN_OPEN_SUBGROUPS` are inherited
+    /// as members of this subgroup. See [`crate::group::SetSubgroupVisibilityRequest`].
+    SubgroupVisibilitySet { mode: u8 },
     /// Human-readable alias for a context within the group.
     /// **Signer:** group admin.
     ContextAliasSet {
