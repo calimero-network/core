@@ -118,17 +118,39 @@ pub fn get_group_member_value(
     Ok(handle.get(&key)?)
 }
 
-/// Returns `true` if `identity` is a member of `group_id` either directly
-/// or by inheritance through a chain of `Open` subgroups anchored at a
-/// parent where they hold [`MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS`].
+/// How a positive membership decision was reached. See
+/// [`check_group_membership_path`] for full walk semantics.
+///
+/// Used by audit-sensitive callers (e.g., `join_context`) that want to
+/// distinguish a directly-stored membership row from one synthesized by
+/// the parent-chain inheritance walk, since inherited members do not
+/// appear in `list_group_members` for the subgroup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MembershipPath {
+    /// Identity is not a member of the subgroup, directly or by inheritance.
+    None,
+    /// Identity has a direct membership row in the subgroup.
+    Direct,
+    /// Identity inherits membership from the closest ancestor where they
+    /// hold a direct row (`anchor`). `via_admin` is `true` when the
+    /// inheritance came from an admin grant; `false` when it came from
+    /// `CAN_JOIN_OPEN_SUBGROUPS`.
+    Inherited {
+        anchor: ContextGroupId,
+        via_admin: bool,
+    },
+}
+
+/// Returns the [`MembershipPath`] by which `identity` is a member of
+/// `group_id`, or `None` if they are not a member.
 ///
 /// Walk semantics (issue #2256):
 ///
-/// 1. Direct membership in `group_id` short-circuits to `true`.
+/// 1. Direct membership in `group_id` → [`MembershipPath::Direct`].
 /// 2. Else, if `group_id` is `Restricted` (or has no `subgroup_visibility`
-///    set, treated as `Restricted`), return `false`.
-/// 3. Else (`Open`), look up the parent. No parent → `false` (we hit the
-///    namespace root without finding the identity).
+///    set, treated as `Restricted`), return [`MembershipPath::None`].
+/// 3. Else (`Open`), look up the parent. No parent → [`MembershipPath::None`]
+///    (we hit the namespace root without finding the identity).
 /// 4. If `identity` is a direct member of the parent, that's the **anchor**.
 ///    Admins inherit unconditionally; non-admins need
 ///    [`MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS`].
@@ -137,29 +159,38 @@ pub fn get_group_member_value(
 /// The walk terminates at the first `Restricted` ancestor (a wall) or at
 /// the namespace root. Bounded by [`MAX_NAMESPACE_DEPTH`] to defend
 /// against corrupted store state with cyclic parent edges.
-pub fn check_group_membership(
+pub fn check_group_membership_path(
     store: &Store,
     group_id: &ContextGroupId,
     identity: &PublicKey,
-) -> EyreResult<bool> {
+) -> EyreResult<MembershipPath> {
     if has_direct_member(store, group_id, identity)? {
-        return Ok(true);
+        return Ok(MembershipPath::Direct);
     }
 
     let mut current = *group_id;
     for _ in 0..MAX_NAMESPACE_DEPTH {
         if get_subgroup_visibility(store, &current)? != VisibilityMode::Open {
-            return Ok(false);
+            return Ok(MembershipPath::None);
         }
         let Some(parent) = get_parent_group(store, &current)? else {
-            return Ok(false);
+            return Ok(MembershipPath::None);
         };
         if has_direct_member(store, &parent, identity)? {
             if is_group_admin(store, &parent, identity)? {
-                return Ok(true);
+                return Ok(MembershipPath::Inherited {
+                    anchor: parent,
+                    via_admin: true,
+                });
             }
             let caps = get_member_capability(store, &parent, identity)?.unwrap_or(0);
-            return Ok(caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0);
+            if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0 {
+                return Ok(MembershipPath::Inherited {
+                    anchor: parent,
+                    via_admin: false,
+                });
+            }
+            return Ok(MembershipPath::None);
         }
         current = parent;
     }
@@ -167,6 +198,20 @@ pub fn check_group_membership(
         "check_group_membership exceeded MAX_NAMESPACE_DEPTH ({MAX_NAMESPACE_DEPTH}); \
          possible cycle in store"
     )
+}
+
+/// Returns `true` if `identity` is a member of `group_id` either directly
+/// or by inheritance. Thin wrapper over [`check_group_membership_path`]
+/// for callers that don't need to distinguish the path.
+pub fn check_group_membership(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+) -> EyreResult<bool> {
+    Ok(!matches!(
+        check_group_membership_path(store, group_id, identity)?,
+        MembershipPath::None,
+    ))
 }
 
 /// Returns `true` if `identity` is a direct admin of this specific group
