@@ -24,6 +24,7 @@ use crate::metrics::Metrics;
 pub mod auto_follow;
 pub mod config;
 pub mod error;
+pub mod governance_broadcast;
 pub mod governance_dag;
 pub mod group_store;
 pub mod handlers;
@@ -31,6 +32,8 @@ mod lifecycle;
 mod metrics;
 pub mod op_events;
 pub mod registration_notify;
+
+use governance_broadcast::AckRouter;
 
 /// A metadata container for a single, in-memory context.
 ///
@@ -106,6 +109,12 @@ pub struct ContextManager {
     /// Per-namespace governance DAG. Single DAG per namespace containing both
     /// root ops and encrypted group-scoped ops.
     namespace_dags: HashMap<[u8; 32], Arc<tokio::sync::Mutex<DagStore<SignedNamespaceOp>>>>,
+
+    /// Routes incoming `SignedAck` messages from the wire receiver to the
+    /// in-flight `publish_and_await_ack` caller waiting on a specific
+    /// `op_hash`. See [`governance_broadcast`].
+    #[allow(dead_code, reason = "consumed in Phase 3.4 publish_and_await_ack")]
+    pub(crate) ack_router: Arc<AckRouter>,
 }
 
 /// Creates a new `ContextManager`.
@@ -135,6 +144,7 @@ impl ContextManager {
             metrics: prometheus_registry.map(Metrics::new),
             active_propagators: HashSet::new(),
             namespace_dags: HashMap::new(),
+            ack_router: Arc::new(AckRouter::default()),
         }
     }
 
