@@ -8,7 +8,9 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use crate::metrics::record_namespace_retry_event;
+use crate::metrics::{
+    op_kind_label_namespace, record_governance_publish_mesh_peers, record_namespace_retry_event,
+};
 use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::{
@@ -243,6 +245,10 @@ impl<'a> NamespaceGovernance<'a> {
         op: NamespaceOp,
     ) -> EyreResult<()> {
         let head = self.read_head_record()?;
+        // Group ops are observed in `GroupGovernancePublisher` with the
+        // cleartext `GroupOp` label; observing them here too would double-count.
+        let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
+        let op_kind = op_kind_label_namespace(&op);
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
@@ -259,6 +265,12 @@ impl<'a> NamespaceGovernance<'a> {
         self.apply_signed_op(&signed)?;
 
         let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+        if observe_mesh {
+            let mesh_count = node_client
+                .mesh_peer_count_for_namespace(self.namespace_id)
+                .await;
+            record_governance_publish_mesh_peers(op_kind, mesh_count);
+        }
         node_client
             .publish_signed_namespace_op(self.namespace_id, delta_id, parent_ids, bytes)
             .await
@@ -271,6 +283,8 @@ impl<'a> NamespaceGovernance<'a> {
         op: NamespaceOp,
     ) -> EyreResult<()> {
         let head = self.read_head_record()?;
+        let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
+        let op_kind = op_kind_label_namespace(&op);
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
@@ -288,6 +302,12 @@ impl<'a> NamespaceGovernance<'a> {
         self.advance_dag_head(delta_id, &parent_ids, head.next_nonce)?;
 
         let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+        if observe_mesh {
+            let mesh_count = node_client
+                .mesh_peer_count_for_namespace(self.namespace_id)
+                .await;
+            record_governance_publish_mesh_peers(op_kind, mesh_count);
+        }
         node_client
             .publish_signed_namespace_op(self.namespace_id, delta_id, parent_ids, bytes)
             .await
