@@ -1,5 +1,6 @@
 use calimero_context_client::local_governance::{
-    EncryptedGroupOp, GroupOp, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
+    EncryptedGroupOp, GroupOp, NamespaceOp, NamespaceTopicMsg, RootOp, SignedGroupOp,
+    SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
@@ -264,7 +265,8 @@ impl<'a> NamespaceGovernance<'a> {
 
         self.apply_signed_op(&signed)?;
 
-        let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+        let bytes =
+            borsh::to_vec(&NamespaceTopicMsg::Op(signed)).map_err(|e| eyre::eyre!("borsh: {e}"))?;
         if observe_mesh {
             let mesh_count = node_client
                 .mesh_peer_count_for_namespace(self.namespace_id)
@@ -301,7 +303,8 @@ impl<'a> NamespaceGovernance<'a> {
         self.store_operation(&signed)?;
         self.advance_dag_head(delta_id, &parent_ids, head.next_nonce)?;
 
-        let bytes = borsh::to_vec(&signed).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+        let bytes =
+            borsh::to_vec(&NamespaceTopicMsg::Op(signed)).map_err(|e| eyre::eyre!("borsh: {e}"))?;
         if observe_mesh {
             let mesh_count = node_client
                 .mesh_peer_count_for_namespace(self.namespace_id)

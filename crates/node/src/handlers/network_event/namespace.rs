@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use actix::{AsyncContext, WrapFuture};
-use calimero_context_client::local_governance::SignedNamespaceOp;
+use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedNamespaceOp};
 use calimero_context_client::messages::NamespaceApplyOutcome;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
@@ -25,10 +25,23 @@ pub(super) fn handle_namespace_governance_delta(
         return;
     }
 
-    let op: SignedNamespaceOp = match borsh::from_slice(&payload) {
-        Ok(op) => op,
+    let msg: NamespaceTopicMsg = match borsh::from_slice(&payload) {
+        Ok(msg) => msg,
         Err(err) => {
-            warn!(%err, "failed to decode NamespaceGovernanceDelta payload");
+            warn!(%err, "failed to decode NamespaceTopicMsg payload");
+            return;
+        }
+    };
+
+    let op = match msg {
+        NamespaceTopicMsg::Op(op) => op,
+        // Phases 5/7/8 will wire these variants. Until then, drop them
+        // forward-compatibly so the wire schema can be rolled in this
+        // phase without a coordinated cluster upgrade per follow-up.
+        NamespaceTopicMsg::Ack(_)
+        | NamespaceTopicMsg::ReadinessBeacon(_)
+        | NamespaceTopicMsg::ReadinessProbe(_) => {
+            debug!("NamespaceTopicMsg variant not yet handled; dropping");
             return;
         }
     };
