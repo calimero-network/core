@@ -167,24 +167,43 @@ pub fn handle_entity_push(
     })
 }
 
-/// Extract raw `SignedNamespaceOp` bytes from a `skeleton_bytes` store value.
+/// Extract a [`SignedNamespaceOp`](calimero_context_client::local_governance::SignedNamespaceOp)
+/// from a `skeleton_bytes` store value.
 ///
-/// The store encodes entries as `StoredNamespaceEntry::Signed(op)`. All wire
-/// paths (gossip, backfill, join response) expect bare `SignedNamespaceOp`
-/// bytes so the receiver can `borsh::from_slice::<SignedNamespaceOp>` directly.
-pub fn extract_signed_op_bytes(skeleton_bytes: &[u8]) -> Option<Vec<u8>> {
+/// The store encodes entries as `StoredNamespaceEntry::Signed(op)`. Returns
+/// `None` for opaque skeletons (non-member rows) or if the bytes do not
+/// decode as either form.
+///
+/// Prefer this over [`extract_signed_op_bytes`] when the caller needs the
+/// typed op (e.g. to wrap in `NamespaceTopicMsg::Op` for gossip publish) —
+/// it avoids a redundant `borsh::to_vec` + `borsh::from_slice` round-trip.
+pub fn extract_signed_op(
+    skeleton_bytes: &[u8],
+) -> Option<calimero_context_client::local_governance::SignedNamespaceOp> {
     use calimero_context_client::local_governance::{SignedNamespaceOp, StoredNamespaceEntry};
 
     if let Ok(StoredNamespaceEntry::Signed(op)) =
         borsh::from_slice::<StoredNamespaceEntry>(skeleton_bytes)
     {
-        return borsh::to_vec(&op).ok();
+        return Some(op);
     }
     // Fallback: already raw SignedNamespaceOp bytes (legacy / direct-publish path).
-    if borsh::from_slice::<SignedNamespaceOp>(skeleton_bytes).is_ok() {
-        return Some(skeleton_bytes.to_vec());
-    }
-    None
+    borsh::from_slice::<SignedNamespaceOp>(skeleton_bytes).ok()
+}
+
+/// Extract raw `SignedNamespaceOp` bytes from a `skeleton_bytes` store value.
+///
+/// The store encodes entries as `StoredNamespaceEntry::Signed(op)`. The
+/// **stream-based** wire paths (sync backfill response, namespace-join
+/// response) consume the bytes returned here directly so the receiver can
+/// `borsh::from_slice::<SignedNamespaceOp>(...)`.
+///
+/// The **gossip** publish path (`BroadcastMessage::NamespaceGovernanceDelta`)
+/// requires its payload to be a `NamespaceTopicMsg::Op(op)` envelope after
+/// Phase 2 of #2237 — gossip callers should prefer [`extract_signed_op`]
+/// to avoid an unnecessary serialization round-trip.
+pub fn extract_signed_op_bytes(skeleton_bytes: &[u8]) -> Option<Vec<u8>> {
+    extract_signed_op(skeleton_bytes).and_then(|op| borsh::to_vec(&op).ok())
 }
 
 // =============================================================================
