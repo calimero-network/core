@@ -1603,7 +1603,30 @@ impl ReadinessCache {
     /// filter, an older re-delivered beacon could overwrite a fresher one,
     /// causing `pick_sync_partner` and `peer_summary` to regress and the FSM to
     /// spuriously demote `PeerValidatedReady → CatchingUp`.
+    ///
+    /// Also rejects beacons with `ts_millis` more than `MAX_BEACON_CLOCK_DRIFT`
+    /// (60s) ahead of local wall-clock. Without this bound, a malicious or
+    /// clock-skewed member could sign a beacon with `ts_millis = year 2100`,
+    /// poisoning their cache entry: every subsequent legitimate beacon from
+    /// the same peer would be dropped by the `older-than-existing` filter,
+    /// freezing `applied_through` and `dag_head` at attacker-chosen values
+    /// indefinitely. Beacons are signed and verified against namespace
+    /// membership, so only current members can attempt this — but a single
+    /// compromised key would otherwise be sufficient. The 60s drift window
+    /// tolerates legitimate clock skew (NTP-synced fleets routinely diverge
+    /// by tens of milliseconds, occasionally seconds; 60s is generous).
     pub fn insert(&self, beacon: &SignedReadinessBeacon) {
+        // Wall-clock sanity bound — reject far-future ts_millis to close the
+        // cache-poisoning attack described above.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        const MAX_BEACON_CLOCK_DRIFT_MS: u64 = 60_000;
+        if beacon.ts_millis > now_ms.saturating_add(MAX_BEACON_CLOCK_DRIFT_MS) {
+            return;
+        }
+
         let mut g = self.entries.lock().expect("readiness cache lock");
         let key = (beacon.namespace_id, beacon.peer_pubkey);
         if let Some(existing) = g.get(&key) {
@@ -1772,6 +1795,49 @@ fn insert_accepts_newer_beacon_from_same_peer() {
     cache.insert(&newer); // arrives second and IS newer — must replace
     let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
     assert_eq!(s.max_applied_through, Some(100));
+}
+
+#[test]
+fn insert_rejects_far_future_ts_millis() {
+    // Cache-poisoning regression: a malicious or clock-skewed member could sign a
+    // beacon with `ts_millis = year 2100`, then every legitimate beacon would be
+    // rejected as "older". MAX_BEACON_CLOCK_DRIFT_MS (60s) bounds the damage.
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let mut poison = make_beacon(pk, 999, true);
+    poison.ts_millis = now_ms + 600_000; // 10 minutes ahead — well beyond 60s drift
+    cache.insert(&poison);
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert_eq!(
+        s.max_applied_through, None,
+        "far-future beacon must be rejected to prevent cache poisoning"
+    );
+    // A legitimate beacon afterwards should be accepted normally.
+    let mut legit = make_beacon(pk, 42, true);
+    legit.ts_millis = now_ms;
+    cache.insert(&legit);
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert_eq!(s.max_applied_through, Some(42));
+}
+
+#[test]
+fn insert_accepts_ts_millis_within_clock_drift_window() {
+    // 30s ahead is within the 60s drift window — should be accepted.
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let mut b = make_beacon(pk, 17, true);
+    b.ts_millis = now_ms + 30_000;
+    cache.insert(&b);
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert_eq!(s.max_applied_through, Some(17));
 }
 
 #[test]
@@ -2450,13 +2516,15 @@ pub async fn join_namespace(
         .await
         .map_err(|e| JoinError::Transport(e.to_string()))?;
 
-    // step 4: collect first fresh beacon (start anchored above for full-latency timing)
+    // step 4: collect first fresh beacon (start anchored above for full-latency timing).
+    // Clamp the beacon-wait deadline by remaining budget so total wall-clock
+    // (steps 1-3 + step 4) stays within the caller's `deadline`.
     let beacon = self.readiness_cache
         .await_first_fresh_beacon(
             &self.readiness_notify,
             ns_id,
             self.config.ttl_heartbeat,
-            deadline,
+            deadline.saturating_sub(start.elapsed()),
         )
         .await
         .ok_or_else(|| JoinError::NoReadyPeers { waited_ms: start.elapsed().as_millis() as u64 })?;

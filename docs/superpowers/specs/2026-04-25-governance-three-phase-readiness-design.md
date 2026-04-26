@@ -459,7 +459,12 @@ async fn join_namespace(invitation: SignedGroupOpenInvitation, deadline: Duratio
     let probe = ReadinessProbe { namespace_id: ns_id, nonce: random_nonce() };  // step 3
     net.publish(topic.clone(), NamespaceTopicMsg::ReadinessProbe(probe)).await?;
 
-    let beacon = readiness_cache.await_first_fresh_beacon(ns_id, deadline).await
+    // Clamp the beacon-wait deadline by remaining budget so total wall-clock
+    // (steps 1-3 + step 4) stays within the caller's `deadline`. Without this,
+    // a 500ms step-1-3 phase + the full `deadline` for step 4 would overshoot.
+    let beacon = readiness_cache
+        .await_first_fresh_beacon(ns_id, deadline.saturating_sub(start.elapsed()))
+        .await
         .ok_or(JoinError::NoReadyPeers { waited_ms: start.elapsed().as_millis() as u64 })?;
 
     Ok(JoinStarted {
@@ -604,6 +609,8 @@ All nodes boot simultaneously with pre-partition local DAGs. Without the tier sp
 ### 11.3 Lying beacon (malicious or buggy peer)
 
 A peer M advertises `applied_through: 10_000` with a forged `dag_head`. Joiner J picks M as sync partner, calls `run_namespace_backfill(M, ...)`. M's responses either fail op-signature verification (J rejects and marks M misbehaving) or produce a final head that diverges from M's claimed head (J detects mismatch, marks M bad). J evicts M from the cache, picks the next peer. Per-beacon cost of the lie is one wasted sync attempt, already mitigated upstream by gossipsub peer scoring.
+
+**Far-future `ts_millis` (cache poisoning).** `ReadinessCache::insert` orders entries by per-peer `ts_millis` to drop stale beacons that gossipsub may re-deliver out-of-order. Without bounding this signal, a malicious or clock-skewed peer could sign a beacon with `ts_millis = year 2100`; every subsequent legitimate beacon from that same peer would then be dropped by the "older than existing" filter, freezing their cache entry at attacker-chosen `applied_through` / `dag_head` indefinitely. Mitigation: `insert` also rejects any beacon whose `ts_millis` exceeds the local wall-clock by more than `MAX_BEACON_CLOCK_DRIFT_MS = 60_000` (60 s). The window tolerates legitimate NTP drift while bounding the poisoning blast radius.
 
 ### 11.4 Ack flood from forged signers
 
