@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use actix::{AsyncContext, WrapFuture};
-use calimero_context_client::local_governance::SignedNamespaceOp;
+use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedNamespaceOp};
 use calimero_context_client::messages::NamespaceApplyOutcome;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
@@ -25,10 +25,23 @@ pub(super) fn handle_namespace_governance_delta(
         return;
     }
 
-    let op: SignedNamespaceOp = match borsh::from_slice(&payload) {
-        Ok(op) => op,
+    let msg: NamespaceTopicMsg = match borsh::from_slice(&payload) {
+        Ok(msg) => msg,
         Err(err) => {
-            warn!(%err, "failed to decode NamespaceGovernanceDelta payload");
+            warn!(%err, "failed to decode NamespaceTopicMsg payload");
+            return;
+        }
+    };
+
+    let op = match msg {
+        NamespaceTopicMsg::Op(op) => op,
+        // Phases 5/7/8 will wire these variants. Until then, drop them
+        // forward-compatibly so the wire schema can be rolled in this
+        // phase without a coordinated cluster upgrade per follow-up.
+        NamespaceTopicMsg::Ack(_)
+        | NamespaceTopicMsg::ReadinessBeacon(_)
+        | NamespaceTopicMsg::ReadinessProbe(_) => {
+            debug!("NamespaceTopicMsg variant not yet handled; dropping");
             return;
         }
     };
@@ -174,11 +187,29 @@ pub(super) fn handle_namespace_state_heartbeat(
                         else {
                             continue;
                         };
+                        // `extract_signed_op_bytes` returns raw `SignedNamespaceOp`
+                        // borsh (the storage form). Phase 2 of #2237 requires the
+                        // gossip-topic payload to be `NamespaceTopicMsg::Op(op)`,
+                        // so re-decode here and wrap before publishing.
+                        let signed_op: SignedNamespaceOp = match borsh::from_slice(&signed_bytes) {
+                            Ok(op) => op,
+                            Err(err) => {
+                                warn!(
+                                    %err,
+                                    delta_id = %hex::encode(delta_id),
+                                    "heartbeat republish: failed to decode stored op; skipping"
+                                );
+                                continue;
+                            }
+                        };
+                        let Ok(wrapped) = borsh::to_vec(&NamespaceTopicMsg::Op(signed_op)) else {
+                            continue;
+                        };
                         let payload = BroadcastMessage::NamespaceGovernanceDelta {
                             namespace_id,
                             delta_id: *delta_id,
                             parent_ids: vec![],
-                            payload: signed_bytes,
+                            payload: wrapped,
                         };
                         if let Ok(bytes) = borsh::to_vec(&payload) {
                             let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
