@@ -18,16 +18,18 @@ Today the `VisibilityMode { Open, Restricted }` enum is documented as "visibilit
 This design relocates visibility from the (unused) context level to the subgroup level, where it actually makes sense. After this change:
 
 - A subgroup is `Open` or `Restricted`.
-- Members of a parent group are automatically members of any `Open` child subgroup (and transitively, any contexts inside it). Restricted subgroups remain explicit-membership only.
-- `default_visibility` and `CAN_JOIN_OPEN_CONTEXTS` are removed entirely. There is one visibility primitive, attached to one resource (the subgroup), with one effect (parent-chain membership inheritance).
+- Members of a parent group are automatically members of any `Open` child subgroup (and transitively, any contexts inside it) **provided they hold the `CAN_JOIN_OPEN_SUBGROUPS` capability bit** at the parent group level. Restricted subgroups remain explicit-membership only.
+- `default_visibility` is removed entirely. The `CAN_JOIN_OPEN_CONTEXTS` capability bit is renamed to `CAN_JOIN_OPEN_SUBGROUPS` (same bit slot, `1 << 2`, retired meaning replaced with the new one). It is granted by default to new members, so admins use it as a per-member deny-list ("revoke from this user to keep them out of Open subgroups even though they're in the parent").
+- One visibility primitive on the subgroup, one capability bit on the member. Both must align for inherited membership.
 
 ## Goals
 
 1. Single visibility knob, attached to subgroups, with real enforcement.
-2. Parent-namespace members get transparent access to `Open` subgroups (and their contexts) without per-member `add_group_members` cascades.
+2. Parent-namespace members with the `CAN_JOIN_OPEN_SUBGROUPS` capability get transparent access to `Open` subgroups (and their contexts) without per-member `add_group_members` cascades.
 3. The `Restricted` setting acts as a wall in the parent-walk: inheritance stops at the first `Restricted` ancestor.
-4. App-level workarounds (mero-drive's `useInheritCascade`, namespace-wide member fan-out) become unnecessary.
-5. Battleships' invite-link flow benefits directly: a host marks the namespace's gameplay subgroup as `Open`, and any second player who joins the namespace gains context access immediately, with no per-context invite step.
+4. Per-member deny-list: admins can revoke `CAN_JOIN_OPEN_SUBGROUPS` from a specific member to block their inheritance into Open subgroups while leaving them in the parent.
+5. App-level workarounds (mero-drive's `useInheritCascade`, namespace-wide member fan-out) become unnecessary for the common case.
+6. Battleships' invite-link flow benefits directly: a host marks the namespace's gameplay subgroup as `Open`, and any second player who joins the namespace (and gets default capabilities, including `CAN_JOIN_OPEN_SUBGROUPS`) gains context access immediately, with no per-context invite step.
 
 ## Non-goals
 
@@ -39,23 +41,27 @@ This design relocates visibility from the (unused) context level to the subgroup
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ Namespace (root group)                                      │
-│  members: alice (admin), bob, carol                         │
-│  subgroup_visibility: (n/a — root)                          │
-│                                                             │
-│  ├── Subgroup: "general"   subgroup_visibility = Open       │
-│  │    direct members: alice                                 │
-│  │    effective members: alice, bob, carol  ← walked        │
-│  │    contexts: chat-001, chat-002                          │
-│  │       → bob can join_context(chat-001) without invite    │
-│  │                                                          │
-│  └── Subgroup: "leadership"  subgroup_visibility = Restricted
-│       direct members: alice                                 │
-│       effective members: alice                              │
-│       contexts: planning-001                                │
-│          → bob CANNOT join_context(planning-001)            │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ Namespace (root group)                                           │
+│  members: alice (admin),                                         │
+│           bob   [caps: CAN_JOIN_OPEN_SUBGROUPS],                 │
+│           carol [caps: CAN_JOIN_OPEN_SUBGROUPS revoked]          │
+│  subgroup_visibility: (n/a — root)                               │
+│                                                                  │
+│  ├── Subgroup: "general"   subgroup_visibility = Open            │
+│  │    direct members: alice                                      │
+│  │    effective members: alice, bob   ← walked + cap-checked     │
+│  │    (carol excluded: cap revoked at namespace level)           │
+│  │    contexts: chat-001, chat-002                               │
+│  │       → bob can join_context(chat-001) without invite         │
+│  │       → carol cannot, despite "general" being Open            │
+│  │                                                               │
+│  └── Subgroup: "leadership"  subgroup_visibility = Restricted    │
+│       direct members: alice                                      │
+│       effective members: alice                                   │
+│       contexts: planning-001                                     │
+│          → bob and carol both CANNOT join_context(planning-001)  │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 Walk semantics for `check_group_membership(group, identity)`:
@@ -63,9 +69,15 @@ Walk semantics for `check_group_membership(group, identity)`:
 1. If `identity` is a direct member of `group` → `true`.
 2. Else read `group.subgroup_visibility`. If `Restricted` (or unset) → `false`. Stop.
 3. Else (`Open`), look up `group`'s parent. If no parent → `false`.
-4. Recurse step 1 with the parent group.
+4. If `identity` is a direct member of the parent (the **anchor**), check `identity`'s capabilities at the parent:
+   - If admin of parent → `true` (admin override, matches existing `is_group_admin_or_has_capability` pattern).
+   - Else if `CAN_JOIN_OPEN_SUBGROUPS` bit is set → `true`.
+   - Else → `false` (admin has explicitly revoked the cap).
+5. Otherwise, recurse step 2 with the parent group as `current`.
 
 The first `Restricted` ancestor terminates the walk. The walk also terminates at the namespace root (which has no parent) — namespace-level membership is the source of truth.
+
+**Anchor-level cap check:** the cap is evaluated exactly once per call, at the level where the direct membership row is found. Walking bottom-up, the deepest direct membership wins — that group's cap value decides whether inheritance applies. This matches "most-specific membership decides" intuition.
 
 `subgroup_visibility` set on the root group itself is a no-op: there is no parent to inherit from. The setting is only meaningful on non-root groups. We do not reject the op for the root, but we do not act on it either; this keeps the API uniform.
 
@@ -134,7 +146,7 @@ pub enum VisibilityMode {
 
 ## Behavior change
 
-### `check_group_membership` walks parents on `Open`
+### `check_group_membership` walks parents on `Open`, gated by cap at anchor
 
 `crates/context/src/group_store/membership.rs:118-124`
 
@@ -152,22 +164,26 @@ pub fn check_group_membership(
     // subgroup is a membership wall — direct membership is required.
     let mut current = *group_id;
     loop {
-        let visibility = get_subgroup_visibility(store, &current)?;
-        if visibility != VisibilityMode::Open {
+        if get_subgroup_visibility(store, &current)? != VisibilityMode::Open {
             return Ok(false);
         }
         let Some(parent) = get_parent_group(store, &current)? else {
             return Ok(false);
         };
         if has_direct_member(store, &parent, identity)? {
-            return Ok(true);
+            // Anchor found. Admins always inherit; non-admins need the cap.
+            if is_group_admin(store, &parent, identity)? {
+                return Ok(true);
+            }
+            let caps = get_member_capability(store, &parent, identity)?.unwrap_or(0);
+            return Ok(caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0);
         }
         current = parent;
     }
 }
 ```
 
-Performance: O(depth-of-tree) `RocksDB` reads per check. Group hierarchies are shallow in practice (namespace → subgroup → leaf), so this is small and cacheable.
+Performance: O(depth-of-tree) `RocksDB` reads per check, plus one cap read at the anchor. Group hierarchies are shallow in practice (namespace → subgroup → leaf), so this is small and cacheable.
 
 ### `join_context` — no handler change, comment update
 
@@ -184,14 +200,31 @@ if !group_store::check_group_membership(&datastore, &group_id, &joiner_identity)
 }
 ```
 
-### `CAN_JOIN_OPEN_CONTEXTS` removed
+### `CAN_JOIN_OPEN_CONTEXTS` → `CAN_JOIN_OPEN_SUBGROUPS`
 
-The bit was granted by default but never consulted. Remove:
+The bit slot `1 << 2` is reused with new semantics. The constant is renamed, the documentation is rewritten, the grant sites stay (the bit is still default-on), and the display sites get the new label.
 
-- `crates/context/config/src/lib.rs:137` — bit definition.
-- `crates/context/src/handlers/create_group.rs:126` — grant during group creation.
-- `crates/context/src/handlers/store_group_meta.rs:69-78` — grant fallback before `DefaultCapabilitiesSet` arrives.
-- `crates/meroctl/src/output/groups.rs:452`, `crates/meroctl/src/cli/group/members.rs:338`, `crates/meroctl/src/cli/group/settings.rs:88` — display sites.
+`crates/context/config/src/lib.rs:137`:
+
+```rust
+/// Permits a parent-group member to be inherited as a member of any
+/// `Open` subgroup beneath them. Granted by default; admins revoke
+/// per-member when they want a specific user kept out of Open
+/// subgroups even though they remain in the parent.
+pub const CAN_JOIN_OPEN_SUBGROUPS: u32 = 1 << 2;
+```
+
+**Default-on policy preserved:**
+
+- `crates/context/src/handlers/create_group.rs:126` — default capabilities for the creator group still include this bit (renamed reference).
+- `crates/context/src/handlers/store_group_meta.rs:69-78` — fallback grant before `DefaultCapabilitiesSet` arrives still includes this bit (renamed reference).
+- `crates/context/src/group_store/membership.rs` `add_group_member_with_keys` — already grants `default_capabilities` to non-admin members on add; nothing to change here, the new bit flows through automatically.
+
+**Display renamed (not removed):**
+
+- `crates/meroctl/src/output/groups.rs:452` — `"CAN_JOIN_OPEN_CONTEXTS"` → `"CAN_JOIN_OPEN_SUBGROUPS"`.
+- `crates/meroctl/src/cli/group/members.rs:338` — same.
+- `crates/meroctl/src/cli/group/settings.rs:88` — same.
 
 The other `MemberCapabilities::*` bits are unaffected.
 
@@ -258,31 +291,38 @@ Replace per-folder `visibility: 'Inherit' | 'Restricted'` with calling `SetSubgr
 
 ### Battleships invite-link
 
-The host's namespace contains a gameplay subgroup. With `subgroup_visibility = Open`, any player who accepts the namespace invite link gets immediate context access for the game session — no per-context invite, no membership cascade.
+The host's namespace contains a gameplay subgroup. With `subgroup_visibility = Open` (and the joining player getting `CAN_JOIN_OPEN_SUBGROUPS` by default at namespace add), any player who accepts the namespace invite link gets immediate context access for the game session — no per-context invite, no membership cascade. Hosts can revoke the cap from a specific player to keep them out of the gameplay subgroup while leaving them in the namespace lobby.
 
 ## Testing strategy
 
 Unit tests in `crates/context/src/group_store/tests.rs`:
 
 1. `check_membership_direct_member` — direct member of any group passes (covers the existing path).
-2. `check_membership_open_subgroup_inherits_parent` — parent member returns `true` for `Open` child without explicit row.
-3. `check_membership_restricted_subgroup_does_not_inherit` — parent member returns `false` for `Restricted` child.
+2. `check_membership_open_subgroup_inherits_parent_with_default_cap` — parent member with default caps (which include `CAN_JOIN_OPEN_SUBGROUPS`) returns `true` for `Open` child without explicit row.
+3. `check_membership_restricted_subgroup_does_not_inherit` — parent member returns `false` for `Restricted` child even with cap set.
 4. `check_membership_restricted_wall_blocks_grandparent_inheritance` — three-level chain (`namespace → restricted_mid → open_leaf`); namespace member returns `false` for `open_leaf` because the walk stops at the `Restricted` middle.
-5. `check_membership_open_chain_walks_to_root` — three-level chain (`namespace → open_mid → open_leaf`); namespace member returns `true` for `open_leaf`.
+5. `check_membership_open_chain_walks_to_root` — three-level chain (`namespace → open_mid → open_leaf`); namespace member with cap returns `true` for `open_leaf`.
 6. `check_membership_unset_visibility_treated_as_restricted` — group with no `subgroup_visibility` key behaves like `Restricted`.
-7. `set_subgroup_visibility_admin_only` — non-admin call rejected; admin call persists.
-8. `set_subgroup_visibility_round_trip` — set then get returns the stored value.
+7. `check_membership_open_subgroup_blocked_when_cap_revoked` — parent member whose `CAN_JOIN_OPEN_SUBGROUPS` was explicitly cleared returns `false` for `Open` child.
+8. `check_membership_open_subgroup_admin_inherits_without_cap` — parent admin returns `true` for `Open` child even when the cap bit is cleared (admin override).
+9. `check_membership_anchor_cap_check_uses_deepest_direct_membership` — identity has direct rows on both `namespace` and intermediate `mid`, with cap set at `namespace` but cleared at `mid`. For `open_leaf` under `mid`, returns `false` (deepest anchor wins).
+10. `set_subgroup_visibility_admin_only` — non-admin call rejected; admin call persists.
+11. `set_subgroup_visibility_round_trip` — set then get returns the stored value.
+12. `default_capabilities_include_can_join_open_subgroups` — newly added non-admin member gets the bit set automatically.
 
-Integration test (existing `join_context` scenarios extended):
+Integration tests (existing `join_context` scenarios extended):
 
-9. `join_open_subgroup_context_as_namespace_member` — namespace member can `join_context` for a context inside an `Open` subgroup without being added to that subgroup.
-10. `join_restricted_subgroup_context_blocked_until_added` — same scenario with `Restricted` returns the existing "identity is not a member of the group" error; works after explicit `add_group_members`.
+13. `join_open_subgroup_context_as_namespace_member` — namespace member with default caps can `join_context` for a context inside an `Open` subgroup without being added to that subgroup.
+14. `join_open_subgroup_context_blocked_when_cap_revoked` — same scenario after admin revokes `CAN_JOIN_OPEN_SUBGROUPS` returns the existing "identity is not a member of the group" error.
+15. `join_restricted_subgroup_context_blocked_until_added` — same scenario with `Restricted` returns the existing error; works after explicit `add_group_members`.
 
 E2E (`apps/e2e-kv-store/workflows/`): a new workflow `group-subgroup-visibility-inheritance.yml` that boots two nodes, has node A create a namespace + `Open` subgroup + context, has node B join only the namespace, and asserts node B can `join_context` and execute a method on the inner context. Naming follows the existing `group-*.yml` pattern in that directory.
 
 `★ Insight ─────────────────────────────────────`
-- Test 4 is the most important — it pins down the "Restricted = wall" semantic. Without it, an admin could accidentally leak grandparent access by flipping a leaf to `Open`.
-- Test 6 protects the read default. If the default ever silently flipped to `Open`, every existing-but-unset subgroup would suddenly become a public room.
+- Test 4 is the most important on the visibility axis — it pins down the "Restricted = wall" semantic. Without it, an admin could accidentally leak grandparent access by flipping a leaf to `Open`.
+- Test 6 protects the read default for visibility. If the default ever silently flipped to `Open`, every existing-but-unset subgroup would suddenly become a public room.
+- Tests 7 and 9 are the load-bearing ones for the cap axis. Test 7 confirms the cap actually denies (not just decorates the member row); Test 9 nails down which membership row's cap is consulted when there's ambiguity. Without 9, a future reader could justify either "shallowest" or "deepest" anchor and ship the wrong one.
+- Test 8 ensures the admin-override doesn't silently disappear if someone refactors `is_group_admin` later — admins must keep transparently inheriting access.
 `─────────────────────────────────────────────────`
 
 ## Files touched (summary)
@@ -291,7 +331,7 @@ E2E (`apps/e2e-kv-store/workflows/`): a new workflow `group-subgroup-visibility-
 - `crates/store/src/key/group/mod.rs` — rename storage key.
 - `crates/store/src/types/group.rs` — rename `PredefinedEntry` impl.
 - `crates/store/src/key.rs` — rename re-export.
-- `crates/context/config/src/lib.rs` — `VisibilityMode` doc; remove `CAN_JOIN_OPEN_CONTEXTS`.
+- `crates/context/config/src/lib.rs` — `VisibilityMode` doc; rename `CAN_JOIN_OPEN_CONTEXTS` → `CAN_JOIN_OPEN_SUBGROUPS` (same bit slot, new doc).
 - `crates/context/src/group_store/capabilities.rs` — typed get/set/delete fns.
 - `crates/context/src/group_store/membership.rs` — parent-walk in `check_group_membership`.
 - `crates/context/src/group_store/mod.rs` — rename re-exports + wrappers.
@@ -301,8 +341,8 @@ E2E (`apps/e2e-kv-store/workflows/`): a new workflow `group-subgroup-visibility-
 - `crates/context/src/handlers/set_default_visibility.rs` → `set_subgroup_visibility.rs` — rename + retype.
 - `crates/context/src/handlers/store_default_visibility.rs` → `store_subgroup_visibility.rs` — rename.
 - `crates/context/src/handlers/get_group_info.rs` — field rename.
-- `crates/context/src/handlers/create_group.rs` — drop `CAN_JOIN_OPEN_CONTEXTS` grant.
-- `crates/context/src/handlers/store_group_meta.rs` — drop fallback grant.
+- `crates/context/src/handlers/create_group.rs` — rename constant reference (still grants the bit by default).
+- `crates/context/src/handlers/store_group_meta.rs` — rename constant reference in fallback grant (still grants by default).
 - `crates/context/src/handlers/join_context.rs` — comment update only.
 - `crates/context/primitives/src/group.rs` — request structs renamed; field rename in `GroupInfo`.
 - `crates/context/primitives/src/messages.rs` — `ContextMessage` variant rename.
@@ -312,8 +352,9 @@ E2E (`apps/e2e-kv-store/workflows/`): a new workflow `group-subgroup-visibility-
 - `crates/server/primitives/src/admin/mod.rs` — request/response field rename + validator.
 - `crates/server/src/admin/router.rs` (or equivalent) — route path rename.
 - `crates/meroctl/src/cli/group/settings.rs` — subcommand + display rename.
-- `crates/meroctl/src/cli/group/members.rs` — drop `CAN_JOIN_OPEN_CONTEXTS` row.
-- `crates/meroctl/src/output/groups.rs` — drop `CAN_JOIN_OPEN_CONTEXTS` row.
+- `crates/meroctl/src/cli/group/members.rs` — rename `CAN_JOIN_OPEN_CONTEXTS` row label.
+- `crates/meroctl/src/cli/group/settings.rs` — rename in default-caps display block.
+- `crates/meroctl/src/output/groups.rs` — rename `CAN_JOIN_OPEN_CONTEXTS` row label.
 
 **Tests:**
 - `crates/context/src/group_store/tests.rs` — add tests 1-8 above; rename existing `set_and_get_default_visibility` test.
